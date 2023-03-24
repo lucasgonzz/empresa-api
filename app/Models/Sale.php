@@ -1,0 +1,96 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Sale extends Model
+{
+    
+    protected $guarded = [];
+
+    public function impressions() {
+        return $this->hasMany('App\Models\Impression');
+    }
+
+    function scopeWithAll($query) {
+        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles', 'impressions', 'commissions', 'discounts', 'surchages', 'afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'current_acount_payment_method', 'order_production.client', 'order_production.articles');
+    }
+
+    public function budget() {
+        return $this->belongsTo('App\Models\Budget');
+    }
+
+    public function order_production() {
+        return $this->belongsTo('App\Models\OrderProduction');
+    }
+
+    public function sale_type() {
+        return $this->belongsTo('App\Models\SaleType');
+    }
+
+    public function afip_information() {
+        return $this->belongsTo('App\Models\AfipInformation');
+    }
+
+    public function afip_ticket() {
+        return $this->hasOne('App\Models\AfipTicket');
+    }
+
+    public function commissioners() {
+        return $this->belongsToMany('App\Models\Commissioner')->withPivot('percentage', 'is_seller');
+    }
+
+    public function user() {
+        return $this->belongsTo('App\Models\User', 'user_id');
+    }
+
+    public function employee() {
+        return $this->belongsTo('App\Models\User', 'employee_id');
+    }
+
+    public function current_acounts() {
+        return $this->hasMany('App\Models\CurrentAcount');
+    }
+
+    public function commissions() {
+        return $this->hasMany('App\Models\Commission');
+    }
+
+    public function order() {
+        return $this->belongsTo('App\Models\Order');
+    }
+
+    public function discounts() {
+        return $this->belongsToMany('App\Models\Discount')->withPivot('percentage');
+    }
+
+    public function surchages() {
+        return $this->belongsToMany('App\Models\Surchage')->withPivot('percentage');
+    }
+
+    public function articles() {
+        return $this->belongsToMany('App\Models\Article')->withPivot('amount', 'cost', 'price', 'returned_amount', 'delivered_amount', 'discount', 'with_dolar');
+    }
+
+    public function combos() {
+        return $this->belongsToMany('App\Models\Combo')->withPivot('amount', 'price',);
+    }
+
+    public function services() {
+        return $this->belongsToMany('App\Models\Service')->withPivot('discount', 'amount', 'price');
+    }
+
+    public function client() {
+        return $this->belongsTo('App\Models\Client');
+    }
+
+    public function buyer() {
+        return $this->belongsTo('App\Models\Buyer');
+    }
+
+    public function current_acount_payment_method() {
+        return $this->belongsTo('App\Models\CurrentAcountPaymentMethod');
+    }
+
+}
