@@ -43,6 +43,8 @@ class CreateUsersTable extends Migration
             $table->string('default_article_image_url')->nullable();
             $table->boolean('from_cloudinary')->default(0);
             $table->integer('articles_pages')->nullable();
+            $table->string('instagram')->nullable();
+            $table->string('facebook')->nullable();
             $table->timestamp('payment_expired_at')->nullable();
             $table->rememberToken();
 

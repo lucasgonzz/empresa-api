@@ -2,11 +2,12 @@
 
 namespace Database\Seeders;
 
-use App\Models\Article;
-use App\Models\ArticleDiscount;
-use App\Models\Description;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Models\Article;
+use App\Models\ArticleDiscount;
+use App\Models\Category;
+use App\Models\Description;
 use App\Models\Image;
 use App\Models\Provider;
 use App\Models\SubCategory;
@@ -14,15 +15,17 @@ use App\Models\User;
 use App\Models\Variant;
 use Carbon\Carbon;
 use Illuminate\Database\Seeder;
-use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 class ArticleSeeder extends Seeder
 {
 
 
     public $images = [
-        'arma' => 'http://empresa.local:8000/storage/cubo.jpeg',
+        'cubo' => 'http://empresa.local:8000/storage/cubo.jpeg',
+        'cadena' => 'http://empresa.local:8000/storage/cadena.jpg',
+        'mochila' => 'http://empresa.local:8000/storage/mochila.jpg',
     ];
 
     public function run()
@@ -50,7 +53,136 @@ class ArticleSeeder extends Seeder
                 'sub_category_name' => 'lavarropa nuevo',
                 'provider_id'       => $bsas->id,
                 'images'            => [
-                    $this->images['arma'],
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                    [
+                        'url'       => $this->images['mochila'],
+                    ],
+                ],
+                'colors'            => [],
+                'sizes'             => [],
+            ],
+            [
+                'bar_code'          => '',
+                'provider_code'     => '',
+                'name'              => 'Plaqueta de BSAS 2',
+                'stock'             => 10,
+                'cost'              => 100,
+                'price'             => null,
+                'sub_category_name' => 'lavarropa nuevo',
+                'provider_id'       => $bsas->id,
+                'featured'          => 1,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                        'color_id'  => 1,
+                    ],
+                    [
+                        'url'       => $this->images['mochila'],
+                        'color_id'  => 2,
+                    ],
+                ],
+                'colors'            => [
+                    [
+                        'id'        => 1,
+                        'amount'    => 1,
+                    ],
+                    [
+                        'id'        => 2,
+                        'amount'    => 1,
+                    ],
+                ],
+                'sizes'             => [],
+            ],
+            [
+                'bar_code'          => '',
+                'provider_code'     => '',
+                'name'              => 'Plaqueta de BSAS 3',
+                'stock'             => 10,
+                'cost'              => 100,
+                'price'             => null,
+                'sub_category_name' => 'lavarropa nuevo',
+                'provider_id'       => $bsas->id,
+                'featured'          => 2,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                        'color_id'  => 1,
+                    ],
+                    [
+                        'url'       => $this->images['mochila'],
+                        'color_id'  => 2,
+                    ],
+                ],
+                'colors'            => [
+                    [
+                        'id'        => 1,
+                        'amount'    => 1,
+                    ],
+                    [
+                        'id'        => 2,
+                        'amount'    => 0,
+                    ],
+                ],
+                'sizes'             => [],
+            ],
+            [
+                'bar_code'          => '',
+                'provider_code'     => '',
+                'name'              => 'Plaqueta de BSAS 4',
+                'stock'             => 10,
+                'cost'              => 100,
+                'price'             => null,
+                'sub_category_name' => 'lavarropa nuevo',
+                'provider_id'       => $bsas->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                    [
+                        'url'       => $this->images['mochila'],
+                    ],
+                ],
+                'colors'            => [],
+                'sizes'             => [],
+            ],
+            [
+                'bar_code'          => '',
+                'provider_code'     => '',
+                'name'              => 'Plaqueta de BSAS 5',
+                'stock'             => 10,
+                'cost'              => 100,
+                'price'             => null,
+                'sub_category_name' => 'lavarropa nuevo',
+                'provider_id'       => $bsas->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                    [
+                        'url'       => $this->images['mochila'],
+                    ],
+                ],
+                'colors'            => [],
+                'sizes'             => [],
+            ],
+            [
+                'bar_code'          => '',
+                'provider_code'     => '',
+                'name'              => 'Plaqueta de BSAS 6',
+                'stock'             => 10,
+                'cost'              => 100,
+                'price'             => null,
+                'sub_category_name' => 'lavarropa nuevo',
+                'provider_id'       => $bsas->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                    [
+                        'url'       => $this->images['mochila'],
+                    ],
                 ],
                 'colors'            => [],
                 'sizes'             => [],
@@ -65,7 +197,12 @@ class ArticleSeeder extends Seeder
                 'sub_category_name' => 'lavarropas usados',
                 'provider_id'       => $rosario->id,
                 'images'            => [
-                    $this->images['arma'],
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                    [
+                        'url'       => $this->images['mochila'],
+                    ],
                 ],
                 'colors'            => [],
                 'sizes'             => [],
@@ -80,7 +217,12 @@ class ArticleSeeder extends Seeder
                 'sub_category_name' => 'aire nuevo',
                 'provider_id'       => $bsas->id,
                 'images'            => [
-                    $this->images['arma'],
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                    [
+                        'url'       => $this->images['mochila'],
+                    ],
                 ],
                 'colors'            => [],
                 'sizes'             => [],
@@ -95,7 +237,12 @@ class ArticleSeeder extends Seeder
                 'sub_category_name' => 'aires acondicionados usados',
                 'provider_id'       => $rosario->id,
                 'images'            => [
-                    $this->images['arma'],
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                    [
+                        'url'       => $this->images['mochila'],
+                    ],
                 ],
                 'colors'            => [],
                 'sizes'             => [],
@@ -109,6 +256,11 @@ class ArticleSeeder extends Seeder
                 'cost'              => 5,
                 'price'             => 10,
                 'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                ],
             ],
             [
                 'bar_code'          => '',
@@ -119,6 +271,11 @@ class ArticleSeeder extends Seeder
                 'cost'              => 5,
                 'price'             => 10,
                 'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                ],
             ],
             [
                 'bar_code'          => '',
@@ -129,6 +286,11 @@ class ArticleSeeder extends Seeder
                 'cost'              => 5,
                 'price'             => 10,
                 'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                ],
             ],
             [
                 'bar_code'          => '',
@@ -139,6 +301,11 @@ class ArticleSeeder extends Seeder
                 'cost'              => 5,
                 'price'             => 10,
                 'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                ],
             ],
             [
                 'bar_code'          => '',
@@ -149,6 +316,11 @@ class ArticleSeeder extends Seeder
                 'cost'              => 5,
                 'price'             => 10,
                 'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                ],
             ],
             [
                 'bar_code'          => '',
@@ -159,6 +331,11 @@ class ArticleSeeder extends Seeder
                 'cost'              => 5,
                 'price'             => 10,
                 'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                ],
             ],
             [
                 'bar_code'          => '',
@@ -169,6 +346,11 @@ class ArticleSeeder extends Seeder
                 'cost'              => 5,
                 'price'             => 10,
                 'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                ],
             ],
             [
                 'bar_code'          => '',
@@ -179,6 +361,26 @@ class ArticleSeeder extends Seeder
                 'cost'              => 5,
                 'price'             => 10,
                 'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                ],
+            ],
+            [
+                'bar_code'          => '',
+                'provider_code'     => '',
+                'name'              => 'Repuestos de muchas cosas man',
+                'category_name'     => 'repuestos de muchas cosas',
+                'stock'             => 100,
+                'cost'              => 5,
+                'price'             => 10,
+                'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                ],
             ],
             [
                 'bar_code'          => '',
@@ -188,6 +390,11 @@ class ArticleSeeder extends Seeder
                 'cost'              => 5,
                 'price'             => 10,
                 'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                ],
             ],
             [
                 'bar_code'          => '',
@@ -197,6 +404,11 @@ class ArticleSeeder extends Seeder
                 'cost'              => 4,
                 'price'             => 7,
                 'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                ],
             ],
             [
                 'bar_code'          => '',
@@ -206,6 +418,11 @@ class ArticleSeeder extends Seeder
                 'cost'              => 10,
                 'price'             => 15,
                 'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                ],
             ],
             [
                 'bar_code'          => '',
@@ -215,6 +432,11 @@ class ArticleSeeder extends Seeder
                 'cost'              => 10,
                 'price'             => 30,
                 'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                ],
             ],
             [
                 'bar_code'          => '',
@@ -225,6 +447,11 @@ class ArticleSeeder extends Seeder
                 'cost'              => 10,
                 'price'             => 30,
                 'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                ],
             ],
         ];
         $num = 1;
@@ -238,6 +465,7 @@ class ArticleSeeder extends Seeder
                 'slug'              => ArticleHelper::slug($article['name'], $user->id),
                 'cost'              => $article['cost'],
                 'status'            => isset($article['status']) ? $article['status'] : 'active',
+                'featured'          => isset($article['featured']) ? $article['featured'] : null,
                 'stock'             => $article['stock'] ,
                 'provider_id'       => $article['provider_id'],
                 'apply_provider_percentage_gain' => 1,
@@ -250,11 +478,12 @@ class ArticleSeeder extends Seeder
             $days--;
             $num++;
             if (isset($article['images'])) {
-                foreach ($article['images'] as $url) { 
+                foreach ($article['images'] as $image) { 
                     Image::create([
                         'imageable_type'                            => 'article',
                         'imageable_id'                              => $art->id,
-                        env('IMAGE_URL_PROP_NAME', 'image_url')     => $url,
+                        env('IMAGE_URL_PROP_NAME', 'image_url')     => $image['url'],
+                        'color_id'                                  => isset($image['color_id']) ? $image['color_id'] : null,
                     ]);
                 }    
             }
@@ -263,6 +492,7 @@ class ArticleSeeder extends Seeder
                                         'amount' => $article['stock'],
                                     ]);
             $this->createDescriptions($art); 
+            $this->setColors($art, $article); 
             ArticleHelper::setFinalPrice($art, $user->id);
         }
     }
@@ -278,7 +508,25 @@ class ArticleSeeder extends Seeder
         ]);
     }
 
+    function setColors($article, $_article) {
+        if (isset($_article['colors'])) {
+            foreach ($_article['colors'] as $color) {
+                $article->colors()->attach($color['id'], [
+                    'amount'    => $color['amount'],
+                ]);
+            }
+        }
+    }
+
     function getCategoryId($user, $article) {
+        if (isset($article['category_name'])) {
+            $category = Category::where('user_id', $user->id)
+                                    ->where('name', $article['category_name'])
+                                    ->first();
+            if (!is_null($category)) {
+                return $category->id;
+            }
+        }
         if (isset($article['sub_category_name'])) {
             $sub_category = SubCategory::where('user_id', $user->id)
                                         ->where('name', $article['sub_category_name'])

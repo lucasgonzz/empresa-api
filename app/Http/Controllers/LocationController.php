@@ -19,7 +19,7 @@ class LocationController extends Controller
 
     public function store(Request $request) {
         $model = Location::create([
-            'num'                   => $this->num('Locations'),
+            'num'                   => $this->num('locations'),
             'name'                  => $request->name,
             'user_id'               => $this->userId(),
         ]);

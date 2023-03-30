@@ -18,6 +18,7 @@ class CreateImagesTable extends Migration
             $table->string(env('IMAGE_URL_PROP_NAME', 'image_url'));
             $table->integer('imageable_id');
             $table->string('imageable_type');
+            $table->integer('color_id')->nullable();
             $table->timestamps();
         });
     }

@@ -27,8 +27,11 @@ class UserSeeder extends Seeder
                 'image_url'         => env('APP_URL').'/storage/cubo.jpeg',
                 'doc_number'        => '123',
                 'email'             => 'lucasgonzalez210200@gmail.com',
+                'phone'             => '3444622139',
+                'instagram'         => 'https://www.instagram.com/lucasgonzz/',
+                'facebook'          => 'https://www.facebook.com',
                 'password'          => bcrypt('123'),
-                'online_prices'     => 'only_registered',
+                'online_prices'     => 'all',
                 'visible_password'  => null,
                 'payment_expired_at'=> Carbon::now()->addDay(),
             ],
@@ -85,6 +88,9 @@ class UserSeeder extends Seeder
                 'owner_id'              => isset($model['owner_id']) ? $model['owner_id'] : null,  
                 'online_prices'         => isset($model['online_prices']) ? $model['online_prices'] : null,  
                 'payment_expired_at'    => isset($model['payment_expired_at']) ? $model['payment_expired_at'] : null,  
+                'instagram'             => isset($model['instagram']) ? $model['instagram'] : null,  
+                'facebook'              => isset($model['facebook']) ? $model['facebook'] : null,  
+                'phone'                 => isset($model['phone']) ? $model['phone'] : null,  
             ]);
             if (is_null($user->owner_id)) {
 

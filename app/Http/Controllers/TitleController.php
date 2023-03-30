@@ -23,7 +23,9 @@ class TitleController extends Controller
             'header'                => $request->header,
             'lead'                  => $request->lead,
             'image_url'             => $request->image_url,
+            'crop_image_url'        => $request->crop_image_url,
             'hosting_image_url'     => $request->hosting_image_url,
+            'text_color'            => $request->text_color,
             'color'                 => $request->color,
             'user_id'               => $this->userId(),
         ]);
@@ -40,7 +42,9 @@ class TitleController extends Controller
         $model->header                = $request->header;
         $model->lead                  = $request->lead;
         $model->image_url             = $request->image_url;
+        $model->crop_image_url        = $request->crop_image_url;
         $model->hosting_image_url     = $request->hosting_image_url;
+        $model->text_color            = $request->text_color;
         $model->color                 = $request->color;
         $model->save();
         $this->sendAddModelNotification('Title', $model->id);

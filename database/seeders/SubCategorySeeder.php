@@ -54,11 +54,7 @@ class SubCategorySeeder extends Seeder
                 
                 $names = ['repuestos de aires acondicionados 1', 'repuestos de aires acondicionados 2'];
 
-            }   else if ($category->name == 'repuestos de muchas cosas') {
-                
-                $names = ['repuestos de muchas cosas 1', 'repuestos de muchas cosas 2'];
-
-            } 
+            }   
             $num = 1;
             for ($i=0; $i < count($names); $i++) {
                 $sub_category = SubCategory::create([

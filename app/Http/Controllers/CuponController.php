@@ -19,7 +19,7 @@ class CuponController extends Controller
 
     public function store(Request $request) {
         $model = Cupon::create([
-            'num'                   => $this->num('Cupons'),
+            'num'                   => $this->num('cupons'),
             'amount'                => $request->amount,
             'percentage'            => $request->percentage,
             'min_amount'            => $request->min_amount,

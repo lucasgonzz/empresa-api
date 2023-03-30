@@ -19,7 +19,7 @@ class SizeController extends Controller
 
     public function store(Request $request) {
         $model = Size::create([
-            'num'                   => $this->num('Sizes'),
+            'num'                   => $this->num('sizes'),
             'value'                  => $request->value,
             'user_id'               => $this->userId(),
         ]);

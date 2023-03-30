@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Exports\ArticleExport;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Imports\ArticleImport;
 use App\Models\Article;
@@ -155,5 +156,13 @@ class ArticleController extends Controller
         }
         $model->save();
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 200);
+    }
+
+    function destroy($id) {
+        $model = Article::find($id);
+        ImageController::deleteModelImages($model);
+        $model->delete();
+        $this->sendDeleteModelNotification('article', $model->id);
+        return response(null);
     }
 }

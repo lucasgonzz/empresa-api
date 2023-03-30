@@ -62,7 +62,7 @@ class Article extends Model
     }
 
     function colors() {
-        return $this->belongsToMany('App\Models\Color');
+        return $this->belongsToMany('App\Models\Color')->withPivot('amount');
     }
 
     function condition() {
@@ -86,7 +86,7 @@ class Article extends Model
     }
 
     function images() {
-        return $this->morphMany('App\Models\Image', 'imageable');
+        return $this->morphMany('App\Models\Image', 'imageable')->withPivot('color_id');
     }
 
     function sub_user() {

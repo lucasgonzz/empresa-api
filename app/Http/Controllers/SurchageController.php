@@ -19,7 +19,7 @@ class SurchageController extends Controller
 
     public function store(Request $request) {
         $model = Surchage::create([
-            'num'                   => $this->num('Surchages'),
+            'num'                   => $this->num('surchages'),
             'name'                  => $request->name,
             'percentage'            => $request->percentage,
             'user_id'               => $this->userId(),

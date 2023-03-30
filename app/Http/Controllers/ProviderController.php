@@ -20,7 +20,7 @@ class ProviderController extends Controller
 
     public function store(Request $request) {
         $model = Provider::create([
-            'num'                   => $this->num('Providers'),
+            'num'                   => $this->num('providers'),
             'name'                  => $request->name,  
             'phone'                 => $request->phone, 
             'address'               => $request->address,   

@@ -19,7 +19,7 @@ class ColorController extends Controller
 
     public function store(Request $request) {
         $model = Color::create([
-            'num'                   => $this->num('Colors'),
+            'num'                   => $this->num('colors'),
             'name'                  => $request->name,
             'value'                 => $request->value,
             'user_id'               => $this->userId(),

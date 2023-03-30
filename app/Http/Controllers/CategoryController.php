@@ -19,7 +19,7 @@ class CategoryController extends Controller
 
     public function store(Request $request) {
         $model = Category::create([
-            'num'                   => $this->num('Categories'),
+            'num'                   => $this->num('categories'),
             'name'                  => $request->name,
             'user_id'               => $this->userId(),
         ]);

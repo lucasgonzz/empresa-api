@@ -18,7 +18,7 @@ class ProviderOrderStatusController extends Controller
 
     public function store(Request $request) {
         $model = ProviderOrderStatus::create([
-            'num'                   => $this->num('ProviderOrderStatus'),
+            'num'                   => $this->num('provider_order_statuses'),
             'name'                  => $request->name,
             'user_id'               => $this->userId(),
         ]);

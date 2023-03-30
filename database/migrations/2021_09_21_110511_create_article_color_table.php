@@ -17,6 +17,7 @@ class CreateArticleColorTable extends Migration
             $table->id();
             $table->bigInteger('article_id')->unsigned();
             $table->bigInteger('color_id')->unsigned();
+            $table->decimal('amount')->nullable();
             // $table->foreign('article_id')
             //         ->references('id')->on('articles');
             // $table->foreign('color_id')
