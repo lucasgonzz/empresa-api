@@ -188,6 +188,46 @@ class ArticleSeeder extends Seeder
                 'sizes'             => [],
             ],
             [
+                'bar_code'          => '',
+                'provider_code'     => '',
+                'name'              => 'Plaqueta de BSAS 7',
+                'stock'             => 10,
+                'cost'              => 100,
+                'price'             => null,
+                'sub_category_name' => 'lavarropa nuevo',
+                'provider_id'       => $bsas->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                    [
+                        'url'       => $this->images['mochila'],
+                    ],
+                ],
+                'colors'            => [],
+                'sizes'             => [],
+            ],
+            [
+                'bar_code'          => '',
+                'provider_code'     => '',
+                'name'              => 'Plaqueta de BSAS 8',
+                'stock'             => 10,
+                'cost'              => 100,
+                'price'             => null,
+                'sub_category_name' => 'lavarropa nuevo',
+                'provider_id'       => $bsas->id,
+                'images'            => [
+                    [
+                        'url'       => $this->images['cadena'],
+                    ],
+                    [
+                        'url'       => $this->images['mochila'],
+                    ],
+                ],
+                'colors'            => [],
+                'sizes'             => [],
+            ],
+            [
                 'bar_code'          => '234',
                 'provider_code'     => 'p-234',
                 'name'              => 'Plaqueta de Rosario',

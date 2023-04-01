@@ -26,7 +26,7 @@ class UserSeeder extends Seeder
                 'company_name'      => 'Lucas',
                 'image_url'         => env('APP_URL').'/storage/cubo.jpeg',
                 'doc_number'        => '123',
-                'email'             => 'lucasgonzalez210200@gmail.com',
+                'email'             => 'lucasgonzalez5500@gmail.com',
                 'phone'             => '3444622139',
                 'instagram'         => 'https://www.instagram.com/lucasgonzz/',
                 'facebook'          => 'https://www.facebook.com',
@@ -34,6 +34,11 @@ class UserSeeder extends Seeder
                 'online_prices'     => 'all',
                 'visible_password'  => null,
                 'payment_expired_at'=> Carbon::now()->addDay(),
+                'quienes_somos'     => 
+                'Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!
+
+                Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!',
+                'mensaje_contacto'  => 'Contactar tambien por mensaje directo en Facebook o Instagram, es el medio en el que mas activos estamos!',
             ],
             [
                 'name'              => 'Marcos',
@@ -91,6 +96,8 @@ class UserSeeder extends Seeder
                 'instagram'             => isset($model['instagram']) ? $model['instagram'] : null,  
                 'facebook'              => isset($model['facebook']) ? $model['facebook'] : null,  
                 'phone'                 => isset($model['phone']) ? $model['phone'] : null,  
+                'quienes_somos'         => isset($model['quienes_somos']) ? $model['quienes_somos'] : null,  
+                'mensaje_contacto'      => isset($model['mensaje_contacto']) ? $model['mensaje_contacto'] : null,  
             ]);
             if (is_null($user->owner_id)) {
 

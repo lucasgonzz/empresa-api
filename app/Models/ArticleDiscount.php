@@ -11,4 +11,8 @@ class ArticleDiscount extends Model
     function scopeWithAll($q) {
         
     }
+
+    function article() {
+        return $this->belongsTo('App\Models\Article');
+    }
 }

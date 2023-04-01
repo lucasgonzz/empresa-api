@@ -45,6 +45,8 @@ class CreateUsersTable extends Migration
             $table->integer('articles_pages')->nullable();
             $table->string('instagram')->nullable();
             $table->string('facebook')->nullable();
+            $table->text('quienes_somos')->nullable();
+            $table->text('mensaje_contacto')->nullable();
             $table->timestamp('payment_expired_at')->nullable();
             $table->rememberToken();
 

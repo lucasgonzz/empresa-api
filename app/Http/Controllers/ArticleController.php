@@ -104,6 +104,7 @@ class ArticleController extends Controller
         // ArticleHelper::setCondition($model, $request->condition_id);
         // ArticleHelper::setDeposits($model, $request);
         ArticleHelper::setFinalPrice($model);
+        ArticleHelper::checkAdvises($model);
         $this->sendAddModelNotification('article', $model->id);
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 200);
     }

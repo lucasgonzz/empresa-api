@@ -9,7 +9,7 @@ class Order extends Model
     protected $guarded = [];
 
     function scopeWithAll($query) {
-        $query->with('order_status', 'articles.images', 'articles.colors', 'articles.sizes', 'address', 'cupon', 'buyer', 'payment_method.type', 'delivery_zone');
+        $query->with('order_status', 'articles.images', 'articles.colors', 'articles.sizes', 'address', 'cupon', 'buyer', 'payment_method.payment_method_type', 'delivery_zone');
     }
 
     function articles() {

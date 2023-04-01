@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Models\ArticleDiscount;
 use Illuminate\Http\Request;
 
@@ -20,11 +21,12 @@ class ArticleDiscountController extends Controller
     public function store(Request $request) {
         $model = ArticleDiscount::create([
             // 'num'                   => $this->num('article_discounts'),
-            'article_id'            => $request->article_id,
+            'article_id'            => $request->model_id,
             'percentage'            => $request->percentage,
             // 'user_id'               => $this->userId(),
         ]);
-        $this->sendAddModelNotification('article_discount', $model->id);
+        ArticleHelper::setFinalPrice($model->article);
+        $this->sendAddModelNotification('article', $model->article_id, false);
         return response()->json(['model' => $this->fullModel('ArticleDiscount', $model->id)], 201);
     }  
 
@@ -36,7 +38,8 @@ class ArticleDiscountController extends Controller
         $model = ArticleDiscount::find($id);
         $model->percentage                = $request->percentage;
         $model->save();
-        $this->sendAddModelNotification('article_discount', $model->id);
+        ArticleHelper::setFinalPrice($model->article);
+        $this->sendAddModelNotification('article', $model->article_id, false);
         return response()->json(['model' => $this->fullModel('ArticleDiscount', $model->id)], 200);
     }
 

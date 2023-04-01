@@ -12,7 +12,7 @@ use Carbon\Carbon;
 class SaleProviderOrderHelper {
 
 	static function createProviderOrder($sale, $instance) {
-		if (!is_null($sale->client_id)) {
+		if (!is_null($sale->client_id) && !is_null($sale->client->comercio_city_user)) {
 			$client_comercio_city = $sale->client->comercio_city_user;
 			$provider = Provider::where('user_id', $client_comercio_city->id)
 								->where('comercio_city_user_id', $instance->userId())

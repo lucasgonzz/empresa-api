@@ -22,6 +22,8 @@ return [
         'sanctum/csrf-cookie',
         'set-image',
         'password-reset/*',
+        '/storage/*',
+        'storage',
     ],
 
     'allowed_methods' => ['*'],

@@ -16,7 +16,7 @@ Route::post('/password-reset/update-password',
 	'CommonLaravel\PasswordResetController@updatePassword'
 );
 
-Route::get('set-properties/{company_name}', 'HelperController@setProperties');
+Route::get('set-properties/{company_name}/{from_cloudinary?}', 'HelperController@setProperties');
 
 // PDF
 Route::get('sale/pdf/{id}/{with_prices}', 'SaleController@pdf');

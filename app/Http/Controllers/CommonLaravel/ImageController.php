@@ -11,6 +11,22 @@ use Illuminate\Support\Facades\Storage;
 
 class ImageController extends Controller
 {
+
+    function savePreImage(Request $request) {
+        $file_headers = get_headers($request->image_url);
+        if (!$file_headers || $file_headers[0] == 'HTTP/1.1 404 Not Found') {
+            return response()->json(['image_saved' => false], 200);
+        }
+        $name = time().rand(1, 100000).'.webp';
+        Storage::disk('public')->put($name, file_get_contents($request->image_url));
+        if (env('APP_ENV') == 'local') {
+            $name = '/storage/'.$name;
+        } else {
+            $name = '/public/storage/'.$name;
+        }
+        return response()->json(['image_saved' => true, 'image_url' => $name], 201);
+    }
+
     function setImage(Request $request, $prop_name) {
         $model_name = GeneralHelper::getModelName($request->model_name);
         

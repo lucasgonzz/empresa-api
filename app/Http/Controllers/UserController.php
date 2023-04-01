@@ -16,13 +16,17 @@ class UserController extends Controller
 
     function update(Request $request, $id) {
         $model = Auth()->user();
-        $current_dolar          = $model->dollar;
-        $model->name            = $request->name;
-        $model->doc_number      = $request->doc_number;
-        $model->dollar          = $request->dollar;
-        $model->company_name    = $request->company_name;
-        $model->phone           = $request->phone;
-        $model->email           = $request->email;
+        $current_dolar              = $model->dollar;
+        $model->name                = $request->name;
+        $model->doc_number          = $request->doc_number;
+        $model->dollar              = $request->dollar;
+        $model->company_name        = $request->company_name;
+        $model->phone               = $request->phone;
+        $model->email               = $request->email;
+        $model->instagram           = $request->instagram;
+        $model->facebook            = $request->facebook;
+        $model->quienes_somos       = $request->quienes_somos;
+        $model->mensaje_contacto    = $request->mensaje_contacto;
         $model->save();
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_dolar, $request->dolar);
         $model = UserHelper::getFullModel();
