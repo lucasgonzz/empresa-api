@@ -2,20 +2,20 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Commissioner;
-use App\Models\CurrentAcount;
 use App\Http\Controllers\ClientController;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\DiscountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\PdfPrintCurrentAcounts;
-use App\Http\Controllers\Helpers\Pdf\CurrentAcountPdf;
-use App\Http\Controllers\Helpers\Pdf\NotaCreditoPdf;
-use App\Http\Controllers\Helpers\Pdf\PagoPdf;
+use App\Http\Controllers\Pdf\NotaCreditoPdf;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Pdf\CurrentAcountPdf;
+use App\Http\Controllers\Pdf\PagoPdf;
 use App\Imports\CurrentAcountsImport;
+use App\Models\Commissioner;
+use App\Models\CurrentAcount;
 use App\Models\Sale;
 use App\Models\Seller;
 use Carbon\Carbon;
@@ -124,37 +124,6 @@ class CurrentAcountController extends Controller
         return response()->json(['current_acount' => $current_acount], 201);
     }
 
-    function pdfFromModel($model_name, $model_id, $months_ago) {
-        $months_ago = Carbon::now()->subMonths($months_ago);
-        $models = CurrentAcount::whereDate('created_at', '>=', $months_ago)
-                                ->orderBy('created_at', 'ASC');
-                                
-        if ($model_name == 'client') {
-            $models = $models->where('client_id', $model_id);
-        } else if ($model_name == 'provider') {
-            $models = $models->where('provider_id', $model_id);
-        }
-        $models = $models->get();
-        new CurrentAcountPdf($models);
-    }
-
-    function pdf($ids, $model_name) {
-        $ids = explode('-', $ids);
-        if (count($ids) == 1) {
-            $model = CurrentAcount::find($ids[0]);
-            if ($model->status == 'pago_from_client') {
-                $pdf = new PagoPdf($model);
-                $pdf->printCurrentAcounts();
-            } else if ($model->status == 'nota_credito') {
-                $pdf = new NotaCreditoPdf($model);
-                $pdf->printCurrentAcounts();
-            }
-        } else {
-            $pdf = new PdfPrintCurrentAcounts($ids, $model_name);
-            $pdf->printCurrentAcounts();
-        }
-    }
-
     function checkPagos($client_id) {
         $current_acounts_pagadas = CurrentAcount::where(function($query) use ($client_id) {
                                             $query->where('client_id', $client_id)
@@ -225,5 +194,36 @@ class CurrentAcountController extends Controller
     function checkSaldos($model_name, $model_id) {
         CurrentAcountHelper::checkSaldos($model_name, $model_id);
         echo('Listo');
+    }
+
+    function pdfFromModel($model_name, $model_id, $months_ago) {
+        $months_ago = Carbon::now()->subMonths($months_ago);
+        $models = CurrentAcount::whereDate('created_at', '>=', $months_ago)
+                                ->orderBy('created_at', 'ASC');
+                                
+        if ($model_name == 'client') {
+            $models = $models->where('client_id', $model_id);
+        } else if ($model_name == 'provider') {
+            $models = $models->where('provider_id', $model_id);
+        }
+        $models = $models->get();
+        new CurrentAcountPdf($models);
+    }
+
+    function pdf($ids, $model_name) {
+        $ids = explode('-', $ids);
+        if (count($ids) == 1) {
+            $model = CurrentAcount::find($ids[0]);
+            if ($model->status == 'pago_from_client') {
+                $pdf = new PagoPdf($model);
+                $pdf->printCurrentAcounts();
+            } else if ($model->status == 'nota_credito') {
+                $pdf = new NotaCreditoPdf($model);
+                $pdf->printCurrentAcounts();
+            }
+        } else {
+            $pdf = new PdfPrintCurrentAcounts($ids, $model_name);
+            $pdf->printCurrentAcounts();
+        }
     }
 }

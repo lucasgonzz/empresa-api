@@ -19,7 +19,7 @@ class ArticleController extends Controller
                             ->where('status', $status)
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
-                            ->paginate(5);
+                            ->paginate(100);
         return response()->json(['models' => $models], 200);
     }
 

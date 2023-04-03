@@ -18,4 +18,12 @@
     RewriteCond %{REQUEST_FILENAME} !-d
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteRule ^ index.php [L]
+    <IfModule mod_setenvif.c>
+        <IfModule mod_headers.c>
+            <FilesMatch "\.(bmp|cur|gif|ico|jpe?g|png|svgz?|webp|pdf)$">
+                
+                Header set Access-Control-Allow-Origin "*" env=IS_CORS
+            </FilesMatch>
+        </IfModule>
+    </IfModule>
 </IfModule>

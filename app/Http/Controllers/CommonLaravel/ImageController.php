@@ -8,6 +8,7 @@ use App\Models\Image;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Intervention\Image\ImageManager;
 
 class ImageController extends Controller
 {
@@ -20,18 +21,29 @@ class ImageController extends Controller
         $name = time().rand(1, 100000).'.webp';
         Storage::disk('public')->put($name, file_get_contents($request->image_url));
         if (env('APP_ENV') == 'local') {
-            $name = '/storage/'.$name;
+            $name = env('APP_URL').'/storage/'.$name;
         } else {
-            $name = '/public/storage/'.$name;
+            $name = env('APP_URL').'/public/storage/'.$name;
         }
         return response()->json(['image_saved' => true, 'image_url' => $name], 201);
     }
 
+    function crop(Request $request) {
+        // $img = imagecreatetruecolor($request->width, $request->height);
+        $org_img = imagecreatefromjpeg($request->image_url);
+        $img2 = imagecrop($org_img, ['x' => $request->left, 'y' => $request->top, 'width' => $request->width, 'height' => $request->height]);
+        $name = Storage::disk('public')->put('', $request->image_url);
+    }
+
     function setImage(Request $request, $prop_name) {
+        $manager = new ImageManager();
+        $croppedImage = $manager->make($request->image_url);              
+        $croppedImage->crop($request->width, $request->height, $request->left, $request->top);
+        $name = time().rand(1, 100000).'.webp';
+        $croppedImage->save(storage_path().'/app/public/'.$name);
+
         $model_name = GeneralHelper::getModelName($request->model_name);
         
-        $name = Storage::disk('public')->put('', $request->image_url);
-
         if (env('APP_ENV') == 'local') {
             $name = env('APP_URL').'/storage/'.$name;
         } else {
@@ -49,6 +61,9 @@ class ImageController extends Controller
             $this->deleteImageProp($request->model_name, $request->id, $prop_name);
             $model->{$prop_name} = $name;
             $model->save();
+        }
+        if (isset($request->image_url_to_delete)) {
+            Self::deleteImage($request->image_url_to_delete);
         }
         
         return response()->json(['model' => $this->fullModel($request->model_name, $request->id)], 200);
@@ -70,7 +85,11 @@ class ImageController extends Controller
 
     function deleteImageModel($model_name, $model_id, $image_id) {
         $image = Image::find($image_id);
-        Storage::disk('public')->delete($image->image_url);
+        $image_name = $image->{env('IMAGE_URL_PROP_NAME', 'image_url')};
+        $array = explode('/', $image_name);
+        $image_name = $array[count($array)-1];
+        Log::info('Eliminando imagen: '.$image_name);
+        Storage::disk('public')->delete($image_name);
         $image->delete();
         return response()->json(['model' => $this->fullModel($model_name, $model_id)], 200);
     }

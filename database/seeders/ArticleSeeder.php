@@ -73,26 +73,26 @@ class ArticleSeeder extends Seeder
                 'sub_category_name' => 'lavarropa nuevo',
                 'provider_id'       => $bsas->id,
                 'featured'          => 1,
-                'images'            => [
-                    [
-                        'url'       => $this->images['cadena'],
-                        'color_id'  => 1,
-                    ],
-                    [
-                        'url'       => $this->images['mochila'],
-                        'color_id'  => 2,
-                    ],
-                ],
-                'colors'            => [
-                    [
-                        'id'        => 1,
-                        'amount'    => 1,
-                    ],
-                    [
-                        'id'        => 2,
-                        'amount'    => 1,
-                    ],
-                ],
+                // 'images'            => [
+                //     [
+                //         'url'       => $this->images['cadena'],
+                //         'color_id'  => 1,
+                //     ],
+                //     [
+                //         'url'       => $this->images['mochila'],
+                //         'color_id'  => 2,
+                //     ],
+                // ],
+                // 'colors'            => [
+                //     [
+                //         'id'        => 1,
+                //         'amount'    => 1,
+                //     ],
+                //     [
+                //         'id'        => 2,
+                //         'amount'    => 1,
+                //     ],
+                // ],
                 'sizes'             => [],
             ],
             [

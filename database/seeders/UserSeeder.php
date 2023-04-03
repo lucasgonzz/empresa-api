@@ -31,8 +31,9 @@ class UserSeeder extends Seeder
                 'instagram'         => 'https://www.instagram.com/lucasgonzz/',
                 'facebook'          => 'https://www.facebook.com',
                 'password'          => bcrypt('123'),
-                'online_prices'     => 'all',
+                'online_prices'     => 'only_buyers_with_comerciocity_client',
                 'visible_password'  => null,
+                'default_article_image_url' => 'http://empresa.local:8000/storage/168053912176623.webp',
                 'payment_expired_at'=> Carbon::now()->addDay(),
                 'quienes_somos'     => 
                 'Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!
@@ -98,6 +99,7 @@ class UserSeeder extends Seeder
                 'phone'                 => isset($model['phone']) ? $model['phone'] : null,  
                 'quienes_somos'         => isset($model['quienes_somos']) ? $model['quienes_somos'] : null,  
                 'mensaje_contacto'      => isset($model['mensaje_contacto']) ? $model['mensaje_contacto'] : null,  
+                'default_article_image_url'      => isset($model['default_article_image_url']) ? $model['default_article_image_url'] : null,  
             ]);
             if (is_null($user->owner_id)) {
 
