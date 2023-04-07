@@ -26,35 +26,19 @@ class SubCategorySeeder extends Seeder
                                 ->get();
         foreach ($categories as $category) {
             $names = [];
-            if ($category->name == 'Lava ropas') {
+            if ($category->name == 'Herramientas') {
                 
-                $names = ['lavarropa nuevo', 'lavarropas usados'];
+                $names = ['Martillos', 'Pinzas'];
 
-            } else if ($category->name == 'Aires acondicionados') {
+            } else if ($category->name == 'Utensilios') {
                 
-                $names = ['aire nuevo', 'aires acondicionados usados'];
+                $names = ['Cuchillos', 'Cucharas'];
 
-            }  else if ($category->name == 'Computacion') {
+            }  else if ($category->name == 'Muebles') {
                 
-                $names = ['computacion 1', 'computacion 2'];
+                $names = ['Comedor', 'Dormitorio'];
 
-            }  else if ($category->name == 'Tanques de oxigeno') {
-                
-                $names = ['Tanques de oxigeno 1', 'Tanques de oxigeno 2'];
-
-            }  else if ($category->name == 'cosas para la casa') {
-                
-                $names = ['cosas para la casa 1', 'cosas para la casa 2'];
-
-            }   else if ($category->name == 'Repuestos de lavarropas') {
-                
-                $names = ['Repuestos de lavarropas 1', 'Repuestos de lavarropas 2'];
-
-            }   else if ($category->name == 'repuestos de aires acondicionados') {
-                
-                $names = ['repuestos de aires acondicionados 1', 'repuestos de aires acondicionados 2'];
-
-            }   
+            } 
             $num = 1;
             for ($i=0; $i < count($names); $i++) {
                 $sub_category = SubCategory::create([

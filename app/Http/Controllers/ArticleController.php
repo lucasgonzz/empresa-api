@@ -11,12 +11,16 @@ use App\Models\Article;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Maatwebsite\Excel\Facades\Excel;
+use Illuminate\Support\Facades\Log;
 
 class ArticleController extends Controller
 {
-    function index($status = 'active') {
+    function index($last_updated, $status = 'active') {
+        Log::info('date: '.$last_updated);
+        Log::info('date: '.date('Y-m-d').' 00:00:00');
         $models = Article::where('user_id', $this->userId())
                             ->where('status', $status)
+                            ->where('updated_at', '>', $last_updated)
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
                             ->paginate(100);
@@ -60,11 +64,12 @@ class ArticleController extends Controller
         // ArticleHelper::setColors($model, $request->colors);
         // ArticleHelper::setCondition($model, $request->condition_id);
         // ArticleHelper::setSpecialPrices($model, $request);
-        // ArticleHelper::setDeposits($model, $request);
         // $model->user->notify(new CreatedArticle($model));
         ArticleHelper::attachProvider($model, $request);
-        ArticleHelper::setFinalPrice($model);
+        ArticleHelper::setDeposits($model, $request);
         $this->sendAddModelNotification('article', $model->id);
+        $this->updateRelationsCreated('article', $model->id, ['article_discount', 'description']);
+        ArticleHelper::setFinalPrice($model);
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 201);
     }
 
@@ -102,8 +107,8 @@ class ArticleController extends Controller
         // ArticleHelper::setSizes($model, $request->sizes_id);
         // ArticleHelper::setColors($model, $request->colors);
         // ArticleHelper::setCondition($model, $request->condition_id);
-        // ArticleHelper::setDeposits($model, $request);
         ArticleHelper::setFinalPrice($model);
+        ArticleHelper::setDeposits($model, $request);
         ArticleHelper::checkAdvises($model);
         $this->sendAddModelNotification('article', $model->id);
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 200);
@@ -165,5 +170,10 @@ class ArticleController extends Controller
         $model->delete();
         $this->sendDeleteModelNotification('article', $model->id);
         return response(null);
+    }
+
+    function charts($id, $from_date, $until_date) {
+        $result = ArticleHelper::getSalesFromArticle($id, $from_date, $until_date);
+        return response()->json(['result' => $result], 200);
     }
 }

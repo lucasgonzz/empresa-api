@@ -11,7 +11,7 @@ class AuthHelper {
 		$owner = User::find($user->owner_id);
 		$user->owner_extencions = $owner->extencions;
 		$user->owner = $owner;
-		$user->user_configuration = $owner->configuration;
+		$user->owner_configuration = $owner->configuration;
 		$user->owner = $owner;
 		return $user;
 	}

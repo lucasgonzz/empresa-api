@@ -2,7 +2,8 @@
 
 namespace App\Http\Controllers;
 
-use App\Http\Controllers\Helpers\GeneralHelper;
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+// use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Notifications\AddedModel;
 use App\Notifications\DeletedModel;
 use App\Notifications\UpdateModels;
@@ -51,6 +52,17 @@ class Controller extends BaseController
             return 0;
         }
         return $model;
+    }
+
+    function updateRelationsCreated($model_name, $model_id, $relations) {
+        foreach ($relations as $relation) {
+            $relation_models = GeneralHelper::getModelName($relation)::where($model_name.'_id', null)
+                                                                    ->get();
+            foreach ($relation_models as $relation_model) {
+                $relation_model->{$model_name.'_id'} = $model_id;
+                $relation_model->save();
+            }
+        }
     }
 
     function sendAddModelNotification($model_name, $model_id, $check_added_by = true, $for_user_id = null) {

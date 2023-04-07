@@ -56,7 +56,7 @@ class ArticleHelper {
         if (is_null($article->price) || $article->price == '') {
             $cost = $article->cost;
             if ($article->cost_in_dollars) {
-                if (!is_null($article->provider) && !is_null($article->provider->dolar)) {
+                if (!is_null($article->provider) && !is_null($article->provider->dolar) && (float)$article->provider->dolar > 0) {
                     $cost = $cost * $article->provider->dolar;
                 } else if ($article->cost_in_dollars) {
                     $cost = $cost * $user->dollar;
@@ -317,10 +317,10 @@ class ArticleHelper {
     static function setDeposits($article, $request) {
         $article->deposits()->detach();
         if (isset($request->deposits)) {
-            foreach ($request->deposits as $id => $value) {
-                if ($value != '') {
-                    $article->deposits()->attach($id, [
-                                                    'value' => $value
+            foreach ($request->deposits as $deposit) {
+                if (isset($deposit['pivot']) && $deposit['pivot']['value'] != '') {
+                    $article->deposits()->attach($deposit['id'], [
+                                                    'value' => $deposit['pivot']['value'],
                                                 ]);
                 }
             }

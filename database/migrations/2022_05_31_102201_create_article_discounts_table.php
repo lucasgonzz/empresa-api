@@ -15,7 +15,7 @@ class CreateArticleDiscountsTable extends Migration
     {
         Schema::create('article_discounts', function (Blueprint $table) {
             $table->id();
-            $table->integer('article_id')->unsigned();
+            $table->integer('article_id')->unsigned()->nullable();
             $table->decimal('percentage');
             $table->timestamps();
         });

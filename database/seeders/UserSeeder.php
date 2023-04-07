@@ -33,8 +33,9 @@ class UserSeeder extends Seeder
                 'password'          => bcrypt('123'),
                 'online_prices'     => 'only_buyers_with_comerciocity_client',
                 'visible_password'  => null,
+                'dollar'            => 300,
                 'default_article_image_url' => 'http://empresa.local:8000/storage/168053912176623.webp',
-                'payment_expired_at'=> Carbon::now()->addDay(),
+                // 'payment_expired_at'=> Carbon::now()->addDay(),
                 'quienes_somos'     => 
                 'Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!
 
@@ -59,9 +60,9 @@ class UserSeeder extends Seeder
                 'owner_id'          => 1,
                 'image_url'         => null,
                 'permissions_slug'    => [
-                    'product.index',
-                    'product.store',
-                    'product.update',
+                    'article.index',
+                    'article.store',
+                    'article.update',
                 ],
             ],
             [
@@ -73,8 +74,8 @@ class UserSeeder extends Seeder
                 'image_url'         => null,
                 'owner_id'          => 1,
                 'permissions_slug'    => [
-                    'product.index',
-                    'product.delete',
+                    'article.index',
+                    'article.delete',
 
                     'sale.index',
                     'sale.store',
@@ -100,10 +101,11 @@ class UserSeeder extends Seeder
                 'quienes_somos'         => isset($model['quienes_somos']) ? $model['quienes_somos'] : null,  
                 'mensaje_contacto'      => isset($model['mensaje_contacto']) ? $model['mensaje_contacto'] : null,  
                 'default_article_image_url'      => isset($model['default_article_image_url']) ? $model['default_article_image_url'] : null,  
+                'dollar'      => isset($model['dollar']) ? $model['dollar'] : null,  
             ]);
             if (is_null($user->owner_id)) {
 
-                $user->extencions()->attach([1, 2, 5, 6]);
+                $user->extencions()->attach([1, 2, 5, 6, 7]);
                 UserConfiguration::create([
                     'current_acount_pagado_details'         => 'Recibo de pago (saldado)',
                     'current_acount_pagandose_details'      => 'Recibo de pago',

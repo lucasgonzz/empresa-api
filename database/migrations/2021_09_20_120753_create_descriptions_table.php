@@ -17,7 +17,7 @@ class CreateDescriptionsTable extends Migration
             $table->id();
             $table->string('title')->nullable();
             $table->text('content')->nullable();
-            $table->integer('article_id')->unsigned();
+            $table->integer('article_id')->unsigned()->nullable();
             $table->timestamps();
         });
     }

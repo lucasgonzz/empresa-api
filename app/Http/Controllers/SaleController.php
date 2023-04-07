@@ -110,6 +110,16 @@ class SaleController extends Controller
         return response(null);
     }
 
+    function updatePrices(Request $request, $id) {
+        $model = Sale::find($id);
+        SaleHelper::updateItemsPrices($model, $request->items);
+        if ($model->client_id) {
+            SaleHelper::updateCurrentAcountsAndCommissions($model);
+        }
+        $this->sendAddModelNotification('Sale', $id);
+        return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
+    }
+
     function pdf($id, $with_prices) {
         $sale = Sale::find($id);
         $pdf = new SalePdf($sale, (boolean)$with_prices);

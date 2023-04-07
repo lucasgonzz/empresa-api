@@ -39,6 +39,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Online',
                 'slug' => 'online',
             ],
+            [
+                'name' => 'Costo real',
+                'slug' => 'article.costo_real',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

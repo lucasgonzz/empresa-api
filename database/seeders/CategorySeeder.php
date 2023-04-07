@@ -21,9 +21,14 @@ class CategorySeeder extends Seeder
 
     function lucas() {
         $user = User::where('company_name', 'lucas')->first();
-        $categories = ['Lava ropas', 'Aires acondicionados', 'Computacion', 'Tanques de oxigeno', 'cosas para la casa', 'Repuestos de lavarropas', 'repuestos de aires acondicionados', 'repuestos de muchas cosas'];
+        // $categories = ['Lava ropas', 'Aires acondicionados', 'Computacion', 'Tanques de oxigeno', 'cosas para la casa', 'Repuestos de lavarropas', 'repuestos de aires acondicionados', 'repuestos de muchas cosas'];
+        $models = [
+            'Herramientas',
+            'Utensilios',
+            'Muebles',
+        ];
         $num = 1;
-        foreach ($categories as $category) {
+        foreach ($models as $category) {
             Category::create([
                 'num'     => $num,
                 'name'    => $category,

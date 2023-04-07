@@ -25,8 +25,10 @@ class ArticleDiscountController extends Controller
             'percentage'            => $request->percentage,
             // 'user_id'               => $this->userId(),
         ]);
-        ArticleHelper::setFinalPrice($model->article);
-        $this->sendAddModelNotification('article', $model->article_id, false);
+        if (!is_null($request->model_id)) {
+            ArticleHelper::setFinalPrice($model->article);
+            $this->sendAddModelNotification('article', $model->article_id, false);
+        }
         return response()->json(['model' => $this->fullModel('ArticleDiscount', $model->id)], 201);
     }  
 

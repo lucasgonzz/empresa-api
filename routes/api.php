@@ -38,14 +38,16 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::resource('configuration', 'UserConfigurationController');
 
     Route::resource('article', 'ArticleController')->except(['index']);
-    Route::get('article/index/from-status/{status?}', 'ArticleController@index');
+    Route::get('article/index/from-status/{last_updated}/{status?}', 'ArticleController@index');
     Route::post('/article/excel/import', 'ArticleController@import');
     Route::post('/article/new-article', 'ArticleController@newArticle');
     Route::get('/article/set-featured/{id}', 'ArticleController@setFeatured');
     Route::get('/article/set-online/{id}', 'ArticleController@setOnline');
+    Route::get('/article/charts/{id}/{from_date}/{until_date}', 'ArticleController@charts');
 
     Route::resource('sale', 'SaleController');
     Route::get('sale/from-date/{from_date}/{until_date?}', 'SaleController@index');
+    Route::put('sale/update-prices/{id}', 'SaleController@updatePrices');
 
     Route::resource('brand', 'BrandController');
     Route::resource('category', 'CategoryController');

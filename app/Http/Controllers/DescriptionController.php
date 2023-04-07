@@ -21,7 +21,7 @@ class DescriptionController extends Controller
         $model = Description::create([
             'title'                 => $request->title,
             'content'               => $request->content,
-            'user_id'               => $this->userId(),
+            // 'user_id'               => $this->userId(),
         ]);
         $this->sendAddModelNotification('Description', $model->id);
         return response()->json(['model' => $this->fullModel('Description', $model->id)], 201);
