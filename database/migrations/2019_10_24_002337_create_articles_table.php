@@ -43,6 +43,7 @@ class CreateArticlesTable extends Migration
             $table->boolean('apply_provider_percentage_gain')->default(1)->nullable();
             $table->integer('articles_pages')->nullable();
             $table->timestamp('final_price_updated_at')->nullable();
+            $table->softDeletes();
 
             $table->foreign('user_id')
                     ->references('id')->on('users');

@@ -17,6 +17,7 @@ Route::post('/password-reset/update-password',
 );
 
 Route::get('set-properties/{company_name}/{for_articles?}', 'HelperController@setProperties');
+Route::get('check-images/{company_name}', 'HelperController@checkImages');
 
 // PDF
 Route::get('sale/pdf/{id}/{with_prices}', 'SaleController@pdf');

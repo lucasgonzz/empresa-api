@@ -128,7 +128,7 @@ class UserSeeder extends Seeder
             }
             if (!is_null($user->owner_id)) {
                 foreach ($model['permissions_slug'] as $permission_slug) {
-                    $user->permissions()->attach($ct->getModelBy('permissions', 'slug', $permission_slug, false, 'id'));
+                    $user->permissions()->attach($ct->getModelBy('permission_empresas', 'slug', $permission_slug, false, 'id'));
                 }
             }
         }

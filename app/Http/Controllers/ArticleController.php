@@ -16,14 +16,23 @@ use Illuminate\Support\Facades\Log;
 class ArticleController extends Controller
 {
     function index($last_updated, $status = 'active') {
-        Log::info('date: '.$last_updated);
-        Log::info('date: '.date('Y-m-d').' 00:00:00');
         $models = Article::where('user_id', $this->userId())
                             ->where('status', $status)
                             ->where('updated_at', '>', $last_updated)
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
                             ->paginate(100);
+        return response()->json(['models' => $models], 200);
+    }
+
+    function deletedModels($last_updated) {
+        $models = Article::where('user_id', $this->userId())
+                            // ->whereNotNull('deleted_at')
+                            ->withTrashed()
+                            ->where('deleted_at', '>', $last_updated)
+                            ->orderBy('created_at', 'DESC')
+                            // ->withAll()
+                            ->get();
         return response()->json(['models' => $models], 200);
     }
 

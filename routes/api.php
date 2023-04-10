@@ -39,6 +39,7 @@ Route::middleware('auth:sanctum')->group(function() {
 
     Route::resource('article', 'ArticleController')->except(['index']);
     Route::get('article/index/from-status/{last_updated}/{status?}', 'ArticleController@index');
+    Route::get('/article/deleted-models/{last_updated}', 'ArticleController@deletedModels');
     Route::post('/article/excel/import', 'ArticleController@import');
     Route::post('/article/new-article', 'ArticleController@newArticle');
     Route::get('/article/set-featured/{id}', 'ArticleController@setFeatured');

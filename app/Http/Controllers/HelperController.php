@@ -154,6 +154,43 @@ class HelperController extends Controller
         // }
     }
 
+    function checkImages($company_name) {
+        $user = User::where('company_name', $company_name)->first();
+        $id = 1;
+        $models = [];
+        while (count($models) == 10 || $id == 1) {
+            $models = Article::orderBy('id', 'ASC')
+                                ->where('id', '>=', $id)
+                                ->take(10)
+                                ->where('user_id', $user->id)
+                                ->get();
+
+            foreach ($models as $model) {
+                $images = Image::where('article_id', $model->id)->get();
+                foreach($images as $image) {
+                    if (str_contains($image->hosting_url, 'https://api-beta.comerciocity.com/storage')) {
+                        $new = substr($image->hosting_url, 0, 34).'public/'.substr($image->hosting_url, 34);
+                        $image->imageable_id = $model->id;
+                        $image->imageable_type = 'article';
+                        $image->hosting_url = $new;
+                        $image->save();
+                        echo 'Entro con: '.$model->name.': '.$image->hosting_url.' </br>';
+                        echo 'Creado: '.$image->created_at.' </br>';
+                        echo 'Quedo: '.$image->hosting_url.' </br>';
+                        echo '-------------------------------------------- </br>';
+                        // $model->save();
+                    }
+                }
+            }
+            if (count($models) >= 1) {
+                $id = $models[count($models)-1]->id;
+            } else {
+                $id = 0;
+            }
+        }
+        echo '----------------------- Termino ------------------------ </br>';
+    }
+
     function checkImageUrl($url) {
         if (str_contains($url, 'https://api-beta.comerciocity.com/public/public')) {
             $url = substr($url, 0, 41).substr($url, 48);

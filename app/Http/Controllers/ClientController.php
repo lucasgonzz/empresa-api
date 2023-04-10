@@ -18,7 +18,7 @@ class ClientController extends Controller
         $models = Client::where('user_id', $this->userId())
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
-                            ->paginate(25);
+                            ->paginate(100);
         return response()->json(['models' => $models], 200);
     }
 
