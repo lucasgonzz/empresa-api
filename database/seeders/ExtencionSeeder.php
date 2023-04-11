@@ -17,7 +17,7 @@ class ExtencionSeeder extends Seeder
         $extencions = [
             [
                 'name' => 'Presupuestos',
-                'slug' => 'budget',
+                'slug' => 'budgets',
             ],
             [
                 'name' => 'Ordenes de Produccion',

@@ -14,6 +14,7 @@ class ProviderController extends Controller
         $models = Provider::where('user_id', $this->userId())
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
+                            ->where('status', 'active')
                             ->get();
         return response()->json(['models' => $models], 200);
     }

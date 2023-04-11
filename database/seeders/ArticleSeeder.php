@@ -331,17 +331,17 @@ class ArticleSeeder extends Seeder
     function createDescriptions($article) {
         Description::create([
             'title'      => 'Almacentamiento',
-            'content'    => 'Este modelo nos entrega una importante capacidad de almacenamiento loco mal esta re zarpada pero mal mal mal. Este modelo nos entrega una importante capacidad de almacenamiento loco mal esta re zarpada pero mal mal mal. Este modelo nos entrega una importante capacidad de almacenamiento loco mal esta re zarpada pero mal mal mal',
+            'content'    => 'Este modelo nos entrega una importante capacidad de almacenamiento.',
             'article_id' => $article->id,
         ]);
         Description::create([
             'title'      => 'Pantalla',
-            'content'    => 'Tiene una pantalla muy linda y bueno nada esta todo re bien viste mas que bien',
+            'content'    => 'Tiene una pantalla muy linda',
             'article_id' => $article->id,
         ]);
         Description::create([
-            'title'      => 'Bateria',
-            'content'    => 'La bateria se la re aguanta mal mal mal La bateria se la re aguanta mal mal mal La bateria se la re aguanta mal mal mal ',
+            'title'      => 'Materiales',
+            'content'    => 'Esta hecho con los mejores materiales de construccion',
             'article_id' => $article->id,
         ]);
     }
