@@ -140,7 +140,7 @@ class ArticleController extends Controller
 
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
-        Excel::import(new ArticleImport($columns, $request->start_row, $request->finish_row, $request->provider_id), $request->file('models'));
+        Excel::import(new ArticleImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id), $request->file('models'));
         $this->sendUpdateModelsNotification('article');
     }
 

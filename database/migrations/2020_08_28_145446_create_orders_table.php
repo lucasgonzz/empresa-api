@@ -28,6 +28,7 @@ class CreateOrdersTable extends Migration
             $table->integer('cupon_id')->unsigned()->nullable();
             $table->integer('buyer_id')->unsigned();
             $table->integer('order_status_id')->unsigned();
+            $table->decimal('payment_method_discount')->nullable();
             $table->integer('user_id')->unsigned();
 
             $table->timestamps();

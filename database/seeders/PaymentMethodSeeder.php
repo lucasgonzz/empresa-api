@@ -34,6 +34,7 @@ class PaymentMethodSeeder extends Seeder
                 'access_token' => '',
                 'payment_method_type_id' => null,
                 'user_id'   => $user->id,
+                'discount'  => 50,
             ],
             [
                 'name' => 'A convenir',

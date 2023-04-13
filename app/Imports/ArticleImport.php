@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\getIva;
 use App\Http\Controllers\update;
 use App\Models\Article;
+use App\Models\ImportHistory;
 use App\Models\Provider;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -21,13 +22,16 @@ use Maatwebsite\Excel\Concerns\WithHeadingRow;
 class ArticleImport implements ToCollection
 {
     
-    public function __construct($columns, $start_row, $finish_row, $provider_id) {
+    public function __construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id) {
         $this->columns = $columns;
+        $this->create_and_edit = $create_and_edit;
         $this->start_row = $start_row;
         $this->finish_row = $finish_row;
         $this->ct = new Controller();
         $this->provider_id = $provider_id;
         $this->provider = null;
+        $this->created_models = 0;
+        $this->updated_models = 0;
     }
 
     function checkRow($row) {
@@ -42,9 +46,9 @@ class ArticleImport implements ToCollection
         foreach ($rows as $row) {
             if ($this->num_row >= $this->start_row && $this->num_row <= $this->finish_row) {
                 if ($this->checkRow($row)) {
-                    if (!is_null(ImportHelper::getColumnValue($row, 'codigo', $this->columns))) {
+                    if (!is_null(ImportHelper::getColumnValue($row, 'numero', $this->columns))) {
                         $article = Article::where('user_id', UserHelper::userId())
-                                            ->where('num', ImportHelper::getColumnValue($row, 'codigo', $this->columns))
+                                            ->where('num', ImportHelper::getColumnValue($row, 'numero', $this->columns))
                                             ->where('status', 'active')
                                             ->first();
                         $this->saveArticle($row, $article);
@@ -75,6 +79,17 @@ class ArticleImport implements ToCollection
             }
             $this->num_row++;
         }
+        $this->saveImportHistory();
+    }
+
+    function saveImportHistory() {
+        ImportHistory::create([
+            'user_id'           => UserHelper::userId(),
+            'employee_id'       => UserHelper::userId(false),
+            'model_name'        => 'article',
+            'created_models'    => $this->created_models,
+            'updated_models'    => $this->updated_models,
+        ]);
     }
 
     function saveArticle($row, $article) {
@@ -98,9 +113,10 @@ class ArticleImport implements ToCollection
         if (!is_null(ImportHelper::getColumnValue($row, 'stock_actual', $this->columns))) {
             $data['stock'] = ImportHelper::getColumnValue($row, 'stock_actual', $this->columns);
         }
-        if (!is_null($article) && $this->isDataUpdated($article, $data)) {
+        if ($this->create_and_edit && !is_null($article) && $this->isDataUpdated($article, $data)) {
             $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $article->id);
             $article->update($data);
+            $this->updated_models++;
         } else if (is_null($article)) {
             if (!is_null(ImportHelper::getColumnValue($row, 'codigo', $this->columns))) {
                 $data['num'] = ImportHelper::getColumnValue($row, 'codigo', $this->columns);
@@ -111,6 +127,7 @@ class ArticleImport implements ToCollection
             $data['user_id'] = UserHelper::userId();
             $data['created_at'] = Carbon::now()->subSeconds($this->finish_row - $this->num_row);
             $article = Article::create($data);
+            $this->created_models++;
         } 
         $this->setDiscounts($row, $article);
         $this->setProvider($row, $article);
@@ -143,7 +160,7 @@ class ArticleImport implements ToCollection
 
     function setDiscounts($row, $article) {
         if (!is_null(ImportHelper::getColumnValue($row, 'descuentos', $this->columns))) {
-            $_discounts = explode('-', ImportHelper::getColumnValue($row, 'descuentos', $this->columns));
+            $_discounts = explode('_', ImportHelper::getColumnValue($row, 'descuentos', $this->columns));
             $discounts = [];
             foreach ($_discounts as $_discount) {
                 $discount = new \stdClass;

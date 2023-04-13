@@ -49,6 +49,7 @@ class CreateUsersTable extends Migration
             $table->text('quienes_somos')->nullable();
             $table->text('mensaje_contacto')->nullable();
             $table->timestamp('payment_expired_at')->nullable();
+            $table->integer('online_price_type_id')->nullable();
             $table->rememberToken();
 
             $table->enum('status', ['commerce', 'admin', 'super']);

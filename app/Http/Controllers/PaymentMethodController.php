@@ -22,6 +22,7 @@ class PaymentMethodController extends Controller
             // 'num'                       => $this->num('payment_methods'),
             'name'                      => $request->name,
             'description'               => $request->description,
+            'discount'                  => $request->discount,
             'payment_method_type_id'    => $request->payment_method_type_id,
             'public_key'                => $request->public_key,
             'access_token'              => $request->access_token,
@@ -39,6 +40,7 @@ class PaymentMethodController extends Controller
         $model = PaymentMethod::find($id);
         $model->name                        = $request->name;
         $model->description                 = $request->description;
+        $model->discount                    = $request->discount;
         $model->payment_method_type_id      = $request->payment_method_type_id;
         $model->public_key                  = $request->public_key;
         $model->access_token                = $request->access_token;

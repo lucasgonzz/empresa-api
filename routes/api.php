@@ -119,4 +119,9 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::post('/current-acount/nota-debito', 'CurrentAcountController@notaDebito');
     Route::post('/current-acount/saldo-inicial', 'CurrentAcountController@saldoInicial');
     Route::delete('/current-acount/{model_name}/{id}', 'CurrentAcountController@delete');
+
+    Route::get('/import-history/{model_name}', 'ImportHistoryController@index');
+
+    Route::get('/online-price-type', 'OnlinePriceTypeController@index');
+
 });

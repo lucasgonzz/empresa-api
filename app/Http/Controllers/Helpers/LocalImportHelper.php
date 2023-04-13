@@ -67,6 +67,7 @@ class LocalImportHelper {
 	static function saveProvider($proveedor, $ct) {
 		if ($proveedor != 'Sin especificar' && $proveedor != '') {
 	        $data = [
+	        	'num'		=> $ct->num('providers'),
                 'name'      => $proveedor,
                 'user_id'   => $ct->userId(),
             ];

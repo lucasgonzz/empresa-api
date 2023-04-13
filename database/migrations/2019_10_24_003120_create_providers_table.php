@@ -31,6 +31,7 @@ class CreateProvidersTable extends Migration
             $table->decimal('saldo', 12,2)->nullable();
             $table->integer('comercio_city_user_id')->unsigned()->nullable();
             $table->integer('user_id')->unsigned();
+            $table->enum('status', ['active', 'inactive'])->default('active');
             $table->softDeletes();
 
             $table->foreign('user_id')

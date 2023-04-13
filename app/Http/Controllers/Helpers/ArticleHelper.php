@@ -108,6 +108,7 @@ class ArticleHelper {
         }
         $article->final_price = $final_price;
         if ($current_final_price != $article->final_price) {
+            $article->previus_final_price = $current_final_price; 
             $article->final_price_updated_at = Carbon::now();
         }
 

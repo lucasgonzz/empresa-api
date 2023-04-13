@@ -22,25 +22,26 @@ class UserSeeder extends Seeder
         $ct = new Controller();
         $models = [
             [
-                'name'              => 'Lucas Gonzalez',
-                'company_name'      => 'Lucas',
-                'image_url'         => env('APP_URL').'/storage/cubo.jpeg',
-                'doc_number'        => '123',
-                'email'             => 'lucasgonzalez5500@gmail.com',
-                'phone'             => '3444622139',
-                'instagram'         => 'https://www.instagram.com/lucasgonzz/',
-                'facebook'          => 'https://www.facebook.com',
-                'password'          => bcrypt('123'),
-                'online_prices'     => 'only_buyers_with_comerciocity_client',
-                'visible_password'  => null,
-                'dollar'            => 300,
-                'default_article_image_url' => 'http://empresa.local:8000/storage/168053912176623.webp',
-                // 'payment_expired_at'=> Carbon::now()->addDay(),
-                'quienes_somos'     => 
+                'name'                          => 'Lucas Gonzalez',
+                'company_name'                  => 'Lucas',
+                'image_url'                     => env('APP_URL').'/storage/cubo.jpeg',
+                'doc_number'                    => '123',
+                'email'                         => 'lucasgonzalez5500@gmail.com',
+                'phone'                         => '3444622139',
+                'instagram'                     => 'https://www.instagram.com/lucasgonzz/',
+                'facebook'                      => 'https://www.facebook.com',
+                'password'                      => bcrypt('123'),
+                'online_prices'                 => 'only_buyers_with_comerciocity_client',
+                'visible_password'              => null,
+                'dollar'                        => 300,
+                'online_price_type_id'          => 3,
+                'default_article_image_url'     => 'http://empresa.local:8000/storage/168053912176623.webp',
+                // 'payment_expired_at'         => Carbon::now()->addDay(),
+                'quienes_somos'                 => 
                 'Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!
 
                 Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!',
-                'mensaje_contacto'  => 'Contactar tambien por mensaje directo en Facebook o Instagram, es el medio en el que mas activos estamos!',
+                'mensaje_contacto'              => 'Contactar tambien por mensaje directo en Facebook o Instagram, es el medio en el que mas activos estamos!',
             ],
             [
                 'name'              => 'Marcos',
@@ -102,6 +103,7 @@ class UserSeeder extends Seeder
                 'mensaje_contacto'      => isset($model['mensaje_contacto']) ? $model['mensaje_contacto'] : null,  
                 'default_article_image_url'      => isset($model['default_article_image_url']) ? $model['default_article_image_url'] : null,  
                 'dollar'      => isset($model['dollar']) ? $model['dollar'] : null,  
+                'online_price_type_id'      => isset($model['online_price_type_id']) ? $model['online_price_type_id'] : null,  
             ]);
             if (is_null($user->owner_id)) {
 

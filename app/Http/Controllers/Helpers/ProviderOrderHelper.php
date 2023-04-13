@@ -71,8 +71,12 @@ class ProviderOrderHelper {
 			if ($article->provider_id != $provider_order->provider_id || $last_received[$article->id] != $_article['pivot']['received']) {
 				$data_changed = true;
 				$article->provider_id = $provider_order->provider_id;
+				$amount = $_article['pivot']['received'];
+				if (array_key_exists($article->id, $last_received)) {
+					$amount -= $last_received[$article->id];
+				}
 				$article->providers()->attach($provider_order->provider_id, [
-										'amount' => $_article['pivot']['received'] - isset($last_received[$article->id]) ? $last_received[$article->id] : 0,
+										'amount' => $amount,
 										'cost' 	 => $_article['pivot']['cost'],
 									]);
 			}

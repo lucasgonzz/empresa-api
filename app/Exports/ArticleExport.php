@@ -63,7 +63,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
     public function headings(): array
     {
         $headings = [
-            'Codigo',
+            'Numero',
             'Codigo de barras',
             'Codigo de proveedor',
             'Nombre',
@@ -98,7 +98,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $article->discounts_formated = '';
             if (count($article->article_discounts) >= 1) {
                 foreach ($article->article_discounts as $discount) {
-                    $article->discounts_formated .= $discount->percentage.'-';
+                    $article->discounts_formated .= $discount->percentage.'_';
                 }
                 $article->discounts_formated = substr($article->discounts_formated, 0, strlen($article->discounts_formated)-1);
             }
