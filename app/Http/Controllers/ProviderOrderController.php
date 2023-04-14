@@ -57,6 +57,7 @@ class ProviderOrderController extends Controller
 
     public function destroy($id) {
         $model = ProviderOrder::find($id);
+        ProviderOrderHelper::deleteCurrentAcount($model);
         $model->delete();
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('ProviderOrder', $model->id);

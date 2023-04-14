@@ -53,7 +53,7 @@ class UserSeeder extends Seeder
                 'visible_password'  => null,
             ],
             [
-                'name'              => 'Empleado 1',
+                'name'              => 'Juan',
                 'doc_number'        => '1',
                 'email'             => 'lucasgonzalez550022@gmail.com',
                 'password'          => bcrypt('1'),
@@ -67,7 +67,7 @@ class UserSeeder extends Seeder
                 ],
             ],
             [
-                'name'              => 'Empleado 2',
+                'name'              => 'Miguel',
                 'doc_number'        => '2',
                 'email'             => 'lucasgonzalez550023@gmail.com',
                 'password'          => bcrypt('2'),

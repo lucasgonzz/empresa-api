@@ -4,6 +4,7 @@ namespace App\Models\Afip;
 
 use App\Models\Afip\WS;
 use phpWsAfip\Exception\WsnException;
+use Illuminate\Support\Facades\Log;
 
 /**
  * WSN (WebService de Negocio).
@@ -69,7 +70,7 @@ abstract class WSN extends WS
         $this->ta_token             = null;
         $this->ta_sign              = null;
         $this->cuit_representada    = $config['cuit_representada'];
-        $this->for_wsfe             = isset($config['for_wsfe']) ? $config['for_wsfe'] : false;
+        // $this->for_wsfe             = isset($config['for_wsfe']) ? $config['for_wsfe'] : false;
         parent::__construct($config);
     }
 
@@ -109,7 +110,7 @@ abstract class WSN extends WS
         // $this->ta_cuit              = (float) $arr[1];
         $this->ta_token             = (string)$ta->credentials->token;
         $this->ta_sign              = (string)$ta->credentials->sign;
-        $this->for_wsfe             = $this->for_wsfe;
+        // $this->for_wsfe             = $this->for_wsfe;
         return $this;
     }
 
@@ -277,24 +278,36 @@ abstract class WSN extends WS
         if ($this->ta_expiration_time < time()) {
             throw new WsnException('El TA está vencido');
         }
+        $datos = array(
+           'token'              => $this->ta_token,
+           'sign'               => $this->ta_sign,
+           'cuitRepresentada'               => $this->ta_cuit
+        );
+        // $datos = array(
+        //     'Auth' => array(
+        //        'Token'              => $this->ta_token,
+        //        'Sign'               => $this->ta_sign,
+        //        'Cuit'               => $this->ta_cuit
+        //     )
+        // );
 
-        if ($this->for_wsfe) {
-            $datos = array(
-                'Auth' => array(
-                   'Token'              => $this->ta_token,
-                   'Sign'               => $this->ta_sign,
-                   'Cuit'               => $this->ta_cuit
-                )
-            );
-        } else {
-            $datos = array(
-                'authRequest' => array(
-                   'token'              => $this->ta_token,
-                   'sign'               => $this->ta_sign,
-                   'cuitRepresentada'   => $this->ta_cuit
-                )
-            );
-        }
+        // if ($this->for_wsfe) {
+        //     $datos = array(
+        //         'Auth' => array(
+        //            'Token'              => $this->ta_token,
+        //            'Sign'               => $this->ta_sign,
+        //            'Cuit'               => $this->ta_cuit
+        //         )
+        //     );
+        // } else {
+        //     $datos = array(
+        //         'authRequest' => array(
+        //            'token'              => $this->ta_token,
+        //            'sign'               => $this->ta_sign,
+        //            'cuitRepresentada'   => $this->ta_cuit
+        //         )
+        //     );
+        // }
 
 
         // print_r('Se le manda el token: '.$this->ta_token.'</br>');
@@ -304,6 +317,9 @@ abstract class WSN extends WS
         if (isset($arguments[0])) {
             $datos += $arguments[0];
         }
+
+        Log::info('datos:');
+        Log::info($datos);
 
         return parent::__call($name, array($datos));
     }

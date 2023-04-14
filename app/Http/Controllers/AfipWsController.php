@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\AfipTicket;
-use App\Models\Afip\WSFE;
-use App\Models\Article;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Models\AfipTicket;
+use App\Models\Afip\WSAA;
+use App\Models\Afip\WSFE;
+use App\Models\Afip\WSSRConstanciaInscripcion;
+use App\Models\Article;
 use App\Models\Sale;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -17,17 +19,17 @@ class AfipWsController extends Controller
 
     public $sale;
 
-    function __construct($sale) {
-        $this->sale = $sale;
-    }
+    // function __construct($sale) {
+    //     $this->sale = $sale;
+    // }
 
-    function define() {
-        $this->testing = !$this->sale->afip_information->afip_ticket_production;
+    function define($testing) {
+        // $this->testing = !$this->sale->afip_information->afip_ticket_production;
         define ('TRA_xml', public_path().'/afip/wsaa/TRA.xml'); 
         define ('TRA_tmp', public_path().'/afip/wsaa/TRA.tmp'); 
         define ('TA_file', public_path().'/afip/wsaa/TA.xml'); 
         define ('CMS_file', public_path().'/afip/wsaa/CMS.txt'); 
-        if ($this->testing) {
+        if ($testing) {
             $this->cert = 'file://'.realpath(public_path().'/afip/testing/MiCertificado.pem');
             $this->private_key = 'file://'.realpath(public_path().'/afip/testing/MiClavePrivada.key');
             $this->url_wsaa = 'https://wsaahomo.afip.gov.ar/ws/services/LoginCms';
@@ -36,6 +38,42 @@ class AfipWsController extends Controller
             $this->private_key = 'file://'.realpath(public_path().'/afip/production/privada.key');
             $this->url_wsaa = 'https://wsaa.afip.gov.ar/ws/services/LoginCms';
         }
+    }
+
+    function getPersona() {
+        $this->define(true);
+        $this->checkWsaa('ws_sr_constancia_inscripcion');
+
+        // Configuración del servicio WSAA.
+        // $config = [
+        //     'testing'           => true,                    // Utiliza el servicio de homologación.
+        //     'tra_tpl_file'      =>  TRA_tmp        // Define la ubicación de los archivos temporarios con el TRA.
+        // ];
+
+        // $wsaa = new WSAA('ws_sr_constancia_inscripcion', $this->cert, $this->private_key, $config);
+        // if ($ta = $wsaa->requestTa()) {
+        //     // Se visualiza los datos del encabezado.
+        //     print_r($ta->header);
+
+        //     // Guardar el XML en una variable. Luego puede almacenarse en una base de datos.
+        //     //$xml = $ta->asXml();
+        //     //echo $xml;
+
+        //     // Guardar el TA en un archivo.
+        //     $ta->asXml(TA_file);
+        // }
+
+        $this->ws_sr_constancia_inscripcion();
+    }
+
+    function ws_sr_constancia_inscripcion() {
+        $ws = new WSSRConstanciaInscripcion(['testing'=> false, 'cuit_representada' => '20423548984']);
+        $ws->setXmlTa(file_get_contents(TA_file));
+        $result = $ws->getPersona_v2(['idPersona' => '20175018841']);
+        // Log::info($result);
+        // print($result);
+        dd($result);
+        // print_r($result);
     }
 
     function init() {
@@ -48,6 +86,7 @@ class AfipWsController extends Controller
 
     function checkWsaa($service) {
         if (file_exists(TA_file)) {
+            Log::info('file_exists');
             $ta = new \SimpleXMLElement(file_get_contents(TA_file));
             if (!isset($ta->header->expirationTime) || !isset($ta->credentials->token) || !isset($ta->credentials->sign)) {
                 Log::info('El TA no tiene los datos necesarios');
@@ -55,6 +94,8 @@ class AfipWsController extends Controller
             } else if (strtotime($ta->header->expirationTime) < time()) {
                 Log::info('El TA estaba vencido');
                 $this->wsaa($service);
+            } else {
+                Log::info('Todo OK');
             }
         } else {
             Log::info('El TA no estaba creado');
@@ -139,7 +180,8 @@ class AfipWsController extends Controller
             $doc_type = '99';
         }
         $cbte_tipo = $this->getTipoCbte();
-        $wsfe = new WSFE(['testing'=> $this->testing, 'cuit_representada' => $cuit_negocio, 'for_wsfe' => true]);
+        $wsfe = new WSFE(['testing'=> $this->testing, 'cuit_representada' => $cuit_negocio]);
+        // $wsfe = new WSFE(['testing'=> $this->testing, 'cuit_representada' => $cuit_negocio, 'for_wsfe' => true]);
         $wsfe->setXmlTa(file_get_contents(TA_file));
         $cbte_nro = AfipHelper::getNumeroComprobante($wsfe, $punto_venta, $cbte_tipo);
         Log::info('Numero comprobante: '.$cbte_nro);

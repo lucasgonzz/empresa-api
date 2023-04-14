@@ -19,8 +19,11 @@ class ProviderOrderHelper {
 	static function deleteCurrentAcount($provider_order) {
 		$current_acount = CurrentAcount::where('provider_order_id', $provider_order->id)->first();
 		if (!is_null($current_acount)) {
+			Log::info('Eliminando current_acount');
 			$current_acount->delete(); 
 			CurrentAcountHelper::updateProviderSaldos($current_acount);
+		} else {
+			Log::info('No se elimino current_acount');
 		}
 	}
 
@@ -68,7 +71,7 @@ class ProviderOrderHelper {
 				$article->created_at = Carbon::now();
 				$data_changed = true;
 			}
-			if ($article->provider_id != $provider_order->provider_id || $last_received[$article->id] != $_article['pivot']['received']) {
+			if ($article->provider_id != $provider_order->provider_id || (isset($last_received[$article->id]) && $last_received[$article->id] != $_article['pivot']['received'])) {
 				$data_changed = true;
 				$article->provider_id = $provider_order->provider_id;
 				$amount = $_article['pivot']['received'];

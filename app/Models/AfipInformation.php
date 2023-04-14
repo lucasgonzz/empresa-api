@@ -9,7 +9,7 @@ class AfipInformation extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        
+        $q->with('iva_condition');
     }
 
     protected $dates = ['inicio_actividades'];

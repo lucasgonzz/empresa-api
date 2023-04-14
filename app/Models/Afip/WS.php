@@ -69,7 +69,7 @@ abstract class WS
         $this->soap_client      = null;
 
         $this->soap_options = array(
-             'soap_version' => SOAP_1_2,
+             'soap_version' => SOAP_1_1,
              'cache_wsdl'   => WSDL_CACHE_NONE,
              'trace'        => 1,
              'encoding'     => 'ISO-8859-1',

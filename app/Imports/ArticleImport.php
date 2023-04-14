@@ -113,11 +113,11 @@ class ArticleImport implements ToCollection
         if (!is_null(ImportHelper::getColumnValue($row, 'stock_actual', $this->columns))) {
             $data['stock'] = ImportHelper::getColumnValue($row, 'stock_actual', $this->columns);
         }
-        if ($this->create_and_edit && !is_null($article) && $this->isDataUpdated($article, $data)) {
+        if (!is_null($article) && $this->isDataUpdated($article, $data)) {
             $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $article->id);
             $article->update($data);
             $this->updated_models++;
-        } else if (is_null($article)) {
+        } else if (is_null($article) && $this->create_and_edit) {
             if (!is_null(ImportHelper::getColumnValue($row, 'codigo', $this->columns))) {
                 $data['num'] = ImportHelper::getColumnValue($row, 'codigo', $this->columns);
             } else {
@@ -144,7 +144,9 @@ class ArticleImport implements ToCollection
                 $article->cost                              != $data['cost'] ||
                 $article->cost_in_dollars                   != $data['cost_in_dollars'] ||
                 $article->percentage_gain                   != $data['percentage_gain'] ||
-                $article->price                             != $data['price'];
+                $article->price                             != $data['price'] ||
+                $article->category_id                       != $data['category_id'] ||
+                $article->sub_category_id                   != $data['sub_category_id'];
     }
 
     function isFirstRow($row) {

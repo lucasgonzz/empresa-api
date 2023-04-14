@@ -67,7 +67,7 @@ class SearchController extends Controller
         $data['user_id'] = $this->userId();
         $data[$property] = $query;
         foreach ($request->properties_to_set as $property_to_set) {
-            $data[$property_to_set['key']] = $property_to_set['value'];
+            $data[$property_to_set['key']] = $property_to_set['value'];     
         }
         // $data[$property] = $query;
         $model = $model_name::create($data);

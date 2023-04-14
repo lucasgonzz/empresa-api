@@ -483,8 +483,10 @@ class CurrentAcountHelper {
 
     static function getNum($table, $id, $prop) {
         $model = DB::table($table)->where('id', $id)->first();
-        return $model->{$prop};
-        return Self::getFormatedNum($model->{$prop});
+        if (!is_null($model)) {
+            return $model->{$prop};
+        }
+        // return Self::getFormatedNum($model->{$prop});
     }
 
     static function getFormatedNum($num) {
