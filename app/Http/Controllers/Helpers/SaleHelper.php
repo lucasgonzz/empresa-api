@@ -422,24 +422,24 @@ class SaleHelper extends Controller {
 
     static function getTotalWithDiscountsAndSurchages($sale, $total_articles, $total_combos, $total_services) {
         foreach ($sale->discounts as $discount) {
-            Log::info('total_services: '.$total_services);
+            // Log::info('total_services: '.$total_services);
             if ($sale->discounts_in_services) {
-                Log::info('restando '.$total_services * Numbers::percentage($discount->pivot->percentage).' a los servicios');
+                // Log::info('restando '.$total_services * Numbers::percentage($discount->pivot->percentage).' a los servicios');
                 $total_services -= $total_services * Numbers::percentage($discount->pivot->percentage);
             } else {
-                Log::info('No se resto a los servicios');
+                // Log::info('No se resto a los servicios');
             }
-            Log::info('total_services quedo en: '.$total_services);
+            // Log::info('total_services quedo en: '.$total_services);
 
-            Log::info('------------------------------------');
-            Log::info('total_articles: '.$total_articles);
+            // Log::info('------------------------------------');
+            // Log::info('total_articles: '.$total_articles);
             $total_articles -= $total_articles * Numbers::percentage($discount->pivot->percentage);
-            Log::info('total_articles quedo en: '.$total_articles);
+            // Log::info('total_articles quedo en: '.$total_articles);
 
-            Log::info('------------------------------------');
-            Log::info('total_combos: '.$total_combos);
+            // Log::info('------------------------------------');
+            // Log::info('total_combos: '.$total_combos);
             $total_combos -= $total_combos * Numbers::percentage($discount->pivot->percentage);
-            Log::info('total_combos quedo en: '.$total_combos);
+            // Log::info('total_combos quedo en: '.$total_combos);
         }
         foreach ($sale->surchages as $surchage) {
             if ($sale->surchages_in_services) {

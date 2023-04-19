@@ -7,18 +7,22 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Imports\ArticleImport;
+use App\Imports\LocationImport;
 use App\Models\Article;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
-use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Support\Facades\Log;
+use Maatwebsite\Excel\Facades\Excel;
 
 class ArticleController extends Controller
 {
     function index($last_updated, $status = 'active') {
         $models = Article::where('user_id', $this->userId())
                             ->where('status', $status)
-                            ->where('updated_at', '>', $last_updated)
+                            ->where(function($query) use ($last_updated) {
+                                $query->where('updated_at', '>', $last_updated);
+                                $query->orWhere('final_price_updated_at', '>', $last_updated);
+                            })
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
                             ->paginate(100);

@@ -55,7 +55,7 @@ class DatabaseSeeder extends Seeder
             $this->call(SaleTypeSeeder::class);
             // $this->call(CurrentAcountSeeder::class);
             // $this->call(ScheduleSeeder::class);
-            // $this->call(AddressSeeder::class);
+            $this->call(AddressSeeder::class);
             // $this->call(EmployeeSeeder::class);
             $this->call(SaleSeeder::class);
             // $this->call(WorkdaySeeder::class);

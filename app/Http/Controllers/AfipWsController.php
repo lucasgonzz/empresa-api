@@ -1,4 +1,4 @@
-<?php
+<?php 
 
 namespace App\Http\Controllers;
 
@@ -69,7 +69,8 @@ class AfipWsController extends Controller
     function ws_sr_constancia_inscripcion() {
         $ws = new WSSRConstanciaInscripcion(['testing'=> false, 'cuit_representada' => '20423548984']);
         $ws->setXmlTa(file_get_contents(TA_file));
-        $result = $ws->getPersona_v2(['idPersona' => '20175018841']);
+        $result = $ws->getPersona(['idPersona' => '20175018841']);
+        // $result = $ws->getPersona_v2(['idPersona' => '20175018841']);
         // Log::info($result);
         // print($result);
         dd($result);

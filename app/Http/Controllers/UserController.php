@@ -7,11 +7,26 @@ use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Auth;
 
 class UserController extends Controller
 {
     function user() {
         return response()->json(['user' => Auth()->user()], 200);
+    }
+
+    function store(Request $request) {
+        $model = User::create([
+            'name'          => $request->name,
+            'doc_number'    => $request->doc_number,
+            'phone'         => $request->phone,
+            'company_name'  => $request->company_name,
+            'email'         => $request->email,
+            'password'      => bcrypt($request->password),
+        ]);
+        $model->extencions()->attach(6);
+        Auth::login($model);
+        return response()->json(['model' => $model], 201);
     }
 
     function update(Request $request, $id) {

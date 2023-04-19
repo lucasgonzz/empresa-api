@@ -281,7 +281,7 @@ abstract class WSN extends WS
         $datos = array(
            'token'              => $this->ta_token,
            'sign'               => $this->ta_sign,
-           'cuitRepresentada'               => $this->ta_cuit
+           'cuitRepresentada'   => $this->ta_cuit
         );
         // $datos = array(
         //     'Auth' => array(

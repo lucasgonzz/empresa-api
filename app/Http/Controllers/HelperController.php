@@ -4,8 +4,13 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Models\Article;
+use App\Models\Budget;
+use App\Models\Client;
+use App\Models\CurrentAcount;
 use App\Models\Image;
+use App\Models\OrderProduction;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -189,6 +194,44 @@ class HelperController extends Controller
             }
         }
         echo '----------------------- Termino ------------------------ </br>';
+    }
+
+    function clearOrderProductionCurrentAcount($company_name) {
+        $user = User::where('company_name', $company_name)->first();
+        $budgets = Budget::where('user_id', $user->id)
+                        ->get();
+        foreach ($budgets as $budget) {
+            $current_acount = CurrentAcount::where('budget_id', $budget->id)->first();
+            if (!is_null($current_acount)) {
+                $order_production_current_acount = CurrentAcount::where('client_id', $budget->client_id)
+                                                                    ->where('debe', $current_acount->debe)
+                                                                    ->whereNull('budget_id')
+                                                                    ->first();
+                if (!is_null($order_production_current_acount)) {
+                    echo 'Hay un movimiento para el presupuesto N° '.$budget->num.' </br>';
+                    if (!is_null($budget->client)) {
+                        echo 'Del cliente '.$budget->client->name.' </br>';
+                        $saldo_actual = $budget->client->saldo;
+                    }
+                    echo 'Y tambien hay uno para la orden de produccion: '.$order_production_current_acount->detalle.' </br>';
+                    $order_production_current_acount->delete();
+                    CurrentAcountHelper::checkSaldos('client', $budget->client_id);
+                    echo 'Se elimino current_acount y se actualizo el saldo, era de '.$saldo_actual.' y ahora es de '.Client::find($budget->client_id)->saldo.' </br>';
+                }
+            }
+        }
+        // foreach ($order_productions as $order_production) {
+        //     $budget_current_acount = CurrentAcount::where('budget_id', $order_production->budget_id)
+        //                                             ->first();
+        //     if (!is_null($budget_current_acount)) {
+        //         $current_acount = CurrentAcount::where('order_production_id', $order_production->id)
+        //                                         ->first();
+        //         if (!is_null($current_acount)) {
+        //             echo 'Eliminando cuenta corriente </br>';
+        //             echo '----------------- </br>';
+        //         }
+        //     }
+        // }
     }
 
     function checkImageUrl($url) {

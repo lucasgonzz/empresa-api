@@ -410,6 +410,9 @@ class CurrentAcountHelper {
             foreach ($sale->discounts as $discount) {
                 $description .= '(-'.$discount->pivot->percentage . '% '. substr($discount->name, 0, 3) .')';
             }
+            foreach ($sale->surchages as $surchage) {
+                $description .= '(+'.$surchage->pivot->percentage . '% '. substr($surchage->name, 0, 3) .')';
+            }
             return $description;
         } else {
             return null;

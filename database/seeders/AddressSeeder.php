@@ -22,7 +22,7 @@ class AddressSeeder extends Seeder
             ],
             [
                 'num'       => 2,
-                'street'    => 'San amrtin 221',
+                'street'    => 'San martin 221',
                 'user_id'   => 1,
             ],
         ];

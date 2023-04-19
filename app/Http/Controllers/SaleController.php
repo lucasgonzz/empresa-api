@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\SaleProviderOrderHelper;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
 use App\Http\Controllers\Pdf\SalePdf;
 use App\Http\Controllers\Pdf\SaleTicketPdf;
+use App\Models\CurrentAcount;
 use App\Models\Sale;
 use Carbon\Carbon;
 use Illuminate\Http\Request;

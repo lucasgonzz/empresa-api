@@ -22,6 +22,7 @@ return [
         'sanctum/csrf-cookie',
         'set-image',
         'password-reset/*',
+        'user',
         '/storage/*',
         'storage',
     ],

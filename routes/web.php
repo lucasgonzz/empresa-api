@@ -18,8 +18,12 @@ Route::post('/password-reset/update-password',
 
 Route::get('set-properties/{company_name}/{for_articles?}', 'HelperController@setProperties');
 Route::get('check-images/{company_name}', 'HelperController@checkImages');
+Route::get('clear-order-productions-current-acount/{company_name}', 'HelperController@clearOrderProductionCurrentAcount');
 
 Route::get('get-persona', 'AfipWsController@getPersona');
+
+// Registro
+Route::post('user', 'UserController@store');
 
 // PDF
 Route::get('sale/pdf/{id}/{with_prices}', 'SaleController@pdf');
