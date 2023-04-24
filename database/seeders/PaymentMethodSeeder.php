@@ -26,6 +26,7 @@ class PaymentMethodSeeder extends Seeder
                 'public_key' => 'TEST-55fdbf12-f638-48a1-a6fe-1dd41c771384',
                 'access_token' => 'TEST-3668585670354328-100112-a353cb99b53860f22fdf7e7b87c4fd8b-163250661',
                 'user_id'   => $user->id,
+                'surchage'  => 100,
             ],
             [
                 'name' => 'Contado',

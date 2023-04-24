@@ -15,6 +15,7 @@ class CreateCuponsTable extends Migration
     {
         Schema::create('cupons', function (Blueprint $table) {
             $table->id();
+            $table->integer('num');
             $table->decimal('amount', 8, 2)->nullable();
             $table->decimal('percentage', 8, 2)->nullable();
             $table->decimal('min_amount', 8, 2)->nullable();

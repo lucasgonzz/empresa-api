@@ -18,7 +18,7 @@ class CreateProviderOrderAfipTicketsTable extends Migration
             $table->string('code')->nullable();
             $table->timestamp('issued_at')->nullable();
             $table->decimal('total')->nullable();
-            $table->integer('provider_order_id');
+            $table->integer('provider_order_id')->nullable();
             $table->timestamps();
         });
     }

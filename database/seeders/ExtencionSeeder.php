@@ -43,6 +43,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Costo real',
                 'slug' => 'article.costo_real',
             ],
+            [
+                'name' => 'Escanear Codigos de Barra',
+                'slug' => 'bar_code_scanner',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

@@ -215,7 +215,12 @@ class CurrentAcountController extends Controller
         if (count($ids) == 1) {
             $model = CurrentAcount::find($ids[0]);
             if ($model->status == 'pago_from_client') {
-                $pdf = new PagoPdf($model);
+                if (!is_null($model->client_id)) {
+                    $model_name = 'client';
+                } else {
+                    $model_name = 'provider';
+                }
+                $pdf = new PagoPdf($model, $model_name);
                 $pdf->printCurrentAcounts();
             } else if ($model->status == 'nota_credito') {
                 $pdf = new NotaCreditoPdf($model);

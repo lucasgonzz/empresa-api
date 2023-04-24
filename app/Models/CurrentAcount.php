@@ -40,6 +40,10 @@ class CurrentAcount extends Model
         return $this->belongsTo('App\Models\Client');
     }
 
+    public function provider() {
+        return $this->belongsTo('App\Models\Provider');
+    }
+
     public function seller() {
     	return $this->belongsTo('App\Models\Seller');
     }

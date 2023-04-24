@@ -5,9 +5,10 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Models\User;
+use App\Models\UserConfiguration;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
 
 class UserController extends Controller
 {
@@ -24,7 +25,11 @@ class UserController extends Controller
             'email'         => $request->email,
             'password'      => bcrypt($request->password),
         ]);
-        $model->extencions()->attach(6);
+        $model->extencions()->attach([6, 8]);
+        UserConfiguration::create([
+            'user_id'       => $model->id,
+            'iva_included'  => 0,
+        ]);
         Auth::login($model);
         return response()->json(['model' => $model], 201);
     }
@@ -46,6 +51,7 @@ class UserController extends Controller
         $model->show_articles_without_images    = $request->show_articles_without_images;
         $model->show_articles_without_stock     = $request->show_articles_without_stock;
         $model->order_description               = $request->order_description;
+        $model->online_price_surchage           = $request->online_price_surchage;
         $model->save();
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_dolar, $request->dollar);
         $model = UserHelper::getFullModel();

@@ -56,6 +56,9 @@ class ArticleSeeder extends Seeder
                     [
                         'url'       => 'martillo.jpg',
                     ],
+                    [
+                        'url'       => 'martillo_grande.jpg',
+                    ],
                 ],
             ],
             [

@@ -42,6 +42,8 @@ class UserSeeder extends Seeder
 
                 Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!',
                 'mensaje_contacto'              => 'Contactar tambien por mensaje directo en Facebook o Instagram, es el medio en el que mas activos estamos!',
+                'online_price_surchage'         => 50,
+                'online'                        => 'http://tienda.local:8081',
             ],
             [
                 'name'              => 'Marcos',
@@ -86,28 +88,30 @@ class UserSeeder extends Seeder
         ];
         foreach ($models as $model) {
             $user = User::create([
-                'name'                  => $model['name'], 
-                'company_name'          => isset($model['company_name']) ? $model['company_name'] : null,  
-                'doc_number'            => $model['doc_number'], 
-                'email'                 => $model['email'], 
-                'password'              => $model['password'],  
-                'image_url'             => $model['image_url'],  
-                'visible_password'      => $model['visible_password'],  
-                'owner_id'              => isset($model['owner_id']) ? $model['owner_id'] : null,  
-                'online_prices'         => isset($model['online_prices']) ? $model['online_prices'] : null,  
-                'payment_expired_at'    => isset($model['payment_expired_at']) ? $model['payment_expired_at'] : null,  
-                'instagram'             => isset($model['instagram']) ? $model['instagram'] : null,  
-                'facebook'              => isset($model['facebook']) ? $model['facebook'] : null,  
-                'phone'                 => isset($model['phone']) ? $model['phone'] : null,  
-                'quienes_somos'         => isset($model['quienes_somos']) ? $model['quienes_somos'] : null,  
-                'mensaje_contacto'      => isset($model['mensaje_contacto']) ? $model['mensaje_contacto'] : null,  
-                'default_article_image_url'      => isset($model['default_article_image_url']) ? $model['default_article_image_url'] : null,  
-                'dollar'      => isset($model['dollar']) ? $model['dollar'] : null,  
-                'online_price_type_id'      => isset($model['online_price_type_id']) ? $model['online_price_type_id'] : null,  
+                'name'                          => $model['name'], 
+                'company_name'                  => isset($model['company_name']) ? $model['company_name'] : null,  
+                'doc_number'                    => $model['doc_number'], 
+                'email'                         => $model['email'], 
+                'password'                      => $model['password'],  
+                'image_url'                     => $model['image_url'],  
+                'visible_password'              => $model['visible_password'],  
+                'owner_id'                      => isset($model['owner_id']) ? $model['owner_id'] : null,  
+                'online_prices'                 => isset($model['online_prices']) ? $model['online_prices'] : null,  
+                'payment_expired_at'            => isset($model['payment_expired_at']) ? $model['payment_expired_at'] : null,  
+                'instagram'                     => isset($model['instagram']) ? $model['instagram'] : null,  
+                'facebook'                      => isset($model['facebook']) ? $model['facebook'] : null,  
+                'phone'                         => isset($model['phone']) ? $model['phone'] : null,  
+                'quienes_somos'                 => isset($model['quienes_somos']) ? $model['quienes_somos'] : null,  
+                'mensaje_contacto'              => isset($model['mensaje_contacto']) ? $model['mensaje_contacto'] : null,  
+                'default_article_image_url'     => isset($model['default_article_image_url']) ? $model['default_article_image_url'] : null,  
+                'dollar'                        => isset($model['dollar']) ? $model['dollar'] : null,  
+                'online_price_type_id'          => isset($model['online_price_type_id']) ? $model['online_price_type_id'] : null,
+                'online_price_surchage'         => isset($model['online_price_surchage']) ? $model['online_price_surchage'] : null,
+                'online'                        => isset($model['online']) ? $model['online'] : null,
             ]);
             if (is_null($user->owner_id)) {
 
-                $user->extencions()->attach([1, 2, 5, 6]);
+                $user->extencions()->attach([1, 2, 5, 6, 8]);
                 UserConfiguration::create([
                     'current_acount_pagado_details'         => 'Recibo de pago (saldado)',
                     'current_acount_pagandose_details'      => 'Recibo de pago',

@@ -20,7 +20,8 @@ class CreatePaymentMethodsTable extends Migration
             $table->integer('payment_method_type_id')->unsigned()->nullable();
             $table->text('public_key')->nullable();
             $table->text('access_token')->nullable();
-            $table->decimal('discount')->nullable();
+            $table->decimal('discount', 12,2)->nullable();
+            $table->decimal('surchage', 12,2)->nullable();
             $table->integer('user_id')->nullable();
             $table->timestamps();
         });

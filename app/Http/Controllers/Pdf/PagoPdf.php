@@ -10,13 +10,14 @@ require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class PagoPdf extends fpdf {
 
-	function __construct($model) {
+	function __construct($model, $model_name) {
 		parent::__construct();
 		$this->SetAutoPageBreak(true, 1);
 		$this->b = 0;
 		$this->line_height = 7;
 		
 		$this->model = $model;
+		$this->model_name = $model_name;
 
 		$this->AddPage();
 		$this->printPago();
@@ -29,28 +30,51 @@ class PagoPdf extends fpdf {
 	}
 
 	function getModelProps() {
-		return [
-			[
-				'text' 	=> 'Cliente',
-				'key'	=> 'name',
-			],
-			[
-				'text' 	=> 'Telefono',
-				'key'	=> 'phone',
-			],
-			[
-				'text' 	=> 'Cuit',
-				'key'	=> 'cuit',
-			],
-		];
+		if ($this->model_name == 'client') {
+			return [
+				[
+					'text' 	=> 'Cliente',
+					'key'	=> 'name',
+				],
+				[
+					'text' 	=> 'Telefono',
+					'key'	=> 'phone',
+				],
+				[
+					'text' 	=> 'Cuit',
+					'key'	=> 'cuit',
+				],
+			];
+		} else {
+			return [
+				[
+					'text' 	=> 'Proveedor',
+					'key'	=> 'name',
+				],
+				[
+					'text' 	=> 'Telefono',
+					'key'	=> 'phone',
+				],
+				[
+					'text' 	=> 'Cuit',
+					'key'	=> 'cuit',
+				],
+			];
+
+		}
 	}
 
 	function Header() {
+		if ($this->model_name == 'client') {
+			$model_info = $this->model->client;
+		} else {
+			$model_info = $this->model->provider;
+		}
 		$data = [
 			'num' 				=> $this->model->num_receipt,
 			'date'				=> $this->model->created_at,
 			'title' 			=> 'Recibo de Pago',
-			'model_info'		=> $this->model->client,
+			'model_info'		=> $model_info,
 			'model_props' 		=> $this->getModelProps(),
 		];
 		PdfHelper::header($this, $data);
@@ -60,7 +84,11 @@ class PagoPdf extends fpdf {
 		$this->x = 5;
 		$this->y = 50;
 		$this->SetFont('Arial', 'B', 11);
-		$this->Cell(200, 7, 'Recibimos de '.$this->model->client->name, $this->b, 1, 'L');
+		if ($this->model_name == 'client') {
+			$this->Cell(200, 7, 'Recibimos de '.$this->model->client->name, $this->b, 1, 'L');
+		} else {
+			$this->Cell(200, 7, 'Recibimos de '.UserHelper::getFullModel()->company_name, $this->b, 1, 'L');
+		}
 		$this->x = 5;
 		$this->Cell(200, 7, 'la cantidad de pesos '.Numbers::price($this->model->haber), $this->b, 1, 'L');
 	}
