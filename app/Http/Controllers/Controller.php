@@ -13,6 +13,7 @@ use Illuminate\Foundation\Bus\DispatchesJobs;
 use Illuminate\Foundation\Validation\ValidatesRequests;
 use Illuminate\Routing\Controller as BaseController;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class Controller extends BaseController
 {
@@ -54,15 +55,40 @@ class Controller extends BaseController
         return $model;
     }
 
-    function updateRelationsCreated($model_name, $model_id, $relations) {
-        foreach ($relations as $relation) {
-            $relation_models = GeneralHelper::getModelName($relation)::where($model_name.'_id', null)
-                                                                    ->get();
-            foreach ($relation_models as $relation_model) {
-                $relation_model->{$model_name.'_id'} = $model_id;
-                $relation_model->save();
+    function updateRelationsCreated($model_name, $model_id, $childrens) {
+        if (isset($childrens)) {
+            foreach ($childrens as $children) {
+                if (isset($children['is_imageable'])) {
+                    $relation_model = GeneralHelper::getModelName('Image')::where('imageable_id', null)
+                                                                            ->where('temporal_id', $children['temporal_id'])
+                                                                            ->first();
+                    if (!is_null($relation_model)) {
+                        Log::info('Se actualizo '.$children['model_name'].' con el temporal_id de '.$children['temporal_id'].' con '.$model_name.'_id de '.$model_id);
+                        $relation_model->imageable_id = $model_id;
+                        $relation_model->temporal_id = null;
+                        $relation_model->save();
+                    }
+
+                } else {
+                    $relation_model = GeneralHelper::getModelName($children['model_name'])::where($model_name.'_id', null)
+                                                                            ->where('temporal_id', $children['temporal_id'])
+                                                                            ->first();
+                    if (!is_null($relation_model)) {
+                        Log::info('Se actualizo '.$children['model_name'].' con el temporal_id de '.$children['temporal_id'].' con '.$model_name.'_id de '.$model_id);
+                        $relation_model->{$model_name.'_id'} = $model_id;
+                        $relation_model->temporal_id = null;
+                        $relation_model->save();
+                    }
+                }
             }
         }
+    }
+
+    function getTemporalId($request) {
+        if (is_null($request->model_id)) {
+            return time().rand(0, 9999);
+        }
+        return null;
     }
 
     function sendAddModelNotification($model_name, $model_id, $check_added_by = true, $for_user_id = null) {
@@ -85,7 +111,6 @@ class Controller extends BaseController
         }
         Auth()->user()->notify(new UpdateModels($model_name, $check_added_by, $for_user_id));
     }
-
 
     function num($table, $user_id = null, $prop_to_check = 'user_id', $prop_value = null) {
         if (is_null($prop_value)) {

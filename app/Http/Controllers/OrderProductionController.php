@@ -37,7 +37,7 @@ class OrderProductionController extends Controller
             'user_id'                       => $this->userId(),
         ]);
         OrderProductionHelper::attachArticles($model, $request->articles);
-        OrderProductionHelper::checkFinieshed($model);
+        // OrderProductionHelper::checkFinieshed($model);
         $this->sendAddModelNotification('order_production', $model->id);
         // $model = OrderProductionHelper::setArticles([$this->fullModel($model->id)])[0];
         return response()->json(['model' => $this->fullModel('OrderProduction', $model->id)], 201);

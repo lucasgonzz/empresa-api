@@ -17,6 +17,7 @@ class CreateArticleDiscountsTable extends Migration
             $table->id();
             $table->integer('article_id')->unsigned()->nullable();
             $table->decimal('percentage');
+            $table->string('temporal_id')->nullable();
             $table->timestamps();
         });
     }

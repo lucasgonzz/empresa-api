@@ -28,7 +28,6 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::get('permission', 'CommonLaravel\PermissionController@index');
 
     // Images
-    Route::post('save-pre-image', 'CommonLaravel\ImageController@savePreImage');
     Route::post('set-image/{prop}', 'CommonLaravel\ImageController@setImage');
     Route::delete('delete-image-prop/{model_name}/{id}/{prop_name}', 'CommonLaravel\ImageController@deleteImageProp');
     Route::delete('delete-image-model/{model_name}/{model_id}/{image_id}', 'CommonLaravel\ImageController@deleteImageModel');
@@ -49,6 +48,7 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::resource('sale', 'SaleController');
     Route::get('sale/from-date/{from_date}/{until_date?}', 'SaleController@index');
     Route::put('sale/update-prices/{id}', 'SaleController@updatePrices');
+    Route::get('sale/charts/{from}/{to}', 'SaleController@charts');
 
     Route::resource('brand', 'BrandController');
     Route::resource('category', 'CategoryController');

@@ -20,10 +20,14 @@ class DescriptionController extends Controller
     public function store(Request $request) {
         $model = Description::create([
             'title'                 => $request->title,
+            'article_id'            => $request->model_id,
+            'temporal_id'           => $this->getTemporalId($request),
             'content'               => $request->content,
             // 'user_id'               => $this->userId(),
         ]);
-        $this->sendAddModelNotification('Description', $model->id);
+        if (!is_null($request->model_id)) {
+            $this->sendAddModelNotification('article', $model->article_id, false);
+        }
         return response()->json(['model' => $this->fullModel('Description', $model->id)], 201);
     }  
 

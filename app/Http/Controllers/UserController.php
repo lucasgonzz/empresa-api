@@ -52,6 +52,7 @@ class UserController extends Controller
         $model->show_articles_without_stock     = $request->show_articles_without_stock;
         $model->order_description               = $request->order_description;
         $model->online_price_surchage           = $request->online_price_surchage;
+        $model->has_delivery                    = $request->has_delivery;
         $model->save();
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_dolar, $request->dollar);
         $model = UserHelper::getFullModel();

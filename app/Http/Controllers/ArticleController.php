@@ -81,7 +81,7 @@ class ArticleController extends Controller
         ArticleHelper::attachProvider($model, $request);
         ArticleHelper::setDeposits($model, $request);
         ArticleHelper::setFinalPrice($model);
-        $this->updateRelationsCreated('article', $model->id, ['article_discount', 'description']);
+        $this->updateRelationsCreated('article', $model->id, $request->childrens);
         $this->sendAddModelNotification('article', $model->id);
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 201);
     }

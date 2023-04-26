@@ -25,6 +25,8 @@ Route::get('get-persona', 'AfipWsController@getPersona');
 // Registro
 Route::post('user', 'UserController@store');
 
+Route::post('user', 'UserController@store');
+
 // PDF
 Route::get('sale/pdf/{id}/{with_prices}', 'SaleController@pdf');
 Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
@@ -43,3 +45,5 @@ Route::get('client/excel/export', 'ClientController@export');
 
 // Registrar Pago de usuario
 Route::get('user/register-payment/{company_name}', 'CommonLaravel\UserController@registerPayment');
+Route::get('caja', 'SaleController@caja');
+Route::get('sale/charts/{from}/{to}', 'SaleController@charts');

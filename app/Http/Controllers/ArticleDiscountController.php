@@ -20,10 +20,9 @@ class ArticleDiscountController extends Controller
 
     public function store(Request $request) {
         $model = ArticleDiscount::create([
-            // 'num'                   => $this->num('article_discounts'),
             'article_id'            => $request->model_id,
+            'temporal_id'           => $this->getTemporalId($request),
             'percentage'            => $request->percentage,
-            // 'user_id'               => $this->userId(),
         ]);
         if (!is_null($request->model_id)) {
             ArticleHelper::setFinalPrice($model->article);

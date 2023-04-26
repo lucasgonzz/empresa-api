@@ -5,7 +5,9 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\CurrentAcountController;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\CajaHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\SaleChartHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SaleProviderOrderHelper;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
@@ -144,5 +146,15 @@ class SaleController extends Controller
             $address = null;
         }
         $pdf = new SaleTicketPdf($sale, $address);
+    }
+
+    function caja() {
+        $caja = CajaHelper::getCaja($this);
+        return response()->json(['caja' => $caja], 200);
+    }
+
+    function charts($from, $until) {
+        $charts = SaleChartHelper::getCharts($this, $from, $until);
+        return response()->json(['charts' => $charts], 200);
     }
 }

@@ -140,7 +140,7 @@ class ArticleHelper {
         $index = 0;
         $start = Carbon::parse($from_date);
         $end = Carbon::parse($until_date);
-        while ($start < $end) {
+        while ($start <= $end) {
             $from_date = $start->format('Y-m-d H:i:s');
             $until_date = $start->addDay()->format('Y-m-d H:i:s');
             $sales = Sale::where('user_id', UserHelper::userId())
