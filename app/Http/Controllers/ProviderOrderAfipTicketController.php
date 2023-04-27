@@ -24,8 +24,11 @@ class ProviderOrderAfipTicketController extends Controller
             'issued_at'             => $request->issued_at,
             'total'                 => $request->total,
             'provider_order_id'     => $request->model_id,
+            'temporal_id'           => $this->getTemporalId($request),
         ]);
-        $this->sendAddModelNotification('provider_order_afip_ticket', $model->id);
+        if (!is_null($request->model_id)) {
+            $this->sendAddModelNotification('provider_order', $request->model_id);
+        }
         return response()->json(['model' => $this->fullModel('ProviderOrderAfipTicket', $model->id)], 201);
     }  
 

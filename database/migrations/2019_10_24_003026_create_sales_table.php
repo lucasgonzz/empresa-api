@@ -21,7 +21,7 @@ class CreateSalesTable extends Migration
             $table->decimal('percentage_card')->nullable();
             $table->bigInteger('client_id')->nullable()->unsigned();
             $table->integer('buyer_id')->nullable()->unsigned();
-            $table->integer('special_price_id')->nullable()->unsigned();
+            // $table->integer('special_price_id')->nullable()->unsigned();
             $table->integer('address_id')->nullable()->unsigned();
             $table->integer('order_id')->nullable()->unsigned();
             $table->decimal('debt')->nullable();
@@ -40,8 +40,6 @@ class CreateSalesTable extends Migration
                     ->references('id')->on('users');
             $table->foreign('client_id')
                     ->references('id')->on('clients');
-            $table->foreign('special_price_id')
-                    ->references('id')->on('special_prices');
 
             $table->timestamps();
         });

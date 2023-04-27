@@ -16,7 +16,7 @@ class DatabaseSeeder extends Seeder
         if (env('FOR_SERVER') == 'la_barraca') {
             $this->call(UserSeeder::class);
             $this->call(ExtencionSeeder::class);
-            $this->call(PermissionsTableSeeder::class);
+            $this->call(PermissionSeeder::class);
             // $this->call(FeaturesSeeder::class);
             // $this->call(PlansSeeder::class);
             $this->call(OrderStatusSeeder::class);
@@ -24,7 +24,7 @@ class DatabaseSeeder extends Seeder
             $this->call(ColorSeeder::class);
             $this->call(IvaSeeder::class);
             $this->call(IvaConditionSeeder::class);
-            $this->call(WorkdaySeeder::class);
+            // $this->call(WorkdaySeeder::class);
             $this->call(CurrentAcountPaymentMethodSeeder::class);
             $this->call(BudgetStatusSeeder::class);
         } else {

@@ -103,28 +103,40 @@ class HelperController extends Controller
                 } 
                 $models = $models->get();
 
-                foreach ($models as $model) {
-                    $model->timestamps = false;
-                    $model->num = null;
-                    $model->save();
-                }
-                foreach ($models as $model) {
-                    $model->timestamps = false;
-                    $model->num = $this->num($this->getPlural($_model), $user->id);
-                    $model->save();
-                }
+                // foreach ($models as $model) {
+                //     $model->timestamps = false;
+                //     $model->num = null;
+                //     $model->save();
+                // }
+                // foreach ($models as $model) {
+                //     $model->timestamps = false;
+                //     $model->num = $this->num($this->getPlural($_model), $user->id);
+                //     $model->save();
+                // }
 
                 if ($for_articles) {
                     foreach ($models as $model) {
-                        $images = Image::where('article_id', $model->id)->get();
-                        foreach($images as $image) {
-                            $image->imageable_id = $model->id;
-                            $image->imageable_type = 'article';
-                            $image->hosting_url = substr($image->hosting_url, 0, 33).'/public'.substr($image->hosting_url, 33);
-                            $image->save();
-                            echo 'Se actualizo imagen de '.$model->name.' </br>';
-                            echo 'Nueva url: '.$image->hosting_url.' </br>';
-                            echo '-------------------------------------------- </br>';
+                        if ($model->status == 'inactive') {
+                            // echo 'Se elimino '.$model->name.' </br>';
+                            // $model->delete();
+                        } else {
+                            // ArticleHelper::setFinalPrice($model, $user->id);
+                            // echo('Se seteo precio final de '.$model->name.'. Quedo en '.$model->final_price.' </br>');
+                            if (count($model->providers) >= 1) {
+                                $model->provider_id = $model->providers[count($model->providers)-1]->id;
+                                $model->save(); 
+                                echo $model->name.', proveedor: '.$model->provider->name. ' </br>';
+                            }
+                            // $images = Image::where('article_id', $model->id)->get();
+                            // foreach($images as $image) {
+                            //     $image->imageable_id = $model->id;
+                            //     $image->imageable_type = 'article';
+                            //     $image->hosting_url = substr($image->hosting_url, 0, 33).'/public'.substr($image->hosting_url, 33);
+                            //     $image->save();
+                            //     echo 'Se actualizo imagen de '.$model->name.' </br>';
+                            //     echo 'Nueva url: '.$image->hosting_url.' </br>';
+                            //     echo '-------------------------------------------- </br>';
+                            // }
                         }
                     }
                 }

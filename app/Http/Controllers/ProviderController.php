@@ -36,6 +36,7 @@ class ProviderController extends Controller
             'user_id'               => $this->userId(),
         ]);
 
+        $this->updateRelationsCreated('Provider', $model->id, $request->childrens);
         $this->sendAddModelNotification('Provider', $model->id);
         return response()->json(['model' => $this->fullModel('Provider', $model->id)], 201);
     }  

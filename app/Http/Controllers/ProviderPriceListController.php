@@ -24,9 +24,12 @@ class ProviderPriceListController extends Controller
             'name'                  => $request->name,
             'percentage'            => $request->percentage,
             'provider_id'           => $request->model_id,
+            'temporal_id'           => $this->getTemporalId($request),
             // 'user_id'               => $this->userId(),
         ]);
-        $this->sendAddModelNotification('provider_price_list', $model->id);
+        if (!is_null($request->model_id)) {
+            $this->sendAddModelNotification('provider', $request->model_id);
+        }
         return response()->json(['model' => $this->fullModel('ProviderPriceList', $model->id)], 201);
     }  
 

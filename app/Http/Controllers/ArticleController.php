@@ -25,7 +25,7 @@ class ArticleController extends Controller
                             })
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
-                            ->paginate(100);
+                            ->paginate(200);
         return response()->json(['models' => $models], 200);
     }
 

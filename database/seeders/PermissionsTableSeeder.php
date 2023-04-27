@@ -383,7 +383,7 @@ class PermissionsTableSeeder extends Seeder
         | Ordenes de produccion
         |--------------------------------------------------------------------------
         */
-        $order_productions_extencion = Extencion::where('slug', 'order_productions')->first();
+        $order_productions_extencion = Extencion::where('slug', 'production')->first();
         $permissions = [
             [
                 'name' => 'Ver Ordenes de Produccion',

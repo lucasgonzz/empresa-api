@@ -26,11 +26,6 @@ class AddressSeeder extends Seeder
                 'user_id'   => 1,
             ],
             [
-                'num'       => 2,
-                'street'    => 'San martin 221',
-                'user_id'   => 1,
-            ],
-            [
                 'street'    => 'San martin 221',
                 'city'      => 'Coronel Pringles',
                 'province'  => 'San Luis',

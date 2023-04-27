@@ -18,7 +18,8 @@ class CreateProviderPriceListsTable extends Migration
             $table->integer('num')->nullable();
             $table->string('name')->nullable();
             $table->decimal('percentage', 10,2)->nullable();
-            $table->integer('provider_id')->unsigned();
+            $table->integer('provider_id')->unsigned()->nullable();
+            $table->string('temporal_id')->nullable();
             $table->timestamps();
         });
     }
