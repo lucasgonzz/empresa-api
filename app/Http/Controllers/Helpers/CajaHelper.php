@@ -7,53 +7,131 @@ use App\Models\CurrentAcount;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\Sale;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
 
 class CajaHelper {
 	
-	static function getCaja($instance) {
+	static function reports($instance, $from_date, $until_date) {
+		$ingresos = Self::ingresos($instance, $from_date, $until_date);
+		$egresos = Self::egresos($instance, $from_date, $until_date);
+
+		return [
+			'ingresos' 			=> $ingresos,
+			'egresos' 			=> $egresos,
+		];
+
+	}
+
+	static function ingresos($instance, $from_date, $until_date) {
 		$sale_payment_methods = [];
-		$vendido = 0;
+		$total = 0;
 
 		$payment_methods = CurrentAcountPaymentMethod::all();
 
 		foreach ($payment_methods as $payment_method) {
-			$sale_payment_methods[$payment_method->id] = [
-				'name'	=> $payment_method->name,
-				'total'	=> 0,
-			];
+			$sale_payment_methods[$payment_method->name] = 0;
 		}
 
 		$sales = Sale::where('user_id', $instance->userId())
-						->where('created_at', Carbon::today())
-						->get();
+                        ->orderBy('created_at', 'ASC');
+        if (!is_null($until_date)) {
+            $sales = $sales->whereDate('created_at', '>=', $from_date)
+                            ->whereDate('created_at', '<=', $until_date);
+        } else {
+            $sales = $sales->whereDate('created_at', $from_date);
+        }
+		$sales = $sales->get();
 		foreach ($sales as $sale) {
-			$vendido += SaleHelper::getTotalSale($sale);
+			$total += SaleHelper::getTotalSale($sale);
 			if (count($sale->current_acounts) == 0) {
 				if (is_null($sale->current_acount_payment_method)) {
-					$sale_payment_methods[3]['total'] += SaleHelper::getTotalSale($sale);
+					$sale_payment_methods['Efectivo'] += SaleHelper::getTotalSale($sale);
 				} else {
-					$sale_payment_methods[$sale->current_acount_payment_method_id]['total'] += SaleHelper::getTotalSale($sale);
+					$sale_payment_methods[$sale->current_acount_payment_method->name] += SaleHelper::getTotalSale($sale);
 				}
 			}
 		}
 
-		$current_acounts = CurrentAcount::where('created_at', Carbon::today())
-										->where('user_id', $instance->userId())
+		$current_acounts = CurrentAcount::where('user_id', $instance->userId())
 										->whereNotNull('haber')
-										->get();
+										->whereNotNull('client_id');
+		if (!is_null($until_date)) {
+            $current_acounts = $current_acounts->whereDate('created_at', '>=', $from_date)
+                            					->whereDate('created_at', '<=', $until_date);
+        } else {
+            $current_acounts = $current_acounts->whereDate('created_at', $from_date);
+        }							
+		$current_acounts = $current_acounts->get();
 		foreach ($current_acounts as $current_acount) {
-			if (is_null($current_acount->current_acount_payment_method)) {
-				$sale_payment_methods[3]['total'] += $current_acount->haber;
+			if (count($current_acount->current_acount_payment_methods) >= 1) {
+				foreach ($current_acount->current_acount_payment_methods as $current_acount_payment_method) {
+					Log::info('sumando '.$current_acount_payment_method->pivot->amount.' a '.$current_acount_payment_method->name);
+					$sale_payment_methods[$current_acount_payment_method->name] += $current_acount_payment_method->pivot->amount;
+					$total += $current_acount_payment_method->pivot->amount;
+				}
 			} else {
-				$sale_payment_methods[$current_acount->current_acount_payment_method_id]['total'] += $current_acount->haber;
+				$sale_payment_methods['Efectivo'] += $current_acount->haber;
+				$total += $current_acount->haber;
 			}
 		}
 
+		$result = [];
+		foreach ($sale_payment_methods as $key => $value) {
+			$result[] = [
+				'payment_method' => $key,
+				'total' => $value,
+			];
+		}
 		return [
-			'vendido' 				=> $vendido,
-			'sale_payment_methods'	=> $sale_payment_methods,
+			'payment_methods' 	=> $result,
+			'total'				=> $total,
 		];
+	}
 
+	static function egresos($instance, $from_date, $until_date) {
+		$sale_payment_methods = [];
+		$total = 0;
+
+		$payment_methods = CurrentAcountPaymentMethod::all();
+
+		foreach ($payment_methods as $payment_method) {
+			$sale_payment_methods[$payment_method->name] = 0;
+		}
+
+		$current_acounts = CurrentAcount::where('user_id', $instance->userId())
+										->whereNotNull('haber')
+										->whereNotNull('provider_id');
+		if (!is_null($until_date)) {
+            $current_acounts = $current_acounts->whereDate('created_at', '>=', $from_date)
+                            					->whereDate('created_at', '<=', $until_date);
+        } else {
+            $current_acounts = $current_acounts->whereDate('created_at', $from_date);
+        }							
+		$current_acounts = $current_acounts->get();
+		foreach ($current_acounts as $current_acount) {
+			if (count($current_acount->current_acount_payment_methods) >= 1) {
+				foreach ($current_acount->current_acount_payment_methods as $current_acount_payment_method) {
+					Log::info('sumando '.$current_acount_payment_method->pivot->amount.' a '.$current_acount_payment_method->name);
+					$sale_payment_methods[$current_acount_payment_method->name] += $current_acount_payment_method->pivot->amount;
+					$total += $current_acount_payment_method->pivot->amount;
+				}
+			} else {
+				$sale_payment_methods['Efectivo'] += $current_acount->haber;
+				$total += $current_acount->haber;
+			}
+		}
+
+		$result = [];
+		foreach ($sale_payment_methods as $key => $value) {
+			$result[] = [
+				'payment_method' => $key,
+				'total' => $value,
+			];
+		}
+		return [
+			'payment_methods' 	=> $result,
+			'total'				=> $total,
+		];
 	}
 
 }

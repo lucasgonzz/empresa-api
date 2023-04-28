@@ -115,7 +115,7 @@ class UserSeeder extends Seeder
             ]);
             if (is_null($user->owner_id)) {
 
-                $user->extencions()->attach([1, 2, 4, 5, 6, 8]);
+                $user->extencions()->attach([1, 2, 5, 6, 8]);
                 UserConfiguration::create([
                     'current_acount_pagado_details'         => 'Recibo de pago (saldado)',
                     'current_acount_pagandose_details'      => 'Recibo de pago',

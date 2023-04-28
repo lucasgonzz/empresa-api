@@ -128,4 +128,6 @@ Route::middleware('auth:sanctum')->group(function() {
 
     Route::get('/mercado-pago/payment/{payment_id}', 'MercadoPagoController@payment');
 
+    Route::get('report/from-date/{from_date}/{until_date?}', 'CajaController@reports');
+
 });

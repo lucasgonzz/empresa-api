@@ -37,6 +37,7 @@ class ArticleController extends Controller
                             ->orderBy('created_at', 'DESC')
                             // ->withAll()
                             ->get();
+        // return response()->json(['models' => []], 200);
         return response()->json(['models' => $models], 200);
     }
 
