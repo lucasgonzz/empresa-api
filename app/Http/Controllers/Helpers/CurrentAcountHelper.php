@@ -2,18 +2,19 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\CommissionController;
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\CurrentAcountController;
+use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\SellerCommissionHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\Check;
 use App\Models\CreditCard;
 use App\Models\CreditCardPaymentPlan;
 use App\Models\CurrentAcount;
 use App\Models\ErrorCurrentAcount;
-use App\Http\Controllers\CommissionController;
-use App\Http\Controllers\CurrentAcountController;
-use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
-use App\Http\Controllers\Helpers\Numbers;
-use App\Http\Controllers\Helpers\SaleHelper;
-use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Sale;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -240,10 +241,6 @@ class CurrentAcountHelper {
             $haber = $res['haber'];
             $sin_pagar = Self::getFirstSinPagar($model_name, $model_id, $until_pago);
         }
-        // if (!is_null($sin_pagar) && $haber > 0) {
-        //     $res = Self::saldarCurrentAcount($sin_pagar, $haber);
-        //     $detalle .= $res['detalle'];
-        // }
         return $detalle;
     }
 
@@ -262,6 +259,7 @@ class CurrentAcountHelper {
         if ($haber >= $current_acount->debe) {
             $current_acount->status = 'pagado';
             $current_acount->save();
+            SellerCommissionHelper::commissionForSeller($current_acount);
             $haber -= $current_acount->debe;
             if (Self::isSaldoInicial($current_acount)) {
                 $detalle .= Self::pagadoDetails().' Saldo inicial ';

@@ -9,7 +9,7 @@ use App\Models\Sale;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
-class CajaHelper {
+class CajaReportsHelper {
 	
 	static function reports($instance, $from_date, $until_date) {
 		$ingresos = Self::ingresos($instance, $from_date, $until_date);

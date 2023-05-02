@@ -15,17 +15,12 @@ class CreateCommissionsTable extends Migration
     {
         Schema::create('commissions', function (Blueprint $table) {
             $table->id();
-            $table->bigInteger('commissioner_id')->unsigned();
-            $table->bigInteger('sale_id')->unsigned()->nullable();
-            $table->integer('page')->nullable();
-            $table->integer('percentage')->nullable();
-            $table->decimal('monto');
-            $table->decimal('saldo', 10, 2)->nullable();
-            $table->string('detalle')->nullable();
-            $table->enum('status', ['active', 'inactive'])->default('active');
-            $table->boolean('is_seller')->default(false);
-            // $table->foreign('commissioner_id')->references('id')->on('commissioners');
-            // $table->foreign('sale_id')->references('id')->on('sales');
+            $table->integer('num');
+            $table->decimal('from', 12,2)->nullable();
+            $table->decimal('until', 12,2)->nullable();
+            $table->integer('sale_type_id')->nullable();
+            $table->decimal('amount', 12,2)->nullable();
+            $table->integer('user_id')->unsigned();
             $table->timestamps();
         });
     }

@@ -14,7 +14,7 @@ class Sale extends Model
     }
 
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles', 'impressions', 'commissions', 'discounts', 'surchages', 'afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'current_acount_payment_method', 'order_production.client', 'order_production.articles');
+        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'current_acount_payment_method', 'order_production.client', 'order_production.articles');
     }
 
     public function budget() {
@@ -37,10 +37,6 @@ class Sale extends Model
         return $this->hasOne('App\Models\AfipTicket');
     }
 
-    public function commissioners() {
-        return $this->belongsToMany('App\Models\Commissioner')->withPivot('percentage', 'is_seller');
-    }
-
     public function user() {
         return $this->belongsTo('App\Models\User', 'user_id');
     }
@@ -51,10 +47,6 @@ class Sale extends Model
 
     public function current_acounts() {
         return $this->hasMany('App\Models\CurrentAcount');
-    }
-
-    public function commissions() {
-        return $this->hasMany('App\Models\Commission');
     }
 
     public function order() {

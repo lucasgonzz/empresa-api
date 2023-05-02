@@ -8,7 +8,7 @@ class Commission extends Model
 {
     protected $guarded = [];
 
-    function commissioner() {
-    	return $this->belongsTo('App\Models\Commissioner');
+    function scopeWithAll($q) {
+        
     }
 }

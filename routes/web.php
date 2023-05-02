@@ -39,6 +39,8 @@ Route::get('order-production/articles-pdf/{id}', 'OrderProductionController@arti
 Route::get('/current-acount/pdf/{model_name}/{model_id}/{months_ago}', 'CurrentAcountController@pdfFromModel');
 Route::get('/current-acount/pdf/{ids}/{model_name}', 'CurrentAcountController@pdf');
 
+Route::get('order/pdf/{id}/', 'OrderController@pdf');
+
 // Excel
 Route::get('article/excel/export', 'ArticleController@export');
 Route::get('client/excel/export', 'ClientController@export');

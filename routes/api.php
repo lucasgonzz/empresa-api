@@ -129,5 +129,10 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::get('/mercado-pago/payment/{payment_id}', 'MercadoPagoController@payment');
 
     Route::get('report/from-date/{from_date}/{until_date?}', 'CajaController@reports');
+    Route::get('chart/from-date/{from_date}/{until_date?}', 'CajaController@charts');
 
+    Route::resource('commission', 'CommissionController');
+    Route::get('seller-commission/{model_id}/{from_date}/{until_date}', 'SellerCommissionController@index');
+
+    Route::resource('sale-type', 'SaleTypeController');
 });

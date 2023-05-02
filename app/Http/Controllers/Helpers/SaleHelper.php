@@ -28,6 +28,12 @@ use Illuminate\Support\Facades\Log;
 
 class SaleHelper extends Controller {
 
+    static function sendUpdateClient($instance, $sale) {
+        if (!is_null($sale->client_id)) {
+            $instance->sendAddModelNotification('Client', $sale->client_id);
+        }
+    }
+
     static function deleteSaleFrom($model_name, $model_id, $instance) {
         $sale = Sale::where($model_name.'_id', $model_id)
                         ->first();

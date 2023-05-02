@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\OrderHelper;
+use App\Http\Controllers\Pdf\OrderPdf;
 use App\Models\Order;
 use Illuminate\Http\Request;
 
@@ -73,5 +74,10 @@ class OrderController extends Controller
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('Order', $model->id);
         return response(null);
+    }
+
+    function pdf($id) {
+        $model = Order::find($id);
+        new OrderPdf($model);
     }
 }

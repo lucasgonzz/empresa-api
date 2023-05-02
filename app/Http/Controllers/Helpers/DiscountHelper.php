@@ -15,15 +15,10 @@ class DiscountHelper extends Controller {
         return $discounts;
     }
 
-    static function getTotalDiscountsPercentage($discounts, $from_pivot = false) {
+    static function getTotalDiscountsPercentage($discounts) {
         $discounts_percentage = 0;
         foreach ($discounts as $discount) {
-            if ($from_pivot) {
-                $percentage = $discount->pivot->percentage;
-            } else {
-                $percentage = $discount->percentage;
-            }
-            $discounts_percentage += $percentage;
+            $discounts_percentage += $discount->pivot->percentage;
         }
         return $discounts_percentage;
     }

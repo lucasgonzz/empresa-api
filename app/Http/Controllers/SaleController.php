@@ -58,6 +58,7 @@ class SaleController extends Controller
         SaleHelper::attachProperies($model, $request);
         SaleProviderOrderHelper::createProviderOrder($model, $this);
         $this->sendAddModelNotification('Sale', $model->id);
+        SaleHelper::sendUpdateClient($this, $model);
         return response()->json(['model' => $this->fullModel('Sale', $model->id)], 201);
     }  
 
@@ -93,6 +94,7 @@ class SaleController extends Controller
             SaleHelper::updateCurrentAcountsAndCommissions($model);
         }
         $this->sendAddModelNotification('Sale', $model->id);
+        SaleHelper::sendUpdateClient($this, $model);
         return response()->json(['model' => $model], 200);
     }
 

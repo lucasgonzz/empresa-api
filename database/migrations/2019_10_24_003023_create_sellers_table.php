@@ -15,14 +15,10 @@ class CreateSellersTable extends Migration
     {
         Schema::create('sellers', function (Blueprint $table) {
             $table->id();
+            $table->integer('num');
             $table->string('name');
-            // $table->string('surname')->nullable();
-            $table->double('commission')->nullable();
             $table->integer('seller_id')->nullable()->unsigned();
             $table->integer('user_id')->unsigned();
-
-            $table->foreign('user_id')
-                    ->references('id')->on('users');
             $table->timestamps();
         });
     }

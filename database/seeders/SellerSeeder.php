@@ -2,11 +2,11 @@
 
 namespace Database\Seeders;
 
-use App\Models\SaleType;
+use App\Models\Seller;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 
-class SaleTypeSeeder extends Seeder
+class SellerSeeder extends Seeder
 {
     /**
      * Run the database seeds.
@@ -15,20 +15,22 @@ class SaleTypeSeeder extends Seeder
      */
     public function run()
     {
-    	$user = User::where('company_name', 'lucas')->first();
+        $user = User::where('company_name', 'lucas')->first();
         $models = [
             [
-                'name'  => 'Juguetes',
+                'num'       => 1,
+                'name'      => 'Marcelo',
                 'user_id'   => $user->id,
             ],
             [
-                'name'  => 'Varios',
+                'num'       => 2,
+                'name'      => 'Matias',
                 'user_id'   => $user->id,
             ],
         ];
 
         foreach ($models as $model) {
-            SaleType::create($model);
+            Seller::create($model);
         }
     }
 }

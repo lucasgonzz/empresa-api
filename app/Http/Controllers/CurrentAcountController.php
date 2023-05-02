@@ -63,7 +63,6 @@ class CurrentAcountController extends Controller
             'num_receipt'                       => CurrentAcountHelper::getNumReceipt(),
             'client_id'                         => $request->model_name == 'client' ? $request->model_id : null,
             'provider_id'                       => $request->model_name == 'provider' ? $request->model_id : null,
-            // 'current_acount_payment_method_id'  => $request->current_acount_payment_method_id,
             'created_at'                        => CurrentAcountHelper::getCreatedAt($request),
         ]);
         $to_pay_id = !is_null($request->to_pay) ? $request->to_pay['id'] : null;
@@ -75,7 +74,7 @@ class CurrentAcountController extends Controller
             CurrentAcountHelper::checkSaldos($request->model_name, $request->model_id);
         }
         CurrentAcountHelper::updateModelSaldo($pago, $request->model_name, $request->model_id);
-        // CurrentAcountHelper::saveCheck($pago, $request->checks);
+        $this->sendAddModelNotification($request->model_name, $request->model_id);
         return response()->json(['current_acount' => $pago], 201);
     }
 

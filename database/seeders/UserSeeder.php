@@ -70,6 +70,8 @@ class UserSeeder extends Seeder
                     'article.index',
                     'article.store',
                     'article.update',
+                    'client.index',
+                    'client.update',
                 ],
             ],
             [
