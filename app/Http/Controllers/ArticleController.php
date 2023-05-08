@@ -66,6 +66,7 @@ class ArticleController extends Controller
         $model->iva_id                            = $request->iva_id;
         $model->stock                             = $request->stock;
         $model->stock_min                         = $request->stock_min;
+        $model->online                            = $request->online;
         $model->user_id                           = $this->userId();
         if (isset($request->status)) {
             $model->status = $request->status;
@@ -81,8 +82,8 @@ class ArticleController extends Controller
         // $model->user->notify(new CreatedArticle($model));
         ArticleHelper::attachProvider($model, $request);
         ArticleHelper::setDeposits($model, $request);
-        ArticleHelper::setFinalPrice($model);
         $this->updateRelationsCreated('article', $model->id, $request->childrens);
+        ArticleHelper::setFinalPrice($model);
         $this->sendAddModelNotification('article', $model->id);
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 201);
     }
@@ -109,6 +110,7 @@ class ArticleController extends Controller
         $model->stock                             = $request->stock;
         $model->stock                             += $request->new_stock;
         $model->stock_min                         = $request->stock_min;
+        $model->online                            = $request->online;
         if (strtolower($model->name) != strtolower($request->name)) {
             $model->name = ucfirst($request->name);
             $model->slug = ArticleHelper::slug($request->name);
@@ -145,6 +147,8 @@ class ArticleController extends Controller
 
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
+        // Log::info('colunbs');
+        // Log::info($columns);
         Excel::import(new ArticleImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id), $request->file('models'));
         $this->sendUpdateModelsNotification('article');
     }

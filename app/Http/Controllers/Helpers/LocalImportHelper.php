@@ -64,6 +64,17 @@ class LocalImportHelper {
 	    }
 	}
 
+	static function saveSeller($seller, $ct) {
+		if (!is_null($seller) && $seller != 'Sin especificar') {
+	        $data = [
+	        	'num'		=> $ct->num('sellers'),
+                'name'      => $seller,
+                'user_id'   => $ct->userId(),
+            ];
+	        $ct->createIfNotExist('sellers', 'name', $seller, $data);
+	    }
+	}
+
 	static function saveProvider($proveedor, $ct) {
 		if ($proveedor != 'Sin especificar' && $proveedor != '') {
 	        $data = [

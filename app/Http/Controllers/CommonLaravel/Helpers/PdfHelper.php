@@ -34,7 +34,8 @@ class PdfHelper {
         $logo_url = UserHelper::getFullModel()->image_url;
         if (!is_null($logo_url)) {
         	if (env('APP_ENV') == 'local') {
-        		$instance->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', 5, 5, 25, 25);
+        		$instance->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', 5, 5, 40, 25);
+        		// $instance->Image('http://empresa.local:8000/storage/cubo.jpeg', 5, 5, 25, 25);
         	} else {
 	        	$instance->Image($logo_url, 5, 5, 25, 25);
         	}

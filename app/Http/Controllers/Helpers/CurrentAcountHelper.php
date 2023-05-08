@@ -122,17 +122,17 @@ class CurrentAcountHelper {
         }
     }
 
-    static function createCurrentAcountsFromSales($client_id, $from_sale) {
-        $sales = Sale::where('client_id', $client_id)
-                        ->where('created_at', '>=', $from_sale['created_at'])
-                        ->where('user_id', UserHelper::userId())
-                        ->get();
-        foreach ($sales as $sale) {
-            if (count($sale->articles) >= 1) {
-                SaleHelper::updateCurrentAcountsAndCommissions($sale);
-            }
-        }
-    }
+    // static function createCurrentAcountsFromSales($client_id, $from_sale) {
+    //     $sales = Sale::where('client_id', $client_id)
+    //                     ->where('created_at', '>=', $from_sale['created_at'])
+    //                     ->where('user_id', UserHelper::userId())
+    //                     ->get();
+    //     foreach ($sales as $sale) {
+    //         if (count($sale->articles) >= 1) {
+    //             SaleHelper::updateCurrentAcountsAndCommissions($sale);
+    //         }
+    //     }
+    // }
 
     static function createCurrentAcount($sale, $current_acount) {
         $current_acount = CurrentAcount::create([
@@ -259,12 +259,17 @@ class CurrentAcountHelper {
         if ($haber >= $current_acount->debe) {
             $current_acount->status = 'pagado';
             $current_acount->save();
-            SellerCommissionHelper::commissionForSeller($current_acount);
+            if (!is_null($current_acount->sale)) {
+                Log::info('Se saldo venta N°'.$current_acount->sale->num);
+            } else {
+                Log::info('No habia num para la venta id: '.$current_acount->sale_id);
+            }
+            SellerCommissionHelper::checkCommissionStatus($current_acount);
             $haber -= $current_acount->debe;
             if (Self::isSaldoInicial($current_acount)) {
                 $detalle .= Self::pagadoDetails().' Saldo inicial ';
             } else if (!is_null($current_acount->sale_id)) {
-                $detalle .= Self::pagadoDetails().' Rto '.SaleHelper::getNumSaleFromSaleId($current_acount->sale_id).' pag '.$current_acount->page.'. ';
+                $detalle .= Self::pagadoDetails().' Venta N°'.$current_acount->sale->num.'. ';
             } else if ($current_acount->detalle == 'Nota de debito') {
                 $detalle .= Self::pagadoDetails().' Nota de debito de '.$current_acount->debe.'. ';
                 Log::info('se pago nota debito');
@@ -285,7 +290,7 @@ class CurrentAcountHelper {
             if (Self::isSaldoInicial($current_acount)) {
                 $detalle .= Self::pagandoseDetails().' Saldo inicial ($'.Numbers::price($current_acount->pagandose).')';
             } else if (!is_null($current_acount->sale_id)) {
-                $detalle .= Self::pagandoseDetails().' Rto '.SaleHelper::getNumSaleFromSaleId($current_acount->sale_id).' pag '.$current_acount->page.' ($'.Numbers::price($current_acount->pagandose).') ';
+                $detalle .= Self::pagandoseDetails().' Venta N°'.$current_acount->sale->num.' ($'.Numbers::price($current_acount->pagandose).') ';
             } else if ($current_acount->detalle == 'Nota de debito') {
                 Log::info('pagandose nota debito');
                 $detalle .= Self::pagandoseDetails().' Nota de debito de '.$current_acount->debe.'. ';

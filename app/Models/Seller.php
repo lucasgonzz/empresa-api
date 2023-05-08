@@ -9,7 +9,7 @@ class Seller extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        
+        $q->withCount('seller_commissions');
     }
 
     public function sellers() {
@@ -21,6 +21,10 @@ class Seller extends Model
     }
 
     public function clients() {
-    	return $this->hasMany('App\Models\Client');
+        return $this->hasMany('App\Models\Client');
+    }
+
+    public function seller_commissions() {
+        return $this->hasMany('App\Models\SellerCommission');
     }
 }

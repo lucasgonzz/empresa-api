@@ -13,10 +13,12 @@ use App\Http\Controllers\Helpers\SaleProviderOrderHelper;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
 use App\Http\Controllers\Pdf\SalePdf;
 use App\Http\Controllers\Pdf\SaleTicketPdf;
+use App\Http\Controllers\SellerCommissionController;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class SaleController extends Controller
 {
@@ -66,14 +68,14 @@ class SaleController extends Controller
         $model = Sale::where('id', $id)
                         ->with('articles')
                         ->first();
-        SaleHelper::detachItems($model);
-        SaleHelper::attachProperies($model, $request, false);
-
         $model->discounts_in_services = $request->discounts_in_services;
         $model->surchages_in_services  = $request->surchages_in_services;
         $model->current_acount_payment_method_id  = $request->current_acount_payment_method_id;
         $model->afip_information_id  = $request->afip_information_id;
         $model->address_id  = $request->address_id;
+
+        SaleHelper::detachItems($model);
+        SaleHelper::attachProperies($model, $request, false);
 
         if (!is_null($request->client_id) && $request->client_id != $model->client_id) {
             $current_acounts = CurrentAcount::where('sale_id', $model->id)->get();
@@ -103,15 +105,17 @@ class SaleController extends Controller
         if ($model->client_id) {
             $current_acount = new CurrentAcountController();
             $current_acount->deleteFromSale($model);
-            $commission = new CommissionController();
+            $commission = new SellerCommissionController();
             $commission->deleteFromSale($model);
             CurrentAcountHelper::checkSaldos('client', $model->client_id);
             $this->sendAddModelNotification('client', $model->client_id, false);
         }
         foreach ($model->articles as $article) {
+            Log::info('reseteando stock de '.$article->name);
             ArticleHelper::resetStock($article, $article->pivot->amount);
         }
         $model->delete();
+        Log::info('se elimino venta');
         return response(null);
     }
 
@@ -125,9 +129,9 @@ class SaleController extends Controller
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
     }
 
-    function pdf($id, $with_prices) {
+    function pdf($id, $with_prices, $with_commissions) {
         $sale = Sale::find($id);
-        $pdf = new SalePdf($sale, (boolean)$with_prices);
+        $pdf = new SalePdf($sale, (boolean)$with_prices, (boolean)$with_commissions);
     }
 
     function afipTicketPdf($id) {

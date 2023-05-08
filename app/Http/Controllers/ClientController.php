@@ -78,10 +78,10 @@ class ClientController extends Controller
 
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
-        Excel::import(new ClientImport($columns, $request->start_row, $request->finish_row), $request->file('models'));
+        Excel::import(new ClientImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row), $request->file('models'));
     }
 
     function export() {
-        return Excel::download(new ClientExport, 'comerciocity-clientes'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
+        return Excel::download(new ClientExport, 'comerciocity-clientes '.date_format(Carbon::now(), 'd-m-y H:m').'.xlsx');
     }
 }

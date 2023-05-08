@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Models\Commission;
 use Illuminate\Http\Request;
@@ -23,9 +24,10 @@ class CommissionController extends Controller
             'from'                  => $request->from,
             'until'                 => $request->until,
             'sale_type_id'          => $request->sale_type_id,
-            'amount'                => $request->amount,
+            'percentage'            => $request->percentage,
             'user_id'               => $this->userId(),
         ]);
+        GeneralHelper::attachModels($model, 'sellers', $request->sellers, ['percentage']);
         $this->sendAddModelNotification('Commission', $model->id);
         return response()->json(['model' => $this->fullModel('Commission', $model->id)], 201);
     }  
@@ -39,8 +41,9 @@ class CommissionController extends Controller
         $model->from                  = $request->from;
         $model->until                 = $request->until;
         $model->sale_type_id          = $request->sale_type_id;
-        $model->amount                = $request->amount;
+        $model->percentage            = $request->percentage;
         $model->save();
+        GeneralHelper::attachModels($model, 'sellers', $request->sellers, ['percentage']);
         $this->sendAddModelNotification('Commission', $model->id);
         return response()->json(['model' => $this->fullModel('Commission', $model->id)], 200);
     }

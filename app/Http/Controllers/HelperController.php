@@ -12,6 +12,7 @@ use App\Models\CurrentAcount;
 use App\Models\Image;
 use App\Models\OrderProduction;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -67,9 +68,9 @@ class HelperController extends Controller
                 [
                     'model_name' => 'address',
                 ],
-                [
-                    'model_name' => 'sale',
-                ],
+                // [
+                //     'model_name' => 'sale',
+                // ],
                 [
                     'model_name' => 'provider',
                 ],
@@ -103,16 +104,16 @@ class HelperController extends Controller
                 } 
                 $models = $models->get();
 
-                // foreach ($models as $model) {
-                //     $model->timestamps = false;
-                //     $model->num = null;
-                //     $model->save();
-                // }
-                // foreach ($models as $model) {
-                //     $model->timestamps = false;
-                //     $model->num = $this->num($this->getPlural($_model), $user->id);
-                //     $model->save();
-                // }
+                foreach ($models as $model) {
+                    $model->timestamps = false;
+                    $model->num = null;
+                    $model->save();
+                }
+                foreach ($models as $model) {
+                    $model->timestamps = false;
+                    $model->num = $this->num($this->getPlural($_model), $user->id);
+                    $model->save();
+                }
 
                 if ($for_articles) {
                     foreach ($models as $model) {
@@ -171,6 +172,55 @@ class HelperController extends Controller
         // }
     }
 
+    function setClientSeller() {
+        // $user = User::where('company_name', $company_name)->first();
+        Client::where('user_id', 2)
+                ->whereNull('seller_id')
+                ->update([
+                    'seller_id' => 9,
+                ]);
+    }
+
+    function clientesRepetidos($company_name) {
+        $user = User::where('company_name', $company_name)->first();
+        // $clients = Client::where('user_id', $user->id)
+        //                     ->where('status', 'active')
+        //                     ->where('updated_at', '>=', Carbon::now()->subMinutes(3))
+        //                     // ->where('deleted_at', '>=', Carbon::now()->subMinutes(2))
+        //                     // ->withTrashed()
+        //                     ->orderBy('created_at', 'ASC')
+        //                     ->get();
+
+        $clients = Client::where('user_id', $user->id)
+                            ->where('status', 'active')
+                            ->orderBy('created_at', 'ASC')
+                            ->get();
+        $repetidos_global = [];
+        foreach ($clients as $client) {
+            // echo $client->name.' </br>';
+            // $client->restore();
+            if (!in_array($client->id, $repetidos_global)) {
+                $repetidos = Client::where('user_id', $user->id)
+                                    ->where('status', 'active')
+                                    ->where('name', $client->name)
+                                    ->orderBy('created_at', 'ASC')
+                                    ->where('id', '!=', $client->id)
+                                    ->get();
+                if (count($repetidos) >= 1) {
+                    echo 'Hay '.count($repetidos).' clientes con el nombre '.$client->name.' repetidos </br>';
+                    foreach ($repetidos as $repetido) {
+                        echo 'Agregando '.$repetido->name.' id '.$repetido->id. ' </br>';
+                        $repetidos_global[] = $repetido->id;
+                        $repetido->delete();
+                    }
+                } 
+            } else {
+                echo $repetido->name. ' ya estaba eliminado </br>';
+            }
+        }
+        // dd($repetidos_global);
+    }
+
     function checkImages($company_name) {
         $user = User::where('company_name', $company_name)->first();
         $id = 1;
@@ -208,42 +258,67 @@ class HelperController extends Controller
         echo '----------------------- Termino ------------------------ </br>';
     }
 
+    // function clearOrderProductionCurrentAcount($company_name) {
+    //     $user = User::where('company_name', $company_name)->first();
+    //     $budgets = Budget::where('user_id', $user->id)
+    //                     ->get();
+    //     foreach ($budgets as $budget) {
+    //         $current_acount = CurrentAcount::where('budget_id', $budget->id)->first();
+    //         if (!is_null($current_acount)) {
+    //             $order_production_current_acount = CurrentAcount::where('client_id', $budget->client_id)
+    //                                                                 ->where('debe', $current_acount->debe)
+    //                                                                 ->whereNull('budget_id')
+    //                                                                 ->first();
+    //             if (!is_null($order_production_current_acount)) {
+    //                 echo 'Hay un movimiento para el presupuesto N° '.$budget->num.' </br>';
+    //                 if (!is_null($budget->client)) {
+    //                     echo 'Del cliente '.$budget->client->name.' </br>';
+    //                     $saldo_actual = $budget->client->saldo;
+    //                 }
+    //                 echo 'Y tambien hay uno para la orden de produccion: '.$order_production_current_acount->detalle.' </br>';
+    //                 $order_production_current_acount->delete();
+    //                 CurrentAcountHelper::checkSaldos('client', $budget->client_id);
+    //                 echo 'Se elimino current_acount y se actualizo el saldo, era de '.$saldo_actual.' y ahora es de '.Client::find($budget->client_id)->saldo.' </br>';
+    //             }
+    //         }
+    //     }
+    // }
+
     function clearOrderProductionCurrentAcount($company_name) {
         $user = User::where('company_name', $company_name)->first();
-        $budgets = Budget::where('user_id', $user->id)
-                        ->get();
-        foreach ($budgets as $budget) {
-            $current_acount = CurrentAcount::where('budget_id', $budget->id)->first();
+        $order_productions = OrderProduction::where('user_id', $user->id)
+                                ->get();
+        foreach ($order_productions as $order_production) {
+            $current_acount = CurrentAcount::where('order_production_id', $order_production->id)->first();
             if (!is_null($current_acount)) {
-                $order_production_current_acount = CurrentAcount::where('client_id', $budget->client_id)
-                                                                    ->where('debe', $current_acount->debe)
-                                                                    ->whereNull('budget_id')
-                                                                    ->first();
-                if (!is_null($order_production_current_acount)) {
-                    echo 'Hay un movimiento para el presupuesto N° '.$budget->num.' </br>';
-                    if (!is_null($budget->client)) {
-                        echo 'Del cliente '.$budget->client->name.' </br>';
-                        $saldo_actual = $budget->client->saldo;
-                    }
-                    echo 'Y tambien hay uno para la orden de produccion: '.$order_production_current_acount->detalle.' </br>';
-                    $order_production_current_acount->delete();
-                    CurrentAcountHelper::checkSaldos('client', $budget->client_id);
-                    echo 'Se elimino current_acount y se actualizo el saldo, era de '.$saldo_actual.' y ahora es de '.Client::find($budget->client_id)->saldo.' </br>';
-                }
+                echo 'Hay un movimiento para la orden de produccion: '.$current_acount->detalle.' </br>';
+                $current_acount->delete();
+                CurrentAcountHelper::checkSaldos('client', $order_production->client_id);
             }
         }
-        // foreach ($order_productions as $order_production) {
-        //     $budget_current_acount = CurrentAcount::where('budget_id', $order_production->budget_id)
-        //                                             ->first();
-        //     if (!is_null($budget_current_acount)) {
-        //         $current_acount = CurrentAcount::where('order_production_id', $order_production->id)
-        //                                         ->first();
-        //         if (!is_null($current_acount)) {
-        //             echo 'Eliminando cuenta corriente </br>';
-        //             echo '----------------- </br>';
-        //         }
-        //     }
-        // }
+    }
+
+    function deleteClients() {
+        Client::where('status', 'inactive')
+                ->update([
+                    'deleted_at'    => Carbon::now(),
+                ]);
+    }
+
+    function checkBudgetStatus($company_name) {
+        $user = User::where('company_name', $company_name)->first();
+        $budgets = Budget::where('user_id', $user->id)
+                            ->where('budget_status_id', 1)
+                            ->get();
+        foreach ($budgets as $budget) {
+            $current_acount = CurrentAcount::where('budget_id', $budget->id)
+                                            ->first();
+            if (!is_null($current_acount)) {
+                echo 'Habia una cuenta del cliente '.$current_acount->client->name.' </br>';
+                $current_acount->delete();
+                CurrentAcountHelper::checkSaldos('client', $current_acount->client_id);
+            }
+        }
     }
 
     function checkImageUrl($url) {

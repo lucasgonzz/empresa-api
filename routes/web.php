@@ -19,6 +19,10 @@ Route::post('/password-reset/update-password',
 Route::get('set-properties/{company_name}/{for_articles?}', 'HelperController@setProperties');
 Route::get('check-images/{company_name}', 'HelperController@checkImages');
 Route::get('clear-order-productions-current-acount/{company_name}', 'HelperController@clearOrderProductionCurrentAcount');
+Route::get('delete-clients', 'HelperController@deleteClients');
+Route::get('check-budgets-status/{company_name}', 'HelperController@checkBudgetStatus');
+Route::get('clientes-repetidos/{company_name}', 'HelperController@clientesRepetidos');
+Route::get('clients-sellers/', 'HelperController@setClientSeller');
 
 Route::get('get-persona', 'AfipWsController@getPersona');
 
@@ -28,7 +32,8 @@ Route::post('user', 'UserController@store');
 Route::post('user', 'UserController@store');
 
 // PDF
-Route::get('sale/pdf/{id}/{with_prices}', 'SaleController@pdf');
+// Route::get('sale/pdf/{id}/{with_prices}', 'SaleController@pdf');
+Route::get('sale/pdf/{id}/{with_prices}/{with_commissions}', 'SaleController@pdf');
 Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
 Route::get('sale/afip-ticket-pdf/{id}', 'SaleController@afipTicketPdf');
 
@@ -49,3 +54,6 @@ Route::get('client/excel/export', 'ClientController@export');
 Route::get('user/register-payment/{company_name}', 'CommonLaravel\UserController@registerPayment');
 Route::get('caja', 'SaleController@caja');
 Route::get('sale/charts/{from}/{to}', 'SaleController@charts');
+
+Route::get('check-saldos/{model_name}/{id}', 'CurrentAcountController@checkSaldos');
+

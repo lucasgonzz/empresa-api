@@ -2,10 +2,6 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Models\Article;
-use App\Models\Client;
-use App\Models\Commissioner;
-use App\Models\Discount;
 use App\Http\Controllers\AfipWsController;
 use App\Http\Controllers\ClientController;
 use App\Http\Controllers\CommissionController;
@@ -19,6 +15,11 @@ use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\SaleController;
+use App\Http\Controllers\SellerCommissionController;
+use App\Models\Article;
+use App\Models\Client;
+use App\Models\Commissioner;
+use App\Models\Discount;
 use App\Models\Sale;
 use App\Models\SaleType;
 use App\Models\Service;
@@ -149,7 +150,7 @@ class SaleHelper extends Controller {
         if ($client_id && $sale->save_current_acount) {
             $discounts = GeneralHelper::getModelsFromId('Discount', $discounts_id);
             $surchages = GeneralHelper::getModelsFromId('Surchage', $surchages_id);
-            $helper = new CurrentAcountAndCommissionHelper($sale, $discounts, $surchages, false);
+            $helper = new CurrentAcountAndCommissionHelper($sale, $discounts, $surchages);
             $helper->attachCommissionsAndCurrentAcounts();
         }
     }
@@ -237,31 +238,28 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function updateCurrentAcountsAndCommissions($sale, $only_commissions = false) {
+    static function updateCurrentAcountsAndCommissions($sale) {
         // Se eliminan las cuentas corrientes y se actualizan los saldos se las siguientes
-        if (!$only_commissions) {
-            $current_acount_ct = new CurrentAcountController();
-            $current_acount_ct->deleteFromSale($sale);
-        }
+        $current_acount_ct = new CurrentAcountController();
+        $current_acount_ct->deleteFromSale($sale);
 
         // Se eliminan las comisiones y se actualizan los saldos se las siguientes
-        $commission_ct = new CommissionController();
+        $commission_ct = new SellerCommissionController();
         $commission_ct->deleteFromSale($sale);
 
-        $helper = new CurrentAcountAndCommissionHelper($sale, $sale->discounts, $sale->surchages, $only_commissions);
+        $helper = new CurrentAcountAndCommissionHelper($sale, $sale->discounts, $sale->surchages);
         $helper->attachCommissionsAndCurrentAcounts();
 
         CurrentAcountHelper::checkSaldos('client', $sale->client_id);
-
         // $client_controller = new ClientController();
         // $current_acount_ct->checkSaldos($sale->client_id);
     }
 
-    static function checkCommissions($id) {
-        $sale = Sale::find($id);
-        // Self::updateCurrentAcountsAndCommissions($sale, false);
-        Self::updateCurrentAcountsAndCommissions($sale, true);
-    }
+    // static function checkCommissions($id) {
+    //     $sale = Sale::find($id);
+    //     // Self::updateCurrentAcountsAndCommissions($sale, false);
+    //     Self::updateCurrentAcountsAndCommissions($sale, true);
+    // }
 
     static function getDiscount($item) {
         if (isset($item['discount'])) {
@@ -325,7 +323,7 @@ class SaleHelper extends Controller {
         $sale->services()->detach();
     }
 
-    static function getTotalSale($sale, $with_discount = true, $with_surchages = true) {
+    static function getTotalSale($sale, $with_discount = true, $with_surchages = true, $with_seller_commissions = true) {
         $total_articles = 0;
         $total_combos = 0;
         $total_services = 0;
@@ -359,6 +357,11 @@ class SaleHelper extends Controller {
         $total = $total_articles + $total_services + $total_combos;
         if (!is_null($sale->percentage_card)) {
             $total += ($total * Numbers::percentage($sale->percentage_card));
+        }
+        if ($with_seller_commissions) {
+            foreach ($sale->seller_commissions as $seller_commission) {
+                $total -= $seller_commission->debe;
+            }
         }
         return $total;
     }

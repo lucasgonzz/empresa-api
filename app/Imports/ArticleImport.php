@@ -32,6 +32,20 @@ class ArticleImport implements ToCollection
         $this->provider = null;
         $this->created_models = 0;
         $this->updated_models = 0;
+        $this->setProps();
+    }
+
+    function setProps() {
+        $this->props_to_set = [
+            'name'              => 'nombre',
+            'bar_code'          => 'codigo_de_barras',
+            'provider_code'     => 'codigo_de_proveedor',
+            'stock'             => 'stock_actual',
+            'stock_min'         => 'stock_minimo',
+            'cost'              => 'costo',
+            'percentage_gain'   => 'margen_de_ganancia',
+            'price'             => 'precio',
+        ];
     }
 
     function checkRow($row) {
@@ -93,26 +107,43 @@ class ArticleImport implements ToCollection
     }
 
     function saveArticle($row, $article) {
-        $iva_id = LocalImportHelper::getIvaId(ImportHelper::getColumnValue($row, 'iva', $this->columns));
-        LocalImportHelper::saveProvider(ImportHelper::getColumnValue($row, 'proveedor', $this->columns), $this->ct);
-        $data = [
-            'name'              => ImportHelper::getColumnValue($row, 'nombre', $this->columns),
-            'bar_code'          => ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns),
-            'provider_code'     => ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns),
-            // 'stock'             => ImportHelper::getColumnValue($row, 'stock_actual', $this->columns),
-            'stock_min'         => ImportHelper::getColumnValue($row, 'stock_minimo', $this->columns),
-            'iva_id'            => $iva_id,
-            'cost'              => ImportHelper::getColumnValue($row, 'costo', $this->columns),
-            'cost_in_dollars'   => $this->getCostInDollars($row),
-            'percentage_gain'   => ImportHelper::getColumnValue($row, 'margen_de_ganancia', $this->columns),
-            'price'             => ImportHelper::getColumnValue($row, 'precio', $this->columns),
-            'category_id'       => LocalImportHelper::getCategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), $this->ct),
-            'sub_category_id'   => LocalImportHelper::getSubcategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), ImportHelper::getColumnValue($row, 'sub_categoria', $this->columns), $this->ct),
-            // 'provider_id'       => $this->provider_id != 0 ? $this->provider_id : ImportHelper::getColumnValue($row, 'proveedor', $this->columns),
-        ];
-        if (!is_null(ImportHelper::getColumnValue($row, 'stock_actual', $this->columns))) {
-            $data['stock'] = ImportHelper::getColumnValue($row, 'stock_actual', $this->columns);
+        // $iva_id = LocalImportHelper::getIvaId(ImportHelper::getColumnValue($row, 'iva', $this->columns));
+        // LocalImportHelper::saveProvider(ImportHelper::getColumnValue($row, 'proveedor', $this->columns), $this->ct);
+        // $data = [
+        //     'name'              => ImportHelper::getColumnValue($row, 'nombre', $this->columns),
+        //     'bar_code'          => ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns),
+        //     'provider_code'     => ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns),
+        //     // 'stock'             => ImportHelper::getColumnValue($row, 'stock_actual', $this->columns),
+        //     'stock_min'         => ImportHelper::getColumnValue($row, 'stock_minimo', $this->columns),
+        //     'iva_id'            => $iva_id,
+        //     'cost'              => ImportHelper::getColumnValue($row, 'costo', $this->columns),
+        //     'cost_in_dollars'   => $this->getCostInDollars($row),
+        //     'percentage_gain'   => ImportHelper::getColumnValue($row, 'margen_de_ganancia', $this->columns),
+        //     'price'             => ImportHelper::getColumnValue($row, 'precio', $this->columns),
+        //     'category_id'       => LocalImportHelper::getCategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), $this->ct),
+        //     'sub_category_id'   => LocalImportHelper::getSubcategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), ImportHelper::getColumnValue($row, 'sub_categoria', $this->columns), $this->ct),
+        // ];
+        $data = [];
+        foreach ($this->props_to_set as $key => $value) {
+            if (!ImportHelper::isIgnoredColumn($value, $this->columns)) {
+                $data[$key] = ImportHelper::getColumnValue($row, $value, $this->columns);
+            }
         }
+        if (!ImportHelper::isIgnoredColumn('proveedor', $this->columns)) {
+            LocalImportHelper::saveProvider(ImportHelper::getColumnValue($row, 'proveedor', $this->columns), $this->ct);
+        }
+        if (!ImportHelper::isIgnoredColumn('iva', $this->columns)) {
+            $data['iva_id'] = LocalImportHelper::getIvaId(ImportHelper::getColumnValue($row, 'iva', $this->columns));
+        }
+        if (!ImportHelper::isIgnoredColumn('categoria', $this->columns)) {
+            $data['category_id'] = LocalImportHelper::getCategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), $this->ct);
+        }
+        if (!ImportHelper::isIgnoredColumn('categoria', $this->columns)) {
+            $data['sub_category_id'] = LocalImportHelper::getSubcategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), ImportHelper::getColumnValue($row, 'sub_categoria', $this->columns), $this->ct);
+        }
+        // if (!is_null(ImportHelper::getColumnValue($row, 'stock_actual', $this->columns))) {
+        //     $data['stock'] = ImportHelper::getColumnValue($row, 'stock_actual', $this->columns);
+        // }
         if (!is_null($article) && $this->isDataUpdated($article, $data)) {
             $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $article->id);
             $article->update($data);
@@ -135,18 +166,18 @@ class ArticleImport implements ToCollection
     }
 
     function isDataUpdated($article, $data) {
-        return  $article->name                              != $data['name'] ||
-                $article->bar_code                          != $data['bar_code'] ||
-                $article->provider_code                     != $data['provider_code'] ||
-                (isset($data['stock']) && $article->stock   != $data['stock']) ||
-                $article->stock_min                         != $data['stock_min'] ||
-                $article->iva_id                            != $data['iva_id'] ||
-                $article->cost                              != $data['cost'] ||
-                $article->cost_in_dollars                   != $data['cost_in_dollars'] ||
-                $article->percentage_gain                   != $data['percentage_gain'] ||
-                $article->price                             != $data['price'] ||
-                $article->category_id                       != $data['category_id'] ||
-                $article->sub_category_id                   != $data['sub_category_id'];
+        return  (isset($data['name']) && $data['name']                          != $article->name) ||
+                (isset($data['bar_code']) && $data['bar_code']                  != $article->bar_code) ||
+                (isset($data['provider_code']) && $data['provider_code']        != $article->provider_code) ||
+                (isset($data['stock_min']) && $data['stock_min']                != $article->stock_min) ||
+                (isset($data['iva_id']) && $data['iva_id']                      != $article->iva_id) ||
+                (isset($data['cost']) && $data['cost']                          != $article->cost) ||
+                (isset($data['cost_in_dollars']) && $data['cost_in_dollars']    != $article->cost_in_dollars) ||
+                (isset($data['percentage_gain']) && $data['percentage_gain']    != $article->percentage_gain) ||
+                (isset($data['price']) && $data['price']                        != $article->price) ||
+                (isset($data['category_id']) && $data['category_id']            != $article->category_id) ||
+                (isset($data['sub_category_id']) && $data['sub_category_id']    != $article->sub_category_id) ||
+                (isset($data['stock']) && $data['stock']                        != $article->stock);
     }
 
     function isFirstRow($row) {

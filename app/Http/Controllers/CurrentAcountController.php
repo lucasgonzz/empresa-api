@@ -150,8 +150,6 @@ class CurrentAcountController extends Controller
         }
     }
 
-    
-
     function deleteFromSale($sale) {
         $current_acounts = CurrentAcount::where('sale_id', $sale->id)
                                         ->whereNull('haber')

@@ -19,17 +19,17 @@ class AfipWsController extends Controller
 
     public $sale;
 
-    // function __construct($sale) {
-    //     $this->sale = $sale;
-    // }
+    function __construct($sale) {
+        $this->sale = $sale;
+        $this->testing = !$this->sale->afip_information->afip_ticket_production;
+    }
 
-    function define($testing) {
-        // $this->testing = !$this->sale->afip_information->afip_ticket_production;
+    function define() {
         define ('TRA_xml', public_path().'/afip/wsaa/TRA.xml'); 
         define ('TRA_tmp', public_path().'/afip/wsaa/TRA.tmp'); 
         define ('TA_file', public_path().'/afip/wsaa/TA.xml'); 
         define ('CMS_file', public_path().'/afip/wsaa/CMS.txt'); 
-        if ($testing) {
+        if ($this->testing) {
             $this->cert = 'file://'.realpath(public_path().'/afip/testing/MiCertificado.pem');
             $this->private_key = 'file://'.realpath(public_path().'/afip/testing/MiClavePrivada.key');
             $this->url_wsaa = 'https://wsaahomo.afip.gov.ar/ws/services/LoginCms';
@@ -234,7 +234,7 @@ class AfipWsController extends Controller
         }
         // Se visualiza el resultado con el CAE correspondiente al comprobante.
         $result = $wsfe->FECAESolicitar($invoice);
-        // print_r($result);
+        print_r($result);
         $this->saveAfipTicket($result, $cbte_nro, $importes['total'], $moneda_id);
         return true;
     }

@@ -16,4 +16,8 @@ class SellerCommission extends Model
     function sale() {
         return $this->belongsTo(Sale::class);
     }
+
+    function seller() {
+        return $this->belongsTo(Seller::class);
+    }
 }

@@ -15,10 +15,16 @@ class CreateSellerCommissionsTable extends Migration
     {
         Schema::create('seller_commissions', function (Blueprint $table) {
             $table->id();
-            $table->integer('sale_id')->unsigned();
+            $table->integer('num')->nullable();
+            $table->integer('sale_id')->unsigned()->nullable();
             $table->integer('seller_id')->unsigned();
-            $table->decimal('percentage');
-            $table->decimal('amount');
+            $table->text('description')->nullable();
+            $table->decimal('percentage')->nullable();
+            $table->decimal('debe', 14,2)->nullable();
+            $table->decimal('haber', 14,2)->nullable();
+            $table->decimal('saldo', 14,2)->nullable();
+            $table->string('status')->default('inactive');
+            $table->integer('user_id')->unsigned();
             $table->timestamps();
         });
     }

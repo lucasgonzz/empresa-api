@@ -35,6 +35,7 @@ Route::middleware('auth:sanctum')->group(function() {
     // ----------------------------------------------------------------------------------------------------
 
     Route::resource('configuration', 'UserConfigurationController');
+    Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
 
     Route::resource('article', 'ArticleController')->except(['index']);
     Route::get('article/index/from-status/{last_updated}/{status?}', 'ArticleController@index');
@@ -133,6 +134,9 @@ Route::middleware('auth:sanctum')->group(function() {
 
     Route::resource('commission', 'CommissionController');
     Route::get('seller-commission/{model_id}/{from_date}/{until_date}', 'SellerCommissionController@index');
+    Route::post('seller-commission/saldo-inicial', 'SellerCommissionController@saldoInicial');
+    Route::post('seller-commission/pago', 'SellerCommissionController@pago');
+    Route::delete('seller-commission/{id}', 'SellerCommissionController@destroy');
 
     Route::resource('sale-type', 'SaleTypeController');
 });

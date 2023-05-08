@@ -48,6 +48,7 @@ class UserSeeder extends Seeder
                 'mensaje_contacto'              => 'Contactar tambien por mensaje directo en Facebook o Instagram, es el medio en el que mas activos estamos!',
                 'online_price_surchage'         => 50,
                 'online'                        => 'http://tienda.local:8081',
+                'max_items_in_sale'             => 2,
             ],
             [
                 'name'              => 'Marcos',
@@ -114,6 +115,7 @@ class UserSeeder extends Seeder
                 'online_price_type_id'          => isset($model['online_price_type_id']) ? $model['online_price_type_id'] : null,
                 'online_price_surchage'         => isset($model['online_price_surchage']) ? $model['online_price_surchage'] : null,
                 'online'                        => isset($model['online']) ? $model['online'] : null,
+                'max_items_in_sale'             => isset($model['max_items_in_sale']) ? $model['max_items_in_sale'] : null,
             ]);
             if (is_null($user->owner_id)) {
 

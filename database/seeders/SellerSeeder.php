@@ -18,14 +18,40 @@ class SellerSeeder extends Seeder
         $user = User::where('company_name', 'lucas')->first();
         $models = [
             [
-                'num'       => 1,
-                'name'      => 'Marcelo',
-                'user_id'   => $user->id,
+                'num'                       => 1,
+                'name'                      => 'Marcelo',
+                'commission_after_pay_sale' => 1,
+                'user_id'                   => $user->id,
             ],
             [
-                'num'       => 2,
-                'name'      => 'Matias',
-                'user_id'   => $user->id,
+                'num'                       => 2,
+                'name'                      => 'Matias',
+                'commission_after_pay_sale' => 1,
+                'user_id'                   => $user->id,
+            ],
+            [
+                'num'                       => 3,
+                'name'                      => 'Perdidas',
+                'commission_after_pay_sale' => 0,
+                'user_id'                   => $user->id,
+            ],
+            [
+                'num'                       => 4,
+                'name'                      => 'Oscar',
+                'commission_after_pay_sale' => 0,
+                'user_id'                   => $user->id,
+            ],
+            [
+                'num'                       => 5,
+                'name'                      => 'Fede',
+                'commission_after_pay_sale' => 0,
+                'user_id'                   => $user->id,
+            ],
+            [
+                'num'                       => 6,
+                'name'                      => 'Papi',
+                'commission_after_pay_sale' => 0,
+                'user_id'                   => $user->id,
             ],
         ];
 

@@ -11,7 +11,7 @@ class Commissioner extends Model
     public function sales() {
         return $this->belongsToMany('App\Models\Sales')->withPivot('percentage');
     }
-	
+    
     public function seller() {
         return $this->belongsTo('App\Models\Seller');
     }

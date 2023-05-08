@@ -14,7 +14,7 @@ require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class SalePdf extends fpdf {
 
-	function __construct($sale, $with_prices) {
+	function __construct($sale, $with_prices, $with_seller_commissions) {
 		parent::__construct();
 		$this->SetAutoPageBreak(false);
 		$this->start_x = 5;
@@ -25,6 +25,7 @@ class SalePdf extends fpdf {
 		$this->user = UserHelper::getFullModel();
 		$this->sale = $sale;
 		$this->with_prices = $with_prices;
+		$this->with_seller_commissions = $with_seller_commissions;
 		$this->total_sale = SaleHelper::getTotalSale($this->sale, false, false);
 		$this->total_articles = 0;
 		$this->total_services = 0;
@@ -102,6 +103,10 @@ class SalePdf extends fpdf {
 			$this->total();
 			$this->discounts();
 			$this->surchages();
+			$this->saleType();
+			if ($this->with_seller_commissions) {
+				$this->commissions();
+			}
 			$this->totalFinal();
 		}
 		PdfHelper::comerciocityInfo($this, $this->y);
@@ -209,142 +214,30 @@ class SalePdf extends fpdf {
 		}
 	}
 
-	function tableHeader() {
-		$this->x = $this->start_x;
-		$this->y = 60;
-		$this->SetFont('Arial', 'B', 12);
-		$this->SetLineWidth(.5);
-		$this->SetDrawColor(0,0,0);
-		$this->Cell(
-			$this->widths['#'], 
-			$this->table_header_line_height, 
-			'#', 
-			'TB', 
-			0, 
-			'C'
-		);
-		$this->Cell(
-			$this->widths['bar_code'], 
-			$this->table_header_line_height, 
-			'Codigo', 
-			'TB', 
-			0, 
-			'C'
-		);
-		$this->Cell(
-			$this->widths['name'], 
-			$this->table_header_line_height, 
-			'Nombre', 
-			'TB', 
-			0, 
-			'C'
-		);
-		$this->Cell(
-			$this->widths['price'], 
-			$this->table_header_line_height, 
-			'Precio', 
-			'TB', 
-			0, 
-			'C'
-		);
-		$this->Cell(
-			$this->widths['amount'], 
-			$this->table_header_line_height, 
-			'Cant', 
-			'TB', 
-			0, 
-			'C'
-		);
-		$this->Cell(
-			$this->widths['discount'], 
-			$this->table_header_line_height, 
-			'Des', 
-			'TB', 
-			0, 
-			'C'
-		);
-		$this->Cell(
-			$this->widths['sub_total'], 
-			$this->table_header_line_height, 
-			'SubTotal', 
-			'TB', 
-			0, 
-			'C'
-		);
-		$this->x = $this->start_x;
-		$this->y += $this->table_header_line_height;
+	function commissions() {
+		if (count($this->sale->seller_commissions) >= 1) {
+	    	$this->SetX(5);
+	    	$this->SetFont('Arial', '', 9);
+	    	$this->Cell(65,5,'Comisiones: ', 1, 1, 'L');
+	    	foreach ($this->sale->seller_commissions as $commission) {
+		    	$this->SetX(5);
+		    	$this->Cell(40,5,$commission->seller->name . ' ' . $commission->percentage . '%', 1, 0, 'L');
+		    	$this->Cell(25,5, '$'.Numbers::price($commission->debe), 1 ,1,'L');
+	    	}
+			// $this->Y += 5;
+ 			// $this->SetY($this->Y);
+	    	// $this->SetX(5);
+		    // 	$this->Cell(50,5, 'Total: ','B',0,'L');
+		    // $this->Cell(50,5, '$'.$this->getTotalMenosComisiones() ,'B',0,'L');
+		}
 	}
 
-	function numSale() {
-		$this->SetFont('Arial', 'B', 14);
-		$this->x = 105;
-		$this->y = 0;
-
-		// Numero
-		$this->Cell(50, 10, 'N° '.$this->sale->num_sale, $this->b, 0, 'L');
-		$this->Cell(50, 10, date_format($this->sale->created_at, 'd/m/Y'), $this->b, 0, 'R');
-		$this->y += 10;
-	}
-
-	function commerceInfo() {
-		// Razon social
-		if (!is_null($this->user->afip_information)) {
-			if (!is_null($this->user->afip_information->razon_social)) {
-				$this->x = 105;
-				$this->SetFont('Arial', 'B', 10);
-				$this->Cell(25, 5, 'Razon social: ', $this->b, 0, 'L');
-
-				$this->SetFont('Arial', '', 10);
-				$this->Cell(75, 5, $this->user->afip_information->razon_social, $this->b, 0, 'L');
-			}
+	function saleType() {
+		if (!is_null($this->sale->sale_type)) {
+	    	$this->SetX(5);
+	    	$this->SetFont('Arial', '', 9);
+	    	$this->Cell(65,5,'Tipo de venta: '.$this->sale->sale_type->name, 1, 1, 'L');
 		}
-
-		// Direccion
-		$address = null;
-		if (count($this->user->addresses) >= 1) {
-			$address = $this->user->addresses[0];
-		}
-		if (!is_null($address)) {
-			$this->x = 105;
-			$this->y += 5;
-			$this->SetFont('Arial', 'B', 10);
-			$this->Cell(20, 5, 'Direccion: ', $this->b, 0, 'L');
-
-			$address_text = "{$address->street} {$address->street_number}, {$address->city}, {$address->province}";
-			$this->SetFont('Arial', '', 10);
-			$this->Cell(80, 5, $address_text, $this->b, 0, 'L');
-		}
-
-		// Telefono
-		if (!is_null($this->user->phone)) {
-			$this->x = 105;
-			$this->y += 5;
-			$this->SetFont('Arial', 'B', 10);
-			$this->Cell(18, 5, 'Telefono: ', $this->b, 0, 'L');
-
-			$this->SetFont('Arial', '', 10);
-			$this->Cell(82, 5, $this->user->phone, $this->b, 0, 'L');
-		}
-
-		// Sitio Web
-		if (!is_null($this->user->online)) {
-			$this->x = 105;
-			$this->y += 5;
-			$this->SetFont('Arial', 'B', 10);
-			$this->Cell(20, 5, 'Sitio Web: ', $this->b, 0, 'L');
-
-			$this->SetFont('Arial', '', 10);
-			$this->Cell(80, 5, $this->user->online, $this->b, 0, 'L');
-		}
-
-		// Correo
-		$this->x = 105;
-		$this->y += 5;
-		$this->SetFont('Arial', 'B', 10);
-		$this->Cell(12, 5, 'Email:', $this->b, 0, 'L');
-		$this->SetFont('Arial', '', 10);
-		$this->Cell(88, 5, $this->user->email, $this->b, 0, 'L');
-		$this->y += 10;
 	}
 
 	function total() {
@@ -445,7 +338,7 @@ class SalePdf extends fpdf {
 	}
 
 	function totalFinal() {
-		if (count($this->sale->discounts) >= 1 || count($this->sale->surchages) >= 1) {
+		if (count($this->sale->discounts) >= 1 || count($this->sale->surchages) >= 1 || count($this->sale->seller_commissions) >= 1) {
 	    	$this->SetFont('Arial', 'B', 12);
 	    	$this->x = 5;
 		    $this->Cell(

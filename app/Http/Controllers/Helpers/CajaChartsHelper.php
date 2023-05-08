@@ -37,7 +37,7 @@ class CajaChartsHelper {
 					]; 
 				}
 
-				if (!is_null($article->category_id)) {
+				if (!is_null($article->category)) {
 					if (isset($categorias[$article->category_id])) {
 						$categorias[$article->category_id]['amount'] += (float)$article->pivot->amount;
 					} else {
@@ -48,7 +48,7 @@ class CajaChartsHelper {
 					}
 				}
 
-				if (!is_null($article->sub_category_id)) {
+				if (!is_null($article->sub_category)) {
 					if (isset($sub_categorias[$article->sub_category_id])) {
 						$sub_categorias[$article->sub_category_id]['amount'] += (float)$article->pivot->amount;
 					} else {
@@ -64,6 +64,8 @@ class CajaChartsHelper {
 		usort($articulos, function($a, $b) { 
 			return $b['amount'] - $a['amount']; 
 		});
+
+		$articulos = array_slice($articulos, 0, 30);
 
 		usort($categorias, function($a, $b) { 
 			return $b['amount'] - $a['amount']; 

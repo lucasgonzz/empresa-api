@@ -51,6 +51,7 @@ class CreateUsersTable extends Migration
             $table->timestamp('payment_expired_at')->nullable();
             $table->integer('online_price_type_id')->nullable();
             $table->decimal('online_price_surchage', 12,2)->nullable();
+            $table->integer('max_items_in_sale')->nullable();
             $table->rememberToken();
 
             $table->enum('status', ['commerce', 'admin', 'super']);

@@ -2,15 +2,16 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Models\Article;
-use App\Models\CurrentAcount;
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
-use App\Notifications\ProviderOrderCreated;
-use App\Notifications\UpdatedArticle;
+use App\Models\Article;
+use App\Models\CurrentAcount;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderAfipTicket;
+use App\Notifications\ProviderOrderCreated;
+use App\Notifications\UpdatedArticle;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
@@ -106,18 +107,21 @@ class ProviderOrderHelper {
 					$art->save();
 				}
 			} 
-			$cost = $article['pivot']['cost'];
+			$cost = null;
+			if (isset($article['pivot']['cost'])) {
+				$cost = $article['pivot']['cost'];
+			}
 			if ($article['status'] == 'active' && is_null($cost) && !is_null($article['cost'])) {
 				$cost = $article['cost'];
 			}
 			$provider_order->articles()->attach($article['id'], [
-											'amount' 			=> $article['pivot']['amount'],
-											'notes' 			=> $article['pivot']['notes'],
-											'received' 			=> $article['pivot']['received'],
+											'amount' 			=> GeneralHelper::getPivotValue($article, 'amount'),
+											'notes' 			=> GeneralHelper::getPivotValue($article, 'notes'),
+											'received' 			=> GeneralHelper::getPivotValue($article, 'received'),
 											'cost' 				=> $cost,
-											'received_cost' 	=> $article['pivot']['received_cost'],
-											'update_cost' 		=> $article['pivot']['update_cost'],
-											'cost_in_dollars'	=> $article['pivot']['cost_in_dollars'],
+											'received_cost' 	=> GeneralHelper::getPivotValue($article, 'received_cost'),
+											'update_cost' 		=> GeneralHelper::getPivotValue($article, 'update_cost'),
+											'cost_in_dollars'	=> GeneralHelper::getPivotValue($article, 'cost_in_dollars'),
 											'iva_id'    		=> Self::getIvaId($article),
 										]);
 			Self::updateArticleStock($article, $last_received, $provider_order);

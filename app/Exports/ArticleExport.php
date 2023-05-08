@@ -19,7 +19,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $article->bar_code,
             $article->provider_code,
             $article->name,
-            !is_null($article->sub_category) ? $article->sub_category->category->name : '',
+            !is_null($article->sub_category) && !is_null($article->sub_category->category) ? $article->sub_category->category->name : '',
             !is_null($article->sub_category) ? $article->sub_category->name : '',
             $article->stock,
             $article->stock_min,

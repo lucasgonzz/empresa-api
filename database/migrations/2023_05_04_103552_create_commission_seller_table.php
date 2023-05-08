@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class CreateSellersTable extends Migration
+class CreateCommissionSellerTable extends Migration
 {
     /**
      * Run the migrations.
@@ -13,13 +13,11 @@ class CreateSellersTable extends Migration
      */
     public function up()
     {
-        Schema::create('sellers', function (Blueprint $table) {
+        Schema::create('commission_seller', function (Blueprint $table) {
             $table->id();
-            $table->integer('num');
-            $table->string('name');
-            $table->integer('commission_after_pay_sale')->default(1);
-            $table->integer('seller_id')->nullable()->unsigned();
-            $table->integer('user_id')->unsigned();
+            $table->integer('commission_id');
+            $table->integer('seller_id');
+            $table->decimal('percentage', 12,2);
             $table->timestamps();
         });
     }
@@ -31,6 +29,6 @@ class CreateSellersTable extends Migration
      */
     public function down()
     {
-        Schema::dropIfExists('sellers');
+        Schema::dropIfExists('commission_seller');
     }
 }

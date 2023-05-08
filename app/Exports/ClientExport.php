@@ -26,6 +26,7 @@ class ClientExport implements FromCollection, WithHeadings, WithMapping
             $client->cuit,
             $client->saldo,
             $client->description,
+            GeneralHelper::getRelation($client, 'seller'),
             GeneralHelper::getRelation($client, 'price_type'),
         ];
     }
@@ -33,7 +34,7 @@ class ClientExport implements FromCollection, WithHeadings, WithMapping
     public function headings(): array
     {
         return [
-            'Codigo',
+            'Numero',
             'Nombre',
             'Telefono',
             'Direccion',
@@ -44,6 +45,7 @@ class ClientExport implements FromCollection, WithHeadings, WithMapping
             'Cuit',
             'Saldo',
             'Descripcion',
+            'Vendedor',
             'Tipo de precio',
         ];
     }

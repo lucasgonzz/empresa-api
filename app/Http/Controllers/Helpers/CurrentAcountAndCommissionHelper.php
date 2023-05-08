@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\DiscountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\SellerCommissionHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\Client;
@@ -23,18 +24,13 @@ use Illuminate\Support\Facades\Log;
 
 class CurrentAcountAndCommissionHelper extends Controller {
 
-    function __construct($sale, $discounts, $surchages, $only_commissions, $index = null) {
+    function __construct($sale, $discounts, $surchages, $index = null) {
         $this->user = UserHelper::getFullModel();
         $this->sale = $sale;
         $this->discounts = $discounts;
         $this->surchages = $surchages;
         $this->client = $sale->client;
-        $this->only_commissions = $only_commissions;
-        if ($index) {
-            $this->index = $index;
-        } else {
-            $this->index = null;
-        }
+        $this->index = $index;
     }
 
     function attachCommissionsAndCurrentAcounts() {
@@ -89,19 +85,15 @@ class CurrentAcountAndCommissionHelper extends Controller {
         $this->debe = SaleHelper::getTotalWithDiscountsAndSurchages($this->sale, $this->total_articles, $this->total_combos, $this->total_services);
         $this->createCurrentAcount();
 
-        
-        $this->items_en_pagina = 0;
-        $this->debe = 0;
-    }
-
-    function hasSaleDiscounts() {
-        return !is_null($this->sale->discounts);
+        // ACA TERMINARIA
+        // $this->items_en_pagina = 0;
+        // $this->debe = 0;
     }
 
     function createCurrentAcount() {
-        Log::info('por poner debe de '.$this->debe);
+        // Log::info('por poner debe de '.$this->debe);
         $current_acount = CurrentAcount::create([
-            'detalle'     => 'Rto '.$this->sale->num,
+            'detalle'     => 'Venta N°'.$this->sale->num,
             'debe'        => $this->debe,
             'status'      => 'sin_pagar',
             'client_id'   => $this->sale->client_id,
@@ -115,6 +107,8 @@ class CurrentAcountAndCommissionHelper extends Controller {
         $client = Client::find($this->sale->client_id);
         $client->saldo = $current_acount->saldo;
         $client->save();
+        Log::info('Se creo cuenta corriente para la venta N° '.$this->sale->num);
+        SellerCommissionHelper::commissionForSeller($current_acount);
     }
 
     function getDetalle() {

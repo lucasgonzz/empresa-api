@@ -85,4 +85,8 @@ class Sale extends Model
         return $this->belongsTo('App\Models\CurrentAcountPaymentMethod');
     }
 
+    public function seller_commissions() {
+        return $this->hasMany('App\Models\SellerCommission');
+    }
+
 }

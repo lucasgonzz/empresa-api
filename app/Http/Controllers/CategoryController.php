@@ -3,7 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Models\Article;
 use App\Models\Category;
+use App\Models\SubCategory;
 use Illuminate\Http\Request;
 
 class CategoryController extends Controller
@@ -41,9 +43,25 @@ class CategoryController extends Controller
 
     public function destroy($id) {
         $model = Category::find($id);
+        $this->detachArticlesCategory($model);
+        $this->deleteSubCategories($model);
         $model->delete();
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('Category', $model->id);
+        $this->sendUpdateModelsNotification('sub_category', false);
         return response(null);
+    }
+
+    public function detachArticlesCategory($category) {
+        Article::where('user_id', $this->userId())
+                ->where('category_id', $category->id)
+                ->update([
+                    'category_id'       => 0,
+                    'sub_category_id'   => 0,
+                ]);
+    }
+
+    public function deleteSubCategories($category) {
+        SubCategory::where('category_id', $category->id)->delete();
     }
 }

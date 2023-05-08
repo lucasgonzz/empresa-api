@@ -19,11 +19,11 @@ class SellerController extends Controller
 
     public function store(Request $request) {
         $model = Seller::create([
-            'num'                   => $this->num('sellers'),
-            'name'                  => $request->name,
-            'commision'             => $request->commision,
-            'seller_id'             => $request->seller_id,
-            'user_id'               => $this->userId(),
+            'num'                           => $this->num('sellers'),
+            'name'                          => $request->name,
+            'commission_after_pay_sale'     => $request->commission_after_pay_sale,
+            'seller_id'                     => $request->seller_id,
+            'user_id'                       => $this->userId(),
         ]);
         $this->sendAddModelNotification('Seller', $model->id);
         return response()->json(['model' => $this->fullModel('Seller', $model->id)], 201);
@@ -35,9 +35,9 @@ class SellerController extends Controller
 
     public function update(Request $request, $id) {
         $model = Seller::find($id);
-        $model->name                = $request->name;
-        $model->commision           = $request->commision;
-        $model->seller_id           = $request->seller_id;
+        $model->name                                = $request->name;
+        $model->commission_after_pay_sale           = $request->commission_after_pay_sale;
+        $model->seller_id                           = $request->seller_id;
         $model->save();
         $this->sendAddModelNotification('Seller', $model->id);
         return response()->json(['model' => $this->fullModel('Seller', $model->id)], 200);
