@@ -63,7 +63,12 @@ class SearchController extends Controller
     function saveIfNotExist(Request $request, $_model_name, $property, $query) {
         $model_name = GeneralHelper::getModelName($_model_name);
         $data = [];
-        $data['num'] = $this->num($_model_name.'s');
+        if (substr($_model_name, strlen($_model_name)-1) == 'y') {
+            $model_name_plural = substr($_model_name, 0, strlen($_model_name)-1).'ies';
+        } else {
+            $model_name_plural = $_model_name.'s';
+        }
+        $data['num'] = $this->num($model_name_plural);
         $data['user_id'] = $this->userId();
         $data[$property] = $query;
         foreach ($request->properties_to_set as $property_to_set) {

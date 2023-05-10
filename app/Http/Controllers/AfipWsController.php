@@ -24,6 +24,14 @@ class AfipWsController extends Controller
         $this->testing = !$this->sale->afip_information->afip_ticket_production;
     }
 
+    function init() {
+        $this->define();
+        $service = 'wsfe';
+        $this->checkWsaa($service);
+        $sale = $this->wsfe();
+        return response()->json(['model' => $sale], 201);
+    }
+
     function define() {
         define ('TRA_xml', public_path().'/afip/wsaa/TRA.xml'); 
         define ('TRA_tmp', public_path().'/afip/wsaa/TRA.tmp'); 
@@ -38,51 +46,6 @@ class AfipWsController extends Controller
             $this->private_key = 'file://'.realpath(public_path().'/afip/production/privada.key');
             $this->url_wsaa = 'https://wsaa.afip.gov.ar/ws/services/LoginCms';
         }
-    }
-
-    function getPersona() {
-        $this->define(true);
-        $this->checkWsaa('ws_sr_constancia_inscripcion');
-
-        // Configuración del servicio WSAA.
-        // $config = [
-        //     'testing'           => true,                    // Utiliza el servicio de homologación.
-        //     'tra_tpl_file'      =>  TRA_tmp        // Define la ubicación de los archivos temporarios con el TRA.
-        // ];
-
-        // $wsaa = new WSAA('ws_sr_constancia_inscripcion', $this->cert, $this->private_key, $config);
-        // if ($ta = $wsaa->requestTa()) {
-        //     // Se visualiza los datos del encabezado.
-        //     print_r($ta->header);
-
-        //     // Guardar el XML en una variable. Luego puede almacenarse en una base de datos.
-        //     //$xml = $ta->asXml();
-        //     //echo $xml;
-
-        //     // Guardar el TA en un archivo.
-        //     $ta->asXml(TA_file);
-        // }
-
-        $this->ws_sr_constancia_inscripcion();
-    }
-
-    function ws_sr_constancia_inscripcion() {
-        $ws = new WSSRConstanciaInscripcion(['testing'=> false, 'cuit_representada' => '20423548984']);
-        $ws->setXmlTa(file_get_contents(TA_file));
-        $result = $ws->getPersona(['idPersona' => '20175018841']);
-        // $result = $ws->getPersona_v2(['idPersona' => '20175018841']);
-        // Log::info($result);
-        // print($result);
-        dd($result);
-        // print_r($result);
-    }
-
-    function init() {
-        $this->define();
-        $service = 'wsfe';
-        $this->checkWsaa($service);
-        $sale = $this->wsfe();
-        return response()->json(['model' => $sale], 201);
     }
 
     function checkWsaa($service) {
@@ -291,5 +254,42 @@ class AfipWsController extends Controller
         ];
         $result = $wsfe->FECompUltimoAutorizado($pto_vta);
         return $result->FECompUltimoAutorizadoResult->CbteNro + 1;
+    }
+
+    function getPersona() {
+        $this->define(true);
+        $this->checkWsaa('ws_sr_constancia_inscripcion');
+
+        // Configuración del servicio WSAA.
+        // $config = [
+        //     'testing'           => true,                    // Utiliza el servicio de homologación.
+        //     'tra_tpl_file'      =>  TRA_tmp        // Define la ubicación de los archivos temporarios con el TRA.
+        // ];
+
+        // $wsaa = new WSAA('ws_sr_constancia_inscripcion', $this->cert, $this->private_key, $config);
+        // if ($ta = $wsaa->requestTa()) {
+        //     // Se visualiza los datos del encabezado.
+        //     print_r($ta->header);
+
+        //     // Guardar el XML en una variable. Luego puede almacenarse en una base de datos.
+        //     //$xml = $ta->asXml();
+        //     //echo $xml;
+
+        //     // Guardar el TA en un archivo.
+        //     $ta->asXml(TA_file);
+        // }
+
+        $this->ws_sr_constancia_inscripcion();
+    }
+
+    function ws_sr_constancia_inscripcion() {
+        $ws = new WSSRConstanciaInscripcion(['testing'=> false, 'cuit_representada' => '20423548984']);
+        $ws->setXmlTa(file_get_contents(TA_file));
+        $result = $ws->getPersona(['idPersona' => '20175018841']);
+        // $result = $ws->getPersona_v2(['idPersona' => '20175018841']);
+        // Log::info($result);
+        // print($result);
+        dd($result);
+        // print_r($result);
     }
 }

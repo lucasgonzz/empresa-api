@@ -675,7 +675,7 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->SetFont('Arial', 'B', 8);
 		$this->Cell(32,7,'Condición de venta:',0,0,'L');
 		$this->SetFont('Arial', '', 8);
-		$this->Cell(50,7,'Contado',0,0,'L');
+		$this->Cell(50,7, $this->getPaymentMethod(),0,0,'L');
 		// Razon social
 		if (!is_null($this->sale->client)) {
 			$this->SetY(62);
@@ -837,6 +837,13 @@ class SaleAfipTicketPdf extends fpdf {
 		}
 		$cbte_numero  .= $this->sale->afip_ticket->cbte_numero;
 		return $cbte_numero;
+	}
+
+	function getPaymentMethod() {
+		if (!is_null($this->sale->current_acount_payment_method)) {
+			return $this->sale->current_acount_payment_method->name; 
+		}
+		return 'Contado';
 	}
 
 	function __Footer() {

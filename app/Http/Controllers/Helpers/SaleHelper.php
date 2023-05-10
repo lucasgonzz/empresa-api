@@ -90,7 +90,6 @@ class SaleHelper extends Controller {
         Self::attachServices($model, $request->items);
         Self::attachDiscounts($model, $request->discounts_id);
         Self::attachSurchages($model, $request->surchages_id);
-
         if ($from_store) {
             Self::attachCurrentAcountsAndCommissions($model, $request->client_id, $request->discounts_id, $request->surchages_id);
             Self::saveAfipTicket($model);
@@ -147,7 +146,10 @@ class SaleHelper extends Controller {
     }
 
     static function attachCurrentAcountsAndCommissions($sale, $client_id, $discounts_id, $surchages_id) {
+        Log::info('client_id: '.$client_id);
+        Log::info($sale->save_current_acount);
         if ($client_id && $sale->save_current_acount) {
+            Log::info('2');
             $discounts = GeneralHelper::getModelsFromId('Discount', $discounts_id);
             $surchages = GeneralHelper::getModelsFromId('Surchage', $surchages_id);
             $helper = new CurrentAcountAndCommissionHelper($sale, $discounts, $surchages);
@@ -323,7 +325,7 @@ class SaleHelper extends Controller {
         $sale->services()->detach();
     }
 
-    static function getTotalSale($sale, $with_discount = true, $with_surchages = true, $with_seller_commissions = true) {
+    static function getTotalSale($sale, $with_discount = true, $with_surchages = true, $with_seller_commissions = false) {
         $total_articles = 0;
         $total_combos = 0;
         $total_services = 0;

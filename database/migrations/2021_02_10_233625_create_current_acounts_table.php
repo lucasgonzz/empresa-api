@@ -16,7 +16,7 @@ class CreateCurrentAcountsTable extends Migration
         Schema::create('current_acounts', function (Blueprint $table) {
             $table->id();
             $table->text('detalle')->nullable();
-            $table->integer('page')->nullable();
+            // $table->integer('page')->nullable();
             $table->string('description')->nullable();
             $table->decimal('debe', 15,2)->nullable();
             $table->decimal('haber', 15,2)->nullable();

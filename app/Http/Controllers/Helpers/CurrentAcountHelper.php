@@ -149,18 +149,20 @@ class CurrentAcountHelper {
     }
 
     static function procesarPago($model_name, $model_id, $haber, $until_pago, $to_pay_id = null) {
+        $detalle = '';
         if (!is_null($to_pay_id)) {
             $until_pago->to_pay_id = $to_pay_id;
             $until_pago->save();
-            $detalle = Self::saldarSpecificCurrentAcount($to_pay_id, $haber);
-        } else {
-            $saldar_pagandose = Self::saldarPagandose($model_name, $model_id, $haber, $until_pago);
-            $haber_restante = $saldar_pagandose['haber'];
-            $detalle = $saldar_pagandose['detalle'];    
-            // Log::info('saldarPagandose detalle: '.$detalle);
-            $detalle .= Self::saldarCuentasSinPagar($model_name, $model_id, $haber_restante, $until_pago);
-            // Log::info('saldarCuentasSinPagar detalle: '.$detalle);
-        }
+            $res = Self::saldarSpecificCurrentAcount($to_pay_id, $haber);
+            // Log::info('res');
+            // Log::info($res);
+            $detalle = $res['detalle'];
+            $haber = $res['haber'];
+        } 
+        $saldar_pagandose = Self::saldarPagandose($model_name, $model_id, $haber, $until_pago);
+        $haber_restante = $saldar_pagandose['haber'];
+        $detalle .= $saldar_pagandose['detalle'];    
+        $detalle .= Self::saldarCuentasSinPagar($model_name, $model_id, $haber_restante, $until_pago);
         return $detalle;
     }
 
@@ -248,10 +250,13 @@ class CurrentAcountHelper {
         $current_acount = CurrentAcount::find($to_pay_id);
         if (!is_null($current_acount)) {
             $res = Self::saldarCurrentAcount($current_acount, $haber);
-            $detalle = $res['detalle'];
-            return $detalle;
+            // $detalle = $res['detalle'];
+            return $res;
         }
-        return '';
+        return [
+            'haber'   => $haber,
+            'detalle' => '',
+        ];
     }
 
     static function saldarCurrentAcount($current_acount, $haber) {

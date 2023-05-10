@@ -22,7 +22,8 @@ Route::get('clear-order-productions-current-acount/{company_name}', 'HelperContr
 Route::get('delete-clients', 'HelperController@deleteClients');
 Route::get('check-budgets-status/{company_name}', 'HelperController@checkBudgetStatus');
 Route::get('clientes-repetidos/{company_name}', 'HelperController@clientesRepetidos');
-Route::get('clients-sellers/', 'HelperController@setClientSeller');
+Route::get('clients-sellers', 'HelperController@setClientSeller');
+Route::get('recalculate-current-acounts/{company_name}', 'HelperController@recaulculateCurrentAcounts');
 
 Route::get('get-persona', 'AfipWsController@getPersona');
 
@@ -33,7 +34,7 @@ Route::post('user', 'UserController@store');
 
 // PDF
 // Route::get('sale/pdf/{id}/{with_prices}', 'SaleController@pdf');
-Route::get('sale/pdf/{id}/{with_prices}/{with_commissions}', 'SaleController@pdf');
+Route::get('sale/pdf/{id}/{with_prices}/{with_costs}/{with_commissions}', 'SaleController@pdf');
 Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
 Route::get('sale/afip-ticket-pdf/{id}', 'SaleController@afipTicketPdf');
 

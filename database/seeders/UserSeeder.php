@@ -121,7 +121,7 @@ class UserSeeder extends Seeder
 
                 $user->extencions()->attach([1, 2, 5, 6, 8]);
                 UserConfiguration::create([
-                    'current_acount_pagado_details'         => 'Recibo de pago (saldado)',
+                    'current_acount_pagado_details'         => 'Saldado',
                     'current_acount_pagandose_details'      => 'Recibo de pago',
                     'iva_included'                          => 0,
                     'limit_items_in_sale_per_page'          => null,

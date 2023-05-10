@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\SaleChartHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SaleProviderOrderHelper;
+use App\Http\Controllers\Helpers\CurrentAcountDeleteSaleHelper;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
 use App\Http\Controllers\Pdf\SalePdf;
 use App\Http\Controllers\Pdf\SaleTicketPdf;
@@ -103,8 +104,10 @@ class SaleController extends Controller
     public function destroy($id) {
         $model = Sale::find($id);
         if ($model->client_id) {
-            $current_acount = new CurrentAcountController();
-            $current_acount->deleteFromSale($model);
+            // $current_acount = new CurrentAcountController();
+            // $current_acount->deleteFromSale($model);
+
+            CurrentAcountDeleteSaleHelper::deleteSale($model);
             $commission = new SellerCommissionController();
             $commission->deleteFromSale($model);
             CurrentAcountHelper::checkSaldos('client', $model->client_id);
@@ -129,9 +132,9 @@ class SaleController extends Controller
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
     }
 
-    function pdf($id, $with_prices, $with_commissions) {
+    function pdf($id, $with_prices, $with_costs, $with_commissions) {
         $sale = Sale::find($id);
-        $pdf = new SalePdf($sale, (boolean)$with_prices, (boolean)$with_commissions);
+        $pdf = new SalePdf($sale, (boolean)$with_prices, (boolean)$with_costs, (boolean)$with_commissions);
     }
 
     function afipTicketPdf($id) {

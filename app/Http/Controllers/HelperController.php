@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\RecalculateCurrentAcountsHelper;
 use App\Models\Article;
 use App\Models\Budget;
 use App\Models\Client;
@@ -19,6 +20,10 @@ use Illuminate\Support\Facades\Storage;
 
 class HelperController extends Controller
 {
+
+    function recaulculateCurrentAcounts($company_name) {
+        RecalculateCurrentAcountsHelper::recalculate($company_name);
+    }
 
     function setProperties($company_name, $for_articles = 0) {
         $for_articles = (boolean) $for_articles;
@@ -98,6 +103,7 @@ class HelperController extends Controller
                 echo '------------------------------------------------------ </br>';
                 $models = GeneralHelper::getModelName($_model['model_name'])::orderBy('id', 'ASC')
                                         ->where('id', '>=', $id)
+                                        ->where('created_at', '>=', Carbon::today()->subWeek())
                                         ->take(10);
                 if (!isset($_model['not_from_user_id'])) {
                     $models = $models->where('user_id', $user->id);

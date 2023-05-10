@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\ClientController;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\CurrentAcountDeletePagoHelper;
+use App\Http\Controllers\Helpers\CurrentAcountDeleteNotaDebitoHelper;
 use App\Http\Controllers\Helpers\DiscountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\PdfPrintCurrentAcounts;
@@ -30,21 +32,21 @@ class CurrentAcountController extends Controller
         $months_ago = Carbon::now()->subMonths($months_ago);
         $models = CurrentAcount::whereDate('created_at', '>=', $months_ago);
         if ($model_name == 'client') {
-            $models = $models->where('client_id', $model_id)
-                            ->with(['budget' => function($q) {
-                                return $q->withAll();
-                            }])
-                            ->with(['order_production' => function($q) {
-                                return $q->withAll();
-                            }])
-                            ->with(['sale' => function($q) {
-                                return $q->withAll();
-                            }]);
+            $models = $models->where('client_id', $model_id);
+                            // ->with(['budget' => function($q) {
+                            //     return $q->withAll();
+                            // }])
+                            // ->with(['order_production' => function($q) {
+                            //     return $q->withAll();
+                            // }])
+                            // ->with(['sale' => function($q) {
+                            //     return $q->withAll();
+                            // }]);
         } else {
-            $models = $models->where('provider_id', $model_id)
-                            ->with(['provider_order' => function($q) {
-                                return $q->withAll();
-                            }]);
+            $models = $models->where('provider_id', $model_id);
+                            // ->with(['provider_order' => function($q) {
+                            //     return $q->withAll();
+                            // }]);
         }
         $models = $models->with('current_acount_payment_methods')
                         ->with('checks')
@@ -151,10 +153,10 @@ class CurrentAcountController extends Controller
     }
 
     function deleteFromSale($sale) {
-        $current_acounts = CurrentAcount::where('sale_id', $sale->id)
+        $current_acount = CurrentAcount::where('sale_id', $sale->id)
                                         ->whereNull('haber')
-                                        ->pluck('id');
-        CurrentAcount::destroy($current_acounts);
+                                        ->first();
+        $current_acount->delete();
     }
 
     function updateSaldo($client_id, $current_acounts) {
@@ -179,6 +181,14 @@ class CurrentAcountController extends Controller
 
     function delete($model_name, $id) {
         $current_acount = CurrentAcount::find($id);
+
+        if ($current_acount->status == 'pago_from_client' || $current_acount->status == 'nota_credito') {
+            $ct = new CurrentAcountDeletePagoHelper($model_name, $current_acount);
+            $ct->deletePago();
+        } else {
+            CurrentAcountDeleteNotaDebitoHelper::deleteNotaDebito($current_acount);
+        }
+
         $current_acount->delete();
         if ($model_name == 'client') {
             $model_id = $current_acount->client_id;

@@ -34,6 +34,7 @@ class CurrentAcountAndCommissionHelper extends Controller {
     }
 
     function attachCommissionsAndCurrentAcounts() {
+        Log::info('attachCommissionsAndCurrentAcounts');
         $this->items_en_pagina = 0;
         $this->items_en_venta = 0;
         $this->pagina = 0;

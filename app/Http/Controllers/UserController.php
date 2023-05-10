@@ -29,6 +29,8 @@ class UserController extends Controller
         UserConfiguration::create([
             'user_id'       => $model->id,
             'iva_included'  => 0,
+            'current_acount_pagado_details' => 'Se saldo',
+            'current_acount_pagandose_details'  => 'Pagandose',
         ]);
         Auth::login($model);
         return response()->json(['model' => $model], 201);

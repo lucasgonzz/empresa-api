@@ -7,7 +7,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Notifications\AddedModel;
 use App\Notifications\DeletedModel;
 use App\Notifications\UpdateModels;
-use App\User;
+use App\Models\User;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Foundation\Bus\DispatchesJobs;
 use Illuminate\Foundation\Validation\ValidatesRequests;
@@ -24,6 +24,10 @@ class Controller extends BaseController
             return $user_id;
         }
         $user = Auth()->user();
+        if (is_null($user) && env('APP_ENV') == 'local') {
+            $user = User::where('company_name', 'lucas')->first();
+            return $user->id;
+        }
         if ($from_owner) {
             if (is_null($user->owner_id)) {
                 return $user->id;

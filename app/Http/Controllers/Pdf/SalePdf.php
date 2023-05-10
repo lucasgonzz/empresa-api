@@ -14,7 +14,7 @@ require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class SalePdf extends fpdf {
 
-	function __construct($sale, $with_prices, $with_seller_commissions) {
+	function __construct($sale, $with_prices, $with_costs, $with_seller_commissions) {
 		parent::__construct();
 		$this->SetAutoPageBreak(false);
 		$this->start_x = 5;
@@ -25,6 +25,7 @@ class SalePdf extends fpdf {
 		$this->user = UserHelper::getFullModel();
 		$this->sale = $sale;
 		$this->with_prices = $with_prices;
+		$this->with_costs = $with_costs;
 		$this->with_seller_commissions = $with_seller_commissions;
 		$this->total_sale = SaleHelper::getTotalSale($this->sale, false, false);
 		$this->total_articles = 0;
@@ -46,7 +47,13 @@ class SalePdf extends fpdf {
 			'Cant' 		=> 15,
 		];
 
-		// dd($this->with_prices);
+		if ($this->with_costs) {
+			$fields = array_merge($fields, [
+				'Costo' 	=> 20,
+			]);
+			$fields['Nombre'] = 45;
+		}
+
 		if ($this->with_prices) {
 			$fields = array_merge($fields, [
 				'Precio' 	=> 25,
@@ -87,9 +94,9 @@ class SalePdf extends fpdf {
 			'model_props' 		=> $this->getModelProps(),
 			'fields' 			=> $this->getFields(),
 		];
-		if (!is_null($this->sale->client) && $this->sale->save_current_acount && count($this->sale->current_acounts) >= 1) {
+		if (!is_null($this->sale->client) && $this->sale->save_current_acount && !is_null($this->sale->current_acount)) {
 			$data = array_merge($data, [
-				'current_acount' 	=> $this->sale->current_acounts[0],
+				'current_acount' 	=> $this->sale->current_acount,
 				'client_id'			=> $this->sale->client_id,
 				'compra_actual'		=> SaleHelper::getTotalSale($this->sale),
 			]);
@@ -101,6 +108,7 @@ class SalePdf extends fpdf {
 	function Footer() {
 		if ($this->with_prices) {
 			$this->total();
+			$this->totalCosts();
 			$this->discounts();
 			$this->surchages();
 			$this->saleType();
@@ -178,6 +186,16 @@ class SalePdf extends fpdf {
 			0, 
 			'C'
 		);
+		if ($this->with_costs) {
+			$this->Cell(
+				$this->getFields()['Costo'], 
+				$this->line_height, 
+				'$'.$item->pivot->cost, 
+				$this->b, 
+				0, 
+				'C'
+			);
+		}
 		if ($this->with_prices) {
 			$this->Cell(
 				$this->getFields()['Precio'], 
@@ -236,7 +254,7 @@ class SalePdf extends fpdf {
 		if (!is_null($this->sale->sale_type)) {
 	    	$this->SetX(5);
 	    	$this->SetFont('Arial', '', 9);
-	    	$this->Cell(65,5,'Tipo de venta: '.$this->sale->sale_type->name, 1, 1, 'L');
+	    	$this->Cell(65,5,'Tipo de venta: '.$this->sale->sale_type->name, 0, 1, 'L');
 		}
 	}
 
@@ -246,13 +264,27 @@ class SalePdf extends fpdf {
 	    $this->SetFont('Arial', 'B', 12);
 		$this->Cell(
 			100,
-			10,
+			7,
 			'Total: $'. Numbers::price($this->total_sale),
 			$this->b,
-			0,
+			1,
 			'L'
 		);
-		$this->y += 10;
+	}
+
+	function totalCosts() {
+		if ($this->with_costs) {
+		    $this->x = $this->start_x;
+		    $this->SetFont('Arial', 'B', 12);
+			$this->Cell(
+				100,
+				7,
+				'Costos: $'. Numbers::price(SaleHelper::getTotalCostSale($this->sale)),
+				$this->b,
+				1,
+				'L'
+			);
+		}
 	}
 
 	function discounts() {
@@ -344,7 +376,7 @@ class SalePdf extends fpdf {
 		    $this->Cell(
 				50, 
 				10, 
-				'Total: $'.Numbers::price(SaleHelper::getTotalSale($this->sale)), 
+				'Total: $'.Numbers::price(SaleHelper::getTotalSale($this->sale, true, true, true)), 
 				$this->b, 
 				1, 
 				'L'

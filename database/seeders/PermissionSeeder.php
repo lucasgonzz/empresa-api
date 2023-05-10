@@ -125,5 +125,24 @@ class PermissionSeeder extends Seeder
                 ]);
             }
         }
+        $permissions = [
+            [
+                'singular'      => 'Reportes',
+                'plural'        => 'Estadisticas',
+                'en'            => 'caja.reports',
+            ],
+            [
+                'singular'      => 'Ver Estadisticas',
+                'plural'        => 'Estadisticas',
+                'en'            => 'caja.charts',
+            ],
+        ];
+        foreach ($permissions as $permission) {
+            PermissionEmpresa::create([
+                'model_name'    => $permission['plural'],
+                'name'          => $permission['singular'],
+                'slug'          => $permission['en'],
+            ]);
+        }
     }
 }

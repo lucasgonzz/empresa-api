@@ -13,7 +13,7 @@ use Illuminate\Support\Facades\Log;
 class SellerCommissionHelper {
 
     static function checkCommissionStatus($current_acount) {
-        Log::info('Checkeando la comision de la venta id '.$current_acount->sale_id);
+        // Log::info('Checkeando la comision de la venta n°'.$current_acount->sale->num);
         $seller_commissions = SellerCommission::where('sale_id', $current_acount->sale_id)
                                                 ->get();
         foreach ($seller_commissions as $seller_commission) {
@@ -21,7 +21,7 @@ class SellerCommissionHelper {
             // Log::info('seller_commission status: '.$seller_commission->status);
             if ($seller_commission->status == 'inactive') {
                 $seller_commission->status = 'active';
-                // Log::info('Se puso en active');
+                Log::info('Se puso en active');
                 $seller_commission->save();
             }
         }
@@ -52,20 +52,6 @@ class SellerCommissionHelper {
                 ]);
             }
         }
-        // if (!is_null($commissions)) {
-    	// 	$seller_commission = SellerCommission::create([
-        //         'num'           => $ct->num('seller_commissions'),
-    	// 		'seller_id'		=> $current_acount->seller_id,
-    	// 		'sale_id'		=> $current_acount->sale_id,
-        //         'description'   => Self::getDescription($current_acount),
-    	// 		'percentage'	=> $commission['percentage'],
-    	// 		'debe'		    => $commission['debe'],
-        //         'status'        => Self::getStatus($current_acount->seller),
-        //         'user_id'       => $ct->userId(),
-    	// 	]);
-        //     $seller_commission->saldo = Self::getSaldo($seller_commission) + $seller_commission->debe;
-        //     $seller_commission->save();
-        // }
 	}
 
     static function createCommission($data) {
