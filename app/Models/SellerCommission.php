@@ -20,4 +20,8 @@ class SellerCommission extends Model
     function seller() {
         return $this->belongsTo(Seller::class);
     }
+
+    function pagada_por() {
+        return $this->belongsToMany(CurrentAcount::class);
+    }
 }

@@ -3,41 +3,29 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Controller;
-use App\Http\Controllers\Helpers\CommissionHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
-use App\Http\Controllers\Helpers\DiscountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SellerCommissionHelper;
-use App\Http\Controllers\Helpers\UserHelper;
-use App\Models\Article;
 use App\Models\Client;
-use App\Models\Commission;
-use App\Models\Commissioner;
 use App\Models\CurrentAcount;
-use App\Models\Discount;
 use App\Models\Sale;
-use App\Models\SaleType;
-use App\Models\SellerCommission;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
 class CurrentAcountAndCommissionHelper extends Controller {
 
-    function __construct($sale, $discounts, $surchages, $index = null) {
-        $this->user = UserHelper::getFullModel();
+    public $sale;
+    public $created_current_acount;
+
+    function __construct($sale, $index = null) {
         $this->sale = $sale;
-        $this->discounts = $discounts;
-        $this->surchages = $surchages;
-        $this->client = $sale->client;
         $this->index = $index;
     }
 
     function attachCommissionsAndCurrentAcounts() {
-        Log::info('attachCommissionsAndCurrentAcounts');
         $this->items_en_pagina = 0;
         $this->items_en_venta = 0;
-        $this->pagina = 0;
         $this->debe = 0;
         $this->total_articles = 0;
         $this->total_combos = 0;
@@ -45,7 +33,6 @@ class CurrentAcountAndCommissionHelper extends Controller {
         $this->debe = 0;
         foreach ($this->sale->articles as $article) {
             $this->items_en_venta++;
-            $this->items_en_pagina++;
             $this->debe += SaleHelper::getTotalItem($article);
             $this->total_articles += SaleHelper::getTotalItem($article);
             if ($this->items_en_venta == $this->totalItems()) {
@@ -81,19 +68,15 @@ class CurrentAcountAndCommissionHelper extends Controller {
     }
 
     function proccessCurrentAcount() {
-        $this->pagina++;
         $this->debe_sin_descuentos = $this->debe;
         $this->debe = SaleHelper::getTotalWithDiscountsAndSurchages($this->sale, $this->total_articles, $this->total_combos, $this->total_services);
         $this->createCurrentAcount();
-
-        // ACA TERMINARIA
-        // $this->items_en_pagina = 0;
-        // $this->debe = 0;
+        $this->updateClientSaldo();
+        SellerCommissionHelper::commissionForSeller($this->created_current_acount);
     }
 
     function createCurrentAcount() {
-        // Log::info('por poner debe de '.$this->debe);
-        $current_acount = CurrentAcount::create([
+        $this->created_current_acount = CurrentAcount::create([
             'detalle'     => 'Venta N°'.$this->sale->num,
             'debe'        => $this->debe,
             'status'      => 'sin_pagar',
@@ -103,20 +86,14 @@ class CurrentAcountAndCommissionHelper extends Controller {
             'description' => CurrentAcountHelper::getDescription($this->sale, $this->debe_sin_descuentos),
             'created_at' => $this->getCreatedAt(),
         ]);
-        $current_acount->saldo = Numbers::redondear(CurrentAcountHelper::getSaldo('client', $this->sale->client_id, $current_acount) + $this->debe);
-        $current_acount->save();
-        $client = Client::find($this->sale->client_id);
-        $client->saldo = $current_acount->saldo;
-        $client->save();
-        Log::info('Se creo cuenta corriente para la venta N° '.$this->sale->num);
-        SellerCommissionHelper::commissionForSeller($current_acount);
+        $this->created_current_acount->saldo = Numbers::redondear(CurrentAcountHelper::getSaldo('client', $this->sale->client_id, $this->created_current_acount) + $this->debe);
+        $this->created_current_acount->save();
     }
 
-    function getDetalle() {
-        $detalle = 'Comision '.$this->client->name.' remito '.$this->sale->num;
-        $detalle .= ' pag '.$this->pagina;
-        $detalle .= ' ($'.Numbers::price($this->debe).')';
-        return $detalle;
+    function updateClientSaldo() {
+        $client = Client::find($this->sale->client_id);
+        $client->saldo = $this->created_current_acount->saldo;
+        $client->save();
     }
 
     function getCreatedAt() {

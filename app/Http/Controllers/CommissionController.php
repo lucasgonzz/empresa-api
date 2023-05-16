@@ -27,7 +27,9 @@ class CommissionController extends Controller
             'percentage'            => $request->percentage,
             'user_id'               => $this->userId(),
         ]);
-        GeneralHelper::attachModels($model, 'sellers', $request->sellers, ['percentage']);
+        GeneralHelper::attachModels($model, 'for_all_sellers', $request->for_all_sellers, ['percentage']);
+        GeneralHelper::attachModels($model, 'for_only_sellers', $request->for_only_sellers, []);
+        GeneralHelper::attachModels($model, 'except_sellers', $request->except_sellers, []);
         $this->sendAddModelNotification('Commission', $model->id);
         return response()->json(['model' => $this->fullModel('Commission', $model->id)], 201);
     }  
@@ -43,7 +45,9 @@ class CommissionController extends Controller
         $model->sale_type_id          = $request->sale_type_id;
         $model->percentage            = $request->percentage;
         $model->save();
-        GeneralHelper::attachModels($model, 'sellers', $request->sellers, ['percentage']);
+        GeneralHelper::attachModels($model, 'for_all_sellers', $request->for_all_sellers, ['percentage']);
+        GeneralHelper::attachModels($model, 'for_only_sellers', $request->for_only_sellers, []);
+        GeneralHelper::attachModels($model, 'except_sellers', $request->except_sellers, []);
         $this->sendAddModelNotification('Commission', $model->id);
         return response()->json(['model' => $this->fullModel('Commission', $model->id)], 200);
     }

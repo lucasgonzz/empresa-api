@@ -139,4 +139,6 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::delete('seller-commission/{id}', 'SellerCommissionController@destroy');
 
     Route::resource('sale-type', 'SaleTypeController');
+
+    Route::get('pagado-por/{model_name}/{model_id}/{debe_id}/{haber_id}', 'PagadoPorController@index');
 });

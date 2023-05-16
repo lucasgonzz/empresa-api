@@ -14,7 +14,7 @@ require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class SalePdf extends fpdf {
 
-	function __construct($sale, $with_prices, $with_costs, $with_seller_commissions) {
+	function __construct($sale, $with_prices, $with_costs) {
 		parent::__construct();
 		$this->SetAutoPageBreak(false);
 		$this->start_x = 5;
@@ -26,7 +26,6 @@ class SalePdf extends fpdf {
 		$this->sale = $sale;
 		$this->with_prices = $with_prices;
 		$this->with_costs = $with_costs;
-		$this->with_seller_commissions = $with_seller_commissions;
 		$this->total_sale = SaleHelper::getTotalSale($this->sale, false, false);
 		$this->total_articles = 0;
 		$this->total_services = 0;
@@ -112,7 +111,7 @@ class SalePdf extends fpdf {
 			$this->discounts();
 			$this->surchages();
 			$this->saleType();
-			if ($this->with_seller_commissions) {
+			if ($this->with_costs) {
 				$this->commissions();
 			}
 			$this->totalFinal();
@@ -289,7 +288,7 @@ class SalePdf extends fpdf {
 
 	function discounts() {
 		if (count($this->sale->discounts) >= 1) {
-		    $this->SetFont('Arial', '', 9);
+		    $this->SetFont('Arial', 'B', 11);
 		    $total_sale = $this->total_sale;
 		    foreach ($this->sale->discounts as $discount) {
 		    	$this->x = $this->start_x;
@@ -373,10 +372,15 @@ class SalePdf extends fpdf {
 		if (count($this->sale->discounts) >= 1 || count($this->sale->surchages) >= 1 || count($this->sale->seller_commissions) >= 1) {
 	    	$this->SetFont('Arial', 'B', 12);
 	    	$this->x = 5;
+	    	if ($this->with_costs) {
+	    		$total = SaleHelper::getTotalSale($this->sale, true, true, true);
+	    	} else {
+	    		$total = SaleHelper::getTotalSale($this->sale, true, true, false);
+	    	}
 		    $this->Cell(
 				50, 
 				10, 
-				'Total: $'.Numbers::price(SaleHelper::getTotalSale($this->sale, true, true, true)), 
+				'Total: $'.Numbers::price($total), 
 				$this->b, 
 				1, 
 				'L'

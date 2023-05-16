@@ -26,6 +26,16 @@ class UserSeeder extends Seeder
         $ct = new Controller();
         $models = [
             [
+                'name'              => 'Marcos',
+                'company_name'      => 'Marcos',
+                'image_url'         => env('APP_URL').'/storage/cubo.jpeg',
+                'doc_number'        => '1234',
+                'email'             => 'marcosgonzalez5500@gmail.com',
+                'password'          => bcrypt('1234'),
+                'visible_password'  => null,
+            ],
+            [
+                'id'                            => 2,
                 'name'                          => 'Lucas Gonzalez',
                 'company_name'                  => 'Lucas',
                 'image_url'                     => env('APP_URL').'/storage/cubo.jpeg',
@@ -51,21 +61,12 @@ class UserSeeder extends Seeder
                 'max_items_in_sale'             => 2,
             ],
             [
-                'name'              => 'Marcos',
-                'company_name'      => 'Marcos',
-                'image_url'         => env('APP_URL').'/storage/cubo.jpeg',
-                'doc_number'        => '1234',
-                'email'             => 'marcosgonzalez5500@gmail.com',
-                'password'          => bcrypt('1234'),
-                'visible_password'  => null,
-            ],
-            [
                 'name'              => 'Juan',
                 'doc_number'        => '1',
                 'email'             => 'lucasgonzalez550022@gmail.com',
                 'password'          => bcrypt('1'),
                 'visible_password'  => '1',
-                'owner_id'          => 1,
+                'owner_id'          => 2,
                 'image_url'         => null,
                 'permissions_slug'    => [
                     'article.index',
@@ -82,7 +83,7 @@ class UserSeeder extends Seeder
                 'password'          => bcrypt('2'),
                 'visible_password'  => '2',
                 'image_url'         => null,
-                'owner_id'          => 1,
+                'owner_id'          => 2,
                 'permissions_slug'    => [
                     'article.index',
                     'article.delete',

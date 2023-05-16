@@ -12,10 +12,11 @@ use Illuminate\Support\Facades\Log;
 
 class SellerCommissionHelper {
 
-    static function checkCommissionStatus($current_acount) {
+    static function checkCommissionStatus($current_acount, $pago) {
         // Log::info('Checkeando la comision de la venta n°'.$current_acount->sale->num);
         $seller_commissions = SellerCommission::where('sale_id', $current_acount->sale_id)
                                                 ->get();
+        Log::info($seller_commissions);
         foreach ($seller_commissions as $seller_commission) {
             // Log::info('seller_commission id: '.$seller_commission->id);
             // Log::info('seller_commission status: '.$seller_commission->status);
@@ -23,6 +24,7 @@ class SellerCommissionHelper {
                 $seller_commission->status = 'active';
                 Log::info('Se puso en active');
                 $seller_commission->save();
+                $seller_commission->pagada_por()->attach($pago->id);
             }
         }
     }
@@ -30,29 +32,55 @@ class SellerCommissionHelper {
 	static function commissionForSeller($current_acount) {
 		$commissions = Self::getCommissions($current_acount);
         foreach ($commissions as $commission) {
-            if (count($commission->sellers) >= 1) {
-                foreach ($commission->sellers as $seller) {
+            if (!Self::isExcept($commission, $current_acount->seller_id) && !Self::isForOnlySeller($commission, $current_acount->seller_id)) {
+                if (count($commission->for_all_sellers) >= 1) {
+                    foreach ($commission->for_all_sellers as $seller) {
+                        Self::createCommission([
+                            'seller_id'     => $seller->id,
+                            'sale_id'       => $current_acount->sale_id,
+                            'description'   => Self::getDescription($current_acount),
+                            'percentage'    => $seller->pivot->percentage,
+                            'debe'          => $current_acount->debe * $seller->pivot->percentage / 100,
+                            'status'        => Self::getStatus($seller),
+                        ]);
+                    }
+                } else {
                     Self::createCommission([
-                        'seller_id'     => $seller->id,
+                        'seller_id'     => $current_acount->seller_id,
                         'sale_id'       => $current_acount->sale_id,
                         'description'   => Self::getDescription($current_acount),
-                        'percentage'    => $seller->pivot->percentage,
-                        'debe'          => $current_acount->debe * $seller->pivot->percentage / 100,
-                        'status'        => Self::getStatus($seller),
+                        'percentage'    => $commission->percentage,
+                        'debe'          => $current_acount->debe * $commission->percentage / 100,
+                        'status'        => Self::getStatus($current_acount->seller),
                     ]);
                 }
-            } else {
-                Self::createCommission([
-                    'seller_id'     => $current_acount->seller_id,
-                    'sale_id'       => $current_acount->sale_id,
-                    'description'   => Self::getDescription($current_acount),
-                    'percentage'    => $commission->percentage,
-                    'debe'          => $current_acount->debe * $commission->percentage / 100,
-                    'status'        => Self::getStatus($current_acount->seller),
-                ]);
             }
         }
 	}
+
+    static function isExcept($commission, $seller_id) {
+        $is_except = false;
+        if (count($commission->except_sellers) >= 1) {
+            foreach ($commission->except_sellers as $except_seller) {
+                if ($except_seller->id == $seller_id) {
+                    $is_except = true;
+                }
+            }
+        }
+        return $is_except;
+    }
+
+    static function isForOnlySeller($commission, $seller_id) {
+        $is_for_only_seller = false;
+        if (count($commission->for_only_sellers) >= 1) {
+            foreach ($commission->for_only_sellers as $for_only_seller) {
+                if ($for_only_seller->id != $seller_id) {
+                    $is_for_only_seller = true;
+                }
+            }
+        }
+        return $is_for_only_seller;
+    }
 
     static function createCommission($data) {
         $ct = new Controller();
@@ -73,14 +101,12 @@ class SellerCommissionHelper {
 
     static function getCommissions($current_acount) {
         $total_discounts_percetage = DiscountHelper::getTotalDiscountsPercentage($current_acount->sale->discounts);
-        // Log::info('total_discounts_percetage: '.$total_discounts_percetage);
         $commissions = Commission::where('user_id', UserHelper::userId())->get();
         $commission_to_create = [];
         foreach ($commissions as $commission) {
-            // Log::info('comparando $commission->sale_type_id = '.$commission->sale_type_id.' con $current_acount->sale->sale_type_id = '.$current_acount->sale->sale_type_id);
-            if (is_null($commission->sale_type_id) || $commission->sale_type_id == 0 || $commission->sale_type_id == $current_acount->sale->sale_type_id) {
-                // Log::info('entro con $commission->sale_type_id = '.$commission->sale_type_id);
-                // Log::info('comparando $total_discounts_percetage = '.$total_discounts_percetage.' >= que $commission->from = '.$commission->from. ' && $total_discounts_percetage = '.$total_discounts_percetage.' <= que $commission->until = '.$commission->until);
+            if (
+                is_null($commission->sale_type_id) || $commission->sale_type_id == 0 
+                || $commission->sale_type_id == $current_acount->sale->sale_type_id) {
                 if ((is_null($commission->from) || $total_discounts_percetage >= $commission->from) && (is_null($commission->until) || $total_discounts_percetage <= $commission->until)) {
                     $commission_to_create[] = $commission;
                 } 

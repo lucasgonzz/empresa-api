@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Client;
 use App\Models\User;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Log;
 
 class ClientSeeder extends Seeder
 {
@@ -55,9 +56,19 @@ class ClientSeeder extends Seeder
                 'user_id'               => $user->id,
                 'comercio_city_user_id' => null,
             ],
+            [
+                'id'                    => 784,
+                'name'                  => 'Gregorio',
+                'seller_id'             => 3,
+                'user_id'               => $user->id,
+            ]
         ];
         foreach ($models as $model) {
-            Client::create($model);
+            $client = Client::create($model);
+            if (isset($model['id'])) {
+                $client->id = $model['id'];
+                $client->save();
+            }
         }
     }
 }

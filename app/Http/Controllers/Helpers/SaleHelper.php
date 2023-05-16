@@ -19,15 +19,23 @@ use App\Http\Controllers\SellerCommissionController;
 use App\Models\Article;
 use App\Models\Client;
 use App\Models\Commissioner;
+use App\Models\CurrentAcount;
 use App\Models\Discount;
 use App\Models\Sale;
 use App\Models\SaleType;
+use App\Models\SellerCommission;
 use App\Models\Service;
 use App\Models\Variant;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
 class SaleHelper extends Controller {
+
+    static function updatePreivusClient($sale, $previus_client_id) {
+        if (!is_null($sale->client_id) && $sale->client_id != $previus_client_id) {
+            CurrentAcountHelper::checkSaldos('client', $previus_client_id);
+        }
+    }
 
     static function sendUpdateClient($instance, $sale) {
         if (!is_null($sale->client_id)) {
@@ -85,13 +93,13 @@ class SaleHelper extends Controller {
     }
 
     static function attachProperies($model, $request, $from_store = true) {
-        Self::attachArticles($model, $request->items);
+        Self::attachArticles($model, $request->items, $from_store);
         Self::attachCombos($model, $request->items);
         Self::attachServices($model, $request->items);
         Self::attachDiscounts($model, $request->discounts_id);
         Self::attachSurchages($model, $request->surchages_id);
         if ($from_store) {
-            Self::attachCurrentAcountsAndCommissions($model, $request->client_id, $request->discounts_id, $request->surchages_id);
+            Self::attachCurrentAcountsAndCommissions($model);
             Self::saveAfipTicket($model);
         } else {
             Self::checkNotaCredito($model, $request);
@@ -145,44 +153,21 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function attachCurrentAcountsAndCommissions($sale, $client_id, $discounts_id, $surchages_id) {
-        Log::info('client_id: '.$client_id);
-        Log::info($sale->save_current_acount);
-        if ($client_id && $sale->save_current_acount) {
-            Log::info('2');
-            $discounts = GeneralHelper::getModelsFromId('Discount', $discounts_id);
-            $surchages = GeneralHelper::getModelsFromId('Surchage', $surchages_id);
-            $helper = new CurrentAcountAndCommissionHelper($sale, $discounts, $surchages);
+    static function attachCurrentAcountsAndCommissions($sale) {
+        if (!is_null($sale->client_id) && $sale->save_current_acount) {
+            $helper = new CurrentAcountAndCommissionHelper($sale);
             $helper->attachCommissionsAndCurrentAcounts();
+
+            // CurrentAcountHelper::checkSaldos('client', $sale->client_id);
         }
     }
 
-    static function getCantPag($sale) {
-        $pag = 1;
-        $count = 0;
-        foreach ($sale->articles as $article) {
-            $count++;
-            if ($count > 30) {
-                $pag++;
-                $count = 0;
-            }
+    static function attachArticles($sale, $articles, $from_store) {
+        if (!$from_store) {
+            Log::info('Actualizado venta id: '.$sale->id.' num: '.$sale->num);
+            Log::info('Llegaron estos articulos');
+            Log::info($articles);
         }
-        return $pag;
-    }
-
-    static function getArticleSalePrice($sale, $article) {
-        $price = (float)$article['price_vender'];
-        if (!is_null($sale->special_price_id)) {
-            foreach ($article['special_prices'] as $special_price) {
-                if ($special_price['id'] == $sale->special_price_id) {
-                    $price = (float)$special_price['pivot']['price'];
-                }
-            }
-        }
-        return $price;
-    }
-
-    static function attachArticles($sale, $articles) {
         foreach ($articles as $article) {
             if (isset($article['is_article'])) {
                 $sale->articles()->attach($article['id'], [
@@ -241,27 +226,35 @@ class SaleHelper extends Controller {
     }
 
     static function updateCurrentAcountsAndCommissions($sale) {
-        // Se eliminan las cuentas corrientes y se actualizan los saldos se las siguientes
-        $current_acount_ct = new CurrentAcountController();
-        $current_acount_ct->deleteFromSale($sale);
+        Self::deleteCurrentAcountFromSale($sale);
+        Self::deleteSellerCommissionsFromSale($sale);
 
-        // Se eliminan las comisiones y se actualizan los saldos se las siguientes
-        $commission_ct = new SellerCommissionController();
-        $commission_ct->deleteFromSale($sale);
-
-        $helper = new CurrentAcountAndCommissionHelper($sale, $sale->discounts, $sale->surchages);
+        $helper = new CurrentAcountAndCommissionHelper($sale);
         $helper->attachCommissionsAndCurrentAcounts();
 
+        $sale->client->pagos_checkeados = 0;
+        $sale->client->save();
+
         CurrentAcountHelper::checkSaldos('client', $sale->client_id);
-        // $client_controller = new ClientController();
-        // $current_acount_ct->checkSaldos($sale->client_id);
+
     }
 
-    // static function checkCommissions($id) {
-    //     $sale = Sale::find($id);
-    //     // Self::updateCurrentAcountsAndCommissions($sale, false);
-    //     Self::updateCurrentAcountsAndCommissions($sale, true);
-    // }
+    static function deleteCurrentAcountFromSale($sale) {
+        $current_acount = CurrentAcount::where('sale_id', $sale->id)
+                                        ->whereNull('haber')
+                                        ->first();
+        if (!is_null($current_acount)) {
+            $current_acount->pagado_por()->detach();
+            $current_acount->delete();
+        }
+    }
+
+    static function deleteSellerCommissionsFromSale($sale) {
+        $seller_commissions = SellerCommission::where('sale_id', $sale->id)
+                                            ->whereNull('haber')
+                                            ->pluck('id');
+        SellerCommission::destroy($seller_commissions);
+    }
 
     static function getDiscount($item) {
         if (isset($item['discount'])) {

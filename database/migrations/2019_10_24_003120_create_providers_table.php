@@ -32,6 +32,7 @@ class CreateProvidersTable extends Migration
             $table->integer('comercio_city_user_id')->unsigned()->nullable();
             $table->integer('user_id')->unsigned();
             $table->enum('status', ['active', 'inactive'])->default('active');
+            $table->boolean('pagos_checkeados')->default(0);
             $table->softDeletes();
 
             $table->foreign('user_id')

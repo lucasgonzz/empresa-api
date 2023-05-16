@@ -4,16 +4,18 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\ClientController;
 use App\Http\Controllers\CommissionController;
-use App\Http\Controllers\Helpers\CurrentAcountHelper;
-use App\Http\Controllers\Helpers\CurrentAcountDeletePagoHelper;
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\CurrentAcountDeleteNotaDebitoHelper;
+use App\Http\Controllers\Helpers\CurrentAcountDeletePagoHelper;
+use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
 use App\Http\Controllers\Helpers\DiscountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\PdfPrintCurrentAcounts;
-use App\Http\Controllers\Pdf\NotaCreditoPdf;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Pdf\CurrentAcountPdf;
+use App\Http\Controllers\Pdf\NotaCreditoPdf;
 use App\Http\Controllers\Pdf\PagoPdf;
 use App\Imports\CurrentAcountsImport;
 use App\Models\Commissioner;
@@ -33,26 +35,15 @@ class CurrentAcountController extends Controller
         $models = CurrentAcount::whereDate('created_at', '>=', $months_ago);
         if ($model_name == 'client') {
             $models = $models->where('client_id', $model_id);
-                            // ->with(['budget' => function($q) {
-                            //     return $q->withAll();
-                            // }])
-                            // ->with(['order_production' => function($q) {
-                            //     return $q->withAll();
-                            // }])
-                            // ->with(['sale' => function($q) {
-                            //     return $q->withAll();
-                            // }]);
         } else {
             $models = $models->where('provider_id', $model_id);
-                            // ->with(['provider_order' => function($q) {
-                            //     return $q->withAll();
-                            // }]);
         }
         $models = $models->with('current_acount_payment_methods')
                         ->with('checks')
+                        ->with('pagado_por')
                         ->orderBy('created_at', 'ASC')
                         ->get();
-        $models = CurrentAcountHelper::format($models);
+        // $models = CurrentAcountHelper::format($models);
         return response()->json(['models' => $models], 200);
     }
 
@@ -63,15 +54,17 @@ class CurrentAcountController extends Controller
             'status'                            => 'pago_from_client',
             'user_id'                           => $this->userId(),
             'num_receipt'                       => CurrentAcountHelper::getNumReceipt(),
+            'to_pay_id'                         => !is_null($request->to_pay) ? $request->to_pay['id'] : null,
             'client_id'                         => $request->model_name == 'client' ? $request->model_id : null,
             'provider_id'                       => $request->model_name == 'provider' ? $request->model_id : null,
             'created_at'                        => CurrentAcountHelper::getCreatedAt($request),
         ]);
-        $to_pay_id = !is_null($request->to_pay) ? $request->to_pay['id'] : null;
-        CurrentAcountHelper::attachPaymentMethods($pago, $request->current_acount_payment_methods);
+        CurrentAcountPagoHelper::attachPaymentMethods($pago, $request->current_acount_payment_methods);
         $pago->saldo = CurrentAcountHelper::getSaldo($request->model_name, $request->model_id, $pago) - $request->haber;
-        $pago->detalle = CurrentAcountHelper::procesarPago($request->model_name, $request->model_id, $request->haber, $pago, $to_pay_id);
+        $pago->detalle = 'Pago N°'.$pago->num_receipt;
         $pago->save();
+        $pago_helper = new CurrentAcountPagoHelper($request->model_name, $request->model_id, $pago);
+        $pago_helper->init();
         if (!$request->current_date) {
             CurrentAcountHelper::checkSaldos($request->model_name, $request->model_id);
         }
@@ -125,40 +118,6 @@ class CurrentAcountController extends Controller
         return response()->json(['current_acount' => $current_acount], 201);
     }
 
-    function checkPagos($client_id) {
-        $current_acounts_pagadas = CurrentAcount::where(function($query) use ($client_id) {
-                                            $query->where('client_id', $client_id)
-                                                ->where('status', 'pagandose');
-                                        })
-                                        ->orWhere(function($query) use ($client_id) {
-                                            $query->where('client_id', $client_id)
-                                                ->where('status', 'pagado');
-                                        })
-                                        ->get();
-        foreach ($current_acounts_pagadas as $current_acount) {
-            $current_acount->update([
-                'status' => 'sin_pagar',
-                'pagandose' => null,
-            ]);
-        }
-        $pagos = CurrentAcount::where([['client_id', $client_id], ['status', 'pago_from_client']])
-                                ->orWhere([['client_id', $client_id], ['status', 'nota_credito']])
-                                ->orderBy('created_at', 'ASC')
-                                ->get();
-        foreach ($pagos as $pago) {
-            $detalle = $this->procesarPago($pago->haber, $client_id, $pago);
-            $pago->detalle = $detalle;
-            $pago->save();
-        }
-    }
-
-    function deleteFromSale($sale) {
-        $current_acount = CurrentAcount::where('sale_id', $sale->id)
-                                        ->whereNull('haber')
-                                        ->first();
-        $current_acount->delete();
-    }
-
     function updateSaldo($client_id, $current_acounts) {
         foreach ($current_acounts as $current_acount) {
             if ($this->esUnPago($current_acount)) {
@@ -183,8 +142,10 @@ class CurrentAcountController extends Controller
         $current_acount = CurrentAcount::find($id);
 
         if ($current_acount->status == 'pago_from_client' || $current_acount->status == 'nota_credito') {
-            $ct = new CurrentAcountDeletePagoHelper($model_name, $current_acount);
-            $ct->deletePago();
+            // $ct = new CurrentAcountDeletePagoHelper($model_name, $current_acount);
+            // $ct->deletePago();
+            $current_acount->pagando_a()->detach();
+            CurrentAcountHelper::updateSellerCommissionsStatus($current_acount);            
         } else {
             CurrentAcountDeleteNotaDebitoHelper::deleteNotaDebito($current_acount);
         }
@@ -195,12 +156,10 @@ class CurrentAcountController extends Controller
         } else {
             $model_id = $current_acount->provider_id;
         }
+        $model = GeneralHelper::getModelName($model_name)::find($model_id);
+        $model->pagos_checkeados = 0;
+        $model->save();
         CurrentAcountHelper::checkSaldos($model_name, $model_id);
-    }
-
-    function checkSaldos($model_name, $model_id) {
-        CurrentAcountHelper::checkSaldos($model_name, $model_id);
-        echo('Listo');
     }
 
     function pdfFromModel($model_name, $model_id, $months_ago) {

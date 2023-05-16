@@ -24,6 +24,8 @@ Route::get('check-budgets-status/{company_name}', 'HelperController@checkBudgetS
 Route::get('clientes-repetidos/{company_name}', 'HelperController@clientesRepetidos');
 Route::get('clients-sellers', 'HelperController@setClientSeller');
 Route::get('recalculate-current-acounts/{company_name}', 'HelperController@recaulculateCurrentAcounts');
+Route::get('check-pagos/{model_name}/{model_id}/{si_o_si}', 'Helpers\CurrentAcountHelper@checkPagos');
+Route::get('check-saldos/{model_name}/{id}', 'Helpers\CurrentAcountHelper@checkSaldos');
 
 Route::get('get-persona', 'AfipWsController@getPersona');
 
@@ -34,7 +36,7 @@ Route::post('user', 'UserController@store');
 
 // PDF
 // Route::get('sale/pdf/{id}/{with_prices}', 'SaleController@pdf');
-Route::get('sale/pdf/{id}/{with_prices}/{with_costs}/{with_commissions}', 'SaleController@pdf');
+Route::get('sale/pdf/{id}/{with_prices}/{with_costs}', 'SaleController@pdf');
 Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
 Route::get('sale/afip-ticket-pdf/{id}', 'SaleController@afipTicketPdf');
 
@@ -56,5 +58,4 @@ Route::get('user/register-payment/{company_name}', 'CommonLaravel\UserController
 Route::get('caja', 'SaleController@caja');
 Route::get('sale/charts/{from}/{to}', 'SaleController@charts');
 
-Route::get('check-saldos/{model_name}/{id}', 'CurrentAcountController@checkSaldos');
 

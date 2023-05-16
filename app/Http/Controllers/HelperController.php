@@ -22,7 +22,31 @@ class HelperController extends Controller
 {
 
     function recaulculateCurrentAcounts($company_name) {
-        RecalculateCurrentAcountsHelper::recalculate($company_name);
+        $user = User::where('company_name', $company_name)->first();
+        $clients = Client::where('user_id', $user->id)
+                            ->get();
+        foreach ($clients as $client) {
+            echo 'Cliente '.$client->name.' </br>';
+            CurrentAcountHelper::checkSaldos('client', $client->id);
+            CurrentAcountHelper::checkPagos('client', $client->id);
+            foreach ($client->current_acounts as $current_acount) {
+                echo 'CC del '.date_format($current_acount->created_at, 'd/m/Y').' </br>';
+                if (!is_null($current_acount->debe)) {
+                    if (!is_null($current_acount->sale_id)) {
+                        $current_acount->detalle = 'Venta N°'.$current_acount->sale->num;
+                    } else {
+                        $current_acount->detalle = 'Nota debito';
+                    }
+                } else if (!is_null($current_acount->haber)) {
+                    if ($current_acount->status == 'nota_credito') {
+                        $current_acount->detalle = 'Nota Credito N°'.$current_acount->num_receipt;
+                    } else {
+                        $current_acount->detalle = 'Pago N°'.$current_acount->num_receipt;
+                    }
+                }
+                $current_acount->save();
+            }
+        }
     }
 
     function setProperties($company_name, $for_articles = 0) {
@@ -73,9 +97,9 @@ class HelperController extends Controller
                 [
                     'model_name' => 'address',
                 ],
-                // [
-                //     'model_name' => 'sale',
-                // ],
+                [
+                    'model_name' => 'sale',
+                ],
                 [
                     'model_name' => 'provider',
                 ],
@@ -103,7 +127,7 @@ class HelperController extends Controller
                 echo '------------------------------------------------------ </br>';
                 $models = GeneralHelper::getModelName($_model['model_name'])::orderBy('id', 'ASC')
                                         ->where('id', '>=', $id)
-                                        ->where('created_at', '>=', Carbon::today()->subWeek())
+                                        // ->where('created_at', '>=', Carbon::today()->subWeek())
                                         ->take(10);
                 if (!isset($_model['not_from_user_id'])) {
                     $models = $models->where('user_id', $user->id);
@@ -124,26 +148,26 @@ class HelperController extends Controller
                 if ($for_articles) {
                     foreach ($models as $model) {
                         if ($model->status == 'inactive') {
-                            // echo 'Se elimino '.$model->name.' </br>';
-                            // $model->delete();
+                            echo 'Se elimino '.$model->name.' </br>';
+                            $model->delete();
                         } else {
-                            // ArticleHelper::setFinalPrice($model, $user->id);
-                            // echo('Se seteo precio final de '.$model->name.'. Quedo en '.$model->final_price.' </br>');
+                            ArticleHelper::setFinalPrice($model, $user->id);
+                            echo('Se seteo precio final de '.$model->name.'. Quedo en '.$model->final_price.' </br>');
                             if (count($model->providers) >= 1) {
                                 $model->provider_id = $model->providers[count($model->providers)-1]->id;
                                 $model->save(); 
                                 echo $model->name.', proveedor: '.$model->provider->name. ' </br>';
                             }
-                            // $images = Image::where('article_id', $model->id)->get();
-                            // foreach($images as $image) {
-                            //     $image->imageable_id = $model->id;
-                            //     $image->imageable_type = 'article';
-                            //     $image->hosting_url = substr($image->hosting_url, 0, 33).'/public'.substr($image->hosting_url, 33);
-                            //     $image->save();
-                            //     echo 'Se actualizo imagen de '.$model->name.' </br>';
-                            //     echo 'Nueva url: '.$image->hosting_url.' </br>';
-                            //     echo '-------------------------------------------- </br>';
-                            // }
+                            $images = Image::where('article_id', $model->id)->get();
+                            foreach($images as $image) {
+                                $image->imageable_id = $model->id;
+                                $image->imageable_type = 'article';
+                                $image->hosting_url = substr($image->hosting_url, 0, 33).'/public'.substr($image->hosting_url, 33);
+                                $image->save();
+                                echo 'Se actualizo imagen de '.$model->name.' </br>';
+                                echo 'Nueva url: '.$image->hosting_url.' </br>';
+                                echo '-------------------------------------------- </br>';
+                            }
                         }
                     }
                 }

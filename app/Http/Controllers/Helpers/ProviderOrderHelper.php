@@ -21,8 +21,10 @@ class ProviderOrderHelper {
 		$current_acount = CurrentAcount::where('provider_order_id', $provider_order->id)->first();
 		if (!is_null($current_acount)) {
 			Log::info('Eliminando current_acount');
+            $current_acount->pagado_por()->detach();
+            $current_acount->delete();
 			$current_acount->delete(); 
-			CurrentAcountHelper::updateProviderSaldos($current_acount);
+			CurrentAcountHelper::checkSaldos('provider', $provider_order->provider_id, $current_acount);
 		} else {
 			Log::info('No se elimino current_acount');
 		}
@@ -169,21 +171,25 @@ class ProviderOrderHelper {
 			$current_acount = CurrentAcount::where('provider_order_id', $provider_order->id)->first();
 			if (is_null($current_acount)) {
 				$current_acount = CurrentAcount::create([
-					'detalle' 			=> 'Pedido N° '.$provider_order->num,
+					'detalle' 			=> 'Pedido N°'.$provider_order->num,
 					'debe'				=> $total,
 					'status' 			=> 'sin_pagar',
 					'user_id'			=> UserHelper::userId(),
 					'provider_id'		=> $provider_order->provider_id,
 					'provider_order_id'	=> $provider_order->id,
 				]);
-				$current_acount->saldo = CurrentAcountHelper::getProviderSaldo($current_acount) + $total;
+				$current_acount->saldo = CurrentAcountHelper::getSaldo('provider', $provider_order->provider_id, $current_acount) + $total;
 				$current_acount->save();
 				Log::info('Se creo current_acount con saldo de: '.$current_acount->saldo);
 			} else if ($current_acount->debe != $total) {
 				$current_acount->debe = $total;
-				$current_acount->saldo = CurrentAcountHelper::getProviderSaldo($current_acount) + $total;
+				$current_acount->saldo = CurrentAcountHelper::getSaldo('provider', $provider_order->provider_id, $current_acount) + $total;
 				$current_acount->save();
-				CurrentAcountHelper::updateProviderSaldos($current_acount);
+				CurrentAcountHelper::checkSaldos('provider', $provider_order->provider_id, $current_acount);
+
+		        $provider_order->provider->pagos_checkeados = 0;
+		        $provider_order->provider->save();
+
 				Log::info('Se actualizo current_acount con saldo de: '.$current_acount->saldo);
 			}
 		}

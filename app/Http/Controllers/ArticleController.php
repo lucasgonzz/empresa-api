@@ -111,10 +111,10 @@ class ArticleController extends Controller
         $model->stock                             += $request->new_stock;
         $model->stock_min                         = $request->stock_min;
         $model->online                            = $request->online;
-        if (strtolower($model->name) != strtolower($request->name)) {
+        // if (strtolower($model->name) != strtolower($request->name)) {
             $model->name = ucfirst($request->name);
             $model->slug = ArticleHelper::slug($request->name);
-        }
+        // }
         $model->save();
         // ArticleHelper::checkAdvises($model);
         // ArticleHelper::setTags($model, $request->tags);

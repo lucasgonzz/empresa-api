@@ -31,7 +31,7 @@ class SellerSeeder extends Seeder
             ],
             [
                 'num'                       => 3,
-                'name'                      => 'Perdidas',
+                'name'                      => 'Oscar (perdidas)',
                 'commission_after_pay_sale' => 0,
                 'user_id'                   => $user->id,
             ],

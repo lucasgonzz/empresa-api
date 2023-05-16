@@ -179,8 +179,14 @@ class PdfHelper {
 		if (isset($data['model_info']) && !is_null($data['model_info'])) {
 		    $instance->x = 5;
 		    $start_y = $instance->y;
-		    $instance->SetFont('Arial', '', 10);
+		    $index = 1;
 		    foreach ($data['model_props'] as $prop) {
+		    	if ($index == 1) {
+		    		$instance->SetFont('Arial', 'B', 10);
+		    	} else {
+		    		$instance->SetFont('Arial', '', 10);
+		    	}
+		    	$index++;
 		    	$instance->x = 5;
 				$instance->Cell(100, 5, $prop['text'].': '.Self::getPropValue($data['model_info'], $prop), $instance->b, 1, 'L');
 		    }

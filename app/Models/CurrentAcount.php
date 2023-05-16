@@ -8,6 +8,18 @@ class CurrentAcount extends Model
 {
     protected $guarded = [];
 
+    public function pagado_por() {
+        return $this->belongsToMany('App\Models\CurrentAcount', 'pagado_por', 'debe_id', 'haber_id')->withPivot('pagado', 'total_pago');
+    }
+
+    public function pagando_a() {
+        return $this->belongsToMany('App\Models\CurrentAcount', 'pagado_por', 'haber_id', 'debe_id')->withPivot('pagado', 'total_pago');
+    }
+
+    public function pagando_las_comisiones() {
+        return $this->belongsToMany('App\Models\SellerCommission');
+    }
+
     public function sale() {
         return $this->belongsTo('App\Models\Sale');
     }

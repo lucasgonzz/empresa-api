@@ -57,11 +57,4 @@ class SellerCommissionController extends Controller
         SellerCommissionHelper::checkSaldos($model);
         return response(null, 200);
     }
-
-    function deleteFromSale($sale) {
-        $seller_commissions = SellerCommission::where('sale_id', $sale->id)
-                                            ->whereNull('haber')
-                                            ->pluck('id');
-        SellerCommission::destroy($seller_commissions);
-    }
 }

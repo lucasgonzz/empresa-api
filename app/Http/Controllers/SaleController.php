@@ -62,6 +62,9 @@ class SaleController extends Controller
         SaleProviderOrderHelper::createProviderOrder($model, $this);
         $this->sendAddModelNotification('Sale', $model->id);
         SaleHelper::sendUpdateClient($this, $model);
+        if (!is_null($model->client_id) && is_null($model->current_acount)) {
+            Log::info('No se creo cuenta corriente para la venta id '.$model->id);
+        }
         return response()->json(['model' => $this->fullModel('Sale', $model->id)], 201);
     }  
 
@@ -74,28 +77,22 @@ class SaleController extends Controller
         $model->current_acount_payment_method_id  = $request->current_acount_payment_method_id;
         $model->afip_information_id  = $request->afip_information_id;
         $model->address_id  = $request->address_id;
+        $model->sale_type_id  = $request->sale_type_id;
+        $model->updated_at = Carbon::now();
+        $model->save();
+        $previus_client_id = $model->client_id;
 
         SaleHelper::detachItems($model);
         SaleHelper::attachProperies($model, $request, false);
 
-        if (!is_null($request->client_id) && $request->client_id != $model->client_id) {
-            $current_acounts = CurrentAcount::where('sale_id', $model->id)->get();
-            if (count($current_acounts) >= 1) {
-                foreach ($current_acounts as $current_acount) {
-                    $current_acount->delete();
-                }
-                CurrentAcountHelper::checkSaldos('client', $model->client_id);
-            }
-            $model->client_id = $request->client_id;
-        }
         $model->updated_at = Carbon::now();
         $model->save();
-        $model = Sale::where('id', $model->id)
-                        ->withAll()
-                        ->first();
+
+        $model = Sale::find($model->id);
         if ($model->client_id) {
             SaleHelper::updateCurrentAcountsAndCommissions($model);
         }
+        SaleHelper::updatePreivusClient($model, $previus_client_id);
         $this->sendAddModelNotification('Sale', $model->id);
         SaleHelper::sendUpdateClient($this, $model);
         return response()->json(['model' => $model], 200);
@@ -106,19 +103,17 @@ class SaleController extends Controller
         if ($model->client_id) {
             // $current_acount = new CurrentAcountController();
             // $current_acount->deleteFromSale($model);
-
-            CurrentAcountDeleteSaleHelper::deleteSale($model);
-            $commission = new SellerCommissionController();
-            $commission->deleteFromSale($model);
+            SaleHelper::deleteCurrentAcountFromSale($model);
+            SaleHelper::deleteSellerCommissionsFromSale($model);
+            $model->client->pagos_checkeados = 0;
+            $model->client->save();
             CurrentAcountHelper::checkSaldos('client', $model->client_id);
             $this->sendAddModelNotification('client', $model->client_id, false);
         }
         foreach ($model->articles as $article) {
-            Log::info('reseteando stock de '.$article->name);
             ArticleHelper::resetStock($article, $article->pivot->amount);
         }
         $model->delete();
-        Log::info('se elimino venta');
         return response(null);
     }
 
@@ -132,9 +127,9 @@ class SaleController extends Controller
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
     }
 
-    function pdf($id, $with_prices, $with_costs, $with_commissions) {
+    function pdf($id, $with_prices, $with_costs) {
         $sale = Sale::find($id);
-        $pdf = new SalePdf($sale, (boolean)$with_prices, (boolean)$with_costs, (boolean)$with_commissions);
+        $pdf = new SalePdf($sale, (boolean)$with_prices, (boolean)$with_costs);
     }
 
     function afipTicketPdf($id) {
