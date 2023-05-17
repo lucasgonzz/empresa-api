@@ -250,7 +250,7 @@ class SalePdf extends fpdf {
 	}
 
 	function saleType() {
-		if (!is_null($this->sale->sale_type)) {
+		if (count($this->user->sale_types) >= 1 && !is_null($this->sale->sale_type)) {
 	    	$this->SetX(5);
 	    	$this->SetFont('Arial', '', 9);
 	    	$this->Cell(65,5,'Tipo de venta: '.$this->sale->sale_type->name, 0, 1, 'L');

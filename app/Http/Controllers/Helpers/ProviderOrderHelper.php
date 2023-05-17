@@ -187,11 +187,10 @@ class ProviderOrderHelper {
 				$current_acount->save();
 				CurrentAcountHelper::checkSaldos('provider', $provider_order->provider_id, $current_acount);
 
-		        $provider_order->provider->pagos_checkeados = 0;
-		        $provider_order->provider->save();
-
 				Log::info('Se actualizo current_acount con saldo de: '.$current_acount->saldo);
 			}
+	        $provider_order->provider->pagos_checkeados = 0;
+	        $provider_order->provider->save();
 		}
 	}
 
@@ -230,6 +229,9 @@ class ProviderOrderHelper {
 					$total += $total_article;
 				}
 			}
+		}
+		foreach ($provider_order->provider_order_extra_costs as $extra_cost) {
+			$total += $extra_cost->value;
 		}
 		return $total;
 	}

@@ -35,7 +35,7 @@ class ProviderOrderController extends Controller
             'user_id'                                   => $this->userId(),
         ]);
         ProviderOrderHelper::attachArticles($request->articles, $model);
-        $this->updateRelationsCreated('Provider', $model->id, $request->childrens);
+        $this->updateRelationsCreated('provider_order', $model->id, $request->childrens);
         $this->sendAddModelNotification('provider_order', $model->id);
         return response()->json(['model' => $this->fullModel('ProviderOrder', $model->id)], 201);
     }  

@@ -9,6 +9,7 @@ Route::middleware('auth:sanctum')->group(function() {
     // ----------------------------------------------------------------------------------------------------
     // Generals
     Route::post('search/{model_name}', 'CommonLaravel\SearchController@search');
+    Route::post('search-from-modal/{model_name}', 'CommonLaravel\SearchController@searchFromModal');
     Route::post('search/save-if-not-exist/{model_name}/{propertye}/{query}', 'CommonLaravel\SearchController@saveIfNotExist');
     Route::get('previus-day/{model_name}/{index}', 'CommonLaravel\PreviusDayController@previusDays');
     Route::get('previus-next/{model_name}/{index}', 'CommonLaravel\PreviusNextController@previusNext');
@@ -141,4 +142,6 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::resource('sale-type', 'SaleTypeController');
 
     Route::get('pagado-por/{model_name}/{model_id}/{debe_id}/{haber_id}', 'PagadoPorController@index');
+
+    Route::resource('provider-order-extra-cost', 'ProviderOrderExtraCostController');
 });

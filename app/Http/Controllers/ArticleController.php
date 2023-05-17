@@ -8,6 +8,7 @@ use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Imports\ArticleImport;
 use App\Imports\LocationImport;
+use App\Imports\ProvinciaImport;
 use App\Models\Article;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -149,6 +150,8 @@ class ArticleController extends Controller
         $columns = GeneralHelper::getImportColumns($request);
         // Log::info('colunbs');
         // Log::info($columns);
+        // Excel::import(new ProvinciaImport(), $request->file('models'));
+        // Excel::import(new LocationImport(), $request->file('models'));
         Excel::import(new ArticleImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id), $request->file('models'));
         $this->sendUpdateModelsNotification('article');
     }
