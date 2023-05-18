@@ -28,7 +28,7 @@ class SubCategorySeeder extends Seeder
             $names = [];
             if ($category->name == 'Herramientas') {
                 
-                $names = ['Martillos', 'Pinzas'];
+                $names = ['Martillos', 'Pinzas', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola1', 'Hola12', 'Hola123'];
 
             } else if ($category->name == 'Utensilios') {
                 
@@ -36,7 +36,7 @@ class SubCategorySeeder extends Seeder
 
             }  else if ($category->name == 'Muebles') {
                 
-                $names = ['Comedor', 'Dormitorio'];
+                $names = ['Comedor', 'Dormitorio', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola', 'Hola1', 'Hola12', 'Hola123'];
 
             } 
             $num = 1;

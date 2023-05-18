@@ -26,16 +26,6 @@ class UserSeeder extends Seeder
         $ct = new Controller();
         $models = [
             [
-                'name'              => 'Marcos',
-                'company_name'      => 'Marcos',
-                'image_url'         => env('APP_URL').'/storage/cubo.jpeg',
-                'doc_number'        => '1234',
-                'email'             => 'marcosgonzalez5500@gmail.com',
-                'password'          => bcrypt('1234'),
-                'visible_password'  => null,
-            ],
-            [
-                'id'                            => 2,
                 'name'                          => 'Lucas Gonzalez',
                 'company_name'                  => 'Lucas',
                 'image_url'                     => env('APP_URL').'/storage/cubo.jpeg',
@@ -59,6 +49,15 @@ class UserSeeder extends Seeder
                 'online_price_surchage'         => 50,
                 'online'                        => 'http://tienda.local:8081',
                 'max_items_in_sale'             => 2,
+            ],
+            [
+                'name'              => 'Marcos',
+                'company_name'      => 'Marcos',
+                'image_url'         => env('APP_URL').'/storage/cubo.jpeg',
+                'doc_number'        => '1234',
+                'email'             => 'marcosgonzalez5500@gmail.com',
+                'password'          => bcrypt('1234'),
+                'visible_password'  => null,
             ],
             [
                 'name'              => 'Juan',

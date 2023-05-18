@@ -37,6 +37,7 @@ Route::middleware('auth:sanctum')->group(function() {
 
     Route::resource('configuration', 'UserConfigurationController');
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
+    Route::get('update-feature', 'UpdateFeatureController@index');
 
     Route::resource('article', 'ArticleController')->except(['index']);
     Route::get('article/index/from-status/{last_updated}/{status?}', 'ArticleController@index');
@@ -144,4 +145,6 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::get('pagado-por/{model_name}/{model_id}/{debe_id}/{haber_id}', 'PagadoPorController@index');
 
     Route::resource('provider-order-extra-cost', 'ProviderOrderExtraCostController');
+
+    Route::get('recipe/article-used-in-recipes/{article_id}', 'RecipeController@articleUsedInRecipes');
 });

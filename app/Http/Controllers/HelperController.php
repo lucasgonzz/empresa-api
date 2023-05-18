@@ -12,6 +12,7 @@ use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\Image;
 use App\Models\OrderProduction;
+use App\Models\Provider;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -23,6 +24,31 @@ class HelperController extends Controller
 
     function recaulculateCurrentAcounts($company_name) {
         $user = User::where('company_name', $company_name)->first();
+        $providers = Provider::where('user_id', $user->id)
+                            ->get();
+        foreach ($providers as $provider) {
+            echo 'Proveedor '.$provider->name.' </br>';
+            CurrentAcountHelper::checkSaldos('provider', $provider->id);
+            CurrentAcountHelper::checkPagos('provider', $provider->id);
+            foreach ($provider->current_acounts as $current_acount) {
+                echo 'CC del '.date_format($current_acount->created_at, 'd/m/Y').' </br>';
+                if (!is_null($current_acount->debe)) {
+                    if (!is_null($current_acount->provider_order_id)) {
+                        $current_acount->detalle = 'Pedido N°'.$current_acount->provider_order->num;
+                    } else {
+                        $current_acount->detalle = 'Nota debito';
+                    }
+                } else if (!is_null($current_acount->haber)) {
+                    if ($current_acount->status == 'nota_credito') {
+                        $current_acount->detalle = 'Nota Credito N°'.$current_acount->num_receipt;
+                    } else {
+                        $current_acount->detalle = 'Pago N°'.$current_acount->num_receipt;
+                    }
+                }
+                $current_acount->save();
+            }
+        }
+        return;
         $clients = Client::where('user_id', $user->id)
                             ->get();
         foreach ($clients as $client) {

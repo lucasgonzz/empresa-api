@@ -23,6 +23,7 @@ class ArticleDiscountController extends Controller
             'article_id'            => $request->model_id,
             'temporal_id'           => $this->getTemporalId($request),
             'percentage'            => $request->percentage,
+            'show_in_online'        => $request->show_in_online,
         ]);
         if (!is_null($request->model_id)) {
             ArticleHelper::setFinalPrice($model->article);
@@ -38,6 +39,7 @@ class ArticleDiscountController extends Controller
     public function update(Request $request, $id) {
         $model = ArticleDiscount::find($id);
         $model->percentage                = $request->percentage;
+        $model->show_in_online            = $request->show_in_online;
         $model->save();
         ArticleHelper::setFinalPrice($model->article);
         $this->sendAddModelNotification('article', $model->article_id, false);

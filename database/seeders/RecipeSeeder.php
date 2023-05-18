@@ -18,7 +18,7 @@ class RecipeSeeder extends Seeder
     {
         $user = User::where('company_name', 'lucas')->first();
         $article = Article::where('user_id', $user->id)
-                            ->where('name', 'Plaqueta de BSAS')
+                            ->where('name', 'Cama dos plazas')
                             ->first();
         $recipe = Recipe::create([
             'num'           => 1,
@@ -27,22 +27,22 @@ class RecipeSeeder extends Seeder
         ]);
         $articles = [
             [
-                'name'                          => 'Tornillo num 6',
+                'name'                          => 'Martillo',
                 'order_production_status_id'    => 1,
                 'amount'                        => 1,
             ],
             [
-                'name'                          => 'Boton chico blanco',
+                'name'                          => 'Martillo grande',
                 'order_production_status_id'    => 2,
                 'amount'                        => 2,
             ],
             [
-                'name'                          => 'Cable 10cm',
+                'name'                          => 'Pinza',
                 'order_production_status_id'    => 3,
                 'amount'                        => 2,
             ],
             [
-                'name'                          => 'Carcaza negra',
+                'name'                          => 'Alicate',
                 'order_production_status_id'    => 4,
                 'amount'                        => 1,
             ],

@@ -5,7 +5,9 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\RecipeHelper;
 use App\Models\Recipe;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class RecipeController extends Controller
 {
@@ -48,5 +50,26 @@ class RecipeController extends Controller
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('Recipe', $model->id);
         return response(null);
+    }
+
+    function articleUsedInRecipes($article_id) {
+        $recipes = Recipe::whereHas('articles', function(Builder $query) use ($article_id) {
+                                $query->where('article_id', $article_id);
+                            })
+                            ->get();
+        Log::info($recipes);
+        $models = [];
+        foreach ($recipes as $recipe) {
+            foreach ($recipe->articles as $article) {
+                if ($article->id == $article_id) {
+                    $models[] = [
+                        'article'                   => $recipe->article->name,
+                        'amount'                    => $article->pivot->amount,
+                        'order_production_status'   => $this->getModelBy('order_production_statuses', 'id', $article->pivot->order_production_status_id, false, 'name'),
+                    ];
+                }
+            }
+        }
+        return response()->json(['models' => $models], 200);
     }
 }
