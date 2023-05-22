@@ -40,7 +40,8 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::get('update-feature', 'UpdateFeatureController@index');
 
     Route::resource('article', 'ArticleController')->except(['index']);
-    Route::get('article/index/from-status/{last_updated}/{status?}', 'ArticleController@index');
+    Route::get('article/index/from-status/{status?}', 'ArticleController@index');
+    // Route::get('article/index/from-status/{last_updated}/{status?}', 'ArticleController@index');
     Route::get('/article/deleted-models/{last_updated}', 'ArticleController@deletedModels');
     Route::post('/article/excel/import', 'ArticleController@import');
     Route::post('/article/new-article', 'ArticleController@newArticle');
@@ -147,4 +148,10 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::resource('provider-order-extra-cost', 'ProviderOrderExtraCostController');
 
     Route::get('recipe/article-used-in-recipes/{article_id}', 'RecipeController@articleUsedInRecipes');
+
+    Route::resource('task', 'TaskController');
+    Route::put('task-finish/{id}', 'TaskController@finish');
+
+    Route::get('inventory-linkage-scope', 'InventoryLinkageScopeController@index');
+    Route::resource('inventory-linkage', 'InventoryLinkageController');
 });

@@ -10,7 +10,7 @@ class GeneralController extends Controller
     function setComercioCityUser(Request $request) {
         $model_to_attach_name = GeneralHelper::getModelName($request->model_name_to_attach);
         $model = $model_to_attach_name::where($request->prop_to_find_model, $request->prop_value);
-        if ($request->model_to_attach_name != 'user') {
+        if ($request->model_name_to_attach != 'user') {
             $model = $model->where('user_id', $this->userId());
         }
         $model = $model->first();

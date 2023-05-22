@@ -22,6 +22,16 @@ use Illuminate\Support\Facades\Storage;
 class HelperController extends Controller
 {
 
+    function setClientesOscar() {
+        $user = User::where('company_name', 'oscar')->first();
+        $clients = Client::whereNull('seller_id')
+                        ->orWhere('seller_id', 0)
+                        ->update([
+                            'seller_id' => 9
+                        ]);
+        echo 'Listo';
+    }
+
     function recaulculateCurrentAcounts($company_name) {
         $user = User::where('company_name', $company_name)->first();
         $providers = Provider::where('user_id', $user->id)

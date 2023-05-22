@@ -48,6 +48,7 @@ class ArticleHelper {
         } else {
             $user = User::find($user_id);
         }
+        // Log::info('apply_provider_percentage_gain de '.$article->name.': '.$article->apply_provider_percentage_gain);
         $current_final_price = $article->final_price;
         if (!is_null($article->percentage_gain) || ($article->apply_provider_percentage_gain && !is_null($article->provider) && !is_null($article->provider->percentage_gain))) {
             $article->price = null;

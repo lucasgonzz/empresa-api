@@ -22,11 +22,13 @@ class RecipeController extends Controller
 
     public function store(Request $request) {
         $model = Recipe::create([
-            'num'                   => $this->num('recipes'),
-            'article_id'            => $request->article_id,
-            'user_id'               => $this->userId(),
+            'num'                       => $this->num('recipes'),
+            'article_id'                => $request->article_id,
+            'article_cost_from_recipe'  => $request->article_cost_from_recipe,
+            'user_id'                   => $this->userId(),
         ]);
         RecipeHelper::attachArticles($model, $request->articles);
+        RecipeHelper::checkCostFromRecipe($model, $this);
         $this->sendAddModelNotification('Recipe', $model->id);
         return response()->json(['model' => $this->fullModel('Recipe', $model->id)], 201);
     }  
@@ -37,9 +39,11 @@ class RecipeController extends Controller
 
     public function update(Request $request, $id) {
         $model = Recipe::find($id);
-        $model->article_id       = $request->article_id;
+        $model->article_cost_from_recipe    = $request->article_cost_from_recipe;
+        $model->article_id                  = $request->article_id;
         $model->save();
         RecipeHelper::attachArticles($model, $request->articles);
+        RecipeHelper::checkCostFromRecipe($model, $this);
         $this->sendAddModelNotification('Recipe', $model->id);
         return response()->json(['model' => $this->fullModel('Recipe', $model->id)], 200);
     }

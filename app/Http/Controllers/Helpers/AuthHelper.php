@@ -10,9 +10,8 @@ class AuthHelper {
 	function setEmployeeProps($user) {
 		$owner = User::find($user->owner_id);
 		$user->owner_extencions = $owner->extencions;
-		$user->owner = $owner;
 		$user->owner_configuration = $owner->configuration;
-		$user->owner = $owner;
+		// $user->owner = $owner;
 		return $user;
 	}
 

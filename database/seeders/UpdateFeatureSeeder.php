@@ -16,20 +16,20 @@ class UpdateFeatureSeeder extends Seeder
     {
         $models = [
             [
-                'name' => 'Estadísticas de Insumos',
-                'description' => 'Desde el LISTADO, cada articulo va a contar con un botón, al lado del botón de estadisticas, el cual abrirá una ventana indicando la cantidad de recetas que hacen uso del articulo.',
+                'name' => 'Boton Tareas',
+                'description' => 'En la ezquina superior derecha, a la izquierda del nombre de usuario, habra un boton azul con el icono de mensaje, para que se puedan dejar agendadas tareas para uno a mas usuarios. Las tareas pueden ser agendadas tanto por el dueño como por los empleados. El dueño podra ver todas las tareas, hayan sido o no creadas para el, mientras que los empleados solo podran ver las tareas creadas por o para ellos. Tambien se podra indicar si se termino o no la tarea.',
             ],
             [
-                'name' => 'Correccion del CANTIDADES ACTUALES',
-                'description' => 'Correccion de la funcion CANTIDADES ACTUALES en la seccion PRODUCCION/MOVIMIENTOS.'
+                'name'  => 'Pantalla de carga en segundo plano',
+                'description'   => 'Anteriormente habia que esperar que el sistema descargue todos los recursos de la nube para poder comenzar a utilizarlo, a partir de ahora este proceso ocurrira en segundo plano para que se pueda comenzar a utilizar el sistema lo mas rapido posible.'
             ],
             [
-                'name' => 'Historial de Pagos en cuentas Corrientes',
-                'description' => 'Agregamos la columna Info Pagos, para que podamos ver el historial de los pagos de cada movimiento. En el caso de un movimiento de pago, vamos a ver a las deudas que ese pago aporto, y en el caso de una deuda (venta o presupuesto), vamos a ver los pagos que aportaron a esa deuda.',
+                'name'  => 'Optimizacion en dispositivos mobiles',
+                'description'   => 'Al ingresar desde un dispositivo mobil no se descargara ingormacion que consuman muchos recursos, como es el caso de los articulos, clientes y proveedores. Cuando se necesite hacer uso de esta informacion, el sistema los obtendra mediante una solicitud al servidor en el momento en que se necesite. Si igual prefiere tener descargada esta informacion, puede descargarlos de todas formas.'
             ],
             [
-                'name' => 'Escoger la visibilidad de los descuentos de los artículos en la Pagina Web',
-                'description' => 'En los descuentos que tengamos creados para cada articulo, vamos a poder indicar si queremos que esa informacion figure o no en la Tienda Online. Por defecto la visibilidad de los descuentos en la Pagina Web esta desactivada para todos los descuentos creados hasta el momento.',
+                'name'  => 'Seter el costo de un articulo en base a su reseta',
+                'description'   => 'En las recetas aparece la opcion de "Establecer costo del articulo en base a los costos de los insumos", si se marca esta opcion, el costo del articulo se calculara sumando los costos de los insumos utilizados para producirlo.'
             ],
         ];
         foreach ($models as $model) {

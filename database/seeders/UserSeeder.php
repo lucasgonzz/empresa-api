@@ -65,7 +65,7 @@ class UserSeeder extends Seeder
                 'email'             => 'lucasgonzalez550022@gmail.com',
                 'password'          => bcrypt('1'),
                 'visible_password'  => '1',
-                'owner_id'          => 2,
+                'owner_id'          => 1,
                 'image_url'         => null,
                 'permissions_slug'    => [
                     'article.index',
@@ -73,6 +73,7 @@ class UserSeeder extends Seeder
                     'article.update',
                     'client.index',
                     'client.update',
+                    'sale.store',
                 ],
             ],
             [
@@ -82,7 +83,7 @@ class UserSeeder extends Seeder
                 'password'          => bcrypt('2'),
                 'visible_password'  => '2',
                 'image_url'         => null,
-                'owner_id'          => 2,
+                'owner_id'          => 1,
                 'permissions_slug'    => [
                     'article.index',
                     'article.delete',
@@ -133,9 +134,11 @@ class UserSeeder extends Seeder
                     'iva_condition_id'      => 1,
                     'razon_social'          => 'Empresa de '.$user->company_name,
                     'domicilio_comercial'   => 'Pellegrini 1876',
-                    'cuit'                  => '20175018841',
-                    'punto_venta'           => 4,
-                    'ingresos_brutos'       => '20175018841',
+                    'cuit'                  => '20167430490',
+                    // 20175018841 papa 
+                    // 20167430490 felix
+                    'punto_venta'           => 9,
+                    'ingresos_brutos'       => '20167430490',
                     'inicio_actividades'    => Carbon::now()->subYears(5),
                     'user_id'               => $user->id,
                 ]);

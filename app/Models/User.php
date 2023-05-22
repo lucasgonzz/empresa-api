@@ -96,7 +96,7 @@ class User extends Authenticatable
     }
 
     public function owner() {
-        return $this->belongsTo('App\Models\User', 'id');  
+        return $this->belongsTo('App\Models\User', 'owner_id');  
     }
 
     public function admin() {

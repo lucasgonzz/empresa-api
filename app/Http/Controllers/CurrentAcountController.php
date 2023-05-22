@@ -75,6 +75,7 @@ class CurrentAcountController extends Controller
 
     public function notaCredito(Request $request) {
         $nota_credito = CurrentAcountHelper::notaCredito($request->form['nota_credito'], $request->form['description'], $request->model_name, $request->model_id);
+        $this->sendAddModelNotification($request->model_name, $request->model_id);
         return response()->json(['current_acount' => $nota_credito], 201);
     }
 
@@ -92,6 +93,7 @@ class CurrentAcountController extends Controller
         $nota_debito->saldo = CurrentAcountHelper::getSaldo($request->model_name, $request->model_id, $nota_debito) + $request->debe;
         $nota_debito->save();
         CurrentAcountHelper::updateModelSaldo($nota_debito, $request->model_name, $request->model_id);
+        $this->sendAddModelNotification($request->model_name, $request->model_id);
         return response()->json(['current_acount' => $nota_debito], 201);
     }
 

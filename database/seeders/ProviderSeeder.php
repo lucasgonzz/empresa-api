@@ -20,6 +20,7 @@ class ProviderSeeder extends Seeder
     public function run()
     {
         $this->lucas();
+        $this->marcos();
     }
 
     function lucas() {
@@ -50,19 +51,21 @@ class ProviderSeeder extends Seeder
                 'address'           => 'Calle 123',
                 'user_id'           => $user->id,
             ],
-            [
-                'num'                   => 1,
-                'name'                  => 'lucas',
-                'percentage_gain'       => 0,
-                'email'                 => 'lucasgonzalez5500@gmail.com',
-                'address'               => 'Calle 123',
-                'comercio_city_user_id' => 1,
-                'user_id'               => 2,
-            ],
         ];
         foreach ($models as $model) {
             Provider::create($model);
         }
+    }
+
+    function marcos() {
+        $user = User::where('company_name', 'marcos')->first();
+        $lucas_user = User::where('company_name', 'lucas')->first();
+        $lucas_provider = Provider::create([
+            'num'                   => 1,
+            'name'                  => 'Lucas',
+            'comercio_city_user_id' => $lucas_user->id,
+            'user_id'               => $user->id,
+        ]);
     }
 
     function la_barraca() {

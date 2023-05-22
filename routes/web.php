@@ -16,6 +16,7 @@ Route::post('/password-reset/update-password',
 	'CommonLaravel\PasswordResetController@updatePassword'
 );
 
+Route::get('set-clientes-oscar', 'HelperController@setClientesOscar');
 Route::get('set-properties/{company_name}/{for_articles?}', 'HelperController@setProperties');
 Route::get('check-images/{company_name}', 'HelperController@checkImages');
 Route::get('clear-order-productions-current-acount/{company_name}', 'HelperController@clearOrderProductionCurrentAcount');
@@ -39,6 +40,7 @@ Route::post('user', 'UserController@store');
 Route::get('sale/pdf/{id}/{with_prices}/{with_costs}', 'SaleController@pdf');
 Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
 Route::get('sale/afip-ticket-pdf/{id}', 'SaleController@afipTicketPdf');
+Route::get('sale/delivered-articles-pdf/{id}', 'SaleController@deliveredArticlesPdf');
 
 Route::get('budget/pdf/{id}/{with_prices}', 'BudgetController@pdf');
 Route::get('order-production/pdf/{id}/{with_prices}', 'OrderProductionController@pdf');

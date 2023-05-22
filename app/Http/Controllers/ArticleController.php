@@ -6,6 +6,7 @@ use App\Exports\ArticleExport;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Imports\ArticleImport;
 use App\Imports\LocationImport;
 use App\Imports\ProvinciaImport;
@@ -86,6 +87,10 @@ class ArticleController extends Controller
         $this->updateRelationsCreated('article', $model->id, $request->childrens);
         ArticleHelper::setFinalPrice($model);
         $this->sendAddModelNotification('article', $model->id);
+
+        $inventory_linkage_helper = new InventoryLinkageHelper();
+        $inventory_linkage_helper->checkArticle($model);
+
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 201);
     }
 
@@ -128,6 +133,10 @@ class ArticleController extends Controller
         ArticleHelper::setDeposits($model, $request);
         ArticleHelper::checkAdvises($model);
         $this->sendAddModelNotification('article', $model->id);
+
+        $inventory_linkage_helper = new InventoryLinkageHelper();
+        $inventory_linkage_helper->checkArticle($model);
+        
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 200);
     }
 

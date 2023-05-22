@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class CreateRecipesTable extends Migration
+class CreateTaskUserTable extends Migration
 {
     /**
      * Run the migrations.
@@ -13,12 +13,11 @@ class CreateRecipesTable extends Migration
      */
     public function up()
     {
-        Schema::create('recipes', function (Blueprint $table) {
+        Schema::create('task_user', function (Blueprint $table) {
             $table->id();
-            $table->integer('num')->nullable();
-            $table->integer('article_id')->unsigned();
-            $table->boolean('article_cost_from_recipe')->nullable();
-            $table->integer('user_id')->unsigned();
+            $table->integer('task_id');
+            $table->integer('user_id');
+            $table->boolean('is_finished')->default(0);
             $table->timestamps();
         });
     }
@@ -30,6 +29,6 @@ class CreateRecipesTable extends Migration
      */
     public function down()
     {
-        Schema::dropIfExists('recipes');
+        Schema::dropIfExists('task_user');
     }
 }

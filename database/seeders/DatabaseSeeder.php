@@ -72,7 +72,7 @@ class DatabaseSeeder extends Seeder
             // $this->call(LocationSeeder::class);
             $this->call(PaymentMethodTypeSeeder::class);
             // $this->call(CuponSeeder::class);
-            // $this->call(PriceTypeSeeder::class);
+            $this->call(PriceTypeSeeder::class);
             $this->call(BudgetStatusSeeder::class);
             // $this->call(BudgetSeeder::class);
             $this->call(RecipeSeeder::class);
@@ -82,6 +82,7 @@ class DatabaseSeeder extends Seeder
             // $this->call(CreditCardPaymentPlanSeeder::class);
             $this->call(UpdateFeatureSeeder::class);
             $this->call(OrderSeeder::class);
+            $this->call(InventoryLinkageScopeSeeder::class);
         }
     }
 }

@@ -30,6 +30,7 @@ class SalePdf extends fpdf {
 		$this->total_articles = 0;
 		$this->total_services = 0;
 		$this->AddPage();
+		$this->setTotales();
 		$this->items();
 
         $this->Output();
@@ -124,14 +125,23 @@ class SalePdf extends fpdf {
 		$this->SetLineWidth(.1);
 		$index = 1;
 		foreach ($this->sale->articles as $article) {
-			$this->total_articles += SaleHelper::getTotalItem($article);
+			// $this->total_articles += SaleHelper::getTotalItem($article);
 			$this->printItem($index, $article);
 			$index++;
 		}
 		foreach ($this->sale->services as $service) {
-			$this->total_services += SaleHelper::getTotalItem($service);
+			// $this->total_services += SaleHelper::getTotalItem($service);
 			$this->printItem($index, $service);
 			$index++;
+		}
+	}
+
+	function setTotales() {
+		foreach ($this->sale->articles as $article) {
+			$this->total_articles += SaleHelper::getTotalItem($article);
+		}
+		foreach ($this->sale->services as $service) {
+			$this->total_services += SaleHelper::getTotalItem($service);
 		}
 	}
 
@@ -289,15 +299,16 @@ class SalePdf extends fpdf {
 	function discounts() {
 		if (count($this->sale->discounts) >= 1) {
 		    $this->SetFont('Arial', 'B', 11);
-		    $total_sale = $this->total_sale;
+		    $total_articles = $this->total_articles;
+		    $total_services = $this->total_services;
 		    foreach ($this->sale->discounts as $discount) {
 		    	$this->x = $this->start_x;
 		    	$text = '-'.$discount->pivot->percentage.'% '.$discount->name;
-		    	$this->total_articles -= $this->total_articles * floatval($discount->pivot->percentage) / 100;
+		    	$total_articles -= $total_articles * floatval($discount->pivot->percentage) / 100;
 		    	if ($this->sale->discounts_in_services) {
-		    		$this->total_services -= $this->total_services * floatval($discount->pivot->percentage) / 100;
+		    		$total_services -= $total_services * floatval($discount->pivot->percentage) / 100;
 		    	}
-		    	$total_with_discounts = $this->total_articles + $this->total_services;
+		    	$total_with_discounts = $total_articles + $total_services;
 		    	$text .= ' = $'.Numbers::price($total_with_discounts);
 				$this->Cell(
 					50, 
@@ -372,19 +383,25 @@ class SalePdf extends fpdf {
 		if (count($this->sale->discounts) >= 1 || count($this->sale->surchages) >= 1 || count($this->sale->seller_commissions) >= 1) {
 	    	$this->SetFont('Arial', 'B', 12);
 	    	$this->x = 5;
-	    	if ($this->with_costs) {
-	    		$total = SaleHelper::getTotalSale($this->sale, true, true, true);
-	    	} else {
-	    		$total = SaleHelper::getTotalSale($this->sale, true, true, false);
-	    	}
 		    $this->Cell(
 				50, 
 				10, 
-				'Total: $'.Numbers::price($total), 
+				'Total: $'.Numbers::price(SaleHelper::getTotalSale($this->sale, true, true, false)), 
 				$this->b, 
 				1, 
 				'L'
 			);
+			if ($this->with_costs && count($this->sale->seller_commissions) >= 1) {
+	    		$this->x = 5;
+			    $this->Cell(
+					50, 
+					10, 
+					'Total menos comisiones: $'.Numbers::price(SaleHelper::getTotalSale($this->sale, true, true, true)), 
+					$this->b, 
+					1, 
+					'L'
+				);
+			}
 		}
 	}
 

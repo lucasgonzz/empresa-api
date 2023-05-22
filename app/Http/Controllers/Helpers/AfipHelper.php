@@ -13,6 +13,7 @@ class AfipHelper {
             'CbteTipo'  => $cbte_tipo
         ];
         $result = $wsfe->FECompUltimoAutorizado($pto_vta);
+        Log::info('$result->FECompUltimoAutorizadoResult->CbteNro: '.$result->FECompUltimoAutorizadoResult->CbteNro);
         return $result->FECompUltimoAutorizadoResult->CbteNro + 1;
     }
 
@@ -96,7 +97,7 @@ class AfipHelper {
     }
 
     static function getPriceWithoutIva($article) {
-        if ($article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento') {
+        if (!is_null($article->iva) && $article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento') {
             return $article->pivot->price / (($article->iva->percentage / 100) + 1); 
         } 
         return $article->pivot->price;
@@ -104,7 +105,7 @@ class AfipHelper {
 
     static function getArticlePrice($article, $client) {
         if (UserHelper::getFullModel()->afip_information->iva_condition->name == 'Responsable inscripto' && !is_null($client) && $client->iva_condition->name == 'Responsable inscripto') {
-            if ($article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento') {
+            if (!is_null($article->iva) && $article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento') {
                 $percentage = floatval($article->iva->percentage);
                 if (is_int($percentage)) {
                     $num = floatval('1.'.$article->iva->percentage);
@@ -125,7 +126,7 @@ class AfipHelper {
     }
 
     static function montoIvaDelPrecio($article) {
-        if ($article->iva->percentage != 'No Gravado' || $article->iva->percentage != 'Exento') {
+        if (!is_null($article->iva) && ($article->iva->percentage != 'No Gravado' || $article->iva->percentage != 'Exento')) {
             return Numbers::redondear(Self::getPriceWithoutIva($article) * floatval($article->iva->percentage) / 100);
         } 
         return 0;
@@ -137,7 +138,7 @@ class AfipHelper {
         }
         $importe = 0;
         $base_imp = 0;
-        if ($article->iva->percentage == $iva) {
+        if (!is_null($article->iva) && $article->iva->percentage == $iva) {
             $importe = Self::montoIvaDelPrecio($article) * $article->pivot->amount;
             $base_imp = Self::getPriceWithoutIva($article) * $article->pivot->amount;
         }
@@ -176,7 +177,7 @@ class AfipHelper {
     }
 
     static function getImporteGravado($article) {
-        if ($article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento') {
+        if (!is_null($article->iva) && $article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento') {
             // Log::info('Se suman '.Self::getPriceWithoutIva($article) * $article->pivot->amount.' al gravado del art '.$article->name);
             return Self::getPriceWithoutIva($article) * $article->pivot->amount;
         }
