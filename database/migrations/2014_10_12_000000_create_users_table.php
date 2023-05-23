@@ -52,6 +52,7 @@ class CreateUsersTable extends Migration
             $table->integer('online_price_type_id')->nullable();
             $table->decimal('online_price_surchage', 12,2)->nullable();
             $table->integer('max_items_in_sale')->nullable();
+            $table->boolean('download_articles')->default(1);
             $table->rememberToken();
 
             $table->enum('status', ['commerce', 'admin', 'super']);

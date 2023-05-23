@@ -49,6 +49,7 @@ class UserSeeder extends Seeder
                 'online_price_surchage'         => 50,
                 'online'                        => 'http://tienda.local:8081',
                 'max_items_in_sale'             => 2,
+                'download_articles'             => 0,
             ],
             [
                 'name'              => 'Marcos',

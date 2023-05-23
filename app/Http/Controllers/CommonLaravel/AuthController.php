@@ -14,7 +14,7 @@ class AuthController extends Controller
     
     function login(Request $request) {
         $login = false;
-        $user = null;
+        $user = null;s
         if ($this->loginLucas($request)) {
             $user = UserHelper::getFullModel($this->userId(false));
             $login = true;

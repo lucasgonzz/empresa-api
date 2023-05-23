@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Controller;
 use App\Models\Article;
+use App\Models\Image;
 use App\Models\InventoryLinkage;
 use App\Models\PriceType;
 use App\Models\Provider;
@@ -88,6 +89,13 @@ class InventoryLinkageHelper extends Controller {
 			'created_at'			=> $created_at,
 			'apply_provider_percentage_gain'	=> 1,
 		]);
+        foreach ($article->images as $image) {
+            $client_article_image = Image::create([
+                env('IMAGE_URL_PROP_NAME', 'image_url')     => $image->{env('IMAGE_URL_PROP_NAME', 'image_url')},
+                'imageable_id'                              => $client_article->id,
+                'imageable_type'                            => 'article',
+            ]);
+        }
 		ArticleHelper::setFinalPrice($client_article, $client->comercio_city_user_id);
 		return $client_article;
 	}

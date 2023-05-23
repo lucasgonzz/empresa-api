@@ -62,7 +62,7 @@ class Sale extends Model
     }
 
     public function articles() {
-        return $this->belongsToMany('App\Models\Article')->withPivot('amount', 'cost', 'price', 'returned_amount', 'delivered_amount', 'discount', 'with_dolar');
+        return $this->belongsToMany('App\Models\Article')->withPivot('amount', 'cost', 'price', 'returned_amount', 'delivered_amount', 'discount', 'with_dolar')->withTrashed();
     }
 
     public function combos() {

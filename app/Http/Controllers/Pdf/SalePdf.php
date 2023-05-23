@@ -14,7 +14,7 @@ require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class SalePdf extends fpdf {
 
-	function __construct($sale, $with_prices, $with_costs) {
+	function __construct($sale, $with_prices, $with_costs, $save_doc_as = false) {
 		parent::__construct();
 		$this->SetAutoPageBreak(false);
 		$this->start_x = 5;
@@ -33,8 +33,12 @@ class SalePdf extends fpdf {
 		$this->setTotales();
 		$this->items();
 
-        $this->Output();
-        exit;
+		if ($save_doc_as) {
+        	$this->Output('F', storage_path().'/app/public/oscar-pdf/'.$save_doc_as, true);
+		} else {
+        	$this->Output();
+        	exit;
+		}
 	}
 
 
