@@ -32,7 +32,7 @@ class Budget extends Model
     }
 
     function articles() {
-        return $this->belongsToMany('App\Models\Article')->withPivot('amount', 'bonus', 'location', 'price');
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'bonus', 'location', 'price');
     }
 
     function optional_order_production_statuses() {

@@ -34,7 +34,11 @@ class SearchController extends Controller
                         // Log::info('Filtrando por number '.$filter['text'].' max');
                     }
                 } else if (($filter['type'] == 'text' || $filter['type'] == 'textarea') && $filter['value'] != '') {
-                    $models = $models->where($filter['key'], 'like', '%'.$filter['value'].'%');
+                    if ($filter['key'] == 'bar_code') {
+                        $models = $models->where($filter['key'], $filter['value']);
+                    } else {
+                        $models = $models->where($filter['key'], 'like', '%'.$filter['value'].'%');
+                    }
                     // Log::info('Filtrando por text '.$filter['text']);
                 } else if ($filter['type'] == 'boolean' && $filter['value'] != -1) {
                     $models = $models->where($filter['key'], $filter['value']);
@@ -82,8 +86,12 @@ class SearchController extends Controller
     function searchFromModal(Request $request, $model_name) {
         $model_name = GeneralHelper::getModelName($model_name);
         $models = $model_name::where('user_id', $this->userId())
-                                ->withAll()
-                                ->where($request->prop_to_filter['key'], 'like', '%'.$request->query_value.'%');
+                                ->withAll();
+        if ($request->prop_to_filter['key'] == 'bar_code') {
+            $models = $models->where($request->prop_to_filter['key'], $request->query_value);
+        } else {
+            $models = $models->where($request->prop_to_filter['key'], 'like', '%'.$request->query_value.'%');
+        }
         if (isset($request->depends_on_key)) {
             $models = $models->where($request->depends_on_key, $request->depends_on_value);
         }

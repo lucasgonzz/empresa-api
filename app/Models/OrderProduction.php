@@ -28,7 +28,7 @@ class OrderProduction extends Model
     }
 
     function articles() {
-        return $this->belongsToMany('App\Models\Article')->withPivot('price', 'amount', 'bonus', 'location', 'delivered', 'employee_id');
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('price', 'amount', 'bonus', 'location', 'delivered', 'employee_id');
     }
 
     function articles_finished() {

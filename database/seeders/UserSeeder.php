@@ -49,7 +49,7 @@ class UserSeeder extends Seeder
                 'online_price_surchage'         => 50,
                 'online'                        => 'http://tienda.local:8081',
                 'max_items_in_sale'             => 2,
-                'download_articles'             => 0,
+                'download_articles'             => 1,
             ],
             [
                 'name'              => 'Marcos',
@@ -135,11 +135,11 @@ class UserSeeder extends Seeder
                     'iva_condition_id'      => 1,
                     'razon_social'          => 'Empresa de '.$user->company_name,
                     'domicilio_comercial'   => 'Pellegrini 1876',
-                    'cuit'                  => '20167430490',
+                    'cuit'                  => '20175018841',
                     // 20175018841 papa 
                     // 20167430490 felix
-                    'punto_venta'           => 9,
-                    'ingresos_brutos'       => '20167430490',
+                    'punto_venta'           => 4,
+                    'ingresos_brutos'       => '20175018841',
                     'inicio_actividades'    => Carbon::now()->subYears(5),
                     'user_id'               => $user->id,
                 ]);

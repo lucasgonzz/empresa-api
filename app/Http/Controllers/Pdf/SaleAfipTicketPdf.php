@@ -613,17 +613,17 @@ class SaleAfipTicketPdf extends fpdf {
 	function printArticle($article) {
 	    $this->SetArticleConf();
     	$this->setFont('Arial', '', 8);
-        $this->Cell($this->widths['codigo'],6,StringHelper::short($article->bar_code, 14),0,0,'L');
-        $this->Cell($this->widths['producto'],6,StringHelper::short($article->name, 30),0,0,'L');
-        $this->Cell($this->widths['cantidad'],6,$article->pivot->amount,0,0,'R');
-        $this->Cell($this->widths['unidad_medida'],6,'unidad',0,0,'C');
-        $this->Cell($this->widths['precio_unitario'],6,Numbers::price(AfipHelper::getArticlePrice($article, $this->client)),0,0,'R');
+        $this->Cell($this->widths['codigo'], 6, StringHelper::short($article->bar_code, 14), 0, 0, 'L');
+        $this->Cell($this->widths['producto'], 6, StringHelper::short($article->name, 30), 0, 0, 'L');
+        $this->Cell($this->widths['cantidad'], 6, $article->pivot->amount, 0, 0, 'R');
+        $this->Cell($this->widths['unidad_medida'], 6, 'unidad', 0, 0, 'C');
+        $this->Cell($this->widths['precio_unitario'], 6, Numbers::price(AfipHelper::getArticlePrice($article, $this->client)), 0, 0, 'R');
 
-        $this->Cell($this->widths['bonif'],6,'0.00',0,0,'R');
-        $this->Cell($this->widths['subtotal'],6,Numbers::price(AfipHelper::getImporteNeto($article, $this->client)),0,0,'R');
+        $this->Cell($this->widths['bonif'], 6, $article->pivot->discount, 0, 0, 'R');
+        $this->Cell($this->widths['subtotal'], 6, Numbers::price(AfipHelper::subTotal($article)), 0, 0, 'R');
 		if ($this->sale->afip_ticket->cbte_tipo == 1) {
-        	$this->Cell($this->widths['iva'],6,$article->iva->percentage,0,0,'C');
-        	$this->Cell($this->widths['subtotal_con_iva'],6,Numbers::price(PdfArticleHelper::getSubTotalPrice($article)),0,0,'R');
+        	$this->Cell($this->widths['iva'], 6, $article->iva->percentage, 0, 0, 'C');
+        	$this->Cell($this->widths['subtotal_con_iva'], 6, Numbers::price(PdfArticleHelper::getSubTotalPrice($article)), 0, 0, 'R');
 		}
         $this->y += 6;
     }

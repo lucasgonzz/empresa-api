@@ -17,6 +17,6 @@ class Recipe extends Model
     }
 
     function articles() {
-        return $this->belongsToMany('App\Models\Article')->withPivot('amount', 'notes', 'order_production_status_id');
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'notes', 'order_production_status_id');
     }
 }

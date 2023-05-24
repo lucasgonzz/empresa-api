@@ -197,7 +197,7 @@ class AfipWsController extends Controller
         }
         // Se visualiza el resultado con el CAE correspondiente al comprobante.
         $result = $wsfe->FECAESolicitar($invoice);
-        print_r($result);
+        // print_r($result);
         $this->saveAfipTicket($result, $cbte_nro, $importes['total'], $moneda_id);
         return true;
     }

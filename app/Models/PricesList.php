@@ -13,6 +13,6 @@ class PricesList extends Model
     }
 
     function articles() {
-        return $this->belongsToMany('App\Models\Article');
+        return $this->belongsToMany('App\Models\Article')->withTrashed();
     }
 }

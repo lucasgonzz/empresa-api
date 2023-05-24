@@ -13,7 +13,7 @@ class Combo extends Model
     }
 
     function articles() {
-        return $this->belongsToMany('App\Models\Article')->withPivot('amount');
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount');
     }
 
     public function sales() {

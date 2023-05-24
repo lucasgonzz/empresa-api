@@ -1,2 +1,2 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<loginTicketRequest version="1.0"><header><uniqueId>1684769684</uniqueId><generationTime>2023-05-22T12:33:44-03:00</generationTime><expirationTime>2023-05-22T12:35:44-03:00</expirationTime></header><service>wsfe</service></loginTicketRequest>
+<loginTicketRequest version="1.0"><header><uniqueId>1684865599</uniqueId><generationTime>2023-05-23T15:12:19-03:00</generationTime><expirationTime>2023-05-23T15:14:19-03:00</expirationTime></header><service>wsfe</service></loginTicketRequest>

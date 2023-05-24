@@ -164,9 +164,9 @@ class SaleHelper extends Controller {
 
     static function attachArticles($sale, $articles, $from_store) {
         if (!$from_store) {
-            Log::info('Actualizado venta id: '.$sale->id.' num: '.$sale->num);
-            Log::info('Llegaron estos articulos');
-            Log::info($articles);
+            // Log::info('Actualizado venta id: '.$sale->id.' num: '.$sale->num);
+            // Log::info('Llegaron estos articulos');
+            // Log::info($articles);
         }
         foreach ($articles as $article) {
             if (isset($article['is_article'])) {

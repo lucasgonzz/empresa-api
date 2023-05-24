@@ -9,6 +9,6 @@ class SpecialPrice extends Model
     protected $fillable = ['user_id', 'name'];
 
     public function articles() {
-        return $this->belongsToMany('App\Models\Article')->withPivot('price');
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('price');
     }
 }

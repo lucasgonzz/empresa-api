@@ -9,6 +9,6 @@ class Tag extends Model
     protected $guarded = [];
     
     function articles() {
-        return $this->belongsToMany('App\Models\Article');
+        return $this->belongsToMany('App\Models\Article')->withTrashed();
     }
 }

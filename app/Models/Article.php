@@ -40,7 +40,7 @@ class Article extends Model
     }
 
     function combos() {
-        return $this->belongsToMany('App\Models\Article');
+        return $this->belongsToMany('App\Models\Article')->withTrashed();
     }
 
     function brand() {
