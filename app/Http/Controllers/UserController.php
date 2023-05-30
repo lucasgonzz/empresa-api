@@ -28,7 +28,7 @@ class UserController extends Controller
         $model->extencions()->attach([6, 8]);
         UserConfiguration::create([
             'user_id'       => $model->id,
-            'iva_included'  => 0,
+            'iva_included'  => 1,
             'current_acount_pagado_details' => 'Se saldo',
             'current_acount_pagandose_details'  => 'Pagandose',
         ]);
@@ -56,6 +56,7 @@ class UserController extends Controller
         $model->online_price_surchage           = $request->online_price_surchage;
         $model->has_delivery                    = $request->has_delivery;
         $model->download_articles               = $request->download_articles;
+        $model->pausar_tienda_online            = $request->pausar_tienda_online;
         $model->save();
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_dolar, $request->dollar);
         $model = UserHelper::getFullModel();

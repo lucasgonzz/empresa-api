@@ -54,12 +54,12 @@ class BudgetPdf extends fpdf {
 				'key'	=> 'name',
 			],
 			[
-				'text' 	=> 'Telefono',
-				'key'	=> 'phone',
+				'text' 	=> 'Localidad',
+				'key'	=> 'location.name',
 			],
 			[
-				'text' 	=> 'Cuit',
-				'key'	=> 'cuit',
+				'text' 	=> 'Direccion',
+				'key'	=> 'address',
 			],
 		];
 	}

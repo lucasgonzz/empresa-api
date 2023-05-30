@@ -22,7 +22,7 @@ class CreateUsersTable extends Migration
             $table->string('image_url')->nullable();
             $table->string('hosting_image_url')->nullable();
             $table->string('company_name', 128)->nullable();
-            $table->enum('type', ['commerce', 'provider'])->default('commerce');
+            $table->enum('type', ['commerce', 'provider'])->default('commerce')->nullable();
             $table->string('password', 128);
             $table->string('visible_password', 128)->nullable();
             $table->string('prev_password', 128)->nullable();
@@ -30,7 +30,7 @@ class CreateUsersTable extends Migration
             $table->integer('plan_id')->unsigned()->nullable();
             $table->integer('percentage_card')->nullable();
             $table->string('dni')->nullable();
-            $table->boolean('has_delivery')->default(1);
+            $table->boolean('has_delivery')->default(1)->nullable();
             $table->decimal('delivery_price')->nullable();
             $table->enum('online_prices', ['all', 'only_registered', 'only_buyers_with_comerciocity_client'])->nullable();
             $table->string('order_description')->nullable();
@@ -39,10 +39,10 @@ class CreateUsersTable extends Migration
             $table->timestamp('email_verified_at')->nullable();
             $table->string('online')->nullable();
             $table->text('online_description')->nullable();
-            $table->boolean('show_articles_without_images')->default(1);
-            $table->boolean('show_articles_without_stock')->default(1);
+            $table->boolean('show_articles_without_images')->default(1)->nullable();
+            $table->boolean('show_articles_without_stock')->default(1)->nullable();
             $table->string('default_article_image_url')->nullable();
-            $table->boolean('from_cloudinary')->default(0);
+            $table->boolean('from_cloudinary')->default(0)->nullable();
             $table->integer('articles_pages')->nullable();
             $table->string('instagram')->nullable();
             $table->string('facebook')->nullable();
@@ -52,7 +52,8 @@ class CreateUsersTable extends Migration
             $table->integer('online_price_type_id')->nullable();
             $table->decimal('online_price_surchage', 12,2)->nullable();
             $table->integer('max_items_in_sale')->nullable();
-            $table->boolean('download_articles')->default(1);
+            $table->boolean('download_articles')->default(1)->nullable();
+            $table->boolean('pausar_tienda_online')->default(0)->nullable();
             $table->rememberToken();
 
             $table->enum('status', ['commerce', 'admin', 'super']);

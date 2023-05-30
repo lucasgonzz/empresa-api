@@ -3,21 +3,19 @@
 namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
+use App\Http\Controllers\Controller;
 use Illuminate\Support\Facades\Log;
 
-class AfipHelper {
+class AfipHelper extends Controller {
 
-    static function getNumeroComprobante($wsfe, $punto_venta, $cbte_tipo) {
-        $pto_vta = [
-            'PtoVta'    => $punto_venta,
-            'CbteTipo'  => $cbte_tipo
-        ];
-        $result = $wsfe->FECompUltimoAutorizado($pto_vta);
-        Log::info('$result->FECompUltimoAutorizadoResult->CbteNro: '.$result->FECompUltimoAutorizadoResult->CbteNro);
-        return $result->FECompUltimoAutorizadoResult->CbteNro + 1;
+    public $sale;
+    public $article;
+
+    function __construct($sale) {
+        $this->sale = $sale;
     }
 
-    static function getImportes($sale) {
+    function getImportes() {
         $items = [];
         $gravado            = 0;
         $neto_no_gravado    = 0;
@@ -33,33 +31,34 @@ class AfipHelper {
         ];
         $subtotal           = 0;
         $total              = 0;
-        if (UserHelper::getFullModel()->afip_information->iva_condition->name == 'Responsable inscripto') {
-            foreach ($sale->articles as $article) {
-                $gravado                += Self::getImporteGravado($article);
-                $exento                 += Self::getImporteIva($article, 'Exento')['BaseImp'];
-                $neto_no_gravado        += Self::getImporteIva($article, 'No Gravado')['BaseImp'];
-                $iva                    += Self::getImporteIva($article);
-                $res                    = Self::getImporteIva($article, '27');
+        if ($this->sale->afip_information->iva_condition->name == 'Responsable inscripto') {
+            foreach ($this->sale->articles as $article) {
+                $this->article = $article;
+                $gravado                += $this->getImporteGravado();
+                $exento                 += $this->getImporteIva('Exento')['BaseImp'];
+                $neto_no_gravado        += $this->getImporteIva('No Gravado')['BaseImp'];
+                $iva                    += $this->getImporteIva();
+                $res                    = $this->getImporteIva('27');
                 $ivas['27']['Importe']  += $res['Importe'];
                 $ivas['27']['BaseImp']  += $res['BaseImp'];
 
-                $res                    = Self::getImporteIva($article, '21');
+                $res                    = $this->getImporteIva('21');
                 $ivas['21']['Importe']  += $res['Importe'];
                 $ivas['21']['BaseImp']  += $res['BaseImp'];
 
-                $res                    = Self::getImporteIva($article, '10.5');
+                $res                    = $this->getImporteIva('10.5');
                 $ivas['10']['Importe']  += $res['Importe'];
                 $ivas['10']['BaseImp']  += $res['BaseImp'];
 
-                $res                    = Self::getImporteIva($article, '5');
+                $res                    = $this->getImporteIva('5');
                 $ivas['5']['Importe']  += $res['Importe'];
                 $ivas['5']['BaseImp']  += $res['BaseImp'];
 
-                $res                    = Self::getImporteIva($article, '2.5');
+                $res                    = $this->getImporteIva('2.5');
                 $ivas['2']['Importe']  += $res['Importe'];
                 $ivas['2']['BaseImp']  += $res['BaseImp'];
 
-                $res                    = Self::getImporteIva($article, '0');
+                $res                    = $this->getImporteIva('0');
                 $ivas['0']['Importe']  += $res['Importe'];
                 $ivas['0']['BaseImp']  += $res['BaseImp'];
             } 
@@ -79,6 +78,109 @@ class AfipHelper {
         ];
     }
 
+    function getImporteIva($iva = null) {
+        if (is_null($iva)) {
+            return $this->montoIvaDelPrecio() * $this->article->pivot->amount;
+        }
+        $importe = 0;
+        $base_imp = 0;
+        if (!is_null($this->article->iva) && $this->article->iva->percentage == $iva) {
+            $importe = $this->montoIvaDelPrecio() * $this->article->pivot->amount;
+            $base_imp = $this->getPriceWithoutIva() * $this->article->pivot->amount;
+        }
+        return ['Importe' => $importe, 'BaseImp' => Numbers::redondear($base_imp)];
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Retorna el Precio sin el iva
+    |--------------------------------------------------------------------------
+    |
+    | Si un articulo cuesta $100 y tiene el iva del 21
+    | - El precio sin iva seria $82,64 
+    | - Si with_discount = true, se restan los descuentos del articulo y de la venta
+    |
+    */
+    function getPriceWithoutIva($with_discount = true) {
+        if ($with_discount) {
+            $price = $this->getArticlePriceWithDiscounts();
+        } else {
+            $price = $this->article->pivot->price;
+        }
+        if (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0) {
+            return $price / (($this->article->iva->percentage / 100) + 1); 
+        } 
+        return $price;
+    }
+
+    function getArticlePriceWithDiscounts() {
+        $price = $this->article->pivot->price;
+        if (!is_null($this->article->pivot->discount)) {
+            Log::info('restando descouneto de articulo del '.$this->article->pivot->discount.' a '.$price);
+            $price -= $price * $this->article->pivot->discount / 100;
+            Log::info('quedo en '.$price);
+        }
+        foreach ($this->sale->discounts as $discount) {
+            Log::info('restando descouneto de venta de '.$discount->pivot->percentage.' a '.$price);
+            $price -= $price * $discount->pivot->percentage / 100;
+            Log::info('quedo en '.$price);
+        }
+        return $price;
+    }
+
+    function getArticlePrice($article) {
+        $this->article = $article;
+        $price = $this->article->pivot->price;
+        if ($this->isBoletaA()) {
+            if (!is_null($article->iva) && $article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento' && $article->iva->percentage != 0) {
+                return $this->getPriceWithoutIva(false);
+            } 
+        } 
+        return $price;
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Retorna el Monto del iva
+    |--------------------------------------------------------------------------
+    |
+    | Si un articulo cuesta $100 y tiene el iva del 21
+    | - El precio sin iva seria $82,64 
+    | - Y el montoIvaDelPrecio seria de $17.36
+    |
+    */
+    function montoIvaDelPrecio() {
+        if (!is_null($this->article->iva) && ($this->article->iva->percentage != 'No Gravado' || $this->article->iva->percentage != 'Exento' || $this->article->iva->percentage != 0)) {
+            return Numbers::redondear($this->getPriceWithoutIva() * floatval($this->article->iva->percentage) / 100);
+        } 
+        return 0;
+    }
+
+    static function getImporteItem($article) {
+        return $article->pivot->price * $article->pivot->amount;
+    }
+
+    function getImporteGravado() {
+        if (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0) {
+            return $this->getPriceWithoutIva($this->article) * $this->article->pivot->amount;
+        }
+        return 0;
+    }
+
+    function subTotal($article) {
+        $this->article = $article;
+        if ($this->isBoletaA()) {
+            return $this->getPriceWithoutIva() * $article->pivot->amount;
+        }
+        return $this->getArticlePriceWithDiscounts() * $article->pivot->amount;
+    }
+
+    function isBoletaA() {
+        return $this->user()->afip_information->iva_condition->name == 'Responsable inscripto' && !is_null($this->sale->client) && $this->sale->client->iva_condition->name == 'Responsable inscripto';
+    }
+
     static function getDocType($slug) {
         $doc_type = [
             'Cuit' => 80,
@@ -95,87 +197,14 @@ class AfipHelper {
         return $doc_type[$slug];
     }
 
-    static function getPriceWithoutIva($article) {
-        if (!is_null($article->iva) && $article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento' && $article->iva->percentage != 0) {
-            return Self::getArticlePriceWithDiscounts($article) / (($article->iva->percentage / 100) + 1); 
-        } 
-        return $article->pivot->price;
-    }
-
-    static function getArticlePriceWithDiscounts($article) {
-        $price = $article->pivot->price;
-        if (!is_null($article->pivot->discount)) {
-            Log::info('entro a restar el '.$article->pivot->discount);
-            $price -= $price * $article->pivot->discount / 100;
-        }
-        return $price;
-    }
-
-    static function getArticlePrice($article, $client) {
-        $price = $article->pivot->price;
-        // if (!is_null($article->pivot->discount)) {
-        //     $price -= $price * $article->pivot->discount / 100;
-        // }
-        if (UserHelper::getFullModel()->afip_information->iva_condition->name == 'Responsable inscripto' && !is_null($client) && $client->iva_condition->name == 'Responsable inscripto') {
-            if (!is_null($article->iva) && $article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento') {
-                $percentage = floatval($article->iva->percentage);
-                if (is_int($percentage)) {
-                    $num = floatval('1.'.$article->iva->percentage);
-                } else {
-                    if (floatval($article->iva->percentage) >= 10) {
-                        $num = floatval('1.'.str_replace('.', '', $article->iva->percentage));
-                    } else {
-                        $num = floatval('1.0'.str_replace('.', '', $article->iva->percentage));
-                    }
-                }
-                $res = $price / $num ;
-                return Numbers::redondear($res);
-            } else {
-                return $price;
-            }
-        } 
-        return $price;
-    }
-
-    static function montoIvaDelPrecio($article) {
-        if (!is_null($article->iva) && ($article->iva->percentage != 'No Gravado' || $article->iva->percentage != 'Exento')) {
-            return Numbers::redondear(Self::getPriceWithoutIva($article) * floatval($article->iva->percentage) / 100);
-        } 
-        return 0;
-    }
-
-    static function getImporteIva($article, $iva = null) {
-        if (is_null($iva)) {
-            return Self::montoIvaDelPrecio($article) * $article->pivot->amount;
-        }
-        $importe = 0;
-        $base_imp = 0;
-        if (!is_null($article->iva) && $article->iva->percentage == $iva) {
-            $importe = Self::montoIvaDelPrecio($article) * $article->pivot->amount;
-            $base_imp = Self::getPriceWithoutIva($article) * $article->pivot->amount;
-        }
-        return ['Importe' => $importe, 'BaseImp' => Numbers::redondear($base_imp)];
-    }
-
-    static function getImporteItem($article) {
-        return $article->pivot->price * $article->pivot->amount;
-    }
-
-    static function getImporteGravado($article) {
-        if (!is_null($article->iva) && $article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento' && $article->iva->percentage != 0) {
-            // Log::info('Se suman '.Self::getPriceWithoutIva($article) * $article->pivot->amount.' al gravado del art '.$article->name);
-            return Self::getPriceWithoutIva($article) * $article->pivot->amount;
-        }
-        return 0;
-    }
-
-
-    static function getImporteNeto($article, $client) {
-        return Self::getArticlePrice($article, $client) * $article->pivot->amount;
-    }
-
-    static function subTotal($article) {
-        return Self::getArticlePriceWithDiscounts($article) * $article->pivot->amount;
+    static function getNumeroComprobante($wsfe, $punto_venta, $cbte_tipo) {
+        $pto_vta = [
+            'PtoVta'    => $punto_venta,
+            'CbteTipo'  => $cbte_tipo
+        ];
+        $result = $wsfe->FECompUltimoAutorizado($pto_vta);
+        Log::info('$result->FECompUltimoAutorizadoResult->CbteNro: '.$result->FECompUltimoAutorizadoResult->CbteNro);
+        return $result->FECompUltimoAutorizadoResult->CbteNro + 1;
     }
 
 }

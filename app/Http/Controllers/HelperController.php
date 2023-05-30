@@ -22,6 +22,15 @@ use Illuminate\Support\Facades\Storage;
 class HelperController extends Controller
 {
 
+    function checkClientsSaldos($company_name) {
+        $user = User::where('company_name', $company_name)->first();
+        $clients = Client::where('user_id', $user->id)
+                            ->get();
+        foreach ($clients as $client) {
+            CurrentAcountHelper::checkSaldos('client', $client->id);
+        }
+    }
+
     function setClientesOscar() {
         $user = User::where('company_name', 'oscar')->first();
         $clients = Client::whereNull('seller_id')
@@ -85,6 +94,8 @@ class HelperController extends Controller
         }
     }
 
+
+    // SETEAR TAMBIEN LA IMAGEN DEL USUARIO
     function setProperties($company_name, $for_articles = 0) {
         $for_articles = (boolean) $for_articles;
         $user = User::where('company_name', $company_name)->first();
@@ -129,9 +140,7 @@ class HelperController extends Controller
                 ],
                 [
                     'model_name' => 'address',
-                ],
-                [
-                    'model_name' => 'address',
+                    'plural'     => 'addresses',
                 ],
                 [
                     'model_name' => 'sale',
@@ -203,6 +212,9 @@ class HelperController extends Controller
                                 echo 'Se actualizo imagen de '.$model->name.' </br>';
                                 echo 'Nueva url: '.$image->hosting_url.' </br>';
                                 echo '-------------------------------------------- </br>';
+                                if (str_contains($image->hosting_url, 'public/public')) {
+                                    
+                                }
                             }
                         }
                     }

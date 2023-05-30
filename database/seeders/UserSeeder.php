@@ -48,8 +48,9 @@ class UserSeeder extends Seeder
                 'mensaje_contacto'              => 'Contactar tambien por mensaje directo en Facebook o Instagram, es el medio en el que mas activos estamos!',
                 'online_price_surchage'         => 50,
                 'online'                        => 'http://tienda.local:8081',
-                'max_items_in_sale'             => 2,
+                // 'max_items_in_sale'             => 2,
                 'download_articles'             => 1,
+                'pausar_tienda_online'          => 1,
             ],
             [
                 'name'              => 'Marcos',
@@ -118,6 +119,8 @@ class UserSeeder extends Seeder
                 'online_price_surchage'         => isset($model['online_price_surchage']) ? $model['online_price_surchage'] : null,
                 'online'                        => isset($model['online']) ? $model['online'] : null,
                 'max_items_in_sale'             => isset($model['max_items_in_sale']) ? $model['max_items_in_sale'] : null,
+                'download_articles'             => isset($model['download_articles']) ? $model['download_articles'] : null,
+                'pausar_tienda_online'             => isset($model['pausar_tienda_online']) ? $model['pausar_tienda_online'] : null,
             ]);
             if (is_null($user->owner_id)) {
 
@@ -167,7 +170,7 @@ class UserSeeder extends Seeder
             'percentage_card'               => 0,
             'has_delivery'                  => 1,
             'dollar'                        => 200,
-            'doc_number'                    => '7777',
+            'doc_number'                    => '21491373',
             // 'delivery_price'                => 70,
             'online_prices'                 => 'all',
             // 'online'                        => 'http://kioscoverde.local:8080',

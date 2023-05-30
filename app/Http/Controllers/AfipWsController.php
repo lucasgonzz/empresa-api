@@ -150,7 +150,9 @@ class AfipWsController extends Controller
         $cbte_nro = AfipHelper::getNumeroComprobante($wsfe, $punto_venta, $cbte_tipo);
         Log::info('Numero comprobante: '.$cbte_nro);
         Log::info('sigue con importes');
-        $importes = AfipHelper::getImportes($this->sale);
+
+        $afip_helper = new AfipHelper($this->sale);
+        $importes = $afip_helper->getImportes();
         Log::info('importes:');
         Log::info($importes);
         $today = date('Ymd');
