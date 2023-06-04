@@ -225,6 +225,12 @@ class ArticleSeeder extends Seeder
                     [
                         'url'       => 'cama_2_plazas.jpg',
                     ],
+                    [
+                        'url'       => 'martillo.jpg',
+                    ],
+                    [
+                        'url'       => 'martillo_grande.jpg',
+                    ],
                 ],
             ],
             

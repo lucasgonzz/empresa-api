@@ -195,6 +195,7 @@ class SaleAfipTicketPdf extends fpdf {
 	function printImportes() {
 		$importes = $this->afip_helper->getImportes();
 		$this->setX(5);
+		$this->y += 5;
 		$this->SetFont('Arial', 'B', 9);
 		if ($this->sale->afip_ticket->cbte_tipo == 1) {
 			$this->Cell(60, 5, 'Importe Neto Gravado: $'.Numbers::price($importes['gravado']), 1, 0, 'L');
@@ -674,19 +675,27 @@ class SaleAfipTicketPdf extends fpdf {
 
 	function printCommerceInfo() {
 		// Razon social
-		$this->SetY(17);
+		$this->SetY(19);
 		$this->SetX(6);
 		// $this->SetFont('Arial', 'B', 9);
 		// $this->Cell(23,12,'Razón Social:',0,0,'L');
 		$this->SetFont('Arial', 'B', 20);
-		$this->Cell(90,12,Auth()->user()->afip_information->razon_social, 0, 1,'L');
+	    $this->MultiCell( 
+			90, 
+			6, 
+			$this->sale->afip_information->razon_social, 
+	    	0, 
+	    	'L', 
+	    	false
+	    );
 
+		$this->SetY(32);
 		// Domicilio
 		$this->SetX(6);
 		$this->SetFont('Arial', 'B', 9);
 		$this->Cell(35,5,'Domicilio Comercial:',0,0,'L');
 		$this->SetFont('Arial', '', 9);
-		$this->Cell(50,5,Auth()->user()->afip_information->domicilio_comercial,0,1,'L');
+		$this->Cell(50,5,$this->sale->afip_information->domicilio_comercial,0,1,'L');
 		// Iva
 		$this->SetX(6);
 		$this->SetFont('Arial', 'B', 9);
@@ -694,12 +703,6 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->SetFont('Arial', 'B', 9);
 		// $this->Cell(50,5,'IVA '.Auth()->user()->iva->name,0,0,'L');
 		$this->Cell(50,5,'IVA '.$this->sale->afip_ticket->iva_negocio,0,1,'L');
-
-		// Ingresos brutos 
-		$this->SetX(6);
-		$this->SetFont('Arial', 'B', 9);
-		$this->Cell(30,5,'Ingresos Brutos:', 0, 0,'L');
-		$this->Cell(25,5,Auth()->user()->ingresos_brutos, 0, 1,'L');
 		
 		// Inicio actividades
 		if ($this->user->afip_information->inicio_actividades != '') {
@@ -733,6 +736,12 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->SetFont('Arial', 'B', 9);
 		$this->Cell(12,5,'CUIT:',0,0,'L');
 		$this->Cell(25,5,$this->sale->afip_ticket->cuit_negocio, 0, 1,'L');
+
+		// Ingresos brutos 
+		$this->SetX(118);
+		$this->SetFont('Arial', 'B', 9);
+		$this->Cell(30,5,'Ingresos Brutos:', 0, 0,'L');
+		$this->Cell(25,5,$this->sale->afip_information->ingresos_brutos, 0, 1,'L');
 	}
 
 	function printCommerceLines() {

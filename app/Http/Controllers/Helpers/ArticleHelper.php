@@ -339,9 +339,8 @@ class ArticleHelper {
     }
 
     static function setDiscounts($article, $article_discounts) {
-        $article_discounts = ArticleDiscount::where('article_id', $article->id)
-                                            ->pluck('id');
-        ArticleDiscount::destroy($article_discounts);                                   
+        ArticleDiscount::where('article_id', $article->id)
+                        ->delete();
         if ($article_discounts) {
             foreach ($article_discounts as $discount) {
                 $discount = (object) $discount;
@@ -350,6 +349,7 @@ class ArticleHelper {
                         'percentage' => $discount->percentage,
                         'article_id' => $article->id,
                     ]);
+                    Log::info('se creo descuento de '.$discount->percentage);
                 }
             }
         }

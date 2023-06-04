@@ -54,8 +54,6 @@ class ImageController extends Controller
         Log::info('model_name: '.$model_name);
         $image = null;
         if ($prop_name == 'has_many') {
-            Log::info('model_id: '.$request->model_id);
-            Log::info('model id: '.$model->id);
             $image = Image::create([
                 env('IMAGE_URL_PROP_NAME', 'image_url')     => $name,
                 'imageable_id'                              => !is_null($model) ? $request->model_id : null,

@@ -157,4 +157,13 @@ Route::middleware('auth:sanctum')->group(function() {
 
     Route::get('inventory-linkage-scope', 'InventoryLinkageScopeController@index');
     Route::resource('inventory-linkage', 'InventoryLinkageController');
+
+    Route::resource('article-property', 'ArticlePropertyController');
+
+    Route::resource('article-property-type', 'ArticlePropertyTypeController');
+    
+    Route::resource('article-property-value', 'ArticlePropertyValueController');
+
+    Route::post('article-variant', 'ArticleVariantController@store');
+    Route::put('article-variant/{id}', 'ArticleVariantController@update');
 });

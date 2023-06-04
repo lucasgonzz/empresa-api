@@ -38,7 +38,7 @@ class UserSeeder extends Seeder
                 'online_prices'                 => 'only_buyers_with_comerciocity_client',
                 'visible_password'              => null,
                 'dollar'                        => 300,
-                'online_price_type_id'          => 3,
+                'online_price_type_id'          => 1,
                 'default_article_image_url'     => 'http://empresa.local:8000/storage/168053912176623.webp',
                 // 'payment_expired_at'         => Carbon::now()->addDay(),
                 'quienes_somos'                 => 
@@ -50,7 +50,7 @@ class UserSeeder extends Seeder
                 'online'                        => 'http://tienda.local:8081',
                 // 'max_items_in_sale'             => 2,
                 'download_articles'             => 1,
-                'pausar_tienda_online'          => 1,
+                'pausar_tienda_online'          => 0,
             ],
             [
                 'name'              => 'Marcos',

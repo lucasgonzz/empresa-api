@@ -2,10 +2,6 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Models\Article;
-use App\Models\Buyer;
-use App\Models\Cart;
-use App\Models\Color;
 use App\Events\OrderConfirmed as OrderConfirmedEvent;
 use App\Events\OrderFinished as OrderFinishedEvent;
 use App\Events\PaymentError as PaymentErrorEvent;
@@ -17,14 +13,20 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\PaymentController;
 use App\Listerners\OrderConfirmedListene;
+use App\Models\Article;
+use App\Models\ArticleVariant;
+use App\Models\Buyer;
+use App\Models\Cart;
+use App\Models\Color;
+use App\Models\Sale;
+use App\Models\Size;
+use App\Models\Variant;
 use App\Notifications\CreatedSale;
 use App\Notifications\OrderConfirmed as OrderConfirmedNotification;
 use App\Notifications\OrderFinished as OrderFinishedNotification;
 use App\Notifications\PaymentError as PaymentErrorNotification;
 use App\Notifications\PaymentSuccess as PaymentSuccessNotification;
-use App\Models\Sale;
-use App\Models\Size;
-use App\Models\Variant;
+use Illuminate\Support\Facades\Log;
 
 
 class OrderHelper {
@@ -103,15 +105,19 @@ class OrderHelper {
         if ($model->order_status->name == 'Sin confirmar') {
             foreach ($model->articles as $article) {
                 $_article = Article::find($article->id);
-                if (!is_null($_article->stock)) {
-                    $stock_resultante = $_article->stock - $article->pivot->amount;
-                    if ($stock_resultante > 0) {
-                        $_article->stock = $stock_resultante;
-                    } else {
-                        $_article->stock = 0;
+                if (count($_article->article_variants) >= 1) {
+                    $article_variant = ArticleVariant::find($article->pivot->variant_id);
+                    if (!is_null($article_variant->stock)) {
+                        $_article->timestamps = false;
+                        $article_variant->stock -= $article->pivot->amount;
+                        $article_variant->save();
                     }
-                    $_article->timestamps = false;
-                    $_article->save();
+                } else {
+                    if (!is_null($_article->stock)) {
+                        $_article->timestamps = false;
+                        $_article->stock -= $article->pivot->amount;
+                        $_article->save();
+                    }
                 }
             }
         }

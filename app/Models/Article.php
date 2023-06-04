@@ -12,7 +12,15 @@ class Article extends Model
     protected $guarded = [];
 
     function scopeWithAll($query) {
-        $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits');
+        $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values');
+    }
+
+    function article_properties() {
+        return $this->hasMany(ArticleProperty::class);
+    }
+
+    function article_variants() {
+        return $this->hasMany(ArticleVariant::class);
     }
 
     function views() {

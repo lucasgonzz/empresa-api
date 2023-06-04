@@ -65,7 +65,7 @@ class DatabaseSeeder extends Seeder
             // $this->call(SizeSeeder::class);
             // $this->call(PricesListSeeder::class);
             // $this->call(PlateletSeeder::class);
-            $this->call(OrderProductionStatusSeeder::class);
+            // $this->call(OrderProductionStatusSeeder::class);
             $this->call(CurrentAcountPaymentMethodSeeder::class);
             $this->call(PaymentMethodSeeder::class);
             $this->call(DeliveryZoneSeeder::class);
@@ -84,6 +84,8 @@ class DatabaseSeeder extends Seeder
             $this->call(OrderSeeder::class);
             $this->call(InventoryLinkageScopeSeeder::class);
             $this->call(AfipTicketSeeder::class);
+            $this->call(ArticlePropertyTypeSeeder::class);
+            $this->call(ArticlePropertyValueSeeder::class);
         }
     }
 }
