@@ -28,6 +28,7 @@ Route::get('recalculate-current-acounts/{company_name}', 'HelperController@recau
 Route::get('check-pagos/{model_name}/{model_id}/{si_o_si}', 'Helpers\CurrentAcountHelper@checkPagos');
 Route::get('check-saldos/{model_name}/{id}', 'Helpers\CurrentAcountHelper@checkSaldos');
 Route::get('clients-check-saldos/{model_name}', 'Helpers\CurrentAcountHelper@checkClientsSaldos');
+Route::get('set-comerciocity-extencion', 'HelperController@setComerciocityExtencion');
 
 Route::get('get-persona', 'AfipWsController@getPersona');
 

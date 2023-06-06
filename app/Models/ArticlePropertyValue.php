@@ -10,6 +10,10 @@ class ArticlePropertyValue extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        
+        $q->with('article_property_type');        
+    }
+
+    function article_property_type() {
+        return $this->belongsTo(ArticlePropertyType::class);
     }
 }

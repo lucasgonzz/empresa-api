@@ -22,6 +22,14 @@ use Illuminate\Support\Facades\Storage;
 class HelperController extends Controller
 {
 
+    function setComerciocityExtencion() {
+        $users = User::whereNull('owner_id')->get();
+        foreach ($users as $user) {
+            $user->extencions()->attach(9);
+            echo 'Se agrego extencion a '.$user->company_name.'</br>';
+        }
+    }
+
     function checkClientsSaldos($company_name) {
         $user = User::where('company_name', $company_name)->first();
         $clients = Client::where('user_id', $user->id)

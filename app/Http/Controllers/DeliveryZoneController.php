@@ -19,7 +19,7 @@ class DeliveryZoneController extends Controller
 
     public function store(Request $request) {
         $model = DeliveryZone::create([
-            'num'                   => $this->num('delivery_zones'),
+            // 'num'                   => $this->num('delivery_zones'),
             'name'                  => $request->name,
             'description'           => $request->description,
             'price'                 => $request->price,

@@ -233,6 +233,23 @@ class ArticleSeeder extends Seeder
                     ],
                 ],
             ],
+            [
+                'bar_code'          => '',
+                'provider_code'     => '',
+                'name'              => 'Zapatilla adidas',
+                'stock'             => null,
+                'cost'              => 10000,
+                'percentage_gain'   => 50,
+                'iva_id'            => 6,
+                'images'            => [
+                    [
+                        'url'       => 'zapatilla_blanca.webp',
+                    ],
+                    [
+                        'url'       => 'zapatilla_roja.webp',
+                    ],
+                ],
+            ],
             
         ];
         $num = 1;
@@ -248,10 +265,12 @@ class ArticleSeeder extends Seeder
                 'status'            => isset($article['status']) ? $article['status'] : 'active',
                 'featured'          => isset($article['featured']) ? $article['featured'] : null,
                 'stock'             => $article['stock'] ,
-                'provider_id'       => $article['provider_id'],
+                'provider_id'       => isset($article['provider_id']) ? $article['provider_id'] : null,
+                'percentage_gain'   => isset($article['percentage_gain']) ? $article['percentage_gain'] : null,
+                'iva_id'            => isset($article['iva_id']) ? $article['iva_id'] : 2,
                 'apply_provider_percentage_gain' => 0,
                 // 'apply_provider_percentage_gain' => 1,
-                'price'             => $article['price'],
+                'price'             => isset($article['price']) ? $article['price'] : null,
                 'category_id'       => $this->getCategoryId($user, $article),
                 'sub_category_id'   => $this->getSubcategoryId($user, $article),
                 'created_at'        => Carbon::now()->subDays($days),
@@ -271,10 +290,12 @@ class ArticleSeeder extends Seeder
                     ]);
                 }    
             }
-            $art->providers()->attach($article['provider_id'], [
-                                        'cost'  => $article['cost'],
-                                        'amount' => $article['stock'],
-                                    ]);
+            if (isset($article['provider_id'])) {
+                $art->providers()->attach($article['provider_id'], [
+                                            'cost'  => $article['cost'],
+                                            'amount' => $article['stock'],
+                                        ]);
+            }
             $this->createDescriptions($art); 
             $this->setColors($art, $article); 
             ArticleHelper::setFinalPrice($art, $user->id);

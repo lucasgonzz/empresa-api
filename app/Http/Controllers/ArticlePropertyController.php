@@ -24,4 +24,11 @@ class ArticlePropertyController extends Controller
         GeneralHelper::attachModels($model, 'article_property_values', $request->article_property_values);
         return response()->json(['model' => $this->fullModel('ArticleProperty', $model->id)], 200);
     }
+
+    function destroy($id) {
+        $model = ArticleProperty::find($id);
+        $model->article_property_values()->detach();
+        $model->delete();
+        return response(null, 200);
+    }
 }

@@ -86,6 +86,7 @@ class DatabaseSeeder extends Seeder
             $this->call(AfipTicketSeeder::class);
             $this->call(ArticlePropertyTypeSeeder::class);
             $this->call(ArticlePropertyValueSeeder::class);
+            $this->call(ArticlePropertySeeder::class);
         }
     }
 }

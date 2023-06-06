@@ -43,7 +43,7 @@ class CajaReportsHelper {
 		$sales = $sales->get();
 		foreach ($sales as $sale) {
 			$total += SaleHelper::getTotalSale($sale);
-			if (count($sale->current_acounts) == 0) {
+			if (is_null($sale->current_acount)) {
 				if (is_null($sale->current_acount_payment_method)) {
 					$sale_payment_methods['Efectivo'] += SaleHelper::getTotalSale($sale);
 				} else {

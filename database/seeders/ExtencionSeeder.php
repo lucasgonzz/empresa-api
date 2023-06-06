@@ -47,6 +47,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Escanear Codigos de Barra',
                 'slug' => 'bar_code_scanner',
             ],
+            [
+                'name' => 'Usar sistema de administracion',
+                'slug' => 'comerciocity_interno',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

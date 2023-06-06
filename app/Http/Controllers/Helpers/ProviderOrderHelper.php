@@ -171,7 +171,7 @@ class ProviderOrderHelper {
 		if ($total > 0) {
 			Log::info('entro a total > 0');
 			$current_acount = CurrentAcount::where('provider_order_id', $provider_order->id)->first();
-			Log::info('current_acount_id: '.$current_acount->id);
+			// Log::info('current_acount_id: '.$current_acount->id);
 			if (is_null($current_acount)) {
 				$current_acount = CurrentAcount::create([
 					'detalle' 			=> 'Pedido N°'.$provider_order->num,

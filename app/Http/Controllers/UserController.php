@@ -25,7 +25,7 @@ class UserController extends Controller
             'email'         => $request->email,
             'password'      => bcrypt($request->password),
         ]);
-        $model->extencions()->attach([6, 8]);
+        $model->extencions()->attach([6, 8, 9]);
         UserConfiguration::create([
             'user_id'       => $model->id,
             'iva_included'  => 1,
