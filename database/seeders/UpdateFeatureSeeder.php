@@ -16,21 +16,33 @@ class UpdateFeatureSeeder extends Seeder
     {
         $models = [
             [
-                'name' => 'Boton Tareas',
-                'description' => 'En la ezquina superior derecha, a la izquierda del nombre de usuario, habra un boton azul con el icono de mensaje, para que se puedan dejar agendadas tareas para uno a mas usuarios. Las tareas pueden ser agendadas tanto por el dueño como por los empleados. El dueño podra ver todas las tareas, hayan sido o no creadas para el, mientras que los empleados solo podran ver las tareas creadas por o para ellos. Tambien se podra indicar si se termino o no la tarea.',
+                'name' => 'Pedidos a Proveedor',
+                'description' => 'Cuando se agregue un articulo al pedido de un proveedor, se va a poder indicar si queremos que se sume al listado.',
             ],
             [
-                'name'  => 'Pantalla de carga en segundo plano',
-                'description'   => 'Anteriormente habia que esperar que el sistema descargue todos los recursos de la nube para poder comenzar a utilizarlo, a partir de ahora este proceso ocurrira en segundo plano para que se pueda comenzar a utilizar el sistema lo mas rapido posible.'
+                'name' => 'Configuracion Online',
+                'description' => 'Se separo el apartado de configuracion de la Tienda y la configuracion general de la cuenta',
             ],
             [
-                'name'  => 'Optimizacion en dispositivos mobiles',
-                'description'   => 'Al ingresar desde un dispositivo mobil no se descargara ingormacion que consuman muchos recursos, como es el caso de los articulos, clientes y proveedores. Cuando se necesite hacer uso de esta informacion, el sistema los obtendra mediante una solicitud al servidor en el momento en que se necesite. Si igual prefiere tener descargada esta informacion, puede descargarlos de todas formas.'
+                'name' => 'Boton checkear saldos',
+                'description' => 'Para depejar cualquier duda en la suma de los saldos de las cuentas corrientes, se agrego el boton "checkear saldos" para recalcular los saldos',
             ],
             [
-                'name'  => 'Seter el costo de un articulo en base a su reseta',
-                'description'   => 'En las recetas aparece la opcion de "Establecer costo del articulo en base a los costos de los insumos", si se marca esta opcion, el costo del articulo se calculara sumando los costos de los insumos utilizados para producirlo.'
+                'name' => 'Mensajes Online',
+                'description' => 'Se mejoro la vista de los Mensajes de la Tienda Online',
             ],
+            [
+                'name' => 'Notas de credito AFIP',
+                'description' => 'Ahora se pueden enviar a AFIP las notas de credito generadas para una venta que tambien haya sido blanqueada',
+            ],
+            [
+                'name' => 'Seleccionar con un click resultado de busqueda',
+                'description' => 'El primer resultado de busqueda, que ya aparece marcado, puede ser seleccionado con el mouse sin deseleccionarce como ocurria antes.',
+            ],
+            // [
+            //     'name' => '',
+            //     'description' => '',
+            // ],
         ];
         foreach ($models as $model) {
             UpdateFeature::create([

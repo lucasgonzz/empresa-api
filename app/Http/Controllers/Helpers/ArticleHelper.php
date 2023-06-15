@@ -96,7 +96,7 @@ class ArticleHelper {
             $final_price = $article->price;
         }
 
-        if (!$user->configuration->iva_included && Self::hasIva($article)) {
+        if (!$user->iva_included && Self::hasIva($article)) {
             // Log::info('sumando iva de '.$article->iva->percentage);
             // Log::info('final_price esta en '.$final_price);
             $final_price += $final_price * $article->iva->percentage / 100;
@@ -202,12 +202,14 @@ class ArticleHelper {
     }
 
     static function attachProvider($article, $request) {
-        if ($request->provider_id != 0) {
+        if ($request->provider_id != 0 && ($article->provider_id != $request->provider_id || $article->stock != $request->stock)) {
             $article->providers()->attach($request->provider_id, [
                                             'amount' => $request->stock,
                                             'cost'   => $request->cost,
-                                            // 'price'  => $request->price
+                                            'price'  => $article->final_price,
+                                            'amount' => $request->stock - $article->stock,
                                         ]);
+            Log::info('Se agrego provider');
         }
     }
 

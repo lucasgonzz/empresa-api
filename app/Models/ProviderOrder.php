@@ -29,7 +29,7 @@ class ProviderOrder extends Model
     }
 
     function articles() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'cost', 'notes', 'received', 'iva_id', 'received_cost', 'update_cost', 'cost_in_dollars');
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'cost', 'notes', 'received', 'iva_id', 'received_cost', 'update_cost', 'cost_in_dollars', 'add_to_articles');
     }
 
     function provider_order_extra_costs() {

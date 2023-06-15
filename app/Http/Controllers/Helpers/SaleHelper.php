@@ -7,6 +7,7 @@ use App\Http\Controllers\ClientController;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\CurrentAcountController;
+use App\Http\Controllers\Helpers\Afip\AfipNotaCreditoHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CurrentAcountAndCommissionHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
@@ -72,9 +73,9 @@ class SaleHelper extends Controller {
 
     static function saveAfipTicket($sale) {
         if (!is_null($sale->afip_information_id) && $sale->afip_information_id != 0) {
-            Log::info('guardando afip ticket');
             $ct = new AfipWsController($sale);
-            $ct->init();
+            $afip_ticket = $ct->init();
+            return $afip_ticket;
         } 
     }
 
@@ -100,17 +101,15 @@ class SaleHelper extends Controller {
         Self::attachSurchages($model, $request->surchages_id);
         if ($from_store) {
             Self::attachCurrentAcountsAndCommissions($model);
-            Self::saveAfipTicket($model);
+            $afip_ticket = Self::saveAfipTicket($model);
         } else {
             Self::checkNotaCredito($model, $request);
-
         }
     }
 
     static function checkNotaCredito($sale, $request) {
         if ($request->save_nota_credito) {
             $haber = 0;
-            $total_article = 0;
             $articles = [];
             foreach ($request->items as $item) {
                 if (isset($item['is_article']) && $item['returned_amount'] > 0) {
@@ -128,9 +127,40 @@ class SaleHelper extends Controller {
                     $haber += (float)$surchage->pivot->percentage * $haber / 100;
                 }
             }
-            CurrentAcountHelper::notaCredito($haber, $request->nota_credito_description, 'client', $request->client_id, $sale->id, $articles);
+            $nota_credito = CurrentAcountHelper::notaCredito($haber, $request->nota_credito_description, 'client', $request->client_id, $sale->id, $articles);
             CurrentAcountHelper::checkSaldos('client', $request->client_id);
+            if (!is_null($sale->afip_ticket)) {
+                $afip_helper = new AfipNotaCreditoHelper($sale, $nota_credito);
+                $afip_helper->init();
+            }
         }
+    }
+
+    static function createNotaCreditoFromDestroy($sale) {
+        $haber = 0;
+        $articles = [];
+        foreach ($sale->articles as $article) {
+            $haber += $article->pivot->price * $article->pivot->amount;
+            $article->returned_amount = $article->pivot->amount;
+            $articles[] = $article;
+        }
+        if (count($sale->discounts) >= 1) {
+            foreach ($sale->discounts as $discount) {
+                $haber -= (float)$discount->pivot->percentage * $haber / 100;
+            }
+        }
+        if (count($sale->surchages) >= 1) {
+            foreach ($sale->surchages as $surchage) {
+                $haber += (float)$surchage->pivot->percentage * $haber / 100;
+            }
+        }
+        $description = 'Venta N°'.$sale->num.' eliminada';
+        $nota_credito = CurrentAcountHelper::notaCredito($haber, $description, 'client', $sale->client_id, $sale->id, $articles);
+        if (!is_null($sale->client)) {
+            CurrentAcountHelper::checkSaldos('client', $sale->client_id);
+        }
+        $afip_helper = new AfipNotaCreditoHelper($sale, $nota_credito);
+        $afip_helper->init();
     }
 
     static function attachDiscounts($sale, $discounts_id) {

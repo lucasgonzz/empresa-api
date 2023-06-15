@@ -19,7 +19,7 @@ class AfipInformationController extends Controller
 
     public function store(Request $request) {
         $model = AfipInformation::create([
-            'num'                       => $this->num('afip_information'),
+            // 'num'                       => $this->num('afip_information'),
             'iva_condition_id'          => $request->iva_condition_id,
             'razon_social'              => $request->razon_social,
             'domicilio_comercial'       => $request->domicilio_comercial,

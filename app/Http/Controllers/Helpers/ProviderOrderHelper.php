@@ -68,7 +68,7 @@ class ProviderOrderHelper {
 				$article->stock -= $last_received[$article->id];
 			}
 			$article->stock += $_article['pivot']['received'];
-			if ($article->status == 'inactive') {
+			if ($article->status == 'inactive' && $_article['pivot']['add_to_articles']) {
 				$article->status = 'active';
 				$article->apply_provider_percentage_gain = 1;
 				$article->created_at = Carbon::now();
@@ -86,7 +86,7 @@ class ProviderOrderHelper {
 										'cost' 	 => $_article['pivot']['cost'],
 									]);
 			}
-			if ($data_changed) {
+			if ($data_changed && $article->status == 'active') {
 				$article->save();
 				ArticleHelper::setFinalPrice($article);
 				$ct = new Controller();
@@ -124,6 +124,7 @@ class ProviderOrderHelper {
 											'received_cost' 	=> GeneralHelper::getPivotValue($article, 'received_cost'),
 											'update_cost' 		=> GeneralHelper::getPivotValue($article, 'update_cost'),
 											'cost_in_dollars'	=> GeneralHelper::getPivotValue($article, 'cost_in_dollars'),
+											'add_to_articles'	=> GeneralHelper::getPivotValue($article, 'add_to_articles'),
 											'iva_id'    		=> Self::getIvaId($article),
 										]);
 			Self::updateArticleStock($article, $last_received, $provider_order);

@@ -71,7 +71,7 @@ class CurrentAcountAndCommissionHelper extends Controller {
         $this->debe_sin_descuentos = $this->debe;
         $this->debe = SaleHelper::getTotalWithDiscountsAndSurchages($this->sale, $this->total_articles, $this->total_combos, $this->total_services);
         $this->createCurrentAcount();
-        $this->checkCurrentAcountSaldo();
+        CurrentAcountHelper::checkCurrentAcountSaldo('client', $this->sale->client_id);
         $this->updateClientSaldo();
         SellerCommissionHelper::commissionForSeller($this->created_current_acount);
     }
@@ -89,16 +89,6 @@ class CurrentAcountAndCommissionHelper extends Controller {
         ]);
         $this->created_current_acount->saldo = Numbers::redondear(CurrentAcountHelper::getSaldo('client', $this->sale->client_id, $this->created_current_acount) + $this->debe);
         $this->created_current_acount->save();
-    }
-
-    function checkCurrentAcountSaldo() {
-        $current_acounts = CurrentAcount::where('client_id', $this->sale->client_id)
-                                        ->orderBy('created_at', 'DESC')
-                                        ->take(3)
-                                        ->get();
-        if (isset($current_acounts[2])) {
-            CurrentAcountHelper::checkSaldos('client', $this->sale->client_id, $current_acounts[2]);
-        }
     }
 
     function updateClientSaldo() {

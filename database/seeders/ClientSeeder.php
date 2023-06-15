@@ -24,7 +24,8 @@ class ClientSeeder extends Seeder
                 'num'                   => 1,
                 'name'                  => 'Marcos Gonzalez',
                 'address'               => 'San antonio 23 - Gualeguay, Entre Rios',
-                'cuit'                  => '20242112025',
+                'cuit'                  => '30671859339',
+                // Cuit Banco la Rioja: 30671859339
                 'razon_social'          => 'MARCOS SRL', 
                 'iva_condition_id'      => 1,
                 'seller_id'             => 1,

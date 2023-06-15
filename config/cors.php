@@ -23,6 +23,7 @@ return [
         'set-image',
         'password-reset/*',
         'user',
+        'home/clients',
         '/storage/*',
         'storage',
     ],

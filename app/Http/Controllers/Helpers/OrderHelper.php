@@ -30,7 +30,18 @@ use Illuminate\Support\Facades\Log;
 
 
 class OrderHelper {
-    
+
+    static function setArticlesVariant($orders) {
+        foreach ($orders as $order) {
+            foreach ($order->articles as $article) {
+                if (isset($article->pivot) && $article->pivot->variant_id) {
+                    $article->variant = Variant::find($article->pivot->variant_id);
+                } 
+            }
+        }
+        return $orders;
+    }
+
     static function setArticlesColor($orders) {
         $colors = Color::all();
         foreach ($orders as $order) {

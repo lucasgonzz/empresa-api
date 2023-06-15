@@ -29,7 +29,7 @@ class ClientController extends Controller
             'email'                     => $request->email,
             'phone'                     => $request->phone,
             'address'                   => $request->address,
-            'cuit'                      => $request->cuit,
+            'cuit'                      => $this->getCuit($request->cuit),
             'razon_social'              => $request->razon_social,
             'iva_condition_id'          => $request->iva_condition_id,
             'price_type_id'             => $request->price_type_id,
@@ -54,7 +54,7 @@ class ClientController extends Controller
         $model->email                       = $request->email;
         $model->phone                       = $request->phone;
         $model->address                     = $request->address;
-        $model->cuit                        = $request->cuit;
+        $model->cuit                        = $this->getCuit($request->cuit);
         $model->razon_social                = $request->razon_social;
         $model->iva_condition_id            = $request->iva_condition_id;
         $model->price_type_id               = $request->price_type_id;
@@ -83,5 +83,9 @@ class ClientController extends Controller
 
     function export() {
         return Excel::download(new ClientExport, 'comerciocity-clientes '.date_format(Carbon::now(), 'd-m-y H:m').'.xlsx');
+    }
+
+    function getCuit($cuit) {
+        return str_replace('-', '', $cuit);
     }
 }

@@ -25,6 +25,7 @@ class OrderController extends Controller
         }
 
         $models = $models->get();
+        $models = OrderHelper::setArticlesVariant($models);
         return response()->json(['models' => $models], 200);
     }
 

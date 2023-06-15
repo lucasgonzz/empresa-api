@@ -49,6 +49,10 @@ class Sale extends Model
         return $this->hasOne('App\Models\CurrentAcount');
     }
 
+    public function current_acounts() {
+        return $this->hasMany('App\Models\CurrentAcount');
+    }
+
     public function order() {
         return $this->belongsTo('App\Models\Order');
     }

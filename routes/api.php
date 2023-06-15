@@ -38,7 +38,8 @@ Route::middleware('auth:sanctum')->group(function() {
 
     // ----------------------------------------------------------------------------------------------------
 
-    Route::resource('configuration', 'UserConfigurationController');
+    Route::get('online-configuration', 'OnlineConfigurationController@index');
+    Route::put('online-configuration/{id}', 'OnlineConfigurationController@update');
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
     Route::get('update-feature', 'UpdateFeatureController@index');
 
@@ -51,6 +52,7 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::get('/article/set-featured/{id}', 'ArticleController@setFeatured');
     Route::get('/article/set-online/{id}', 'ArticleController@setOnline');
     Route::get('/article/charts/{id}/{from_date}/{until_date}', 'ArticleController@charts');
+    Route::get('/article/providers-history/{article_id}', 'ArticleController@providersHistory');
 
     Route::resource('sale', 'SaleController');
     Route::get('sale/from-date/{from_date}/{until_date?}', 'SaleController@index');
@@ -126,6 +128,7 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::post('/current-acount/nota-debito', 'CurrentAcountController@notaDebito');
     Route::post('/current-acount/saldo-inicial', 'CurrentAcountController@saldoInicial');
     Route::delete('/current-acount/{model_name}/{id}', 'CurrentAcountController@delete');
+    Route::get('check-saldos/{model_name}/{id}', 'Helpers\CurrentAcountHelper@checkSaldos');
 
     Route::get('/import-history/{model_name}', 'ImportHistoryController@index');
 

@@ -82,10 +82,10 @@ class ArticleController extends Controller
         // ArticleHelper::setCondition($model, $request->condition_id);
         // ArticleHelper::setSpecialPrices($model, $request);
         // $model->user->notify(new CreatedArticle($model));
-        ArticleHelper::attachProvider($model, $request);
         ArticleHelper::setDeposits($model, $request);
         $this->updateRelationsCreated('article', $model->id, $request->childrens);
         ArticleHelper::setFinalPrice($model);
+        ArticleHelper::attachProvider($model, $request);
         $this->sendAddModelNotification('article', $model->id);
 
         $inventory_linkage_helper = new InventoryLinkageHelper();
@@ -132,6 +132,7 @@ class ArticleController extends Controller
         ArticleHelper::setFinalPrice($model);
         ArticleHelper::setDeposits($model, $request);
         ArticleHelper::checkAdvises($model);
+        ArticleHelper::attachProvider($model, $request);
         $this->sendAddModelNotification('article', $model->id);
 
         $inventory_linkage_helper = new InventoryLinkageHelper();
@@ -167,6 +168,13 @@ class ArticleController extends Controller
 
     function export() {
         return Excel::download(new ArticleExport, 'comerciocity-articulos_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
+    }
+
+    function providersHistory($article_id) {
+        $model = Article::where('id', $article_id)
+                        ->with('providers')
+                        ->first();
+        return response()->json(['model' => $model], 200);
     }
 
     function setFeatured($id) {

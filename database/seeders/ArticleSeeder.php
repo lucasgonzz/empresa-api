@@ -53,6 +53,7 @@ class ArticleSeeder extends Seeder
                 // 'price'             => 2000,
                 'sub_category_name' => 'Martillos',
                 'provider_id'       => $bsas->id,
+                'featured'          => 1,
                 'images'            => [
                     [
                         'url'       => 'martillo.jpg',
@@ -63,6 +64,7 @@ class ArticleSeeder extends Seeder
                 ],
             ],
             [
+                'featured'          => 2,
                 'bar_code'          => '1234',
                 'provider_code'     => 'p-1234',
                 'name'              => 'Martillo grande',
@@ -86,6 +88,7 @@ class ArticleSeeder extends Seeder
                 'price'             => 1500,
                 'sub_category_name' => 'Pinzas',
                 'provider_id'       => $bsas->id,
+                'featured'          => 3,
                 'images'            => [
                     [
                         'url'       => 'pinza.jpg',
@@ -106,6 +109,7 @@ class ArticleSeeder extends Seeder
                         'url'       => 'pinza_alicate.jpg',
                     ],
                 ],
+                'featured'          => 4,
             ],
             [
                 'bar_code'          => '',
@@ -116,6 +120,7 @@ class ArticleSeeder extends Seeder
                 'price'             => 1000,
                 'sub_category_name' => 'Cuchillos',
                 'provider_id'       => $bsas->id,
+                'featured'          => 5,
                 'images'            => [
                     [
                         'url'       => 'cuchilla.jpg',
@@ -268,6 +273,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => isset($article['provider_id']) ? $article['provider_id'] : null,
                 'percentage_gain'   => isset($article['percentage_gain']) ? $article['percentage_gain'] : null,
                 'iva_id'            => isset($article['iva_id']) ? $article['iva_id'] : 2,
+                'featured'            => isset($article['featured']) ? $article['featured'] : null,
                 'apply_provider_percentage_gain' => 0,
                 // 'apply_provider_percentage_gain' => 1,
                 'price'             => isset($article['price']) ? $article['price'] : null,

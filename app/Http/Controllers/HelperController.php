@@ -11,6 +11,7 @@ use App\Models\Budget;
 use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\Image;
+use App\Models\OnlineConfiguration;
 use App\Models\OrderProduction;
 use App\Models\Provider;
 use App\Models\User;
@@ -21,6 +22,34 @@ use Illuminate\Support\Facades\Storage;
 
 class HelperController extends Controller
 {
+
+    function setOnlineConfiguration() {
+        $users = User::whereNull('owner_id')->get();
+        foreach ($users as $user) {
+            if (!is_null($user->configuration)) {
+                $user->iva_included = $user->configuration->iva_included;
+                $user->save();
+                OnlineConfiguration::create([
+                    'pausar_tienda_online'            => $user->pausar_tienda_online,                     
+                    'online_price_type_id'            => $user->online_price_type_id,                     
+                    'online_price_surchage'           => $user->online_price_surchage,                      
+                    'instagram'                       => $user->instagram,                     
+                    'facebook'                        => $user->facebook,                     
+                    'quienes_somos'                   => $user->quienes_somos,                     
+                    'default_article_image_url'       => $user->default_article_image_url,                     
+                    'mensaje_contacto'                => $user->mensaje_contacto,                     
+                    'show_articles_without_images'    => $user->show_articles_without_images,                     
+                    'show_articles_without_stock'     => $user->show_articles_without_stock,                     
+                    'online_description'              => $user->online_description,                     
+                    'has_delivery'                    => $user->has_delivery,                     
+                    'order_description'               => $user->order_description,
+                    'user_id'                         => $user->id,
+                ]);
+                echo 'Se puso iva_included '.$user->iva_included.' y se creo online_configuration a '.$user->company_name.'</br>';
+            }
+        }
+        // setear config online
+    }
 
     function setComerciocityExtencion() {
         $users = User::whereNull('owner_id')->get();
@@ -187,42 +216,53 @@ class HelperController extends Controller
                 } 
                 $models = $models->get();
 
-                foreach ($models as $model) {
-                    $model->timestamps = false;
-                    $model->num = null;
-                    $model->save();
-                }
-                foreach ($models as $model) {
-                    $model->timestamps = false;
-                    $model->num = $this->num($this->getPlural($_model), $user->id);
-                    $model->save();
-                }
+                // foreach ($models as $model) {
+                //     $model->timestamps = false;
+                //     $model->num = null;
+                //     $model->save();
+                // }
+                // foreach ($models as $model) {
+                //     $model->timestamps = false;
+                //     $model->num = $this->num($this->getPlural($_model), $user->id);
+                //     $model->save();
+                // }
 
                 if ($for_articles) {
                     foreach ($models as $model) {
                         if ($model->status == 'inactive') {
-                            echo 'Se elimino '.$model->name.' </br>';
-                            $model->delete();
+                            // echo 'Se elimino '.$model->name.' </br>';
+                            // $model->delete();
                         } else {
-                            ArticleHelper::setFinalPrice($model, $user->id);
-                            echo('Se seteo precio final de '.$model->name.'. Quedo en '.$model->final_price.' </br>');
-                            if (count($model->providers) >= 1) {
-                                $model->provider_id = $model->providers[count($model->providers)-1]->id;
-                                $model->save(); 
-                                echo $model->name.', proveedor: '.$model->provider->name. ' </br>';
-                            }
+                            // ArticleHelper::setFinalPrice($model, $user->id);
+                            // echo('Se seteo precio final de '.$model->name.'. Quedo en '.$model->final_price.' </br>');
+                            // if (count($model->providers) >= 1) {
+                            //     $model->provider_id = $model->providers[count($model->providers)-1]->id;
+                            //     $model->save(); 
+                            //     echo $model->name.', proveedor: '.$model->provider->name. ' </br>';
+                            // }
                             $images = Image::where('article_id', $model->id)->get();
                             foreach($images as $image) {
-                                $image->imageable_id = $model->id;
-                                $image->imageable_type = 'article';
-                                $image->hosting_url = substr($image->hosting_url, 0, 33).'/public'.substr($image->hosting_url, 33);
-                                $image->save();
-                                echo 'Se actualizo imagen de '.$model->name.' </br>';
-                                echo 'Nueva url: '.$image->hosting_url.' </br>';
-                                echo '-------------------------------------------- </br>';
-                                if (str_contains($image->hosting_url, 'public/public')) {
-                                    
+
+                                if (str_contains($image->hosting_url, '/public/public')) {
+                                    $url = $image->hosting_url;
+                                    $new_url = substr($image->hosting_url, 0, 33).'/public'.substr($image->hosting_url, 47);
+                                    $image->hosting_url = $new_url;
+                                    $image->save();
+                                    echo 'entro con '.$model->name.' - '.$url.' </br>';
+                                    echo 'Ahora es '.$new_url.' </br>';
+                                    echo '---------------------- </br>';
                                 }
+
+                                // $image->imageable_id = $model->id;
+                                // $image->imageable_type = 'article';
+                                // $image->hosting_url = substr($image->hosting_url, 0, 33).'/public'.substr($image->hosting_url, 33);
+                                // $image->save();
+                                // echo 'Se actualizo imagen de '.$model->name.' </br>';
+                                // echo 'Nueva url: '.$image->hosting_url.' </br>';
+                                // echo '-------------------------------------------- </br>';
+                                // if (str_contains($image->hosting_url, 'public/public')) {
+                                    
+                                // }
                             }
                         }
                     }

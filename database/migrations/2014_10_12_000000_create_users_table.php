@@ -30,32 +30,20 @@ class CreateUsersTable extends Migration
             $table->integer('plan_id')->unsigned()->nullable();
             $table->integer('percentage_card')->nullable();
             $table->string('dni')->nullable();
-            $table->boolean('has_delivery')->default(1)->nullable();
-            $table->decimal('delivery_price')->nullable();
-            $table->enum('online_prices', ['all', 'only_registered', 'only_buyers_with_comerciocity_client'])->nullable();
-            $table->string('order_description')->nullable();
+            // $table->enum('online_prices', ['all', 'only_registered', 'only_buyers_with_comerciocity_client'])->nullable();
             $table->decimal('dollar', 10,2)->nullable();
             $table->timestamp('expired_at')->nullable();
             $table->timestamp('email_verified_at')->nullable();
             $table->string('online')->nullable();
-            $table->text('online_description')->nullable();
-            $table->boolean('show_articles_without_images')->default(1)->nullable();
-            $table->boolean('show_articles_without_stock')->default(1)->nullable();
-            $table->string('default_article_image_url')->nullable();
             $table->boolean('from_cloudinary')->default(0)->nullable();
             $table->integer('articles_pages')->nullable();
-            $table->string('instagram')->nullable();
-            $table->string('facebook')->nullable();
-            $table->text('quienes_somos')->nullable();
-            $table->text('mensaje_contacto')->nullable();
             $table->timestamp('payment_expired_at')->nullable();
-            $table->integer('online_price_type_id')->nullable();
-            $table->decimal('online_price_surchage', 12,2)->nullable();
             $table->integer('max_items_in_sale')->nullable();
             $table->boolean('download_articles')->default(1)->nullable();
-            $table->boolean('pausar_tienda_online')->default(0)->nullable();
+            $table->integer('home_position')->nullable();
+            $table->boolean('iva_included')->default(false);
             $table->rememberToken();
-
+            
             $table->enum('status', ['commerce', 'admin', 'super']);
 
             // $table->foreign('owner_id')->references('id')->on('users');

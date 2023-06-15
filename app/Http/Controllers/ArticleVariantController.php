@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\Log;
 class ArticleVariantController extends Controller
 {
     function store(Request $request) {
-        $article_id = $request->models[0]['article_id'];
+        $article_id = $request->article_id;
         $this->deleteVariants($article_id);
 
         foreach ($request->models as $model) {

@@ -1,6 +1,6 @@
 <?php 
 
-namespace App\Http\Controllers;
+namespace App\Http\Controllers\Helpers\Afip;
 
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
@@ -16,26 +16,27 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
-class AfipWsController extends Controller
+class AfipNotaCreditoHelper
 {
 
-    public $sale;
+    public $nota_credito;
     public $monto_minimo_para_factura_de_credito = 546737;
 
-    function __construct($sale) {
+    function __construct($sale, $nota_credito) {
         $this->sale = $sale;
-        $this->testing = !$this->sale->afip_information->afip_ticket_production;
+        $this->nota_credito = $nota_credito;
+        $this->testing = !$this->nota_credito->sale->afip_information->afip_ticket_production;
     }
 
     function init() {
         $afip_wsaa = new AfipWSAAHelper($this->testing);
         $afip_wsaa->checkWsaa();
 
-        $sale = $this->wsfe();
+        $sale = $this->notaCredito();
         return response()->json(['model' => $sale], 201);
     }
 
-    function wsfe() {
+    function notaCredito() {
         $user = UserHelper::getFullModel();
         $punto_venta = $this->sale->afip_information->punto_venta;
         $cuit_negocio = $this->sale->afip_information->cuit;
@@ -52,7 +53,7 @@ class AfipWsController extends Controller
         $cbte_nro = AfipHelper::getNumeroComprobante($wsfe, $punto_venta, $cbte_tipo);
         // Log::info('Numero comprobante: '.$cbte_nro);
 
-        $afip_helper = new AfipHelper($this->sale);
+        $afip_helper = new AfipHelper($this->sale, $this->nota_credito->articles);
         $importes = $afip_helper->getImportes();
         // Log::info('sigue con importes');
         // Log::info('importes:');
@@ -83,6 +84,15 @@ class AfipWsController extends Controller
                         'MonId'        => $moneda_id,
                         'MonCotiz'     => 1,
                         'Opcionales'   => $this->getOpcionales(),
+                        'CbtesAsoc'    => [
+                            [
+                                'Tipo'      => $this->sale->afip_ticket->cbte_tipo,
+                                'PtoVta'    => $this->sale->afip_ticket->punto_venta,
+                                'Nro'       => $this->sale->afip_ticket->cbte_numero,
+                                'Cuit'      => $this->sale->afip_ticket->cuit_negocio,
+                                'CbteFch'   => date_format($this->sale->afip_ticket->created_at, 'Ymd'),
+                            ],
+                        ],
                     )
                 )
             )
@@ -103,6 +113,9 @@ class AfipWsController extends Controller
             }
             $invoice['FeCAEReq']['FeDetReq']['FECAEDetRequest']['Iva'] = $ivas;
         }
+
+        Log::info('se va a enviar a afip:');
+        Log::info($invoice);
         // Se visualiza el resultado con el CAE correspondiente al comprobante.
         $result = $wsfe->FECAESolicitar($invoice);
         Log::info((array)$result);
@@ -126,7 +139,7 @@ class AfipWsController extends Controller
             'iva_cliente'       => !is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) ? $this->sale->client->iva_condition->name : '',
             'cae'               => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAE,
             'cae_expired_at'    => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAEFchVto,
-            'sale_id'           => $this->sale->id,
+            'nota_credito_id'   => $this->nota_credito->id,
         ]);
     }
 
@@ -155,85 +168,39 @@ class AfipWsController extends Controller
 
     function getTipoCbte() {
         if (SaleHelper::getTotalSale($this->sale) >= $this->monto_minimo_para_factura_de_credito) {
-            Log::info('Entro con mas al monto_minimo_para_factura_de_credito: '.SaleHelper::getTotalSale($this->sale));
             if ($this->sale->afip_information->iva_condition->name == 'Responsable inscripto') {
                 if (!is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) && $this->sale->client->iva_condition->name == 'Responsable inscripto') {
-                    return 201; #A
+                    return 203; #A
                 } else {
-                    return 206; #B
+                    return 208; #B
                 }
             } else if ($this->sale->afip_information->iva_condition->name == 'Monotributista') {
-                return 211; #C
+                return 213; #C
             }
         } else {
             if ($this->sale->afip_information->iva_condition->name == 'Responsable inscripto') {
                 if (!is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) && $this->sale->client->iva_condition->name == 'Responsable inscripto') {
-                    return 1; #A
+                    return 3; #A
                 } else {
-                    return 6; #B
+                    return 8; #B
                 }
             } else if ($this->sale->afip_information->iva_condition->name == 'Monotributista') {
-                return 11; #C
+                return 13; #C
             }
         } 
     }
 
     function getTipoLetra($cbte_tipo) {
         Log::info('getTipoLetra: '.$cbte_tipo);
-        if ($cbte_tipo == 1 || $cbte_tipo == 201) {
+        if ($cbte_tipo == 3 || $cbte_tipo == 203) {
             return 'A';
         }
-        if ($cbte_tipo == 6 || $cbte_tipo == 206) {
+        if ($cbte_tipo == 8 || $cbte_tipo == 208) {
             return 'B';
         }
-        if ($cbte_tipo == 11 || $cbte_tipo == 211) {
+        if ($cbte_tipo == 13 || $cbte_tipo == 213) {
             return 'C';
         }
     }
 
-    // function getNumeroComprobante($wsfe, $punto_venta, $cbte_tipo) {
-    //     $pto_vta = [
-    //         'PtoVta'    => $punto_venta,
-    //         'CbteTipo'  => $cbte_tipo
-    //     ];
-    //     $result = $wsfe->FECompUltimoAutorizado($pto_vta);
-    //     return $result->FECompUltimoAutorizadoResult->CbteNro + 1;
-    // }
-
-    function getPersona() {
-        $this->define(true);
-        $this->checkWsaa('ws_sr_constancia_inscripcion');
-
-        // Configuración del servicio WSAA.
-        // $config = [
-        //     'testing'           => true,                    // Utiliza el servicio de homologación.
-        //     'tra_tpl_file'      =>  TRA_tmp        // Define la ubicación de los archivos temporarios con el TRA.
-        // ];
-
-        // $wsaa = new WSAA('ws_sr_constancia_inscripcion', $this->cert, $this->private_key, $config);
-        // if ($ta = $wsaa->requestTa()) {
-        //     // Se visualiza los datos del encabezado.
-        //     print_r($ta->header);
-
-        //     // Guardar el XML en una variable. Luego puede almacenarse en una base de datos.
-        //     //$xml = $ta->asXml();
-        //     //echo $xml;
-
-        //     // Guardar el TA en un archivo.
-        //     $ta->asXml(TA_file);
-        // }
-
-        $this->ws_sr_constancia_inscripcion();
-    }
-
-    function ws_sr_constancia_inscripcion() {
-        $ws = new WSSRConstanciaInscripcion(['testing'=> false, 'cuit_representada' => '20423548984']);
-        $ws->setXmlTa(file_get_contents(TA_file));
-        $result = $ws->getPersona(['idPersona' => '20175018841']);
-        // $result = $ws->getPersona_v2(['idPersona' => '20175018841']);
-        // Log::info($result);
-        // print($result);
-        dd($result);
-        // print_r($result);
-    }
 }

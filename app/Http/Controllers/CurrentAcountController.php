@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\PdfPrintCurrentAcounts;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Pdf\AfipTicketPdf;
 use App\Http\Controllers\Pdf\CurrentAcountPdf;
 use App\Http\Controllers\Pdf\NotaCreditoPdf;
 use App\Http\Controllers\Pdf\PagoPdf;
@@ -67,6 +68,8 @@ class CurrentAcountController extends Controller
         $pago_helper->init();
         if (!$request->current_date) {
             CurrentAcountHelper::checkSaldos($request->model_name, $request->model_id);
+        } else {
+            CurrentAcountHelper::checkCurrentAcountSaldo($request->model_name, $request->model_id);
         }
         CurrentAcountHelper::updateModelSaldo($pago, $request->model_name, $request->model_id);
         $this->sendAddModelNotification($request->model_name, $request->model_id);
@@ -75,6 +78,7 @@ class CurrentAcountController extends Controller
 
     public function notaCredito(Request $request) {
         $nota_credito = CurrentAcountHelper::notaCredito($request->form['nota_credito'], $request->form['description'], $request->model_name, $request->model_id);
+        CurrentAcountHelper::checkCurrentAcountSaldo($request->model_name, $request->model_id);
         $this->sendAddModelNotification($request->model_name, $request->model_id);
         return response()->json(['current_acount' => $nota_credito], 201);
     }
@@ -92,6 +96,7 @@ class CurrentAcountController extends Controller
         ]);
         $nota_debito->saldo = CurrentAcountHelper::getSaldo($request->model_name, $request->model_id, $nota_debito) + $request->debe;
         $nota_debito->save();
+        CurrentAcountHelper::checkCurrentAcountSaldo($request->model_name, $request->model_id);
         CurrentAcountHelper::updateModelSaldo($nota_debito, $request->model_name, $request->model_id);
         $this->sendAddModelNotification($request->model_name, $request->model_id);
         return response()->json(['current_acount' => $nota_debito], 201);
@@ -191,8 +196,12 @@ class CurrentAcountController extends Controller
                 $pdf = new PagoPdf($model, $model_name);
                 $pdf->printCurrentAcounts();
             } else if ($model->status == 'nota_credito') {
-                $pdf = new NotaCreditoPdf($model);
-                $pdf->printCurrentAcounts();
+                if (!is_null($model->afip_ticket)) {
+                    $pdf = new AfipTicketPdf(null, $model);
+                } else {
+                    $pdf = new NotaCreditoPdf($model);
+                    $pdf->printCurrentAcounts();
+                }
             }
         } else {
             $pdf = new PdfPrintCurrentAcounts($ids, $model_name);

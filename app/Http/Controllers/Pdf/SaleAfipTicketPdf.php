@@ -718,7 +718,11 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->SetY(17);
 		$this->SetX(118);
 		$this->SetFont('Arial', 'B', 18);
-		$this->Cell(35,10,'FACTURA',0,1,'L');
+		$title = 'FACTURA';
+		if ($this->sale->afip_ticket->cbte_tipo > 200) {
+			$title .= ' CREDITO';
+		}
+		$this->Cell(35,10,$title,0,1,'L');
 		// Punto de venta y numero de cbte
 		$this->SetX(118);
 		$this->SetFont('Arial', 'B', 9);

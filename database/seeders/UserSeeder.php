@@ -5,10 +5,11 @@ namespace Database\Seeders;
 use App\Http\Controllers\Controller;
 use App\Models\Address;
 use App\Models\AfipInformation;
+use App\Models\OnlineConfiguration;
 use App\Models\User;
 use App\Models\UserConfiguration;
-use Illuminate\Database\Seeder;
 use Carbon\Carbon;
+use Illuminate\Database\Seeder;
 
 class UserSeeder extends Seeder
 {
@@ -32,34 +33,77 @@ class UserSeeder extends Seeder
                 'doc_number'                    => '123',
                 'email'                         => 'lucasgonzalez5500@gmail.com',
                 'phone'                         => '3444622139',
-                'instagram'                     => 'https://www.instagram.com/lucasgonzz/',
-                'facebook'                      => 'https://www.facebook.com',
                 'password'                      => bcrypt('123'),
-                'online_prices'                 => 'only_buyers_with_comerciocity_client',
                 'visible_password'              => null,
                 'dollar'                        => 300,
-                'online_price_type_id'          => 1,
-                'default_article_image_url'     => 'http://empresa.local:8000/storage/168053912176623.webp',
-                // 'payment_expired_at'         => Carbon::now()->addDay(),
-                'quienes_somos'                 => 
-                'Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!
-
-                Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!',
-                'mensaje_contacto'              => 'Contactar tambien por mensaje directo en Facebook o Instagram, es el medio en el que mas activos estamos!',
-                'online_price_surchage'         => 50,
-                'online'                        => 'http://tienda.local:8081',
-                // 'max_items_in_sale'             => 2,
+                'home_position'                 => 1,
                 'download_articles'             => 1,
-                'pausar_tienda_online'          => 0,
+                'online'                        => 'http://tienda.local:8081',
+                // 'payment_expired_at'         => Carbon::now()->addDay(),
+                'online_configuration'          => [
+                    'online_price_type_id'          => 1,
+                    'default_article_image_url'     => 'http://empresa.local:8000/storage/168053912176623.webp',
+                    'quienes_somos'                 => 
+                    'Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!
+
+                    Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!',
+                    'mensaje_contacto'              => 'Contactar tambien por mensaje directo en Facebook o Instagram, es el medio en el que mas activos estamos!',
+                    'online_price_surchage'         => 50,
+                    // 'max_items_in_sale'             => 2,
+                    'pausar_tienda_online'          => 0,
+                    'instagram'                     => 'https://www.instagram.com/lucasgonzz/',
+                    'facebook'                      => 'https://www.facebook.com',
+                ],
             ],
             [
                 'name'              => 'Marcos',
                 'company_name'      => 'Marcos',
-                'image_url'         => env('APP_URL').'/storage/cubo.jpeg',
+                'image_url'         => env('APP_URL').'/storage/zapatilla_roja.webp',
                 'doc_number'        => '1234',
                 'email'             => 'marcosgonzalez5500@gmail.com',
                 'password'          => bcrypt('1234'),
                 'visible_password'  => null,
+                'home_position'                 => 3,
+            ],
+            [
+                'name'              => 'Bartolo',
+                'company_name'      => 'Marcos',
+                'image_url'         => env('APP_URL').'/storage/kas.png',
+                'doc_number'        => '1234',
+                'email'             => 'marcosgonzalez5500@gmail.com',
+                'password'          => bcrypt('1234'),
+                'visible_password'  => null,
+                'home_position'                 => 2,
+            ],
+            [
+                'name'              => 'Juliana',
+                'company_name'      => 'Marcos',
+                'image_url'         => env('APP_URL').'/storage/pinocho.png',
+                'doc_number'        => '1234',
+                'email'             => 'marcosgonzalez5500@gmail.com',
+                'password'          => bcrypt('1234'),
+                'visible_password'  => null,
+                'home_position'                 => 2,
+            ],
+            [
+                'name'              => 'Inidca',
+                'company_name'      => 'Marcos',
+                'image_url'         => env('APP_URL').'/storage/indica.png',
+                'doc_number'        => '1234',
+                'email'             => 'marcosgonzalez5500@gmail.com',
+                'password'          => bcrypt('1234'),
+                'visible_password'  => null,
+                'home_position'                 => 2,
+            ],
+            [
+                'name'              => 'Calie',
+                'company_name'      => 'Marcos',
+                'image_url'         => env('APP_URL').'/storage/cali.png',
+                'doc_number'        => '1234',
+                'email'             => 'marcosgonzalez5500@gmail.com',
+                'password'          => bcrypt('1234'),
+                'visible_password'  => null,
+                'home_position'                 => 2,
             ],
             [
                 'name'              => 'Juan',
@@ -106,21 +150,9 @@ class UserSeeder extends Seeder
                 'image_url'                     => $model['image_url'],  
                 'visible_password'              => $model['visible_password'],  
                 'owner_id'                      => isset($model['owner_id']) ? $model['owner_id'] : null,  
-                'online_prices'                 => isset($model['online_prices']) ? $model['online_prices'] : null,  
                 'payment_expired_at'            => isset($model['payment_expired_at']) ? $model['payment_expired_at'] : null,  
-                'instagram'                     => isset($model['instagram']) ? $model['instagram'] : null,  
-                'facebook'                      => isset($model['facebook']) ? $model['facebook'] : null,  
-                'phone'                         => isset($model['phone']) ? $model['phone'] : null,  
-                'quienes_somos'                 => isset($model['quienes_somos']) ? $model['quienes_somos'] : null,  
-                'mensaje_contacto'              => isset($model['mensaje_contacto']) ? $model['mensaje_contacto'] : null,  
-                'default_article_image_url'     => isset($model['default_article_image_url']) ? $model['default_article_image_url'] : null,  
-                'dollar'                        => isset($model['dollar']) ? $model['dollar'] : null,  
-                'online_price_type_id'          => isset($model['online_price_type_id']) ? $model['online_price_type_id'] : null,
-                'online_price_surchage'         => isset($model['online_price_surchage']) ? $model['online_price_surchage'] : null,
                 'online'                        => isset($model['online']) ? $model['online'] : null,
-                'max_items_in_sale'             => isset($model['max_items_in_sale']) ? $model['max_items_in_sale'] : null,
-                'download_articles'             => isset($model['download_articles']) ? $model['download_articles'] : null,
-                'pausar_tienda_online'             => isset($model['pausar_tienda_online']) ? $model['pausar_tienda_online'] : null,
+                'home_position'                 => isset($model['home_position']) ? $model['home_position'] : null,
             ]);
             if (is_null($user->owner_id)) {
 
@@ -146,6 +178,12 @@ class UserSeeder extends Seeder
                     'inicio_actividades'    => Carbon::now()->subYears(5),
                     'user_id'               => $user->id,
                 ]);
+
+                if (isset($model['online_configuration'])) {
+                    $online_configuration               = $model['online_configuration'];
+                    $online_configuration['user_id']    = $user->id;
+                    OnlineConfiguration::create($online_configuration);
+                }
             }
             if (!is_null($user->owner_id)) {
                 foreach ($model['permissions_slug'] as $permission_slug) {

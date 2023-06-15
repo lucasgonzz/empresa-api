@@ -23,6 +23,16 @@ use Illuminate\Support\Facades\Log;
 
 class CurrentAcountHelper {
 
+    static function checkCurrentAcountSaldo($model_name, $model_id) {
+        $current_acounts = CurrentAcount::where($model_name.'_id', $model_id)
+                                        ->orderBy('created_at', 'DESC')
+                                        ->take(3)
+                                        ->get();
+        if (isset($current_acounts[2])) {
+            Self::checkSaldos($model_name, $model_id, $current_acounts[2]);
+        }
+    }
+
     static function updateSellerCommissionsStatus($pago) {
         foreach ($pago->pagando_las_comisiones as $seller_commission) {
             $seller_commission->status = 'inactive';
@@ -47,12 +57,15 @@ class CurrentAcountHelper {
         }
     }
 
-    static function getNumReceipt() {
+    static function getNumReceipt($from_nota_credito = false) {
         $last_receipt = CurrentAcount::where('user_id', UserHelper::userId())
-                                        ->where('status', 'pago_from_client')
-                                        ->where('status', '!=', 'nota_credito')
-                                        ->orderBy('created_at', 'DESC')
-                                        ->first();
+                                        ->orderBy('created_at', 'DESC');
+        if ($from_nota_credito) {
+            $last_receipt = $last_receipt->where('status', 'nota_credito');
+        } else {
+            $last_receipt = $last_receipt->where('status', 'pago_from_client');
+        }
+        $last_receipt = $last_receipt->first();
         return is_null($last_receipt) ? 1 : $last_receipt->num_receipt + 1;
     }
 
@@ -89,7 +102,7 @@ class CurrentAcountHelper {
             'client_id'     => $model_name == 'client' ? $model_id : null,
             'provider_id'   => $model_name == 'provider' ? $model_id : null,
             'sale_id'       => $sale_id,
-            'num_receipt'   => CurrentAcountHelper::getNumReceipt(),
+            'num_receipt'   => CurrentAcountHelper::getNumReceipt(true),
             'user_id'       => UserHelper::userId(),
         ]);
         $nota_credito->saldo = Self::getSaldo($model_name, $model_id, $nota_credito) - $haber;

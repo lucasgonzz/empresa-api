@@ -11,8 +11,12 @@ class AfipHelper extends Controller {
     public $sale;
     public $article;
 
-    function __construct($sale) {
+    function __construct($sale, $articles = null) {
         $this->sale = $sale;
+        if (is_null($articles)) {
+            $articles = $this->sale->articles;
+        }
+        $this->articles = $articles;
     }
 
     function getImportes() {
@@ -32,7 +36,7 @@ class AfipHelper extends Controller {
         $subtotal           = 0;
         $total              = 0;
         if ($this->sale->afip_information->iva_condition->name == 'Responsable inscripto') {
-            foreach ($this->sale->articles as $article) {
+            foreach ($this->articles as $article) {
                 $this->article = $article;
                 $gravado                += $this->getImporteGravado();
                 $exento                 += $this->getImporteIva('Exento')['BaseImp'];

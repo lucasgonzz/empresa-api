@@ -129,7 +129,7 @@ class Article extends Model
     }
     
     function providers(){
-        return $this->belongsToMany('App\Models\Provider')->withPivot('amount', 'cost', 'price')
+        return $this->belongsToMany('App\Models\Provider')->withPivot('amount', 'cost', 'price', 'amount')
                                                     ->withTimestamps();
     }
     

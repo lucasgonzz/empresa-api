@@ -64,7 +64,7 @@ class MessageSend extends Notification
         $user = UserHelper::getFullModel();
         Log::info('mail logo_url: '.$user->image_url);
         return (new MailMessage)
-                    ->from($user->email, $user->company_name)
+                    ->from('contacto@comerciocity.com', 'comerciocity.com')
                     ->subject($this->title)
                     ->markdown('emails.message-send', [
                         'commerce'  => $user,

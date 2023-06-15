@@ -111,20 +111,22 @@ class SaleController extends Controller
 
     public function destroy($id) {
         $model = Sale::find($id);
-        if ($model->client_id) {
-            // $current_acount = new CurrentAcountController();
-            // $current_acount->deleteFromSale($model);
-            SaleHelper::deleteCurrentAcountFromSale($model);
-            SaleHelper::deleteSellerCommissionsFromSale($model);
-            $model->client->pagos_checkeados = 0;
-            $model->client->save();
-            CurrentAcountHelper::checkSaldos('client', $model->client_id);
-            $this->sendAddModelNotification('client', $model->client_id, false);
+        if (!is_null($model->afip_ticket)) {
+            SaleHelper::createNotaCreditoFromDestroy($model);
+        } else {
+            if ($model->client_id) {
+                SaleHelper::deleteCurrentAcountFromSale($model);
+                SaleHelper::deleteSellerCommissionsFromSale($model);
+                $model->client->pagos_checkeados = 0;
+                $model->client->save();
+                CurrentAcountHelper::checkSaldos('client', $model->client_id);
+                $this->sendAddModelNotification('client', $model->client_id, false);
+            }
+            foreach ($model->articles as $article) {
+                ArticleHelper::resetStock($article, $article->pivot->amount);
+            }
+            $model->delete();
         }
-        foreach ($model->articles as $article) {
-            ArticleHelper::resetStock($article, $article->pivot->amount);
-        }
-        $model->delete();
         return response(null);
     }
 

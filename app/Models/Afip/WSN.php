@@ -318,8 +318,8 @@ abstract class WSN extends WS
             $datos += $arguments[0];
         }
 
-        Log::info('datos:');
-        Log::info($datos);
+        // Log::info('datos:');
+        // Log::info($datos);
 
         return parent::__call($name, array($datos));
     }
