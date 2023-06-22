@@ -308,11 +308,11 @@ class SalePdf extends fpdf {
 		    foreach ($this->sale->discounts as $discount) {
 		    	$this->x = $this->start_x;
 		    	$text = '-'.$discount->pivot->percentage.'% '.$discount->name;
-		    	$total_articles -= $total_articles * floatval($discount->pivot->percentage) / 100;
+		    	$this->total_articles -= $this->total_articles * floatval($discount->pivot->percentage) / 100;
 		    	if ($this->sale->discounts_in_services) {
-		    		$total_services -= $total_services * floatval($discount->pivot->percentage) / 100;
+		    		$this->total_services -= $this->total_services * floatval($discount->pivot->percentage) / 100;
 		    	}
-		    	$total_with_discounts = $total_articles + $total_services;
+		    	$total_with_discounts = $this->total_articles + $this->total_services;
 		    	$text .= ' = $'.Numbers::price($total_with_discounts);
 				$this->Cell(
 					50, 

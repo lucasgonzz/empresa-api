@@ -18,6 +18,9 @@ class PaymentMethodTypeSeeder extends Seeder
             [
                 'name' => 'MercadoPago'
             ],
+            [
+                'name' => 'Payway'
+            ],
         ];
         foreach ($models as $model) {
             PaymentMethodType::create([

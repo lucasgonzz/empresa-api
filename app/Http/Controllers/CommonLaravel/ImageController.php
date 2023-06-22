@@ -17,7 +17,11 @@ class ImageController extends Controller
         $manager = new ImageManager();
         $croppedImage = $manager->make($request->image_url);              
         $croppedImage->crop($request->width, $request->height, $request->left, $request->top);
-        $name = time().rand(1, 100000).'.webp';
+        if ($request->model_name == 'user') {
+            $name = time().rand(1, 100000).'.png';
+        } else {
+            $name = time().rand(1, 100000).'.webp';
+        }
         $croppedImage->save(storage_path().'/app/public/'.$name);
 
         $model_name = GeneralHelper::getModelName($request->model_name);

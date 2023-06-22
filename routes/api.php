@@ -169,4 +169,6 @@ Route::middleware('auth:sanctum')->group(function() {
 
     Route::post('article-variant', 'ArticleVariantController@store');
     Route::put('article-variant/{id}', 'ArticleVariantController@update');
+
+    Route::resource('payment-method-installment', 'PaymentMethodInstallmentController');
 });

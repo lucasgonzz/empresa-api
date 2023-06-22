@@ -174,28 +174,41 @@ class ProviderOrderHelper {
 			$current_acount = CurrentAcount::where('provider_order_id', $provider_order->id)->first();
 			// Log::info('current_acount_id: '.$current_acount->id);
 			if (is_null($current_acount)) {
-				$current_acount = CurrentAcount::create([
-					'detalle' 			=> 'Pedido N°'.$provider_order->num,
-					'debe'				=> $total,
-					'status' 			=> 'sin_pagar',
-					'user_id'			=> UserHelper::userId(),
-					'provider_id'		=> $provider_order->provider_id,
-					'provider_order_id'	=> $provider_order->id,
-				]);
-				$current_acount->saldo = CurrentAcountHelper::getSaldo('provider', $provider_order->provider_id, $current_acount) + $total;
-				$current_acount->save();
-				Log::info('Se creo current_acount con saldo de: '.$current_acount->saldo);
-			} else if ($current_acount->debe != $total) {
-				$current_acount->debe = $total;
-				$current_acount->saldo = CurrentAcountHelper::getSaldo('provider', $provider_order->provider_id, $current_acount) + $total;
-				$current_acount->save();
-				CurrentAcountHelper::checkSaldos('provider', $provider_order->provider_id, $current_acount);
+				Self::createCurrentAcount($provider_order, $total);
+			} else {
+				if ($current_acount->provider_id != $provider_order->provider_id) {
+					$previus_current_acount = CurrentAcount::where('provider_order_id', $provider_order->id)->first();
+					$previus_current_acount->delete();
+					CurrentAcountHelper::checkSaldos('provider', $current_acount->provider_id);
+					Self::createCurrentAcount($provider_order, $total);
+				} else {
+					$current_acount->provider_id = $provider_order->provider_id;
+					$current_acount->debe = $total;
+					$current_acount->saldo = CurrentAcountHelper::getSaldo('provider', $provider_order->provider_id, $current_acount) + $total;
+					$current_acount->save();
+					CurrentAcountHelper::checkSaldos('provider', $provider_order->provider_id, $current_acount);
 
-				Log::info('Se actualizo current_acount con saldo de: '.$current_acount->saldo);
+					Log::info('Se actualizo current_acount con saldo de: '.$current_acount->saldo);
+				}
 			}
 	        $provider_order->provider->pagos_checkeados = 0;
 	        $provider_order->provider->save();
 		}
+	}
+
+	static function createCurrentAcount($provider_order, $total) {
+		$current_acount = CurrentAcount::create([
+			'detalle' 			=> 'Pedido N°'.$provider_order->num,
+			'debe'				=> $total,
+			'status' 			=> 'sin_pagar',
+			'user_id'			=> UserHelper::userId(),
+			'provider_id'		=> $provider_order->provider_id,
+			'provider_order_id'	=> $provider_order->id,
+		]);
+		$current_acount->saldo = CurrentAcountHelper::getSaldo('provider', $provider_order->provider_id, $current_acount) + $total;
+		$current_acount->save();
+		CurrentAcountHelper::checkSaldos('provider', $provider_order->provider_id);
+		Log::info('Se creo current_acount con saldo de: '.$current_acount->saldo);
 	}
 
 	static function getTotal($id) {

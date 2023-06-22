@@ -28,7 +28,7 @@ class CreateAfipTicketsTable extends Migration
             $table->string('cuit_cliente');
             $table->string('iva_cliente');
             $table->string('cae');
-            $table->string('cae_expired_at');
+            $table->timestamp('cae_expired_at');
             $table->integer('sale_id')->unsigned()->nullable();
             $table->integer('nota_credito_id')->unsigned()->nullable();
             $table->timestamps();

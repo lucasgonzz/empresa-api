@@ -136,6 +136,11 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'Estadisticas',
                 'en'            => 'caja.charts',
             ],
+            [
+                'singular'      => 'Cambiar el precio de los articulos en VENDER',
+                'plural'        => 'Vender',
+                'en'            => 'article.vender.change_price',
+            ],
         ];
         foreach ($permissions as $permission) {
             PermissionEmpresa::create([

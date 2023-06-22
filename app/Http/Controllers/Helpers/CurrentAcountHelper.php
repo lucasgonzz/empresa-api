@@ -270,6 +270,7 @@ class CurrentAcountHelper {
         } else {
             $model->saldo = 0;
         }
+        Log::info('Se puso saldo a '.$model->name. ' de '.$model->saldo);
         $model->save();
     }
 

@@ -10,11 +10,10 @@ require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class SaleTicketPdf extends fpdf {
 
-	function __construct($sale, $address) {
-		$this->line_height = 7;
+	function __construct($sale) {
+		$this->line_height = 5;
 		$this->user = UserHelper::getFullModel();
 		$this->sale = $sale;
-		$this->address = $address;
 
 		parent::__construct('P', 'mm', [58, $this->getPdfHeight()]);
 		$this->SetAutoPageBreak(false);
@@ -28,13 +27,31 @@ class SaleTicketPdf extends fpdf {
 
 	function Header() {
 		$this->logo();
+		$this->afipInformation();
+		$this->date();
+		$this->address();
+	}
+
+	function afipInformation() {
+		if (!is_null($this->sale->afip_information)) {
+			$this->SetFont('Arial', '', 8);
+			$this->x = 2;
+			$this->Cell(45, 5, 'IVA: '.$this->user->afip_information->iva_condition->name, $this->b, 1, 'L');
+			$this->x = 2;
+			$this->Cell(45, 5, 'Cuit: '.$this->user->afip_information->cuit, $this->b, 1, 'L');
+			$this->x = 2;
+			$this->SetFont('Arial', 'B', 8);
+			$this->Cell(45, 5, 'Punto de venta: '.$this->sale->afip_information->punto_venta, $this->b, 1, 'L');
+			$this->x = 2;
+			$this->Cell(45, 5, 'CAE: '.$this->sale->afip_ticket->cae, $this->b, 1, 'L');
+			$this->x = 2;
+			$this->Cell(45, 5, 'Vto cae: '.date_format($this->sale->afip_ticket->cae_expired_at, 'd/m/Y'), $this->b, 1, 'L');
+		}
 	}
 
 	function Footer() {
 		$this->total();
 		$this->thanks();
-		$this->date();
-		$this->address();
 		// $this->comerciocityInfo();
 	}
 
@@ -62,6 +79,7 @@ class SaleTicketPdf extends fpdf {
 
 	function items() {
 		$this->x = 2;
+		$this->y += 2;
 
 		foreach ($this->sale->combos as $combo) {
 			$this->SetFont('Arial', '', 9);
@@ -118,7 +136,7 @@ class SaleTicketPdf extends fpdf {
 	    $this->x = 2;
 	    $this->SetFont('Arial', '', 10);
 		$this->Cell(54, 10, 'GRACIAS POR SU VISITA', 0, 0, 'C');
-		$this->y += 10;
+		// $this->y += 10;
 	}
 
 	function date() {
@@ -130,11 +148,11 @@ class SaleTicketPdf extends fpdf {
 	}
 	
 	function address() {
-		if (!is_null($this->address)) {
-			$address = $this->address->street.' '.$this->address->street_number;
+		if (!is_null($this->sale->address)) {
+			$address = $this->sale->address->street.' '.$this->sale->address->street_number;
 		    $this->x = 2;
-		    $this->SetFont('Arial', 'I', 9);
-			$this->Cell(54, 5, $address, 0, 0, 'L');
+		    $this->SetFont('Arial', '', 9);
+			$this->Cell(54, 5, $address, 0, 1, 'L');
 		}
 	}
 
@@ -156,7 +174,7 @@ class SaleTicketPdf extends fpdf {
 	}
 
 	function getPdfHeight() {
-		$height = 85;
+		$height = 110;
 		foreach ($this->sale->combos as $combo) {
 			$height += $this->getHeight($combo, 20);
 			foreach ($combo->articles as $article) {
@@ -164,7 +182,7 @@ class SaleTicketPdf extends fpdf {
 			}
 		}
 		foreach ($this->sale->articles as $article) {
-			$height += $this->getHeight($article, 20);
+			$height += $this->getHeight($article, 15);
 		}
 		// $height += 
 		return $height;

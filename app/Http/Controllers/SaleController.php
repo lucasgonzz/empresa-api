@@ -84,9 +84,9 @@ class SaleController extends Controller
         $previus_client_id = $model->client_id;
 
 
-        if ($this->userId() == 2) {
-            $pdf = new SalePdf($model, 1, 1, 'venta N° '.$model->num.' antes de actualizar '.date_format(Carbon::now(), 'd-m-y H-i-s').'.pdf');
-        }
+        // if ($this->userId() == 2) {
+        //     $pdf = new SalePdf($model, 1, 1, 'venta N° '.$model->num.' antes de actualizar '.date_format(Carbon::now(), 'd-m-y H-i-s').'.pdf');
+        // }
 
         SaleHelper::detachItems($model);
         SaleHelper::attachProperies($model, $request, false);
@@ -99,9 +99,9 @@ class SaleController extends Controller
             SaleHelper::updateCurrentAcountsAndCommissions($model);
         }
 
-        if ($this->userId() == 2) {
-            $pdf = new SalePdf($model, 1, 1, 'venta N° '.$model->num.' despues de actualizar '.date_format(Carbon::now(), 'd-m-y H-i-s').'.pdf');
-        }
+        // if ($this->userId() == 2) {
+        //     $pdf = new SalePdf($model, 1, 1, 'venta N° '.$model->num.' despues de actualizar '.date_format(Carbon::now(), 'd-m-y H-i-s').'.pdf');
+        // }
 
         SaleHelper::updatePreivusClient($model, $previus_client_id);
         $this->sendAddModelNotification('Sale', $model->id);
@@ -155,14 +155,9 @@ class SaleController extends Controller
         $pdf = new SaleDeliveredArticlesPdf($sale);
     }
 
-    function ticketPdf($id, $address_id = null) {
+    function ticketPdf($id) {
         $sale = Sale::find($id);
-        if (!is_null($address_id)) {
-            $address = Address::find($address_id);
-        } else {
-            $address = null;
-        }
-        $pdf = new SaleTicketPdf($sale, $address);
+        $pdf = new SaleTicketPdf($sale);
     }
 
     function caja() {

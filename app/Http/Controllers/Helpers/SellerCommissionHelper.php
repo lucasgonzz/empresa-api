@@ -30,29 +30,31 @@ class SellerCommissionHelper {
     }
 	
 	static function commissionForSeller($current_acount) {
-		$commissions = Self::getCommissions($current_acount);
-        foreach ($commissions as $commission) {
-            if (!Self::isExcept($commission, $current_acount->seller_id) && !Self::isForOnlySeller($commission, $current_acount->seller_id)) {
-                if (count($commission->for_all_sellers) >= 1) {
-                    foreach ($commission->for_all_sellers as $seller) {
+        if (!is_null($current_acount->seller_id)) {
+    		$commissions = Self::getCommissions($current_acount);
+            foreach ($commissions as $commission) {
+                if (!Self::isExcept($commission, $current_acount->seller_id) && !Self::isForOnlySeller($commission, $current_acount->seller_id)) {
+                    if (count($commission->for_all_sellers) >= 1) {
+                        foreach ($commission->for_all_sellers as $seller) {
+                            Self::createCommission([
+                                'seller_id'     => $seller->id,
+                                'sale_id'       => $current_acount->sale_id,
+                                'description'   => Self::getDescription($current_acount),
+                                'percentage'    => $seller->pivot->percentage,
+                                'debe'          => $current_acount->debe * $seller->pivot->percentage / 100,
+                                'status'        => Self::getStatus($seller),
+                            ]);
+                        }
+                    } else {
                         Self::createCommission([
-                            'seller_id'     => $seller->id,
+                            'seller_id'     => $current_acount->seller_id,
                             'sale_id'       => $current_acount->sale_id,
                             'description'   => Self::getDescription($current_acount),
-                            'percentage'    => $seller->pivot->percentage,
-                            'debe'          => $current_acount->debe * $seller->pivot->percentage / 100,
-                            'status'        => Self::getStatus($seller),
+                            'percentage'    => $commission->percentage,
+                            'debe'          => $current_acount->debe * $commission->percentage / 100,
+                            'status'        => Self::getStatus($current_acount->seller),
                         ]);
                     }
-                } else {
-                    Self::createCommission([
-                        'seller_id'     => $current_acount->seller_id,
-                        'sale_id'       => $current_acount->sale_id,
-                        'description'   => Self::getDescription($current_acount),
-                        'percentage'    => $commission->percentage,
-                        'debe'          => $current_acount->debe * $commission->percentage / 100,
-                        'status'        => Self::getStatus($current_acount->seller),
-                    ]);
                 }
             }
         }
@@ -96,7 +98,7 @@ class SellerCommissionHelper {
         ]);
         $seller_commission->saldo = Self::getSaldo($seller_commission) + $seller_commission->debe;
         $seller_commission->save();
-        Log::info('se creo commission para el vendedor '.$seller_commission->seller->name);
+        // Log::info('se creo commission para el vendedor '.$seller_commission->seller->name);
     }
 
     static function getCommissions($current_acount) {
@@ -159,7 +161,7 @@ class SellerCommissionHelper {
     }
 
     static function getStatus($seller) {
-        if ((boolean)$seller->commission_after_pay_sale) {
+        if (!is_null($seller) && (boolean)$seller->commission_after_pay_sale) {
             return 'inactive';
         }
         return 'active';

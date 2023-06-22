@@ -16,33 +16,13 @@ class UpdateFeatureSeeder extends Seeder
     {
         $models = [
             [
-                'name' => 'Pedidos a Proveedor',
-                'description' => 'Cuando se agregue un articulo al pedido de un proveedor, se va a poder indicar si queremos que se sume al listado.',
+                'name' => 'Botones de guardar',
+                'description' => 'En los formularios aparecera un boton para GUARDAR y otro para GUARDAR Y CERRAR, ambos van a guardar los cambios que hagamos, el segundo cerrara el formulario, como venia funcionando hasta el momento, mientras que el segundo mantendra abierto el formulario.',
             ],
             [
-                'name' => 'Configuracion Online',
-                'description' => 'Se separo el apartado de configuracion de la Tienda y la configuracion general de la cuenta',
+                'name' => 'Checkbox limpiar formulario',
+                'description' => 'Por defecto estara activado, si lo desactivamos, luego de crear una entidad, se mantendran algunos datos para agilizar el proceso de dar de alta. Por el momento surte efecto para dar de alta los articulos, manteniendo sin limpiar los datos de: Margen de ganancia, Disponible en la tienda, Proveedor, y Aplicar margen de ganancia del proveedor',
             ],
-            [
-                'name' => 'Boton checkear saldos',
-                'description' => 'Para depejar cualquier duda en la suma de los saldos de las cuentas corrientes, se agrego el boton "checkear saldos" para recalcular los saldos',
-            ],
-            [
-                'name' => 'Mensajes Online',
-                'description' => 'Se mejoro la vista de los Mensajes de la Tienda Online',
-            ],
-            [
-                'name' => 'Notas de credito AFIP',
-                'description' => 'Ahora se pueden enviar a AFIP las notas de credito generadas para una venta que tambien haya sido blanqueada',
-            ],
-            [
-                'name' => 'Seleccionar con un click resultado de busqueda',
-                'description' => 'El primer resultado de busqueda, que ya aparece marcado, puede ser seleccionado con el mouse sin deseleccionarce como ocurria antes.',
-            ],
-            // [
-            //     'name' => '',
-            //     'description' => '',
-            // ],
         ];
         foreach ($models as $model) {
             UpdateFeature::create([

@@ -40,6 +40,9 @@ class SearchController extends Controller
                         $models = $models->where($filter['key'], 'like', '%'.$filter['value'].'%');
                     }
                     // Log::info('Filtrando por text '.$filter['text']);
+                } else if ($filter['type'] == 'search' && $filter['value'] != 0) {
+                    $models = $models->where($filter['key'], $filter['value']);
+                    Log::info('Filtrando por text '.$filter['text']);
                 } else if ($filter['type'] == 'boolean' && $filter['value'] != -1) {
                     $models = $models->where($filter['key'], $filter['value']);
                     // Log::info('Filtrando por boolean '.$filter['text']);

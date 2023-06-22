@@ -202,9 +202,9 @@ class HelperController extends Controller
             ];
         }
         foreach ($_models as $_model) {
-            $id = 1;
+            $id = 63555;
             $models = [];
-            while (count($models) == 10 || $id == 1) {
+            while (count($models) == 10 || $id == 63555) {
                 echo 'Entro con '.$_model['model_name'].' id: '.$id.' </br>';
                 echo '------------------------------------------------------ </br>';
                 $models = GeneralHelper::getModelName($_model['model_name'])::orderBy('id', 'ASC')
@@ -216,50 +216,50 @@ class HelperController extends Controller
                 } 
                 $models = $models->get();
 
-                // foreach ($models as $model) {
-                //     $model->timestamps = false;
-                //     $model->num = null;
-                //     $model->save();
-                // }
-                // foreach ($models as $model) {
-                //     $model->timestamps = false;
-                //     $model->num = $this->num($this->getPlural($_model), $user->id);
-                //     $model->save();
-                // }
+                foreach ($models as $model) {
+                    $model->timestamps = false;
+                    $model->num = null;
+                    $model->save();
+                }
+                foreach ($models as $model) {
+                    $model->timestamps = false;
+                    $model->num = $this->num($this->getPlural($_model), $user->id);
+                    $model->save();
+                }
 
                 if ($for_articles) {
                     foreach ($models as $model) {
                         if ($model->status == 'inactive') {
-                            // echo 'Se elimino '.$model->name.' </br>';
-                            // $model->delete();
+                            echo 'Se elimino '.$model->name.' </br>';
+                            $model->delete();
                         } else {
-                            // ArticleHelper::setFinalPrice($model, $user->id);
-                            // echo('Se seteo precio final de '.$model->name.'. Quedo en '.$model->final_price.' </br>');
-                            // if (count($model->providers) >= 1) {
-                            //     $model->provider_id = $model->providers[count($model->providers)-1]->id;
-                            //     $model->save(); 
-                            //     echo $model->name.', proveedor: '.$model->provider->name. ' </br>';
-                            // }
+                            ArticleHelper::setFinalPrice($model, $user->id);
+                            echo('Se seteo precio final de '.$model->name.'. Quedo en '.$model->final_price.' </br>');
+                            if (count($model->providers) >= 1) {
+                                $model->provider_id = $model->providers[count($model->providers)-1]->id;
+                                $model->save(); 
+                                // echo $model->name.', proveedor: '.$model->provider->name. ' </br>';
+                            }
                             $images = Image::where('article_id', $model->id)->get();
                             foreach($images as $image) {
 
-                                if (str_contains($image->hosting_url, '/public/public')) {
-                                    $url = $image->hosting_url;
-                                    $new_url = substr($image->hosting_url, 0, 33).'/public'.substr($image->hosting_url, 47);
-                                    $image->hosting_url = $new_url;
-                                    $image->save();
-                                    echo 'entro con '.$model->name.' - '.$url.' </br>';
-                                    echo 'Ahora es '.$new_url.' </br>';
-                                    echo '---------------------- </br>';
-                                }
+                                // if (str_contains($image->hosting_url, '/public/public')) {
+                                //     $url = $image->hosting_url;
+                                //     $new_url = substr($image->hosting_url, 0, 33).'/public'.substr($image->hosting_url, 47);
+                                //     $image->hosting_url = $new_url;
+                                //     $image->save();
+                                //     echo 'entro con '.$model->name.' - '.$url.' </br>';
+                                //     echo 'Ahora es '.$new_url.' </br>';
+                                //     echo '---------------------- </br>';
+                                // }
 
-                                // $image->imageable_id = $model->id;
-                                // $image->imageable_type = 'article';
-                                // $image->hosting_url = substr($image->hosting_url, 0, 33).'/public'.substr($image->hosting_url, 33);
-                                // $image->save();
-                                // echo 'Se actualizo imagen de '.$model->name.' </br>';
-                                // echo 'Nueva url: '.$image->hosting_url.' </br>';
-                                // echo '-------------------------------------------- </br>';
+                                $image->imageable_id = $model->id;
+                                $image->imageable_type = 'article';
+                                $image->hosting_url = substr($image->hosting_url, 0, 33).'/public'.substr($image->hosting_url, 33);
+                                $image->save();
+                                echo 'Se actualizo imagen de '.$model->name.' </br>';
+                                echo 'Nueva url: '.$image->hosting_url.' </br>';
+                                echo '-------------------------------------------- </br>';
                                 // if (str_contains($image->hosting_url, 'public/public')) {
                                     
                                 // }
