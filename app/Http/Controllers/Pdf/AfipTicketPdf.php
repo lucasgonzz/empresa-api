@@ -157,7 +157,7 @@ class AfipTicketPdf extends fpdf {
 		$this->SetFont('Arial', 'B', 10);
 		$this->Cell(50, 5, 'Fecha de Vto. de CAE:', 0, 0, 'R');
 		$this->SetFont('Arial', '', 10);
-		$this->Cell(50, 5, date_format($this->model->afip_ticket->cae_expired_at, 'd/m/Y'), 0, 0, 'L');
+		$this->Cell(50, 5, $this->model->afip_ticket->cae_expired_at, 0, 0, 'L');
 	}
 
 	function printQR() {

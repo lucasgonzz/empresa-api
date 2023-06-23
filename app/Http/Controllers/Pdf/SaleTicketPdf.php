@@ -45,8 +45,13 @@ class SaleTicketPdf extends fpdf {
 			$this->x = 2;
 			$this->Cell(45, 5, 'CAE: '.$this->sale->afip_ticket->cae, $this->b, 1, 'L');
 			$this->x = 2;
-			$this->Cell(45, 5, 'Vto cae: '.date_format($this->sale->afip_ticket->cae_expired_at, 'd/m/Y'), $this->b, 1, 'L');
+			$this->Cell(45, 5, 'Vto cae: '.$this->getCaeExpiredAt(), $this->b, 1, 'L');
 		}
+	}
+
+	function getCaeExpiredAt() {
+		$date = $this->sale->afip_ticket->cae_expired_at;
+		return substr($date, 0, 4).'/'.substr($this->sale->afip_ticket->cae_expired_at, 4, 2).'/'.substr($date, 6, 8);
 	}
 
 	function Footer() {

@@ -256,7 +256,12 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->SetFont('Arial', 'B', 10);
 		$this->Cell(50, 5, 'Fecha de Vto. de CAE:', 0, 0, 'R');
 		$this->SetFont('Arial', '', 10);
-		$this->Cell(50, 5, date_format($this->sale->afip_ticket->cae_expired_at, 'd/m/Y'), 0, 0, 'L');
+		$this->Cell(50, 5, $this->getCaeExpiredAt(), 0, 0, 'L');
+	}
+
+	function getCaeExpiredAt() {
+		$date = $this->sale->afip_ticket->cae_expired_at;
+		return substr($date, 0, 4).'/'.substr($this->sale->afip_ticket->cae_expired_at, 4, 2).'/'.substr($date, 6, 8);
 	}
 
 	function printQR() {
