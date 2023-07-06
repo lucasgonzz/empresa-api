@@ -141,6 +141,11 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'Vender',
                 'en'            => 'article.vender.change_price',
             ],
+            [
+                'singular'      => 'Cambiar el empleado en VENDER',
+                'plural'        => 'Vender',
+                'en'            => 'vender.change_employee',
+            ],
         ];
         foreach ($permissions as $permission) {
             PermissionEmpresa::create([

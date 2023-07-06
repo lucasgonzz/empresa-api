@@ -40,10 +40,15 @@ class AfipWsController extends Controller
         $punto_venta = $this->sale->afip_information->punto_venta;
         $cuit_negocio = $this->sale->afip_information->cuit;
         if ($this->sale->client) {
-            $cuit_cliente = $this->sale->client->cuit;
-            $doc_type = 80;
+            if ($this->sale->client->cuit) {
+                $cod_client = $this->sale->client->cuit;
+                $doc_type = 80;
+            } else if ($this->sale->client->cuil) {
+                $cod_client = $this->sale->client->cuil;
+                $doc_type = 86;
+            }
         } else {
-            $cuit_cliente = "NR";
+            $cod_client = "NR";
             $doc_type = '99';
         }
         $cbte_tipo = $this->getTipoCbte();
@@ -70,7 +75,7 @@ class AfipWsController extends Controller
                     'FECAEDetRequest' => array(
                         'Concepto'     => 1,                
                         'DocTipo'      => $doc_type,           
-                        'DocNro'       => $cuit_cliente,
+                        'DocNro'       => $cod_client,
                         'CbteDesde'    => $cbte_nro,
                         'CbteHasta'    => $cbte_nro,
                         'CbteFch'      => $today,

@@ -29,6 +29,7 @@ class ClientController extends Controller
             'email'                     => $request->email,
             'phone'                     => $request->phone,
             'address'                   => $request->address,
+            'cuil'                      => $this->getCuit($request->cuil),
             'cuit'                      => $this->getCuit($request->cuit),
             'razon_social'              => $request->razon_social,
             'iva_condition_id'          => $request->iva_condition_id,
@@ -54,6 +55,7 @@ class ClientController extends Controller
         $model->email                       = $request->email;
         $model->phone                       = $request->phone;
         $model->address                     = $request->address;
+        $model->cuil                        = $this->getCuit($request->cuil);
         $model->cuit                        = $this->getCuit($request->cuit);
         $model->razon_social                = $request->razon_social;
         $model->iva_condition_id            = $request->iva_condition_id;

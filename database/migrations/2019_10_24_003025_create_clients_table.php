@@ -21,6 +21,7 @@ class CreateClientsTable extends Migration
             $table->string('email', 128)->nullable();
             $table->string('phone', 128)->nullable();
             $table->text('address')->nullable();
+            $table->string('cuil', 128)->nullable();
             $table->string('cuit', 128)->nullable();
             $table->string('razon_social', 128)->nullable();
             $table->integer('iva_condition_id')->unsigned()->nullable();
