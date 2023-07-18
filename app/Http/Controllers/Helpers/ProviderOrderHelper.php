@@ -127,6 +127,7 @@ class ProviderOrderHelper {
 											'add_to_articles'	=> GeneralHelper::getPivotValue($article, 'add_to_articles'),
 											'iva_id'    		=> Self::getIvaId($article),
 										]);
+			Log::info($article['name'].' update_cost del helper = '.GeneralHelper::getPivotValue($article, 'update_cost').' sin helper = '.$article['pivot']['update_cost']);
 			Self::updateArticleStock($article, $last_received, $provider_order);
 		}
 		Self::saveCurrentAcount($provider_order);

@@ -57,6 +57,7 @@ class UserController extends Controller
         $model->email                           = $request->email;
         $model->download_articles               = $request->download_articles;
         $model->iva_included                    = $request->iva_included;
+        $model->ask_amount_in_vender            = $request->ask_amount_in_vender;
         // $model->online_price_type_id            = $request->online_price_type_id;
         // $model->instagram                       = $request->instagram;
         // $model->facebook                        = $request->facebook;

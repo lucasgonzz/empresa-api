@@ -79,6 +79,7 @@ class SaleController extends Controller
         $model->afip_information_id  = $request->afip_information_id;
         $model->address_id  = $request->address_id;
         $model->sale_type_id  = $request->sale_type_id;
+        $model->employee_id  = SaleHelper::getEmployeeId($request);
         $model->updated_at = Carbon::now();
         $model->save();
         $previus_client_id = $model->client_id;

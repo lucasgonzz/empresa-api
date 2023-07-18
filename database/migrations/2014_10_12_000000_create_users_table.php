@@ -42,6 +42,7 @@ class CreateUsersTable extends Migration
             $table->boolean('download_articles')->default(1)->nullable();
             $table->integer('home_position')->nullable();
             $table->boolean('iva_included')->default(false);
+            $table->boolean('ask_amount_in_vender')->default(false);
             $table->rememberToken();
             
             $table->enum('status', ['commerce', 'admin', 'super']);

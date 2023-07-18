@@ -48,7 +48,7 @@ class EmployeeController extends Controller
         $user = auth()->user();
 
 
-        if ($this->docNumerRegister($request->doc_number)) {
+        if (!$this->docNumerRegister($request->doc_number)) {
             $model = User::create([
                 'name'              => ucfirst($request->name),
                 'doc_number'        => $request->doc_number,

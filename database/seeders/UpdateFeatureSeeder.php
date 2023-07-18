@@ -16,12 +16,12 @@ class UpdateFeatureSeeder extends Seeder
     {
         $models = [
             [
-                'name' => 'Botones de guardar',
-                'description' => 'En los formularios aparecera un boton para GUARDAR y otro para GUARDAR Y CERRAR, ambos van a guardar los cambios que hagamos, el segundo cerrara el formulario, como venia funcionando hasta el momento, mientras que el segundo mantendra abierto el formulario.',
+                'name' => 'Preguntar la cantidad en VENDER',
+                'description' => 'Desde la configuracion se va a poder indicar si se quiere que pregunte la cantidad del articulo que se este por agregar al remito en VENDER, si se deja desactivado, el articulo se agregara automaticamente con la cantidad = 1.',
             ],
             [
-                'name' => 'Checkbox limpiar formulario',
-                'description' => 'Por defecto estara activado, si lo desactivamos, luego de crear una entidad, se mantendran algunos datos para agilizar el proceso de dar de alta. Por el momento surte efecto para dar de alta los articulos, manteniendo sin limpiar los datos de: Margen de ganancia, Disponible en la tienda, Proveedor, y Aplicar margen de ganancia del proveedor',
+                'name' => 'Nuevos permisos',
+                'description' => 'Se agrego el permiso "Crear un articulo no ingresado en VENDER", para indicar si el empleado podra crear un articulo no ingresado al sistema desde VENDER.',
             ],
         ];
         foreach ($models as $model) {
