@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\OrderNotificationHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\PaymentController;
+use App\Http\Controllers\PaywayController;
 use App\Listerners\OrderConfirmedListene;
 use App\Models\Article;
 use App\Models\ArticleVariant;
@@ -20,7 +21,6 @@ use App\Models\Cart;
 use App\Models\Color;
 use App\Models\Sale;
 use App\Models\Size;
-use App\Models\Variant;
 use App\Notifications\CreatedSale;
 use App\Notifications\OrderConfirmed as OrderConfirmedNotification;
 use App\Notifications\OrderFinished as OrderFinishedNotification;
@@ -35,7 +35,7 @@ class OrderHelper {
         foreach ($orders as $order) {
             foreach ($order->articles as $article) {
                 if (isset($article->pivot) && $article->pivot->variant_id) {
-                    $article->variant = Variant::find($article->pivot->variant_id);
+                    $article->variant = ArticleVariant::find($article->pivot->variant_id)->variant_description;
                 } 
             }
         }
@@ -117,6 +117,7 @@ class OrderHelper {
             foreach ($model->articles as $article) {
                 $_article = Article::find($article->id);
                 if (count($_article->article_variants) >= 1) {
+                    Log::info('se va a buscar article_variant id: '.$article->pivot->variant_id);
                     $article_variant = ArticleVariant::find($article->pivot->variant_id);
                     if (!is_null($article_variant->stock)) {
                         $_article->timestamps = false;
@@ -131,6 +132,15 @@ class OrderHelper {
                     }
                 }
             }
+        }
+    }
+
+
+    // Si tiene payment_card_info se ejecuta el pago con tarjeta
+    static function checkPaymentCardInfo($model) {
+        if ($model->order_status->name == 'Sin confirmar' && !is_null($model->payment_method->payment_method_type) && $model->payment_method->payment_method_type->name == 'Payway') {
+            $ct = new PaywayController();
+            $ct->executePayment($model);
         }
     }
 

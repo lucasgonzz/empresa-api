@@ -16,6 +16,7 @@ class CreateAfipInformationTable extends Migration
         Schema::create('afip_information', function (Blueprint $table) {
             $table->id();
             $table->integer('iva_condition_id')->unsigned()->nullable();
+            $table->string('description')->nullable();
             $table->string('razon_social')->nullable();
             $table->string('domicilio_comercial')->nullable();
             $table->string('cuit')->nullable();
@@ -23,6 +24,7 @@ class CreateAfipInformationTable extends Migration
             $table->timestamp('inicio_actividades')->nullable();
             $table->integer('punto_venta')->nullable();
             $table->boolean('afip_ticket_production')->default(0);
+            $table->integer('address_id')->unsigned()->nullable();
             $table->integer('user_id')->unsigned();
             $table->timestamps();
         });

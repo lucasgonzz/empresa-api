@@ -19,6 +19,7 @@ class CreateCartsTable extends Migration
             $table->integer('address_id')->unsigned()->nullable();
             $table->integer('delivery_zone_id')->unsigned()->nullable();
             $table->integer('payment_method_id')->unsigned()->nullable();
+            $table->integer('payment_card_info_id')->unsigned()->nullable();
             $table->integer('payment_id')->nullable();
             $table->string('payment_status')->nullable();
             $table->text('description')->nullable();

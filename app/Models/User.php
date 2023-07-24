@@ -38,6 +38,10 @@ class User extends Authenticatable
         return $this->hasOne('App\Models\UserConfiguration');
     }
 
+    public function online_configuration() {
+        return $this->hasOne('App\Models\OnlineConfiguration');
+    }
+
     public function delivery_zones() {
         return $this->hasOne('App\Models\DeliveryZone');
     }

@@ -23,6 +23,7 @@ class CreateOrdersTable extends Migration
             $table->string('description')->nullable();
             $table->integer('payment_id')->nullable();
             $table->integer('payment_method_id')->unsigned()->nullable();
+            $table->integer('payment_card_info_id')->unsigned()->nullable();
             $table->integer('delivery_zone_id')->unsigned()->nullable();
             $table->decimal('percentage_card', 8, 2)->nullable();
             $table->integer('cupon_id')->unsigned()->nullable();

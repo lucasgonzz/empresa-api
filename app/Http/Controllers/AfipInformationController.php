@@ -28,6 +28,8 @@ class AfipInformationController extends Controller
             'inicio_actividades'        => $request->inicio_actividades,
             'punto_venta'               => $request->punto_venta,
             'afip_ticket_production'    => $request->afip_ticket_production,
+            'address_id'                => $request->address_id,
+            'description'               => $request->description,
             'user_id'                   => $this->userId(),
         ]);
         $this->sendAddModelNotification('afip_information', $model->id);
@@ -48,6 +50,8 @@ class AfipInformationController extends Controller
         $model->inicio_actividades        = $request->inicio_actividades;
         $model->punto_venta               = $request->punto_venta;
         $model->afip_ticket_production    = $request->afip_ticket_production;
+        $model->address_id                = $request->address_id;
+        $model->description               = $request->description;
         $model->save();
         $this->sendAddModelNotification('afip_information', $model->id);
         return response()->json(['model' => $this->fullModel('AfipInformation', $model->id)], 200);

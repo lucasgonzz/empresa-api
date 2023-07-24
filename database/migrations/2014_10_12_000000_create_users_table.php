@@ -43,6 +43,7 @@ class CreateUsersTable extends Migration
             $table->integer('home_position')->nullable();
             $table->boolean('iva_included')->default(false);
             $table->boolean('ask_amount_in_vender')->default(false);
+            $table->decimal('sale_ticket_width', 12,2)->default(58);
             $table->rememberToken();
             
             $table->enum('status', ['commerce', 'admin', 'super']);

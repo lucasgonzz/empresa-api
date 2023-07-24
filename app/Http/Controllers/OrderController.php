@@ -40,6 +40,7 @@ class OrderController extends Controller
     function updateStatus(Request $request, $id) {
         $model = Order::find($id);
         OrderHelper::discountArticleStock($model);
+        OrderHelper::checkPaymentCardInfo($model);
         $model->order_status_id = $request->order_status_id;
         $model->save();
         $model = Order::find($id);
@@ -59,7 +60,9 @@ class OrderController extends Controller
     }
 
     public function show($id) {
-        return response()->json(['model' => $this->fullModel('Order', $id)], 200);
+        $model = $this->fullModel('Order', $id);
+        $model = OrderHelper::setArticlesVariant([$model])[0];
+        return response()->json(['model' => $model], 200);
     }
 
     public function update(Request $request, $id) {

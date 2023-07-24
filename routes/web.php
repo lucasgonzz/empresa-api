@@ -32,7 +32,7 @@ Route::get('set-comerciocity-extencion', 'HelperController@setComerciocityExtenc
 Route::get('set-online-configuration', 'HelperController@setOnlineConfiguration');
 
 Route::get('prueba', function() {
-	echo Carbon\Carbon::today()->addDays(30)->format('Ymd');
+	dd(App\Http\Controllers\Helpers\PaywayHelper::getPaymentMethodId('Visa'));
 });
 
 Route::get('get-persona', 'AfipWsController@getPersona');
