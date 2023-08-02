@@ -70,8 +70,8 @@ class CurrentAcountController extends Controller
             CurrentAcountHelper::checkSaldos($request->model_name, $request->model_id);
         } else {
             CurrentAcountHelper::checkCurrentAcountSaldo($request->model_name, $request->model_id);
+            CurrentAcountHelper::updateModelSaldo($pago, $request->model_name, $request->model_id);
         }
-        CurrentAcountHelper::updateModelSaldo($pago, $request->model_name, $request->model_id);
         $this->sendAddModelNotification($request->model_name, $request->model_id);
         return response()->json(['current_acount' => $pago], 201);
     }

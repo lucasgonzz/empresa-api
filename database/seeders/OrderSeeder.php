@@ -25,6 +25,7 @@ class OrderSeeder extends Seeder
                 'buyer_id'          => $buyer->id,
                 'order_status_id'   => 1,
                 'deliver'           => 0,
+                // 'created_at'        => Carbon::now(),
                 'created_at'        => Carbon::now()->subDays(2),
             ],
             [

@@ -237,6 +237,16 @@ class ArticleSeeder extends Seeder
                         'url'       => 'martillo_grande.jpg',
                     ],
                 ],
+                'addresses'     => [
+                    [
+                        'id'        => 1,
+                        'amount'    => 10,
+                    ],
+                    [
+                        'id'        => 2,
+                        'amount'    => 10,
+                    ],
+                ],
             ],
             [
                 'bar_code'          => '',
@@ -304,6 +314,7 @@ class ArticleSeeder extends Seeder
             }
             $this->createDescriptions($art); 
             $this->setColors($art, $article); 
+            $this->setAddresses($art, $article); 
             ArticleHelper::setFinalPrice($art, $user->id);
         }
     }
@@ -324,6 +335,16 @@ class ArticleSeeder extends Seeder
             foreach ($_article['colors'] as $color) {
                 $article->colors()->attach($color['id'], [
                     'amount'    => $color['amount'],
+                ]);
+            }
+        }
+    }
+
+    function setAddresses($article, $_article) {
+        if (isset($_article['addresses'])) {
+            foreach ($_article['addresses'] as $address) {
+                $article->addresses()->attach($address['id'], [
+                    'amount'    => $address['amount'],
                 ]);
             }
         }

@@ -74,14 +74,10 @@ class ArticleController extends Controller
             $model->status = $request->status;
         }
         $model->save();
-        // ArticleHelper::setTags($model, $request->tags);
-        // ArticleHelper::setDiscounts($model, $request->discounts);
-        // ArticleHelper::setDescriptions($model, $request->descriptions);
-        // ArticleHelper::setSizes($model, $request->sizes_id);
-        // ArticleHelper::setColors($model, $request->colors);
-        // ArticleHelper::setCondition($model, $request->condition_id);
-        // ArticleHelper::setSpecialPrices($model, $request);
-        // $model->user->notify(new CreatedArticle($model));
+
+        GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
+        ArticleHelper::setArticleStockFromAddresses($model);
+
         ArticleHelper::setDeposits($model, $request);
         $this->updateRelationsCreated('article', $model->id, $request->childrens);
         ArticleHelper::setFinalPrice($model);
@@ -114,7 +110,7 @@ class ArticleController extends Controller
         $model->price                             = $request->price;
         $model->apply_provider_percentage_gain    = $request->apply_provider_percentage_gain;
         $model->stock                             = $request->stock;
-        $model->stock                             += $request->new_stock;
+        // $model->stock                             += $request->new_stock;
         $model->stock_min                         = $request->stock_min;
         $model->online                            = $request->online;
         // if (strtolower($model->name) != strtolower($request->name)) {
@@ -122,13 +118,10 @@ class ArticleController extends Controller
             $model->slug = ArticleHelper::slug($request->name);
         // }
         $model->save();
-        // ArticleHelper::checkAdvises($model);
-        // ArticleHelper::setTags($model, $request->tags);
-        // ArticleHelper::setDiscounts($model, $request->discounts);
-        // ArticleHelper::setDescriptions($model, $request->descriptions);
-        // ArticleHelper::setSizes($model, $request->sizes_id);
-        // ArticleHelper::setColors($model, $request->colors);
-        // ArticleHelper::setCondition($model, $request->condition_id);
+        
+        GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
+        ArticleHelper::setArticleStockFromAddresses($model);
+
         ArticleHelper::setFinalPrice($model);
         ArticleHelper::setDeposits($model, $request);
         ArticleHelper::checkAdvises($model);

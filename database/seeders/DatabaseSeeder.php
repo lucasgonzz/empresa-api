@@ -87,6 +87,7 @@ class DatabaseSeeder extends Seeder
             $this->call(ArticlePropertyTypeSeeder::class);
             $this->call(ArticlePropertyValueSeeder::class);
             $this->call(ArticlePropertySeeder::class);
+            $this->call(ProviderOrderSeeder::class);
         }
     }
 }

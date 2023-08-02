@@ -17,12 +17,12 @@ class AddressSeeder extends Seeder
         $models = [
             [
                 'num'       => 1,
-                'street'    => 'San antonio 332',
+                'street'    => 'San antonio 1',
                 'user_id'   => 1,
             ],
             [
                 'num'       => 2,
-                'street'    => 'San martin 221',
+                'street'    => 'San martin 2',
                 'user_id'   => 1,
             ],
             [

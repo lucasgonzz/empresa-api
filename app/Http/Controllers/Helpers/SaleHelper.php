@@ -209,7 +209,8 @@ class SaleHelper extends Controller {
                                                             'discount'          => Self::getDiscount($article),
                                                             'created_at'        => Carbon::now(),
                                                         ]);
-                ArticleHelper::discountStock($article['id'], $article['amount']);
+                ArticleHelper::discountStock($article['id'], $article['amount'], $sale);
+                ArticleHelper::setArticleStockFromAddresses($article);
             }
         }
     }
@@ -335,14 +336,34 @@ class SaleHelper extends Controller {
     }
 
     static function detachItems($sale) {
+        Log::info('detachItems');
         foreach ($sale->articles as $article) {
-            if (!is_null($article->stock)) {
+            Log::info($sale->address_id);
+            if (count($article->addresses) >= 1 && !is_null($sale->address_id)) {
+                Log::info('detachItems entro en addresses');
+                foreach ($article->addresses as $article_address) {
+                    if ($article_address->pivot->address_id == $sale->address_id) {
+                        $new_amount = $article_address->pivot->amount + $article->pivot->amount;
+                        Log::info('Se regreso el stock de '.$article_address->street.' a '.$new_amount);
+                        $article->addresses()->updateExistingPivot($article_address->id, [
+                            'amount'    => $new_amount,
+                        ]);
+                    }
+                }
+                ArticleHelper::setArticleStockFromAddresses($article);
+            } else if (!is_null($article->stock)) {
+                Log::info('detachItems NO entro en addresses');
                 $stock = 0;
                 $stock = (int)$article->pivot->amount;
                 $article->stock += $stock;
                 $article->save();
             }
         }
+
+        foreach ($sale->articles as $article) {
+            ArticleHelper::setArticleStockFromAddresses($article);
+        }
+
         $sale->articles()->detach();
         $sale->combos()->detach();
         $sale->services()->detach();

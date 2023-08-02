@@ -73,21 +73,16 @@ class SaleController extends Controller
         $model = Sale::where('id', $id)
                         ->with('articles')
                         ->first();
-        $model->discounts_in_services = $request->discounts_in_services;
-        $model->surchages_in_services  = $request->surchages_in_services;
-        $model->current_acount_payment_method_id  = $request->current_acount_payment_method_id;
-        $model->afip_information_id  = $request->afip_information_id;
-        $model->address_id  = $request->address_id;
-        $model->sale_type_id  = $request->sale_type_id;
-        $model->employee_id  = SaleHelper::getEmployeeId($request);
-        $model->updated_at = Carbon::now();
+        $model->discounts_in_services               = $request->discounts_in_services;
+        $model->surchages_in_services               = $request->surchages_in_services;
+        $model->current_acount_payment_method_id    = $request->current_acount_payment_method_id;
+        $model->afip_information_id                 = $request->afip_information_id;
+        $model->address_id                          = $request->address_id;
+        $model->sale_type_id                        = $request->sale_type_id;
+        $model->employee_id                         = SaleHelper::getEmployeeId($request);
+        $model->updated_at                          = Carbon::now();
         $model->save();
-        $previus_client_id = $model->client_id;
-
-
-        // if ($this->userId() == 2) {
-        //     $pdf = new SalePdf($model, 1, 1, 'venta N° '.$model->num.' antes de actualizar '.date_format(Carbon::now(), 'd-m-y H-i-s').'.pdf');
-        // }
+        $previus_client_id                          = $model->client_id;
 
         SaleHelper::detachItems($model);
         SaleHelper::attachProperies($model, $request, false);
@@ -99,10 +94,6 @@ class SaleController extends Controller
         if ($model->client_id) {
             SaleHelper::updateCurrentAcountsAndCommissions($model);
         }
-
-        // if ($this->userId() == 2) {
-        //     $pdf = new SalePdf($model, 1, 1, 'venta N° '.$model->num.' despues de actualizar '.date_format(Carbon::now(), 'd-m-y H-i-s').'.pdf');
-        // }
 
         SaleHelper::updatePreivusClient($model, $previus_client_id);
         $this->sendAddModelNotification('Sale', $model->id);
@@ -124,7 +115,8 @@ class SaleController extends Controller
                 $this->sendAddModelNotification('client', $model->client_id, false);
             }
             foreach ($model->articles as $article) {
-                ArticleHelper::resetStock($article, $article->pivot->amount);
+                ArticleHelper::resetStock($article, $article->pivot->amount, $model);
+                ArticleHelper::setArticleStockFromAddresses($article);
             }
             $model->delete();
         }

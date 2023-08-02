@@ -16,12 +16,12 @@ class UpdateFeatureSeeder extends Seeder
     {
         $models = [
             [
-                'name' => 'Preguntar la cantidad en VENDER',
-                'description' => 'Desde la configuracion se va a poder indicar si se quiere que pregunte la cantidad del articulo que se este por agregar al remito en VENDER, si se deja desactivado, el articulo se agregara automaticamente con la cantidad = 1.',
+                'name' => 'Agregar un limite de dias para los PEDIDOS A PROVEEDOR',
+                'description' => 'En cada pedido a proveedor, se podra indicar el dato de X dias a partir de los cuales, el sistema va a mostrar una alerta si el pedido no ha cambiado al estado de recibido.',
             ],
             [
-                'name' => 'Nuevos permisos',
-                'description' => 'Se agrego el permiso "Crear un articulo no ingresado en VENDER", para indicar si el empleado podra crear un articulo no ingresado al sistema desde VENDER.',
+                'name' => 'Stock para cada DIRECCION',
+                'description' => 'A demas del dato de stock de un articulo, se podra indicar un stock espesifico para cada direccion dada de alta en el sistema, del cual se descontara la cantidad vendida cuando se indique la direccion en una venta.',
             ],
         ];
         foreach ($models as $model) {

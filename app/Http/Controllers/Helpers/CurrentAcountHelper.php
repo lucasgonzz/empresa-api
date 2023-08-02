@@ -72,7 +72,6 @@ class CurrentAcountHelper {
 
     static function updateModelSaldo($current_acount, $model_name, $model_id) {
         $model_name = GeneralHelper::getModelName($model_name);
-        Log::info('model_id: '.$model_id);
         $model = $model_name::find($model_id);
         $model->saldo = $current_acount->saldo;
         $model->save();
@@ -270,7 +269,6 @@ class CurrentAcountHelper {
         } else {
             $model->saldo = 0;
         }
-        Log::info('Se puso saldo a '.$model->name. ' de '.$model->saldo);
         $model->save();
     }
 

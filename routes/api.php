@@ -73,12 +73,15 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::post('client/excel/import', 'ClientController@import');
     Route::resource('seller', 'SellerController');
     Route::resource('price-type', 'PriceTypeController');
+
     Route::resource('provider-order', 'ProviderOrderController');
     Route::get('provider-order/from-date/{from_date}/{until_date?}', 'ProviderOrderController@index');
+    Route::get('provider-order/days-to-advise/not-received', 'ProviderOrderController@indexDaysToAdvise');
     Route::resource('provider-order-status', 'ProviderOrderStatusController');
     Route::resource('provider-order-afip-ticket', 'ProviderOrderAfipTicketController');
     
     Route::resource('order', 'OrderController')->except(['index']);
+    Route::get('order/unconfirmed/models', 'OrderController@indexUnconfirmed');
     Route::get('order/from-date/{from_date}/{until_date?}', 'OrderController@index');
     Route::put('order/update-status/{order_id}', 'OrderController@updateStatus');
     Route::put('order/cancel/{order_id}', 'OrderController@cancel');

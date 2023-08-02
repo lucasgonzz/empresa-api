@@ -272,23 +272,54 @@ class ArticleHelper {
         }
     }
 
-    static function discountStock($id, $amount) {
+    static function discountStock($id, $amount, $sale) {
         $article = Article::find($id);
-        if (!is_null($article->stock)) {
-            $stock_resultante = $article->stock - $amount;
-            $article->stock = $stock_resultante;
-            // if ($stock_resultante > 0) {
-            //     $article->stock = $stock_resultante;
-            // } else {
-            //     $article->stock = 0;
-            // }
+        if (count($article->addresses) >= 1 && !is_null($sale->address_id)) {
+            foreach ($article->addresses as $article_address) {
+                if ($article_address->pivot->address_id == $sale->address_id) {
+                    $new_amount = $article_address->pivot->amount - $amount;
+                    Log::info('restando '.$new_amount.' en address '.$article_address->street);
+                    $article->addresses()->updateExistingPivot($article_address->id, [
+                        'amount'    => $new_amount,
+                    ]);
+                }
+            }
+        } else if (!is_null($article->stock)) {
+            $article->stock -= $amount;
             $article->timestamps = false;
             $article->save();
         }
     }
 
-    static function resetStock($article, $amount) {
-        if (!is_null($article->stock)) {
+    static function setArticleStockFromAddresses($article) {
+        if (!is_object($article)) {
+            $article = Article::find($article['id']);
+        }
+        if (count($article->addresses) >= 1) {
+            $stock = 0;
+            foreach ($article->addresses as $article_address) {
+                Log::info('sumando: '.$article_address->pivot->amount.' de '.$article_address->street);
+                $stock += $article_address->pivot->amount;
+            }
+            $article->stock = $stock;
+            Log::info('setArticleStockFromAddresses: '.$stock);
+            $article->timestamps = false;
+            $article->save();
+        }
+    }
+
+    static function resetStock($article, $amount, $sale) {
+        if (count($article->addresses) >= 1 && !is_null($sale->address_id)) {
+            foreach ($article->addresses as $article_address) {
+                if ($article_address->pivot->address_id == $sale->address_id) {
+                    $new_amount = $article_address->pivot->amount + $amount;
+                    Log::info('entro en address '.$article_address->street.' con: '.$new_amount);
+                    $article->addresses()->updateExistingPivot($article_address->id, [
+                        'amount'    => $new_amount,
+                    ]);
+                }
+            }
+        } else if (!is_null($article->stock)) {
             $article->stock += $amount;
         }
         $article->timestamps = false;

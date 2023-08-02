@@ -20,6 +20,7 @@ class CreateProviderOrdersTable extends Migration
             $table->boolean('total_from_provider_order_afip_tickets')->nullable()->default(0);
             $table->integer('provider_order_status_id')->unsigned()->default(1);
             $table->integer('provider_id')->unsigned();
+            $table->integer('days_to_advise')->unsigned();
             $table->integer('user_id')->unsigned();
             $table->timestamps();
         });
