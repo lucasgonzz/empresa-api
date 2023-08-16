@@ -24,7 +24,7 @@ class User extends Authenticatable
         'email_verified_at' => 'datetime',
     ];
     
-    protected $dates = ['expired_at', 'payment_expired_at'];
+    protected $dates = ['expired_at', 'payment_expired_at', 'last_activity'];
 
     function scopeWithAll($query) {
         $query->with('afip_information.iva_condition', 'permissions', 'plan.features', 'addresses', 'extencions', 'addresses', 'configuration', 'owner');

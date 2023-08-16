@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Models\User;
 use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
 
 class AuthHelper {
 	
@@ -15,6 +16,23 @@ class AuthHelper {
 		$user->ask_amount_in_vender = $owner->ask_amount_in_vender;
 		// $user->owner = $owner;
 		return $user;
+	}
+
+	function checkUserLastActivity($user) {
+		Log::info('last_activity: '.$user->last_activity.' carbon::now: '.Carbon::now().', carbon menos '.env('USER_ACTIVITY_MINUTES').'min: '.Carbon::now()->subMinutes(env('USER_ACTIVITY_MINUTES')));
+		if (is_null($user->last_activity) || Carbon::now()->subMinutes(env('USER_ACTIVITY_MINUTES'))->gte($user->last_activity)) {
+			$user->last_activity = Carbon::now();
+			$user->save();
+			return true;
+
+		}
+		return false;
+	}
+
+	function removeUserLastActivity($user) {
+		$user->last_activity = Carbon::now()->subMinutes(env('USER_ACTIVITY_MINUTES'));
+		Log::info('se puso last_activity en '.Carbon::now()->subMinutes(env('USER_ACTIVITY_MINUTES')));
+		$user->save();
 	}
 
 }

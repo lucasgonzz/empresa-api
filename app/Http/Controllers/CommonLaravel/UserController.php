@@ -5,6 +5,7 @@ namespace App\Http\Controllers\CommonLaravel;
 use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 
 class UserController extends Controller
@@ -38,5 +39,12 @@ class UserController extends Controller
         $user->payment_expired_at = $user->payment_expired_at->addMonth();
         $user->save();
         echo 'El proximo pago de '.$user->company_name.' vence el '.date_format($user->payment_expired_at, 'd/m/Y H:m:i');
+    }
+
+    function setLastActivity() {
+        $user = Auth()->user();
+        $user->last_activity = Carbon::now();
+        $user->save();
+        return response(null, 200);
     }
 }

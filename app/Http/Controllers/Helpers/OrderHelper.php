@@ -138,7 +138,7 @@ class OrderHelper {
 
     // Si tiene payment_card_info se ejecuta el pago con tarjeta
     static function checkPaymentCardInfo($model) {
-        if ($model->order_status->name == 'Sin confirmar' && !is_null($model->payment_method->payment_method_type) && $model->payment_method->payment_method_type->name == 'Payway') {
+        if ($model->order_status->name == 'Sin confirmar' && !is_null($model->payment_method) && !is_null($model->payment_method->payment_method_type) && $model->payment_method->payment_method_type->name == 'Payway') {
             $ct = new PaywayController();
             $ct->executePayment($model);
         }

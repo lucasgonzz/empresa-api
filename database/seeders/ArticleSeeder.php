@@ -269,53 +269,55 @@ class ArticleSeeder extends Seeder
         ];
         $num = 1;
         $days = count($articles);
-        foreach ($articles as $article) {
-            $art = Article::create([
-                'num'               => $num,
-                'bar_code'          => $article['bar_code'],
-                'provider_code'     => $article['provider_code'],
-                'name'              => $article['name'],
-                'slug'              => ArticleHelper::slug($article['name'], $user->id),
-                'cost'              => $article['cost'],
-                'status'            => isset($article['status']) ? $article['status'] : 'active',
-                'featured'          => isset($article['featured']) ? $article['featured'] : null,
-                'stock'             => $article['stock'] ,
-                'provider_id'       => isset($article['provider_id']) ? $article['provider_id'] : null,
-                'percentage_gain'   => isset($article['percentage_gain']) ? $article['percentage_gain'] : null,
-                'iva_id'            => isset($article['iva_id']) ? $article['iva_id'] : 2,
-                'featured'            => isset($article['featured']) ? $article['featured'] : null,
-                'apply_provider_percentage_gain' => 0,
-                // 'apply_provider_percentage_gain' => 1,
-                'price'             => isset($article['price']) ? $article['price'] : null,
-                'category_id'       => $this->getCategoryId($user, $article),
-                'sub_category_id'   => $this->getSubcategoryId($user, $article),
-                'created_at'        => Carbon::now()->subDays($days),
-                'updated_at'        => Carbon::now()->subDays($days),
-                'user_id'           => $user->id,
-            ]);    
-            $art->timestamps = false;
-            $days--;
-            $num++;
-            if (isset($article['images'])) {
-                foreach ($article['images'] as $image) { 
-                    Image::create([
-                        'imageable_type'                            => 'article',
-                        'imageable_id'                              => $art->id,
-                        env('IMAGE_URL_PROP_NAME', 'image_url')     => env('APP_URL').'/storage/'.$image['url'],
-                        'color_id'                                  => isset($image['color_id']) ? $image['color_id'] : null,
-                    ]);
-                }    
+        for ($i=0; $i < 4; $i++) { 
+            foreach ($articles as $article) {
+                $art = Article::create([
+                    'num'               => $num,
+                    'bar_code'          => $article['bar_code'],
+                    'provider_code'     => $article['provider_code'],
+                    'name'              => $article['name'],
+                    'slug'              => ArticleHelper::slug($article['name'], $user->id),
+                    'cost'              => $article['cost'],
+                    'status'            => isset($article['status']) ? $article['status'] : 'active',
+                    'featured'          => isset($article['featured']) ? $article['featured'] : null,
+                    'stock'             => $article['stock'] ,
+                    'provider_id'       => isset($article['provider_id']) ? $article['provider_id'] : null,
+                    'percentage_gain'   => isset($article['percentage_gain']) ? $article['percentage_gain'] : null,
+                    'iva_id'            => isset($article['iva_id']) ? $article['iva_id'] : 2,
+                    'featured'            => isset($article['featured']) ? $article['featured'] : null,
+                    'apply_provider_percentage_gain' => 0,
+                    // 'apply_provider_percentage_gain' => 1,
+                    'price'             => isset($article['price']) ? $article['price'] : null,
+                    'category_id'       => $this->getCategoryId($user, $article),
+                    'sub_category_id'   => $this->getSubcategoryId($user, $article),
+                    'created_at'        => Carbon::now()->subDays($days),
+                    'updated_at'        => Carbon::now()->subDays($days),
+                    'user_id'           => $user->id,
+                ]);    
+                $art->timestamps = false;
+                $days--;
+                $num++;
+                if (isset($article['images'])) {
+                    foreach ($article['images'] as $image) { 
+                        Image::create([
+                            'imageable_type'                            => 'article',
+                            'imageable_id'                              => $art->id,
+                            env('IMAGE_URL_PROP_NAME', 'image_url')     => env('APP_URL').'/storage/'.$image['url'],
+                            'color_id'                                  => isset($image['color_id']) ? $image['color_id'] : null,
+                        ]);
+                    }    
+                }
+                if (isset($article['provider_id'])) {
+                    $art->providers()->attach($article['provider_id'], [
+                                                'cost'  => $article['cost'],
+                                                'amount' => $article['stock'],
+                                            ]);
+                }
+                $this->createDescriptions($art); 
+                $this->setColors($art, $article); 
+                $this->setAddresses($art, $article); 
+                ArticleHelper::setFinalPrice($art, $user->id);
             }
-            if (isset($article['provider_id'])) {
-                $art->providers()->attach($article['provider_id'], [
-                                            'cost'  => $article['cost'],
-                                            'amount' => $article['stock'],
-                                        ]);
-            }
-            $this->createDescriptions($art); 
-            $this->setColors($art, $article); 
-            $this->setAddresses($art, $article); 
-            ArticleHelper::setFinalPrice($art, $user->id);
         }
     }
 

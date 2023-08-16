@@ -23,6 +23,26 @@ use Illuminate\Support\Facades\Storage;
 class HelperController extends Controller
 {
 
+    function codigosRepetidos() {
+        $user = User::where('doc_number', '09876543')
+                        ->first();
+        $articles = Article::where('user_id', $user->id)->get();
+        $codigos = [];
+        foreach ($articles as $article) {
+            if (array_key_exists($article->bar_code, $codigos)) {
+                $codigos[$article->bar_code]++;
+            } else {
+                $codigos[$article->bar_code] = 1;
+            }
+        }
+        foreach ($codigos as $codigo => $cantidad) {
+            if ($cantidad > 1) {
+                echo 'Hay '.$cantidad.' con '.$codigo.' </br>';
+            } else {
+            }
+        }
+    }
+
     function setOnlineConfiguration() {
         $users = User::whereNull('owner_id')->get();
         foreach ($users as $user) {

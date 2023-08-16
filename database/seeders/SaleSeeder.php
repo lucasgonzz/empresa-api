@@ -129,6 +129,12 @@ class SaleSeeder extends Seeder
         $pago_helper = new CurrentAcountPagoHelper('client', 1, $pago);
         $pago_helper->init();
         CurrentAcountHelper::updateModelSaldo($pago, 'client', 1);
+
+        for ($i=0; $i < 10; $i++) { 
+            Sale::create([
+                'user_id' => $user->id
+            ]);
+        }
     }
 
     function videos() {
@@ -168,13 +174,13 @@ class SaleSeeder extends Seeder
         $request->discounts_id = [];
         $request->surchages_id = [];
         $request->client_id = $sale->id;
-        $articles = Article::where('id', 1)
+        $articles = Article::take(7)
                             ->get();
         foreach ($articles as $article) {
             $_article = [
                 'id'            => $article->id,
                 'is_article'    => true,
-                'amount'        => 1,
+                'amount'        => rand(1,7),
                 'cost'          => $article->cost,
                 'price_vender'  => $article->final_price,
             ];

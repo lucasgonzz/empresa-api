@@ -55,13 +55,22 @@ class ProviderOrderHelper {
 					$data_changed = true;
 				}
 			}
+			if ($_article['pivot']['cost_in_dollars']) {
+				$article->cost_in_dollars = 1;
+				$article->provider_cost_in_dollars = 1;
+				$data_changed = true;
+			} else {
+				$article->cost_in_dollars = 0;
+				$article->provider_cost_in_dollars = 0;
+				$data_changed = true;
+			}
 			if (!is_null($_article['pivot']['iva_id']) && $_article['pivot']['iva_id'] != 0 && $article->iva_id != $_article['pivot']['iva_id']) {
 				$article->iva_id = $_article['pivot']['iva_id'];
-				Log::info('Nuevo iva');
+				// Log::info('Nuevo iva');
 				$data_changed = true;
 			}
 			if (!isset($last_received[$article->id]) || $_article['pivot']['received'] != $last_received[$article->id]) {
-				Log::info('Nuevo stock');
+				// Log::info('Nuevo stock');
 				$data_changed = true;
 			}
 			if (isset($last_received[$article->id])) {
@@ -123,11 +132,11 @@ class ProviderOrderHelper {
 											'cost' 				=> $cost,
 											'received_cost' 	=> GeneralHelper::getPivotValue($article, 'received_cost'),
 											'update_cost' 		=> GeneralHelper::getPivotValue($article, 'update_cost'),
-											'cost_in_dollars'	=> GeneralHelper::getPivotValue($article, 'cost_in_dollars'),
+											'cost_in_dollars'	=> $article['pivot']['cost_in_dollars'],
 											'add_to_articles'	=> GeneralHelper::getPivotValue($article, 'add_to_articles'),
 											'iva_id'    		=> Self::getIvaId($article),
 										]);
-			Log::info($article['name'].' update_cost del helper = '.GeneralHelper::getPivotValue($article, 'update_cost').' sin helper = '.$article['pivot']['update_cost']);
+			Log::info($article['name'].' cost_in_dollars = '.$article['pivot']['cost_in_dollars']);
 			Self::updateArticleStock($article, $last_received, $provider_order);
 		}
 		Self::saveCurrentAcount($provider_order);

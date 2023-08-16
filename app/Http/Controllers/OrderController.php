@@ -31,13 +31,11 @@ class OrderController extends Controller
     }
 
     function indexUnconfirmed() {
-        Log::info('asd:');
         $models = Order::where('user_id', $this->userId())
                         ->where('order_status_id', 1)
+                        ->orderBy('created_at', 'DESC')
                         ->withAll()
                         ->get();
-        Log::info('aca:');
-        Log::info($models);
         // $models = OrderHelper::setArticlesVariant($models);
         return response()->json(['models' => $models], 200);
     }

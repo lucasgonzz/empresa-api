@@ -40,6 +40,7 @@ class UserSeeder extends Seeder
                 'download_articles'             => 1,
                 'online'                        => 'http://tienda.local:8081',
                 // 'payment_expired_at'         => Carbon::now()->addDay(),
+                'last_user_activity'            => Carbon::now(),
                 'online_configuration'          => [
                     'online_price_type_id'          => 1,
                     'default_article_image_url'     => 'http://empresa.local:8000/storage/168053912176623.webp',

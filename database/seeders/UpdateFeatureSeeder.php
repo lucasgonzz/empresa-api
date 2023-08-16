@@ -16,12 +16,8 @@ class UpdateFeatureSeeder extends Seeder
     {
         $models = [
             [
-                'name' => 'Agregar un limite de dias para los PEDIDOS A PROVEEDOR',
-                'description' => 'En cada pedido a proveedor, se podra indicar el dato de X dias a partir de los cuales, el sistema va a mostrar una alerta si el pedido no ha cambiado al estado de recibido.',
-            ],
-            [
-                'name' => 'Stock para cada DIRECCION',
-                'description' => 'A demas del dato de stock de un articulo, se podra indicar un stock espesifico para cada direccion dada de alta en el sistema, del cual se descontara la cantidad vendida cuando se indique la direccion en una venta.',
+                'name' => 'Nuevo diseño para las Tablas',
+                'description' => 'Adaptamos las tablas para que tengan la fila de los titulos fija para una mejor visualizacion de los datos',
             ],
         ];
         foreach ($models as $model) {
