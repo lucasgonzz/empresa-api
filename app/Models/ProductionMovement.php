@@ -24,4 +24,8 @@ class ProductionMovement extends Model
     function order_production_status() {
         return $this->belongsTo('App\Models\OrderProductionStatus');
     }
+
+    function address() {
+        return $this->belongsTo('App\Models\Address');
+    }
 }

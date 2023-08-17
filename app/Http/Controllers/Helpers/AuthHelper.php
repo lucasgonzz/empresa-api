@@ -18,13 +18,28 @@ class AuthHelper {
 		return $user;
 	}
 
-	function checkUserLastActivity($user) {
-		Log::info('last_activity: '.$user->last_activity.' carbon::now: '.Carbon::now().', carbon menos '.env('USER_ACTIVITY_MINUTES').'min: '.Carbon::now()->subMinutes(env('USER_ACTIVITY_MINUTES')));
-		if (is_null($user->last_activity) || Carbon::now()->subMinutes(env('USER_ACTIVITY_MINUTES'))->gte($user->last_activity)) {
+	function checkUserLastActivity() {
+		$user = Auth()->user();
+		if (is_null($user->last_activity) || is_null($user->session_id) || $this->ya_paso_el_tiempo($user)) {
+			session(['session_id' => time().rand(0,1000)]);
 			$user->last_activity = Carbon::now();
+			$user->session_id = session('session_id');
 			$user->save();
+			Log::info('se puso session_id: '.$user->session_id);
 			return true;
+		} else if ($user->session_id == session('session_id')) {
+			Log::info('tiene el mismo session_id: '.$user->session_id);
+			return true;
+		}
+		return false;
+	}
 
+	function ya_paso_el_tiempo($user) {
+		if (Carbon::now()->subMinutes(env('USER_ACTIVITY_MINUTES'))->gte($user->last_activity)) {
+			Log::info('Ya paso el tiempo');
+			return true;
+		} else {
+			Log::info('No ha paso el tiempo');
 		}
 		return false;
 	}

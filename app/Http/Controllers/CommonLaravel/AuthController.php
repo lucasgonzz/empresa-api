@@ -22,10 +22,11 @@ class AuthController extends Controller
         } else if (Auth::attempt(['doc_number' => $request->doc_number, 
                            'password' => $request->password], $request->remember)) {
             
-            $user = UserHelper::getFullModel(false);
-            if ($this->checkUserLastActivity($user)) {
+            if ($this->checkUserLastActivity()) {
+                $user = UserHelper::getFullModel(false);
                 $login = true;
             } else {
+                Log::info('no paso user_last_activity');
                 $user_last_activity = true;
             }
         } 
@@ -43,8 +44,8 @@ class AuthController extends Controller
     }
 
     public function user() {
-        $user = UserHelper::getFullModel(false);
-        if ($this->checkUserLastActivity($user)) {
+        if ($this->checkUserLastActivity()) {
+            $user = UserHelper::getFullModel(false);
             return response()->json(['user' => $user], 200);
         }
         return response()->json(['user' => null], 403);
@@ -70,11 +71,11 @@ class AuthController extends Controller
         return false;
     }
 
-    function checkUserLastActivity($user) {
+    function checkUserLastActivity() {
         if (class_exists('App\Http\Controllers\Helpers\AuthHelper')) {
             $auth_helper = new \App\Http\Controllers\Helpers\AuthHelper();
             if (method_exists($auth_helper, 'checkUserLastActivity')) {
-                return $auth_helper->checkUserLastActivity($user);
+                return $auth_helper->checkUserLastActivity();
             }
         } 
         return true;

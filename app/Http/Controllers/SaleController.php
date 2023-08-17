@@ -98,7 +98,7 @@ class SaleController extends Controller
         SaleHelper::updatePreivusClient($model, $previus_client_id);
         $this->sendAddModelNotification('Sale', $model->id);
         SaleHelper::sendUpdateClient($this, $model);
-        return response()->json(['model' => $model], 200);
+        return response()->json(['model' => $this->fullModel('Sale', $model->id)], 200);
     }
 
     public function destroy($id) {

@@ -19,6 +19,7 @@ class CreateProductionMovementsTable extends Migration
             $table->integer('employee_id')->nullable();
             $table->integer('article_id');
             $table->integer('order_production_status_id');
+            $table->integer('address_id');
             $table->decimal('amount', 12,2);
             $table->decimal('current_amount', 12,2)->nullable();
             $table->integer('user_id');

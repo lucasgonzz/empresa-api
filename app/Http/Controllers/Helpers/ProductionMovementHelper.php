@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Models\OrderProductionStatus;
 use App\Models\ProductionMovement;
 use Carbon\Carbon;
@@ -26,6 +27,13 @@ class ProductionMovementHelper {
 			}
 		}
 		Self::checkIsLastStatus($production_movement, $instance);
+		Self::checkArticleAddresses($production_movement, $instance);
+	}
+
+	static function checkArticleAddresses($production_movement) {
+		foreach ($production_movement->article->recipe->articles as $article) {
+        	ArticleHelper::setArticleStockFromAddresses($article);
+		}
 	}
 
 	static function checkIsLastStatus($production_movement, $instance) {
@@ -45,10 +53,24 @@ class ProductionMovementHelper {
 	static function discountStock($article_recipe, $production_movement, $instance, $last_amount) {
 		if (!is_null($article_recipe->stock)) {
 			$amount_to_discount = $production_movement->amount - $last_amount;
-			Log::info('Stock de '.$article_recipe->name.': '.$article_recipe->stock);
-			Log::info('Se descontaran '.$article_recipe->pivot->amount * $amount_to_discount);
-			$article_recipe->stock -= $article_recipe->pivot->amount * $amount_to_discount;
-			$article_recipe->save();
+			$amount_to_discount = $article_recipe->pivot->amount * $amount_to_discount;
+			
+			if (!is_null($production_movement->address_id) && count($article_recipe->addresses) >= 1) {
+				foreach ($article_recipe->addresses as $address) {
+					if ($address->id == $production_movement->address_id) {
+						Log::info('Stock de '.$article_recipe->name.'en la direccion '.$address->street.': '.$address->pivot->amount);
+						$new_amount = $address->pivot->amount - $amount_to_discount;
+						$article_recipe->addresses()->updateExistingPivot($address->id, [
+							'amount' => $new_amount,
+						]);
+					}
+				}
+			} else {
+				Log::info('Stock de '.$article_recipe->name.': '.$article_recipe->stock);
+				Log::info('Se descontaran '.$amount_to_discount);
+				$article_recipe->stock -= $amount_to_discount;
+				$article_recipe->save();
+			}
         	$instance->sendAddModelNotification('article', $article_recipe->id, false);
 			Log::info('Nuevo Stock de '.$article_recipe->name.': '.$article_recipe->stock);
 			// Log::info('Nuevo Stock de '.$article_recipe->name.': '.$article_recipe->stock);
