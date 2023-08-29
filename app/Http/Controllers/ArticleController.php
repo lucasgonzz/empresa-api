@@ -204,6 +204,11 @@ class ArticleController extends Controller
     }
 
     function charts($id, $from_date, $until_date) {
+        $result = ArticleHelper::getChartsFromArticle($id, $from_date, $until_date);
+        return response()->json(['result' => $result], 200);
+    }
+
+    function sales($id, $from_date, $until_date) {
         $result = ArticleHelper::getSalesFromArticle($id, $from_date, $until_date);
         return response()->json(['result' => $result], 200);
     }

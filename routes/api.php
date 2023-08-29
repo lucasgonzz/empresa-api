@@ -53,6 +53,7 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::get('/article/set-featured/{id}', 'ArticleController@setFeatured');
     Route::get('/article/set-online/{id}', 'ArticleController@setOnline');
     Route::get('/article/charts/{id}/{from_date}/{until_date}', 'ArticleController@charts');
+    Route::get('/article/sales/{id}/{from_date}/{until_date}', 'ArticleController@sales');
     Route::get('/article/providers-history/{article_id}', 'ArticleController@providersHistory');
 
     Route::resource('sale', 'SaleController');

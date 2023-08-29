@@ -269,7 +269,7 @@ class ArticleSeeder extends Seeder
         ];
         $num = 1;
         $days = count($articles);
-        // for ($i=0; $i < 4; $i++) { 
+        for ($i=0; $i < 2; $i++) { 
             foreach ($articles as $article) {
                 $art = Article::create([
                     'num'               => $num,
@@ -318,7 +318,7 @@ class ArticleSeeder extends Seeder
                 $this->setAddresses($art, $article); 
                 ArticleHelper::setFinalPrice($art, $user->id);
             }
-        // }
+        }
     }
 
     function createDiscount($article) {

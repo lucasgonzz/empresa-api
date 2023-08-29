@@ -16,8 +16,12 @@ class UpdateFeatureSeeder extends Seeder
     {
         $models = [
             [
-                'name' => 'Nuevo diseño para las Tablas',
-                'description' => 'Adaptamos las tablas para que tengan la fila de los titulos fija para una mejor visualizacion de los datos',
+                'name' => 'Ver las ventas de un articulo',
+                'description' => 'Se agrego la funcionalidad para que se puedan ver las ventas hechas de un articulo, no como estadisticas, sino para explicitamente ver las ventas en las que participo el articulo y poder consultarlas desde ahi mismo. Esta funcionalidad esta disponible desde LISTADO, boton azul VENTAS (este boton esta en cada articulo).',
+            ],
+            [
+                'name' => 'Correccion Nota de Credito',
+                'description' => 'Cuando se haga una nota de credito inficando las unidades devueltas, se tendra en cuenta el descuento del articulo, si es que lo tiene, para calcular el total de la nota de credito.',
             ],
         ];
         foreach ($models as $model) {

@@ -31,6 +31,7 @@ class SaleTicketPdf extends fpdf {
 	function Header() {
 		$this->logo();
 		$this->afipInformation();
+		$this->num();
 		$this->date();
 		$this->address();
 	}
@@ -71,7 +72,7 @@ class SaleTicketPdf extends fpdf {
         	if (env('APP_ENV') == 'local') {
         		$this->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', $sobrante / 2, 0, 0, $image_width);
         	} else {
-	        	$this->Image($this->user->image_url, 17, 0, 0, 25);
+	        	$this->Image($this->user->image_url, $sobrante / 2, 0, 0, 25);
         	}
         }
 		
@@ -144,6 +145,13 @@ class SaleTicketPdf extends fpdf {
 	    $this->SetFont('Arial', '', 10);
 		$this->Cell($this->cell_ancho, 10, 'GRACIAS POR SU VISITA', 0, 0, 'C');
 		// $this->y += 10;
+	}
+
+	function num() {
+	    $this->x = 2;
+	    $this->SetFont('Arial', '', 9);
+		$this->Cell($this->cell_ancho, 5, 'N° '.$this->sale->num, $this->b, 0, 'L');
+		$this->y += 5;
 	}
 
 	function date() {

@@ -16,6 +16,7 @@ Route::post('/password-reset/update-password',
 	'CommonLaravel\PasswordResetController@updatePassword'
 );
 
+Route::get('proveedores-eliminados/{company_name}', 'HelperController@reemplazarProveedoresEliminados');
 Route::get('repetidos', 'HelperController@codigosRepetidos');
 Route::get('set-clientes-oscar', 'HelperController@setClientesOscar');
 Route::get('set-properties/{company_name}/{for_articles?}', 'HelperController@setProperties');

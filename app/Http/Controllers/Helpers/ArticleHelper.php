@@ -136,7 +136,7 @@ class ArticleHelper {
         return $models;
     }
 
-    static function getSalesFromArticle($id, $from_date, $until_date) {
+    static function getChartsFromArticle($id, $from_date, $until_date) {
         $result = [];
         $index = 0;
         $start = Carbon::parse($from_date);
@@ -165,6 +165,20 @@ class ArticleHelper {
             }
         }
         return $result;
+    }
+
+    static function getSalesFromArticle($id, $from_date, $until_date) {
+        Log::info($from_date);
+        Log::info($until_date);
+        $sales = Sale::where('user_id', UserHelper::userId())
+                            ->whereHas('articles', function(Builder $query) use ($id) {
+                                $query->where('article_id', $id);
+                            })
+                            ->whereDate('created_at', '>=', $from_date)
+                            ->whereDate('created_at', '<=', $until_date)
+                            ->withAll()
+                            ->get();
+        return $sales;
     }
 
     static function lastProviderPercentageGain($article) {

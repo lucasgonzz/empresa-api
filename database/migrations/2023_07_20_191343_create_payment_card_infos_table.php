@@ -22,6 +22,7 @@ class CreatePaymentCardInfosTable extends Migration
             $table->string('card_brand')->nullable(); 
             $table->string('status')->nullable(); 
             $table->string('num_ticket')->nullable();
+            $table->integer('payment_method_id')->nullable();
             $table->timestamps();
         });
     }

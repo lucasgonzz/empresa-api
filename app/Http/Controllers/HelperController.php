@@ -23,6 +23,45 @@ use Illuminate\Support\Facades\Storage;
 class HelperController extends Controller
 {
 
+    function reemplazarProveedoresEliminados($company_name) {
+        $user = User::where('company_name', $company_name)
+                        ->first();
+        $providers = Provider::where('user_id', $user->id)      
+                                ->get();
+        $proveedores_repetidos = [];
+        foreach ($providers as $provider) {
+            if (array_key_exists($provider->name, $proveedores_repetidos)) {
+                $proveedores_repetidos[$provider->name]++;
+            } else {
+                $proveedores_repetidos[$provider->name] = 1;
+            }
+        }
+
+        foreach ($proveedores_repetidos as $proveedor => $cant) {
+            if ($cant > 1) {
+                $provider_eliminado = Provider::where('user_id', $user->id)
+                                        ->where('name', $proveedor)
+                                        ->where('status', 'inactive')
+                                        ->first();
+
+                $provider_no_eliminado = Provider::where('user_id', $user->id)
+                                        ->where('name', $proveedor)
+                                        ->where('status', 'active')
+                                        ->first();
+                if (is_null($provider_no_eliminado)) {
+                    echo 'Error con el proveedor '.$proveedor.' </br>';
+                } else {
+                    Article::where('provider_id', $provider_eliminado->id)
+                            ->update([
+                                'provider_id' => $provider_no_eliminado->id,
+                            ]);
+                }
+            }
+        }
+
+        // var_dump($proveedores_repetidos);
+    }
+
     function codigosRepetidos() {
         $user = User::where('doc_number', '09876543')
                         ->first();

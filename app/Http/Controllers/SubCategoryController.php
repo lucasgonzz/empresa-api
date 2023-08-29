@@ -45,9 +45,11 @@ class SubCategoryController extends Controller
 
     public function destroy($id) {
         $model = SubCategory::find($id);
-        $model->delete();
-        ImageController::deleteModelImages($model);
-        $this->sendDeleteModelNotification('sub_category', $model->id);
+        if (!is_null($model)) {
+            $model->delete();
+            ImageController::deleteModelImages($model);
+            $this->sendDeleteModelNotification('sub_category', $model->id);
+        }
         return response(null);
     }
 }

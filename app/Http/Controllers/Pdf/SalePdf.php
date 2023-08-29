@@ -150,7 +150,7 @@ class SalePdf extends fpdf {
 	}
 
 	function printItem($index, $item) {
-		if ($this->y >= 245) {
+		if ($this->y >= 230) {
 			$this->AddPage();
 		}
 		$this->SetFont('Arial', '', 8);
@@ -387,9 +387,10 @@ class SalePdf extends fpdf {
 		if (count($this->sale->discounts) >= 1 || count($this->sale->surchages) >= 1 || count($this->sale->seller_commissions) >= 1) {
 	    	$this->SetFont('Arial', 'B', 12);
 	    	$this->x = 5;
+	    	$this->y += 2;
 		    $this->Cell(
 				50, 
-				10, 
+				5, 
 				'Total: $'.Numbers::price(SaleHelper::getTotalSale($this->sale, true, true, false)), 
 				$this->b, 
 				1, 
@@ -399,7 +400,7 @@ class SalePdf extends fpdf {
 	    		$this->x = 5;
 			    $this->Cell(
 					50, 
-					10, 
+					5, 
 					'Total menos comisiones: $'.Numbers::price(SaleHelper::getTotalSale($this->sale, true, true, true)), 
 					$this->b, 
 					1, 

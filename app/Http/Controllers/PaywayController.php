@@ -43,7 +43,7 @@ class PaywayController extends Controller
                 'email'             => $order->buyer->email,
                 'ip_address'        => null,
             ),
-            'payment_method_id'     => 1,
+            'payment_method_id'     => (int)$order->payment_card_info->payment_method_id,
             // 'payment_method_id'     => PaywayHelper::getPaymentMethodId($order->payment_card_info->card_brand),
             'bin'                   => $order->payment_card_info->bin,
             'amount'                => $total,
@@ -55,8 +55,8 @@ class PaywayController extends Controller
             'sub_payments'          => array(),
         ];
 
-        // Log::info('data: ');
-        // Log::info($data);
+        Log::info('data: ');
+        Log::info($data);
 
         try {
             $response = $connector->payment()->ExecutePayment($data);

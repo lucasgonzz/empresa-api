@@ -113,7 +113,11 @@ class SaleHelper extends Controller {
             $articles = [];
             foreach ($request->items as $item) {
                 if (isset($item['is_article']) && $item['returned_amount'] > 0) {
-                    $haber += $item['price_vender'] * $item['returned_amount'];
+                    $total_item = $item['price_vender'] * $item['returned_amount'];
+                    if (!is_null($item['discount'])) {
+                        $total_item -= $total_item * $item['discount'] / 100;
+                    }
+                    $haber += $total_item;
                     $articles[] = $item;
                 }
             }
