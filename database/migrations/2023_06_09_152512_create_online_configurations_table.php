@@ -25,6 +25,7 @@ class CreateOnlineConfigurationsTable extends Migration
             $table->text('mensaje_contacto')->nullable();
             $table->boolean('show_articles_without_images')->default(1)->nullable();
             $table->boolean('show_articles_without_stock')->default(1)->nullable();
+            $table->boolean('stock_null_equal_0')->default(0)->nullable();
             $table->text('online_description')->nullable();
             $table->boolean('has_delivery')->default(1)->nullable();
             $table->string('order_description')->nullable();

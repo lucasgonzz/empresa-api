@@ -29,7 +29,8 @@ class UserSeeder extends Seeder
             [
                 'name'                          => 'Lucas Gonzalez',
                 'company_name'                  => 'Lucas',
-                'image_url'                     => env('APP_URL').'/storage/cubo.jpeg',
+                'image_url'                     => null,
+                // 'image_url'                     => env('APP_URL').'/storage/cubo.jpeg',
                 'doc_number'                    => '123',
                 'email'                         => 'lucasgonzalez5500@gmail.com',
                 'phone'                         => '3444622139',
@@ -39,7 +40,7 @@ class UserSeeder extends Seeder
                 'home_position'                 => 1,
                 'download_articles'             => 1,
                 'online'                        => 'http://tienda.local:8081',
-                // 'payment_expired_at'         => Carbon::now()->addDay(),
+                'payment_expired_at'            => Carbon::now()->addDays(4),
                 'last_user_activity'            => Carbon::now(),
                 'online_configuration'          => [
                     'online_price_type_id'          => 1,

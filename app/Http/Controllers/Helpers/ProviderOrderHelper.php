@@ -83,7 +83,7 @@ class ProviderOrderHelper {
 				$article->created_at = Carbon::now();
 				$data_changed = true;
 			}
-			if ($article->provider_id != $provider_order->provider_id || (isset($last_received[$article->id]) && $last_received[$article->id] != $_article['pivot']['received'])) {
+			if ($_article['pivot']['update_provider'] && ($article->provider_id != $provider_order->provider_id || (isset($last_received[$article->id]) && $last_received[$article->id] != $_article['pivot']['received']))) {
 				$data_changed = true;
 				$article->provider_id = $provider_order->provider_id;
 				$amount = $_article['pivot']['received'];
@@ -132,11 +132,12 @@ class ProviderOrderHelper {
 											'cost' 				=> $cost,
 											'received_cost' 	=> GeneralHelper::getPivotValue($article, 'received_cost'),
 											'update_cost' 		=> GeneralHelper::getPivotValue($article, 'update_cost'),
+											'update_provider' 		=> GeneralHelper::getPivotValue($article, 'update_provider'),
 											'cost_in_dollars'	=> $article['pivot']['cost_in_dollars'],
 											'add_to_articles'	=> GeneralHelper::getPivotValue($article, 'add_to_articles'),
 											'iva_id'    		=> Self::getIvaId($article),
 										]);
-			Log::info($article['name'].' cost_in_dollars = '.$article['pivot']['cost_in_dollars']);
+			// Log::info($article['name'].' cost_in_dollars = '.$article['pivot']['cost_in_dollars']);
 			Self::updateArticleStock($article, $last_received, $provider_order);
 		}
 		Self::saveCurrentAcount($provider_order);

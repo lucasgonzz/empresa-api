@@ -33,7 +33,7 @@ class BudgetPdf extends fpdf {
 			'Producto' 	=> 150,
 			'Cant' 		=> 30,
 		];
-}
+	}
 
 	function getModelProps() {
 		return [

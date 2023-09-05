@@ -55,13 +55,13 @@ class AfipWsController extends Controller
         $wsfe = new WSFE(['testing'=> $this->testing, 'cuit_representada' => $cuit_negocio]);
         $wsfe->setXmlTa(file_get_contents(TA_file));
         $cbte_nro = AfipHelper::getNumeroComprobante($wsfe, $punto_venta, $cbte_tipo);
-        // Log::info('Numero comprobante: '.$cbte_nro);
+        Log::info('Numero comprobante: '.$cbte_nro);
 
         $afip_helper = new AfipHelper($this->sale);
         $importes = $afip_helper->getImportes();
-        // Log::info('sigue con importes');
-        // Log::info('importes:');
-        // Log::info($importes);
+        Log::info('sigue con importes');
+        Log::info('importes:');
+        Log::info($importes);
         $today = date('Ymd');
         $moneda_id = 'PES';
         $invoice = array(
@@ -116,23 +116,25 @@ class AfipWsController extends Controller
     }
 
     function saveAfipTicket($result, $cbte_nro, $importe_total, $moneda_id) {
-        AfipTicket::create([
-            'cuit_negocio'      => $result->FECAESolicitarResult->FeCabResp->Cuit,
-            'iva_negocio'       => $this->sale->afip_information->iva_condition->name,
-            'punto_venta'       => $result->FECAESolicitarResult->FeCabResp->PtoVta,
-            'cbte_numero'       => $cbte_nro,
-            'cbte_letra'        => $this->getTipoLetra($result->FECAESolicitarResult->FeCabResp->CbteTipo),
-            'cbte_tipo'         => $result->FECAESolicitarResult->FeCabResp->CbteTipo,
-            'importe_total'     => $importe_total,
-            'moneda_id'         => $moneda_id,
-            'resultado'         => $result->FECAESolicitarResult->FeCabResp->Resultado,
-            'concepto'          => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Concepto,
-            'cuit_cliente'      => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->DocNro,
-            'iva_cliente'       => !is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) ? $this->sale->client->iva_condition->name : '',
-            'cae'               => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAE,
-            'cae_expired_at'    => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAEFchVto,
-            'sale_id'           => $this->sale->id,
-        ]);
+        if (is_null($result->FECAESolicitarResult->Errors)) {
+            AfipTicket::create([
+                'cuit_negocio'      => $result->FECAESolicitarResult->FeCabResp->Cuit,
+                'iva_negocio'       => $this->sale->afip_information->iva_condition->name,
+                'punto_venta'       => $result->FECAESolicitarResult->FeCabResp->PtoVta,
+                'cbte_numero'       => $cbte_nro,
+                'cbte_letra'        => $this->getTipoLetra($result->FECAESolicitarResult->FeCabResp->CbteTipo),
+                'cbte_tipo'         => $result->FECAESolicitarResult->FeCabResp->CbteTipo,
+                'importe_total'     => $importe_total,
+                'moneda_id'         => $moneda_id,
+                'resultado'         => $result->FECAESolicitarResult->FeCabResp->Resultado,
+                'concepto'          => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Concepto,
+                'cuit_cliente'      => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->DocNro,
+                'iva_cliente'       => !is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) ? $this->sale->client->iva_condition->name : '',
+                'cae'               => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAE,
+                'cae_expired_at'    => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAEFchVto,
+                'sale_id'           => $this->sale->id,
+            ]);
+        }
     }
 
     function FchVtoPago() {

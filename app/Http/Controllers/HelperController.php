@@ -23,6 +23,17 @@ use Illuminate\Support\Facades\Storage;
 class HelperController extends Controller
 {
 
+    function updateBetaImges() {
+        $images = Image::where('hosting_url', 'LIKE', '%api-beta.comerciocity%')
+                            ->get();
+        foreach ($images as $image) {
+            $new_url = 'https://api-empresa'.substr($image->hosting_url, 16);
+            $image->hosting_url = $new_url;
+            $image->save();
+            echo 'new_url: '.$image->hosting_url.' </br>';
+        }
+    }
+
     function reemplazarProveedoresEliminados($company_name) {
         $user = User::where('company_name', $company_name)
                         ->first();
@@ -261,9 +272,9 @@ class HelperController extends Controller
             ];
         }
         foreach ($_models as $_model) {
-            $id = 63555;
+            $id = 1;
             $models = [];
-            while (count($models) == 10 || $id == 63555) {
+            while (count($models) == 10 || $id == 1) {
                 echo 'Entro con '.$_model['model_name'].' id: '.$id.' </br>';
                 echo '------------------------------------------------------ </br>';
                 $models = GeneralHelper::getModelName($_model['model_name'])::orderBy('id', 'ASC')

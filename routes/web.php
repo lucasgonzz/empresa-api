@@ -16,6 +16,7 @@ Route::post('/password-reset/update-password',
 	'CommonLaravel\PasswordResetController@updatePassword'
 );
 
+Route::get('images-beta', 'HelperController@updateBetaImges');
 Route::get('proveedores-eliminados/{company_name}', 'HelperController@reemplazarProveedoresEliminados');
 Route::get('repetidos', 'HelperController@codigosRepetidos');
 Route::get('set-clientes-oscar', 'HelperController@setClientesOscar');
@@ -53,6 +54,9 @@ Route::get('sale/pdf/{id}/{with_prices}/{with_costs}', 'SaleController@pdf');
 Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
 Route::get('sale/afip-ticket-pdf/{id}', 'SaleController@afipTicketPdf');
 Route::get('sale/delivered-articles-pdf/{id}', 'SaleController@deliveredArticlesPdf');
+
+// Article
+Route::get('article/tickets-pdf/{ids}', 'ArticleController@ticketsPdf');
 
 Route::get('budget/pdf/{id}/{with_prices}', 'BudgetController@pdf');
 Route::get('order-production/pdf/{id}/{with_prices}', 'OrderProductionController@pdf');

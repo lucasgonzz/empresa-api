@@ -7,6 +7,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
+use App\Http\Controllers\Pdf\ArticleTicketPdf;
 use App\Imports\ArticleImport;
 use App\Imports\LocationImport;
 use App\Imports\ProvinciaImport;
@@ -211,5 +212,9 @@ class ArticleController extends Controller
     function sales($id, $from_date, $until_date) {
         $result = ArticleHelper::getSalesFromArticle($id, $from_date, $until_date);
         return response()->json(['result' => $result], 200);
+    }
+
+    function ticketsPdf($ids) {
+        new ArticleTicketPdf($ids);
     }
 }

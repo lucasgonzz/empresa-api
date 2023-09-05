@@ -25,6 +25,7 @@ class CreateArticleProviderOrderTable extends Migration
             $table->boolean('update_cost')->default(1)->nullable();
             $table->boolean('cost_in_dollars')->default(0)->nullable();
             $table->boolean('add_to_articles')->default(1)->nullable();
+            $table->boolean('update_provider')->default(1)->nullable();
             $table->text('notes')->nullable();
             $table->timestamps();
         });

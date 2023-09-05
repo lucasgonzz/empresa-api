@@ -47,7 +47,7 @@ class OrderController extends Controller
         $model->order_status_id = $request->order_status_id;
         $model->save();
         $model = Order::find($id);
-        OrderHelper::sendMail($model);
+        // OrderHelper::sendMail($model);
         OrderHelper::saveSale($model, $this);
         $this->sendAddModelNotification('Order', $model->id);
         return response()->json(['model' => $this->fullModel('Order', $model->id)], 200);
@@ -58,7 +58,7 @@ class OrderController extends Controller
         $model->order_status_id = $this->getModelBy('order_statuses', 'name', 'Cancelado', false, 'id');
         $model->save();
         OrderHelper::restartArticleStock($model);
-        MessageHelper::sendOrderCanceledMessage($request->description, $model);
+        // MessageHelper::sendOrderCanceledMessage($request->description, $model);
         return response()->json(['model' => $this->fullModel('Order', $model->id)], 200);
     }
 

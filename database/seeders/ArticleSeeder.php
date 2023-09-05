@@ -269,7 +269,7 @@ class ArticleSeeder extends Seeder
         ];
         $num = 1;
         $days = count($articles);
-        for ($i=0; $i < 2; $i++) { 
+        for ($i=0; $i < 4; $i++) { 
             foreach ($articles as $article) {
                 $art = Article::create([
                     'num'               => $num,
