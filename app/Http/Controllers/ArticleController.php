@@ -80,9 +80,12 @@ class ArticleController extends Controller
         ArticleHelper::setArticleStockFromAddresses($model);
 
         ArticleHelper::setDeposits($model, $request);
+
         $this->updateRelationsCreated('article', $model->id, $request->childrens);
+
         ArticleHelper::setFinalPrice($model);
-        ArticleHelper::attachProvider($model, $request);
+        ArticleHelper::attachProvider($request, $model);
+
         $this->sendAddModelNotification('article', $model->id);
 
         $inventory_linkage_helper = new InventoryLinkageHelper();
@@ -93,7 +96,10 @@ class ArticleController extends Controller
 
     function update(Request $request) {
         $model = Article::find($request->id);
-        ArticleHelper::saveProvider($model, $request);
+
+        $actual_stock = $model->stock;
+        $actual_provider_id = $model->provider_id;
+        
         $model->status                            = 'active';
         $model->provider_id                       = $request->provider_id;
         $model->bar_code                          = $request->bar_code;
@@ -126,7 +132,7 @@ class ArticleController extends Controller
         ArticleHelper::setFinalPrice($model);
         ArticleHelper::setDeposits($model, $request);
         ArticleHelper::checkAdvises($model);
-        ArticleHelper::attachProvider($model, $request);
+        ArticleHelper::attachProvider($request, $model, $actual_provider_id, $actual_stock);
         $this->sendAddModelNotification('article', $model->id);
 
         $inventory_linkage_helper = new InventoryLinkageHelper();

@@ -117,6 +117,8 @@ class CurrentAcountHelper {
 
     static function attachNotaCreditoArticles($nota_credito, $articles) {
         if (!is_null($articles)) {
+            Log::info('attachNotaCreditoArticles articles:');
+            Log::info($articles);
             $nota_credito->articles()->detach();
             foreach ($articles as $article) {
                 $nota_credito->articles()->attach($article['id'], [

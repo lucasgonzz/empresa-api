@@ -20,7 +20,7 @@ class SaleTicketPdf extends fpdf {
 
 		parent::__construct('P', 'mm', [$this->ancho, $this->getPdfHeight()]);
 		$this->SetAutoPageBreak(false);
-		$this->b = 1;
+		$this->b = 0;
 
 		$this->AddPage();
 		$this->items();
@@ -31,6 +31,7 @@ class SaleTicketPdf extends fpdf {
 	function Header() {
 		$this->logo();
 		$this->afipInformation();
+		$this->clientInfo();
 		$this->num();
 		$this->date();
 		$this->address();
@@ -53,8 +54,19 @@ class SaleTicketPdf extends fpdf {
 		}
 	}
 
+	function clientInfo() {
+		$this->x = 2;
+		$this->SetFont('Arial', '', 8);
+		if ($this->sale->client) {
+			$this->Cell($this->cell_ancho, 5, 'Cliente: '.$this->sale->client->name, $this->b, 1, 'L');
+		} else if (is_null($this->sale->client) && $this->sale->afip_ticket) {
+			$this->Cell($this->cell_ancho, 5, 'Cliente: Consumidor final', $this->b, 1, 'L');
+		}
+	}
+
 	function getCaeExpiredAt() {
 		$date = $this->sale->afip_ticket->cae_expired_at;
+		return substr($date, 0, 11);
 		return substr($date, 0, 4).'/'.substr($this->sale->afip_ticket->cae_expired_at, 4, 2).'/'.substr($date, 6, 8);
 	}
 
@@ -150,7 +162,7 @@ class SaleTicketPdf extends fpdf {
 	function num() {
 	    $this->x = 2;
 	    $this->SetFont('Arial', '', 9);
-		$this->Cell($this->cell_ancho, 5, 'N° '.$this->sale->num, $this->b, 0, 'L');
+		$this->Cell($this->cell_ancho, 5, 'Venta N° '.$this->sale->num, $this->b, 0, 'L');
 		$this->y += 5;
 	}
 

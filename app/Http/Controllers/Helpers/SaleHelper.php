@@ -110,17 +110,15 @@ class SaleHelper extends Controller {
     static function checkNotaCredito($sale, $request) {
         if ($request->save_nota_credito) {
             $haber = 0;
-            $articles = [];
-            foreach ($request->items as $item) {
-                if (isset($item['is_article']) && $item['returned_amount'] > 0) {
-                    $total_item = $item['price_vender'] * $item['returned_amount'];
-                    if (!is_null($item['discount'])) {
-                        $total_item -= $total_item * $item['discount'] / 100;
-                    }
-                    $haber += $total_item;
-                    $articles[] = $item;
+            foreach ($request->returned_articles as $article) {
+                $total_item = (float)$article['price_vender'] * (float)$article['returned_amount'];
+                if (!is_null($article['discount']) && $article['discount'] != 0) {
+                    $total_item -= $total_item * $article['discount'] / 100;
                 }
+                Log::info('se agrego a la nota de credito '.$article['returned_amount'].' unidades de '.$article['name']);
+                $haber += $total_item;
             }
+            Log::info('El total quedo en '.$haber);
             if (count($sale->discounts) >= 1) {
                 foreach ($sale->discounts as $discount) {
                     $haber -= (float)$discount->pivot->percentage * $haber / 100;
@@ -131,7 +129,7 @@ class SaleHelper extends Controller {
                     $haber += (float)$surchage->pivot->percentage * $haber / 100;
                 }
             }
-            $nota_credito = CurrentAcountHelper::notaCredito($haber, $request->nota_credito_description, 'client', $request->client_id, $sale->id, $articles);
+            $nota_credito = CurrentAcountHelper::notaCredito($haber, $request->nota_credito_description, 'client', $request->client_id, $sale->id, $request->returned_articles);
             CurrentAcountHelper::checkSaldos('client', $request->client_id);
             if (!is_null($sale->afip_ticket)) {
                 $afip_helper = new AfipNotaCreditoHelper($sale, $nota_credito);

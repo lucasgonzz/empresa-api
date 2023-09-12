@@ -46,6 +46,9 @@ class AfipWsController extends Controller
             } else if ($this->sale->client->cuil) {
                 $cod_client = $this->sale->client->cuil;
                 $doc_type = 86;
+            } else {
+                $cod_client = "NR";
+                $doc_type = '99';
             }
         } else {
             $cod_client = "NR";
@@ -116,7 +119,7 @@ class AfipWsController extends Controller
     }
 
     function saveAfipTicket($result, $cbte_nro, $importe_total, $moneda_id) {
-        if (is_null($result->FECAESolicitarResult->Errors)) {
+        if (!isset($result->FECAESolicitarResult->Errors)) {
             AfipTicket::create([
                 'cuit_negocio'      => $result->FECAESolicitarResult->FeCabResp->Cuit,
                 'iva_negocio'       => $this->sale->afip_information->iva_condition->name,

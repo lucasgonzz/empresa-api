@@ -43,18 +43,19 @@ class ArticleHelper {
     }
 
     static function setFinalPrice($article, $user_id = null) {
+        // Log::info('setFinalPrice article->price '.$article->price);
         if (is_null($user_id)) {
             $user = UserHelper::user();
         } else {
             $user = User::find($user_id);
         }
-        // Log::info('apply_provider_percentage_gain de '.$article->name.': '.$article->apply_provider_percentage_gain);
         $current_final_price = $article->final_price;
         if (!is_null($article->percentage_gain) || ($article->apply_provider_percentage_gain && !is_null($article->provider) && !is_null($article->provider->percentage_gain))) {
             $article->price = null;
             $article->save();
         }
         if (is_null($article->price) || $article->price == '') {
+            // Log::info('entor con price null');
             $cost = $article->cost;
             if ($article->cost_in_dollars) {
                 if (!is_null($article->provider) && !is_null($article->provider->dolar) && (float)$article->provider->dolar > 0) {
@@ -94,7 +95,11 @@ class ArticleHelper {
             }
         } else {
             $final_price = $article->price;
+            // Log::info('entro con price: '.$article->price);
         }
+
+        // Log::info('final_price:');
+        // Log::info($final_price);
 
         if (!$user->iva_included && Self::hasIva($article)) {
             // Log::info('sumando iva de '.$article->iva->percentage);
@@ -168,8 +173,8 @@ class ArticleHelper {
     }
 
     static function getSalesFromArticle($id, $from_date, $until_date) {
-        Log::info($from_date);
-        Log::info($until_date);
+        // Log::info($from_date);
+        // Log::info($until_date);
         $sales = Sale::where('user_id', UserHelper::userId())
                             ->whereHas('articles', function(Builder $query) use ($id) {
                                 $query->where('article_id', $id);
@@ -215,13 +220,12 @@ class ArticleHelper {
         return $articles;
     }
 
-    static function attachProvider($article, $request) {
-        if ($request->provider_id != 0 && ($article->provider_id != $request->provider_id || $article->stock != $request->stock)) {
+    static function attachProvider($request, $article, $actual_provider_id = null, $actual_stock = null) {
+        if ($actual_provider_id != $request->provider_id || $actual_stock != $request->stock) {
             $article->providers()->attach($request->provider_id, [
                                             'amount' => $request->stock,
                                             'cost'   => $request->cost,
                                             'price'  => $article->final_price,
-                                            'amount' => $request->stock - $article->stock,
                                         ]);
             Log::info('Se agrego provider');
         }
@@ -288,7 +292,7 @@ class ArticleHelper {
 
     static function discountStock($id, $amount, $sale) {
         $article = Article::find($id);
-        if (count($article->addresses) >= 1 && !is_null($sale->address_id)) {
+        if (!is_null($article) && count($article->addresses) >= 1 && !is_null($sale->address_id)) {
             foreach ($article->addresses as $article_address) {
                 if ($article_address->pivot->address_id == $sale->address_id) {
                     $new_amount = $article_address->pivot->amount - $amount;

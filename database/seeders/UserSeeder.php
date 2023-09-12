@@ -39,7 +39,7 @@ class UserSeeder extends Seeder
                 'dollar'                        => 300,
                 'home_position'                 => 1,
                 'download_articles'             => 1,
-                'online'                        => 'http://tienda.local:8081',
+                'online'                        => 'https://calzadosmarrox.com.ar',
                 'payment_expired_at'            => Carbon::now()->addDays(4),
                 'last_user_activity'            => Carbon::now(),
                 'online_configuration'          => [
@@ -65,6 +65,7 @@ class UserSeeder extends Seeder
                 'email'             => 'marcosgonzalez5500@gmail.com',
                 'password'          => bcrypt('1234'),
                 'visible_password'  => null,
+                'online'                        => 'https://calzadosmarrox.com.ar',
                 'home_position'                 => 3,
             ],
             [
