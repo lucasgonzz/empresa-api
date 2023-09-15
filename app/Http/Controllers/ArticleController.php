@@ -48,6 +48,19 @@ class ArticleController extends Controller
         return response()->json(['model' => $this->fullModel('article', $id)], 200);
     }
 
+    function guardar($datos) {
+        $articulo = new Article();
+        $articulo->nombre = $datos->nombre;
+        $articulo->codigo_de_barras = $datos->codigo_de_barras;
+        $articulo->precio = $datos->precio;
+        $articulo->guardar();
+        $mensaje = "se guardo bien";
+        return $mensaje;
+    }
+
+
+
+
     function store(Request $request) {
         $model = new Article();
         $model->num                               = $this->num('articles');

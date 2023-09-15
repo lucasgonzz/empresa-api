@@ -31,6 +31,7 @@ class BudgetHelper {
 			Self::deleteCurrentAcount($budget);
 			Self::saveCurrentAcount($budget);
 	        CurrentAcountHelper::checkSaldos('client', $budget->client_id);
+	        Self::deleteSale($budget);
 	        Self::saveSale($budget);
 		}
 	}
@@ -47,6 +48,7 @@ class BudgetHelper {
 	            'save_current_acount' 	=> 0,
 	        ]);
 	        Self::attachSaleArticles($sale, $budget);
+	        Self::attachSaleDiscountsAndSurchages($sale, $budget);
         	$ct->sendAddModelNotification('Sale', $sale->id, false);
 		}
 	}
@@ -57,6 +59,19 @@ class BudgetHelper {
 				'amount'	=> $article->pivot->amount,
 				'price'	    => $article->pivot->price,
 				'discount'	=> $article->pivot->bonus,
+			]);
+		}
+	}
+
+	static function attachSaleDiscountsAndSurchages($sale, $budget) {
+		foreach ($budget->discounts as $discount) {
+			$sale->discounts()->attach($discount->id, [
+				'percentage'	=> $discount->pivot->percentage,
+			]);
+		}
+		foreach ($budget->surchages as $surchage) {
+			$sale->surchages()->attach($surchage->id, [
+				'percentage'	=> $surchage->pivot->percentage,
 			]);
 		}
 	}
@@ -87,10 +102,26 @@ class BudgetHelper {
 		return false;
 	}
 
+	static function deleteSale($budget) {
+		$sale = Sale::where('budget_id', $budget->id)
+										->first();
+		if (!is_null($sale)) {
+			$sale->delete();
+			return true;
+		}
+		return false;
+	}
+
 	static function getTotal($budget) {
 		$total = 0;
 		foreach ($budget->articles as $article) {
 			$total += Self::totalArticle($article);
+		}
+		foreach ($budget->discounts as $discount) {
+			$total -= $discount->pivot->percentage * $total / 100;
+		}
+		foreach ($budget->surchages as $surchage) {
+			$total += $surchage->pivot->percentage * $total / 100;
 		}
 		return $total;
 	}

@@ -11,8 +11,16 @@ class Budget extends Model
     protected $dates = ['start_at', 'finish_at'];
 
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'articles', 'budget_status');
+        $query->with('client.iva_condition', 'client.price_type', 'articles', 'budget_status', 'discounts', 'surchages');
         // $query->with('client.iva_condition', 'client.price_type', 'articles', 'budget_status', 'optional_order_production_statuses');
+    }
+
+    function discounts() {
+        return $this->belongsToMany('App\Models\Discount')->withPivot('percentage');
+    }
+
+    function surchages() {
+        return $this->belongsToMany('App\Models\Surchage')->withPivot('percentage');
     }
 
     function sale() {

@@ -79,9 +79,11 @@ class ImageController extends Controller
     }
 
     static function deleteModelImages($model) {
-        foreach ($model->getAttributes() as $prop => $_prop) {
-            if (substr($prop, 0, 4) == 'foto' || substr($model->{$prop}, 0, 5) == 'image') {
-                Self::deleteImage($model->{$prop});
+        if (!is_null($model)) {
+            foreach ($model->getAttributes() as $prop => $_prop) {
+                if (substr($prop, 0, 4) == 'foto' || substr($model->{$prop}, 0, 5) == 'image') {
+                    Self::deleteImage($model->{$prop});
+                }
             }
         }
     }

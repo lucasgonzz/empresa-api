@@ -232,7 +232,7 @@ class ProviderOrderHelper {
 			}
 		} else {
 			foreach ($provider_order->articles as $article) {
-				if ($article->pivot->cost != '' && $article->pivot->received > 0) {
+				if (($article->pivot->cost != '' || $article->pivot->received_cost != '') && $article->pivot->received > 0) {
 					$cost = $article->pivot->cost;
 					if (!is_null($article->pivot->received_cost)) {
 						$cost = $article->pivot->received_cost;

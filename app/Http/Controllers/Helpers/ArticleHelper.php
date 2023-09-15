@@ -302,7 +302,7 @@ class ArticleHelper {
                     ]);
                 }
             }
-        } else if (!is_null($article->stock)) {
+        } else if (!is_null($article) && !is_null($article->stock)) {
             $article->stock -= $amount;
             $article->timestamps = false;
             $article->save();
@@ -313,7 +313,7 @@ class ArticleHelper {
         if (!is_object($article)) {
             $article = Article::find($article['id']);
         }
-        if (count($article->addresses) >= 1) {
+        if (!is_null($article) && count($article->addresses) >= 1) {
             $stock = 0;
             foreach ($article->addresses as $article_address) {
                 Log::info('sumando: '.$article_address->pivot->amount.' de '.$article_address->street);

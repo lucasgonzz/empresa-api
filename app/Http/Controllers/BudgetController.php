@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
@@ -38,8 +39,12 @@ class BudgetController extends Controller
             'budget_status_id'          => $request->budget_status_id,
             'user_id'               => $this->userId(),
         ]);
+        GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
+        GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
+
         BudgetHelper::attachArticles($model, $request->articles);
         BudgetHelper::checkStatus($this->fullModel('Budget', $model->id));
+
         $this->sendAddModelNotification('Budget', $model->id);
         return response()->json(['model' => $this->fullModel('Budget', $model->id)], 201);
     }  
@@ -56,8 +61,12 @@ class BudgetController extends Controller
         $model->observations              = $request->observations;
         $model->budget_status_id          = $request->budget_status_id;
         $model->save();
+        GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
+        GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
+        
         BudgetHelper::attachArticles($model, $request->articles);
         BudgetHelper::checkStatus($this->fullModel('Budget', $model->id));
+        
         $this->sendAddModelNotification('Budget', $model->id);
         return response()->json(['model' => $this->fullModel('Budget', $model->id)], 200);
     }

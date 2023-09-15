@@ -56,10 +56,10 @@ class ArticleSeeder extends Seeder
                 'featured'          => 1,
                 'images'            => [
                     [
-                        'url'       => 'martillo.jpg',
+                        'url'       => 'rasti.jpg',
                     ],
                     [
-                        'url'       => 'martillo_grande.jpg',
+                        'url'       => 'rasti.jpg',
                     ],
                 ],
             ],
@@ -75,7 +75,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'martillo_grande.jpg',
+                        'url'       => 'rasti.jpg',
                     ],
                 ],
             ],
@@ -91,7 +91,7 @@ class ArticleSeeder extends Seeder
                 'featured'          => 3,
                 'images'            => [
                     [
-                        'url'       => 'pinza.jpg',
+                        'url'       => 'rasti.jpg',
                     ],
                 ],
             ],
@@ -106,7 +106,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'pinza_alicate.jpg',
+                        'url'       => 'rasti.jpg',
                     ],
                 ],
                 'featured'          => 4,
@@ -123,7 +123,7 @@ class ArticleSeeder extends Seeder
                 'featured'          => 5,
                 'images'            => [
                     [
-                        'url'       => 'cuchilla.jpg',
+                        'url'       => 'rasti.jpg',
                     ],
                 ],
             ],
@@ -138,7 +138,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'cuchillo_tramontina.jpg',
+                        'url'       => 'rasti.jpg',
                     ],
                 ],
             ],
@@ -153,7 +153,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'cuchara.jpg',
+                        'url'       => 'rasti.jpg',
                     ],
                 ],
             ],
@@ -168,7 +168,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'cuchara_plastico.webp',
+                        'url'       => 'rasti.jpg',
                     ],
                 ],
             ],
@@ -183,7 +183,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'mesa.webp',
+                        'url'       => 'rasti.jpg',
                     ],
                 ],
             ],
@@ -198,7 +198,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'mesa_larga.jpg',
+                        'url'       => 'rasti.jpg',
                     ],
                 ],
             ],
@@ -213,7 +213,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'cama.jpg',
+                        'url'       => 'rasti.jpg',
                     ],
                 ],
             ],
@@ -228,13 +228,13 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'cama_2_plazas.jpg',
+                        'url'       => 'rasti.jpg',
                     ],
                     [
-                        'url'       => 'martillo.jpg',
+                        'url'       => 'rasti.jpg',
                     ],
                     [
-                        'url'       => 'martillo_grande.jpg',
+                        'url'       => 'rasti.jpg',
                     ],
                 ],
                 'addresses'     => [
@@ -258,10 +258,10 @@ class ArticleSeeder extends Seeder
                 'iva_id'            => 6,
                 'images'            => [
                     [
-                        'url'       => 'zapatilla_blanca.webp',
+                        'url'       => 'rasti.jpg',
                     ],
                     [
-                        'url'       => 'zapatilla_roja.webp',
+                        'url'       => 'rasti.jpg',
                     ],
                 ],
             ],

@@ -48,13 +48,17 @@ class GeneralHelper {
         return $result;
     }
     
-    static function attachModels($model, $relation_name, $relation_models, $pivot_values = null) {
+    static function attachModels($model, $relation_name, $relation_models, $pivot_values = null, $from_pivot_prop = true) {
         $model->{$relation_name}()->detach();
         foreach ($relation_models as $relation_model) {
             $_pivot_values = [];
             if (!is_null($pivot_values)) {
                 foreach ($pivot_values as $pivot_value) {
-                    $_pivot_values[$pivot_value] = Self::getPivotValue($relation_model, $pivot_value);
+                    if ($from_pivot_prop) {
+                        $_pivot_values[$pivot_value] = Self::getPivotValue($relation_model, $pivot_value);
+                    } else {
+                        $_pivot_values[$pivot_value] = $relation_model[$pivot_value];
+                    }
                 }
             }
             $model->{$relation_name}()->attach($relation_model['id'], $_pivot_values);

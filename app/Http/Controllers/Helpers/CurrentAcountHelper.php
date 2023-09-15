@@ -73,13 +73,15 @@ class CurrentAcountHelper {
     static function updateModelSaldo($current_acount, $model_name, $model_id) {
         $model_name = GeneralHelper::getModelName($model_name);
         $model = $model_name::find($model_id);
-        $model->saldo = $current_acount->saldo;
+        $model->saldo = Self::getSaldo($model_name, $model_id);
         $model->save();
     } 
 
-    static function getSaldo($model_name, $model_id, $until_current_acount) {
-        $last = CurrentAcount::orderBy('created_at', 'DESC')
-                                ->where('created_at', '<', $until_current_acount->created_at);
+    static function getSaldo($model_name, $model_id, $until_current_acount = null) {
+        $last = CurrentAcount::orderBy('created_at', 'DESC');
+        if (!is_null($until_current_acount)) {
+            $last = $last->where('created_at', '<', $until_current_acount->created_at);
+        } 
         if ($model_name == 'client') {
             $last = $last->where('client_id', $model_id);
         } else {

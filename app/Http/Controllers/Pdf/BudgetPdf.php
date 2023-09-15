@@ -80,6 +80,7 @@ class BudgetPdf extends fpdf {
 		// $y = 230;
 		// $this->SetLineWidth(.4);
 		$this->observations();
+		$this->discountsSurchages();
 		$this->total();
 		PdfHelper::comerciocityInfo($this, $this->y);
 	}
@@ -220,11 +221,25 @@ class BudgetPdf extends fpdf {
 		return '';
 	}
 
+	function discountsSurchages() {
+		if ($this->with_prices) {
+		    $this->SetFont('Arial', '', 10);
+		    foreach ($this->budget->discounts as $discount) {
+		    	$this->x = 5;
+				$this->Cell(100, 7, '- '.$discount->pivot->percentage.'% '.$discount->name, 0, 1, 'L');
+		    }
+		    foreach ($this->budget->surchages as $surchage) {
+		    	$this->x = 5;
+				$this->Cell(100, 7, '+ '.$surchage->pivot->percentage.'% '.$surchage->name, 0, 1, 'L');
+		    }
+		}
+	}
+
 	function total() {
 		if ($this->with_prices) {
-		    $this->x = 105;
+		    $this->x = 5;
 		    $this->SetFont('Arial', 'B', 14);
-			$this->Cell(100, 10, 'Total: $'. Numbers::price(BudgetHelper::getTotal($this->budget)), 0, 1, 'R');
+			$this->Cell(100, 10, 'Total: $'. Numbers::price(BudgetHelper::getTotal($this->budget)), 0, 1, 'L');
 		}
 	}
 
