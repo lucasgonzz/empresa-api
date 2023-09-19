@@ -71,10 +71,11 @@ class CurrentAcountHelper {
 
 
     static function updateModelSaldo($current_acount, $model_name, $model_id) {
-        $model_name = GeneralHelper::getModelName($model_name);
-        $model = $model_name::find($model_id);
+        $_model_name = GeneralHelper::getModelName($model_name);
+        $model = $_model_name::find($model_id);
         $model->saldo = Self::getSaldo($model_name, $model_id);
         $model->save();
+        Log::info('se seteo saldo de '.$model->name.' a '.$model->saldo);
     } 
 
     static function getSaldo($model_name, $model_id, $until_current_acount = null) {
@@ -89,8 +90,10 @@ class CurrentAcountHelper {
         }
         $last = $last->first();
         if (is_null($last)) {
+            // Log::info('es null el ultimo movimiento y se retorna 0 con model_name = '.$model_name);
             return 0;
         } else {
+            // Log::info('Se retorna el saldo de '.$last->saldo);
             return $last->saldo;
         }
     }
@@ -274,6 +277,7 @@ class CurrentAcountHelper {
             $model->saldo = 0;
         }
         $model->save();
+        Log::info('se actualizo saldo del cliente '.$model->name.' a '.$model->saldo);
     }
 
     static function checkPagos($model_name, $model_id, $si_o_si = false) {

@@ -12,7 +12,7 @@ class Plan extends Model
         return $this->belongsToMany('App\Models\PermissionBeta');
     }
 
-    function features() {
-        return $this->belongsToMany('App\Models\Feature')->withPivot('active');
+    function plan_features() {
+        return $this->belongsToMany('App\Models\PlanFeature')->withPivot('value');
     }
 }

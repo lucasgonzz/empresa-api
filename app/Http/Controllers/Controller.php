@@ -100,6 +100,7 @@ class Controller extends BaseController
             $for_user_id = $this->userId();
         }
         Auth()->user()->notify(new AddedModel($model_name, $model_id, $check_added_by, $for_user_id));
+        Log::info('se mando notificacion a '.$model_name);
     }
 
     function sendDeleteModelNotification($model_name, $model_id, $check_added_by = true, $for_user_id = null) {

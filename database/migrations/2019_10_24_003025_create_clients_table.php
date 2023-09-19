@@ -33,6 +33,7 @@ class CreateClientsTable extends Migration
             $table->integer('user_id')->unsigned();
             $table->bigInteger('seller_id')->nullable()->unsigned();
             $table->boolean('pagos_checkeados')->default(0);
+            $table->string('status')->default('active');
             $table->softDeletes();
 
 

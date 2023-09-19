@@ -211,8 +211,12 @@ class PdfHelper {
 
 	static function comerciocityInfo($instance, $y = 290) {
 	    $instance->y = $y;
+	    $instance->y += 5;
 	    $instance->x = 5;
 	    $instance->SetFont('Arial', '', 8);
+
+        $instance->Image(public_path().'/storage/logo.png', 165, $instance->y - 8, 23, 20);
+
 		$instance->Cell(200, 5, 'Comprobante creado con el sistema de control de stock ComercioCity - comerciocity.com', $instance->b, 0, 'C');
 	}
 

@@ -40,8 +40,9 @@ class UserSeeder extends Seeder
                 'home_position'                 => 1,
                 'download_articles'             => 1,
                 'online'                        => 'https://calzadosmarrox.com.ar',
-                'payment_expired_at'            => Carbon::now()->addDays(4),
+                'payment_expired_at'            => Carbon::now()->addDays(5),
                 'last_user_activity'            => Carbon::now(),
+                'plan_id'                       => 1,
                 'online_configuration'          => [
                     'online_price_type_id'          => 1,
                     'default_article_image_url'     => 'http://empresa.local:8000/storage/168053912176623.webp',
@@ -156,6 +157,7 @@ class UserSeeder extends Seeder
                 'payment_expired_at'            => isset($model['payment_expired_at']) ? $model['payment_expired_at'] : null,  
                 'online'                        => isset($model['online']) ? $model['online'] : null,
                 'home_position'                 => isset($model['home_position']) ? $model['home_position'] : null,
+                'plan_id'                       => isset($model['plan_id']) ? $model['plan_id'] : null,
             ]);
             if (is_null($user->owner_id)) {
 

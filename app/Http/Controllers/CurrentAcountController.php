@@ -64,8 +64,10 @@ class CurrentAcountController extends Controller
         $pago->saldo = CurrentAcountHelper::getSaldo($request->model_name, $request->model_id, $pago) - $request->haber;
         $pago->detalle = 'Pago N°'.$pago->num_receipt;
         $pago->save();
+
         $pago_helper = new CurrentAcountPagoHelper($request->model_name, $request->model_id, $pago);
         $pago_helper->init();
+        
         if (!$request->current_date) {
             CurrentAcountHelper::checkSaldos($request->model_name, $request->model_id);
         } else {
@@ -167,6 +169,7 @@ class CurrentAcountController extends Controller
         $model->pagos_checkeados = 0;
         $model->save();
         CurrentAcountHelper::checkSaldos($model_name, $model_id);
+        $this->sendAddModelNotification($model_name, $model_id);
     }
 
     function pdfFromModel($model_name, $model_id, $months_ago) {

@@ -32,7 +32,8 @@ class DatabaseSeeder extends Seeder
             // $this->call(PermissionsTableSeeder::class);
             $this->call(PermissionSeeder::class);
             // $this->call(FeaturesSeeder::class);
-            // $this->call(PlansSeeder::class);
+            $this->call(PlanFeatureSeeder::class);
+            $this->call(PlanSeeder::class);
             $this->call(OrderStatusSeeder::class);
             $this->call(ProviderOrderStatusSeeder::class);
             $this->call(OnlinePriceTypeSeeder::class);

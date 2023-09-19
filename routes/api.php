@@ -39,6 +39,7 @@ Route::middleware('auth:sanctum')->group(function() {
 
     // ----------------------------------------------------------------------------------------------------
 
+
     Route::get('online-configuration', 'OnlineConfigurationController@index');
     Route::put('online-configuration/{id}', 'OnlineConfigurationController@update');
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
@@ -177,3 +178,8 @@ Route::middleware('auth:sanctum')->group(function() {
 
     Route::resource('payment-method-installment', 'PaymentMethodInstallmentController');
 });
+
+
+// Plans
+Route::get('plan', 'PlanController@index');
+Route::get('plan-feature', 'PlanFeatureController@index');
