@@ -16,6 +16,8 @@ Route::post('/password-reset/update-password',
 	'CommonLaravel\PasswordResetController@updatePassword'
 );
 
+Route::get('/super-budget/{id}', 'SuperBudgetController@pdf');
+
 Route::get('images-beta', 'HelperController@updateBetaImges');
 Route::get('proveedores-eliminados/{company_name}', 'HelperController@reemplazarProveedoresEliminados');
 Route::get('repetidos', 'HelperController@codigosRepetidos');

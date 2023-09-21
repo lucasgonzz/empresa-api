@@ -19,10 +19,10 @@ class PasswordReset extends Mailable
     public function build()
     {
         return $this->subject('Restablecer Contraseña')
-                    ->from(env('MAIL_FROM_ADDRESS'), 'ComercioCity')
+                    ->from('contacto@comerciocity.com', 'comerciocity.com')
                     ->markdown('emails.password-reset', [
                         'code'      => $this->code,
-                        'logo_url'  => 'https://api-beta.comerciocity.com/public/storage/oyzhttl2ru24ppq7mtpr.jpeg',
+                        'logo_url'  => 'https://api.comerciocity.com/public/storage/logo.png',
                     ]);
     }
 }

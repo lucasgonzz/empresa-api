@@ -58,35 +58,50 @@ class NotaCreditoPdf extends fpdf {
 			'title' 			=> 'Nota de Credito',
 			'model_info'		=> $this->model->client,
 			'model_props' 		=> $this->getModelProps(),
-			'fields' 			=> $this->getFields(),
+			// 'fields' 			=> $this->getFields(),
 		];
+		if (count($this->model->articles) >= 1) {
+			$data['fields'] = $this->getFields();
+		}
 		PdfHelper::header($this, $data);
 	}
 
 	function printItems() {
 		$this->x = 5;
 		$this->SetFont('Arial', '', 8);
-		foreach ($this->model->articles as $article) {
-			$this->Cell($this->getFields()['Codigo'], 5, $article->bar_code, $this->b, 0, 'C');
+		if (count($this->model->articles) >= 1) {
+			foreach ($this->model->articles as $article) {
+				$this->Cell($this->getFields()['Codigo'], 5, $article->bar_code, $this->b, 0, 'C');
 
-			$y_1 = $this->y;
-		    $this->MultiCell( 
-				$this->getFields()['Producto'], 
+				$y_1 = $this->y;
+			    $this->MultiCell( 
+					$this->getFields()['Producto'], 
+					5, 
+					$article->name, 
+			    	$this->b, 
+			    	'L', 
+			    	false
+			    );
+			    $y_2 = $this->y;
+			    $this->y = $y_1;
+		    	$this->x = 5 + $this->getFields()['Codigo'] + $this->getFields()['Producto'];
+				$this->Cell($this->getFields()['Precio'], 5, '$'.Numbers::price($article->pivot->price), $this->b, 0, 'C');
+				$this->Cell($this->getFields()['Cant'], 5, $article->pivot->amount, $this->b, 0, 'C');
+				$this->Cell($this->getFields()['Total'], 5, $this->getTotal($article), $this->b, 0, 'C');
+				$this->y = $y_2;
+				$this->x = 5;
+				$this->Line(5, $this->y, 205, $this->y);
+			}
+		} else {
+			$this->SetFont('Arial', '', 12);
+			$this->MultiCell( 
+				200, 
 				5, 
-				$article->name, 
+				$this->model->description, 
 		    	$this->b, 
 		    	'L', 
 		    	false
 		    );
-		    $y_2 = $this->y;
-		    $this->y = $y_1;
-	    	$this->x = 5 + $this->getFields()['Codigo'] + $this->getFields()['Producto'];
-			$this->Cell($this->getFields()['Precio'], 5, '$'.Numbers::price($article->pivot->price), $this->b, 0, 'C');
-			$this->Cell($this->getFields()['Cant'], 5, $article->pivot->amount, $this->b, 0, 'C');
-			$this->Cell($this->getFields()['Total'], 5, $this->getTotal($article), $this->b, 0, 'C');
-			$this->y = $y_2;
-			$this->x = 5;
-			$this->Line(5, $this->y, 205, $this->y);
 		}
 	}
 
@@ -105,7 +120,12 @@ class NotaCreditoPdf extends fpdf {
 				$this->total += $this->total * $surchage->pivot->percentage / 100;
 			}
 		}
-		PdfHelper::total($this, $this->total);
+		if (count($this->model->articles) >= 1) {
+			$total = $this->total;
+		} else {
+			$total = $this->model->haber;
+		}
+		PdfHelper::total($this, $total);
 		PdfHelper::comerciocityInfo($this, $this->y);
 	}
 

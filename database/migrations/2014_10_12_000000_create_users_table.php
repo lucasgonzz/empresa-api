@@ -30,6 +30,7 @@ class CreateUsersTable extends Migration
             $table->integer('plan_id')->unsigned()->nullable();
             $table->integer('percentage_card')->nullable();
             $table->string('dni')->nullable();
+            $table->string('verification_code')->nullable();
             // $table->enum('online_prices', ['all', 'only_registered', 'only_buyers_with_comerciocity_client'])->nullable();
             $table->decimal('dollar', 10,2)->nullable();
             $table->timestamp('expired_at')->nullable();
