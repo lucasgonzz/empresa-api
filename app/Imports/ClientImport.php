@@ -68,21 +68,6 @@ class ClientImport implements ToCollection {
     }
 
     function saveModel($row, $client) {
-        // LocalImportHelper::saveLocation(ImportHelper::getColumnValue($row, 'localidad', $this->columns), $this->ct);
-        // LocalImportHelper::savePriceType(ImportHelper::getColumnValue($row, 'tipo_de_precio', $this->columns), $this->ct);
-        // $data = [
-        //     'name'              => ImportHelper::getColumnValue($row, 'nombre', $this->columns),
-        //     'phone'             => ImportHelper::getColumnValue($row, 'telefono', $this->columns),
-        //     'address'           => ImportHelper::getColumnValue($row, 'direccion', $this->columns),
-        //     'location_id'       => $this->ct->getModelBy('locations', 'name', ImportHelper::getColumnValue($row, 'localidad', $this->columns), true, 'id'),
-        //     'email'             => ImportHelper::getColumnValue($row, 'email', $this->columns),
-        //     'iva_condition_id'  => $this->ct->getModelBy('iva_conditions', 'name', ImportHelper::getColumnValue($row, 'condicion_frente_al_iva', $this->columns), false, 'id'),
-        //     'razon_social'      => ImportHelper::getColumnValue($row, 'razon_social', $this->columns),
-        //     'cuit'              => ImportHelper::getColumnValue($row, 'cuit', $this->columns),
-        //     'description'       => ImportHelper::getColumnValue($row, 'descripcion', $this->columns),
-        //     'price_type_id'     => $this->ct->getModelBy('price_types', 'name', ImportHelper::getColumnValue($row, 'tipo_de_precio', $this->columns), true, 'id'),
-        // ];
-
         $data = [];
         foreach ($this->props_to_set as $key => $value) {
             if (!ImportHelper::isIgnoredColumn($value, $this->columns)) {
@@ -104,14 +89,16 @@ class ClientImport implements ToCollection {
             LocalImportHelper::savePriceType(ImportHelper::getColumnValue($row, 'tipo_de_precio', $this->columns), $this->ct);
             $data['price_type_id'] = $this->ct->getModelBy('price_types', 'name', ImportHelper::getColumnValue($row, 'tipo_de_precio', $this->columns), true, 'id');
         }
-        Log::info('data');
-        Log::info($data);
+        // Log::info('data');
+        // Log::info($data);
         if (!is_null($client) && $this->isDataUpdated($client, $data)) {
             Log::info('actualizando cliente '.$client->name);
             $client->update($data);
         } else if (is_null($client) && $this->create_and_edit) {
-            if (isset($row['numero']) && $row['numero'] != '') {
-                $data['num'] = $row['numero'];
+            if (!is_null(ImportHelper::getColumnValue($row, 'numero', $this->columns))) {
+                $data['num'] = ImportHelper::getColumnValue($row, 'numero', $this->columns);
+                Log::info('saco num del excel, data:');
+                Log::info($data);
             } else {
                 $data['num'] = $this->ct->num('clients');
             }
@@ -120,25 +107,7 @@ class ClientImport implements ToCollection {
             $client = Client::create($data);
             Log::info('creando cliente '.$client->name);
         }
-        if (!is_null(ImportHelper::getColumnValue($row, 'saldo_actual', $this->columns))) {
-            $current_acounts = CurrentAcount::where('client_id', $client->id)
-                                            ->get();
-            if (count($current_acounts) == 0) {
-                $is_for_debe = false;
-                $saldo_inicial = (float)ImportHelper::getColumnValue($row, 'saldo_actual', $this->columns);
-                if ($saldo_inicial >= 0) {
-                    $is_for_debe = true;
-                }
-                $current_acount = CurrentAcount::create([
-                    'detalle'   => 'Saldo inicial',
-                    'status'    => $is_for_debe ? 'sin_pagar' : 'pago_from_client',
-                    'client_id' => $client->id,
-                    'debe'      => $is_for_debe ? $saldo_inicial : null,
-                    'haber'     => !$is_for_debe ? $saldo_inicial : null,
-                    'saldo'     => $saldo_inicial,
-                ]);
-            }
-        }
+        LocalImportHelper::setSaldoInicial($row, $this->columns, 'client', $client);
     }
 
     function isDataUpdated($client, $data) {

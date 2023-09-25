@@ -1,12 +1,37 @@
 <?php
 
 namespace App\Http\Controllers\Helpers;
+use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Category;
+use App\Models\CurrentAcount;
 use App\Models\Iva;
 use App\Models\SubCategory;
 
 class LocalImportHelper {
+
+	static function setSaldoInicial($row, $columns, $model_name, $model) {
+        if (!is_null(ImportHelper::getColumnValue($row, 'saldo_actual', $columns))) {
+            $current_acounts = CurrentAcount::where($model_name.'_id', $model->id)
+                                            ->get();
+            if (count($current_acounts) == 0) {
+                $is_for_debe = false;
+                $saldo_inicial = (float)ImportHelper::getColumnValue($row, 'saldo_actual', $columns);
+                if ($saldo_inicial >= 0) {
+                    $is_for_debe = true;
+                }
+                $current_acount = CurrentAcount::create([
+                    'detalle'   => 'Saldo inicial',
+                    'status'    => $is_for_debe ? 'sin_pagar' : 'pago_from_client',
+                    'client_id' => $model_name == 'client' ? $model->id : null,
+                    'provider_id' => $model_name == 'provider' ? $model->id : null,
+                    'debe'      => $is_for_debe ? $saldo_inicial : null,
+                    'haber'     => !$is_for_debe ? $saldo_inicial : null,
+                    'saldo'     => $saldo_inicial,
+                ]);
+            }
+        }
+	}
 
 	static function getCategoryId($categoria, $ct) {
 		if ($categoria != '') {

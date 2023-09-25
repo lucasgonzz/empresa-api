@@ -18,6 +18,7 @@ Route::post('/password-reset/update-password',
 
 Route::get('/super-budget/{id}', 'SuperBudgetController@pdf');
 
+Route::get('buyers-sin-vincular/{company_name}', 'HelperController@getBuyerSinVincular');
 Route::get('images-beta', 'HelperController@updateBetaImges');
 Route::get('proveedores-eliminados/{company_name}', 'HelperController@reemplazarProveedoresEliminados');
 Route::get('repetidos', 'HelperController@codigosRepetidos');
@@ -72,6 +73,7 @@ Route::get('order/pdf/{id}/', 'OrderController@pdf');
 // Excel
 Route::get('article/excel/export', 'ArticleController@export');
 Route::get('client/excel/export', 'ClientController@export');
+Route::get('provider/excel/export', 'ProviderController@export');
 
 // Registrar Pago de usuario
 Route::get('user/register-payment/{company_name}', 'CommonLaravel\UserController@registerPayment');

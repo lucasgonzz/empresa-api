@@ -25,7 +25,7 @@ class CreateCartsTable extends Migration
             $table->text('description')->nullable();
             $table->integer('cupon_id')->unsigned()->nullable();
             $table->integer('order_id')->unsigned()->nullable();
-            $table->integer('buyer_id')->unsigned();
+            $table->integer('buyer_id')->unsigned()->nullable();
             $table->integer('user_id')->unsigned();
 
             $table->timestamps();

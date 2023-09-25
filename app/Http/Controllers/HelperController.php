@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\RecalculateCurrentAcountsHelper;
 use App\Models\Article;
 use App\Models\Budget;
+use App\Models\Buyer;
 use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\Image;
@@ -22,6 +23,18 @@ use Illuminate\Support\Facades\Storage;
 
 class HelperController extends Controller
 {
+
+    function getBuyerSinVincular($company_name) {
+        $user = User::where('company_name', $company_name)
+                        ->first();
+
+        $buyers = Buyer::where('user_id', $user->id)
+                        ->whereNull('comercio_city_client_id')
+                        ->get();
+        foreach ($buyers as $buyer) {
+            echo $buyer->name.' N°'.$buyer->num.' </br>';
+        }
+    }
 
     function updateBetaImges() {
         $images = Image::where('hosting_url', 'LIKE', '%api-beta.comerciocity%')

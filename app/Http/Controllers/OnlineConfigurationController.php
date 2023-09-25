@@ -19,7 +19,8 @@ class OnlineConfigurationController extends Controller
 
     public function update(Request $request, $id) {
         $model = OnlineConfiguration::find($id);
-        $model->pausar_tienda_online            = $request->pausar_tienda_online;                     
+        $model->pausar_tienda_online            = $request->pausar_tienda_online;    
+        $model->register_to_buy                 = $request->register_to_buy;    
         $model->online_price_type_id            = $request->online_price_type_id;                     
         $model->online_price_surchage           = $request->online_price_surchage;                      
         $model->instagram                       = $request->instagram;                     

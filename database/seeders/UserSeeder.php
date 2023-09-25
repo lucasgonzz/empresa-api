@@ -45,6 +45,7 @@ class UserSeeder extends Seeder
                 'plan_id'                       => 1,
                 'online_configuration'          => [
                     'online_price_type_id'          => 1,
+                    'register_to_buy'               => 0,
                     'default_article_image_url'     => 'http://empresa.local:8000/storage/168053912176623.webp',
                     'quienes_somos'                 => 
                     'Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!
@@ -211,14 +212,14 @@ class UserSeeder extends Seeder
             'type'                          => 'provider',
             'password'                      => bcrypt('1234'),
             'percentage_card'               => 0,
-            'has_delivery'                  => 1,
+            // 'has_delivery'                  => 1,
             'dollar'                        => 200,
             'doc_number'                    => '21491373',
             // 'delivery_price'                => 70,
-            'online_prices'                 => 'all',
+            // 'online_prices'                 => 'all',
             // 'online'                        => 'http://kioscoverde.local:8080',
-            'order_description'             => 'Observaciones',
-            'show_articles_without_images'  => 1,
+            // 'order_description'             => 'Observaciones',
+            // 'show_articles_without_images'  => 1,
             // 'default_article_image_url'     => 'http://miregistrodeventas.local:8001/storage/ajx4wszusy7hp2vditgb.webp',
             'created_at'                    => Carbon::now()->subMonths(2),
         ]);
@@ -233,7 +234,7 @@ class UserSeeder extends Seeder
             'user_id'       => $commerce->id,
         ]);
 
-        $commerce->extencions()->attach([1, 2, 3, 4, 7, 8, 9]);
+        $commerce->extencions()->attach([1, 2, 4, 5, 7, 8, 9]);
         UserConfiguration::create([
             'current_acount_pagado_details'         => 'Recibo de pago (saldado)',
             'current_acount_pagandose_details'      => 'Recibo de pago',

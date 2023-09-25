@@ -56,9 +56,9 @@ class ClientExport implements FromCollection, WithHeadings, WithMapping
     */
     public function collection()
     {
-        $mdoels = Client::where('user_id', UserHelper::userId())
+        $models = Client::where('user_id', UserHelper::userId())
                         ->orderBy('created_at', 'DESC')
                         ->get();
-        return $mdoels;
+        return $models;
     }
 }

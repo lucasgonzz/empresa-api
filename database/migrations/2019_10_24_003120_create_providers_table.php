@@ -24,8 +24,8 @@ class CreateProvidersTable extends Migration
             $table->string('razon_social', 128)->nullable();
             $table->string('cuit', 128)->nullable();
             $table->text('observations')->nullable();
-            $table->integer('location_id')->unsigned()->default(0);
-            $table->integer('iva_condition_id')->unsigned()->default(0);
+            $table->integer('location_id')->unsigned()->default(0)->nullable();
+            $table->integer('iva_condition_id')->unsigned()->default(0)->nullable();
             $table->decimal('percentage_gain', 8,2)->nullable();
             $table->decimal('dolar', 14,2)->nullable();
             $table->decimal('saldo', 12,2)->nullable();

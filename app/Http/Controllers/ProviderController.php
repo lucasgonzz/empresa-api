@@ -2,10 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Exports\ProviderExport;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Imports\ProviderImport;
 use App\Models\Provider;
 use Illuminate\Http\Request;
+use Maatwebsite\Excel\Facades\Excel;
+use Carbon\Carbon;
 
 class ProviderController extends Controller
 {
@@ -73,5 +77,15 @@ class ProviderController extends Controller
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('Provider', $model->id);
         return response(null);
+    }
+
+    function import(Request $request) {
+        $columns = GeneralHelper::getImportColumns($request);
+        Excel::import(new ProviderImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id), $request->file('models'));
+        $this->sendUpdateModelsNotification('provider');
+    }
+
+    function export() {
+        return Excel::download(new ProviderExport, 'comerciocity-proveedores '.date_format(Carbon::now(), 'd-m-y H:m').'.xlsx');
     }
 }

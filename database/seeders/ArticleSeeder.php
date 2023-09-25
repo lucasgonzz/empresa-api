@@ -228,7 +228,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'rasti.jpg',
+                        'url'       => 'cartera.webp',
                     ],
                     [
                         'url'       => 'rasti.jpg',

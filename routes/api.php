@@ -67,6 +67,8 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::resource('condition', 'ConditionController');
     Route::resource('iva', 'IvaController');
     Route::resource('provider', 'ProviderController');
+    Route::post('/provider/excel/import', 'ProviderController@import');
+
     Route::resource('provider-price-list', 'ProviderPriceListController');
     Route::resource('sub-category', 'SubCategoryController');
     Route::resource('iva-condition', 'IvaConditionController');
