@@ -39,13 +39,14 @@ class UserSeeder extends Seeder
                 'dollar'                        => 300,
                 'home_position'                 => 1,
                 'download_articles'             => 1,
-                'online'                        => 'https://calzadosmarrox.com.ar',
+                'online'                        => 'http://tienda.local:8081',
                 'payment_expired_at'            => Carbon::now()->addDays(5),
                 'last_user_activity'            => Carbon::now(),
                 'plan_id'                       => 1,
                 'online_configuration'          => [
                     'online_price_type_id'          => 1,
-                    'register_to_buy'               => 0,
+                    'register_to_buy'               => 1,
+                    'scroll_infinito_en_home'       => 1,
                     'default_article_image_url'     => 'http://empresa.local:8000/storage/168053912176623.webp',
                     'quienes_somos'                 => 
                     'Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!

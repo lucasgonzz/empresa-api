@@ -16,8 +16,9 @@ Route::post('/password-reset/update-password',
 	'CommonLaravel\PasswordResetController@updatePassword'
 );
 
-Route::get('/super-budget/{id}', 'SuperBudgetController@pdf');
+Route::get('/super-budget', 'SuperBudgetController@pdf');
 
+Route::get('imagenes-a-jpg/{company_name}', 'HelperController@imagesWebpToJpg');
 Route::get('buyers-sin-vincular/{company_name}', 'HelperController@getBuyerSinVincular');
 Route::get('images-beta', 'HelperController@updateBetaImges');
 Route::get('proveedores-eliminados/{company_name}', 'HelperController@reemplazarProveedoresEliminados');
@@ -59,6 +60,7 @@ Route::get('sale/afip-ticket-pdf/{id}', 'SaleController@afipTicketPdf');
 Route::get('sale/delivered-articles-pdf/{id}', 'SaleController@deliveredArticlesPdf');
 
 // Article
+Route::get('article/pdf/{ids}', 'ArticleController@pdf');
 Route::get('article/tickets-pdf/{ids}', 'ArticleController@ticketsPdf');
 
 Route::get('budget/pdf/{id}/{with_prices}', 'BudgetController@pdf');

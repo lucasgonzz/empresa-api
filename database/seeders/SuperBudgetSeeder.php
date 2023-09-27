@@ -18,7 +18,7 @@ class SuperBudgetSeeder extends Seeder
      */
     public function run()
     {
-        require(database_path().'\super-budgets\angelo_mapa_de_mesas.php');
+        require(database_path().'\super-budgets\fede_articulos_pdf.php');
         $_model = SuperBudget::create([
             'client'            => $model['client'],
             'offer_validity'    => $model['offer_validity'],

@@ -56,7 +56,7 @@ class ArticleSeeder extends Seeder
                 'featured'          => 1,
                 'images'            => [
                     [
-                        'url'       => 'rasti.jpg',
+                        'url'       => 'webp.webp',
                     ],
                     [
                         'url'       => 'rasti.jpg',
@@ -258,7 +258,7 @@ class ArticleSeeder extends Seeder
                 'iva_id'            => 6,
                 'images'            => [
                     [
-                        'url'       => 'rasti.jpg',
+                        'url'       => 'webp.webp',
                     ],
                     [
                         'url'       => 'rasti.jpg',

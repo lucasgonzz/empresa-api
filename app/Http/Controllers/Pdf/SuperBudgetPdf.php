@@ -95,8 +95,8 @@ class SuperBudgetPdf extends fpdf {
 			$line_height = 10;
 			$this->SetFont('Arial', '', 16);
 			$this->x = 10;
-			$this->Cell(190, $line_height, $feature->title, $this->b, 0, 'L');
-			$this->y += $line_height;
+			$this->MultiCell(190, 7, $feature->title, $this->b, 'L', false);
+			// $this->y += $line_height;
 
 			// DESCRIPCION
 			$line_height = 5;

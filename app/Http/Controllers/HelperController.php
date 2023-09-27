@@ -24,6 +24,27 @@ use Illuminate\Support\Facades\Storage;
 class HelperController extends Controller
 {
 
+    function imagesWebpToJpg($company_name) {
+        $user = User::where('company_name', $company_name)
+                        ->first();
+
+        $articles = Article::where('user_id', $user->id)
+                            ->get();
+        foreach ($articles as $article) {
+            foreach ($article->images as $image) {
+                $array = explode('/', $image->hosting_url); 
+                $name = $array[count($array)-1];
+                $name = explode('.', $name)[0];
+                
+                Log::info('image name: '.$name);
+
+                $img = imagecreatefromwebp($image->hosting_url);
+                
+                imagejpeg($img, storage_path().'/app/public/'.$name.'.jpg', 100);
+            }
+        }
+    }
+
     function getBuyerSinVincular($company_name) {
         $user = User::where('company_name', $company_name)
                         ->first();

@@ -29,6 +29,7 @@ class CreateOnlineConfigurationsTable extends Migration
             $table->text('online_description')->nullable();
             $table->boolean('has_delivery')->default(1)->nullable();
             $table->boolean('register_to_buy')->default(1)->nullable();
+            $table->boolean('scroll_infinito_en_home')->default(1)->nullable();
             $table->string('order_description')->nullable();
             $table->integer('user_id');
             $table->timestamps();

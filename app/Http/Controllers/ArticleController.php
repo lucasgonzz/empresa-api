@@ -7,6 +7,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
+use App\Http\Controllers\Pdf\ArticlePdf;
 use App\Http\Controllers\Pdf\ArticleTicketPdf;
 use App\Imports\ArticleImport;
 use App\Imports\LocationImport;
@@ -235,5 +236,9 @@ class ArticleController extends Controller
 
     function ticketsPdf($ids) {
         new ArticleTicketPdf($ids);
+    }
+
+    function pdf($ids) {
+        new ArticlePdf($ids);
     }
 }
