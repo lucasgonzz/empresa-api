@@ -28,9 +28,11 @@ class CreateUsersTable extends Migration
             $table->string('prev_password', 128)->nullable();
             $table->integer('owner_id')->nullable()->unsigned();
             $table->integer('plan_id')->unsigned()->nullable();
+            $table->decimal('plan_discount', 8,2)->unsigned()->nullable();
             $table->integer('percentage_card')->nullable();
             $table->string('dni')->nullable();
             $table->string('verification_code')->nullable();
+            $table->integer('admin_access')->default(0)->nullable();
             // $table->enum('online_prices', ['all', 'only_registered', 'only_buyers_with_comerciocity_client'])->nullable();
             $table->decimal('dollar', 10,2)->nullable();
             $table->timestamp('expired_at')->nullable();

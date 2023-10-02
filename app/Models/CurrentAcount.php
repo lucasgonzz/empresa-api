@@ -32,6 +32,10 @@ class CurrentAcount extends Model
         return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'price');
     }
 
+    public function services() {
+        return $this->belongsToMany('App\Models\Service')->withPivot('amount', 'price');
+    }
+
     public function budget() {
         return $this->belongsTo('App\Models\Budget');
     }

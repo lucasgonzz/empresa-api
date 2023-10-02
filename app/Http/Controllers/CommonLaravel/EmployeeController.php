@@ -27,6 +27,7 @@ class EmployeeController extends Controller
         $model->permissions()->sync($request->permissions_id);
         $model->name                = $request->name;
         $model->visible_password    = $request->visible_password;
+        $model->admin_access        = $request->admin_access;
         $model->password            = bcrypt($request->visible_password);
         if ($model->doc_number == $request->doc_number || !$this->docNumerRegister($request->doc_number)) {
             $model->doc_number          = $request->doc_number;

@@ -98,7 +98,7 @@ class CurrentAcountHelper {
         }
     }
 
-    static function notaCredito($haber, $description, $model_name, $model_id, $sale_id = null, $articles = null) {
+    static function notaCredito($haber, $description, $model_name, $model_id, $sale_id = null, $items = null) {
         $nota_credito = CurrentAcount::create([
             'description'   => $description,
             'haber'         => $haber,
@@ -112,7 +112,8 @@ class CurrentAcountHelper {
         $nota_credito->saldo = Self::getSaldo($model_name, $model_id, $nota_credito) - $haber;
         $nota_credito->detalle = 'Nota Credito N°'.$nota_credito->num_receipt;
         $nota_credito->save();
-        Self::attachNotaCreditoArticles($nota_credito, $articles);
+        Self::attachNotaCreditoArticles($nota_credito, $items);
+        Self::attachNotaCreditoServices($nota_credito, $items);
         Self::updateModelSaldo($nota_credito, $model_name, $model_id);
 
         $pago_helper = new CurrentAcountPagoHelper($model_name, $model_id, $nota_credito);
@@ -120,16 +121,31 @@ class CurrentAcountHelper {
         return $nota_credito;
     }
 
-    static function attachNotaCreditoArticles($nota_credito, $articles) {
-        if (!is_null($articles)) {
-            Log::info('attachNotaCreditoArticles articles:');
-            Log::info($articles);
+    static function attachNotaCreditoArticles($nota_credito, $items) {
+        if (!is_null($items)) {
             $nota_credito->articles()->detach();
-            foreach ($articles as $article) {
-                $nota_credito->articles()->attach($article['id'], [
-                                                    'amount' => $article['returned_amount'],
-                                                    'price'  => $article['price_vender'],
-                                                ]);
+            foreach ($items as $item) {
+                if (isset($item['is_article'])) {
+                    $nota_credito->articles()->attach($item['id'], [
+                                                        'amount' => $item['returned_amount'],
+                                                        'price'  => $item['price_vender'],
+                                                    ]);
+                }
+            }
+        }
+    }
+
+    static function attachNotaCreditoServices($nota_credito, $items) {
+        if (!is_null($items)) {
+            $nota_credito->services()->detach();
+            foreach ($items as $item) {
+                if (isset($item['is_service'])) {
+                    Log::info('attach service '.$item['id']);
+                    $nota_credito->services()->attach($item['id'], [
+                                                        'amount' => $item['returned_amount'],
+                                                        'price'  => $item['price_vender'],
+                                                    ]);
+                }
             }
         }
     }

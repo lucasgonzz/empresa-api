@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class CreateSaleServiceTable extends Migration
+class CreateCurrentAcountServiceTable extends Migration
 {
     /**
      * Run the migrations.
@@ -13,15 +13,13 @@ class CreateSaleServiceTable extends Migration
      */
     public function up()
     {
-        Schema::create('sale_service', function (Blueprint $table) {
+        Schema::create('current_acount_service', function (Blueprint $table) {
             $table->id();
-            $table->integer('sale_id')->unsigned();
             $table->integer('service_id')->unsigned();
-            $table->decimal('price', 12,2);
-            $table->integer('amount');
-            $table->integer('returned_amount')->nullable();
-            $table->decimal('discount', 8,2)->nullable();
-            // $table->timestamps();
+            $table->integer('current_acount_id')->unsigned();
+            $table->decimal('amount', 12,2)->nullable();
+            $table->decimal('price', 12,2)->nullable();
+            $table->timestamps();
         });
     }
 
@@ -32,6 +30,6 @@ class CreateSaleServiceTable extends Migration
      */
     public function down()
     {
-        Schema::dropIfExists('sale_service');
+        Schema::dropIfExists('current_acount_service');
     }
 }

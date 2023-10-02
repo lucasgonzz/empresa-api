@@ -78,7 +78,7 @@ class Sale extends Model
     }
 
     public function services() {
-        return $this->belongsToMany('App\Models\Service')->withPivot('discount', 'amount', 'price');
+        return $this->belongsToMany('App\Models\Service')->withPivot('discount', 'amount', 'price', 'returned_amount');
     }
 
     public function client() {

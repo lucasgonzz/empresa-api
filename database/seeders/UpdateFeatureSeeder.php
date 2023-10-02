@@ -16,12 +16,16 @@ class UpdateFeatureSeeder extends Seeder
     {
         $models = [
             [
-                'name' => 'Ver las ventas de un articulo',
-                'description' => 'Se agrego la funcionalidad para que se puedan ver las ventas hechas de un articulo, no como estadisticas, sino para explicitamente ver las ventas en las que participo el articulo y poder consultarlas desde ahi mismo. Esta funcionalidad esta disponible desde LISTADO, boton azul VENTAS (este boton esta en cada articulo).',
+                'name' => 'Ya viste el panel de ESTADISTICAS',
+                'description' => 'Desde la seccion de CAJA, vas a poder ver las estadisticas de los articulos mas vendidos, asi como de las categorias y sub categorias mas vendidas, dentro del rango de fecha que selecciones (por defecto es desde principos de mes hasta la fecha actual). Tambien podes ver las estadisticas de las ventas de un articulo en especifico desde la seccion del listado, con los botones que estan al final a la derecha en cada fila de la tabla.',
             ],
             [
-                'name' => 'Correccion Nota de Credito',
-                'description' => 'Cuando se haga una nota de credito inficando las unidades devueltas, se tendra en cuenta el descuento del articulo, si es que lo tiene, para calcular el total de la nota de credito.',
+                'name' => 'Generar documentos PDF con los articulos que necesites',
+                'description' => 'Cuando hagas una busqueda o actives la seleccion multiple en el LISTADO, vas a tener la opcion de generar un PDF con los articulos involucrados, donde se mostraran la image, nombre y precio de los articulos, para que puedas enviar el documento a tus clientes o le del el uso que creas conveniente.',
+            ],
+            [
+                'name' => 'Asignar permisos de ADMINISTRADOR a los empleados',
+                'description' => 'Ahora podes asignar el rol de administrador a tus empleados, para que tengan el mismo acceso a todo el sistema que el duño de la empresa.',
             ],
         ];
         foreach ($models as $model) {

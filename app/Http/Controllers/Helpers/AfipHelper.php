@@ -130,17 +130,28 @@ class AfipHelper extends Controller {
             $price -= $price * $discount->pivot->percentage / 100;
             Log::info('quedo en '.$price);
         }
+        foreach ($this->sale->surchages as $surchage) {
+            Log::info('aumentando recargo de venta de '.$surchage->pivot->percentage.' a '.$price);
+            $price += $price * $surchage->pivot->percentage / 100;
+            Log::info('quedo en '.$price);
+        }
         return $price;
     }
 
-    function getArticlePrice($article) {
+    function getArticlePrice($sale, $article) {
         $this->article = $article;
         $price = $this->article->pivot->price;
         if ($this->isBoletaA()) {
             if (!is_null($article->iva) && $article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento' && $article->iva->percentage != 0) {
-                return $this->getPriceWithoutIva(false);
+                return $this->getPriceWithoutIva();
             } 
         } 
+        foreach ($sale->discounts as $discount) {
+            $price -= $price * $discount->pivot->percentage / 100;
+        }
+        foreach ($sale->surchages as $surchage) {
+            $price += $price * $surchage->pivot->percentage / 100;
+        }
         return $price;
     }
 
@@ -168,7 +179,7 @@ class AfipHelper extends Controller {
 
     function getImporteGravado() {
         if (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0) {
-            return $this->getPriceWithoutIva($this->article) * $this->article->pivot->amount;
+            return $this->getPriceWithoutIva() * $this->article->pivot->amount;
         }
         return 0;
     }

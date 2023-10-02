@@ -18,6 +18,8 @@ class CreatePlansTable extends Migration
             $table->string('name');
             // $table->string('preapproval_plan_id', 128)->nullable();
             $table->double('price', 6,2);
+            $table->double('user_price', 6,2);
+            $table->double('e_commerce', 6,2);
             $table->boolean('official')->default(1);
             // $table->text('modules');
             $table->timestamps();

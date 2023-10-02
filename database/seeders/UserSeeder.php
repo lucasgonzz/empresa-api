@@ -40,9 +40,10 @@ class UserSeeder extends Seeder
                 'home_position'                 => 1,
                 'download_articles'             => 1,
                 'online'                        => 'http://tienda.local:8081',
-                'payment_expired_at'            => Carbon::now()->addDays(5),
+                'payment_expired_at'            => Carbon::now()->addDays(1),
                 'last_user_activity'            => Carbon::now(),
-                'plan_id'                       => 1,
+                'plan_id'                       => 4,
+                'plan_discount'                 => 27,
                 'online_configuration'          => [
                     'online_price_type_id'          => 1,
                     'register_to_buy'               => 1,
@@ -118,6 +119,7 @@ class UserSeeder extends Seeder
                 'password'          => bcrypt('1'),
                 'visible_password'  => '1',
                 'owner_id'          => 1,
+                'admin_access'      => 1,
                 'image_url'         => null,
                 'permissions_slug'    => [
                     'article.index',
@@ -156,10 +158,12 @@ class UserSeeder extends Seeder
                 'image_url'                     => $model['image_url'],  
                 'visible_password'              => $model['visible_password'],  
                 'owner_id'                      => isset($model['owner_id']) ? $model['owner_id'] : null,  
+                'admin_access'                      => isset($model['admin_access']) ? $model['admin_access'] : null,  
                 'payment_expired_at'            => isset($model['payment_expired_at']) ? $model['payment_expired_at'] : null,  
                 'online'                        => isset($model['online']) ? $model['online'] : null,
                 'home_position'                 => isset($model['home_position']) ? $model['home_position'] : null,
                 'plan_id'                       => isset($model['plan_id']) ? $model['plan_id'] : null,
+                'plan_discount'                 => isset($model['plan_discount']) ? $model['plan_discount'] : null,
             ]);
             if (is_null($user->owner_id)) {
 

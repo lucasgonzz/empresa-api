@@ -27,7 +27,7 @@ class NotaCreditoPdf extends fpdf {
 	function getFields() {
 		return [
 			'Codigo' 	=> 40,
-			'Producto' 	=> 90,
+			'Producto/Servicio' 	=> 90,
 			'Precio' 	=> 20,
 			'Cant' 		=> 20,
 			'Total' 	=> 30,
@@ -69,13 +69,13 @@ class NotaCreditoPdf extends fpdf {
 	function printItems() {
 		$this->x = 5;
 		$this->SetFont('Arial', '', 8);
-		if (count($this->model->articles) >= 1) {
+		if (count($this->model->articles) >= 1 || count($this->model->services) >= 1) {
 			foreach ($this->model->articles as $article) {
 				$this->Cell($this->getFields()['Codigo'], 5, $article->bar_code, $this->b, 0, 'C');
 
 				$y_1 = $this->y;
 			    $this->MultiCell( 
-					$this->getFields()['Producto'], 
+					$this->getFields()['Producto/Servicio'], 
 					5, 
 					$article->name, 
 			    	$this->b, 
@@ -84,10 +84,32 @@ class NotaCreditoPdf extends fpdf {
 			    );
 			    $y_2 = $this->y;
 			    $this->y = $y_1;
-		    	$this->x = 5 + $this->getFields()['Codigo'] + $this->getFields()['Producto'];
+		    	$this->x = 5 + $this->getFields()['Codigo'] + $this->getFields()['Producto/Servicio'];
 				$this->Cell($this->getFields()['Precio'], 5, '$'.Numbers::price($article->pivot->price), $this->b, 0, 'C');
 				$this->Cell($this->getFields()['Cant'], 5, $article->pivot->amount, $this->b, 0, 'C');
 				$this->Cell($this->getFields()['Total'], 5, $this->getTotal($article), $this->b, 0, 'C');
+				$this->y = $y_2;
+				$this->x = 5;
+				$this->Line(5, $this->y, 205, $this->y);
+			}
+			foreach ($this->model->services as $service) {
+				// $this->Cell($this->getFields()['Codigo'], 5, $service->bar_code, $this->b, 0, 'C');
+				$this->x += $this->getFields()['Codigo'];
+				$y_1 = $this->y;
+			    $this->MultiCell( 
+					$this->getFields()['Producto/Servicio'], 
+					5, 
+					$service->name, 
+			    	$this->b, 
+			    	'L', 
+			    	false
+			    );
+			    $y_2 = $this->y;
+			    $this->y = $y_1;
+		    	$this->x = 5 + $this->getFields()['Codigo'] + $this->getFields()['Producto/Servicio'];
+				$this->Cell($this->getFields()['Precio'], 5, '$'.Numbers::price($service->pivot->price), $this->b, 0, 'C');
+				$this->Cell($this->getFields()['Cant'], 5, $service->pivot->amount, $this->b, 0, 'C');
+				$this->Cell($this->getFields()['Total'], 5, $this->getTotal($service), $this->b, 0, 'C');
 				$this->y = $y_2;
 				$this->x = 5;
 				$this->Line(5, $this->y, 205, $this->y);

@@ -110,12 +110,11 @@ class SaleHelper extends Controller {
     static function checkNotaCredito($sale, $request) {
         if ($request->save_nota_credito) {
             $haber = 0;
-            foreach ($request->returned_articles as $article) {
-                $total_item = (float)$article['price_vender'] * (float)$article['returned_amount'];
-                if (!is_null($article['discount']) && $article['discount'] != 0) {
-                    $total_item -= $total_item * $article['discount'] / 100;
+            foreach ($request->returned_items as $item) {
+                $total_item = (float)$item['price_vender'] * (float)$item['returned_amount'];
+                if (!is_null($item['discount']) && $item['discount'] != 0) {
+                    $total_item -= $total_item * $item['discount'] / 100;
                 }
-                Log::info('se agrego a la nota de credito '.$article['returned_amount'].' unidades de '.$article['name']);
                 $haber += $total_item;
             }
             Log::info('El total quedo en '.$haber);
@@ -129,7 +128,7 @@ class SaleHelper extends Controller {
                     $haber += (float)$surchage->pivot->percentage * $haber / 100;
                 }
             }
-            $nota_credito = CurrentAcountHelper::notaCredito($haber, $request->nota_credito_description, 'client', $request->client_id, $sale->id, $request->returned_articles);
+            $nota_credito = CurrentAcountHelper::notaCredito($haber, $request->nota_credito_description, 'client', $request->client_id, $sale->id, $request->returned_items);
             CurrentAcountHelper::checkSaldos('client', $request->client_id);
 
             $ct = new Controller();
@@ -255,6 +254,7 @@ class SaleHelper extends Controller {
                 $sale->services()->attach($service['id'], [
                     'price' => $service['price_vender'],
                     'amount' => $service['amount'],
+                    'returned_amount'   => Self::getReturnedAmount($service),
                     'discount' => Self::getDiscount($service),
                 ]);
             }

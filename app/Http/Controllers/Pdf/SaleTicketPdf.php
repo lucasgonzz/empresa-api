@@ -44,9 +44,12 @@ class SaleTicketPdf extends fpdf {
 			$this->Cell($this->cell_ancho, 5, 'IVA: '.$this->user->afip_information->iva_condition->name, $this->b, 1, 'L');
 			$this->x = 2;
 			$this->Cell($this->cell_ancho, 5, 'Cuit: '.$this->user->afip_information->cuit, $this->b, 1, 'L');
-			$this->x = 2;
+			
 			$this->SetFont('Arial', 'B', 8);
+			$this->x = 2;
 			$this->Cell($this->cell_ancho, 5, 'Punto de venta: '.$this->sale->afip_information->punto_venta, $this->b, 1, 'L');
+			$this->x = 2;
+			$this->Cell($this->cell_ancho, 5, 'Tipo comprobante: '.$this->sale->afip_ticket->cbte_letra, $this->b, 1, 'L');
 			$this->x = 2;
 			$this->Cell($this->cell_ancho, 5, 'CAE: '.$this->sale->afip_ticket->cae, $this->b, 1, 'L');
 			$this->x = 2;
@@ -129,11 +132,22 @@ class SaleTicketPdf extends fpdf {
 			$this->y = $y_1;
 
 			$this->SetFont('Arial', 'B', 9);
-			$this->Cell($ancho_price, $y_2 - $y_1, '$'.Numbers::Price($article->pivot->price * $article->pivot->amount), 'TRB', 0, 'R');
+			$this->Cell($ancho_price, $y_2 - $y_1, $this->totalItem($article), 'TRB', 0, 'R');
 			
 			$this->x = 2;
 			$this->y = $y_2;
 		}
+	}
+
+	function totalItem($item) {
+		$total = $item->pivot->price * $item->pivot->amount;
+		foreach ($this->sale->discounts as $discount) {
+			$total -= $total * $discount->pivot->percentage / 100; 
+		}
+		foreach ($this->sale->surchages as $surchage) {
+			$total += $total * $surchage->pivot->percentage / 100; 
+		}
+		return '$'.Numbers::Price($total);
 	}
 
 	function comboArticles($combo) {

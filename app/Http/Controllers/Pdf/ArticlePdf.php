@@ -27,8 +27,9 @@ class ArticlePdf extends fpdf {
 		$this->user = UserHelper::getFullModel();
 
 		$this->image_width = 45;
-		$this->name_width = 110;
-		$this->price_width = 50;
+		$this->provider_code_width = 30;
+		$this->name_width = 100;
+		$this->price_width = 30;
 
 		$this->AddPage();
 		$this->print();
@@ -68,6 +69,7 @@ class ArticlePdf extends fpdf {
 
 		$this->SetFillColor(221,211,211);
 		$this->Cell($this->image_width, 8, 'Imagen', 1, 0, 'L');
+		$this->Cell($this->provider_code_width, 8, 'Cod Prov.', 1, 0, 'L');
 		$this->Cell($this->name_width, 8, 'Nombre', 1, 0, 'L');
 		$this->Cell($this->price_width, 8, 'Precio', 1, 0, 'L');
 		$this->y += 9;
@@ -101,7 +103,6 @@ class ArticlePdf extends fpdf {
         }
 
         if (!file_exists($jpg_file_url)) {
-        	Log::info('Se va a crear jpg con el nombre de '.$jpg_file_url);
             $img = imagecreatefromwebp($img_url);
             imagejpeg($img, $jpg_file_url, 100);
         }
@@ -124,11 +125,15 @@ class ArticlePdf extends fpdf {
         	}
 		}
 
-		$this->x = 50;
+		$this->x = 5+$this->image_width;
+		$this->Cell($this->provider_code_width, 8, $article->provider_code, $this->b, 0, 'L');
+
+		// $this->x += $this->provider_code_width;
 		$this->MultiCell($this->name_width, 8, $article->name, $this->b, 'L', false);
 
 		$this->y -= 8;
-		$this->x += $this->name_width + 35;
+
+		$this->x += $this->image_width + $this->provider_code_width + $this->name_width -5;
 		$this->Cell($this->price_width, 8, '$'.Numbers::price($article->final_price), $this->b, 0, 'L');	
 
 		$this->y += 48;
