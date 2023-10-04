@@ -23,8 +23,11 @@ class EmployeeController extends Controller
     function update(Request $request, $id) {
         $model = User::where('id', $request->id)
                         ->first();
-
-        $model->permissions()->sync($request->permissions_id);
+        
+        $model->permissions()->sync([]);
+        foreach ($request->permissions as $permission) {
+            $model->permissions()->attach($permission['id']);
+        }
         $model->name                = $request->name;
         $model->visible_password    = $request->visible_password;
         $model->admin_access        = $request->admin_access;

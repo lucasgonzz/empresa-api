@@ -16,6 +16,15 @@ Route::post('/password-reset/update-password',
 	'CommonLaravel\PasswordResetController@updatePassword'
 );
 
+
+// ------------------------------------------------------------------------------
+// Reportes
+Route::get('/reportes/inventario/{company_name}/{periodo}', 'ReporteController@inventario');
+
+Route::get('/reportes/clientes/{company_name}/{periodo}', 'ReporteController@clientes');
+
+
+
 Route::get('/super-budget', 'SuperBudgetController@pdf');
 
 Route::get('imagenes-a-jpg/{company_name}', 'HelperController@imagesWebpToJpg');

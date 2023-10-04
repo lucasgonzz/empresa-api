@@ -2,19 +2,29 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Models\CurrentAcount;
+use App\Models\CurrentAcountPaymentMethod;
 use App\Models\Sale;
 
 class CajaChartsHelper {
 	
-	static function charts($instance, $from_date, $until_date) {
+	static function charts($instance = null, $from_date, $until_date, $user_id = null) {
 		$cantidad_ventas = 0;
 		$total_ventas = 0;
 		$categorias = [];
 		$sub_categorias = [];
 		$articulos = [];
+		$clientes_cantidad_ventas = [];
+		$clientes_monto_gastado = [];
+		$metodos_de_pago = [];
 
-		$sales = Sale::where('user_id', $instance->userId())
+		if (is_null($user_id)) {
+			$user_id = $instance->userId();
+		}
+
+		$sales = Sale::where('user_id', $user_id)
                         ->orderBy('created_at', 'ASC');
         if (!is_null($until_date)) {
             $sales = $sales->whereDate('created_at', '>=', $from_date)
@@ -27,6 +37,25 @@ class CajaChartsHelper {
 		foreach ($sales as $sale) {
 			$cantidad_ventas++;
 			$total_ventas += SaleHelper::getTotalSale($sale);
+			if (!is_null($sale->client)) {
+				if (isset($clientes_cantidad_ventas[$sale->client_id])) {
+					$clientes_cantidad_ventas[$sale->client_id]['amount'] += 1;
+				} else {
+					$clientes_cantidad_ventas[$sale->client_id] = [
+						'name'		=> $sale->client->name,
+						'amount'	=> 1, 
+					]; 
+				}
+
+				if (isset($clientes_monto_gastado[$sale->client_id])) {
+					$clientes_monto_gastado[$sale->client_id]['amount'] += SaleHelper::getTotalSale($sale);
+				} else {
+					$clientes_monto_gastado[$sale->client_id] = [
+						'name'		=> $sale->client->name,
+						'amount'	=> SaleHelper::getTotalSale($sale), 
+					]; 
+				}
+			}
 			foreach ($sale->articles as $article) {
 				if (isset($articulos[$article->id])) {
 					$articulos[$article->id]['amount'] += (float)$article->pivot->amount;
@@ -61,6 +90,9 @@ class CajaChartsHelper {
 			}
 		}
 
+
+		$metodos_de_pago = Self::metodos_de_pago($user_id, $from_date, $until_date);
+
 		usort($articulos, function($a, $b) { 
 			return $b['amount'] - $a['amount']; 
 		});
@@ -75,14 +107,70 @@ class CajaChartsHelper {
 			return $b['amount'] - $a['amount']; 
 		});
 
+		usort($clientes_cantidad_ventas, function($a, $b) { 
+			return $b['amount'] - $a['amount']; 
+		});
+
+		usort($clientes_monto_gastado, function($a, $b) { 
+			return $b['amount'] - $a['amount']; 
+		});
+
+		usort($metodos_de_pago, function($a, $b) { 
+			return $b['amount'] - $a['amount']; 
+		});
+
 		return [
-			'cantidad_ventas' 	=> $cantidad_ventas,
-			'total_ventas' 		=> $total_ventas,
-			'article' 			=> $articulos,
-			'category' 		=> $categorias,
-			'sub_category' 	=> $sub_categorias,
+			'cantidad_ventas' 				=> $cantidad_ventas,
+			'total_ventas' 					=> $total_ventas,
+			'article' 						=> $articulos,
+			'category' 						=> $categorias,
+			'sub_category' 					=> $sub_categorias,
+			'clientes_cantidad_ventas' 		=> $clientes_cantidad_ventas,
+			'clientes_monto_gastado' 		=> $clientes_monto_gastado,
+			'metodos_de_pago'				=> $metodos_de_pago,
 		];
 
+	}
+
+	static function metodos_de_pago($user_id, $from_date, $until_date) {
+		$metodos_de_pago = [];
+		$efectivo = CurrentAcountPaymentMethod::where('name', 'Efectivo')
+												->first();
+		$pagos = CurrentAcount::where('user_id', $user_id)
+                        ->orderBy('created_at', 'ASC')
+            			->whereDate('created_at', '>=', $from_date)
+                        ->whereDate('created_at', '<=', $until_date)
+                        ->whereNotNull('haber')
+                        ->whereNotNull('client_id')
+                        ->get();
+
+        foreach ($pagos as $pago) {
+        	if (count($pago->current_acount_payment_methods) >= 1) {
+	        	foreach ($pago->current_acount_payment_methods as $payment_method) {
+					if (isset($metodos_de_pago[$payment_method->id])) {
+						$metodos_de_pago[$payment_method->id]['amount'] += $payment_method->pivot->amount;
+					} else {
+						$metodos_de_pago[$payment_method->id] = [
+							'name'		=> $payment_method->name,
+							'amount'	=> $payment_method->pivot->amount,
+						]; 
+					}
+	        	}
+        	} else {
+				if (isset($metodos_de_pago[$efectivo->id])) {
+					$metodos_de_pago[$efectivo->id]['amount'] += $pago->haber;
+				} else {
+					$metodos_de_pago[$efectivo->id] = [
+						'name'		=> $efectivo->name,
+						'amount'	=> $pago->haber,
+					]; 
+				}
+        	}
+        }
+        foreach ($metodos_de_pago as $metodo_de_pago) {
+        	$metodo_de_pago['amount'] = Numbers::price($metodo_de_pago['amount']);
+        }
+        return $metodos_de_pago;
 	}
 
 }

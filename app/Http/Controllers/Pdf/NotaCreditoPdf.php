@@ -60,7 +60,7 @@ class NotaCreditoPdf extends fpdf {
 			'model_props' 		=> $this->getModelProps(),
 			// 'fields' 			=> $this->getFields(),
 		];
-		if (count($this->model->articles) >= 1) {
+		if (count($this->model->articles) >= 1 || count($this->model->services) >= 1) {
 			$data['fields'] = $this->getFields();
 		}
 		PdfHelper::header($this, $data);

@@ -169,7 +169,7 @@ class CurrentAcountController extends Controller
         $model->pagos_checkeados = 0;
         $model->save();
         CurrentAcountHelper::checkSaldos($model_name, $model_id);
-        $this->sendAddModelNotification($model_name, $model_id);
+        $this->sendAddModelNotification($model_name, $model_id, false);
     }
 
     function pdfFromModel($model_name, $model_id, $months_ago) {

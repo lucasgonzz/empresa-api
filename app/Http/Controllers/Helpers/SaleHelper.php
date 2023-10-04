@@ -132,7 +132,7 @@ class SaleHelper extends Controller {
             CurrentAcountHelper::checkSaldos('client', $request->client_id);
 
             $ct = new Controller();
-            $ct->sendAddModelNotification('client', $request->client_id);
+            $ct->sendAddModelNotification('client', $request->client_id, false);
             if (!is_null($sale->afip_ticket)) {
                 $afip_helper = new AfipNotaCreditoHelper($sale, $nota_credito);
                 $afip_helper->init();

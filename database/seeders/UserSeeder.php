@@ -29,8 +29,8 @@ class UserSeeder extends Seeder
             [
                 'name'                          => 'Lucas Gonzalez',
                 'company_name'                  => 'Lucas',
-                'image_url'                     => null,
-                // 'image_url'                     => env('APP_URL').'/storage/cubo.jpeg',
+                // 'image_url'                     => null,
+                'image_url'                     => env('APP_URL').'/storage/cubo.jpeg',
                 'doc_number'                    => '123',
                 'email'                         => 'lucasgonzalez5500@gmail.com',
                 'phone'                         => '3444622139',
