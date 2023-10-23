@@ -7,6 +7,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
+use App\Http\Controllers\Pdf\ArticleListPdf;
 use App\Http\Controllers\Pdf\ArticlePdf;
 use App\Http\Controllers\Pdf\ArticleTicketPdf;
 use App\Imports\ArticleImport;
@@ -49,19 +50,6 @@ class ArticleController extends Controller
         return response()->json(['model' => $this->fullModel('article', $id)], 200);
     }
 
-    function guardar($datos) {
-        $articulo = new Article();
-        $articulo->nombre = $datos->nombre;
-        $articulo->codigo_de_barras = $datos->codigo_de_barras;
-        $articulo->precio = $datos->precio;
-        $articulo->guardar();
-        $mensaje = "se guardo bien";
-        return $mensaje;
-    }
-
-
-
-
     function store(Request $request) {
         $model = new Article();
         $model->num                               = $this->num('articles');
@@ -84,6 +72,7 @@ class ArticleController extends Controller
         $model->stock                             = $request->stock;
         $model->stock_min                         = $request->stock_min;
         $model->online                            = $request->online;
+        $model->in_offer                          = $request->in_offer;
         $model->user_id                           = $this->userId();
         if (isset($request->status)) {
             $model->status = $request->status;
@@ -134,6 +123,7 @@ class ArticleController extends Controller
         // $model->stock                             += $request->new_stock;
         $model->stock_min                         = $request->stock_min;
         $model->online                            = $request->online;
+        $model->in_offer                          = $request->in_offer;
         // if (strtolower($model->name) != strtolower($request->name)) {
             $model->name = ucfirst($request->name);
             $model->slug = ArticleHelper::slug($request->name);
@@ -240,5 +230,9 @@ class ArticleController extends Controller
 
     function pdf($ids) {
         new ArticlePdf($ids);
+    }
+
+    function listPdf($ids) {
+        new ArticleListPdf($ids);
     }
 }

@@ -53,7 +53,7 @@ class ProductionMovementController extends Controller
             'employee_id'                   => $request->employee_id,
             'article_id'                    => $request->article_id,
             'order_production_status_id'    => $request->order_production_status_id,
-            'address_id'                    => $request->address_id,
+            // 'address_id'                    => $request->address_id,
             'amount'                        => $request->amount,
             'current_amount'                => $request->amount,
             'user_id'                       => $this->userId(),
@@ -61,6 +61,7 @@ class ProductionMovementController extends Controller
         ProductionMovementHelper::checkRecipe($model, $this);
         ProductionMovementHelper::setCurrentAmount($model, $this);
         $this->sendAddModelNotification('production_movement', $model->id);
+        ProductionMovementHelper::checkArticleAddresses($model, $this);
         return response()->json(['model' => $this->fullModel('ProductionMovement', $model->id)], 201);
     }  
 
@@ -74,7 +75,7 @@ class ProductionMovementController extends Controller
         $model->employee_id                   = $request->employee_id;
         $model->article_id                    = $request->article_id;
         $model->order_production_status_id    = $request->order_production_status_id;
-        $model->address_id                    = $request->address_id;
+        // $model->address_id                    = $request->address_id;
         $model->amount                        = $request->amount;
         $model->save();
         ProductionMovementHelper::checkRecipe($model, $this, $last_amount);

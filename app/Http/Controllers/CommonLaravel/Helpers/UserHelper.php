@@ -10,7 +10,7 @@ class UserHelper {
 	static function userId($get_owner = true) {
         $user = Auth()->user();
         if (is_null($user) && env('APP_ENV') == 'local') {
-            $user = User::where('company_name', env('DEFAULT_COMPANY_NAME'))->first();
+            $user = User::where('company_name', str_replace('_', ' ', env('DEFAULT_COMPANY_NAME')))->first();
             return $user->id;
         }
         if ($get_owner) {

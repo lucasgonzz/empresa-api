@@ -12,6 +12,7 @@ class AfipHelper extends Controller {
     public $article;
 
     function __construct($sale, $articles = null) {
+        $this->user = $this->user();
         $this->sale = $sale;
         if (is_null($articles)) {
             $articles = $this->sale->articles;
@@ -88,7 +89,7 @@ class AfipHelper extends Controller {
         }
         $importe = 0;
         $base_imp = 0;
-        if (!is_null($this->article->iva) && $this->article->iva->percentage == $iva) {
+        if (($this->user->iva_included && is_null($this->article->iva) && $iva == 21) || (!is_null($this->article->iva) && $this->article->iva->percentage == $iva)) {
             $importe = $this->montoIvaDelPrecio() * $this->article->pivot->amount;
             $base_imp = $this->getPriceWithoutIva() * $this->article->pivot->amount;
         }
@@ -112,8 +113,12 @@ class AfipHelper extends Controller {
         } else {
             $price = $this->article->pivot->price;
         }
-        if (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0) {
-            return $price / (($this->article->iva->percentage / 100) + 1); 
+        if ($this->user->iva_included || (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0)) {
+            $article_iva = 21;
+            if (!is_null($this->article->iva)) {
+                $article_iva = $this->article->iva->percentage;
+            }
+            return $price / (($article_iva / 100) + 1); 
         } 
         return $price;
     }
@@ -167,8 +172,12 @@ class AfipHelper extends Controller {
     |
     */
     function montoIvaDelPrecio() {
-        if (!is_null($this->article->iva) && ($this->article->iva->percentage != 'No Gravado' || $this->article->iva->percentage != 'Exento' || $this->article->iva->percentage != 0)) {
-            return Numbers::redondear($this->getPriceWithoutIva() * floatval($this->article->iva->percentage) / 100);
+        if (($this->user->iva_included && is_null($this->article->iva)) || (!is_null($this->article->iva) && ($this->article->iva->percentage != 'No Gravado' || $this->article->iva->percentage != 'Exento' || $this->article->iva->percentage != 0))) {
+            $iva = 21;
+            if (!is_null($this->article->iva)) {
+                $iva = (float)$this->article->iva->percentage;
+            }
+            return Numbers::redondear($this->getPriceWithoutIva() * $iva / 100);
         } 
         return 0;
     }
@@ -178,7 +187,8 @@ class AfipHelper extends Controller {
     }
 
     function getImporteGravado() {
-        if (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0) {
+        // if (is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0) {
+        if ($this->user->iva_included || (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0)) {
             return $this->getPriceWithoutIva() * $this->article->pivot->amount;
         }
         return 0;

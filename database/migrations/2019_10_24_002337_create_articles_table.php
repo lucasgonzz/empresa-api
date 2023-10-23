@@ -43,6 +43,7 @@ class CreateArticlesTable extends Migration
             $table->boolean('apply_provider_percentage_gain')->default(1)->nullable();
             $table->integer('articles_pages')->nullable();
             $table->integer('provider_article_id')->nullable();
+            $table->boolean('in_offer')->default(0)->nullable();
             $table->timestamp('final_price_updated_at')->nullable();
             $table->softDeletes();
 

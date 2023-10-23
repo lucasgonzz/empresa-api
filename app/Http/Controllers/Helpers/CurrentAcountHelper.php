@@ -293,7 +293,7 @@ class CurrentAcountHelper {
             $model->saldo = 0;
         }
         $model->save();
-        Log::info('se actualizo saldo del cliente '.$model->name.' a '.$model->saldo);
+        // Log::info('se actualizo saldo del modelo '.$model->name.' a '.$model->saldo);
     }
 
     static function checkPagos($model_name, $model_id, $si_o_si = false) {

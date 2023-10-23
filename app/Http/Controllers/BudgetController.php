@@ -14,15 +14,17 @@ use Illuminate\Http\Request;
 class BudgetController extends Controller
 {
 
-    public function index($from_date, $until_date = null) {
+    public function index($from_date = null, $until_date = null) {
         $models = Budget::where('user_id', $this->userId())
                         ->orderBy('created_at', 'DESC')
                         ->withAll();
-        if (!is_null($until_date)) {
-            $models = $models->whereDate('created_at', '>=', $from_date)
-                            ->whereDate('created_at', '<=', $until_date);
-        } else {
-            $models = $models->whereDate('created_at', $from_date);
+        if (!is_null($from_date)) {
+            if (!is_null($until_date)) {
+                $models = $models->whereDate('created_at', '>=', $from_date)
+                                ->whereDate('created_at', '<=', $until_date);
+            } else {
+                $models = $models->whereDate('created_at', $from_date);
+            }
         }
 
         $models = $models->get();

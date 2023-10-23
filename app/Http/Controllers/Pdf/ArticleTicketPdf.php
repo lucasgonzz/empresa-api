@@ -67,12 +67,15 @@ class ArticleTicketPdf extends fpdf {
 		}
 
 		$this->x = $this->start_x;
-		$this->SetFont('Arial', 'B', 15);
-		$this->Cell(70, 8, StringHelper::short($article->name, 24), 1, 1, 'L');
+		$this->SetFont('Arial', 'B', 12);
+		$this->Cell(70, 8, StringHelper::short($article->name, 30), 1, 1, 'L');
 		
 		$this->x = $this->start_x;
+		$this->SetFont('Arial', '', 10);
+		$this->Cell(30, 16, $article->provider_code, 'LTB', 0, 'L');
+
 		$this->SetFont('Arial', 'B', 27);
-		$this->Cell(70, 16, '$'.Numbers::price($article->final_price), 1, 1, 'R');
+		$this->Cell(40, 16, '$'.Numbers::price($article->final_price), 'RTB', 1, 'R');
 
 		$this->x = $this->start_x;
 		$this->SetFont('Arial', '', 12);

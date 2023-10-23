@@ -26,6 +26,7 @@ class ArticleSeeder extends Seeder
         'cubo' => 'http://empresa.local:8000/storage/cubo.jpeg',
         'cadena' => 'http://empresa.local:8000/storage/cadena.jpg',
         'mochila' => 'http://empresa.local:8000/storage/mochila.jpg',
+        'martillo' => 'http://empresa.local:8000/storage/martillo.jpg',
     ];
 
     public function run()
@@ -34,7 +35,7 @@ class ArticleSeeder extends Seeder
     }
 
     function lucas() {
-        $user = User::where('company_name', 'lucas')
+        $user = User::where('company_name', 'Jugueteria Rosario')
                     ->first();
         $bsas = Provider::where('user_id', $user->id)
                             ->where('name', 'Buenos Aires')
@@ -56,10 +57,7 @@ class ArticleSeeder extends Seeder
                 'featured'          => 1,
                 'images'            => [
                     [
-                        'url'       => 'webp.webp',
-                    ],
-                    [
-                        'url'       => 'rasti.jpg',
+                        'url'       => 'martillo.jpg',
                     ],
                 ],
             ],
@@ -67,7 +65,7 @@ class ArticleSeeder extends Seeder
                 'featured'          => 2,
                 'bar_code'          => '1234',
                 'provider_code'     => 'p-1234',
-                'name'              => 'Martillo grande',
+                'name'              => 'Martillo acero',
                 'stock'             => 10,
                 'cost'              => 2000,
                 'price'             => 3000,
@@ -75,7 +73,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'rasti.jpg',
+                        'url'       => 'martillo-acero.jpg',
                     ],
                 ],
             ],
@@ -91,7 +89,7 @@ class ArticleSeeder extends Seeder
                 'featured'          => 3,
                 'images'            => [
                     [
-                        'url'       => 'rasti.jpg',
+                        'url'       => 'pinza.jpeg',
                     ],
                 ],
             ],
@@ -106,7 +104,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'rasti.jpg',
+                        'url'       => 'alicate.jpg',
                     ],
                 ],
                 'featured'          => 4,
@@ -123,7 +121,7 @@ class ArticleSeeder extends Seeder
                 'featured'          => 5,
                 'images'            => [
                     [
-                        'url'       => 'rasti.jpg',
+                        'url'       => 'cuchilla.webp',
                     ],
                 ],
             ],
@@ -138,7 +136,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'rasti.jpg',
+                        'url'       => 'cuchillo.png',
                     ],
                 ],
             ],
@@ -153,7 +151,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'rasti.jpg',
+                        'url'       => 'cuchara.jpg',
                     ],
                 ],
             ],
@@ -168,7 +166,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'rasti.jpg',
+                        'url'       => 'cuchara-plastico.jpg',
                     ],
                 ],
             ],
@@ -183,7 +181,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'rasti.jpg',
+                        'url'       => 'mesa-madera.jpg',
                     ],
                 ],
             ],
@@ -198,7 +196,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'rasti.jpg',
+                        'url'       => 'mesa-larga.jpg',
                     ],
                 ],
             ],
@@ -213,7 +211,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'rasti.jpg',
+                        'url'       => 'cama-1.jpg',
                     ],
                 ],
             ],
@@ -228,13 +226,7 @@ class ArticleSeeder extends Seeder
                 'provider_id'       => $bsas->id,
                 'images'            => [
                     [
-                        'url'       => 'cartera.webp',
-                    ],
-                    [
-                        'url'       => 'rasti.jpg',
-                    ],
-                    [
-                        'url'       => 'rasti.jpg',
+                        'url'       => 'cama-2.jpg',
                     ],
                 ],
                 'addresses'     => [
@@ -248,23 +240,23 @@ class ArticleSeeder extends Seeder
                     ],
                 ],
             ],
-            [
-                'bar_code'          => '',
-                'provider_code'     => '',
-                'name'              => 'Zapatilla adidas',
-                'stock'             => null,
-                'cost'              => 10000,
-                'percentage_gain'   => 50,
-                'iva_id'            => 6,
-                'images'            => [
-                    [
-                        'url'       => 'webp.webp',
-                    ],
-                    [
-                        'url'       => 'rasti.jpg',
-                    ],
-                ],
-            ],
+            // [
+            //     'bar_code'          => '',
+            //     'provider_code'     => '',
+            //     'name'              => 'Zapatilla adidas',
+            //     'stock'             => null,
+            //     'cost'              => 10000,
+            //     'percentage_gain'   => 50,
+            //     'iva_id'            => 6,
+            //     'images'            => [
+            //         [
+            //             'url'       => 'webp.webp',
+            //         ],
+            //         [
+            //             'url'       => 'rasti.jpg',
+            //         ],
+            //     ],
+            // ],
             
         ];
         $num = 1;

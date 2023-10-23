@@ -16,7 +16,7 @@ class ClientsTableSeeder extends Seeder
      */
     public function run()
     {
-        $users = User::where('company_name', 'lucas')
+        $users = User::where('company_name', 'Jugueteria Rosario')
                         ->get();
         $models = [
             [

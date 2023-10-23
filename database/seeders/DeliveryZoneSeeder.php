@@ -15,7 +15,7 @@ class DeliveryZoneSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'lucas')
+        $user = User::where('company_name', 'Jugueteria Rosario')
                         ->first();
         $models = [
             [

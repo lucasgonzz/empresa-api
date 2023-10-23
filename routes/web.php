@@ -27,6 +27,7 @@ Route::get('/reportes/clientes/{company_name}/{periodo}', 'ReporteController@cli
 
 Route::get('/super-budget', 'SuperBudgetController@pdf');
 
+Route::get('rehacer-facturas', 'HelperController@rehacerFacturas');
 Route::get('imagenes-a-jpg/{company_name}', 'HelperController@imagesWebpToJpg');
 Route::get('buyers-sin-vincular/{company_name}', 'HelperController@getBuyerSinVincular');
 Route::get('images-beta', 'HelperController@updateBetaImges');
@@ -71,6 +72,7 @@ Route::get('sale/delivered-articles-pdf/{id}', 'SaleController@deliveredArticles
 // Article
 Route::get('article/pdf/{ids}', 'ArticleController@pdf');
 Route::get('article/tickets-pdf/{ids}', 'ArticleController@ticketsPdf');
+Route::get('article/list-pdf/{ids}', 'ArticleController@listPdf');
 
 Route::get('budget/pdf/{id}/{with_prices}', 'BudgetController@pdf');
 Route::get('order-production/pdf/{id}/{with_prices}', 'OrderProductionController@pdf');

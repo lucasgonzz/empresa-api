@@ -20,7 +20,7 @@ class CategorySeeder extends Seeder
 
 
     function lucas() {
-        $user = User::where('company_name', 'lucas')->first();
+        $user = User::where('company_name', 'Jugueteria Rosario')->first();
         // $categories = ['Lava ropas', 'Aires acondicionados', 'Computacion', 'Tanques de oxigeno', 'cosas para la casa', 'Repuestos de lavarropas', 'repuestos de aires acondicionados', 'repuestos de muchas cosas'];
         $models = [
             'Herramientas',

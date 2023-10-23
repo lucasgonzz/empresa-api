@@ -179,11 +179,8 @@ class ProviderOrderHelper {
 
 	static function saveCurrentAcount($provider_order) {
 		$total = Self::getTotal($provider_order->id);
-		Log::info('Total del pedido '.$provider_order->num.': '.$total);
 		if ($total > 0) {
-			Log::info('entro a total > 0');
 			$current_acount = CurrentAcount::where('provider_order_id', $provider_order->id)->first();
-			// Log::info('current_acount_id: '.$current_acount->id);
 			if (is_null($current_acount)) {
 				Self::createCurrentAcount($provider_order, $total);
 			} else {
@@ -197,9 +194,9 @@ class ProviderOrderHelper {
 					$current_acount->debe = $total;
 					$current_acount->saldo = CurrentAcountHelper::getSaldo('provider', $provider_order->provider_id, $current_acount) + $total;
 					$current_acount->save();
-					CurrentAcountHelper::checkSaldos('provider', $provider_order->provider_id, $current_acount);
+					CurrentAcountHelper::checkSaldos('provider', $provider_order->provider_id);
 
-					Log::info('Se actualizo current_acount con saldo de: '.$current_acount->saldo);
+					// Log::info('Se actualizo current_acount con saldo de: '.$current_acount->saldo);
 				}
 			}
 	        $provider_order->provider->pagos_checkeados = 0;

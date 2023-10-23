@@ -15,7 +15,8 @@ class CreateSuperBudgetTitlesTable extends Migration
     {
         Schema::create('super_budget_titles', function (Blueprint $table) {
             $table->id();
-            $table->text('text');
+            $table->text('title')->nullable();
+            $table->text('text')->nullable();
             $table->integer('super_budget_id')->unsigned();
             $table->timestamps();
         });

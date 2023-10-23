@@ -13,7 +13,7 @@ use Carbon\Carbon;
 class InventarioPdf {
 
 	function __construct($company_name, $periodo) {
-		$reporte_pdf = new ReportePdf($company_name, 'Reporte de Clientes', $periodo);
+		$reporte_pdf = new ReportePdf($company_name, 'Reporte de Invetario', $periodo);
 
 		$reporte_pdf->print('Articulos mas vendidos', null, 'article', true, false, 130);
 

@@ -31,7 +31,7 @@ class ArticlesTableSeeder extends Seeder
     }
 
     function lucas() {
-        $user = User::where('company_name', 'lucas')
+        $user = User::where('company_name', 'Jugueteria Rosario')
                     ->first();
         $bsas = Provider::where('user_id', $user->id)
                             ->where('name', 'Buenos Aires')

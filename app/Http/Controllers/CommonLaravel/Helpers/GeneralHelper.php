@@ -48,6 +48,16 @@ class GeneralHelper {
         return $result;
     }
     
+    function file_exists_2($filePath) {
+        $file_headers = @get_headers($filePath);
+        if(str_contains($file_headers[0], '404 Not Found')) {
+            $exists = false;
+        } else {
+            $exists = true;
+        }
+        return $exists;
+    }
+    
     static function attachModels($model, $relation_name, $relation_models, $pivot_values = null, $from_pivot_prop = true) {
         $model->{$relation_name}()->detach();
         foreach ($relation_models as $relation_model) {

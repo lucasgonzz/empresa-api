@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\AfipWsController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
@@ -15,6 +16,7 @@ use App\Models\Image;
 use App\Models\OnlineConfiguration;
 use App\Models\OrderProduction;
 use App\Models\Provider;
+use App\Models\Sale;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -23,6 +25,42 @@ use Illuminate\Support\Facades\Storage;
 
 class HelperController extends Controller
 {
+
+    function rehacerFacturas() {
+        $user = User::where('doc_number', '09876543')
+                        ->first();
+
+
+        $sales = Sale::where('created_at', '>=', '2023-10-01')
+                        ->whereHas('afip_ticket')
+                        ->orderBy('created_at', 'ASC')
+                        ->where('user_id', $user->id)
+                        ->get();
+
+        // $sales = Sale::where('id', 89913)
+        //                 ->get();
+
+        foreach ($sales as $sale) {
+
+            if ($sale->afip_ticket->importe_total == 0) {
+                echo date_format($sale->created_at, 'd-m-y').' </br>';
+                echo 'Venta id: '.$sale->id. ' </br>'; 
+                echo 'Venta N°: '.$sale->num. ' </br>'; 
+                echo 'Afip ticket id: '.$sale->afip_ticket->id. ' </br>'; 
+                echo 'Punto venta: '.$sale->afip_ticket->punto_venta . ' </br>'; 
+                echo 'N° ' .$sale->afip_ticket->cbte_numero . ' </br>'; 
+                echo 'Importe: '.$sale->afip_ticket->importe_total .' </br>';
+                echo '-------------------------------- </br>';
+
+                $afip = new AfipWsController($sale);
+                $afip_ticket = $afip->init();
+
+                // dd($afip_ticket);
+            }
+
+        }
+
+    }
 
     function imagesWebpToJpg($company_name) {
         $user = User::where('company_name', $company_name)

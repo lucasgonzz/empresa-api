@@ -15,7 +15,7 @@ class DiscountSeeder extends Seeder
      */
     public function run()
     {
-        $users = User::where('company_name', 'lucas')
+        $users = User::where('company_name', 'Jugueteria Rosario')
                     ->get();
 
         foreach ($users as $user) {

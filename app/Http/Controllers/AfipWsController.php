@@ -120,7 +120,8 @@ class AfipWsController extends Controller
 
     function saveAfipTicket($result, $cbte_nro, $importe_total, $moneda_id) {
         if (!isset($result->FECAESolicitarResult->Errors)) {
-            AfipTicket::create([
+            $this->deletePreviusAfipTicket();
+            $afip_ticket = AfipTicket::create([
                 'cuit_negocio'      => $result->FECAESolicitarResult->FeCabResp->Cuit,
                 'iva_negocio'       => $this->sale->afip_information->iva_condition->name,
                 'punto_venta'       => $result->FECAESolicitarResult->FeCabResp->PtoVta,
@@ -137,6 +138,15 @@ class AfipWsController extends Controller
                 'cae_expired_at'    => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAEFchVto,
                 'sale_id'           => $this->sale->id,
             ]);
+            // echo 'Se creo afip_ticket id: '.$afip_ticket->id.' </br>';
+        }
+    }
+
+    function deletePreviusAfipTicket() {
+        $afip_ticket = $this->sale->afip_ticket;
+        if (!is_null($afip_ticket)) {
+            // echo 'Se elimino el ticket id: '.$afip_ticket->id.' </br>';
+            $afip_ticket->delete();
         }
     }
 

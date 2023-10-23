@@ -107,7 +107,8 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::resource('discount', 'DiscountController');
     Route::resource('surchage', 'SurchageController');
     Route::post('service', 'ServiceController@store');
-    Route::resource('budget', 'BudgetController')->except(['index']);
+    // Route::resource('budget', 'BudgetController')->except(['index']);
+    Route::resource('budget', 'BudgetController');
     Route::get('budget/from-date/{from_date}/{until_date?}', 'BudgetController@index');
     Route::resource('budget-status', 'BudgetStatusController');
     Route::resource('afip-information', 'AfipInformationController');

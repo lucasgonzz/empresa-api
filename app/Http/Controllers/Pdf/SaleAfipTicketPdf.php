@@ -261,6 +261,7 @@ class SaleAfipTicketPdf extends fpdf {
 
 	function getCaeExpiredAt() {
 		$date = $this->sale->afip_ticket->cae_expired_at;
+		return substr($date, 0, 11);
 		return substr($date, 0, 4).'/'.substr($this->sale->afip_ticket->cae_expired_at, 4, 2).'/'.substr($date, 6, 8);
 	}
 
@@ -594,10 +595,17 @@ class SaleAfipTicketPdf extends fpdf {
         $this->Cell($this->widths['bonif'], 6, $article->pivot->discount, 0, 0, 'R');
         $this->Cell($this->widths['subtotal'], 6, Numbers::price($this->afip_helper->subTotal($article)), 0, 0, 'R');
 		if ($this->sale->afip_ticket->cbte_tipo == 1) {
-        	$this->Cell($this->widths['iva'], 6, $article->iva->percentage, 0, 0, 'C');
+        	$this->Cell($this->widths['iva'], 6, $this->getArticleIva($article), 0, 0, 'C');
         	$this->Cell($this->widths['subtotal_con_iva'], 6, $this->subtotalConIva($article), 0, 0, 'R');
 		}
         $this->y += 6;
+    }
+
+    function getArticleIva($article) {
+    	if (!is_null($article->iva)) {
+    		return $article->iva->percentage;
+    	} 
+    	return 21;
     }
 
 	function __Header() {

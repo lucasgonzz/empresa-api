@@ -25,7 +25,7 @@ class ProviderSeeder extends Seeder
 
     function lucas() {
         $ct = new Controller();
-        $user = User::where('company_name', 'lucas')->first();
+        $user = User::where('company_name', 'Jugueteria Rosario')->first();
         $models = [
             [
                 'num'               => 1,
@@ -59,7 +59,7 @@ class ProviderSeeder extends Seeder
 
     function marcos() {
         $user = User::where('company_name', 'marcos')->first();
-        $lucas_user = User::where('company_name', 'lucas')->first();
+        $lucas_user = User::where('company_name', 'Jugueteria Rosario')->first();
         $lucas_provider = Provider::create([
             'num'                   => 1,
             'name'                  => 'Lucas',

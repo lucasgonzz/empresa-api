@@ -18,7 +18,7 @@ class SuperBudgetSeeder extends Seeder
      */
     public function run()
     {
-        require(database_path().'\super-budgets\fede_articulos_pdf.php');
+        require(database_path().'\super-budgets\nueva_york_peluqueria.php');
         $_model = SuperBudget::create([
             'client'            => $model['client'],
             'offer_validity'    => $model['offer_validity'],
@@ -27,8 +27,9 @@ class SuperBudgetSeeder extends Seeder
         ]);
         foreach ($model['titles'] as $title) {
             SuperBudgetTitle::create([
-                'text'             => $title['text'],
-                'super_budget_id'   => $_model->id,
+                'title'            => isset($title['title']) ? $title['title'] : null,
+                'text'             => isset($title['text']) ? $title['text'] : null,
+                'super_budget_id'  => $_model->id,
             ]);
         }
         foreach ($model['features'] as $feature) {

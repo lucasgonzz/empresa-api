@@ -11,15 +11,17 @@ use Illuminate\Http\Request;
 class ProviderOrderController extends Controller
 {
 
-    public function index($from_date, $until_date = null) {
+    public function index($from_date = null, $until_date = null) {
         $models = ProviderOrder::where('user_id', $this->userId())
                         ->orderBy('created_at', 'DESC')
                         ->withAll();
-        if (!is_null($until_date)) {
-            $models = $models->whereDate('created_at', '>=', $from_date)
-                            ->whereDate('created_at', '<=', $until_date);
-        } else {
-            $models = $models->whereDate('created_at', $from_date);
+        if (!is_null($from_date)) {
+            if (!is_null($until_date)) {
+                $models = $models->whereDate('created_at', '>=', $from_date)
+                                ->whereDate('created_at', '<=', $until_date);
+            } else {
+                $models = $models->whereDate('created_at', $from_date);
+            }
         }
 
         $models = $models->get();
@@ -56,6 +58,7 @@ class ProviderOrderController extends Controller
         ProviderOrderHelper::attachArticles($request->articles, $model);
         $this->updateRelationsCreated('provider_order', $model->id, $request->childrens);
         $this->sendAddModelNotification('provider_order', $model->id);
+        $this->sendAddModelNotification('provider', $model->provider_id, false);
         return response()->json(['model' => $this->fullModel('ProviderOrder', $model->id)], 201);
     }  
 
@@ -73,6 +76,7 @@ class ProviderOrderController extends Controller
         $model->save();
         ProviderOrderHelper::attachArticles($request->articles, $model);
         $this->sendAddModelNotification('provider_order', $model->id);
+        $this->sendAddModelNotification('provider', $model->provider_id, false);
         return response()->json(['model' => $this->fullModel('ProviderOrder', $model->id)], 200);
     }
 

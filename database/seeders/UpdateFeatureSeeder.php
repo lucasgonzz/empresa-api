@@ -16,16 +16,12 @@ class UpdateFeatureSeeder extends Seeder
     {
         $models = [
             [
-                'name' => 'Ya viste el panel de ESTADISTICAS',
-                'description' => 'Desde la seccion de CAJA, vas a poder ver las estadisticas de los articulos mas vendidos, asi como de las categorias y sub categorias mas vendidas, dentro del rango de fecha que selecciones (por defecto es desde principos de mes hasta la fecha actual). Tambien podes ver las estadisticas de las ventas de un articulo en especifico desde la seccion del listado, con los botones que estan al final a la derecha en cada fila de la tabla.',
+                'name' => 'Imprimir lista de articulos en PDF',
+                'description' => 'Desde el LISTADO, luego de realizar una busqueda o una seleccion multiple, se podra imprimir una lista en PDF con los articulos sin imagenes.',
             ],
             [
-                'name' => 'Generar documentos PDF con los articulos que necesites',
-                'description' => 'Cuando hagas una busqueda o actives la seleccion multiple en el LISTADO, vas a tener la opcion de generar un PDF con los articulos involucrados, donde se mostraran la image, nombre y precio de los articulos, para que puedas enviar el documento a tus clientes o le del el uso que creas conveniente.',
-            ],
-            [
-                'name' => 'Asignar permisos de ADMINISTRADOR a los empleados',
-                'description' => 'Ahora podes asignar el rol de administrador a tus empleados, para que tengan el mismo acceso a todo el sistema que el duño de la empresa.',
+                'name' => 'Pedidos a proveedores y Presupuestos HISTORICOS',
+                'description' => 'En estas secciones, se podran seguir visualizando los resultados filtrados por una fecha, o se podra ver el historial completo todo junto. Esta opcion aparece en la isquina superior derecha.',
             ],
         ];
         foreach ($models as $model) {

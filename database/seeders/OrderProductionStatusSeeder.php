@@ -15,7 +15,7 @@ class OrderProductionStatusSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'lucas')->first();
+        $user = User::where('company_name', 'Jugueteria Rosario')->first();
         $models = [
             ['name' => 'Deposito', 'position' => 1, 'user_id' => $user->id], 
             ['name' => 'Producción', 'position' => 2, 'user_id' => $user->id], 

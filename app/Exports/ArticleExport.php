@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use Maatwebsite\Excel\Concerns\FromCollection;
 use Maatwebsite\Excel\Concerns\WithHeadings;
 use Maatwebsite\Excel\Concerns\WithMapping;
+use Illuminate\Support\Facades\Log;
 
 class ArticleExport implements FromCollection, WithHeadings, WithMapping
 {
@@ -35,6 +36,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $article->updated_at,
         ];
         $map = ExportHelper::mapPriceTypes($map, $article);
+        // $map = ExportHelper::mapCharts($map, $article);
         return $map;
     }
 
@@ -44,6 +46,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
     */
     public function collection()
     {
+        set_time_limit(999999);
         $articles = Article::where('user_id', UserHelper::userId())
                         // ->select('bar_code', 'provider_code', 'name', 'iva_id', 'cost', 'percentage_gain', 'price', 'stock', 'stock_min', 'created_at', 'updated_at')
                         ->where('status', 'active')
@@ -57,6 +60,9 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
         $articles = $this->setDiscounts($articles);
         // $articles = ArticleHelper::setDiscount($articles);
         $articles = ExportHelper::setPriceTypes($articles);
+        // $articles = ExportHelper::setCharts($articles);
+        // Log::info('Articles:');
+        // Log::info($articles);
         return $articles;
     }
 
@@ -83,6 +89,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             'Actualizado',
         ];
         $headings = ExportHelper::setPriceTypesHeadings($headings);
+        // $headings = ExportHelper::setChartsheadings($headings);
         return $headings;
     }
 

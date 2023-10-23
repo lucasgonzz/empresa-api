@@ -323,6 +323,10 @@ class ArticleHelper {
             Log::info('setArticleStockFromAddresses: '.$stock);
             $article->timestamps = false;
             $article->save();
+        } else {
+            Log::info('------------------------------------');
+            Log::info('No entro en '.$article->name);
+            Log::info($article->addresses);
         }
     }
 

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\CommonLaravel\Helpers;
 
 use App\Article;
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
@@ -29,14 +30,36 @@ class PdfHelper {
 		}
 	}
 
+	function simpleHeader($instance, $data) {
+        $user = UserHelper::getFullModel();
+		if (env('APP_ENV') == 'local') {
+    		$instance->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 2, 2, 45, 45);
+    	} else {
+    		if (GeneralHelper::file_exists_2($user->image_url)) {
+    			$instance->Image($user->image_url, 2, 2, 45, 45);
+    		}
+    	}
+
+		$instance->SetFont('Arial', 'B', 18);
+
+		$instance->x = 50;
+		$instance->y = 20;
+		$instance->Cell(70, 8, $user->company_name, $instance->b, 0, 'L');	
+		
+		$instance->SetFont('Arial', '', 14);
+		$instance->Cell(80, 8, date('d/m/Y'), $instance->b, 0, 'R');
+
+		$instance->y = 50;
+		Self::tableHeader($instance, $data['fields']);
+	}
+
 	static function logo($instance) {
         // Logo
         $logo_url = UserHelper::getFullModel()->image_url;
         if (!is_null($logo_url)) {
         	if (env('APP_ENV') == 'local') {
         		$instance->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', 5, 5, 40, 25);
-        		// $instance->Image('http://empresa.local:8000/storage/cubo.jpeg', 5, 5, 25, 25);
-        	} else {
+        	} else if (GeneralHelper::file_exists_2($logo_url)) {
 	        	$instance->Image($logo_url, 5, 5, 25, 25);
         	}
         }

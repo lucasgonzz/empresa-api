@@ -48,7 +48,9 @@ class ArticlePdf extends fpdf {
 		if (env('APP_ENV') == 'local') {
     		$this->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 2, 2, 45, 45);
     	} else {
-    		$this->Image($this->user->image_url, 2, 2, 45, 45);
+    		if (!is_null($this->user->image_url) && file_exists($this->user->image_url)) {
+    			$this->Image($this->user->image_url, 2, 2, 45, 45);
+    		}
     	}
 
 		$this->SetFont('Arial', 'B', 18);
@@ -83,8 +85,10 @@ class ArticlePdf extends fpdf {
 	}
 
 	function printImage($article) {
-        $img_url = $this->getJpgImage($article);
-        $this->Image($img_url, 2, $this->y, $this->image_width, $this->image_width);
+		if (count($article->images) >= 1) {
+	        $img_url = $this->getJpgImage($article);
+	        $this->Image($img_url, 2, $this->y, $this->image_width, $this->image_width);
+		}
 
 	}
 

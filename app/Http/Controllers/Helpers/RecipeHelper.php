@@ -22,6 +22,7 @@ class RecipeHelper {
 			$recipe->articles()->attach($article['id'], [
 											'amount' 	=> GeneralHelper::getPivotValue($article, 'amount'),
 											'notes' 	=> GeneralHelper::getPivotValue($article, 'notes'),
+											'address_id' 	=> GeneralHelper::getPivotValue($article, 'address_id'),
 											'order_production_status_id' => GeneralHelper::getPivotValue($article, 'order_production_status_id'),
 										]);
 		}

@@ -27,13 +27,13 @@ class BudgetHelper {
 	}
 
 	static function checkStatus($budget) {
+		Self::deleteCurrentAcount($budget);
+	    Self::deleteSale($budget);
 		if ($budget->budget_status->name == 'Confirmado') {
-			Self::deleteCurrentAcount($budget);
 			Self::saveCurrentAcount($budget);
-	        CurrentAcountHelper::checkSaldos('client', $budget->client_id);
-	        Self::deleteSale($budget);
 	        Self::saveSale($budget);
-		}
+		} 
+	    CurrentAcountHelper::checkSaldos('client', $budget->client_id);
 	}
 
 	static function saveSale($budget) {

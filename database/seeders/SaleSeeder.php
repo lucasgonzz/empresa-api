@@ -29,7 +29,7 @@ class SaleSeeder extends Seeder
     }
 
     function pagos() {
-        $user = User::where('company_name', 'lucas')->first();
+        $user = User::where('company_name', 'Jugueteria Rosario')->first();
         $addresses = Address::where('user_id', $user->id)
                         ->get();
         $ct = new Controller();
@@ -138,7 +138,7 @@ class SaleSeeder extends Seeder
     }
 
     function videos() {
-        $user = User::where('company_name', 'lucas')->first();
+        $user = User::where('company_name', 'Jugueteria Rosario')->first();
         $addresses = Address::where('user_id', $user->id)
                         ->get();
         $employees = User::where('owner_id', $user->id)

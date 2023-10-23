@@ -27,7 +27,6 @@ class ProductionMovementHelper {
 			}
 		}
 		Self::checkIsLastStatus($production_movement, $instance);
-		Self::checkArticleAddresses($production_movement, $instance);
 	}
 
 	static function checkArticleAddresses($production_movement) {
@@ -51,13 +50,13 @@ class ProductionMovementHelper {
 	}
 
 	static function discountStock($article_recipe, $production_movement, $instance, $last_amount) {
-		if (!is_null($article_recipe->stock)) {
+		if (!is_null($article_recipe->stock) || count($article_recipe->addresses) >= 1) {
 			$amount_to_discount = $production_movement->amount - $last_amount;
 			$amount_to_discount = $article_recipe->pivot->amount * $amount_to_discount;
 			
-			if (!is_null($production_movement->address_id) && count($article_recipe->addresses) >= 1) {
+			if (!is_null($article_recipe->pivot->address_id) && count($article_recipe->addresses) >= 1) {
 				foreach ($article_recipe->addresses as $address) {
-					if ($address->id == $production_movement->address_id) {
+					if ($address->id == $article_recipe->pivot->address_id) {
 						Log::info('Stock de '.$article_recipe->name.'en la direccion '.$address->street.': '.$address->pivot->amount);
 						$new_amount = $address->pivot->amount - $amount_to_discount;
 						$article_recipe->addresses()->updateExistingPivot($address->id, [
@@ -81,13 +80,28 @@ class ProductionMovementHelper {
 	static function increaseStock($article_recipe, $production_movement, $instance) {
 		Log::info('Stock de '.$article_recipe->name.': '.$article_recipe->stock);
 		Log::info('Se repondran '.$article_recipe->pivot->amount * $production_movement->amount);
-		if (!is_null($article_recipe->stock)) {
-			$article_recipe->stock += $article_recipe->pivot->amount * $production_movement->amount;
-			$article_recipe->save();
-        	$instance->sendAddModelNotification('article', $article_recipe->id, false);
-			Log::info('Nuevo Stock de '.$article_recipe->name.': '.$article_recipe->stock);
+
+		if (!is_null($article_recipe->stock) || count($article_recipe->addresses) >= 1) {
+			$amount_to_increase = $article_recipe->pivot->amount * $production_movement->amount;
+
+			if (!is_null($article_recipe->pivot->address_id) && count($article_recipe->addresses) >= 1) {
+				foreach ($article_recipe->addresses as $address) {
+					if ($address->id == $article_recipe->pivot->address_id) {
+						Log::info('Stock de '.$article_recipe->name.'en la direccion '.$address->street.': '.$address->pivot->amount);
+						$new_amount = $address->pivot->amount - $amount_to_increase;
+						$article_recipe->addresses()->updateExistingPivot($address->id, [
+							'amount' => $new_amount,
+						]);
+					}
+				}
+			} else if (!is_null($article_recipe->stock)) {
+				$article_recipe->stock += $article_recipe->pivot->amount * $production_movement->amount;
+				$article_recipe->save();
+	        	$instance->sendAddModelNotification('article', $article_recipe->id, false);
+				Log::info('Nuevo Stock de '.$article_recipe->name.': '.$article_recipe->stock);
+			}
 		}
-		// Log::info('----------------------------------------');
+
 	}
 
 	static function setCurrentAmount($production_movement, $instance, $last_amount = 0) {

@@ -28,7 +28,7 @@ class UserSeeder extends Seeder
         $models = [
             [
                 'name'                          => 'Lucas Gonzalez',
-                'company_name'                  => 'Lucas',
+                'company_name'                  => 'Jugueteria Rosario',
                 // 'image_url'                     => null,
                 'image_url'                     => env('APP_URL').'/storage/cubo.jpeg',
                 'doc_number'                    => '123',

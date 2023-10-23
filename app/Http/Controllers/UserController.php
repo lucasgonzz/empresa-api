@@ -14,9 +14,6 @@ use Illuminate\Support\Facades\Hash;
 
 class UserController extends Controller
 {
-    function user() {
-        return response()->json(['user' => Auth()->user()], 200);
-    }
 
     function store(Request $request) {
         if (!$this->docNumberRegistered($request->doc_number)) {
@@ -59,6 +56,7 @@ class UserController extends Controller
         $model->iva_included                    = $request->iva_included;
         $model->ask_amount_in_vender            = $request->ask_amount_in_vender;
         $model->sale_ticket_width               = $request->sale_ticket_width;
+        $model->default_current_acount_payment_method_id               = $request->default_current_acount_payment_method_id;
         // $model->online_price_type_id            = $request->online_price_type_id;
         // $model->instagram                       = $request->instagram;
         // $model->facebook                        = $request->facebook;

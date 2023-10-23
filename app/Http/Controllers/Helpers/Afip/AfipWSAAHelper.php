@@ -12,10 +12,23 @@ class AfipWSAAHelper {
 	}
 
     function define() {
-        define ('TRA_xml', public_path().'/afip/wsaa/TRA.xml'); 
-        define ('TRA_tmp', public_path().'/afip/wsaa/TRA.tmp'); 
-        define ('TA_file', public_path().'/afip/wsaa/TA.xml'); 
-        define ('CMS_file', public_path().'/afip/wsaa/CMS.txt'); 
+        if (!defined('TRA_xml')) {
+            define ('TRA_xml', public_path().'/afip/wsaa/TRA.xml'); 
+        }
+        if (!defined('TRA_tmp')) {
+            define ('TRA_tmp', public_path().'/afip/wsaa/TRA.tmp'); 
+        }
+        if (!defined('TA_file')) {
+            define ('TA_file', public_path().'/afip/wsaa/TA.xml'); 
+        }
+        if (!defined('CMS_file')) {
+            define ('CMS_file', public_path().'/afip/wsaa/CMS.txt'); 
+        }
+
+        // define ('TRA_xml', public_path().'/afip/wsaa/TRA.xml'); 
+        // define ('TRA_tmp', public_path().'/afip/wsaa/TRA.tmp'); 
+        // define ('TA_file', public_path().'/afip/wsaa/TA.xml'); 
+        // define ('CMS_file', public_path().'/afip/wsaa/CMS.txt'); 
         if ($this->testing) {
             $this->cert = 'file://'.realpath(public_path().'/afip/testing/MiCertificado.pem');
             $this->private_key = 'file://'.realpath(public_path().'/afip/testing/MiClavePrivada.key');

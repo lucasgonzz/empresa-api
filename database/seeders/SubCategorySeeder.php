@@ -20,7 +20,7 @@ class SubCategorySeeder extends Seeder
     }
 
     function lucas() {
-        $user = User::where('company_name', 'lucas')
+        $user = User::where('company_name', 'Jugueteria Rosario')
                     ->first();
         $categories = Category::where('user_id', $user->id)
                                 ->get();
