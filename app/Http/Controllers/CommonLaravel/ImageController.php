@@ -15,8 +15,12 @@ class ImageController extends Controller
 
     function setImage(Request $request, $prop_name) {
         $manager = new ImageManager();
-        $croppedImage = $manager->make($request->image_url);              
-        $croppedImage->crop($request->width, $request->height, $request->left, $request->top);
+        $croppedImage = $manager->make($request->image_url); 
+        // Log::info('height: '.$croppedImage->height());
+        // Log::info('width: '.$croppedImage->width());
+        if (isset($request->top)) {
+            $croppedImage->crop($request->width, $request->height, $request->left, $request->top);
+        }           
         if ($request->model_name == 'user') {
             $name = time().rand(1, 100000).'.png';
         } else {
@@ -33,7 +37,7 @@ class ImageController extends Controller
         }
 
         $model = $model_name::find($request->model_id);
-        Log::info('model_name: '.$model_name);
+
         $image = null;
         if ($prop_name == 'has_many') {
             $image = Image::create([
@@ -93,26 +97,4 @@ class ImageController extends Controller
         $storage_name = $storage_name[count($storage_name)-1];
         Storage::disk('public')->delete($storage_name);
     }
-
-    // function savePreImage(Request $request) {
-    //     $file_headers = get_headers($request->image_url);
-    //     if (!$file_headers || $file_headers[0] == 'HTTP/1.1 404 Not Found') {
-    //         return response()->json(['image_saved' => false], 200);
-    //     }
-    //     $name = time().rand(1, 100000).'.webp';
-    //     Storage::disk('public')->put($name, file_get_contents($request->image_url));
-    //     if (env('APP_ENV') == 'local') {
-    //         $name = env('APP_URL').'/storage/'.$name;
-    //     } else {
-    //         $name = env('APP_URL').'/public/storage/'.$name;
-    //     }
-    //     return response()->json(['image_saved' => true, 'image_url' => $name], 201);
-    // }
-
-    // function crop(Request $request) {
-    //     // $img = imagecreatetruecolor($request->width, $request->height);
-    //     $org_img = imagecreatefromjpeg($request->image_url);
-    //     $img2 = imagecrop($org_img, ['x' => $request->left, 'y' => $request->top, 'width' => $request->width, 'height' => $request->height]);
-    //     $name = Storage::disk('public')->put('', $request->image_url);
-    // }
 }

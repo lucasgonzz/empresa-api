@@ -22,11 +22,11 @@ class SuperBudgetPdf extends fpdf {
 		$this->printTitles();
 		$this->printFeatures();
 		$this->printIncluye();
-		// $this->printResumen();
-		// $this->printOfferValidity();
-		// $this->printTiempoEntrega();
-		// $this->printPlazosDePago();
-		// $this->printDescuentos();
+		$this->printResumen();
+		$this->printOfferValidity();
+		$this->printTiempoEntrega();
+		$this->printPlazosDePago();
+		$this->printDescuentos();
 		$this->printTrabajosRealizados();
         $this->Output();
         exit;
@@ -280,7 +280,7 @@ class SuperBudgetPdf extends fpdf {
 	function printDescuentos() {
 		$this->SetFont('Arial', '', 18);
 		$this->x = 10;
-		$this->Cell(190, 10, 'Descuentos por formas de pago', $this->b, 1, 'L');
+		$this->Cell(190, 10, 'Descuentos por metodos de pago', $this->b, 1, 'L');
 
 		$this->SetFont('Arial', 'B', 10);
 
@@ -291,16 +291,16 @@ class SuperBudgetPdf extends fpdf {
 
 		$pago_efectivo = $total - ($total * 10 / 100);
 		$this->x = 10;
-		$this->SetFont('Arial', '', 14);
+		$this->SetFont('Arial', '', 18);
 		$this->Cell(190, 10, '$'.Numbers::price($pago_efectivo), $this->b, 1, 'L');
 
 		$this->x = 10;
 		$this->SetFont('Arial', 'B', 10);
-		$this->Cell(190, 10, '10% de descuento en caso de no necesitar factura', $this->b, 1, 'L');
+		$this->Cell(190, 10, '21% de descuento en caso de no necesitar factura', $this->b, 1, 'L');
 
-		$sin_factura = $pago_efectivo - ($pago_efectivo * 10 / 100);
+		$sin_factura = $pago_efectivo - ($pago_efectivo * 21 / 100);
 		$this->x = 10;
-		$this->SetFont('Arial', '', 14);
+		$this->SetFont('Arial', '', 18);
 		$this->Cell(190, 10, '$'.Numbers::price($sin_factura), $this->b, 1, 'L');
 	}
 
