@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\StockMovementController;
 use App\Models\Article;
 use App\Models\CurrentAcount;
 use App\Models\ProviderOrder;
@@ -73,28 +74,16 @@ class ProviderOrderHelper {
 				// Log::info('Nuevo stock');
 				$data_changed = true;
 			}
-			if (isset($last_received[$article->id])) {
-				$article->stock -= $last_received[$article->id];
-			}
-			$article->stock += $_article['pivot']['received'];
+
+			$data_changed = Self::saveStockMovement($provider_order, $_article, $article, $last_received, $data_changed);
+
 			if ($article->status == 'inactive' && $_article['pivot']['add_to_articles']) {
 				$article->status = 'active';
 				$article->apply_provider_percentage_gain = 1;
 				$article->created_at = Carbon::now();
 				$data_changed = true;
 			}
-			if ($_article['pivot']['update_provider'] && ($article->provider_id != $provider_order->provider_id || (isset($last_received[$article->id]) && $last_received[$article->id] != $_article['pivot']['received']))) {
-				$data_changed = true;
-				$article->provider_id = $provider_order->provider_id;
-				$amount = $_article['pivot']['received'];
-				if (array_key_exists($article->id, $last_received)) {
-					$amount -= $last_received[$article->id];
-				}
-				$article->providers()->attach($provider_order->provider_id, [
-										'amount' => $amount,
-										'cost' 	 => $_article['pivot']['cost'],
-									]);
-			}
+			
 			if ($data_changed && $article->status == 'active') {
 				$article->save();
 				ArticleHelper::setFinalPrice($article);
@@ -104,9 +93,37 @@ class ProviderOrderHelper {
 		}
 	}
 
+	static function saveStockMovement($provider_order, $_article, $article, $last_received, $data_changed) {
+		if ($_article['pivot']['received'] >= 1 
+			&& (!isset($last_received[$article->id]) || $_article['pivot']['received'] != $last_received[$article->id])) {
+			$ct_stock_movement = new StockMovementController();
+			$amount = $_article['pivot']['received'];
+
+			if (isset($last_received[$article->id])) {
+				$amount -= $last_received[$article->id];
+			}
+
+	        $request = new \Illuminate\Http\Request();
+	        $request->model_id = $article->id;
+			if (count($article->addresses) >= 1 && $_article['pivot']['address_id']) {
+	            $request->to_address_id = $_article['pivot']['address_id'];
+			} 
+			$request->amount = $amount;
+			$request->provider_id = $provider_order->provider_id;
+			$request->concepto = 'Pedido Proveedor N° '.$provider_order->num;
+	        $ct_stock_movement->store($request);
+
+	        if ($_article['pivot']['update_provider'] && ($article->provider_id != $provider_order->provider_id)) {
+				$data_changed = true;
+				$article->provider_id = $provider_order->provider_id;
+				$article->save();
+			}
+		}
+		return $data_changed;
+	}
+
 	static function attachArticles($articles, $provider_order) {
 		$last_received = Self::getLastReceived($provider_order);
-		// Self::deleteInactiveArticles($provider_order);
 		$provider_order->articles()->sync([]);
 		foreach ($articles as $article) {
 			if ($article['status'] == 'inactive') {
@@ -135,6 +152,7 @@ class ProviderOrderHelper {
 											'update_provider' 		=> GeneralHelper::getPivotValue($article, 'update_provider'),
 											'cost_in_dollars'	=> $article['pivot']['cost_in_dollars'],
 											'add_to_articles'	=> GeneralHelper::getPivotValue($article, 'add_to_articles'),
+											'address_id'		=> GeneralHelper::getPivotValue($article, 'address_id'),
 											'iva_id'    		=> Self::getIvaId($article),
 										]);
 			// Log::info($article['name'].' cost_in_dollars = '.$article['pivot']['cost_in_dollars']);
@@ -180,6 +198,7 @@ class ProviderOrderHelper {
 	static function saveCurrentAcount($provider_order) {
 		$total = Self::getTotal($provider_order->id);
 		if ($total > 0) {
+			Log::info('Total del pedido '.$provider_order->num.' = '.$total);
 			$current_acount = CurrentAcount::where('provider_order_id', $provider_order->id)->first();
 			if (is_null($current_acount)) {
 				Self::createCurrentAcount($provider_order, $total);
@@ -196,7 +215,7 @@ class ProviderOrderHelper {
 					$current_acount->save();
 					CurrentAcountHelper::checkSaldos('provider', $provider_order->provider_id);
 
-					// Log::info('Se actualizo current_acount con saldo de: '.$current_acount->saldo);
+					// Log::info('Se actualizo current_acount con saldo de: '.$current_acount->saldo.' creado el '.$current_acount->cre);
 				}
 			}
 	        $provider_order->provider->pagos_checkeados = 0;

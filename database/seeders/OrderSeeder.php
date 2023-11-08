@@ -30,7 +30,7 @@ class OrderSeeder extends Seeder
             ],
             [
                 'buyer_id'          => $buyer->id,
-                'order_status_id'   => 2,
+                'order_status_id'   => 1,
                 'deliver'           => 0,
                 'created_at'        => Carbon::now(),
             ],
@@ -44,12 +44,27 @@ class OrderSeeder extends Seeder
                 'created_at'            => $model['created_at'],
                 'user_id'               => $user->id,
             ]);
-            $articles = Article::where('user_id', $user->id)
-                                ->get();
+
+            $articles = [
+                [
+                    'name'          => 'Pintura para cama',
+                    'amount'        => 10,
+                    // 'address_id'    => 1,
+                ],
+                [
+                    'name'          => 'cama una plaza',
+                    'amount'        => 1,
+                ],
+            ];
+
             foreach ($articles as $article) {
-                $order->articles()->attach($article->id, [
-                    'amount'    => 2,
-                    'price'     => $article->final_price,
+                $_article = Article::where('name', $article['name'])
+                                    ->first();
+
+                $order->articles()->attach($_article->id, [
+                    'amount'        => $article['amount'],
+                    'address_id'    => isset($article['address_id']) ? $article['address_id'] : null,
+                    'price'         => $_article->final_price,
                 ]); 
              }     
         }

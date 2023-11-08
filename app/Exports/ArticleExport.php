@@ -20,7 +20,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $article->bar_code,
             $article->provider_code,
             $article->name,
-            !is_null($article->sub_category) && !is_null($article->sub_category->category) ? $article->sub_category->category->name : '',
+            !is_null($article->category) ? $article->category->name : '',
             !is_null($article->sub_category) ? $article->sub_category->name : '',
             $article->stock,
             $article->stock_min,
@@ -35,15 +35,12 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $article->created_at,
             $article->updated_at,
         ];
+        $map = ExportHelper::mapAddresses($map, $article);
         $map = ExportHelper::mapPriceTypes($map, $article);
-        // $map = ExportHelper::mapCharts($map, $article);
         return $map;
     }
 
 
-    /**
-    * @return \Illuminate\Support\Collection
-    */
     public function collection()
     {
         set_time_limit(999999);
@@ -54,11 +51,13 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
                         ->with('article_discounts')
                         ->with('providers')
                         ->with('sub_category')
+                        ->with('addresses')
                         ->orderBy('created_at', 'DESC')
                         ->get();
         // $articles = ArticleHelper::setPrices($articles);
         $articles = $this->setDiscounts($articles);
         // $articles = ArticleHelper::setDiscount($articles);
+        $articles = ExportHelper::setAddresses($articles);
         $articles = ExportHelper::setPriceTypes($articles);
         // $articles = ExportHelper::setCharts($articles);
         // Log::info('Articles:');
@@ -88,6 +87,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             'Ingresado',
             'Actualizado',
         ];
+        $headings = ExportHelper::setAddressesHeadings($headings);
         $headings = ExportHelper::setPriceTypesHeadings($headings);
         // $headings = ExportHelper::setChartsheadings($headings);
         return $headings;

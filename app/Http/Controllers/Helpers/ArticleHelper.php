@@ -2,16 +2,17 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
+use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\MessageHelper;
+use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\StockMovementController;
+use App\Mail\Advise as AdviseMail;
+use App\Mail\ArticleAdvise;
 use App\Models\Advise;
 use App\Models\Article;
 use App\Models\ArticleDiscount;
 use App\Models\Description;
-use App\Http\Controllers\Controller;
-use App\Http\Controllers\Helpers\MessageHelper;
-use App\Http\Controllers\Helpers\Numbers;
-use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
-use App\Mail\Advise as AdviseMail;
-use App\Mail\ArticleAdvise;
 use App\Models\PriceType;
 use App\Models\Sale;
 use App\Models\SpecialPrice;
@@ -122,6 +123,24 @@ class ArticleHelper {
         // echo('-------------------------------------------------------------- </br>');
         $article->timestamps = false;
         $article->save();
+    }
+
+    static function setStockFromStockMovement($article) {
+        Log::info($article->name. ' stock_movements: ');
+        Log::info($article->stock_movements);
+        if (count($article->stock_movements) == 1) {
+            $fisrt_stock_movement = $article->stock_movements[0];
+            if (is_null($fisrt_stock_movement->to_address_id)) {
+                $article->stock = $fisrt_stock_movement->amount;
+                $article->save();
+            } else {
+                $article->addresses()->attach($fisrt_stock_movement->to_address_id, [
+                    'amount'    => $fisrt_stock_movement->amount,
+                ]);
+                Log::info('se agrego address '.$fisrt_stock_movement->to_address->street.' a '.$article->name);
+                Self::setArticleStockFromAddresses($article);
+            }
+        }
     }
 
     static function clearCost($article) {
@@ -292,60 +311,46 @@ class ArticleHelper {
 
     static function discountStock($id, $amount, $sale) {
         $article = Article::find($id);
-        if (!is_null($article) && count($article->addresses) >= 1 && !is_null($sale->address_id)) {
-            foreach ($article->addresses as $article_address) {
-                if ($article_address->pivot->address_id == $sale->address_id) {
-                    $new_amount = $article_address->pivot->amount - $amount;
-                    Log::info('restando '.$new_amount.' en address '.$article_address->street);
-                    $article->addresses()->updateExistingPivot($article_address->id, [
-                        'amount'    => $new_amount,
-                    ]);
-                }
-            }
-        } else if (!is_null($article) && !is_null($article->stock)) {
-            $article->stock -= $amount;
-            $article->timestamps = false;
-            $article->save();
-        }
+        Self::storeStockMovement($article, $sale->id, $amount, $sale->address_id);
+    }
+
+    static function storeStockMovement($article, $sale_id, $amount, $from_address_id = null, $to_address_id = null, $concepto = null) {
+        $ct = new StockMovementController();
+        $request = new \Illuminate\Http\Request();
+        
+        $request->model_id = $article->id;
+        $request->from_address_id = $from_address_id;
+        $request->to_address_id = $to_address_id;
+        $request->amount = $amount;
+        $request->sale_id = $sale_id;
+        $request->concepto = $concepto;
+        $ct->store($request);
     }
 
     static function setArticleStockFromAddresses($article) {
         if (!is_object($article)) {
             $article = Article::find($article['id']);
         }
+
+        $article->load('addresses');
         if (!is_null($article) && count($article->addresses) >= 1) {
+            Log::info('------------------------------------');
+            Log::info('Set Stock From Addresses para '.$article->name);
             $stock = 0;
             foreach ($article->addresses as $article_address) {
                 Log::info('sumando: '.$article_address->pivot->amount.' de '.$article_address->street);
                 $stock += $article_address->pivot->amount;
             }
             $article->stock = $stock;
-            Log::info('setArticleStockFromAddresses: '.$stock);
+            Log::info('quedo en: '.$stock);
             $article->timestamps = false;
             $article->save();
-        } else {
             Log::info('------------------------------------');
-            Log::info('No entro en '.$article->name);
-            Log::info($article->addresses);
-        }
+        } 
     }
 
     static function resetStock($article, $amount, $sale) {
-        if (count($article->addresses) >= 1 && !is_null($sale->address_id)) {
-            foreach ($article->addresses as $article_address) {
-                if ($article_address->pivot->address_id == $sale->address_id) {
-                    $new_amount = $article_address->pivot->amount + $amount;
-                    Log::info('entro en address '.$article_address->street.' con: '.$new_amount);
-                    $article->addresses()->updateExistingPivot($article_address->id, [
-                        'amount'    => $new_amount,
-                    ]);
-                }
-            }
-        } else if (!is_null($article->stock)) {
-            $article->stock += $amount;
-        }
-        $article->timestamps = false;
-        $article->save();
+        Self::storeStockMovement($article, null, $amount, null, $sale->address_id, 'Eliminacion venta');
     }
 
     static function getShortName($name, $length) {

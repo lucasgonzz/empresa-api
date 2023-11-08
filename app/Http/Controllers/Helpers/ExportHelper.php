@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
+use App\Models\Address;
 use App\Models\Article;
 use App\Models\PriceType;
 use App\Models\Sale;
@@ -18,6 +19,22 @@ class ExportHelper {
 								->orderBy('position', 'ASC')
 								->get();
 	}
+
+	static function getAddresses() {
+		return Address::where('user_id', UserHelper::userId())
+						->orderBy('created_at', 'ASC')
+						->get();
+	}
+
+	static function mapAddresses($map, $article) {
+		$addresses = Self::getAddresses();
+		if (count($addresses) >= 1) {
+			foreach ($addresses as $address) {
+				$map[] = $article->{$address->street};
+			}
+		}
+		return $map;
+	}
 	
 	static function mapPriceTypes($map, $article) {
 		$price_types = Self::getPriceTypes();
@@ -28,16 +45,15 @@ class ExportHelper {
 		}
 		return $map;
 	}
-	
-	static function mapCharts($map, $article) {
-		// Log::info($map);
-		// Log::info('Ventas en los ultimos 3 meses');
-		// Log::info($article->{'Ventas en los ultimos 3 meses'});
-		// Log::info($article->{'Ventas en el ultimo mes'});
-		// $map[] = $article->{'Ventas en los ultimos 3 meses'};
-		$map[] = $article->{'Ventas en el ultimo mes'};
-		// Log::info($map);
-		return $map;
+
+	static function setAddressesHeadings($headings) {
+		$addresses = Self::getAddresses();
+		if (count($addresses) >= 1) {
+			foreach ($addresses as $address) {
+				$headings[] = $address->street;
+			}
+		}
+		return $headings;
 	}
 	
 	static function setPriceTypesHeadings($headings) {
@@ -49,12 +65,25 @@ class ExportHelper {
 		}
 		return $headings;
 	}
-	
-	static function setChartsheadings($headings) {
-		// $headings[] = 'Ventas en los ultimos 3 meses';
-		$headings[] = 'Ventas en el ultimo mes';
-		return $headings;
+
+	static function setAddresses($articles) {
+		$addresses = Self::getAddresses();
+		if (count($addresses) >= 1) {
+			foreach ($articles as $article) {
+				foreach ($addresses as $address) {
+					$stock_address = null;
+					foreach ($article->addresses as $article_address) {
+						if ($article_address->id == $address->id) {
+							$stock_address = $article_address->pivot->amount;
+						}
+					}
+					$article->{$address->street} = $stock_address;
+				}
+			}
+		}
+		return $articles;
 	}
+	
 	
 	static function setPriceTypes($articles) {
 		$price_types = Self::getPriceTypes();
@@ -70,34 +99,4 @@ class ExportHelper {
 		return $articles;
 	}
 	
-	static function setCharts($articles) {
-		foreach ($articles as $article) {
-			$from_date = Carbon::today()->subMonth()->startOfMonth();
-			$until_date = Carbon::today()->subMonth()->endOfMonth();
-			$article_id = $article->id;
-
-			$sales_ultimo_mes = Self::getSales($from_date, $until_date, $article_id);
-
-			// $from_date = Carbon::today()->subMonths(3)->startOfMonth();
-			// $sales_ultimos_tres_meses = Self::getSales($from_date, $until_date, $article_id);
-
-	        $article->{'Ventas en el ultimo mes'} = count($sales_ultimo_mes);
-	        // $article->{'Ventas en los ultimos 3 meses'} = 1;
-	        // $article->{'Ventas en los ultimos 3 meses'} = count($sales_ultimos_tres_meses);
-		}
-		return $articles;
-	}
-
-	static function getSales($from_date, $until_date, $article_id) {
-		$user_id = UserHelper::userId();
-		$sales = Sale::where('user_id', $user_id)
-            			->whereDate('created_at', '>=', $from_date)
-                        ->whereDate('created_at', '<=', $until_date)
-                        ->whereHas('articles', function(Builder $query) use ($article_id) {
-                            $query->where('article_id', $article_id);
-                        })
-                        ->pluck('id');
-        return $sales;
-	}
-
 }

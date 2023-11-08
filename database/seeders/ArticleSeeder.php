@@ -232,31 +232,114 @@ class ArticleSeeder extends Seeder
                 'addresses'     => [
                     [
                         'id'        => 1,
-                        'amount'    => 10,
+                        'amount'    => 5,
                     ],
                     [
                         'id'        => 2,
-                        'amount'    => 10,
+                        'amount'    => 5,
                     ],
                 ],
             ],
-            // [
-            //     'bar_code'          => '',
-            //     'provider_code'     => '',
-            //     'name'              => 'Zapatilla adidas',
-            //     'stock'             => null,
-            //     'cost'              => 10000,
-            //     'percentage_gain'   => 50,
-            //     'iva_id'            => 6,
-            //     'images'            => [
-            //         [
-            //             'url'       => 'webp.webp',
-            //         ],
-            //         [
-            //             'url'       => 'rasti.jpg',
-            //         ],
-            //     ],
-            // ],
+            [
+                'bar_code'          => '',
+                'provider_code'     => '',
+                'name'              => 'Pata de cama',
+                'stock'             => 100,
+                'cost'              => 50,
+                'price'             => 100,
+                'sub_category_name' => 'Comedor',
+                'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => 'pata-de-cama.jpg',
+                    ],
+                ],
+                // 'addresses'     => [
+                //     [
+                //         'id'        => 1,
+                //         'amount'    => 50,
+                //     ],
+                //     [
+                //         'id'        => 2,
+                //         'amount'    => 50,
+                //     ],
+                // ],
+            ],
+            [
+                'bar_code'          => '',
+                'provider_code'     => '',
+                'name'              => 'Marco para cama',
+                'stock'             => 100,
+                'cost'              => 50,
+                'price'             => 1000,
+                'sub_category_name' => 'Comedor',
+                'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => 'marco-cama.jpg',
+                    ],
+                ],
+                'addresses'     => [
+                    [
+                        'id'        => 1,
+                        'amount'    => 50,
+                    ],
+                    [
+                        'id'        => 2,
+                        'amount'    => 50,
+                    ],
+                ],
+            ],
+            [
+                'bar_code'          => '',
+                'provider_code'     => '',
+                'name'              => 'Clavos N° 2',
+                'stock'             => 100,
+                'cost'              => 50,
+                'price'             => 500,
+                'sub_category_name' => 'Comedor',
+                'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => 'clavos.jpg',
+                    ],
+                ],
+                'addresses'     => [
+                    [
+                        'id'        => 1,
+                        'amount'    => 50,
+                    ],
+                    [
+                        'id'        => 2,
+                        'amount'    => 50,
+                    ],
+                ],
+            ],
+            [
+                'bar_code'          => '',
+                'provider_code'     => '',
+                'name'              => 'Pintura para cama',
+                'stock'             => 100,
+                'cost'              => 50,
+                'price'             => 500,
+                'sub_category_name' => 'Comedor',
+                'provider_id'       => $rosario->id,
+                'images'            => [
+                    [
+                        'url'       => 'pintura.jpg',
+                    ],
+                ],
+                'addresses'     => [
+                    [
+                        'id'        => 1,
+                        'amount'    => 50,
+                    ],
+                    [
+                        'id'        => 2,
+                        'amount'    => 50,
+                    ],
+                ],
+            ],
             
         ];
         $num = 1;
@@ -309,6 +392,7 @@ class ArticleSeeder extends Seeder
                 $this->setColors($art, $article); 
                 $this->setAddresses($art, $article); 
                 ArticleHelper::setFinalPrice($art, $user->id);
+                ArticleHelper::setArticleStockFromAddresses($art);
             }
         // }
     }

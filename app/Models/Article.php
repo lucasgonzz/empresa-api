@@ -15,6 +15,10 @@ class Article extends Model
         $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'addresses');
     }
 
+    function stock_movements() {
+        return $this->hasMany(StockMovement::class);
+    }
+
     function addresses() {
         return $this->belongsToMany(Address::class)->withPivot('amount');
     }

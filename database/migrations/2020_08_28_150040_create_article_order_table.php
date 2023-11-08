@@ -24,6 +24,7 @@ class CreateArticleOrderTable extends Migration
             $table->bigInteger('variant_id')->nullable();
             $table->bigInteger('color_id')->nullable();
             $table->bigInteger('size_id')->nullable();
+            $table->integer('address_id')->nullable();
             $table->decimal('with_dolar')->nullable();
 
             $table->timestamps();

@@ -10,7 +10,7 @@ use App\Models\Sale;
 
 class CajaChartsHelper {
 	
-	static function charts($instance = null, $from_date, $until_date, $user_id = null) {
+	static function charts($instance = null, $from_date, $until_date, $user_id = null, $slice_articles = true) {
 		$cantidad_ventas = 0;
 		$total_ventas = 0;
 		$categorias = [];
@@ -61,8 +61,11 @@ class CajaChartsHelper {
 					$articulos[$article->id]['amount'] += (float)$article->pivot->amount;
 				} else {
 					$articulos[$article->id] = [
-						'name'		=> $article->name,
-						'amount'	=> (float)$article->pivot->amount, 
+						'num'			=> $article->num,
+						'bar_code'  	=> $article->bar_code,
+						'provider_code' => $article->provider_code,
+						'name'			=> $article->name,
+						'amount'		=> (float)$article->pivot->amount, 
 					]; 
 				}
 
@@ -97,7 +100,9 @@ class CajaChartsHelper {
 			return $b['amount'] - $a['amount']; 
 		});
 
-		$articulos = array_slice($articulos, 0, 30);
+		if ($slice_articles) {
+			$articulos = array_slice($articulos, 0, 30);
+		}
 
 		usort($categorias, function($a, $b) { 
 			return $b['amount'] - $a['amount']; 

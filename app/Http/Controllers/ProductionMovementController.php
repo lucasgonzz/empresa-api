@@ -53,7 +53,6 @@ class ProductionMovementController extends Controller
             'employee_id'                   => $request->employee_id,
             'article_id'                    => $request->article_id,
             'order_production_status_id'    => $request->order_production_status_id,
-            // 'address_id'                    => $request->address_id,
             'amount'                        => $request->amount,
             'current_amount'                => $request->amount,
             'user_id'                       => $this->userId(),

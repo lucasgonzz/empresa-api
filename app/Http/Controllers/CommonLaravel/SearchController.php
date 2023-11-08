@@ -10,10 +10,10 @@ use Illuminate\Support\Facades\Log;
 
 class SearchController extends Controller
 {
-    function search(Request $request, $model_name_param, $_filters = null) {
+    function search(Request $request, $model_name_param, $_filters = null, $paginate = 0) {
         $model_name = GeneralHelper::getModelName($model_name_param);
         $models = $model_name::where('user_id', $this->userId());
-        if (is_null($_filters)) {
+        if (is_null($_filters) || $_filters == 'null') {
             $filters = $request->filters;
         } else {
             $filters = $_filters;
@@ -42,7 +42,7 @@ class SearchController extends Controller
                     // Log::info('Filtrando por text '.$filter['text']);
                 } else if ($filter['type'] == 'search' && $filter['value'] != 0) {
                     $models = $models->where($filter['key'], $filter['value']);
-                    Log::info('Filtrando por text '.$filter['text']);
+                    Log::info('Filtrando por text '.$filter['text'].' value = '.$filter['value']);
                 } else if ($filter['type'] == 'boolean' && $filter['value'] != -1) {
                     $models = $models->where($filter['key'], $filter['value']);
                     // Log::info('Filtrando por boolean '.$filter['text']);
@@ -56,8 +56,12 @@ class SearchController extends Controller
             $models = $models->where('status', 'active');
         }
         $models = $models->withAll()
-                        ->orderBy('created_at', 'DESC')
-                        ->get();
+                        ->orderBy('created_at', 'DESC');
+        if ($paginate) {
+            $models = $models->paginate(100);
+        } else {
+            $models = $models->get();
+        }
         // if ($model_name_param == 'article') {
         //     $models = ArticleHelper::setPrices($models);
         // }

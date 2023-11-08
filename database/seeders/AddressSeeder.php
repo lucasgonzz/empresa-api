@@ -23,6 +23,7 @@ class AddressSeeder extends Seeder
             [
                 'num'       => 2,
                 'street'    => 'San martin 2',
+                'default_address'    => 1,
                 'user_id'   => 1,
             ],
             [

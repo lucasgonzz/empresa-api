@@ -27,23 +27,27 @@ class RecipeSeeder extends Seeder
         ]);
         $articles = [
             [
-                'name'                          => 'Martillo',
+                'name'                          => 'Pata de cama',
                 'order_production_status_id'    => 1,
+                'address_id'                    => 1,
+                'amount'                        => 4,
+            ],
+            [
+                'name'                          => 'Marco para cama',
+                'order_production_status_id'    => 1,
+                'address_id'                    => 1,
                 'amount'                        => 1,
             ],
             [
-                'name'                          => 'Martillo grande',
+                'name'                          => 'Clavos N° 2',
+                'order_production_status_id'    => 1,
+                'address_id'                    => 1,
+                'amount'                        => 10,
+            ],
+            [
+                'name'                          => 'Pintura para cama',
                 'order_production_status_id'    => 2,
-                'amount'                        => 2,
-            ],
-            [
-                'name'                          => 'Pinza',
-                'order_production_status_id'    => 3,
-                'amount'                        => 2,
-            ],
-            [
-                'name'                          => 'Alicate',
-                'order_production_status_id'    => 4,
+                'address_id'                    => 1,
                 'amount'                        => 1,
             ],
         ];
@@ -53,6 +57,7 @@ class RecipeSeeder extends Seeder
                             ->first();
             $recipe->articles()->attach($art->id, [
                                     'order_production_status_id'    => $article['order_production_status_id'],
+                                    'address_id'                    => $article['address_id'],
                                     'amount'                        => $article['amount'],
                                 ]);
         }

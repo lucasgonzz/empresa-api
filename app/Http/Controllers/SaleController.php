@@ -73,6 +73,8 @@ class SaleController extends Controller
         $model = Sale::where('id', $id)
                         ->with('articles')
                         ->first();
+        SaleHelper::detachItems($model);
+        
         $model->discounts_in_services               = $request->discounts_in_services;
         $model->surchages_in_services               = $request->surchages_in_services;
         $model->current_acount_payment_method_id    = $request->current_acount_payment_method_id;
@@ -84,7 +86,6 @@ class SaleController extends Controller
         $model->save();
         $previus_client_id                          = $model->client_id;
 
-        SaleHelper::detachItems($model);
         SaleHelper::attachProperies($model, $request, false);
 
         $model->updated_at = Carbon::now();
@@ -119,6 +120,7 @@ class SaleController extends Controller
                 ArticleHelper::setArticleStockFromAddresses($article);
             }
             $model->delete();
+            $this->sendDeleteModelNotification('sale', $model->id);
         }
         return response(null);
     }

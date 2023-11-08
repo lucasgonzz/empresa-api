@@ -16,11 +16,11 @@ class UpdateFeatureSeeder extends Seeder
     {
         $models = [
             [
-                'name' => 'Imprimir lista de articulos en PDF',
-                'description' => 'Desde el LISTADO, luego de realizar una busqueda o una seleccion multiple, se podra imprimir una lista en PDF con los articulos sin imagenes.',
+                'name' => 'Movimientos de Stock',
+                'description' => 'Sumamos una nueva instancia a la hora de trabajar con el stock de los articulos, resumimos lo mas importante en un video. Si no lo has visto, comunicate con tu empleador para que te facilite el link.',
             ],
             [
-                'name' => 'Pedidos a proveedores y Presupuestos HISTORICOS',
+                'name' => 'Pedidos Online HISTORICOS',
                 'description' => 'En estas secciones, se podran seguir visualizando los resultados filtrados por una fecha, o se podra ver el historial completo todo junto. Esta opcion aparece en la isquina superior derecha.',
             ],
         ];

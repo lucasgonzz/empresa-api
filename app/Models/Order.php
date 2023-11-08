@@ -13,7 +13,7 @@ class Order extends Model
     }
 
     function articles() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('cost', 'price', 'amount', 'variant_id', 'color_id', 'size_id', 'with_dolar');
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('cost', 'price', 'amount', 'variant_id', 'color_id', 'size_id', 'with_dolar', 'address_id');
     }
 
     function payment_card_info() {

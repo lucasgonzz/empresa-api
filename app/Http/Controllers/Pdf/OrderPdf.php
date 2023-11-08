@@ -27,7 +27,8 @@ class OrderPdf extends fpdf {
 
 	function getFields() {
 		return [
-			'Nombre' 	=> 110,
+			'C. Barras' => 35,
+			'Nombre' 	=> 75,
 			'Precio' 	=> 30,
 			'Cantidad'  => 30,
 			'Total' 	=> 30,
@@ -84,9 +85,11 @@ class OrderPdf extends fpdf {
 	function printModel($model) {
 		$this->x = 5;
 		$y_1 = $this->y;
+		$this->Cell($this->getFields()['C. Barras'], $this->line_height, $model->bar_code, $this->b, 0, 'L');
+
 		$this->MultiCell($this->getFields()['Nombre'], $this->line_height, $model->name, $this->b, 'L', false);
 	    $y_2 = $this->y;
-		$this->x = $this->getFields()['Nombre']+5;
+		$this->x = $this->getFields()['C. Barras']+$this->getFields()['Nombre']+5;
 		$this->y = $y_1;
 
 		$this->Cell($this->getFields()['Precio'], $this->line_height, '$'.Numbers::price($model->pivot->price), $this->b, 0, 'L');

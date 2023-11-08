@@ -2,10 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Exports\ArticleClientsExport;
 use App\Exports\ArticleExport;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Pdf\ArticleListPdf;
 use App\Http\Controllers\Pdf\ArticlePdf;
@@ -69,7 +71,7 @@ class ArticleController extends Controller
         $model->percentage_gain                   = $request->percentage_gain;
         $model->provider_price_list_id            = $request->provider_price_list_id;
         $model->iva_id                            = $request->iva_id;
-        $model->stock                             = $request->stock;
+        // $model->stock                             = $request->stock;
         $model->stock_min                         = $request->stock_min;
         $model->online                            = $request->online;
         $model->in_offer                          = $request->in_offer;
@@ -80,14 +82,16 @@ class ArticleController extends Controller
         $model->save();
 
         GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
-        ArticleHelper::setArticleStockFromAddresses($model);
+        // ArticleHelper::setArticleStockFromAddresses($model);
 
         ArticleHelper::setDeposits($model, $request);
 
         $this->updateRelationsCreated('article', $model->id, $request->childrens);
 
         ArticleHelper::setFinalPrice($model);
-        ArticleHelper::attachProvider($request, $model);
+        // ArticleHelper::attachProvider($request, $model);
+
+        ArticleHelper::setStockFromStockMovement($model);
 
         $this->sendAddModelNotification('article', $model->id);
 
@@ -131,7 +135,7 @@ class ArticleController extends Controller
         $model->save();
         
         GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
-        ArticleHelper::setArticleStockFromAddresses($model);
+        // ArticleHelper::setArticleStockFromAddresses($model);
 
         ArticleHelper::setFinalPrice($model);
         ArticleHelper::setDeposits($model, $request);
@@ -162,16 +166,19 @@ class ArticleController extends Controller
 
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
-        // Log::info('colunbs');
-        // Log::info($columns);
-        // Excel::import(new ProvinciaImport(), $request->file('models'));
-        // Excel::import(new LocationImport(), $request->file('models'));
+        $columns = ArticleImportHelper::addAddressesColumns($columns);
+        Log::info('colunbs');
+        Log::info($columns);
         Excel::import(new ArticleImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id), $request->file('models'));
         $this->sendUpdateModelsNotification('article');
     }
 
     function export() {
         return Excel::download(new ArticleExport, 'comerciocity-articulos_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
+    }
+
+    function clientsExport() {
+        return Excel::download(new ArticleClientsExport, 'cc-articulos-clientes_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
     }
 
     function providersHistory($article_id) {

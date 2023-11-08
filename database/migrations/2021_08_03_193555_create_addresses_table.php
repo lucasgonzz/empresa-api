@@ -26,6 +26,7 @@ class CreateAddressesTable extends Migration
             $table->string('description')->nullable();
             $table->integer('buyer_id')->unsigned()->nullable();
             $table->integer('user_id')->unsigned()->nullable();
+            $table->boolean('default_address')->nullable()->default(0);
             $table->timestamps();
         });
     }

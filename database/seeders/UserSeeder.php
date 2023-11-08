@@ -40,9 +40,9 @@ class UserSeeder extends Seeder
                 'home_position'                 => 1,
                 'download_articles'             => 1,
                 'online'                        => 'http://tienda.local:8081',
-                'payment_expired_at'            => Carbon::now()->addDays(1),
+                'payment_expired_at'            => Carbon::now()->addDays(10),
                 'last_user_activity'            => Carbon::now(),
-                'plan_id'                       => 4,
+                'plan_id'                       => 3,
                 'plan_discount'                 => 27,
                 'online_configuration'          => [
                     'online_price_type_id'          => 1,

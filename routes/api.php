@@ -8,7 +8,7 @@ Route::middleware('auth:sanctum')->group(function() {
     // CommonLaravel 
     // ----------------------------------------------------------------------------------------------------
     // Generals
-    Route::post('search/{model_name}', 'CommonLaravel\SearchController@search');
+    Route::post('search/{model_name}/{_filters?}/{paginate?}', 'CommonLaravel\SearchController@search');
     Route::post('search-from-modal/{model_name}', 'CommonLaravel\SearchController@searchFromModal');
     Route::post('search/save-if-not-exist/{model_name}/{propertye}/{query}', 'CommonLaravel\SearchController@saveIfNotExist');
     Route::get('previus-day/{model_name}/{index}', 'CommonLaravel\PreviusDayController@previusDays');
@@ -57,6 +57,9 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::get('/article/sales/{id}/{from_date}/{until_date}', 'ArticleController@sales');
     Route::get('/article/providers-history/{article_id}', 'ArticleController@providersHistory');
 
+    Route::resource('stock-movement', 'StockMovementController')->except(['index', 'show']);
+    Route::get('stock-movement/{article_id}', 'StockMovementController@index');
+
     Route::resource('sale', 'SaleController');
     Route::get('sale/from-date/{from_date}/{until_date?}', 'SaleController@index');
     Route::put('sale/update-prices/{id}', 'SaleController@updatePrices');
@@ -80,14 +83,14 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::resource('price-type', 'PriceTypeController');
 
     Route::resource('provider-order', 'ProviderOrderController');
-    Route::get('provider-order/from-date/{from_date}/{until_date?}', 'ProviderOrderController@index');
+    Route::get('provider-order/from-date/{from_date?}/{until_date?}', 'ProviderOrderController@index');
     Route::get('provider-order/days-to-advise/not-received', 'ProviderOrderController@indexDaysToAdvise');
     Route::resource('provider-order-status', 'ProviderOrderStatusController');
     Route::resource('provider-order-afip-ticket', 'ProviderOrderAfipTicketController');
     
-    Route::resource('order', 'OrderController')->except(['index']);
+    Route::resource('order', 'OrderController');
     Route::get('order/unconfirmed/models', 'OrderController@indexUnconfirmed');
-    Route::get('order/from-date/{from_date}/{until_date?}', 'OrderController@index');
+    Route::get('order/from-date/{from_date?}/{until_date?}', 'OrderController@index');
     Route::put('order/update-status/{order_id}', 'OrderController@updateStatus');
     Route::put('order/cancel/{order_id}', 'OrderController@cancel');
 

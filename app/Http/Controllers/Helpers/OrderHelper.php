@@ -13,6 +13,7 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\PaywayController;
+use App\Http\Controllers\StockMovementController;
 use App\Listerners\OrderConfirmedListene;
 use App\Models\Article;
 use App\Models\ArticleVariant;
@@ -116,21 +117,20 @@ class OrderHelper {
         if ($model->order_status->name == 'Sin confirmar') {
             foreach ($model->articles as $article) {
                 $_article = Article::find($article->id);
-                if (count($_article->article_variants) >= 1) {
-                    Log::info('se va a buscar article_variant id: '.$article->pivot->variant_id);
-                    $article_variant = ArticleVariant::find($article->pivot->variant_id);
-                    if (!is_null($article_variant->stock)) {
-                        $_article->timestamps = false;
-                        $article_variant->stock -= $article->pivot->amount;
-                        $article_variant->save();
-                    }
+
+                $ct_stock_movement = new StockMovementController();
+
+                $request = new \Illuminate\Http\Request();
+                $request->model_id = $article->id;
+
+                if (!is_null($article->pivot->address_id) && $article->pivot->address_id != 0) {
+                    $request->from_address_id = $article->pivot->address_id;
+                    $request->amount = $article->pivot->amount;
                 } else {
-                    if (!is_null($_article->stock)) {
-                        $_article->timestamps = false;
-                        $_article->stock -= $article->pivot->amount;
-                        $_article->save();
-                    }
+                    $request->amount = -$article->pivot->amount;
                 }
+                $request->concepto = 'Pedido Online N° '.$model->num;
+                $ct_stock_movement->store($request);
             }
         }
     }

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\StockMovementController;
 use App\Models\OrderProductionStatus;
 use App\Models\ProductionMovement;
 use Carbon\Carbon;
@@ -53,24 +54,22 @@ class ProductionMovementHelper {
 		if (!is_null($article_recipe->stock) || count($article_recipe->addresses) >= 1) {
 			$amount_to_discount = $production_movement->amount - $last_amount;
 			$amount_to_discount = $article_recipe->pivot->amount * $amount_to_discount;
+    		
+
+			$stock_movement_ct = new StockMovementController();
+    		$request = new \Illuminate\Http\Request();
+			$request->model_id = $article_recipe->id;
+			$request->amount = $amount_to_discount;
+			$request->concepto = 'Prod. '.$production_movement->article->name;
 			
 			if (!is_null($article_recipe->pivot->address_id) && count($article_recipe->addresses) >= 1) {
-				foreach ($article_recipe->addresses as $address) {
-					if ($address->id == $article_recipe->pivot->address_id) {
-						Log::info('Stock de '.$article_recipe->name.'en la direccion '.$address->street.': '.$address->pivot->amount);
-						$new_amount = $address->pivot->amount - $amount_to_discount;
-						$article_recipe->addresses()->updateExistingPivot($address->id, [
-							'amount' => $new_amount,
-						]);
-					}
-				}
+				$request->from_address_id = $article_recipe->pivot->address_id;
 			} else {
-				Log::info('Stock de '.$article_recipe->name.': '.$article_recipe->stock);
-				Log::info('Se descontaran '.$amount_to_discount);
-				$article_recipe->stock -= $amount_to_discount;
-				$article_recipe->save();
+				$request->amount = -$amount_to_discount;
 			}
-        	$instance->sendAddModelNotification('article', $article_recipe->id, false);
+           	$stock_movement_ct->store($request);
+
+        	// $instance->sendAddModelNotification('article', $article_recipe->id, false);
 			Log::info('Nuevo Stock de '.$article_recipe->name.': '.$article_recipe->stock);
 			// Log::info('Nuevo Stock de '.$article_recipe->name.': '.$article_recipe->stock);
 		}
@@ -78,28 +77,19 @@ class ProductionMovementHelper {
 	}
 
 	static function increaseStock($article_recipe, $production_movement, $instance) {
-		Log::info('Stock de '.$article_recipe->name.': '.$article_recipe->stock);
-		Log::info('Se repondran '.$article_recipe->pivot->amount * $production_movement->amount);
-
 		if (!is_null($article_recipe->stock) || count($article_recipe->addresses) >= 1) {
 			$amount_to_increase = $article_recipe->pivot->amount * $production_movement->amount;
+			
+			$stock_movement_ct = new StockMovementController();
+    		$request = new \Illuminate\Http\Request();
+			$request->model_id = $article_recipe->id;
+			$request->amount = $amount_to_increase;
+			$request->concepto = 'Eliminacion Mov. Prod. '.$production_movement->article->name;
 
 			if (!is_null($article_recipe->pivot->address_id) && count($article_recipe->addresses) >= 1) {
-				foreach ($article_recipe->addresses as $address) {
-					if ($address->id == $article_recipe->pivot->address_id) {
-						Log::info('Stock de '.$article_recipe->name.'en la direccion '.$address->street.': '.$address->pivot->amount);
-						$new_amount = $address->pivot->amount - $amount_to_increase;
-						$article_recipe->addresses()->updateExistingPivot($address->id, [
-							'amount' => $new_amount,
-						]);
-					}
-				}
-			} else if (!is_null($article_recipe->stock)) {
-				$article_recipe->stock += $article_recipe->pivot->amount * $production_movement->amount;
-				$article_recipe->save();
-	        	$instance->sendAddModelNotification('article', $article_recipe->id, false);
-				Log::info('Nuevo Stock de '.$article_recipe->name.': '.$article_recipe->stock);
-			}
+				$request->to_address_id = $article_recipe->pivot->address_id;
+			} 
+           	$stock_movement_ct->store($request);
 		}
 
 	}

@@ -26,6 +26,7 @@ use App\Models\Sale;
 use App\Models\SaleType;
 use App\Models\SellerCommission;
 use App\Models\Service;
+use App\Models\StockMovement;
 use App\Models\Variant;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -94,7 +95,7 @@ class SaleHelper extends Controller {
     }
 
     static function attachProperies($model, $request, $from_store = true) {
-        Self::attachArticles($model, $request->items, $from_store);
+        Self::attachArticles($model, $request->items);
         Self::attachCombos($model, $request->items);
         Self::attachServices($model, $request->items);
         Self::attachDiscounts($model, $request->discounts_id);
@@ -196,12 +197,8 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function attachArticles($sale, $articles, $from_store) {
-        if (!$from_store) {
-            // Log::info('Actualizado venta id: '.$sale->id.' num: '.$sale->num);
-            // Log::info('Llegaron estos articulos');
-            // Log::info($articles);
-        }
+    static function attachArticles($sale, $articles) {
+        
         foreach ($articles as $article) {
             if (isset($article['is_article'])) {
                 $sale->articles()->attach($article['id'], [
@@ -214,7 +211,6 @@ class SaleHelper extends Controller {
                                                             'created_at'        => Carbon::now(),
                                                         ]);
                 ArticleHelper::discountStock($article['id'], $article['amount'], $sale);
-                ArticleHelper::setArticleStockFromAddresses($article);
             }
         }
     }
@@ -341,21 +337,21 @@ class SaleHelper extends Controller {
     }
 
     static function detachItems($sale) {
-        Log::info('detachItems');
         foreach ($sale->articles as $article) {
-            Log::info($sale->address_id);
             if (count($article->addresses) >= 1 && !is_null($sale->address_id)) {
-                Log::info('detachItems entro en addresses');
                 foreach ($article->addresses as $article_address) {
                     if ($article_address->pivot->address_id == $sale->address_id) {
                         $new_amount = $article_address->pivot->amount + $article->pivot->amount;
-                        Log::info('Se regreso el stock de '.$article_address->street.' a '.$new_amount);
+                        Log::info('------------------------------------');
+                        Log::info('Reseteando stock de '.$article->name);
+                        Log::info('Se regresaron '.$article->pivot->amount.' unidades al stock de '.$article_address->street);
+                        Log::info('El stock de '.$article_address->street.' quedo en '.$new_amount);
                         $article->addresses()->updateExistingPivot($article_address->id, [
                             'amount'    => $new_amount,
                         ]);
                     }
                 }
-                ArticleHelper::setArticleStockFromAddresses($article);
+                // ArticleHelper::setArticleStockFromAddresses($article);
             } else if (!is_null($article->stock)) {
                 Log::info('detachItems NO entro en addresses');
                 $stock = 0;
@@ -363,15 +359,23 @@ class SaleHelper extends Controller {
                 $article->stock += $stock;
                 $article->save();
             }
+            Self::deleteStockMovement($sale, $article);
         }
 
-        foreach ($sale->articles as $article) {
-            ArticleHelper::setArticleStockFromAddresses($article);
-        }
+        // foreach ($sale->articles as $article) {
+        //     ArticleHelper::setArticleStockFromAddresses($article);
+        // }
 
         $sale->articles()->detach();
         $sale->combos()->detach();
         $sale->services()->detach();
+    }
+
+    static function deleteStockMovement($sale, $article) {
+        $stock_movement = StockMovement::where('sale_id', $sale->id)
+                                        ->where('article_id', $article->id)
+                                        ->first()
+                                        ->delete();
     }
 
     static function getTotalSale($sale, $with_discount = true, $with_surchages = true, $with_seller_commissions = false) {

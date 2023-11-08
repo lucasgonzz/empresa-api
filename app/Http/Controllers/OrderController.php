@@ -14,17 +14,19 @@ use Illuminate\Support\Facades\Log;
 class OrderController extends Controller
 {
 
-    public function index($from_date, $until_date = null) {
+    public function index($from_date = null, $until_date = null) {
         $models = Order::where('user_id', $this->userId())
                         ->orderBy('created_at', 'DESC')
                         ->withAll();
-        if (!is_null($until_date)) {
-            $models = $models->whereDate('created_at', '>=', $from_date)
-                            ->whereDate('created_at', '<=', $until_date);
-        } else {
-            $models = $models->whereDate('created_at', $from_date);
+        if (!is_null($from_date)) {
+            if (!is_null($until_date)) {
+                $models = $models->whereDate('created_at', '>=', $from_date)
+                                ->whereDate('created_at', '<=', $until_date);
+            } else {
+                $models = $models->whereDate('created_at', $from_date);
+            }
         }
-
+        
         $models = $models->get();
         $models = OrderHelper::setArticlesVariant($models);
         return response()->json(['models' => $models], 200);
@@ -70,7 +72,7 @@ class OrderController extends Controller
 
     public function update(Request $request, $id) {
         $model = Order::find($id);
-        GeneralHelper::attachModels($model, 'articles', $request->articles, ['price', 'amount']);
+        GeneralHelper::attachModels($model, 'articles', $request->articles, ['price', 'amount', 'address_id']);
         $this->sendAddModelNotification('Order', $model->id);
         return response()->json(['model' => $this->fullModel('Order', $model->id)], 200);
     }

@@ -19,7 +19,7 @@ class ProviderController extends Controller
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
                             ->where('status', 'active')
-                            ->get();
+                            ->paginate(100);
         return response()->json(['models' => $models], 200);
     }
 

@@ -58,7 +58,7 @@ class DatabaseSeeder extends Seeder
             // $this->call(ScheduleSeeder::class);
             $this->call(AddressSeeder::class);
             // $this->call(EmployeeSeeder::class);
-            $this->call(SaleSeeder::class);
+            // $this->call(SaleSeeder::class);
             // $this->call(WorkdaySeeder::class);
             // $this->call(ConditionSeeder::class);
             $this->call(TitleSeeder::class);
@@ -76,7 +76,7 @@ class DatabaseSeeder extends Seeder
             $this->call(PriceTypeSeeder::class);
             $this->call(BudgetStatusSeeder::class);
             $this->call(BudgetSeeder::class);
-            // $this->call(RecipeSeeder::class);
+            $this->call(RecipeSeeder::class);
             // $this->call(OrderProductionSeeder::class);
             $this->call(SuperBudgetSeeder::class);
             // $this->call(CreditCardSeeder::class);
@@ -84,7 +84,7 @@ class DatabaseSeeder extends Seeder
             $this->call(UpdateFeatureSeeder::class);
             $this->call(OrderSeeder::class);
             $this->call(InventoryLinkageScopeSeeder::class);
-            $this->call(AfipTicketSeeder::class);
+            // $this->call(AfipTicketSeeder::class);
             // $this->call(ArticlePropertyTypeSeeder::class);
             // $this->call(ArticlePropertyValueSeeder::class);
             // $this->call(ArticlePropertySeeder::class);

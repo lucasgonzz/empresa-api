@@ -17,11 +17,12 @@ class OrderProductionStatusSeeder extends Seeder
     {
         $user = User::where('company_name', 'Jugueteria Rosario')->first();
         $models = [
-            ['name' => 'Deposito', 'position' => 1, 'user_id' => $user->id], 
-            ['name' => 'Producción', 'position' => 2, 'user_id' => $user->id], 
-            ['name' => 'Entrega', 'position' => 3, 'user_id' => $user->id], 
-            ['name' => 'Colocación', 'position' => 4, 'user_id' => $user->id],
-            ['name' => 'Pintura', 'position' => 5, 'user_id' => $user->id],
+            ['name' => 'Armado', 'position' => 1, 'user_id' => $user->id], 
+            ['name' => 'Pintura', 'position' => 2, 'user_id' => $user->id], 
+            ['name' => 'Terminado', 'position' => 3, 'user_id' => $user->id], 
+            // ['name' => 'Entrega', 'position' => 3, 'user_id' => $user->id], 
+            // ['name' => 'Colocación', 'position' => 4, 'user_id' => $user->id],
+            // ['name' => 'Pintura', 'position' => 5, 'user_id' => $user->id],
         ];
         foreach ($models as $model) {
             OrderProductionStatus::create($model);

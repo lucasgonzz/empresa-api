@@ -23,6 +23,11 @@ Route::get('/reportes/inventario/{company_name}/{periodo}', 'ReporteController@i
 
 Route::get('/reportes/clientes/{company_name}/{periodo}', 'ReporteController@clientes');
 
+Route::get('/reportes/excel-articulos/{company_name}/{mes}', 'ReporteController@excel_articulos');
+
+// Clientes Potenciales
+Route::get('/cliente-potencial/{nombre_negocio}/{email}', 'ClientePotencialController@clientePotencial');
+
 
 
 Route::get('/super-budget', 'SuperBudgetController@pdf');
@@ -85,6 +90,7 @@ Route::get('order/pdf/{id}/', 'OrderController@pdf');
 
 // Excel
 Route::get('article/excel/export', 'ArticleController@export');
+Route::get('article-clients/excel/export', 'ArticleController@clientsExport');
 Route::get('client/excel/export', 'ClientController@export');
 Route::get('provider/excel/export', 'ProviderController@export');
 
