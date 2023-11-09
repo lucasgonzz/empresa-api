@@ -141,6 +141,7 @@ class ArticleController extends Controller
         ArticleHelper::setDeposits($model, $request);
         ArticleHelper::checkAdvises($model);
         ArticleHelper::attachProvider($request, $model, $actual_provider_id, $actual_stock);
+
         $this->sendAddModelNotification('article', $model->id);
 
         $inventory_linkage_helper = new InventoryLinkageHelper();

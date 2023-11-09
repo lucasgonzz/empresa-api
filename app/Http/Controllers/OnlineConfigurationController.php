@@ -29,7 +29,9 @@ class OnlineConfigurationController extends Controller
         $model->quienes_somos                   = $request->quienes_somos;                     
         $model->default_article_image_url       = $request->default_article_image_url;                     
         $model->mensaje_contacto                = $request->mensaje_contacto;                     
-        $model->show_articles_without_images    = $request->show_articles_without_images;                     
+        $model->show_articles_without_images    = $request->show_articles_without_images;
+        $model->save_sale_after_finish_order    = $request->save_sale_after_finish_order;
+                             
         $model->show_articles_without_stock     = $request->show_articles_without_stock;
         $model->stock_null_equal_0              = $request->stock_null_equal_0;
 

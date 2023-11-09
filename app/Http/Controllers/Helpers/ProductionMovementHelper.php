@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\StockMovementController;
 use App\Models\OrderProductionStatus;
@@ -14,11 +15,9 @@ class ProductionMovementHelper {
 	static function checkRecipe($production_movement, $instance, $last_amount = 0, $increase_stock = false) {
 		if (!is_null($production_movement->article->recipe)) {
 			foreach ($production_movement->article->recipe->articles as $article_recipe) {
-				$pivot_order_production_status = $instance->getModelBy('order_production_statuses', 'id', $article_recipe->pivot->order_production_status_id);
-				if ($production_movement->order_production_status->position - 1 == $pivot_order_production_status->position) {
-					Log::info('--------------------------');
-					Log::info('Entro en receta de '.$production_movement->article->name.'. En Paso productivo '.$production_movement->order_production_status->name.' con insumo '.$article_recipe->name. ' que en la reseta esta en el paso '.$pivot_order_production_status->name);
-					// Log::info('Necesita '.$article_recipe->pivot->amount.' de '.$article_recipe->name);
+				if (Self::restar_insumos_en_este_estado($instance, $production_movement, $article_recipe)) {
+					// Log::info('--------------------------');
+					// Log::info('Entro en receta de '.$production_movement->article->name.'. En Paso productivo '.$production_movement->order_production_status->name.' con insumo '.$article_recipe->name. ' que en la reseta esta en el paso '.$pivot_order_production_status->name);
 					if ($increase_stock) {
 						Self::increaseStock($article_recipe, $production_movement, $instance);
 					} else {
@@ -28,6 +27,18 @@ class ProductionMovementHelper {
 			}
 		}
 		Self::checkIsLastStatus($production_movement, $instance);
+	}
+
+	static function restar_insumos_en_este_estado($instance, $production_movement, $article_recipe) {
+		$user = UserHelper::getFullModel();
+
+		$pivot_order_production_status = $instance->getModelBy('order_production_statuses', 'id', $article_recipe->pivot->order_production_status_id);
+		
+		$current_position = $production_movement->order_production_status->position;
+		if ($user->discount_stock_from_recipe_after_advance_to_next_status) {
+			$current_position -= 1;
+		}
+		return $current_position == $pivot_order_production_status->position;
 	}
 
 	static function checkArticleAddresses($production_movement) {
@@ -42,11 +53,24 @@ class ProductionMovementHelper {
 											->orderBy('position', 'DESC')
 											->first();
 		if ($production_movement->order_production_status_id == $last_status->id) {
-			if (!is_null($production_movement->article->stock)) {
-				$production_movement->article->stock += $production_movement->amount;
-				$production_movement->article->save();				
-        		$instance->sendAddModelNotification('article', $production_movement->article->id, false);
-			} 
+			
+			$request = new \Illuminate\Http\Request();
+            $request->model_id = $production_movement->article_id;
+            $request->amount = $production_movement->amount;
+            $request->concepto = 'Produccion terminada';
+
+            Log::info('checkIsLastStatus');
+            Log::info('count addresses: '.count($production_movement->article->addresses));
+            Log::info('!is_null address_id: '.!is_null($production_movement->article->recipe->address_id));
+			if (count($production_movement->article->addresses) >= 1 
+				&& !is_null($production_movement->article->recipe->address_id)) {
+            	$request->to_address_id = $production_movement->article->recipe->address_id;
+				Log::info('entro y se puse address_id: '.$production_movement->article->recipe->address_id);
+			}
+
+			$stock_movement_ct = new StockMovementController();
+            $stock_movement_ct->store($request);
+        	$instance->sendAddModelNotification('article', $production_movement->article->id, false);
 		}
 	}
 

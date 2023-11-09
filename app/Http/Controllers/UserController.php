@@ -57,17 +57,7 @@ class UserController extends Controller
         $model->ask_amount_in_vender            = $request->ask_amount_in_vender;
         $model->sale_ticket_width               = $request->sale_ticket_width;
         $model->default_current_acount_payment_method_id               = $request->default_current_acount_payment_method_id;
-        // $model->online_price_type_id            = $request->online_price_type_id;
-        // $model->instagram                       = $request->instagram;
-        // $model->facebook                        = $request->facebook;
-        // $model->quienes_somos                   = $request->quienes_somos;
-        // $model->mensaje_contacto                = $request->mensaje_contacto;
-        // $model->show_articles_without_images    = $request->show_articles_without_images;
-        // $model->show_articles_without_stock     = $request->show_articles_without_stock;
-        // $model->order_description               = $request->order_description;
-        // $model->online_price_surchage           = $request->online_price_surchage;
-        // $model->has_delivery                    = $request->has_delivery;
-        // $model->pausar_tienda_online            = $request->pausar_tienda_online;
+        $model->discount_stock_from_recipe_after_advance_to_next_status               = $request->discount_stock_from_recipe_after_advance_to_next_status;
         $model->save();
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_dolar, $request->dollar);
         $model = UserHelper::getFullModel();

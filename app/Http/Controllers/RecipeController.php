@@ -25,6 +25,7 @@ class RecipeController extends Controller
             'num'                       => $this->num('recipes'),
             'article_id'                => $request->article_id,
             'article_cost_from_recipe'  => $request->article_cost_from_recipe,
+            'address_id'                => $request->address_id,
             'user_id'                   => $this->userId(),
         ]);
         RecipeHelper::attachArticles($model, $request->articles);
@@ -41,6 +42,7 @@ class RecipeController extends Controller
         $model = Recipe::find($id);
         $model->article_cost_from_recipe    = $request->article_cost_from_recipe;
         $model->article_id                  = $request->article_id;
+        $model->address_id                  = $request->address_id;
         $model->save();
         RecipeHelper::attachArticles($model, $request->articles);
         RecipeHelper::checkCostFromRecipe($model, $this);
@@ -61,7 +63,6 @@ class RecipeController extends Controller
                                 $query->where('article_id', $article_id);
                             })
                             ->get();
-        Log::info($recipes);
         $models = [];
         foreach ($recipes as $recipe) {
             foreach ($recipe->articles as $article) {

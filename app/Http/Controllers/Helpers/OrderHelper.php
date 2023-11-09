@@ -114,7 +114,7 @@ class OrderHelper {
     }
 
     static function discountArticleStock($model) {
-        if ($model->order_status->name == 'Sin confirmar') {
+        if ($model->order_status->name == 'Sin confirmar' && Self::saveSaleAfterFinishOrder()) {
             foreach ($model->articles as $article) {
                 $_article = Article::find($article->id);
 
@@ -155,8 +155,13 @@ class OrderHelper {
         }
     }
 
+    static function saveSaleAfterFinishOrder() {
+        $user = UserHelper::getFullModel();
+        return $user->online_configuration->save_sale_after_finish_order;
+    }
+
     static function saveSale($order, $instance) {
-        if ($order->order_status->name == 'Entregado') {
+        if ($order->order_status->name == 'Entregado' && Self::saveSaleAfterFinishOrder()) {
             $client_id = null;
             if (!is_null($order->buyer->comercio_city_client)) {
                 $client_id = $order->buyer->comercio_city_client_id;

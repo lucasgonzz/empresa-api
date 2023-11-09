@@ -23,7 +23,8 @@ class RecipeSeeder extends Seeder
         $recipe = Recipe::create([
             'num'           => 1,
             'article_id'    => $article->id,
-            'user_id'       => $user->id
+            'address_id'    => 1,
+            'user_id'       => $user->id,
         ]);
         $articles = [
             [
