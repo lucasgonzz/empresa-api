@@ -51,6 +51,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Usar sistema de administracion',
                 'slug' => 'comerciocity_interno',
             ],
+            [
+                'name' => 'Articulos por defecto en VENDER',
+                'slug' => 'articles_default_in_vender',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

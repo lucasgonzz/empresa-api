@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\CartArticleAmountInsificienteHelper;
 use App\Models\Article;
 use App\Models\StockMovement;
 use Illuminate\Http\Request;
@@ -31,6 +32,10 @@ class StockMovementController extends Controller
             'to_address_id'     => $this->getToAddressId($request),
             'observations'     => isset($request->observations) && $request->observations != 0 ? $request->observations : null,
         ]);
+
+        Log::info('$request->observations:');
+        Log::info($request->observations);
+        Log::info(isset($request->observations) && $request->observations != 0);
 
         $this->article = $this->stock_movement->article;
 
@@ -105,6 +110,10 @@ class StockMovementController extends Controller
             $this->checkGlobalStock();
 
             ArticleHelper::setArticleStockFromAddresses($this->article);
+
+            if ($this->stock_movement->concepto != 'Movimiento de depositos') {
+                CartArticleAmountInsificienteHelper::checkCartsAmounts($this->article);
+            }
         } 
     }
 

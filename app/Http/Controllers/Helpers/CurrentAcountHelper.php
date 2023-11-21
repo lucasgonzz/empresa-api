@@ -231,12 +231,12 @@ class CurrentAcountHelper {
         return $haber;
     }
 
-    // static function savePagadoPor($current_acount, $pago, $haber) {
-    //     $current_acount->pagado_por()->attach($pago->id, [
-    //         'pagado'        => $haber,
-    //         'total_pago'    => $pago->haber,
-    //     ]);
-    // }
+    static function savePagadoPor($current_acount, $pago, $haber) {
+        $current_acount->pagado_por()->attach($pago->id, [
+            'pagado'        => $haber,
+            'total_pago'    => $pago->haber,
+        ]);
+    }
 
     static function getFirstSinPagar($model_name, $model_id, $until_pago) {
         $first = CurrentAcount::where('status', 'sin_pagar')

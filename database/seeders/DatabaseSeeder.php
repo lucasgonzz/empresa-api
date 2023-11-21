@@ -56,9 +56,9 @@ class DatabaseSeeder extends Seeder
             $this->call(CommissionSeeder::class);
             // $this->call(CurrentAcountSeeder::class);
             // $this->call(ScheduleSeeder::class);
-            $this->call(AddressSeeder::class);
+            // $this->call(AddressSeeder::class);
             // $this->call(EmployeeSeeder::class);
-            // $this->call(SaleSeeder::class);
+            $this->call(SaleSeeder::class);
             // $this->call(WorkdaySeeder::class);
             // $this->call(ConditionSeeder::class);
             $this->call(TitleSeeder::class);
@@ -89,6 +89,7 @@ class DatabaseSeeder extends Seeder
             // $this->call(ArticlePropertyValueSeeder::class);
             // $this->call(ArticlePropertySeeder::class);
             $this->call(ProviderOrderSeeder::class);
+            $this->call(CartSeeder::class);
         }
     }
 }

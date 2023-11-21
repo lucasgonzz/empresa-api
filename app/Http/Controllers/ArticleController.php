@@ -75,6 +75,8 @@ class ArticleController extends Controller
         $model->stock_min                         = $request->stock_min;
         $model->online                            = $request->online;
         $model->in_offer                          = $request->in_offer;
+        $model->default_in_vender                 = $request->default_in_vender;
+
         $model->user_id                           = $this->userId();
         if (isset($request->status)) {
             $model->status = $request->status;
@@ -128,6 +130,7 @@ class ArticleController extends Controller
         $model->stock_min                         = $request->stock_min;
         $model->online                            = $request->online;
         $model->in_offer                          = $request->in_offer;
+        $model->default_in_vender                 = $request->default_in_vender;
         // if (strtolower($model->name) != strtolower($request->name)) {
             $model->name = ucfirst($request->name);
             $model->slug = ArticleHelper::slug($request->name);
@@ -141,6 +144,8 @@ class ArticleController extends Controller
         ArticleHelper::setDeposits($model, $request);
         ArticleHelper::checkAdvises($model);
         ArticleHelper::attachProvider($request, $model, $actual_provider_id, $actual_stock);
+
+        ArticleHelper::checkRecipesForSetPirces($model, $this);
 
         $this->sendAddModelNotification('article', $model->id);
 

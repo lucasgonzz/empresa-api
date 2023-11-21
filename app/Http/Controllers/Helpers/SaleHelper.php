@@ -13,11 +13,13 @@ use App\Http\Controllers\Helpers\CurrentAcountAndCommissionHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\DiscountHelper;
 use App\Http\Controllers\Helpers\GeneralHelper;
+use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SellerCommissionController;
 use App\Models\Article;
+use App\Models\Cart;
 use App\Models\Client;
 use App\Models\Commissioner;
 use App\Models\CurrentAcount;
@@ -211,6 +213,7 @@ class SaleHelper extends Controller {
                                                             'created_at'        => Carbon::now(),
                                                         ]);
                 ArticleHelper::discountStock($article['id'], $article['amount'], $sale);
+
             }
         }
     }
@@ -374,8 +377,10 @@ class SaleHelper extends Controller {
     static function deleteStockMovement($sale, $article) {
         $stock_movement = StockMovement::where('sale_id', $sale->id)
                                         ->where('article_id', $article->id)
-                                        ->first()
-                                        ->delete();
+                                        ->first();
+        if (!is_null($stock_movement)) {
+            $stock_movement->delete();
+        }
     }
 
     static function getTotalSale($sale, $with_discount = true, $with_surchages = true, $with_seller_commissions = false) {

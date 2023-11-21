@@ -11,6 +11,20 @@ use App\Notifications\MessageSend;
 
 class MessageHelper {
 
+    static function sendCartArticleAmountUpdatedMessage($text, $buyer) {
+        $message = Message::create([
+            'user_id'   => UserHelper::userId(),
+            'buyer_id'  => $buyer->id,
+            'text'      => $text,
+            'type'      => 'cart_amount_updated',
+        ]);
+
+        $title = 'Actualizacion de Carrito';
+        // Message Broadcast Mail
+        $buyer->notify(new MessageSend($message, false, $title));
+        UserHelper::getFullModel()->notify(new MessageSend($message, true));
+    }
+
     static function sendOrderConfirmedMessage($order) {
         $confirmation_message = OrderNotificationHelper::getConfirmedMessage($order);
         $message = Message::create([

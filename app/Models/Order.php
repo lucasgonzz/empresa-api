@@ -16,6 +16,10 @@ class Order extends Model
         return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('cost', 'price', 'amount', 'variant_id', 'color_id', 'size_id', 'with_dolar', 'address_id');
     }
 
+    function cart() {
+        return $this->hasOne(Cart::class);
+    }
+
     function payment_card_info() {
         return $this->belongsTo('App\Models\PaymentCardInfo');
     }

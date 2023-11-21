@@ -44,6 +44,7 @@ class CreateArticlesTable extends Migration
             $table->integer('articles_pages')->nullable();
             $table->integer('provider_article_id')->nullable();
             $table->boolean('in_offer')->default(0)->nullable();
+            $table->boolean('default_in_vender')->nullable();
             $table->timestamp('final_price_updated_at')->nullable();
             $table->softDeletes();
 

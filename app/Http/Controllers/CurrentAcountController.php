@@ -156,7 +156,7 @@ class CurrentAcountController extends Controller
             $current_acount->pagando_a()->detach();
             CurrentAcountHelper::updateSellerCommissionsStatus($current_acount);            
         } else {
-            CurrentAcountDeleteNotaDebitoHelper::deleteNotaDebito($current_acount);
+            CurrentAcountDeleteNotaDebitoHelper::deleteNotaDebito($current_acount, $model_name);
         }
 
         $current_acount->delete();

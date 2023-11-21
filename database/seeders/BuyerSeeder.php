@@ -20,11 +20,22 @@ class BuyerSeeder extends Seeder
         foreach ($users as $user) {
             $lucas = Buyer::create([
                 'num'                       => 1,
-                'name'                      => 'Marcos',
+                'name'                      => 'Lucas',
                 'surname'                   => 'Gonzalez',
                 'city'                      => 'Gualeguay',
                 'phone'                     => '+5493444622139',
                 'email'                     => 'lucasgonzalez5500@gmail.com',
+                'password'                  => bcrypt('1234'),
+                'comercio_city_client_id'   => 1,
+                'user_id'                   => $user->id,
+            ]);
+            $marcos = Buyer::create([
+                'num'                       => 1,
+                'name'                      => 'Marcos',
+                'surname'                   => 'Gonzalez',
+                'city'                      => 'Gualeguay',
+                'phone'                     => '+5493444622139',
+                'email'                     => 'lucasgonzalez210200@gmail.com',
                 'password'                  => bcrypt('1234'),
                 'comercio_city_client_id'   => 1,
                 'user_id'                   => $user->id,

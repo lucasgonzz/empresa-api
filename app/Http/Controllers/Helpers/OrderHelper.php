@@ -114,24 +114,34 @@ class OrderHelper {
     }
 
     static function discountArticleStock($model) {
-        if ($model->order_status->name == 'Sin confirmar' && Self::saveSaleAfterFinishOrder()) {
-            foreach ($model->articles as $article) {
-                $_article = Article::find($article->id);
+        if ($model->order_status->name == 'Sin confirmar') {
+            if (Self::saveSaleAfterFinishOrder()) {
+                foreach ($model->articles as $article) {
+                    $_article = Article::find($article->id);
 
-                $ct_stock_movement = new StockMovementController();
+                    $ct_stock_movement = new StockMovementController();
 
-                $request = new \Illuminate\Http\Request();
-                $request->model_id = $article->id;
+                    $request = new \Illuminate\Http\Request();
+                    $request->model_id = $article->id;
 
-                if (!is_null($article->pivot->address_id) && $article->pivot->address_id != 0) {
-                    $request->from_address_id = $article->pivot->address_id;
-                    $request->amount = $article->pivot->amount;
-                } else {
-                    $request->amount = -$article->pivot->amount;
+                    if (!is_null($article->pivot->address_id) && $article->pivot->address_id != 0) {
+                        $request->from_address_id = $article->pivot->address_id;
+                        $request->amount = $article->pivot->amount;
+                    } else {
+                        $request->amount = -$article->pivot->amount;
+                    }
+                    $request->concepto = 'Pedido Online N° '.$model->num;
+                    $ct_stock_movement->store($request);
                 }
-                $request->concepto = 'Pedido Online N° '.$model->num;
-                $ct_stock_movement->store($request);
             }
+            Self::deleteOrderCart($model);
+        }
+    }
+
+    static function deleteOrderCart($order) {
+        if (!is_null($order->cart)) {
+            $order->cart->articles()->detach();
+            $order->cart->delete();
         }
     }
 

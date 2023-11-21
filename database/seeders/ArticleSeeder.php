@@ -55,6 +55,7 @@ class ArticleSeeder extends Seeder
                 'sub_category_name' => 'Martillos',
                 'provider_id'       => $bsas->id,
                 'featured'          => 1,
+                'default_in_vender' => 1,
                 'images'            => [
                     [
                         'url'       => 'martillo.jpg',
@@ -363,6 +364,7 @@ class ArticleSeeder extends Seeder
                     'apply_provider_percentage_gain' => 0,
                     // 'apply_provider_percentage_gain' => 1,
                     'price'             => isset($article['price']) ? $article['price'] : null,
+                    'default_in_vender'             => isset($article['default_in_vender']) ? $article['default_in_vender'] : null,
                     'category_id'       => $this->getCategoryId($user, $article),
                     'sub_category_id'   => $this->getSubcategoryId($user, $article),
                     'created_at'        => Carbon::now()->subDays($days),
@@ -390,9 +392,9 @@ class ArticleSeeder extends Seeder
                 }
                 $this->createDescriptions($art); 
                 $this->setColors($art, $article); 
-                $this->setAddresses($art, $article); 
+                // $this->setAddresses($art, $article); 
                 ArticleHelper::setFinalPrice($art, $user->id);
-                ArticleHelper::setArticleStockFromAddresses($art);
+                // ArticleHelper::setArticleStockFromAddresses($art);
             }
         // }
     }

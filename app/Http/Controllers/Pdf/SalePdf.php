@@ -308,11 +308,11 @@ class SalePdf extends fpdf {
 		    foreach ($this->sale->discounts as $discount) {
 		    	$this->x = $this->start_x;
 		    	$text = '-'.$discount->pivot->percentage.'% '.$discount->name;
-		    	$this->total_articles -= $this->total_articles * floatval($discount->pivot->percentage) / 100;
+		    	$total_articles -= $total_articles * floatval($discount->pivot->percentage) / 100;
 		    	if ($this->sale->discounts_in_services) {
-		    		$this->total_services -= $this->total_services * floatval($discount->pivot->percentage) / 100;
+		    		$total_services -= $total_services * floatval($discount->pivot->percentage) / 100;
 		    	}
-		    	$total_with_discounts = $this->total_articles + $this->total_services;
+		    	$total_with_discounts = $total_articles + $total_services;
 		    	$text .= ' = $'.Numbers::price($total_with_discounts);
 				$this->Cell(
 					50, 
@@ -323,7 +323,7 @@ class SalePdf extends fpdf {
 					'L'
 				);
 		    }
-		    if ($this->total_services > 0) {
+		    if ($total_services > 0) {
 		    	$this->x = $this->start_x;
 		    	if ($this->sale->discounts_in_services) {
 		    		$text = 'Se aplican descuentos a los servicios';
@@ -345,15 +345,16 @@ class SalePdf extends fpdf {
 	function surchages() {
 		if (count($this->sale->surchages) >= 1) {
 		    $this->SetFont('Arial', '', 9);
-		    $total_sale = SaleHelper::getTotalSale($this->sale, true, false);
+		    $total_articles = $this->total_articles;
+		    $total_services = $this->total_services;
 		    foreach ($this->sale->surchages as $surchage) {
 		    	$this->x = $this->start_x;
 		    	$text = '+'.$surchage->pivot->percentage.'% '.$surchage->name;
-		    	$this->total_articles += $this->total_articles * floatval($surchage->pivot->percentage) / 100;
+		    	$total_articles += $total_articles * floatval($surchage->pivot->percentage) / 100;
 		    	if ($this->sale->surchages_in_services) {
-		    		$this->total_services += $this->total_services * floatval($surchage->pivot->percentage) / 100;
+		    		$total_services += $total_services * floatval($surchage->pivot->percentage) / 100;
 		    	}
-		    	$total_with_surchages = $this->total_articles + $this->total_services;
+		    	$total_with_surchages = $total_articles + $total_services;
 		    	$text .= ' = $'.Numbers::price($total_with_surchages);
 				$this->Cell(
 					50, 
@@ -364,7 +365,7 @@ class SalePdf extends fpdf {
 					'L'
 				);
 		    }
-		    if ($this->total_services > 0) {
+		    if ($total_services > 0) {
 		    	$this->x = $this->start_x;
 		    	if ($this->sale->surchages_in_services) {
 		    		$text = 'Se aplican recargos a los servicios';

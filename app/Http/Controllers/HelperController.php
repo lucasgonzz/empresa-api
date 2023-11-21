@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\AfipWsController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\CartArticleAmountInsificienteHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\RecalculateCurrentAcountsHelper;
 use App\Models\Article;
@@ -25,6 +26,17 @@ use Illuminate\Support\Facades\Storage;
 
 class HelperController extends Controller
 {
+
+    function checkCartArticlesInsuficienteAmount($company_name) {
+        $user = User::where('company_name', $company_name)
+                        ->first();
+        $articles = Article::where('user_id', $user->id)
+                            ->get();
+
+        foreach ($articles as $article) {
+            CartArticleAmountInsificienteHelper::checkCartsAmounts($article);
+        }
+    }
 
     function rehacerFacturas() {
         $user = User::where('doc_number', '09876543')

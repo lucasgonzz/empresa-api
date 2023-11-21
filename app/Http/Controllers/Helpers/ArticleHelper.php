@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\RecipeHelper;
 use App\Http\Controllers\StockMovementController;
 use App\Mail\Advise as AdviseMail;
 use App\Mail\ArticleAdvise;
@@ -14,6 +15,7 @@ use App\Models\Article;
 use App\Models\ArticleDiscount;
 use App\Models\Description;
 use App\Models\PriceType;
+use App\Models\Recipe;
 use App\Models\Sale;
 use App\Models\SpecialPrice;
 use App\Models\User;
@@ -24,6 +26,17 @@ use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 
 class ArticleHelper {
+
+    static function checkRecipesForSetPirces($article, $instance) {
+        $article_id = $article->id;
+        $recipes = Recipe::whereHas('articles', function(Builder $query) use ($article_id) {
+                                $query->where('article_id', $article_id);
+                            })
+                            ->get();
+        foreach ($recipes as $recipe) {
+            RecipeHelper::checkCostFromRecipe($recipe, $instance);
+        }
+    }
 
     static function setArticlesFinalPrice($company_name = null) {
         if (!is_null($company_name)) {

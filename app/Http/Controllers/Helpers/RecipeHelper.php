@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Models\Article;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
 
 class RecipeHelper {
 
@@ -32,7 +33,7 @@ class RecipeHelper {
 		if ($recipe->article_cost_from_recipe) {
 			$cost = 0;
 			foreach ($recipe->articles as $article) {
-				$cost += $article->cost * $article->pivot->amount;
+				$cost += (float)$article->final_price * (float)$article->pivot->amount;
 			}
 			$article = $recipe->article;
 			$article->cost = $cost;

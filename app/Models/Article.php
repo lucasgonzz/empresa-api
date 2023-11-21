@@ -19,6 +19,10 @@ class Article extends Model
         return $this->hasMany(StockMovement::class);
     }
 
+    function cart() {
+        return $this->belongsToMany(Cart::class)->using(ArticleCart::class);
+    }
+
     function addresses() {
         return $this->belongsToMany(Address::class)->withPivot('amount');
     }

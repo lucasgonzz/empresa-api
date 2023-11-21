@@ -21,6 +21,7 @@ class OrderPdf extends fpdf {
 
 		$this->AddPage();
 		$this->print();
+		$this->printDescription();
         $this->Output();
         exit;
 	}
@@ -79,6 +80,20 @@ class OrderPdf extends fpdf {
 				$this->x = 5;
 				$this->printModel($article);
 			}
+		}
+	}
+
+	function printDescription() {
+		if (!is_null($this->model->description)) {
+			$this->y += 10;
+			$this->x = 5;
+
+			$this->SetFont('Arial', 'B', 12);
+			$this->Cell(200, $this->line_height, 'Notas del pedido:', $this->b, 1, 'L');
+			
+			$this->SetFont('Arial', '', 10);
+			$this->x = 5;
+			$this->MultiCell(200, $this->line_height, $this->model->description, $this->b, 'L', false);
 		}
 	}
 
