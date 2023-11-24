@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Models\PriceType;
 use Illuminate\Http\Request;
@@ -26,6 +27,9 @@ class PriceTypeController extends Controller
             'user_id'               => $this->userId(),
         ]);
         $this->sendAddModelNotification('price_type', $model->id);
+        
+        GeneralHelper::attachModels($model, 'sub_categories', $request->sub_categories, ['percentage']);
+
         return response()->json(['model' => $this->fullModel('PriceType', $model->id)], 201);
     }  
 
@@ -40,6 +44,9 @@ class PriceTypeController extends Controller
         $model->position            = $request->position;
         $model->save();
         $this->sendAddModelNotification('price_type', $model->id);
+
+        GeneralHelper::attachModels($model, 'sub_categories', $request->sub_categories, ['percentage']);
+        
         return response()->json(['model' => $this->fullModel('PriceType', $model->id)], 200);
     }
 

@@ -51,6 +51,15 @@ class ProviderSeeder extends Seeder
                 'address'           => 'Calle 123',
                 'user_id'           => $user->id,
             ],
+            [
+                'num'               => 1,
+                'name'              => 'Jugueteria Rosario',
+                'percentage_gain'   => 50,
+                'email'             => 'lucasgonzalez5500@gmail.com',
+                'address'           => 'Calle 123',
+                'user_id'           => 2,
+                'comercio_city_user_id' => 1,
+            ],
         ];
         foreach ($models as $model) {
             Provider::create($model);

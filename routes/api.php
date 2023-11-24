@@ -57,6 +57,8 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::get('/article/sales/{id}/{from_date}/{until_date}', 'ArticleController@sales');
     Route::get('/article/providers-history/{article_id}', 'ArticleController@providersHistory');
 
+    Route::get('/article-ticket-info', 'ArticleTicketInfoController@index');
+
     Route::resource('stock-movement', 'StockMovementController')->except(['index', 'show']);
     Route::get('stock-movement/{article_id}', 'StockMovementController@index');
 

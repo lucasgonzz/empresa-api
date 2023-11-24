@@ -33,6 +33,7 @@ Route::get('/cliente-potencial/{nombre_negocio}/{email}', 'ClientePotencialContr
 Route::get('/super-budget', 'SuperBudgetController@pdf');
 
 
+Route::get('articulos-repetidos/{provider_id}', 'HelperController@articulosRepetidos');
 Route::get('check-insuficiente-amount/{company_name}', 'HelperController@checkCartArticlesInsuficienteAmount');
 Route::get('rehacer-facturas', 'HelperController@rehacerFacturas');
 Route::get('imagenes-a-jpg/{company_name}', 'HelperController@imagesWebpToJpg');

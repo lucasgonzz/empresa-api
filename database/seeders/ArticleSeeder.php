@@ -45,24 +45,6 @@ class ArticleSeeder extends Seeder
                             ->first();
         $articles = [
             [
-                'bar_code'          => '123',
-                'provider_code'     => 'p-123',
-                'name'              => 'Martillo',
-                'stock'             => 10,
-                'cost'              => 1000,
-                'price'             => 100,
-                // 'price'             => 2000,
-                'sub_category_name' => 'Martillos',
-                'provider_id'       => $bsas->id,
-                'featured'          => 1,
-                'default_in_vender' => 1,
-                'images'            => [
-                    [
-                        'url'       => 'martillo.jpg',
-                    ],
-                ],
-            ],
-            [
                 'featured'          => 2,
                 'bar_code'          => '1234',
                 'provider_code'     => 'p-1234',
@@ -341,6 +323,25 @@ class ArticleSeeder extends Seeder
                     ],
                 ],
             ],
+            [
+                'bar_code'          => '123',
+                'provider_code'     => 'p-123',
+                'name'              => 'Martillo',
+                'stock'             => 10,
+                'cost'              => 1000,
+                'price'             => 100,
+                // 'price'             => 2000,
+                'sub_category_name' => 'Martillos',
+                'provider_id'       => $bsas->id,
+                'featured'          => 1,
+                'default_in_vender' => 1,
+                'iva_id'            => 6,
+                'images'            => [
+                    [
+                        'url'       => 'martillo.jpg',
+                    ],
+                ],
+            ],
             
         ];
         $num = 1;
@@ -392,7 +393,7 @@ class ArticleSeeder extends Seeder
                 }
                 $this->createDescriptions($art); 
                 $this->setColors($art, $article); 
-                // $this->setAddresses($art, $article); 
+                $this->setAddresses($art, $article); 
                 ArticleHelper::setFinalPrice($art, $user->id);
                 // ArticleHelper::setArticleStockFromAddresses($art);
             }

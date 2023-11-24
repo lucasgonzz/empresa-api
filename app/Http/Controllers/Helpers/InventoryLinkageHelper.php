@@ -46,8 +46,8 @@ class InventoryLinkageHelper extends Controller {
 		if (count($inventory_linkages) >= 1) {
 			foreach ($inventory_linkages as $inventory_linkage) {
 				$client = $inventory_linkage->client;
-				Log::info('Entro en la vinculacion del cliente '.$client->name);
-				Log::info('Buscando article con user_id = '.$client->comercio_city_user_id.' y provider_article_id = '.$article->id);
+				// Log::info('Entro en la vinculacion del cliente '.$client->name);
+				// Log::info('Buscando article con user_id = '.$client->comercio_city_user_id.' y provider_article_id = '.$article->id);
 				$client_article = Article::where('user_id', $client->comercio_city_user_id)
 												->where('provider_article_id', $article->id)
 												->first();
@@ -109,12 +109,21 @@ class InventoryLinkageHelper extends Controller {
 		} 
 
 		$price = $article->final_price;
-		// Log::info('final_price de '.$article->name.': '.$price);
+		Log::info('final_price de '.$article->name.': '.$price);
 		if (count($this->price_types) >= 1) {
 			foreach ($this->price_types as $price_type) {
 				if ($price_type->position <= $client_price_type->position) {
-					$price = $price + ($price * $price_type->percentage / 100);
-					// Log::info('Sumando el '.$price_type->percentage.' de '.$price_type->name.'. Quedo en: '.$price);
+					$percentage = $price_type->percentage;
+                    if (count($price_type->sub_categories) >= 1 && !is_null($article->sub_category)) {
+                        foreach ($price_type->sub_categories as $price_type_sub_category) {
+                            if ($price_type_sub_category->id == $article->sub_category_id) {
+                                Log::info('Usando el porcetaje de '.$price_type_sub_category->name.' de '.$price_type_sub_category->pivot->percentage);
+                                $percentage = $price_type_sub_category->pivot->percentage;
+                            }
+                        }
+                    }
+					$price = $price + ($price * $percentage / 100);
+					Log::info('Sumando el '.$percentage.' de '.$price_type->name.'. Quedo en: '.$price);
 				}
 			}
 		}

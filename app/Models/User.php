@@ -30,6 +30,10 @@ class User extends Authenticatable
         $query->with('afip_information.iva_condition', 'permissions', 'plan', 'addresses', 'extencions', 'addresses', 'configuration', 'online_configuration');
     }
 
+    public function article_ticket_info() {
+        return $this->belongsTo(ArticleTicketInfo::class);
+    }
+
     public function user_payments() {
         return $this->hasMany('App\Models\UserPayment');
     }

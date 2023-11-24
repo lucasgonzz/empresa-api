@@ -21,6 +21,8 @@ class StockMovementController extends Controller
 
     function store(Request $request) {
         $this->request = $request;
+        $this->article_id = $request->model_id;
+
         $this->stock_movement = StockMovement::create([
             'temporal_id'       => $this->getTemporalId($request),
             'article_id'        => $request->model_id,
@@ -28,14 +30,10 @@ class StockMovementController extends Controller
             'concepto'          => isset($request->concepto) && !is_null($request->concepto) ? $request->concepto : null,
             'sale_id'           => isset($request->sale_id) && $request->sale_id != 0 ? $request->sale_id : null,
             'provider_id'       => $request->amount >= 1 && isset($request->provider_id) && $request->provider_id != 0 ? $request->provider_id : null,
-            'from_address_id'   => $this->getFromAddressId($request),
-            'to_address_id'     => $this->getToAddressId($request),
+            'from_address_id'   => $this->getFromAddressId(),
+            'to_address_id'     => $this->getToAddressId(),
             'observations'     => isset($request->observations) && $request->observations != 0 ? $request->observations : null,
         ]);
-
-        Log::info('$request->observations:');
-        Log::info($request->observations);
-        Log::info(isset($request->observations) && $request->observations != 0);
 
         $this->article = $this->stock_movement->article;
 
@@ -45,7 +43,7 @@ class StockMovementController extends Controller
 
         $this->setArticleProvider();
 
-        $this->sendUpdateNotification($request);
+        $this->sendUpdateNotification();
 
         if (!is_null($this->article)) {
             Log::info('Se creo stock_movement para '.$this->article->name.' con '.$this->stock_movement->amount);
@@ -54,30 +52,32 @@ class StockMovementController extends Controller
         return response()->json(['model' => $this->stock_movement], 201);
     }
 
-    function getFromAddressId($request) {
-        if (isset($request->from_address_id) && $request->from_address_id != 0 && $this->articleHasAddresses($request->model_id)) {
-            return $request->from_address_id;
+    function getFromAddressId() {
+        if (isset($this->request->from_address_id) && $this->request->from_address_id != 0 && $this->articleHasAddresses()) {
+            return $this->request->from_address_id;
         }
         return null;
     }
 
-    function getToAddressId($request) {
-        if (isset($request->to_address_id) && $request->to_address_id != 0 && $this->articleHasAddresses($request->model_id)) {
-            return $request->to_address_id;
+    function getToAddressId() {
+        if (isset($this->request->to_address_id) && $this->request->to_address_id != 0 && $this->articleHasAddresses()) {
+            return $this->request->to_address_id;
         }
         return null;
     }
 
-    function articleHasAddresses($article_id) {
-        $article = Article::find($article_id);
-        if (is_null($article) || count($article->addresses) >= 1) {
+    function articleHasAddresses() {
+        $article = Article::find($this->article_id);
+        if (is_null($article) || count($article->addresses) >= 1 || isset($this->request->from_create_article_addresses)) {
+            Log::info('Tiene articleHasAddresses');
             return true;
         }
+        Log::info('isset '.isset($this->request->from_create_article_addresses));
         return false;
     }
 
-    function sendUpdateNotification($request) {
-        if (!is_null($this->article) && !is_null(Auth()->user()) && (!isset($request->from_excel_import))) {
+    function sendUpdateNotification() {
+        if (!is_null($this->article) && !is_null(Auth()->user()) && (!isset($this->request->from_excel_import))) {
             $this->sendAddModelNotification('Article', $this->article->id, false);
         }
     }
@@ -125,6 +125,10 @@ class StockMovementController extends Controller
     }
 
     function checkGlobalStock() {
+        if (is_null($this->article->stock)) {
+            $this->article->stock = 0;
+            $this->article->save();
+        }
         if (!is_null($this->article->stock) && !count($this->article->addresses) >= 1) {
             if (!is_null($this->stock_movement->sale)) {
                 Log::info('Descontando stock global por venta');
@@ -147,7 +151,7 @@ class StockMovementController extends Controller
             * Importacion de excel
     */
     function checkToAddress() {
-        if (!is_null($this->stock_movement->to_address_id) && count($this->article->addresses) >= 1) {
+        if (!is_null($this->stock_movement->to_address_id) && $this->articleHasAddresses()) {
             Log::info('checkToAddress para '.$this->article->name);
             $to_address = null;
             foreach ($this->article->addresses as $address) {

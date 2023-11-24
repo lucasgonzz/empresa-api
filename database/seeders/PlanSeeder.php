@@ -20,9 +20,9 @@ class PlanSeeder extends Seeder
             // Oficial
             [
                 'name'          => 'Basico',
-                'price'         => 7.87,
-                'user_price'    => 3.6, 
-                'e_commerce'    => 3.9, 
+                'price'         => 8,
+                'user_price'    => 3, 
+                'e_commerce'    => 4, 
                 'official'      => 1,
                 'features'      => [
                     [
@@ -113,9 +113,9 @@ class PlanSeeder extends Seeder
             ],
             [
                 'name'      => 'Plus',
-                'price'     => 12.37,
-                'user_price'    => 2.8, 
-                'e_commerce'    => 5.5, 
+                'price'     => 13,
+                'user_price'    => 3, 
+                'e_commerce'    => 6, 
                 'official'  => 1,
                 'features'  => [
                     [
@@ -206,9 +206,9 @@ class PlanSeeder extends Seeder
             ],
             [
                 'name'      => 'Premium',
-                'price'     => 20.63,
-                'user_price'    => 3.6, 
-                'e_commerce'    => 8.3, 
+                'price'     => 22,
+                'user_price'    => 4, 
+                'e_commerce'    => 8, 
                 'official'  => 1,
                 'features'  => [
                     [

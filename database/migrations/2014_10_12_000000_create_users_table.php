@@ -49,7 +49,9 @@ class CreateUsersTable extends Migration
             $table->boolean('discount_stock_from_recipe_after_advance_to_next_status')->default(false);
             $table->decimal('sale_ticket_width', 12,2)->default(58);
             $table->integer('default_current_acount_payment_method_id')->nullable();
+            $table->integer('article_ticket_info_id')->nullable();
             $table->string('session_id')->nullable();
+            $table->decimal('total_a_pagar', 12,2)->nullable();
             $table->timestamp('last_activity')->nullable();
             $table->rememberToken();
             

@@ -27,6 +27,27 @@ use Illuminate\Support\Facades\Storage;
 class HelperController extends Controller
 {
 
+    function articulosRepetidos($provider_id) {
+        $user = User::find(228);
+        $articles = Article::where('user_id', $user->id)  
+                                ->where('provider_id', $provider_id)    
+                                ->where('category_id', 245)    
+                                ->get();
+        $articulos_repetidos = [];
+        foreach ($articles as $article) {
+            if (array_key_exists($article->name, $articulos_repetidos)) {
+                $articulos_repetidos[$article->name]++;
+            } else {
+                $articulos_repetidos[$article->name] = 1;
+            }
+        }
+        foreach ($articulos_repetidos as $key => $value) {
+            if ($value > 1) {
+                echo('Hay '.$value.' de '.$key.' </br>');
+            }
+        }
+    }
+
     function checkCartArticlesInsuficienteAmount($company_name) {
         $user = User::where('company_name', $company_name)
                         ->first();

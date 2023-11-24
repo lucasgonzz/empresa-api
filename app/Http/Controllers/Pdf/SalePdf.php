@@ -47,7 +47,7 @@ class SalePdf extends fpdf {
 			'#' 		=> 5,
 			'Num' 		=> 15,
 			'Codigo' 	=> 35,
-			'Nombre' 	=> 65,
+			'Nombre' 	=> 55,
 			'Cant' 		=> 15,
 		];
 
@@ -55,13 +55,14 @@ class SalePdf extends fpdf {
 			$fields = array_merge($fields, [
 				'Costo' 	=> 20,
 			]);
-			$fields['Nombre'] = 45;
+			$fields['Nombre'] = 35;
 		}
 
 		if ($this->with_prices) {
 			$fields = array_merge($fields, [
 				'Precio' 	=> 25,
 				'Des' 		=> 13,
+				'U/D' 		=> 10,
 				'Sub total' => 27,
 			]);
 		}
@@ -222,6 +223,14 @@ class SalePdf extends fpdf {
 				$this->getFields()['Des'], 
 				$this->line_height, 
 				$item->pivot->discount, 
+				$this->b, 
+				0, 
+				'C'
+			);
+			$this->Cell(
+				$this->getFields()['U/D'], 
+				$this->line_height, 
+				$item->pivot->returned_amount, 
 				$this->b, 
 				0, 
 				'C'

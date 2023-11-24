@@ -40,10 +40,12 @@ class UserSeeder extends Seeder
                 'home_position'                 => 1,
                 'download_articles'             => 1,
                 'online'                        => 'http://tienda.local:8081',
-                'payment_expired_at'            => Carbon::now()->addDays(10),
+                'payment_expired_at'            => Carbon::now()->addDays(1),
                 'last_user_activity'            => Carbon::now(),
+                'total_a_pagar'                 => 15000,
                 'plan_id'                       => 3,
                 'plan_discount'                 => 27,
+                'article_ticket_info_id'        => 1,
                 'online_configuration'          => [
                     'online_price_type_id'          => 1,
                     'register_to_buy'               => 1,
@@ -62,8 +64,8 @@ class UserSeeder extends Seeder
                 ],
             ],
             [
-                'name'              => 'Marcos',
-                'company_name'      => 'Marcos',
+                'name'              => 'Lucas Gonzalez',
+                'company_name'      => 'Minorista Lucas',
                 'image_url'         => env('APP_URL').'/storage/zapatilla_roja.webp',
                 'doc_number'        => '1234',
                 'email'             => 'marcosgonzalez5500@gmail.com',
@@ -164,6 +166,8 @@ class UserSeeder extends Seeder
                 'home_position'                 => isset($model['home_position']) ? $model['home_position'] : null,
                 'plan_id'                       => isset($model['plan_id']) ? $model['plan_id'] : null,
                 'plan_discount'                 => isset($model['plan_discount']) ? $model['plan_discount'] : null,
+                'article_ticket_info_id'                 => isset($model['article_ticket_info_id']) ? $model['article_ticket_info_id'] : null,
+                'total_a_pagar'                 => isset($model['total_a_pagar']) ? $model['total_a_pagar'] : null,
             ]);
             if (is_null($user->owner_id)) {
 

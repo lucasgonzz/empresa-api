@@ -58,6 +58,8 @@ class UserController extends Controller
         $model->sale_ticket_width               = $request->sale_ticket_width;
         $model->default_current_acount_payment_method_id               = $request->default_current_acount_payment_method_id;
         $model->discount_stock_from_recipe_after_advance_to_next_status               = $request->discount_stock_from_recipe_after_advance_to_next_status;
+        $model->article_ticket_info_id          = $request->article_ticket_info_id;
+
         $model->save();
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_dolar, $request->dollar);
         $model = UserHelper::getFullModel();

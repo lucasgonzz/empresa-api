@@ -427,7 +427,11 @@ class SaleHelper extends Controller {
     }
 
     static function getTotalItem($item) {
-        $total = $item->pivot->price * $item->pivot->amount;
+        $amount = $item->pivot->amount;
+        if (!is_null($item->pivot->returned_amount)) {
+            $amount -= $item->pivot->returned_amount;
+        }
+        $total = $item->pivot->price * $amount;
         if (!is_null($item->pivot->discount)) {
             $total -= $total * ($item->pivot->discount / 100);
         }
