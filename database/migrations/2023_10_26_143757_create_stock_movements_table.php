@@ -24,6 +24,7 @@ class CreateStockMovementsTable extends Migration
             $table->text('concepto')->nullable();
             $table->text('observations')->nullable();
             $table->decimal('amount', 12,2)->nullable();
+            $table->integer('employee_id')->nullable();
             $table->timestamps();
         });
     }

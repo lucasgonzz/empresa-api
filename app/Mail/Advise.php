@@ -30,7 +30,7 @@ class Advise extends Mailable
     public function build()
     {
         $user = UserHelper::getFullModel();
-        return $this->from($user->email)
+        return $this->from('contacto@comerciocity.com', 'comerciocity.com')
                     ->subject('Nuevo stock de '.$this->article->name)
                     ->markdown('emails.articles.advise', [
                         'article'       => $this->article,

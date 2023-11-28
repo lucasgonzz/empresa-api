@@ -12,7 +12,7 @@ class PriceTypeController extends Controller
 
     public function index() {
         $models = PriceType::where('user_id', $this->userId())
-                            ->orderBy('created_at', 'DESC')
+                            ->orderBy('position', 'ASC')
                             ->withAll()
                             ->get();
         return response()->json(['models' => $models], 200);

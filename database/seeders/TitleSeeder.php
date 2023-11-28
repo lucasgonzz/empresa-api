@@ -23,8 +23,8 @@ class TitleSeeder extends Seeder
                 // 'header'    => 'Nebulastore',
                 // 'lead'      => 'Tienda de ropa americana',
                 'color'     => '#333',
-                'image_url' => 'http://empresa.local:8000/storage/banner.webp',
-                'crop_image_url' => 'http://empresa.local:8000/storage/banner_mobile.webp',
+                'image_url' => 'http://empresa.local:8000/storage/banner.jpg',
+                'crop_image_url' => 'http://empresa.local:8000/storage/banner_mobile.jpg',
             ],
             // [
             //     'num'       => 2,

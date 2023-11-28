@@ -25,7 +25,7 @@ class CreateArticlesTable extends Migration
             $table->decimal('price', 16, 6)->nullable();
             $table->decimal('final_price', 16, 6)->nullable();
             $table->decimal('previus_final_price', 12, 2)->nullable();
-            $table->integer('stock')->nullable();
+            $table->decimal('stock', 12,2)->nullable();
             $table->integer('stock_min')->nullable();
             $table->boolean('online')->default(1);
             $table->integer('user_id')->unsigned();

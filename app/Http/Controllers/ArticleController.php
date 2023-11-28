@@ -125,7 +125,7 @@ class ArticleController extends Controller
         $model->provider_price_list_id            = $request->provider_price_list_id;
         $model->price                             = $request->price;
         $model->apply_provider_percentage_gain    = $request->apply_provider_percentage_gain;
-        $model->stock                             = $request->stock;
+        // $model->stock                             = $request->stock;
         // $model->stock                             += $request->new_stock;
         $model->stock_min                         = $request->stock_min;
         $model->online                            = $request->online;
@@ -142,7 +142,7 @@ class ArticleController extends Controller
 
         ArticleHelper::setFinalPrice($model);
         ArticleHelper::setDeposits($model, $request);
-        ArticleHelper::checkAdvises($model);
+        // ArticleHelper::checkAdvises($model);
         ArticleHelper::attachProvider($request, $model, $actual_provider_id, $actual_stock);
 
         ArticleHelper::checkRecipesForSetPirces($model, $this);

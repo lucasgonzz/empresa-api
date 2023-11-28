@@ -43,6 +43,7 @@ class ProviderOrderHelper {
 			$article = Article::find($_article['id']);
 			if (is_null($article->stock)) {
 				$article->stock = 0;
+				$article->save();
 			}
 			if ($_article['pivot']['update_cost']) {
 				$cost = null;

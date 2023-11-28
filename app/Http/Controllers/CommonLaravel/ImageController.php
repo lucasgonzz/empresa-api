@@ -24,7 +24,7 @@ class ImageController extends Controller
         if ($request->model_name == 'user') {
             $name = time().rand(1, 100000).'.png';
         } else {
-            $name = time().rand(1, 100000).'.jpg';
+            $name = time().rand(1, 100000).'.webp';
         }
         $croppedImage->save(storage_path().'/app/public/'.$name);
 

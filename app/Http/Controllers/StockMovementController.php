@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartArticleAmountInsificienteHelper;
 use App\Models\Article;
@@ -32,7 +33,8 @@ class StockMovementController extends Controller
             'provider_id'       => $request->amount >= 1 && isset($request->provider_id) && $request->provider_id != 0 ? $request->provider_id : null,
             'from_address_id'   => $this->getFromAddressId(),
             'to_address_id'     => $this->getToAddressId(),
-            'observations'     => isset($request->observations) && $request->observations != 0 ? $request->observations : null,
+            'observations'      => isset($request->observations) && $request->observations != 0 ? $request->observations : null,
+            'employee_id'       => UserHelper::userId(false),
         ]);
 
         $this->article = $this->stock_movement->article;
@@ -108,6 +110,8 @@ class StockMovementController extends Controller
             $this->checkToAddress();
 
             $this->checkGlobalStock();
+    
+            ArticleHelper::checkAdvises($this->article);
 
             ArticleHelper::setArticleStockFromAddresses($this->article);
 
@@ -132,9 +136,9 @@ class StockMovementController extends Controller
         if (!is_null($this->article->stock) && !count($this->article->addresses) >= 1) {
             if (!is_null($this->stock_movement->sale)) {
                 Log::info('Descontando stock global por venta');
-                $this->article->stock -= $this->stock_movement->amount;
+                $this->article->stock -= (float)$this->stock_movement->amount;
             } else {
-                $this->article->stock += $this->stock_movement->amount;
+                $this->article->stock += (float)$this->stock_movement->amount;
             }
             $this->article->save();
         }
