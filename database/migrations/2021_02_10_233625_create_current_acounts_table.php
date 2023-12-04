@@ -53,6 +53,7 @@ class CreateCurrentAcountsTable extends Migration
             $table->bigInteger('provider_order_id')->unsigned()->nullable();
             
             $table->bigInteger('current_acount_payment_method_id')->unsigned()->nullable();
+            $table->bigInteger('employee_id')->nullable();
             $table->timestamps();
         });
     }

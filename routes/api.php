@@ -62,6 +62,8 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::resource('stock-movement', 'StockMovementController')->except(['index', 'show']);
     Route::get('stock-movement/{article_id}', 'StockMovementController@index');
 
+    Route::get('price-change/{article_id}', 'PriceChangeController@index');
+
     Route::resource('sale', 'SaleController');
     Route::get('sale/from-date/{from_date}/{until_date?}', 'SaleController@index');
     Route::put('sale/update-prices/{id}', 'SaleController@updatePrices');
@@ -152,7 +154,7 @@ Route::middleware('auth:sanctum')->group(function() {
 
     Route::get('/mercado-pago/payment/{payment_id}', 'MercadoPagoController@payment');
 
-    Route::get('report/from-date/{from_date}/{until_date?}', 'CajaController@reports');
+    Route::get('report/from-date/{from_date}/{until_date?}/{employee_id?}', 'CajaController@reports');
     Route::get('chart/from-date/{from_date}/{until_date?}', 'CajaController@charts');
 
     Route::resource('commission', 'CommissionController');

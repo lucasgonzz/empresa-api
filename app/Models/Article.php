@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Http\Controllers\Helpers\UserHelper;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
@@ -11,8 +12,34 @@ class Article extends Model
     
     protected $guarded = [];
 
+    protected $appends = ['costo_real'];
+
     function scopeWithAll($query) {
         $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'addresses');
+    }
+
+    public function getCostoRealAttribute() {
+        $owner = UserHelper::user();
+        $cost = $this->cost;
+        if (UserHelper::hasExtencion('article.costo_real', $owner) && !is_null($this->cost)) {
+            if ($this->cost_in_dollars) {
+                if (!is_null($this->provider) && !is_null($this->provider->dolar)) {
+                    $cost = $cost * (float)$this->provider->dolar;
+                } else {
+                    $cost = $cost * $owner->dollar;
+                }
+            }
+            foreach ($this->article_discounts as $discount) {
+                $cost -= $cost * (float)$discount->percentage / 100;
+            }
+            if (!is_null($this->iva) 
+                && $this->iva->percentage != 0 
+                && $this->iva->percentage != 'Extento'
+                && $this->iva->percentage != 'No Gravado') {
+                $cost += $cost * (float)$this->iva->percentage / 100;
+            }
+        }
+        return $cost;
     }
 
     function stock_movements() {

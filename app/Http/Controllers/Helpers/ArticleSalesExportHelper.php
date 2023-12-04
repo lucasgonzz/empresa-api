@@ -33,12 +33,15 @@ class ArticleSalesExportHelper {
 		$articles = [];
 		foreach ($chart['article'] as $_article) {
 			$article = new \stdClass;
-			$article->num = $_article['num'];
-			$article->bar_code = $_article['bar_code'];
+			$article->num 			= $_article['num'];
+			$article->bar_code 		= $_article['bar_code'];
 			$article->provider_code = $_article['provider_code'];
-			$article->name = $_article['name'];
-			$article->amount = $_article['amount'];
-			$articles[] = $article;
+			$article->provider 		= $_article['provider'];
+			$article->name 			= $_article['name'];
+			$article->amount 		= $_article['amount'];
+			// $article->rentabilidad 	= $_article['rentabilidad'];
+			
+			$articles[] 			= $article;
 		}
 		$articles = collect($articles);
 		return $articles;

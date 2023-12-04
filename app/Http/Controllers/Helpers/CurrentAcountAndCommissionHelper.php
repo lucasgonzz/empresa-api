@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
@@ -85,7 +86,8 @@ class CurrentAcountAndCommissionHelper extends Controller {
             'seller_id'   => $this->sale->client->seller_id,
             'sale_id'     => $this->sale->id,
             'description' => CurrentAcountHelper::getDescription($this->sale, $this->debe_sin_descuentos),
-            'created_at' => $this->getCreatedAt(),
+            'created_at'  => $this->getCreatedAt(),
+            'employee_id' => UserHelper::userId(false),
         ]);
         $this->created_current_acount->saldo = Numbers::redondear(CurrentAcountHelper::getSaldo('client', $this->sale->client_id, $this->created_current_acount) + $this->debe);
         $this->created_current_acount->save();

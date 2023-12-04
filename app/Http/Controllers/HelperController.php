@@ -27,6 +27,42 @@ use Illuminate\Support\Facades\Storage;
 class HelperController extends Controller
 {
 
+    function callMethod($method) {
+        $this->{$method}();
+    }
+
+    function articulos_faltantes() {
+        require(base_path().'\app\Http\Controllers\Helpers\helper-info\articles_id_22_noviembre.php');
+        echo 'Ahora no estan los siguientes id </br>';
+        foreach ($articles_ids as $article_id) {
+            $article = Article::find($article_id);
+            if (is_null($article)) {
+                echo $article_id.', </br>';
+            }
+        }
+    }
+
+    function articulos_que_no_estan() {
+        require(base_path().'\app\Http\Controllers\Helpers\helper-info\articles_del_22_noviembre_que_no_estan.php');
+        echo 'Los articulos del 15 de octubre que ahora no estan: '.count($articles_ids).' </br>';
+        echo '----------------------------------- </br>';
+        foreach ($articles_ids as $article_id) {
+            $article = Article::where('id', $article_id)
+                                ->withTrashed()
+                                ->first();
+            // echo '----------------------------------- </br>';
+            // if (!is_null($article)) {
+            if (!is_null($article) && is_null($article->deleted_at)) {
+                // if (!is_null($article->deleted_at)) {
+                //     echo 'ESTA ELIMINADO </br>';
+                // }
+                echo 'Codigo de barras: '.$article->bar_code.' </br>';
+                echo 'Nombre: '.$article->name.' </br>';
+                echo '----------------------------------- </br>';
+            } 
+        }
+    }
+
     function articulosRepetidos($provider_id) {
         $user = User::find(228);
         $articles = Article::where('user_id', $user->id)  

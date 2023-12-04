@@ -109,16 +109,18 @@ class ProviderOrderHelper {
 			if (count($article->addresses) >= 1 && $_article['pivot']['address_id']) {
 	            $request->to_address_id = $_article['pivot']['address_id'];
 			} 
+
+	        if ($_article['pivot']['update_provider'] && ($article->provider_id != $provider_order->provider_id)) {
+				$data_changed = true;
+			} else {
+				$request->not_save_provider = true;
+			}
+
 			$request->amount = $amount;
 			$request->provider_id = $provider_order->provider_id;
 			$request->concepto = 'Pedido Proveedor N° '.$provider_order->num;
 	        $ct_stock_movement->store($request);
 
-	        if ($_article['pivot']['update_provider'] && ($article->provider_id != $provider_order->provider_id)) {
-				$data_changed = true;
-				$article->provider_id = $provider_order->provider_id;
-				$article->save();
-			}
 		}
 		return $data_changed;
 	}

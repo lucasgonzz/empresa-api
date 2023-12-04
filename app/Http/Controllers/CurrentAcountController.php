@@ -59,6 +59,7 @@ class CurrentAcountController extends Controller
             'client_id'                         => $request->model_name == 'client' ? $request->model_id : null,
             'provider_id'                       => $request->model_name == 'provider' ? $request->model_id : null,
             'created_at'                        => CurrentAcountHelper::getCreatedAt($request),
+            'employee_id'                       => UserHelper::userId(false),
         ]);
         CurrentAcountPagoHelper::attachPaymentMethods($pago, $request->current_acount_payment_methods);
         $pago->saldo = CurrentAcountHelper::getSaldo($request->model_name, $request->model_id, $pago) - $request->haber;

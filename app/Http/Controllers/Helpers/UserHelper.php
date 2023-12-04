@@ -52,6 +52,19 @@ class UserHelper {
     	return $user;
     }
 
+    static function hasExtencion($extencion_slug, $user = null) {
+        if (is_null($user)) {
+            $user = Self::user();
+        }
+        $has_extencion = false;
+        foreach ($user->extencions as $extencion) {
+            if ($extencion->slug == $extencion_slug) {
+                $has_extencion = true;
+            }
+        }
+        return $has_extencion;
+    }
+
     static function setEmployeeExtencionsAndConfigurations($employee) {
         $user_owner = Self::getFullModel(); 
         $employee->owner_extencions = $user_owner->extencions;

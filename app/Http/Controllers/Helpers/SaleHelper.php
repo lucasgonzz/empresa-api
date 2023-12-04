@@ -313,8 +313,8 @@ class SaleHelper extends Controller {
     }
 
     static function getCost($item) {
-        if (isset($item['cost'])) {
-            return $item['cost'];
+        if (isset($item['costo_real'])) {
+            return $item['costo_real'];
         }
         return null;
     }

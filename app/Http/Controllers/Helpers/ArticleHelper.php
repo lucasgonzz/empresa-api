@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\RecipeHelper;
+use App\Http\Controllers\PriceChangeController;
 use App\Http\Controllers\StockMovementController;
 use App\Mail\Advise as AdviseMail;
 use App\Mail\ArticleAdvise;
@@ -130,6 +131,7 @@ class ArticleHelper {
         if ($current_final_price != $article->final_price) {
             $article->previus_final_price = $current_final_price; 
             $article->final_price_updated_at = Carbon::now();
+            PriceChangeController::store($article);
         }
 
         // echo($article->name.' final_price: '.$article->final_price.' </br>');

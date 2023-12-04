@@ -11,8 +11,8 @@ use Illuminate\Support\Facades\Log;
 
 class CajaReportsHelper {
 	
-	static function reports($instance, $from_date, $until_date) {
-		$ingresos = Self::ingresos($instance, $from_date, $until_date);
+	static function reports($instance, $from_date, $until_date, $employee_id) {
+		$ingresos = Self::ingresos($instance, $from_date, $until_date, $employee_id);
 		$egresos = Self::egresos($instance, $from_date, $until_date);
 
 		return [
@@ -22,7 +22,7 @@ class CajaReportsHelper {
 
 	}
 
-	static function ingresos($instance, $from_date, $until_date) {
+	static function ingresos($instance, $from_date, $until_date, $employee_id) {
 		$sale_payment_methods = [];
 		$total = 0;
 
@@ -34,11 +34,15 @@ class CajaReportsHelper {
 
 		$sales = Sale::where('user_id', $instance->userId())
                         ->orderBy('created_at', 'ASC');
-        if (!is_null($until_date)) {
+        if ($until_date != 0) {
             $sales = $sales->whereDate('created_at', '>=', $from_date)
                             ->whereDate('created_at', '<=', $until_date);
         } else {
             $sales = $sales->whereDate('created_at', $from_date);
+        }
+
+        if ($employee_id != 'todos') {
+        	$sales = $sales->where('employee_id', $employee_id);
         }
 		$sales = $sales->get();
 		foreach ($sales as $sale) {
@@ -55,19 +59,20 @@ class CajaReportsHelper {
 		$current_acounts = CurrentAcount::where('user_id', $instance->userId())
 										->whereNotNull('haber')
 										->whereNotNull('client_id');
-		if (!is_null($until_date)) {
+		if ($until_date != 0) {
             $current_acounts = $current_acounts->whereDate('created_at', '>=', $from_date)
                             					->whereDate('created_at', '<=', $until_date);
         } else {
             $current_acounts = $current_acounts->whereDate('created_at', $from_date);
-        }							
+        }				
+        if ($employee_id != 'todos') {
+        	$current_acounts = $current_acounts->where('employee_id', $employee_id);
+        }			
 		$current_acounts = $current_acounts->get();
 		foreach ($current_acounts as $current_acount) {
 			if (count($current_acount->current_acount_payment_methods) >= 1) {
 				foreach ($current_acount->current_acount_payment_methods as $current_acount_payment_method) {
-					// Log::info('sumando '.$current_acount_payment_method->pivot->amount.' a '.$current_acount_payment_method->name);
 					$sale_payment_methods[$current_acount_payment_method->name] += $current_acount_payment_method->pivot->amount;
-					// $total += $current_acount_payment_method->pivot->amount;
 				}
 			} else {
 				$sale_payment_methods['Efectivo'] += $current_acount->haber;

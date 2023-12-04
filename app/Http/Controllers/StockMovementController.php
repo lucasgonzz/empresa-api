@@ -122,7 +122,8 @@ class StockMovementController extends Controller
     }
 
     function setArticleProvider() {
-        if (!is_null($this->article) && !is_null($this->stock_movement->provider)) {
+        if (!is_null($this->article) && !is_null($this->stock_movement->provider)
+            && !isset($this->request->not_save_provider)) {
             $this->article->provider_id = $this->stock_movement->provider_id;
             $this->article->save();
         }

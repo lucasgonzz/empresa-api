@@ -29,7 +29,7 @@ class ClientePotencial extends Mailable
     public function build()
     {
         return $this->from('contacto@comerciocity.com', 'ComercioCity')
-                    ->subject('Servicios de administracion para empresas')
+                    ->subject('Servicios de automatizacion para empresas')
                     ->markdown('emails.clientes-potenciales.cliente-potencial', [
                         'nombre_negocio'    => $this->nombre_negocio,
                     ]);

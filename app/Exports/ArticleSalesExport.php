@@ -23,7 +23,9 @@ class ArticleSalesExport implements FromCollection, WithHeadings, WithMapping
             $article->num,
             $article->bar_code,
             $article->provider_code,
+            !is_null($article->provider) ? $article->provider->name : null,
             $article->name,
+            // $article->rentabilidad,
         ];
         $map = ArticleSalesExportHelper::mapCharts($map, $article);
         return $map;
@@ -33,11 +35,6 @@ class ArticleSalesExport implements FromCollection, WithHeadings, WithMapping
     public function collection()
     {
         set_time_limit(999999);
-        // $articles = Article::where('user_id', $this->user->id)
-        //                 ->where('status', 'active')
-        //                 ->orderBy('created_at', 'DESC')
-        //                 ->get();
-        // $articles = ArticleSalesExportHelper::setCharts($articles, $this->user);
         $articles = ArticleSalesExportHelper::setCharts($this->user);
         return $articles;
     }
@@ -48,7 +45,9 @@ class ArticleSalesExport implements FromCollection, WithHeadings, WithMapping
             'Numero',
             'Codigo de barras',
             'Codigo de proveedor',
+            'Proveedor',
             'Nombre',
+            // 'Rentabilidad',
         ];
         $headings = ArticleSalesExportHelper::setChartsheadings($headings);
         return $headings;

@@ -96,8 +96,12 @@ class CurrentAcountPagoHelper {
 
     static function attachPaymentMethods($pago, $payment_methods) {
         foreach ($payment_methods as $payment_method) {
+            $amount = $payment_method['amount'];
+            if ($amount == '' || is_null($amount)) {
+                $amount = $pago->haber;
+            }
             $pago->current_acount_payment_methods()->attach($payment_method['current_acount_payment_method_id'], [
-                                                        'amount'                        => $payment_method['amount'],
+                                                        'amount'                        => $amount,
                                                         'bank'                          => $payment_method['bank'],
                                                         'payment_date'                  => $payment_method['payment_date'],
                                                         'num'                           => $payment_method['num'],

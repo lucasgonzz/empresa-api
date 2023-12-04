@@ -2,25 +2,25 @@
 
 # Buenos dias {{ $nombre_negocio }}
 
-Ayer nos comunicamos con Gonzalo y nos brindo este email para poder ponernos en contacto con su negocio.
+<h2>En ComercioCity ayudamos a empresas de venta mayorista (fabricante, importador o distribuidor), a automatizar y organizar sus procesos en menos de 2 meses con nuestro software de Transformación Digital.</h2>
 
-Estamos en conocimiento de tus necesidades para organizar y gestionar fácilmente tu negocio.
-Somos una empresa de tecnologia y hemos desarrollado el software hecho a medida para las pequeñas y medianas empresas argentinas.
+# Nuestro objetivo es que en menos de 2 meses tengas todas tus operaciones comerciales integradas en una única plataforma.
+
 
 Tu empresa no necesita solo un sistema informático, necesita <strong>UNA SOLUCIÓN</strong> que englobe todos los procesos de manejo de información de tu negocio, y también necesitas la ayuda para implementar y poner en marcha este tipo de tecnología.
 
 # Nuestra mision es:
 
 @component('mail::panel')
-Ayudarte con los procesos de carga de tu información: artículos (inventario), clientes, metodos de pago, información de facturación, etc. Por lo que te brindamos el servicio de data entry, para que te despreocupes de la principal barrera de entrada para muchas empresas. Sabemos que no cuentan con el tiempo ni el conocimiento (al menos en un principio) para ponerse a ingresar toda su información, por lo que tenemos un equipo listo para trabajar en junto a vos.
+Comprender exactamente lo que tu empresa necesita, para entregarles un software personalizado y adaptado a sus demandas.
 @endcomponent
 
 @component('mail::panel')
-Que todo tus empleados comprendan como utilizar el sistema, por lo que nos ocupamos de la su capacitación.
+Que todo tus empleados comprendan como utilizar la plataforma, por lo que nos ocupamos de su capacitación.
 @endcomponent
 
 @component('mail::panel')
-Que cuentes con las herramientas para tener presencia en este nuevo mundo digital, por lo que desarrollamos y mantenemos tu PROPIA tienda web "visual-grafica-profesional.com.ar". Somos la ÚNICA empresa que te brinda la solución de tener tu propia pagina web completamente integrada y sincronizada con tu sistema de gestión, por lo que la pagina web se mantiene practicamente por su cuenta.
+Que cuentes con las herramientas para tener presencia en este nuevo mundo digital, por lo que desarrollamos y mantenemos tu PROPIO e-commerce "todo-contructor.com". Somos la ÚNICA empresa que te brinda la solución de tener tu propia pagina web completamente integrada y sincronizada con tu sistema de gestión, para que puedas brindarles a tus clientes la posibilidad de ver tus productos, las compras que han realizado, y toda la información <strong>actualizada segundo a segundo</strong> que tu negocio necesite facilitarles. Esta web, al igual que el sistema, es 100% adaptada a tu modelo de negocios, por ejemplo, podemos tener en cuenta si utilizas distintos precios para tus clientes dependiendo su perfil de compra, basicamente cualquier funcionalidad que necesites. 
 @endcomponent
 
 <h2>En caso de estar interesado, podemos agendarle una llamada con nuestro equipo de ventas, para que le expliquen adecuadamente en que consiste nuestra solución para su negocio.</h2>
@@ -30,7 +30,7 @@ Que cuentes con las herramientas para tener presencia en este nuevo mundo digita
 
 
 @component('mail::panel')
-Experimenta el rendimiento y comodidad que un buen sistema de gestión te ofrece.
+Experimenta el rendimiento y comodidad que un buen sistema de automatización tiene para ofrece.
 @endcomponent
 
 
@@ -48,7 +48,7 @@ Agendar una llamada para despejar dudas
 
 @component('mail::panel')
 <h2>VENTAS</h2>
-<p>Realiza ventas <strong>en negro</strong> o <strong>en blanco</strong>, anónimas o a clientes de tu sistema, para que impacte en sus cuentas corrientes.</p>
+<p>Realiza ventas, anónimas o a clientes de tu sistema, para que impacte en sus cuentas corrientes.</p>
 <p>Consulta las ventas realizadas durante cualquier periodo de tiempo.</p>
 @endcomponent
 
@@ -77,7 +77,7 @@ Ir a WhatsApp
 @endcomponent
 
 
-<img src="https://comerciocity.com/img/logo.e0805ee3.png" class="comerciocity-logo" alt="Logo">
+<img src="https://comerciocity.com/img/logo.cc4cb183.png" class="comerciocity-logo" alt="Logo">
 <div class="footer">
 <p>Equipo de ventas de ComercioCity</p>
 </div> 

@@ -9,8 +9,8 @@ use Illuminate\Http\Request;
 class CajaController extends Controller
 {
 
-    public function reports($from_date, $until_date = null) {
-        $reports = CajaReportsHelper::reports($this, $from_date, $until_date);
+    public function reports($from_date, $until_date = 0, $employee_id = 0) {
+        $reports = CajaReportsHelper::reports($this, $from_date, $until_date, $employee_id);
         return response()->json(['models' => $reports], 200);
     }
 

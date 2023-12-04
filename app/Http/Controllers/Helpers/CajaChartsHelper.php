@@ -59,13 +59,16 @@ class CajaChartsHelper {
 			foreach ($sale->articles as $article) {
 				if (isset($articulos[$article->id])) {
 					$articulos[$article->id]['amount'] += (float)$article->pivot->amount;
+					$articulos[$article->id]['rentabilidad'] += Self::get_rentabilidad_articulo($article, $sale);
 				} else {
 					$articulos[$article->id] = [
 						'num'			=> $article->num,
 						'bar_code'  	=> $article->bar_code,
 						'provider_code' => $article->provider_code,
+						'provider' 		=> $article->provider,
 						'name'			=> $article->name,
 						'amount'		=> (float)$article->pivot->amount, 
+						'rentabilidad'	=> Self::get_rentabilidad_articulo($article, $sale), 
 					]; 
 				}
 
@@ -135,6 +138,37 @@ class CajaChartsHelper {
 			'metodos_de_pago'				=> $metodos_de_pago,
 		];
 
+	}
+
+	static function get_rentabilidad_articulo($article, $sale) {
+		$rentabilidad = 0;
+		$cost = Self::get_article_costo_realt($article);
+		if (!is_null($cost)) {
+			$price_vendido = $article->pivot->price;
+			foreach ($sale->discounts as $discount) {
+				$price_vendido -= $price_vendido * $discount->pivot->percentage / 100;
+			}
+			foreach ($sale->surchages as $surchage) {
+				$price_vendido += $price_vendido * $surchage->pivot->percentage / 100;
+			}
+			$rentabilidad = $price_vendido - $cost; 
+			$rentabilidad *= (float)$article->pivot->amount;
+		}
+		return $rentabilidad;
+	}
+
+	static function get_article_costo_realt($article) {
+		$cost = null;
+		if (!is_null($article->pivot->cost)) {
+			$cost = $article->pivot->cost;
+			if (!is_null($article->iva) 
+				&& $article->iva->percentage != '0'
+				&& $article->iva->percentage != 'Exento'
+				&& $article->iva->percentage != 'No Gravado') {
+				$cost += $cost * (float)$article->iva->percentage / 100;
+			}
+		}
+		return $cost;
 	}
 
 	static function metodos_de_pago($user_id, $from_date, $until_date) {
