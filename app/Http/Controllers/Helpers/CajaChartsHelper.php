@@ -19,6 +19,7 @@ class CajaChartsHelper {
 		$clientes_cantidad_ventas = [];
 		$clientes_monto_gastado = [];
 		$metodos_de_pago = [];
+		$p_m_efectivo = CurrentAcountPaymentMethod::where('name', 'Efectivo')->first();
 
 		if (is_null($user_id)) {
 			$user_id = $instance->userId();
@@ -54,6 +55,26 @@ class CajaChartsHelper {
 						'name'		=> $sale->client->name,
 						'amount'	=> SaleHelper::getTotalSale($sale), 
 					]; 
+				}
+			} else if (is_null($sale->current_acount)) {
+				if (!is_null($sale->current_acount_payment_method)) {
+					if (isset($metodos_de_pago[$sale->current_acount_payment_method_id])) {
+						$metodos_de_pago[$sale->current_acount_payment_method_id]['amount'] += SaleHelper::getTotalSale($sale);
+					} else {
+						$metodos_de_pago[$sale->current_acount_payment_method_id] = [
+							'name'		=> $sale->current_acount_payment_method->name,
+							'amount'	=> SaleHelper::getTotalSale($sale),
+						]; 
+					}
+				} else {
+					if (isset($metodos_de_pago[$p_m_efectivo->id])) {
+						$metodos_de_pago[$p_m_efectivo->id]['amount'] += SaleHelper::getTotalSale($sale);
+					} else {
+						$metodos_de_pago[$p_m_efectivo->id] = [
+							'name'		=> $p_m_efectivo->name,
+							'amount'	=> SaleHelper::getTotalSale($sale),
+						]; 
+					}
 				}
 			}
 			foreach ($sale->articles as $article) {
@@ -97,7 +118,7 @@ class CajaChartsHelper {
 		}
 
 
-		$metodos_de_pago = Self::metodos_de_pago($user_id, $from_date, $until_date);
+		$metodos_de_pago = Self::metodos_de_pago($user_id, $from_date, $until_date, $metodos_de_pago, $p_m_efectivo);
 
 		usort($articulos, function($a, $b) { 
 			return $b['amount'] - $a['amount']; 
@@ -171,10 +192,7 @@ class CajaChartsHelper {
 		return $cost;
 	}
 
-	static function metodos_de_pago($user_id, $from_date, $until_date) {
-		$metodos_de_pago = [];
-		$efectivo = CurrentAcountPaymentMethod::where('name', 'Efectivo')
-												->first();
+	static function metodos_de_pago($user_id, $from_date, $until_date, $metodos_de_pago, $p_m_efectivo) {
 		$pagos = CurrentAcount::where('user_id', $user_id)
                         ->orderBy('created_at', 'ASC')
             			->whereDate('created_at', '>=', $from_date)
@@ -196,11 +214,11 @@ class CajaChartsHelper {
 					}
 	        	}
         	} else {
-				if (isset($metodos_de_pago[$efectivo->id])) {
-					$metodos_de_pago[$efectivo->id]['amount'] += $pago->haber;
+				if (isset($metodos_de_pago[$p_m_efectivo->id])) {
+					$metodos_de_pago[$p_m_efectivo->id]['amount'] += $pago->haber;
 				} else {
-					$metodos_de_pago[$efectivo->id] = [
-						'name'		=> $efectivo->name,
+					$metodos_de_pago[$p_m_efectivo->id] = [
+						'name'		=> $p_m_efectivo->name,
 						'amount'	=> $pago->haber,
 					]; 
 				}

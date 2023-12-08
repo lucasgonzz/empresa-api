@@ -21,7 +21,7 @@ class Article extends Model
     public function getCostoRealAttribute() {
         $owner = UserHelper::user();
         $cost = $this->cost;
-        if (UserHelper::hasExtencion('article.costo_real', $owner) && !is_null($this->cost)) {
+        if (!is_null($this->cost)) {
             if ($this->cost_in_dollars) {
                 if (!is_null($this->provider) && !is_null($this->provider->dolar)) {
                     $cost = $cost * (float)$this->provider->dolar;

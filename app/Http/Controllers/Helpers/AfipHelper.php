@@ -203,7 +203,7 @@ class AfipHelper extends Controller {
     }
 
     function isBoletaA() {
-        return $this->user()->afip_information->iva_condition->name == 'Responsable inscripto' && !is_null($this->sale->client) && $this->sale->client->iva_condition->name == 'Responsable inscripto';
+        return $this->sale->afip_information->iva_condition->name == 'Responsable inscripto' && !is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) && $this->sale->client->iva_condition->name == 'Responsable inscripto';
     }
 
     static function getDocType($slug) {

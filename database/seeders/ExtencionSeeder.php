@@ -65,6 +65,11 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Articulos por defecto en VENDER',
                 'slug' => 'articles_default_in_vender',
             ],
+            [
+                // 11
+                'name' => 'Mostrar Codigo interno en e-commerce',
+                'slug' => 'article_num_in_online',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

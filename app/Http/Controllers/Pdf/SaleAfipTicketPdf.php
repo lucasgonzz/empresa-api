@@ -718,11 +718,11 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->Cell(50,5,'IVA '.$this->sale->afip_ticket->iva_negocio,0,1,'L');
 		
 		// Inicio actividades
-		if ($this->user->afip_information->inicio_actividades != '') {
+		if ($this->sale->afip_information->inicio_actividades != '') {
 			$this->SetX(6);
 			$this->SetFont('Arial', 'B', 9);
 			$this->Cell(52,5,'Fecha de Inicio de Actividades:', 0, 0,'L');
-			$this->Cell(25,5,date_format($this->user->afip_information->inicio_actividades, 'd/m/Y'), 0, 1,'L');
+			$this->Cell(25,5,date_format($this->sale->afip_information->inicio_actividades, 'd/m/Y'), 0, 1,'L');
 		}
 	}
 

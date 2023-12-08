@@ -31,6 +31,44 @@ class HelperController extends Controller
         $this->{$method}();
     }
 
+    function quitar_depositos() {
+        $articles = Article::where('user_id', 228)
+                            ->whereHas('addresses')
+                            ->get();
+        echo 'Hay '.count($articles).' con depostios';
+        foreach ($articles as $article) {
+            echo $article->name.' tiene depositos </br>';
+            $article->addresses()->detach();
+        }
+
+        $articles = Article::where('user_id', 228)
+                            ->whereHas('addresses')
+                            ->get();
+        echo 'Ahora hay '.count($articles).' con depostios';
+    }
+
+    function set_sales_cost() {
+        // $sales = Sale::where('id', 102571)
+        //                 ->get();
+        $sales = Sale::where('user_id', 2)
+                        ->where('created_at', '>=', Carbon::today())
+                        ->orderBy('created_at', 'ASC')
+                        ->get();
+        foreach ($sales as $sale) {
+            echo 'Venta N° '.$sale->num. ' </br>';
+            foreach ($sale->articles as $article) {
+                if (is_null($article->pivot->cost)) {
+                    $sale->articles()->updateExistingPivot($article->id, [
+                        'cost'  => $article->cost,
+                    ]);
+
+                    echo 'Se seteo el costo de '.$article->name.' con '.$article->cost. ' </br>';
+                }
+            }
+            echo '------------------- </br>';
+        }
+    }
+
     function articulos_faltantes() {
         require(base_path().'\app\Http\Controllers\Helpers\helper-info\articles_id_22_noviembre.php');
         echo 'Ahora no estan los siguientes id </br>';

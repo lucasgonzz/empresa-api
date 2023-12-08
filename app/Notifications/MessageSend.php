@@ -21,12 +21,13 @@ class MessageSend extends Notification
      *
      * @return void
      */
-    public function __construct($message, $for_commerce = false, $title = null, $url = null)
+    public function __construct($message, $for_commerce = false, $title = null, $url = null, $send_email = true)
     {
         $this->message = $message;
         $this->for_commerce = $for_commerce;
         $this->title = $title;
         $this->url = $url;
+        $this->send_email = $send_email;
     }
 
     /**
@@ -37,7 +38,7 @@ class MessageSend extends Notification
      */
     public function via($notifiable)
     {
-        if ($this->for_commerce) {
+        if ($this->for_commerce || !$this->send_email) {
             return ['broadcast'];
         } 
         return ['broadcast', 'mail'];

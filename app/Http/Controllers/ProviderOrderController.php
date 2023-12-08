@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\ProviderOrderHelper;
 use App\Models\ProviderOrder;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class ProviderOrderController extends Controller
 {
@@ -30,14 +31,14 @@ class ProviderOrderController extends Controller
 
     public function indexDaysToAdvise($from_date, $until_date = null) {
         $models = ProviderOrder::where('user_id', $this->userId())
-                        ->orderBy('created_at', 'DESC')
-                        ->withAll()
-                        ->whereNotNull('days_to_advise')
-                        ->where('provider_order_status_id', 1)
-                        ->get();
+                                ->orderBy('created_at', 'DESC')
+                                ->withAll()
+                                ->whereNotNull('days_to_advise')
+                                ->where('provider_order_status_id', 1)
+                                ->get();
         $results = [];
         foreach ($models as $model) {
-            if ($model->created_at->addDays($model->days_to_advise)->gte(Carbon::today())) {
+            if ($model->created_at->addDays($model->days_to_advise)->lte(Carbon::today())) {
                 $results[] = $model;
             }
         }

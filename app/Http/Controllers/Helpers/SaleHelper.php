@@ -316,6 +316,9 @@ class SaleHelper extends Controller {
         if (isset($item['costo_real'])) {
             return $item['costo_real'];
         }
+        if (isset($item['cost'])) {
+            return $item['cost'];
+        }
         return null;
     }
 

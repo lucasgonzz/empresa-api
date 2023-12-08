@@ -39,91 +39,93 @@ class ReportePdf extends PDF_Diag {
 	}
 
 	function print($title, $sub_title, $data_prop, $pie_full_width = false, $is_price = false, $name_width = null) {
-		$this->pdf->AddPage();
-		$this->Header();
+		if (count($this->data[$data_prop]) >= 1) {
+			$this->pdf->AddPage();
+			$this->Header();
 
-		$this->pdf->y += 20;
+			$this->pdf->y += 20;
 
-		//Pie chart
-        $this->pdf->Image('https://api.comerciocity.com/public/storage/piechart.png', 10, $this->pdf->y, 15, 15);
-		
-		$this->pdf->SetFont('Arial', 'B', 18);
-		$this->pdf->x = 27;
-		$this->pdf->Cell(120, 10, $title, $this->b, 1, 'L');
-		
-		if (!is_null($sub_title)) {
-			$this->pdf->SetFont('Arial', '', 14);
+			//Pie chart
+	        $this->pdf->Image('https://api.comerciocity.com/public/storage/piechart.png', 10, $this->pdf->y, 15, 15);
+			
+			$this->pdf->SetFont('Arial', 'B', 18);
 			$this->pdf->x = 27;
-			$this->pdf->Cell(120, 5, $sub_title, $this->b, 1, 'L');
-		}
-		$this->pdf->Ln(8);
+			$this->pdf->Cell(120, 10, $title, $this->b, 1, 'L');
+			
+			if (!is_null($sub_title)) {
+				$this->pdf->SetFont('Arial', '', 14);
+				$this->pdf->x = 27;
+				$this->pdf->Cell(120, 5, $sub_title, $this->b, 1, 'L');
+			}
+			$this->pdf->Ln(8);
 
-		$this->pdf->SetFont('Arial', '', 10);
-		$valX = $this->pdf->GetX();
-		$valY = $this->pdf->GetY();
+			$this->pdf->SetFont('Arial', '', 10);
+			$valX = $this->pdf->GetX();
+			$valY = $this->pdf->GetY();
 
-		$colors = [];
-		$r = 00;
-		$g = 00;
-		$b = 255;
-		$index = 1;
-		if (is_null($name_width)) {
+			$colors = [];
+			$r = 00;
+			$g = 00;
+			$b = 255;
+			$index = 1;
+			if (is_null($name_width)) {
+				if ($pie_full_width) {
+					$name_width = 80;
+				} else {
+					$name_width = 50;
+				}
+			}
+			foreach ($this->data[$data_prop] as $_data) {
+				$this->pdf->Cell($name_width, 7, $index.'- '.StringHelper::short($_data['name'], 70));
+
+				if ($is_price) {
+					$amount = '$'.Numbers::price($_data['amount']);
+				} else {
+					$amount = $_data['amount'];
+				}
+				$this->pdf->Cell(15, 7, $amount, 0, 0, 'R');
+				$this->pdf->Ln();
+
+				$index++;
+
+				$colors[] = $this->colors[$index];
+			}
+
+
 			if ($pie_full_width) {
-				$name_width = 80;
+				$pie_width = 200;
+				$pie_height = 100;
+				$this->pdf->SetXY(10, $valY+90);
 			} else {
-				$name_width = 50;
+				$this->pdf->SetXY(80, $valY);
+				// $this->pdf->SetXY(80, $valY+20);
+				$pie_width = 100;
+				$pie_height = 200;
+				// $pie_height = count($this->data[$data_prop]) * 20;
 			}
+
+			$this->pdf->PieChart($pie_width, $pie_height, $this->getChartData($this->data[$data_prop]), '%l (%p)', $colors, $is_price);
+			$this->pdf->SetXY($valX, $valY + 40);
+
+	        // bar char
+	        if ($pie_full_width) {
+	        	$this->pdf->AddPage();
+				$this->pdf->y = 30;
+	        } else {
+				$this->pdf->y = 170;
+	        }
+
+	        $this->pdf->Image('https://api.comerciocity.com/public/storage/barchart.png', 10, $this->pdf->y, 15, 15);
+
+			$this->pdf->SetFont('Arial', 'B', 16);
+			$this->pdf->x = 27;
+			$this->pdf->Cell(0, 15, 'Diagrama detallado para un mejor analisis', 0, 1);
+			$this->pdf->Ln(8);
+			$valX = $this->pdf->GetX();
+			$valY = $this->pdf->GetY();
+			$this->pdf->BarDiagram(190, 70, $this->getChartData($this->data[$data_prop]), '%l : %v (%p)', [13,131,0], 0, 4, $is_price);
+			$this->pdf->SetXY($valX, $valY + 80);
 		}
-		foreach ($this->data[$data_prop] as $_data) {
-			$this->pdf->Cell($name_width, 7, $index.'- '.StringHelper::short($_data['name'], 70));
-
-			if ($is_price) {
-				$amount = '$'.Numbers::price($_data['amount']);
-			} else {
-				$amount = $_data['amount'];
-			}
-			$this->pdf->Cell(15, 7, $amount, 0, 0, 'R');
-			$this->pdf->Ln();
-
-			$index++;
-
-			$colors[] = $this->colors[$index];
-		}
-
-
-		if ($pie_full_width) {
-			$pie_width = 200;
-			$pie_height = 100;
-			$this->pdf->SetXY(10, $valY+90);
-		} else {
-			$this->pdf->SetXY(80, $valY);
-			// $this->pdf->SetXY(80, $valY+20);
-			$pie_width = 100;
-			$pie_height = 200;
-			// $pie_height = count($this->data[$data_prop]) * 20;
-		}
-
-		$this->pdf->PieChart($pie_width, $pie_height, $this->getChartData($this->data[$data_prop]), '%l (%p)', $colors, $is_price);
-		$this->pdf->SetXY($valX, $valY + 40);
-
-        // bar char
-        if ($pie_full_width) {
-        	$this->pdf->AddPage();
-			$this->pdf->y = 30;
-        } else {
-			$this->pdf->y = 170;
-        }
-
-        $this->pdf->Image('https://api.comerciocity.com/public/storage/barchart.png', 10, $this->pdf->y, 15, 15);
-
-		$this->pdf->SetFont('Arial', 'B', 16);
-		$this->pdf->x = 27;
-		$this->pdf->Cell(0, 15, 'Diagrama detallado para un mejor analisis', 0, 1);
-		$this->pdf->Ln(8);
-		$valX = $this->pdf->GetX();
-		$valY = $this->pdf->GetY();
-		$this->pdf->BarDiagram(190, 70, $this->getChartData($this->data[$data_prop]), '%l : %v (%p)', [13,131,0], 0, 4, $is_price);
-		$this->pdf->SetXY($valX, $valY + 80);
 	}
 
 	function setColors() {
