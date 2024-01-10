@@ -17,23 +17,24 @@ class DeleteController extends Controller
         if ($request->from_filter) {
             $search_ct = new SearchController();
             $models = $search_ct->search($request, $model_name, $request->filter_form);
-            Log::info('models from_filter:');
-            foreach($models as $model) {
-                Log::info($model->name);
-            }
+            // foreach($models as $model) {
+            //     Log::info($model->name);
+            // }
         } else {
             foreach ($request->models_id as $id) {
                 $models[] = $formated_model_name::find($id);
             }
-            Log::info('models from models_id:');
-            foreach($models as $model) {
-                Log::info($model->name);
-            }
+            // foreach($models as $model) {
+            //     Log::info($model->name);
+            // }
         }
         $models_response = [];
         foreach ($models as $model) {
-            ImageController::deleteModelImages($model);
-            $model->delete();
+            $controller_name = 'App\\Http\\Controllers\\'.ucfirst($model_name).'Controller';
+            $controller = new $controller_name();
+            $controller->destroy($model->id);
+            // ImageController::deleteModelImages($model);
+            // $model->delete();
         }
         return response()->json(['models' => $models], 200);
     }

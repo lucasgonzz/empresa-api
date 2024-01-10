@@ -57,6 +57,8 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::get('/article/sales/{id}/{from_date}/{until_date}', 'ArticleController@sales');
     Route::get('/article/providers-history/{article_id}', 'ArticleController@providersHistory');
 
+    Route::put('/article/reset-stock/to-0', 'ArticleController@resetStock');
+
     Route::get('/article-ticket-info', 'ArticleTicketInfoController@index');
 
     Route::resource('stock-movement', 'StockMovementController')->except(['index', 'show']);
@@ -65,9 +67,15 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::get('price-change/{article_id}', 'PriceChangeController@index');
 
     Route::resource('sale', 'SaleController');
-    Route::get('sale/from-date/{from_date}/{until_date?}', 'SaleController@index');
+    Route::get('sale/from-date/{from_date?}/{until_date?}', 'SaleController@index');
     Route::put('sale/update-prices/{id}', 'SaleController@updatePrices');
     Route::get('sale/charts/{from}/{to}', 'SaleController@charts');
+    
+    // Afip tickets
+    Route::post('afip-ticket', 'SaleController@makeAfipTicket');
+
+    // Article Performance
+    Route::get('article-performance/{meses_atras}', 'ArticlePerformanceController@index');
 
     Route::resource('brand', 'BrandController');
     Route::resource('category', 'CategoryController');
@@ -145,6 +153,9 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::post('/current-acount/saldo-inicial', 'CurrentAcountController@saldoInicial');
     Route::delete('/current-acount/{model_name}/{id}', 'CurrentAcountController@delete');
     Route::get('check-saldos/{model_name}/{id}', 'Helpers\CurrentAcountHelper@checkSaldos');
+    
+    // Checks
+    Route::get('check/from-date/{from_date?}/{until_date?}', 'CheckController@index');
 
     Route::get('/import-history/{model_name}', 'ImportHistoryController@index');
 

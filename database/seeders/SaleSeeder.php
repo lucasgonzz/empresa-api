@@ -29,7 +29,7 @@ class SaleSeeder extends Seeder
     }
 
     function pagos() {
-        $user = User::where('company_name', 'Jugueteria Rosario')->first();
+        $user = User::where('company_name', 'Autopartes Boxes')->first();
         $addresses = Address::where('user_id', $user->id)
                         ->get();
         $ct = new Controller();
@@ -65,6 +65,7 @@ class SaleSeeder extends Seeder
             'client_id'                         => 1,
             'created_at'                        => Carbon::now()->subDays(2)->addHours(1),
         ]);
+        CurrentAcountPagoHelper::attachPaymentMethods($pago, $this->checks());
         $pago->saldo = CurrentAcountHelper::getSaldo('client', 1, $pago) - $pago->haber;
         $pago->save();
         $pago_helper = new CurrentAcountPagoHelper('client', 1, $pago);
@@ -131,14 +132,34 @@ class SaleSeeder extends Seeder
         CurrentAcountHelper::updateModelSaldo($pago, 'client', 1);
 
         for ($i=0; $i < 10; $i++) { 
-            Sale::create([
-                'user_id' => $user->id
+            $sale = Sale::create([
+                'user_id'               => $user->id,
+                'num'                   => $ct->num('sales', $user->id),
+                'address_id'            => 1,
+                'sale_type_id'          => 1,
+                'client_id'             => 1,
+                'save_current_acount'   => 1,
             ]);
+            SaleHelper::attachProperies($sale, $this->setRequest($sale));
         }
     }
 
+    function checks() {
+        $request = new \stdClass();
+        $request->current_acount_payment_methods = [
+            'current_acount_payment_method_id'  => 1,
+            'amount'                        => 100,
+            'bank'                          => 'BERSA',
+            'payment_date'                  => null,
+            'num'                           => '123123',
+            'credit_card_id'                => null,
+            'credit_card_payment_plan_id'   => null,
+        ];
+        return $request;
+    }
+
     function videos() {
-        $user = User::where('company_name', 'Jugueteria Rosario')->first();
+        $user = User::where('company_name', 'Autopartes Boxes')->first();
         $addresses = Address::where('user_id', $user->id)
                         ->get();
         $employees = User::where('owner_id', $user->id)

@@ -139,6 +139,8 @@ class AfipWsController extends Controller
                 'sale_id'           => $this->sale->id,
             ]);
             // echo 'Se creo afip_ticket id: '.$afip_ticket->id.' </br>';
+        } else {
+            Log::info($result->FECAESolicitarResult->Errors);
         }
     }
 

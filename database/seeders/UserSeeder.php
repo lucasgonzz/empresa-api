@@ -27,8 +27,9 @@ class UserSeeder extends Seeder
         $ct = new Controller();
         $models = [
             [
+                'id'                            => 500,
                 'name'                          => 'Lucas Gonzalez',
-                'company_name'                  => 'Jugueteria Rosario',
+                'company_name'                  => 'Autopartes Boxes',
                 // 'image_url'                     => null,
                 'image_url'                     => env('APP_URL').'/storage/cubo.jpeg',
                 'doc_number'                    => '123',
@@ -46,6 +47,7 @@ class UserSeeder extends Seeder
                 'plan_id'                       => 3,
                 'plan_discount'                 => 27,
                 'article_ticket_info_id'        => 1,
+                // 'app_url'                       => 'https://comerciocity.com',
                 'online_configuration'          => [
                     'online_price_type_id'          => 1,
                     'register_to_buy'               => 1,
@@ -115,12 +117,12 @@ class UserSeeder extends Seeder
                 'home_position'                 => 2,
             ],
             [
-                'name'              => 'Juan',
+                'name'              => 'Patricio',
                 'doc_number'        => '1',
                 'email'             => 'lucasgonzalez550022@gmail.com',
                 'password'          => bcrypt('1'),
                 'visible_password'  => '1',
-                'owner_id'          => 1,
+                'owner_id'          => 500,
                 'admin_access'      => 1,
                 'image_url'         => null,
                 'permissions_slug'    => [
@@ -139,7 +141,7 @@ class UserSeeder extends Seeder
                 'password'          => bcrypt('2'),
                 'visible_password'  => '2',
                 'image_url'         => null,
-                'owner_id'          => 1,
+                'owner_id'          => 500,
                 'permissions_slug'    => [
                     'article.index',
                     'article.delete',
@@ -152,6 +154,7 @@ class UserSeeder extends Seeder
         ];
         foreach ($models as $model) {
             $user = User::create([
+                'id'                            => isset($model['id']) ? $model['id'] : null,  
                 'name'                          => $model['name'], 
                 'company_name'                  => isset($model['company_name']) ? $model['company_name'] : null,  
                 'doc_number'                    => $model['doc_number'], 
@@ -168,10 +171,11 @@ class UserSeeder extends Seeder
                 'plan_discount'                 => isset($model['plan_discount']) ? $model['plan_discount'] : null,
                 'article_ticket_info_id'                 => isset($model['article_ticket_info_id']) ? $model['article_ticket_info_id'] : null,
                 'total_a_pagar'                 => isset($model['total_a_pagar']) ? $model['total_a_pagar'] : null,
+                'app_url'                       => isset($model['app_url']) ? $model['app_url'] : null,
             ]);
             if (is_null($user->owner_id)) {
 
-                $user->extencions()->attach([1, 2, 5, 6, 7, 8, 9, 10, 11]);
+                $user->extencions()->attach([1,5,6,8,9]);
                 UserConfiguration::create([
                     'current_acount_pagado_details'         => 'Saldado',
                     'current_acount_pagandose_details'      => 'Recibo de pago',

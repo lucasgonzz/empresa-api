@@ -135,7 +135,9 @@ class GeneralHelper {
     static function getModelsFromId($model_name, $ids) {
         $models = [];
         foreach ($ids as $id) {
-            $models[] = Self::getModelName($model_name)::find($id);
+            $models[] = Self::getModelName($model_name)::where('id', $id)
+                                                        ->withTrashed()
+                                                        ->first();
         }
         return $models;
     }

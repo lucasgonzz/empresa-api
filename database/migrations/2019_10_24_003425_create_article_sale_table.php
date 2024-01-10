@@ -28,6 +28,7 @@ class CreateArticleSaleTable extends Migration
             $table->decimal('cost')->nullable();
             $table->decimal('price')->nullable();
             $table->decimal('with_dolar')->nullable();
+            $table->decimal('checked_amount', 12,2)->nullable();
 
             $table->timestamps();
         });

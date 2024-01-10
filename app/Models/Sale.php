@@ -62,15 +62,15 @@ class Sale extends Model
     }
 
     public function discounts() {
-        return $this->belongsToMany('App\Models\Discount')->withPivot('percentage');
+        return $this->belongsToMany('App\Models\Discount')->withTrashed()->withPivot('percentage');
     }
 
     public function surchages() {
-        return $this->belongsToMany('App\Models\Surchage')->withPivot('percentage');
+        return $this->belongsToMany('App\Models\Surchage')->withTrashed()->withPivot('percentage');
     }
 
     public function articles() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'cost', 'price', 'returned_amount', 'delivered_amount', 'discount', 'with_dolar')->withTrashed();
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'cost', 'price', 'returned_amount', 'delivered_amount', 'discount', 'with_dolar', 'checked_amount')->withTrashed();
     }
 
     public function combos() {

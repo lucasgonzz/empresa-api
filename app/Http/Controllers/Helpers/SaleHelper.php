@@ -18,6 +18,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SellerCommissionController;
+use App\Http\Controllers\StockMovementController;
 use App\Models\Article;
 use App\Models\Cart;
 use App\Models\Client;
@@ -42,7 +43,7 @@ class SaleHelper extends Controller {
     }
 
     static function sendUpdateClient($instance, $sale) {
-        if (!is_null($sale->client_id)) {
+        if (!is_null($sale->client_id) && !$sale->to_check && !$sale->checked) {
             $instance->sendAddModelNotification('Client', $sale->client_id);
         }
     }
@@ -96,13 +97,15 @@ class SaleHelper extends Controller {
         return null;
     }
 
-    static function attachProperies($model, $request, $from_store = true) {
+    static function attachProperies($model, $request, $from_store = true, $previus_articles = null) {
         Self::attachArticles($model, $request->items);
         Self::attachCombos($model, $request->items);
         Self::attachServices($model, $request->items);
         Self::attachDiscounts($model, $request->discounts_id);
         Self::attachSurchages($model, $request->surchages_id);
-        if ($from_store) {
+
+        Self::check_deleted_articles_from_check($model, $previus_articles);
+        if ($from_store && !$model->to_check && !$model->checked) {
             Self::attachCurrentAcountsAndCommissions($model);
             $afip_ticket = Self::saveAfipTicket($model);
         } else {
@@ -112,6 +115,7 @@ class SaleHelper extends Controller {
 
     static function checkNotaCredito($sale, $request) {
         if ($request->save_nota_credito) {
+            sleep(1);
             $haber = 0;
             foreach ($request->returned_items as $item) {
                 $total_item = (float)$item['price_vender'] * (float)$item['returned_amount'];
@@ -119,6 +123,8 @@ class SaleHelper extends Controller {
                     $total_item -= $total_item * $item['discount'] / 100;
                 }
                 $haber += $total_item;
+
+                Self::returnToStock($sale, $item);
             }
             Log::info('El total quedo en '.$haber);
             if (count($sale->discounts) >= 1) {
@@ -140,6 +146,25 @@ class SaleHelper extends Controller {
                 $afip_helper = new AfipNotaCreditoHelper($sale, $nota_credito);
                 $afip_helper->init();
             }
+        }
+    }
+
+    static function returnToStock($sale, $item) {
+
+        if (
+            isset($item['return_to_stock']) 
+            && !is_null($item['return_to_stock']) 
+            && (float)$item['return_to_stock'] > 0
+        ) {
+            $ct = new StockMovementController();
+            $request = new \Illuminate\Http\Request();
+            
+            $request->model_id = $item['id'];
+            $request->to_address_id = $sale->address_id;
+            $request->amount = $item['return_to_stock'];
+            // $request->sale_id = $sale->id;
+            $request->concepto = 'Nota credito Venta N° '.$sale->num;
+            $ct->store($request);
         }
     }
 
@@ -190,6 +215,47 @@ class SaleHelper extends Controller {
         }
     }
 
+    static function check_deleted_articles_from_check($sale, $previus_articles) {
+        $sale->load('articles');
+        Log::info('check_deleted_articles_from_check');
+        Log::info('sale->articles:');
+        foreach ($sale->articles as $article) {
+            Log::info($article->name);
+        }
+
+
+        if ($sale->checked && !is_null($previus_articles)) {
+            Log::info('previus_articles:');
+            foreach ($previus_articles as $article) {
+                Log::info($article->name);
+            }
+            foreach ($previus_articles as $previus_article) {
+                $is_deleted = true;
+                foreach ($sale->articles as $sale_article) {
+                    if ($previus_article->id == $sale_article->id) {
+                        $is_deleted = false;
+                        Log::info('Se encontro en previus_articles el articulo id: '.$previus_article->id);
+                    }
+                }
+                if ($is_deleted) {
+                    Log::info('No se encontro el articulo en previus_articles id: '.$previus_article->id);
+                    $article = [
+                        'id'                    => $previus_article->id,
+                        'amount'                => (float)$previus_article->pivot->amount,
+                        'cost'                  => $previus_article->pivot->cost,
+                        'price_vender'          => $previus_article->pivot->price,
+                        'returned_amount'       => $previus_article->pivot->returned_amount,
+                        'delivered_amount'      => $previus_article->pivot->delivered_amount,
+                        'discount'              => $previus_article->pivot->discount,
+                        'checked_amount'        => $previus_article->pivot->amount,
+                        'created_at'            => Carbon::now(),
+                    ];
+                    Self::attachArticle($sale, $article);
+                }
+            }
+        }
+    }
+
     static function attachCurrentAcountsAndCommissions($sale) {
         if (!is_null($sale->client_id) && $sale->save_current_acount) {
             $helper = new CurrentAcountAndCommissionHelper($sale);
@@ -203,19 +269,40 @@ class SaleHelper extends Controller {
         
         foreach ($articles as $article) {
             if (isset($article['is_article'])) {
-                $sale->articles()->attach($article['id'], [
-                                                            'amount'            => (float)$article['amount'],
-                                                            'cost'              => Self::getCost($article),
-                                                            'price'             => $article['price_vender'],
-                                                            'returned_amount'   => Self::getReturnedAmount($article),
-                                                            'delivered_amount'   => Self::getDeliveredAmount($article),
-                                                            'discount'          => Self::getDiscount($article),
-                                                            'created_at'        => Carbon::now(),
-                                                        ]);
-                ArticleHelper::discountStock($article['id'], $article['amount'], $sale);
+                Self::attachArticle($sale, $article);
+
+                if (!$sale->to_check && !$sale->checked) {
+                    $cancel = false;
+                    $amount = $article['amount'];
+                    if (isset($article['checked_amount']) && !is_null($article['checked_amount']) && (float)$article['checked_amount'] > 0) {
+                        if ($article['checked_amount'] == $article['amount']) {
+                            $cancel = true;
+                        }
+                        $amount = $article['checked_amount'];
+                    } 
+                    if (!$cancel) {
+                        ArticleHelper::discountStock($article['id'], $amount, $sale);
+                        Log::info('se desconto stock del articulo '.$article['id']);
+                    } else {
+                        $sale->articles()->detach($article['id']);
+                    }
+                }
 
             }
         }
+    }
+
+    static function attachArticle($sale, $article) {
+        $sale->articles()->attach($article['id'], [
+            'amount'                => Self::getAmount($sale, $article),
+            'cost'                  => Self::getCost($article),
+            'price'                 => $article['price_vender'],
+            'returned_amount'       => Self::getReturnedAmount($article),
+            'delivered_amount'      => Self::getDeliveredAmount($article),
+            'discount'              => Self::getDiscount($article),
+            'checked_amount'        => Self::getCheckedAmount($article),
+            'created_at'            => Carbon::now(),
+        ]);
     }
 
     static function updateItemsPrices($sale, $items) {
@@ -298,6 +385,20 @@ class SaleHelper extends Controller {
         return null;
     }
 
+    static function getAmount($sale, $article) {
+        if ($sale->confirmed && isset($article['checked_amount']) && !is_null($article['checked_amount']) && (float)$article['checked_amount'] > 0) {
+            return (float)$article['checked_amount'];
+        }
+        return (float)$article['amount'];
+    }
+
+    static function getCheckedAmount($article) {
+        if (isset($article['checked_amount']) && !is_null($article['checked_amount'])) {
+            return $article['checked_amount'];
+        }
+        return null;
+    }
+
     static function getReturnedAmount($item) {
         if (isset($item['returned_amount'])) {
             return $item['returned_amount'];
@@ -343,34 +444,26 @@ class SaleHelper extends Controller {
     }
 
     static function detachItems($sale) {
-        foreach ($sale->articles as $article) {
-            if (count($article->addresses) >= 1 && !is_null($sale->address_id)) {
-                foreach ($article->addresses as $article_address) {
-                    if ($article_address->pivot->address_id == $sale->address_id) {
-                        $new_amount = $article_address->pivot->amount + $article->pivot->amount;
-                        Log::info('------------------------------------');
-                        Log::info('Reseteando stock de '.$article->name);
-                        Log::info('Se regresaron '.$article->pivot->amount.' unidades al stock de '.$article_address->street);
-                        Log::info('El stock de '.$article_address->street.' quedo en '.$new_amount);
-                        $article->addresses()->updateExistingPivot($article_address->id, [
-                            'amount'    => $new_amount,
-                        ]);
+        if (!$sale->to_check && !$sale->checked) {
+            foreach ($sale->articles as $article) {
+                if (count($article->addresses) >= 1 && !is_null($sale->address_id)) {
+                    foreach ($article->addresses as $article_address) {
+                        if ($article_address->pivot->address_id == $sale->address_id) {
+                            $new_amount = $article_address->pivot->amount + $article->pivot->amount;
+                            $article->addresses()->updateExistingPivot($article_address->id, [
+                                'amount'    => $new_amount,
+                            ]);
+                        }
                     }
+                } else if (!is_null($article->stock)) {
+                    $stock = 0;
+                    $stock = (int)$article->pivot->amount;
+                    $article->stock += $stock;
+                    $article->save();
                 }
-                // ArticleHelper::setArticleStockFromAddresses($article);
-            } else if (!is_null($article->stock)) {
-                Log::info('detachItems NO entro en addresses');
-                $stock = 0;
-                $stock = (int)$article->pivot->amount;
-                $article->stock += $stock;
-                $article->save();
+                Self::deleteStockMovement($sale, $article);
             }
-            Self::deleteStockMovement($sale, $article);
         }
-
-        // foreach ($sale->articles as $article) {
-        //     ArticleHelper::setArticleStockFromAddresses($article);
-        // }
 
         $sale->articles()->detach();
         $sale->combos()->detach();
@@ -431,9 +524,9 @@ class SaleHelper extends Controller {
 
     static function getTotalItem($item) {
         $amount = $item->pivot->amount;
-        if (!is_null($item->pivot->returned_amount)) {
-            $amount -= $item->pivot->returned_amount;
-        }
+        // if (!is_null($item->pivot->returned_amount)) {
+        //     $amount -= $item->pivot->returned_amount;
+        // }
         $total = $item->pivot->price * $amount;
         if (!is_null($item->pivot->discount)) {
             $total -= $total * ($item->pivot->discount / 100);

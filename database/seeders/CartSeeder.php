@@ -17,7 +17,7 @@ class CartSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'Jugueteria Rosario')
+        $user = User::where('company_name', 'Autopartes Boxes')
                     ->first();
         $buyers = Buyer::where('user_id', $user->id)
                             ->get();

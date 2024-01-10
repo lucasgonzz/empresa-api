@@ -31,7 +31,7 @@ class CreateUsersTable extends Migration
             $table->decimal('plan_discount', 8,2)->unsigned()->nullable();
             $table->integer('percentage_card')->nullable();
             $table->string('dni')->nullable();
-            $table->string('verification_code')->nullable();
+            // $table->string('verification_code')->nullable();
             $table->integer('admin_access')->default(0)->nullable();
             // $table->enum('online_prices', ['all', 'only_registered', 'only_buyers_with_comerciocity_client'])->nullable();
             $table->decimal('dollar', 10,2)->nullable();
@@ -53,6 +53,7 @@ class CreateUsersTable extends Migration
             $table->string('session_id')->nullable();
             $table->decimal('total_a_pagar', 12,2)->nullable();
             $table->timestamp('last_activity')->nullable();
+            $table->string('app_url')->nullable();
             $table->rememberToken();
             
             $table->enum('status', ['commerce', 'admin', 'super']);

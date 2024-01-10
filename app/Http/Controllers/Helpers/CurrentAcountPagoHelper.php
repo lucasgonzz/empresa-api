@@ -83,6 +83,7 @@ class CurrentAcountPagoHelper {
     }
 
     static function saveCheck($pago, $checks) {
+        Log::info('enotr a guardar cheques');
         foreach ($checks as $check) {
             Check::create([
                 'bank'                  => $check['bank'],

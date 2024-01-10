@@ -151,6 +151,21 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'Vender',
                 'en'            => 'vender.create_article',
             ],
+            [
+                'singular'      => 'Utilizar modulo ABM',
+                'plural'        => 'Modulo ABM',
+                'en'            => 'abm',
+            ],
+            [
+                'singular'      => 'Utilizar modulo de DEPOSITO VENTAS para checkear',
+                'plural'        => 'Deposito para checkear',
+                'en'            => 'deposito_para_checkear',
+            ],
+            [
+                'singular'      => 'Utilizar modulo de DEPOSITO VENTAS checkeadas',
+                'plural'        => 'Deposito checkeadas',
+                'en'            => 'deposito_checkeadas',
+            ],
         ];
         foreach ($permissions as $permission) {
             PermissionEmpresa::create([

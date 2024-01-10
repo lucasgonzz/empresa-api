@@ -16,7 +16,7 @@ class CommissionSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'Jugueteria Rosario')->first();
+        $user = User::where('company_name', 'Autopartes Boxes')->first();
         $models = [
             // Juguetes
             [

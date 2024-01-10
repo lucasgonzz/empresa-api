@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\AfipWsController;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\CurrentAcountController;
 use App\Http\Controllers\Helpers\ArticleHelper;
@@ -12,9 +13,9 @@ use App\Http\Controllers\Helpers\SaleChartHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SaleProviderOrderHelper;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
+use App\Http\Controllers\Pdf\SaleDeliveredArticlesPdf;
 use App\Http\Controllers\Pdf\SalePdf;
 use App\Http\Controllers\Pdf\SaleTicketPdf;
-use App\Http\Controllers\Pdf\SaleDeliveredArticlesPdf;
 use App\Http\Controllers\SellerCommissionController;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
@@ -25,15 +26,20 @@ use Illuminate\Support\Facades\Log;
 class SaleController extends Controller
 {
 
-    public function index($from_date, $until_date = null) {
+    public function index($from_date = null, $until_date = null) {
         $models = Sale::where('user_id', $this->userId())
                         ->orderBy('created_at', 'DESC')
                         ->withAll();
-        if (!is_null($until_date)) {
-            $models = $models->whereDate('created_at', '>=', $from_date)
-                            ->whereDate('created_at', '<=', $until_date);
+        if (!is_null($from_date)) {
+            if (!is_null($until_date)) {
+                $models = $models->whereDate('created_at', '>=', $from_date)
+                                ->whereDate('created_at', '<=', $until_date);
+            } else {
+                $models = $models->whereDate('created_at', $from_date);
+            }
         } else {
-            $models = $models->whereDate('created_at', $from_date);
+            $models = $models->where('to_check', 1)
+                            ->orWhere('checked', 1);
         }
 
         $models = $models->get();
@@ -57,6 +63,7 @@ class SaleController extends Controller
             'discounts_in_services'             => $request->discounts_in_services,
             'surchages_in_services'             => $request->surchages_in_services,
             'employee_id'                       => SaleHelper::getEmployeeId($request),
+            'to_check'                          => $request->to_check,
             'user_id'                           => $this->userId(),
         ]);
         SaleHelper::attachProperies($model, $request);
@@ -73,6 +80,13 @@ class SaleController extends Controller
         $model = Sale::where('id', $id)
                         ->with('articles')
                         ->first();
+
+        $previus_articles = $model->articles;
+        Log::info('previus_articles:');
+        
+        foreach ($previus_articles as $article) {
+            Log::info($article->name);
+        }
         SaleHelper::detachItems($model);
         
         $model->discounts_in_services               = $request->discounts_in_services;
@@ -81,12 +95,15 @@ class SaleController extends Controller
         $model->afip_information_id                 = $request->afip_information_id;
         $model->address_id                          = $request->address_id;
         $model->sale_type_id                        = $request->sale_type_id;
+        $model->to_check                            = $request->to_check;
+        $model->checked                             = $request->checked;
+        $model->confirmed                           = $request->confirmed;
         $model->employee_id                         = SaleHelper::getEmployeeId($request);
         $model->updated_at                          = Carbon::now();
         $model->save();
         $previus_client_id                          = $model->client_id;
 
-        SaleHelper::attachProperies($model, $request, false);
+        SaleHelper::attachProperies($model, $request, false, $previus_articles);
 
         $model->updated_at = Carbon::now();
         $model->save();
@@ -117,12 +134,24 @@ class SaleController extends Controller
             }
             foreach ($model->articles as $article) {
                 ArticleHelper::resetStock($article, $article->pivot->amount, $model);
-                ArticleHelper::setArticleStockFromAddresses($article);
+                // ArticleHelper::setArticleStockFromAddresses($article);
             }
             $model->delete();
             $this->sendDeleteModelNotification('sale', $model->id);
         }
         return response(null);
+    }
+
+    function makeAfipTicket(Request $request) {
+        $sale = Sale::find($request->sale_id);
+        if (!is_null($sale)) {
+            $sale->afip_information_id = $request->afip_information_id;
+            $sale->save();
+            $ct = new AfipWsController($sale);
+            $afip_ticket = $ct->init();
+            return response()->json(['sale' => $this->fullModel('Sale', $request->sale_id)], 201);
+        }
+        return response(null, 200);
     }
 
     function updatePrices(Request $request, $id) {

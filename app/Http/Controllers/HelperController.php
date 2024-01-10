@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exports\SalesExport;
 use App\Http\Controllers\AfipWsController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
@@ -23,12 +24,17 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Maatwebsite\Excel\Facades\Excel;
 
 class HelperController extends Controller
 {
 
     function callMethod($method) {
         $this->{$method}();
+    }
+
+    function excel_ventas() {
+        return Excel::download(new SalesExport, 'ventas.xlsx');
     }
 
     function quitar_depositos() {

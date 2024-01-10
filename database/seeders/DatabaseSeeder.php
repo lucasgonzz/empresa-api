@@ -73,25 +73,28 @@ class DatabaseSeeder extends Seeder
             // $this->call(LocationSeeder::class);
             $this->call(PaymentMethodTypeSeeder::class);
             // $this->call(CuponSeeder::class);
-            // $this->call(PriceTypeSeeder::class);
+            $this->call(PriceTypeSeeder::class);
             $this->call(BudgetStatusSeeder::class);
             $this->call(BudgetSeeder::class);
-            $this->call(RecipeSeeder::class);
+            // $this->call(RecipeSeeder::class);
             // $this->call(OrderProductionSeeder::class);
             $this->call(SuperBudgetSeeder::class);
             // $this->call(CreditCardSeeder::class);
             // $this->call(CreditCardPaymentPlanSeeder::class);
             $this->call(UpdateFeatureSeeder::class);
-            $this->call(OrderSeeder::class);
-            $this->call(InventoryLinkageScopeSeeder::class);
+            // $this->call(OrderSeeder::class);
+            // $this->call(InventoryLinkageScopeSeeder::class);
             // $this->call(AfipTicketSeeder::class);
             // $this->call(ArticlePropertyTypeSeeder::class);
             // $this->call(ArticlePropertyValueSeeder::class);
             // $this->call(ArticlePropertySeeder::class);
-            $this->call(ProviderOrderSeeder::class);
-            $this->call(CartSeeder::class);
+            // $this->call(ProviderOrderSeeder::class);
+            // $this->call(CartSeeder::class);
             $this->call(MessageSeeder::class);
             $this->call(ArticleTicketInfoSeeder::class);
+            $this->call(ArticlePerformanceSeeder::class);
+            // $this->call(StockMovementSeeder::class);
+            // $this->call(PriceChangeSeeder::class);
         }
     }
 }

@@ -16,12 +16,12 @@ class UpdateFeatureSeeder extends Seeder
     {
         $models = [
             [
-                'name' => 'Movimientos de Stock',
-                'description' => 'Sumamos una nueva instancia a la hora de trabajar con el stock de los articulos, resumimos lo mas importante en un video. Si no lo has visto, comunicate con tu empleador para que te facilite el link.',
+                'name' => 'Buscador de codigo de barras',
+                'description' => 'Desde el LISTADO, vas a podre buscar los articulos diractamente por su codigo de barras con el atajo que vas a encontrar en la parte superior de la pantalla, a la derecha de los botones de informacion de stock.',
             ],
             [
-                'name' => 'Pedidos Online HISTORICOS',
-                'description' => 'En estas secciones, se podran seguir visualizando los resultados filtrados por una fecha, o se podra ver el historial completo todo junto. Esta opcion aparece en la isquina superior derecha.',
+                'name' => 'Mejora en los buscadores',
+                'description' => 'Ahora cuando se busque algun dato, como un articulo por su nombre desde VENDER, no hace falta colocar el nombre con las palabras en el mismo orden, ahora el sistema reconocera el dato a buscar con cualquier orden de palabras, siempre y cuando el articulo contenga esas palabras.',
             ],
         ];
         foreach ($models as $model) {

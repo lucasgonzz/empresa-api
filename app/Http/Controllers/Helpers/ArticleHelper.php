@@ -325,7 +325,8 @@ class ArticleHelper {
     }
 
     static function discountStock($id, $amount, $sale) {
-        $article = Article::find($id);
+        $article = new \stdClass();
+        $article->id = $id;
         Self::storeStockMovement($article, $sale->id, $amount, $sale->address_id);
     }
 
@@ -365,7 +366,7 @@ class ArticleHelper {
     }
 
     static function resetStock($article, $amount, $sale) {
-        Self::storeStockMovement($article, null, $amount, null, $sale->address_id, 'Eliminacion venta');
+        Self::storeStockMovement($article, null, $amount, null, $sale->address_id, 'Eliminacion de venta N°'.$sale->num);
     }
 
     static function getShortName($name, $length) {

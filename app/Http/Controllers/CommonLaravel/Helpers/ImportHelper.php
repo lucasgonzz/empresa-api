@@ -9,7 +9,7 @@ class ImportHelper {
 		Log::info('--------------------------------');
 		Log::info('Por buscar el indice '.$key.' en las columns:');
 		Log::info($columns);
-		if (isset($columns[$key])) {
+		if (isset($columns[$key]) && isset($row[$columns[$key]])) {
 			Log::info('Estaba el indice con el valor: '.$columns[$key]);
 			Log::info('row: ');
 			Log::info($row);

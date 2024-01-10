@@ -21,7 +21,7 @@ class Article extends Model
     public function getCostoRealAttribute() {
         $owner = UserHelper::user();
         $cost = $this->cost;
-        if (!is_null($this->cost)) {
+        if (!is_null($this->cost) && !is_null($owner)) {
             if ($this->cost_in_dollars) {
                 if (!is_null($this->provider) && !is_null($this->provider->dolar)) {
                     $cost = $cost * (float)$this->provider->dolar;
@@ -33,6 +33,7 @@ class Article extends Model
                 $cost -= $cost * (float)$discount->percentage / 100;
             }
             if (!is_null($this->iva) 
+                && !$owner->iva_included
                 && $this->iva->percentage != 0 
                 && $this->iva->percentage != 'Extento'
                 && $this->iva->percentage != 'No Gravado') {

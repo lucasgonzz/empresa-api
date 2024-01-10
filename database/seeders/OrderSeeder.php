@@ -18,7 +18,7 @@ class OrderSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'Jugueteria Rosario')->first();
+        $user = User::where('company_name', 'Autopartes Boxes')->first();
         $buyer = Buyer::where('user_id', $user->id)->first();
         $models = [
             [

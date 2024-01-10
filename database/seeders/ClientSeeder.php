@@ -17,7 +17,7 @@ class ClientSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'Jugueteria Rosario')
+        $user = User::where('company_name', 'Autopartes Boxes')
                         ->first();
         $models = [
             [

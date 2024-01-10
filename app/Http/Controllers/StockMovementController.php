@@ -21,9 +21,11 @@ class StockMovementController extends Controller
     }
 
     function store(Request $request) {
+        // Log::info('Entro con request:');
+        // Log::info($request);
         $this->request = $request;
         $this->article_id = $request->model_id;
-
+        $this->article = Article::find($this->article_id);
         $this->stock_movement = StockMovement::create([
             'temporal_id'       => $this->getTemporalId($request),
             'article_id'        => $request->model_id,
@@ -33,25 +35,42 @@ class StockMovementController extends Controller
             'provider_id'       => $request->amount >= 1 && isset($request->provider_id) && $request->provider_id != 0 ? $request->provider_id : null,
             'from_address_id'   => $this->getFromAddressId(),
             'to_address_id'     => $this->getToAddressId(),
-            'observations'      => isset($request->observations) && $request->observations != 0 ? $request->observations : null,
+            'observations'      => isset($request->observations) ? $request->observations : null,
             'employee_id'       => UserHelper::userId(false),
         ]);
 
-        $this->article = $this->stock_movement->article;
+
+        // Log::info('StockMovement para '.$this->article->name);
+        // Log::info('Stock previo '.$this->article->stock);
+        // Log::info('Cantidad del Movimiento '.$this->stock_movement->amount);
 
         $this->setConcepto();
 
         $this->setArticleStock();
+
+        $this->setStockResultante();
+
+        // Log::info('Stock resultante '.$this->stock_movement->stock_resultante);
 
         $this->setArticleProvider();
 
         $this->sendUpdateNotification();
 
         if (!is_null($this->article)) {
-            Log::info('Se creo stock_movement para '.$this->article->name.' con '.$this->stock_movement->amount);
+            // Log::info('Se creo stock_movement para '.$this->article->name.' con '.$this->stock_movement->amount);
         }
         
+        // Log::info('------------------------------------------------');
         return response()->json(['model' => $this->stock_movement], 201);
+    }
+
+    function setStockResultante() {
+        if (!is_null($this->article)) {
+            $this->stock_movement->stock_resultante = $this->article->stock;
+        } else {
+            $this->stock_movement->stock_resultante = $this->stock_movement->amount;
+        }
+        $this->stock_movement->save();
     }
 
     function getFromAddressId() {
@@ -69,12 +88,11 @@ class StockMovementController extends Controller
     }
 
     function articleHasAddresses() {
-        $article = Article::find($this->article_id);
-        if (is_null($article) || count($article->addresses) >= 1 || isset($this->request->from_create_article_addresses)) {
-            Log::info('Tiene articleHasAddresses');
+        if (is_null($this->article) || count($this->article->addresses) >= 1 || isset($this->request->from_create_article_addresses)) {
+            // Log::info('Tiene articleHasAddresses');
             return true;
         }
-        Log::info('isset '.isset($this->request->from_create_article_addresses));
+        // Log::info('isset '.isset($this->request->from_create_article_addresses));
         return false;
     }
 
@@ -98,6 +116,8 @@ class StockMovementController extends Controller
                 }
             } else if (!is_null($this->stock_movement->from_address_id)) {
                 $this->stock_movement->concepto = 'Movimiento de depositos';
+            } else if (!is_null($this->stock_movement->amount < 0)) {
+                $this->stock_movement->concepto = 'Resta de Stock';
             }
             $this->stock_movement->save();
         }
@@ -136,7 +156,7 @@ class StockMovementController extends Controller
         }
         if (!is_null($this->article->stock) && !count($this->article->addresses) >= 1) {
             if (!is_null($this->stock_movement->sale)) {
-                Log::info('Descontando stock global por venta');
+                // Log::info('Descontando stock global por venta');
                 $this->article->stock -= (float)$this->stock_movement->amount;
             } else {
                 $this->article->stock += (float)$this->stock_movement->amount;
@@ -157,7 +177,7 @@ class StockMovementController extends Controller
     */
     function checkToAddress() {
         if (!is_null($this->stock_movement->to_address_id) && $this->articleHasAddresses()) {
-            Log::info('checkToAddress para '.$this->article->name);
+            // Log::info('checkToAddress para '.$this->article->name);
             $to_address = null;
             foreach ($this->article->addresses as $address) {
                 if ($address->id == $this->stock_movement->to_address_id) {
@@ -168,15 +188,15 @@ class StockMovementController extends Controller
                 $this->article->addresses()->attach($this->stock_movement->to_address_id, [
                     'amount'    => $this->stock_movement->amount,
                 ]);
-                Log::info('Se agrego la direccion '.$this->stock_movement->to_address->street.' con la cantidad de '.$this->stock_movement->amount.' al articulo '.$this->article->name);
+                // Log::info('Se agrego la direccion '.$this->stock_movement->to_address->street.' con la cantidad de '.$this->stock_movement->amount.' al articulo '.$this->article->name);
             } else {
                 $new_amount = $to_address->pivot->amount + $this->stock_movement->amount;
                 $this->article->addresses()->updateExistingPivot($this->stock_movement->to_address_id,[
                     'amount'    => $new_amount,
                 ]);
-                Log::info('Se actualizo la direccion '.$this->stock_movement->to_address->street.' al articulo '.$this->article->name. '. Quedo en '.$new_amount);
+                // Log::info('Se actualizo la direccion '.$this->stock_movement->to_address->street.' al articulo '.$this->article->name. '. Quedo en '.$new_amount);
             }
-            Log::info('---------------------------------------');
+            // Log::info('---------------------------------------');
         }
     }
 
@@ -191,7 +211,7 @@ class StockMovementController extends Controller
     */
     function checkFromAddress() {
         if (!is_null($this->stock_movement->from_address_id) && count($this->article->addresses) >= 1) {
-            Log::info('checkFromAddress para '.$this->article->name);
+            // Log::info('checkFromAddress para '.$this->article->name);
             $from_address = null;
             foreach ($this->article->addresses as $address) {
                 if ($address->id == $this->stock_movement->from_address_id) {
@@ -204,11 +224,11 @@ class StockMovementController extends Controller
                 $this->article->addresses()->updateExistingPivot($from_address->id, [
                     'amount'    => $new_amount,
                 ]);
-                Log::info('Se actualizo la direccion '.$from_address->street.' de '.$from_address->pivot->amount. ' a '.$new_amount);
+                // Log::info('Se actualizo la direccion '.$from_address->street.' de '.$from_address->pivot->amount. ' a '.$new_amount);
             } else {
-                Log::info('no se encontro la direccion from_address');
+                // Log::info('no se encontro la direccion from_address');
             }
-            Log::info('------------------------------------------');
+            // Log::info('------------------------------------------');
         }
     }
 }

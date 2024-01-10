@@ -70,6 +70,11 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Mostrar Codigo interno en e-commerce',
                 'slug' => 'article_num_in_online',
             ],
+            [
+                // 12
+                'name' => 'Chequear ventas',
+                'slug' => 'check_sales',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

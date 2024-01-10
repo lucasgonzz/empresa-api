@@ -25,7 +25,7 @@ class ProviderSeeder extends Seeder
 
     function lucas() {
         $ct = new Controller();
-        $user = User::where('company_name', 'Jugueteria Rosario')->first();
+        $user = User::where('company_name', 'Autopartes Boxes')->first();
         $models = [
             [
                 'num'               => 1,
@@ -34,6 +34,7 @@ class ProviderSeeder extends Seeder
                 'email'             => 'lucasgonzalez5500@gmail.com',
                 'address'           => 'Calle 123',
                 'user_id'           => $user->id,
+                'saldo'             => 100,
             ],
             [
                 'num'               => 2,
@@ -42,6 +43,7 @@ class ProviderSeeder extends Seeder
                 'email'             => 'lucasgonzalez5500@gmail.com',
                 'address'           => 'Calle 123',
                 'user_id'           => $user->id,
+                'saldo'             => 1200,
             ],
             [
                 'num'               => 3,
@@ -52,8 +54,89 @@ class ProviderSeeder extends Seeder
                 'user_id'           => $user->id,
             ],
             [
+                'num'               => 4,
+                'name'              => 'Mc Electronica',
+                'percentage_gain'   => 0,
+                'email'             => 'lucasgonzalez5500@gmail.com',
+                'address'           => 'Calle 123',
+                'user_id'           => $user->id,
+                'saldo'             => 1500,
+            ],
+            [
+                'num'               => 4,
+                'name'              => 'Mc Electronica',
+                'percentage_gain'   => 0,
+                'email'             => 'lucasgonzalez5500@gmail.com',
+                'address'           => 'Calle 123',
+                'user_id'           => $user->id,
+            ],
+            [
+                'num'               => 4,
+                'name'              => 'Mc Electronica',
+                'percentage_gain'   => 0,
+                'email'             => 'lucasgonzalez5500@gmail.com',
+                'address'           => 'Calle 123',
+                'user_id'           => $user->id,
+            ],
+            [
+                'num'               => 4,
+                'name'              => 'Mc Electronica',
+                'percentage_gain'   => 0,
+                'email'             => 'lucasgonzalez5500@gmail.com',
+                'address'           => 'Calle 123',
+                'user_id'           => $user->id,
+            ],
+            [
+                'num'               => 4,
+                'name'              => 'Mc Electronica',
+                'percentage_gain'   => 0,
+                'email'             => 'lucasgonzalez5500@gmail.com',
+                'address'           => 'Calle 123',
+                'user_id'           => $user->id,
+            ],
+            [
+                'num'               => 4,
+                'name'              => 'Mc Electronica',
+                'percentage_gain'   => 0,
+                'email'             => 'lucasgonzalez5500@gmail.com',
+                'address'           => 'Calle 123',
+                'user_id'           => $user->id,
+            ],
+            [
+                'num'               => 4,
+                'name'              => 'Mc Electronica',
+                'percentage_gain'   => 0,
+                'email'             => 'lucasgonzalez5500@gmail.com',
+                'address'           => 'Calle 123',
+                'user_id'           => $user->id,
+            ],
+            [
+                'num'               => 4,
+                'name'              => 'Mc Electronica',
+                'percentage_gain'   => 0,
+                'email'             => 'lucasgonzalez5500@gmail.com',
+                'address'           => 'Calle 123',
+                'user_id'           => $user->id,
+            ],
+            [
+                'num'               => 4,
+                'name'              => 'Mc Electronica',
+                'percentage_gain'   => 0,
+                'email'             => 'lucasgonzalez5500@gmail.com',
+                'address'           => 'Calle 123',
+                'user_id'           => $user->id,
+            ],
+            [
+                'num'               => 4,
+                'name'              => 'Mc Electronica',
+                'percentage_gain'   => 0,
+                'email'             => 'lucasgonzalez5500@gmail.com',
+                'address'           => 'Calle 123',
+                'user_id'           => $user->id,
+            ],
+            [
                 'num'               => 1,
-                'name'              => 'Jugueteria Rosario',
+                'name'              => 'Autopartes Boxes',
                 'percentage_gain'   => 50,
                 'email'             => 'lucasgonzalez5500@gmail.com',
                 'address'           => 'Calle 123',
@@ -68,7 +151,7 @@ class ProviderSeeder extends Seeder
 
     function marcos() {
         $user = User::where('company_name', 'marcos')->first();
-        $lucas_user = User::where('company_name', 'Jugueteria Rosario')->first();
+        $lucas_user = User::where('company_name', 'Autopartes Boxes')->first();
         $lucas_provider = Provider::create([
             'num'                   => 1,
             'name'                  => 'Lucas',

@@ -18,6 +18,14 @@ Route::post('/password-reset/update-password',
 
 
 // ------------------------------------------------------------------------------
+
+
+// Power Bi
+Route::get('/power-bi/articulos', 'PowerBiController@articulos');
+
+// Article Performance
+Route::get('/article-performance/{company_name}/{meses_atras}', 'ArticlePerformanceController@setArticlesPerformance');
+
 // Reportes
 Route::get('/reportes/inventario/{company_name}/{periodo}', 'ReporteController@inventario');
 
@@ -34,6 +42,8 @@ Route::get('/super-budget', 'SuperBudgetController@pdf');
 
 
 Route::get('helpers/{method}', 'HelperController@callMethod');
+
+Route::get('recaulculate-cc-sales-debe/{client_id}', 'Helpers\CurrentAcountHelper@recalculateCurrentAcountsSalesDebe');
 
 Route::get('articulos-repetidos/{provider_id}', 'HelperController@articulosRepetidos');
 Route::get('check-insuficiente-amount/{company_name}', 'HelperController@checkCartArticlesInsuficienteAmount');

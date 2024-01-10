@@ -38,7 +38,7 @@ class SaleTicketPdf extends fpdf {
 	}
 
 	function afipInformation() {
-		if (!is_null($this->sale->afip_information)) {
+		if (!is_null($this->sale->afip_information) && !is_null($this->sale->afip_ticket)) {
 			$this->SetFont('Arial', '', 8);
 			$this->x = 2;
 			$this->Cell($this->cell_ancho, 5, 'IVA: '.$this->user->afip_information->iva_condition->name, $this->b, 1, 'L');

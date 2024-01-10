@@ -25,6 +25,7 @@ class ArticleImport implements ToCollection
 {
     
     public function __construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id) {
+        set_time_limit(999999);
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
         $this->start_row = $start_row;

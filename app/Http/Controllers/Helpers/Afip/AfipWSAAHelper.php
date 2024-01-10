@@ -34,7 +34,7 @@ class AfipWSAAHelper {
             $this->private_key = 'file://'.realpath(public_path().'/afip/testing/MiClavePrivada.key');
             $this->url_wsaa = 'https://wsaahomo.afip.gov.ar/ws/services/LoginCms';
         } else {
-            $this->cert = 'file://'.realpath(public_path().'/afip/production/comerciocity-alias_1775a2484a464aa3.crt');
+            $this->cert = 'file://'.realpath(public_path().'/afip/production/comerciocity-alias_5987b82fa7d1ed3.crt');
             $this->private_key = 'file://'.realpath(public_path().'/afip/production/privada.key');
             $this->url_wsaa = 'https://wsaa.afip.gov.ar/ws/services/LoginCms';
         }

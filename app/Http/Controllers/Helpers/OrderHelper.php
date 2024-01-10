@@ -109,7 +109,9 @@ class OrderHelper {
         } else if ($model->order_status->name == 'Terminado') {
             MessageHelper::sendOrderFinishedMessage($model);
         } else if ($model->order_status->name == 'Entregado') {
-            MessageHelper::sendOrderDeliveredMessage($model);
+            Log::info('Por mandar mail---------------');
+            // MessageHelper::sendOrderDeliveredMessage($model);
+            Log::info('Se mando mail-----------');
         }
     }
 
@@ -171,11 +173,14 @@ class OrderHelper {
     }
 
     static function saveSale($order, $instance) {
+        Log::info('entro en saveSale con order_id: '.$order->id);
+        Log::info('order->order_status: '.$order->order_status->name);
         if ($order->order_status->name == 'Entregado' && Self::saveSaleAfterFinishOrder()) {
             $client_id = null;
             if (!is_null($order->buyer->comercio_city_client)) {
                 $client_id = $order->buyer->comercio_city_client_id;
             }
+            Log::info('client_id: '.$client_id);
             $sale = Sale::create([
                 'user_id'               => $instance->userId(),
                 'buyer_id'              => $order->buyer_id,
@@ -190,6 +195,7 @@ class OrderHelper {
                 SaleHelper::attachCurrentAcountsAndCommissions($sale, $order->buyer->comercio_city_client_id, [], []);
             }
             $instance->sendAddModelNotification('sale', $sale->id, false);
+            Log::info('se guardo venta para el pedido online, sale_id: '.$sale->id);
         }
     }
 

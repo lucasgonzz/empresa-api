@@ -15,7 +15,7 @@ class PriceTypeSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'Jugueteria Rosario')->first();
+        $user = User::where('company_name', 'Autopartes Boxes')->first();
         $models = [
             [
                 'num'           => 1,

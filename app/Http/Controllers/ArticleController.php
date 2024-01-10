@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Pdf\ArticleListPdf;
 use App\Http\Controllers\Pdf\ArticlePdf;
 use App\Http\Controllers\Pdf\ArticleTicketPdf;
+use App\Http\Controllers\StockMovementController;
 use App\Imports\ArticleImport;
 use App\Imports\LocationImport;
 use App\Imports\ProvinciaImport;
@@ -247,5 +248,25 @@ class ArticleController extends Controller
 
     function listPdf($ids) {
         new ArticleListPdf($ids);
+    }
+
+    function resetStock(Request $request) {
+        foreach ($request->articles_id as $article_id) {
+            $article = Article::find($article_id);
+            if (!is_null($article->stock)) {
+                $new_stock = 0 - $article->stock;
+            } else {
+                $new_stock = 0;
+            }
+
+            $stock_movement_ct = new StockMovementController();
+            $request = new \Illuminate\Http\Request();
+            $request->model_id = $article_id;
+            $request->amount = $new_stock;
+            $request->concepto = 'Reseteo de stock';
+            $stock_movement_ct->store($request);
+        }
+
+        return response(null, 200);
     }
 }
