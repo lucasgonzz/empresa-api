@@ -236,11 +236,23 @@ class PdfHelper {
 	    $instance->y = $y;
 	    $instance->y += 5;
 	    $instance->x = 5;
-	    $instance->SetFont('Arial', '', 8);
+	    $instance->SetFont('Arial', 'B', 8);
 
-        $instance->Image(public_path().'/storage/logo.png', 165, $instance->y - 8, 23, 20);
+        $instance->Image(public_path().'/storage/logo.png', 175, $instance->y - 5, 23, 20);
 
-		$instance->Cell(200, 5, 'Comprobante creado con el sistema de control de stock ComercioCity - comerciocity.com', $instance->b, 0, 'C');
+		$instance->Cell(200, 5, 'Creado con la plataforma de gestion y automatizacion ComercioCity | ERP | Pagina web | MercadoLibre | comerciocity.com', $instance->b, 1, 'L');
+	    
+	    $instance->x = 5;
+		$instance->Cell(200, 5, '¡Descuentos para los clientes de nuestros clientes!', $instance->b, 0, 'C');
+
+		// Arriba
+		$instance->Line(5, $instance->y-5, 205, $instance->y-5);
+		// Derecha
+		$instance->Line(205, $instance->y-5, 205, $instance->y+5);
+		// Abjao
+		$instance->Line(5, $instance->y+5, 205, $instance->y+5);
+		// Izquierda
+		$instance->Line(5, $instance->y+5, 5, $instance->y-5);
 	}
 
 	static function total($instance, $total) {

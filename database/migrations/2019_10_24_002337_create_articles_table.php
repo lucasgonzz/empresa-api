@@ -15,6 +15,7 @@ class CreateArticlesTable extends Migration
     {
         Schema::create('articles', function (Blueprint $table) {
             $table->bigIncrements('id');
+            $table->string('me_li_id')->nullable();
             $table->integer('num')->nullable();
             $table->string('bar_code', 128)->nullable();
             $table->string('provider_code', 128)->nullable();
@@ -45,6 +46,7 @@ class CreateArticlesTable extends Migration
             $table->integer('provider_article_id')->nullable();
             $table->boolean('in_offer')->default(0)->nullable();
             $table->boolean('default_in_vender')->nullable();
+            $table->boolean('mercado_libre')->default(true)->nullable();
             $table->timestamp('final_price_updated_at')->nullable();
             $table->softDeletes();
 

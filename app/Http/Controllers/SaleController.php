@@ -55,6 +55,7 @@ class SaleController extends Controller
             'num'                               => $this->num('sales'),
             'client_id'                         => $request->client_id,
             'sale_type_id'                      => $request->sale_type_id,
+            'observations'                      => $request->observations,
             'address_id'                        => $request->address_id,
             'current_acount_payment_method_id'  => SaleHelper::getCurrentAcountPaymentMethodId($request),
             'afip_information_id'               => $request->afip_information_id,
@@ -95,6 +96,7 @@ class SaleController extends Controller
         $model->afip_information_id                 = $request->afip_information_id;
         $model->address_id                          = $request->address_id;
         $model->sale_type_id                        = $request->sale_type_id;
+        $model->observations                        = $request->observations;
         $model->to_check                            = $request->to_check;
         $model->checked                             = $request->checked;
         $model->confirmed                           = $request->confirmed;
@@ -166,6 +168,7 @@ class SaleController extends Controller
 
     function pdf($id, $with_prices, $with_costs) {
         $sale = Sale::find($id);
+        SaleHelper::setPrinted($sale);
         $pdf = new SalePdf($sale, (boolean)$with_prices, (boolean)$with_costs);
     }
 

@@ -37,6 +37,8 @@ class CreateSalesTable extends Migration
             $table->boolean('to_check')->unsigned()->default(0);
             $table->boolean('checked')->unsigned()->default(0);
             $table->boolean('confirmed')->unsigned()->default(0);
+            $table->boolean('printed')->default(0);
+            $table->text('observations')->nullable();
             $table->integer('user_id')->unsigned()->nullable();
 
             $table->foreign('user_id')

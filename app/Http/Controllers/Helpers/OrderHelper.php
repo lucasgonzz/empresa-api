@@ -115,9 +115,9 @@ class OrderHelper {
         }
     }
 
-    static function discountArticleStock($model) {
+    static function discountArticleStock($model, $instance) {
         if ($model->order_status->name == 'Sin confirmar') {
-            if (Self::saveSaleAfterFinishOrder()) {
+            if (Self::saveSaleAfterFinishOrder() && !UserHelper::hasExtencion('check_sales')) {
                 foreach ($model->articles as $article) {
                     $_article = Article::find($article->id);
 
@@ -137,6 +137,14 @@ class OrderHelper {
                 }
             }
             Self::deleteOrderCart($model);
+
+            Self::checkDepositos($model, $instance);
+        }
+    }
+
+    static function checkDepositos($order, $instance) {
+        if (UserHelper::hasExtencion('check_sales')) {
+            Self::createSale($order, $instance, true);
         }
     }
 
@@ -173,30 +181,33 @@ class OrderHelper {
     }
 
     static function saveSale($order, $instance) {
-        Log::info('entro en saveSale con order_id: '.$order->id);
-        Log::info('order->order_status: '.$order->order_status->name);
-        if ($order->order_status->name == 'Entregado' && Self::saveSaleAfterFinishOrder()) {
-            $client_id = null;
-            if (!is_null($order->buyer->comercio_city_client)) {
-                $client_id = $order->buyer->comercio_city_client_id;
-            }
-            Log::info('client_id: '.$client_id);
-            $sale = Sale::create([
-                'user_id'               => $instance->userId(),
-                'buyer_id'              => $order->buyer_id,
-                'client_id'             => $client_id,
-                'num'                   => $instance->num('sales'),
-                'save_current_acount'   => 1,
-                'order_id'              => $order->id,
-                'employee_id'           => SaleHelper::getEmployeeId(),
-            ]);
-            SaleHelper::attachArticlesFromOrder($sale, $order->articles);
+        if ($order->order_status->name == 'Entregado' && Self::saveSaleAfterFinishOrder() && !UserHelper::hasExtencion('check_sales')) {
+            $sale = Self::createSale($order, $instance);
             if (!is_null($order->buyer->comercio_city_client)) {
                 SaleHelper::attachCurrentAcountsAndCommissions($sale, $order->buyer->comercio_city_client_id, [], []);
             }
-            $instance->sendAddModelNotification('sale', $sale->id, false);
             Log::info('se guardo venta para el pedido online, sale_id: '.$sale->id);
         }
+    }
+
+    static function createSale($order, $instance, $to_check = false) {
+        $client_id = null;
+        if (!is_null($order->buyer->comercio_city_client)) {
+            $client_id = $order->buyer->comercio_city_client_id;
+        }
+        $sale = Sale::create([
+            'user_id'               => $instance->userId(),
+            'buyer_id'              => $order->buyer_id,
+            'client_id'             => $client_id,
+            'to_check'              => $to_check,
+            'num'                   => $instance->num('sales'),
+            'save_current_acount'   => 1,
+            'order_id'              => $order->id,
+            'employee_id'           => SaleHelper::getEmployeeId(),
+        ]);
+        SaleHelper::attachArticlesFromOrder($sale, $order->articles);
+        $instance->sendAddModelNotification('sale', $sale->id, false);
+        return $sale;
     }
 
     static function sendOrderConfirmedNotification($order) {

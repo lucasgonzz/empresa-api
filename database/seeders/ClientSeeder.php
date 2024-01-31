@@ -32,7 +32,7 @@ class ClientSeeder extends Seeder
                 'seller_id'             => 2,
                 // 'price_type_id'         => 2,
                 'user_id'               => $user->id,
-                'comercio_city_user_id' => 2,
+                // 'comercio_city_user_id' => 501,
             ],
             [
                 'num'                   => 2,
@@ -45,7 +45,7 @@ class ClientSeeder extends Seeder
                 'seller_id'             => 1,
                 // 'price_type_id'         => 1,
                 'user_id'               => $user->id,
-                'comercio_city_user_id' => User::where('company_name', 'marcos')->first()->id,
+                'comercio_city_user_id' => User::where('company_name', 'Marcos')->first()->id,
             ],
             [
 

@@ -30,7 +30,7 @@ class ProviderSeeder extends Seeder
             [
                 'num'               => 1,
                 'name'              => 'Buenos Aires',
-                'percentage_gain'   => 50,
+                'percentage_gain'   => 100,
                 'email'             => 'lucasgonzalez5500@gmail.com',
                 'address'           => 'Calle 123',
                 'user_id'           => $user->id,

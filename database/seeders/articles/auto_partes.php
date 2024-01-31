@@ -1280,5 +1280,15 @@ $articles = [
                 'url'       => 'auto-partes/044.1488.jpg',
             ],
         ],
+        'addresses'     => [
+            [
+                'id'            => 1,
+                'amount'        => 10,
+            ],
+            [
+                'id'            => 2,
+                'amount'        => 10,
+            ],
+        ],
     ],
 ];

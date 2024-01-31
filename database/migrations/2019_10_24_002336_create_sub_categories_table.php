@@ -19,8 +19,10 @@ class CreateSubCategoriesTable extends Migration
             $table->string('name');
             $table->bigInteger('category_id')->unsigned();
             $table->foreign('category_id')->references('id')->on('categories');
-            $table->boolean('show_in_vender')->default(0);
+            $table->boolean('show_in_vender')->default(0)->nullable();
+            $table->integer('provider_sub_category_id')->nullable();
             $table->integer('user_id')->unsigned();
+
             $table->foreign('user_id')->references('id')->on('users');
             $table->softDeletes();
             $table->timestamps();

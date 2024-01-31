@@ -26,6 +26,7 @@ class CreateStockMovementsTable extends Migration
             $table->decimal('amount', 12,2)->nullable();
             $table->decimal('stock_resultante', 12,2)->nullable();
             $table->integer('employee_id')->nullable();
+            $table->integer('user_id')->nullable();
             $table->timestamps();
         });
     }

@@ -37,6 +37,7 @@ class StockMovementController extends Controller
             'to_address_id'     => $this->getToAddressId(),
             'observations'      => isset($request->observations) ? $request->observations : null,
             'employee_id'       => UserHelper::userId(false),
+            'user_id'           => UserHelper::userId(),
         ]);
 
 
@@ -116,7 +117,7 @@ class StockMovementController extends Controller
                 }
             } else if (!is_null($this->stock_movement->from_address_id)) {
                 $this->stock_movement->concepto = 'Movimiento de depositos';
-            } else if (!is_null($this->stock_movement->amount < 0)) {
+            } else if (!is_null($this->stock_movement->amount) && $this->stock_movement->amount < 0) {
                 $this->stock_movement->concepto = 'Resta de Stock';
             }
             $this->stock_movement->save();
@@ -177,7 +178,6 @@ class StockMovementController extends Controller
     */
     function checkToAddress() {
         if (!is_null($this->stock_movement->to_address_id) && $this->articleHasAddresses()) {
-            // Log::info('checkToAddress para '.$this->article->name);
             $to_address = null;
             foreach ($this->article->addresses as $address) {
                 if ($address->id == $this->stock_movement->to_address_id) {
@@ -188,15 +188,16 @@ class StockMovementController extends Controller
                 $this->article->addresses()->attach($this->stock_movement->to_address_id, [
                     'amount'    => $this->stock_movement->amount,
                 ]);
-                // Log::info('Se agrego la direccion '.$this->stock_movement->to_address->street.' con la cantidad de '.$this->stock_movement->amount.' al articulo '.$this->article->name);
             } else {
+                Log::info('Se va a actualizar la direccion '.$to_address->street);
+                Log::info('Antes habia '.$to_address->pivot->amount);
+                Log::info('Se van a agregar '.$this->stock_movement->amount);
                 $new_amount = $to_address->pivot->amount + $this->stock_movement->amount;
-                $this->article->addresses()->updateExistingPivot($this->stock_movement->to_address_id,[
+                Log::info('Quedo en  '.$new_amount);
+                $this->article->addresses()->updateExistingPivot($this->stock_movement->to_address_id, [
                     'amount'    => $new_amount,
                 ]);
-                // Log::info('Se actualizo la direccion '.$this->stock_movement->to_address->street.' al articulo '.$this->article->name. '. Quedo en '.$new_amount);
             }
-            // Log::info('---------------------------------------');
         }
     }
 

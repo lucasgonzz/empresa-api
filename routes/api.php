@@ -106,6 +106,8 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::put('order/update-status/{order_id}', 'OrderController@updateStatus');
     Route::put('order/cancel/{order_id}', 'OrderController@cancel');
 
+    Route::get('me-li-order/from-date/{from_date?}/{until_date?}', 'MeLiOrderController@index');
+
     Route::resource('order-status', 'OrderStatusController');
     Route::resource('buyer', 'BuyerController');
     Route::resource('delivery-zone', 'DeliveryZoneController');

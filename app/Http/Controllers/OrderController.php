@@ -44,7 +44,7 @@ class OrderController extends Controller
 
     function updateStatus(Request $request, $id) {
         $model = Order::find($id);
-        OrderHelper::discountArticleStock($model);
+        OrderHelper::discountArticleStock($model, $this);
         OrderHelper::checkPaymentCardInfo($model);
         $model->order_status_id = $request->order_status_id;
         $model->save();

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Models\InventoryLinkage;
@@ -23,10 +24,16 @@ class InventoryLinkageController extends Controller
             // 'num'                           => $this->num('inventory_linkages'),
             'client_id'                     => $request->client_id,
             'inventory_linkage_scope_id'    => $request->inventory_linkage_scope_id,
+            'use_categories'                => $request->use_categories,
             'user_id'                       => $this->userId(),
         ]);
-        $inventory_linkage_helper = new InventoryLinkageHelper();
-        $inventory_linkage_helper->setClientArticles($model);
+
+        GeneralHelper::attachModels($model, 'categories', $request->categories, ['percentage_discount']);
+
+        $inventory_linkage_helper = new InventoryLinkageHelper($model);
+        // $inventory_linkage_helper->setClientCategories();
+        // $inventory_linkage_helper->setClientSubCategories();
+        $inventory_linkage_helper->setClientArticles();
         $this->sendAddModelNotification('inventory_linkage', $model->id);
         return response()->json(['model' => $this->fullModel('InventoryLinkage', $model->id)], 201);
     }  
@@ -39,7 +46,11 @@ class InventoryLinkageController extends Controller
         $model = InventoryLinkage::find($id);
         $model->client_id                     = $request->client_id;
         $model->inventory_linkage_scope_id    = $request->inventory_linkage_scope_id;
+        $model->use_categories                = $request->use_categories;
         $model->save();
+
+        GeneralHelper::attachModels($model, 'categories', $request->categories, ['percentage_discount']);
+        
         $this->sendAddModelNotification('inventory_linkage', $model->id);
         return response()->json(['model' => $this->fullModel('InventoryLinkage', $model->id)], 200);
     }

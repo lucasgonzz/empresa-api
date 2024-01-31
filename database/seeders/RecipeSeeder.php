@@ -18,7 +18,7 @@ class RecipeSeeder extends Seeder
     {
         $user = User::where('company_name', 'Autopartes Boxes')->first();
         $article = Article::where('user_id', $user->id)
-                            ->where('name', 'Cama dos plazas')
+                            ->where('name', 'Prensa Espirales Universal')
                             ->first();
         $recipe = Recipe::create([
             'num'           => 1,
@@ -28,25 +28,25 @@ class RecipeSeeder extends Seeder
         ]);
         $articles = [
             [
-                'name'                          => 'Pata de cama',
+                'name'                          => 'Kit 3 Relojes Orlan Rober Classic Aceite Agua Voltímetro',
                 'order_production_status_id'    => 1,
                 'address_id'                    => 1,
                 'amount'                        => 4,
             ],
             [
-                'name'                          => 'Marco para cama',
+                'name'                          => 'Amortiguadores de Baul 1945NR@1945NR',
                 'order_production_status_id'    => 1,
                 'address_id'                    => 1,
                 'amount'                        => 1,
             ],
             [
-                'name'                          => 'Clavos N° 2',
+                'name'                          => 'Batería de auto UB620M',
                 'order_production_status_id'    => 1,
                 'address_id'                    => 1,
                 'amount'                        => 10,
             ],
             [
-                'name'                          => 'Pintura para cama',
+                'name'                          => 'Bobina de Encendido VX21894',
                 'order_production_status_id'    => 2,
                 'address_id'                    => 1,
                 'amount'                        => 1,

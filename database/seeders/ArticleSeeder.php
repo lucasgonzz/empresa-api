@@ -50,23 +50,23 @@ class ArticleSeeder extends Seeder
 
         $num = 1;
         $days = count($articles);
-        $id = 500000;
+        // $id = 500000;
         // for ($i=0; $i < 4; $i++) { 
             foreach ($articles as $article) {
                 $art = Article::create([
-                    'id'                => $id,
                     'num'               => $num,
                     'bar_code'          => $article['bar_code'],
                     'provider_code'     => $article['provider_code'],
                     'name'              => $article['name'],
                     'slug'              => ArticleHelper::slug($article['name'], $user->id),
-                    'cost'              => $article['cost'],
+                    'cost'              => 50,
+                    // 'cost'              => rand(1000, 100000),
                     'status'            => isset($article['status']) ? $article['status'] : 'active',
                     'featured'          => isset($article['featured']) ? $article['featured'] : null,
                     // 'stock'             => $article['stock'] ,
                     'provider_id'       => isset($article['provider_id']) ? $article['provider_id'] : null,
                     'percentage_gain'   => isset($article['percentage_gain']) ? $article['percentage_gain'] : null,
-                    'iva_id'            => isset($article['iva_id']) ? $article['iva_id'] : 2,
+                    'iva_id'            => isset($article['iva_id']) ? $article['iva_id'] : null,
                     'featured'            => isset($article['featured']) ? $article['featured'] : null,
                     // 'apply_provider_percentage_gain' => 0,
                     'apply_provider_percentage_gain' => 1,
@@ -81,7 +81,7 @@ class ArticleSeeder extends Seeder
                 $art->timestamps = false;
                 $days--;
                 $num++;
-                $id++;
+                // $id+;
                 if (isset($article['images'])) {
                     foreach ($article['images'] as $image) { 
                         Image::create([

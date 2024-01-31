@@ -36,6 +36,13 @@ use Illuminate\Support\Facades\Log;
 
 class SaleHelper extends Controller {
 
+    static function setPrinted($sale) {
+        if (UserHelper::hasExtencion('check_sales') && $sale->confirmed) {
+            $sale->printed = 1;
+            $sale->save();
+        }
+    }
+
     static function updatePreivusClient($sale, $previus_client_id) {
         if (!is_null($sale->client_id) && $sale->client_id != $previus_client_id) {
             CurrentAcountHelper::checkSaldos('client', $previus_client_id);

@@ -32,6 +32,7 @@ class SalePdf extends fpdf {
 		$this->AddPage();
 		$this->setTotales();
 		$this->items();
+		$this->observations();
 
 		if ($save_doc_as) {
         	$this->Output('F', storage_path().'/app/public/oscar-pdf/'.$save_doc_as, true);
@@ -138,6 +139,36 @@ class SalePdf extends fpdf {
 			// $this->total_services += SaleHelper::getTotalItem($service);
 			$this->printItem($index, $service);
 			$index++;
+		}
+	}
+
+	function observations() {
+		if (!is_null($this->sale->observations)) {
+			$this->SetFont('Arial', '', 14);
+		    $this->y += 5;
+		    $this->x = 5;
+
+			$this->Cell(
+				200, 
+				7, 
+				'Observaciones', 
+				$this->b, 
+				1, 
+				'L'
+			);
+
+		    $this->y += 2;
+			$this->SetFont('Arial', '', 10);
+		    $this->x = 5;
+		    $this->MultiCell( 
+				200, 
+				5, 
+				$this->sale->observations, 
+		    	$this->b, 
+		    	'L', 
+		    	false
+		    );
+		    $this->y += 2;
 		}
 	}
 

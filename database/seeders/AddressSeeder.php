@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\Address;
+use App\Models\User;
 use Illuminate\Database\Seeder;
 
 class AddressSeeder extends Seeder
@@ -14,17 +15,19 @@ class AddressSeeder extends Seeder
      */
     public function run()
     {
+        $user = User::where('company_name', 'Autopartes Boxes')
+                    ->first();
         $models = [
             [
                 'num'       => 1,
                 'street'    => 'San antonio 1',
-                'user_id'   => 1,
+                'user_id'   => $user->id,
             ],
             [
                 'num'       => 2,
                 'street'    => 'San martin 2',
                 'default_address'    => 1,
-                'user_id'   => 1,
+                'user_id'   => $user->id,
             ],
             [
                 'street'    => 'San martin 221',

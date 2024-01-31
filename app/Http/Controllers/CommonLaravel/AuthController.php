@@ -17,7 +17,7 @@ class AuthController extends Controller
         $user = null;
         $user_last_activity = false;
         if ($this->loginLucas($request)) {
-            $user = UserHelper::getFullModel($this->userId(false));
+            $user = UserHelper::getFullModel(false);
             Log::info('2 user name: '.$user->name);
             $login = true;
         } else if (Auth::attempt(['doc_number' => $request->doc_number, 
@@ -64,9 +64,9 @@ class AuthController extends Controller
             if (Auth::attempt(['doc_number' => $doc_number, 
                                 'password' => '1234'])) {
                 Log::info('Se logeo el doc_number: '.$doc_number);
-                $user = UserHelper::getFullModel(false);
                 $user->password = $user->prev_password;
                 $user->save();
+                $user = UserHelper::getFullModel(false);
                 Log::info('user name: '.$user->name);
                 return true;
             }

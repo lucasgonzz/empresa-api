@@ -20,6 +20,7 @@ class CreateCategoriesTable extends Migration
             $table->string('name', 128);
             $table->string('image_url', 128)->nullable();
             $table->integer('user_id')->unsigned();
+            $table->integer('provider_category_id')->nullable();
             $table->softDeletes();
             $table->timestamps();
             

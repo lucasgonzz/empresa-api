@@ -84,7 +84,7 @@ class ArticleController extends Controller
         }
         $model->save();
 
-        GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
+        // GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
         // ArticleHelper::setArticleStockFromAddresses($model);
 
         ArticleHelper::setDeposits($model, $request);
@@ -138,7 +138,7 @@ class ArticleController extends Controller
         // }
         $model->save();
         
-        GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
+        // GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
         // ArticleHelper::setArticleStockFromAddresses($model);
 
         ArticleHelper::setFinalPrice($model);

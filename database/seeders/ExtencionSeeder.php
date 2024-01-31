@@ -75,6 +75,11 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Chequear ventas',
                 'slug' => 'check_sales',
             ],
+            [
+                // 13
+                'name' => 'Mercado Libre',
+                'slug' => 'mercado_libre',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

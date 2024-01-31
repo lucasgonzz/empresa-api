@@ -19,6 +19,7 @@ use App\Models\OnlineConfiguration;
 use App\Models\OrderProduction;
 use App\Models\Provider;
 use App\Models\Sale;
+use App\Models\StockMovement;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -31,6 +32,98 @@ class HelperController extends Controller
 
     function callMethod($method) {
         $this->{$method}();
+    }
+
+    function corregir_articulos_matias() {
+        $articles = Article::where('user_id', 188)
+                            ->orderBy('id', 'ASC')
+                            ->get();
+        foreach ($articles as $article_matias) {
+            $oscar_article = Article::find($article_matias->provider_article_id);
+
+            $article_matias->cost = $oscar_article->final_price;
+            $article_matias->save();
+            ArticleHelper::setFinalPrice($article_matias, 188);
+            echo 'Se corrigio '.$article_matias->name.' </br>';
+        }
+        echo 'Listo';
+    }
+
+    function check_pagos_repetidos() {
+        $resultadosRepetidos = CurrentAcount::select('num')
+                                    ->groupBy('num')
+                                    ->where('user_id', 121)
+                                    ->havingRaw('COUNT(num) > 1')
+                                    ->get();
+        foreach ($resultadosRepetidos as $current_acount) {
+            echo 'Haber: '.$current_acount->haber.'. Num: '.$current_acount->num.'. created_at: '.$current_acount->created_at.' </br>';
+        }
+        // dd($resultadosRepetidos);
+    }
+
+    function check_article_addresses() {
+        $articles = Article::where('user_id', 138)
+                            ->whereHas('addresses')
+                            ->get();
+
+        foreach ($articles as $article) {
+            $stock_addresses = 0;
+            foreach ($article->addresses as $address) {
+                $stock_addresses += $address->pivot->amount;
+            }
+            if ($article->stock != $stock_addresses) {
+                echo 'No coincide el stock de '.$article->name.' </br>';
+                foreach ($article->addresses as $address) {
+                    echo 'Hay '.$address->pivot->amount.' en '.$address->street.' </br>';
+                }
+                echo 'Total en direcciones: '.$stock_addresses.' </br>';
+                echo 'Stock global: '.$article->stock.' </br>';
+                // echo '-------------------------------------------------------- </br>';
+
+                $last_stock_movement = StockMovement::where('article_id', $article->id)
+                                                    ->orderBy('created_at', 'DESC')
+                                                    ->first();
+
+                if (!is_null($last_stock_movement)) {
+                    $stock_movement_address = null;
+                    $otras_stock_movement_address = [];
+                    foreach ($article->addresses as $address) {
+                        if ($address->id == $last_stock_movement->to_address_id) {
+                            $stock_movement_address = $address;
+                        } else {
+                            $otras_stock_movement_address[] = $address;
+                        }
+                    }
+
+                    if (!is_null($stock_movement_address)) {
+                        $suma_address_mas_stock_movement = $last_stock_movement->amount + $stock_movement_address->pivot->amount;
+                        $suma_address_mas_stock_movement_original = $suma_address_mas_stock_movement;
+                        
+                        foreach ($otras_stock_movement_address as $otra_address) {
+                            $suma_address_mas_stock_movement += $otra_address->pivot->amount;
+                        }
+
+                        if ($suma_address_mas_stock_movement == $article->stock) {
+                            echo 'Da la suma para '.$article->name.' </br>';
+                            // echo '-------------------------------------------------------- </br>';
+                            
+
+                            echo 'Ultimo movimiento de stock: '.$last_stock_movement->amount.' </br>';
+
+                            $new_amount = $suma_address_mas_stock_movement_original;
+                            echo 'Se actaulizo el stock de '.$stock_movement_address->street.' a '.$new_amount.' </br>';
+                            // $article->addresses()->updateExistingPivot($stock_movement_address->id, [
+                            //     'amount'    => $new_amount,
+                            // ]);
+                        }
+                    }                
+                }
+                echo '-------------------------------------------------------- </br>';
+
+
+
+            }
+        }
     }
 
     function excel_ventas() {

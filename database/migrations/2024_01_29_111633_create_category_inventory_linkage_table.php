@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class CreateInventoryLinkagesTable extends Migration
+class CreateCategoryInventoryLinkageTable extends Migration
 {
     /**
      * Run the migrations.
@@ -13,12 +13,11 @@ class CreateInventoryLinkagesTable extends Migration
      */
     public function up()
     {
-        Schema::create('inventory_linkages', function (Blueprint $table) {
+        Schema::create('category_inventory_linkage', function (Blueprint $table) {
             $table->id();
-            $table->integer('client_id');
-            $table->integer('inventory_linkage_scope_id');
-            $table->boolean('use_categories')->nullable();
-            $table->integer('user_id');
+            $table->integer('category_id');
+            $table->integer('inventory_linkage_id');
+            $table->decimal('percentage_discount', 12,2)->nullable();
             $table->timestamps();
         });
     }
@@ -30,6 +29,6 @@ class CreateInventoryLinkagesTable extends Migration
      */
     public function down()
     {
-        Schema::dropIfExists('inventory_linkages');
+        Schema::dropIfExists('category_inventory_linkage');
     }
 }
