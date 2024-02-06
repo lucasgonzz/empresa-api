@@ -15,30 +15,28 @@ class TitleSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
+        $users = User::where('company_name', 'Autopartes Boxes')
+                        ->orWhere('company_name', 'Matias Mayorista')
+                        ->get();
         $models = [
             [
                 'num'       => 1,
-                'user_id'   => $user->id,
-                // 'header'    => 'Nebulastore',
-                // 'lead'      => 'Tienda de ropa americana',
                 'color'     => '#333',
                 'image_url' => 'http://empresa.local:8000/storage/banner.jpg',
                 'crop_image_url' => 'http://empresa.local:8000/storage/banner_mobile.jpg',
             ],
-            // [
-            //     'num'       => 2,
-            //     'user_id'   => $user->id,
-            //     'header'    => 'Consultanos a travez de',
-            //     'lead'      => 'Instagram',
-            //     'color'     => '#f9b234',
-            //     'text_color'=> null,
-            //     'image_url' => 'http://empresa.local:8000/storage/campera2.webp',
-            //     'crop_image_url' => 'http://empresa.local:8000/storage/campera2_recortada.jpg',
-            // ],
+            [
+                'num'       => 2,
+                'text_color'=> null,
+                'image_url' => 'http://empresa.local:8000/storage/banner2.jpg',
+                'crop_image_url' => 'http://empresa.local:8000/storage/banner_mobile2.jpg',
+            ],
         ];
-        foreach ($models as $title) {
-            Title::create($title);
+        foreach ($users as $user) {
+            foreach ($models as $title) {
+                $title['user_id'] = $user->id;
+                Title::create($title);
+            }
         }
     }
 }

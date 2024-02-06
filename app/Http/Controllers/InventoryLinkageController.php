@@ -31,8 +31,6 @@ class InventoryLinkageController extends Controller
         GeneralHelper::attachModels($model, 'categories', $request->categories, ['percentage_discount']);
 
         $inventory_linkage_helper = new InventoryLinkageHelper($model);
-        // $inventory_linkage_helper->setClientCategories();
-        // $inventory_linkage_helper->setClientSubCategories();
         $inventory_linkage_helper->setClientArticles();
         $this->sendAddModelNotification('inventory_linkage', $model->id);
         return response()->json(['model' => $this->fullModel('InventoryLinkage', $model->id)], 201);

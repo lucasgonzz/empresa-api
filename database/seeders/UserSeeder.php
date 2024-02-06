@@ -28,7 +28,7 @@ class UserSeeder extends Seeder
         $models = [
             [
                 'id'                            => 500,
-                'name'                          => 'Lucas Gonzalez',
+                'name'                          => 'Oscar',
                 'company_name'                  => 'Autopartes Boxes',
                 // 'image_url'                     => null,
                 'image_url'                     => env('APP_URL').'/storage/cubo.jpeg',
@@ -59,6 +59,45 @@ class UserSeeder extends Seeder
                     Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!',
                     'mensaje_contacto'              => 'Contactar tambien por mensaje directo en Facebook o Instagram, es el medio en el que mas activos estamos!',
                     'online_price_surchage'         => 50,
+                    // 'max_items_in_sale'             => 2,
+                    'pausar_tienda_online'          => 0,
+                    'instagram'                     => 'https://www.instagram.com/lucasgonzz/',
+                    'facebook'                      => 'https://www.facebook.com',
+                ],
+            ],
+            [
+                'id'                            => 501,
+                'name'                          => 'Matias',
+                'company_name'                  => 'Matias Mayorista',
+                // 'image_url'                     => null,
+                'image_url'                     => env('APP_URL').'/storage/cubo.jpeg',
+                'doc_number'                    => '31707719',
+                'email'                         => 'lucasgonzalez210200@gmail.com',
+                'phone'                         => '3444622139',
+                'password'                      => bcrypt('123'),
+                'visible_password'              => null,
+                'dollar'                        => 300,
+                'home_position'                 => 1,
+                'download_articles'             => 1,
+                'online'                        => 'http://tienda.local:8081',
+                'payment_expired_at'            => Carbon::now()->addDays(12),
+                'last_user_activity'            => Carbon::now(),
+                'total_a_pagar'                 => 15000,
+                'plan_id'                       => 3,
+                'plan_discount'                 => 27,
+                'article_ticket_info_id'        => 1,
+                // 'app_url'                       => 'https://comerciocity.com',
+                'online_configuration'          => [
+                    'online_price_type_id'          => 1,
+                    'register_to_buy'               => 1,
+                    'scroll_infinito_en_home'       => 1,
+                    'default_article_image_url'     => 'http://empresa.local:8000/storage/168053912176623.webp',
+                    'quienes_somos'                 => 
+                    'Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!
+
+                    Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!',
+                    'mensaje_contacto'              => 'Contactar tambien por mensaje directo en Facebook o Instagram, es el medio en el que mas activos estamos!',
+                    // 'online_price_surchage'         => 50,
                     // 'max_items_in_sale'             => 2,
                     'pausar_tienda_online'          => 0,
                     'instagram'                     => 'https://www.instagram.com/lucasgonzz/',
@@ -164,6 +203,7 @@ class UserSeeder extends Seeder
             ]);
             if (is_null($user->owner_id)) {
 
+                // $user->extencions()->attach([1,2,5,6,8,9,10,13]);
                 $user->extencions()->attach([1,2,5,6,8,9,10,12,13]);
                 UserConfiguration::create([
                     'current_acount_pagado_details'         => 'Saldado',

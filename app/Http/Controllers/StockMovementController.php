@@ -20,9 +20,10 @@ class StockMovementController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
-    function store(Request $request) {
+    function store(Request $request, $set_updated_at = true) {
         // Log::info('Entro con request:');
         // Log::info($request);
+        $this->set_updated_at = $set_updated_at;
         $this->request = $request;
         $this->article_id = $request->model_id;
         $this->article = Article::find($this->article_id);
@@ -161,6 +162,9 @@ class StockMovementController extends Controller
                 $this->article->stock -= (float)$this->stock_movement->amount;
             } else {
                 $this->article->stock += (float)$this->stock_movement->amount;
+            }
+            if (!$this->set_updated_at) {
+                $this->article->timestamps = false;
             }
             $this->article->save();
         }

@@ -39,7 +39,8 @@ class SaleController extends Controller
             }
         } else {
             $models = $models->where('to_check', 1)
-                            ->orWhere('checked', 1);
+                            ->orWhere('checked', 1)
+                            ->orWhere('confirmed', 1);
         }
 
         $models = $models->get();
@@ -83,12 +84,14 @@ class SaleController extends Controller
                         ->first();
 
         $previus_articles = $model->articles;
-        Log::info('previus_articles:');
+        Log::info('update a sale N° '.$model->num.'. Id: '.$model->id);
         
         foreach ($previus_articles as $article) {
-            Log::info($article->name);
+            Log::info('Id: '.$article->id.'. '.$article->name);
         }
         SaleHelper::detachItems($model);
+        
+        $previus_client_id                          = $model->client_id;
         
         $model->discounts_in_services               = $request->discounts_in_services;
         $model->surchages_in_services               = $request->surchages_in_services;
@@ -100,10 +103,10 @@ class SaleController extends Controller
         $model->to_check                            = $request->to_check;
         $model->checked                             = $request->checked;
         $model->confirmed                           = $request->confirmed;
+        $model->client_id                           = $request->client_id;
         $model->employee_id                         = SaleHelper::getEmployeeId($request);
         $model->updated_at                          = Carbon::now();
         $model->save();
-        $previus_client_id                          = $model->client_id;
 
         SaleHelper::attachProperies($model, $request, false, $previus_articles);
 
@@ -118,6 +121,12 @@ class SaleController extends Controller
         SaleHelper::updatePreivusClient($model, $previus_client_id);
         $this->sendAddModelNotification('Sale', $model->id);
         SaleHelper::sendUpdateClient($this, $model);
+
+        Log::info('Quedaron estos articulos:');
+        foreach ($model->articles as $article) {
+            Log::info('Id: '.$article->id.'. '.$article->name);
+        }
+
         return response()->json(['model' => $this->fullModel('Sale', $model->id)], 200);
     }
 
@@ -166,9 +175,9 @@ class SaleController extends Controller
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
     }
 
-    function pdf($id, $with_prices, $with_costs) {
+    function pdf($id, $with_prices, $with_costs, $confirmed = 0) {
         $sale = Sale::find($id);
-        SaleHelper::setPrinted($sale);
+        SaleHelper::setPrinted($this, $sale, $confirmed);
         $pdf = new SalePdf($sale, (boolean)$with_prices, (boolean)$with_costs);
     }
 

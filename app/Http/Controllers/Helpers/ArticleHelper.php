@@ -340,7 +340,7 @@ class ArticleHelper {
         $request->amount = $amount;
         $request->sale_id = $sale_id;
         $request->concepto = $concepto;
-        $ct->store($request);
+        $ct->store($request, false);
     }
 
     static function setArticleStockFromAddresses($article) {

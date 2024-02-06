@@ -49,7 +49,7 @@ class OrderController extends Controller
         $model->order_status_id = $request->order_status_id;
         $model->save();
         $model = Order::find($id);
-        // OrderHelper::sendMail($model);
+        OrderHelper::sendMail($model);
         OrderHelper::saveSale($model, $this);
         $this->sendAddModelNotification('Order', $model->id);
         return response()->json(['model' => $this->fullModel('Order', $model->id)], 200);

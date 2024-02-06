@@ -30,22 +30,19 @@ class ClientSeeder extends Seeder
                 'razon_social'          => 'MARCOS SRL', 
                 'iva_condition_id'      => 1,
                 'seller_id'             => 2,
-                // 'price_type_id'         => 2,
                 'user_id'               => $user->id,
-                // 'comercio_city_user_id' => 501,
             ],
             [
                 'num'                   => 2,
-                'name'                  => 'Marcos Gonzalez',
+                'name'                  => 'Matias Galvan',
                 'address'               => 'San antonio 23 - Gualeguay, Entre Rios',
                 'cuit'                  => '30671859339',
                 // Cuit Banco la Rioja: 30671859339
                 'razon_social'          => 'MARCOS SRL', 
                 'iva_condition_id'      => 1,
                 'seller_id'             => 1,
-                // 'price_type_id'         => 1,
                 'user_id'               => $user->id,
-                'comercio_city_user_id' => User::where('company_name', 'Marcos')->first()->id,
+                'comercio_city_user_id' => User::where('company_name', 'Matias Mayorista')->first()->id,
             ],
             [
 
@@ -74,6 +71,31 @@ class ClientSeeder extends Seeder
                 $client->id = $model['id'];
                 $client->save();
             }
+        }
+
+        $this->matias();
+    }
+
+    function matias() {
+
+        $user = User::where('company_name', 'Matias Mayorista')
+                        ->first();
+        $models = [
+            [
+
+                'num'                   => 1,
+                'name'                  => 'Lucas Gonzalez',
+                'email'                 => 'lucasgonzalez5500@gmail.com',
+                'address'               => 'San antonio 23 - Gualeguay, Entre Rios',
+                'cuit'                  => '20242112025',
+                'razon_social'          => 'MARCOS SRL', 
+                'iva_condition_id'      => 1,
+                'seller_id'             => 2,
+                'user_id'               => $user->id,
+            ],
+        ];
+        foreach ($models as $model) {
+            $client = Client::create($model);
         }
     }
 }

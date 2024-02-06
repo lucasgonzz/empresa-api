@@ -22,6 +22,7 @@ class CreateArticleCartTable extends Migration
             $table->double('amount_insuficiente')->nullable();
             $table->double('price');
             $table->bigInteger('variant_id')->nullable();
+            $table->text('notes')->nullable();
             // $table->bigInteger('color_id')->nullable();
             // $table->bigInteger('size_id')->nullable();
 

@@ -34,6 +34,13 @@ class HelperController extends Controller
         $this->{$method}();
     }
 
+    function poner_impresas_las_confirmadas() {
+        Sale::where('confirmed', 1)
+            ->update([
+                'printed'   => 1,
+            ]);
+    }
+
     function corregir_articulos_matias() {
         $articles = Article::where('user_id', 188)
                             ->orderBy('id', 'ASC')

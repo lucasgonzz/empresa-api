@@ -82,7 +82,7 @@ class InventoryLinkageHelper extends Controller {
 	
 	function setClientArticles() {
 		$articles = Article::where('user_id', $this->userId())
-							->where('id', '>', 102275)
+							// ->where('id', '>', 102275)
 							->orderBy('id', 'ASC')
 							->get();
 

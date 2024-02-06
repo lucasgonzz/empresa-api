@@ -67,6 +67,10 @@ class SalePdf extends fpdf {
 				'Sub total' => 27,
 			]);
 		}
+		if (!$this->with_costs && !$this->with_prices) {
+			$fields['Nombre'] = 120;
+			$fields['Cant'] = 25;
+		}
 		return $fields;
 	}
 
@@ -100,7 +104,7 @@ class SalePdf extends fpdf {
 			'model_props' 		=> $this->getModelProps(),
 			'fields' 			=> $this->getFields(),
 		];
-		if (!is_null($this->sale->client) && $this->sale->save_current_acount && !is_null($this->sale->current_acount)) {
+		if (!is_null($this->sale->client) && $this->sale->save_current_acount && !is_null($this->sale->current_acount) && $this->with_prices) {
 			$data = array_merge($data, [
 				'current_acount' 	=> $this->sale->current_acount,
 				'client_id'			=> $this->sale->client_id,

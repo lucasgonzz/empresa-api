@@ -21,6 +21,7 @@ class CreateArticleOrderTable extends Migration
             $table->decimal('cost')->nullable();
             $table->decimal('price');
             $table->integer('amount');
+            $table->text('notes')->nullable();
             $table->bigInteger('variant_id')->nullable();
             $table->bigInteger('color_id')->nullable();
             $table->bigInteger('size_id')->nullable();
