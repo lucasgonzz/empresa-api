@@ -132,6 +132,7 @@ class SaleController extends Controller
 
     public function destroy($id) {
         $model = Sale::find($id);
+        Log::info('Se quiere eliminar sale N° '.$model->num.'. id: '.$model->id.'. Por el empleado: '.Auth()->user()->name.', doc: '.Auth()->user()->doc_number);
         if (!is_null($model->afip_ticket)) {
             SaleHelper::createNotaCreditoFromDestroy($model);
         } else {
