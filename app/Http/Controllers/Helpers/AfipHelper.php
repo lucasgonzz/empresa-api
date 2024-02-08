@@ -228,7 +228,8 @@ class AfipHelper extends Controller {
             'CbteTipo'  => $cbte_tipo
         ];
         $result = $wsfe->FECompUltimoAutorizado($pto_vta);
-        Log::info('$result->FECompUltimoAutorizadoResult->CbteNro: '.$result->FECompUltimoAutorizadoResult->CbteNro);
+        Log::info('getNumeroComprobante');
+        Log::info((array)$result);
         return $result->FECompUltimoAutorizadoResult->CbteNro + 1;
     }
 

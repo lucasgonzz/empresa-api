@@ -1021,6 +1021,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
+                'url'       => 'https://api.comerciocity.com/public/storage/170621104666010.webp',
                 'url'       => 'auto-partes/021.0333.jpg',
             ],
         ],
@@ -1037,6 +1038,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
+                'url'       => 'https://api.comerciocity.com/public/storage/170621104666010.webp',
                 'url'       => 'auto-partes/021.0484.jpg',
             ],
         ],
@@ -1053,6 +1055,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
+                'url'       => 'https://api.comerciocity.com/public/storage/170621104666010.webp',
                 'url'       => 'auto-partes/021.0631.jpg',
             ],
         ],

@@ -114,7 +114,7 @@ class SaleController extends Controller
         $model->save();
 
         $model = Sale::find($model->id);
-        if ($model->client_id) {
+        if ($model->client_id && !$model->to_check && !$model->checked) {
             SaleHelper::updateCurrentAcountsAndCommissions($model);
         }
 
