@@ -160,8 +160,8 @@ class SaleController extends Controller
             $sale->afip_information_id = $request->afip_information_id;
             $sale->save();
             $ct = new AfipWsController($sale);
-            $afip_ticket = $ct->init();
-            return response()->json(['sale' => $this->fullModel('Sale', $request->sale_id)], 201);
+            $result = $ct->init();
+            return response()->json(['sale' => $this->fullModel('Sale', $request->sale_id), 'result' => $result], 201);
         }
         return response(null, 200);
     }

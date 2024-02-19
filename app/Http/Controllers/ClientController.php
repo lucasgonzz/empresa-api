@@ -31,6 +31,7 @@ class ClientController extends Controller
             'address'                   => $request->address,
             'cuil'                      => $this->getCuit($request->cuil),
             'cuit'                      => $this->getCuit($request->cuit),
+            'dni'                       => $request->dni,
             'razon_social'              => $request->razon_social,
             'iva_condition_id'          => $request->iva_condition_id,
             'price_type_id'             => $request->price_type_id,
@@ -57,6 +58,7 @@ class ClientController extends Controller
         $model->address                     = $request->address;
         $model->cuil                        = $this->getCuit($request->cuil);
         $model->cuit                        = $this->getCuit($request->cuit);
+        $model->dni                         = $request->dni;
         $model->razon_social                = $request->razon_social;
         $model->iva_condition_id            = $request->iva_condition_id;
         $model->price_type_id               = $request->price_type_id;

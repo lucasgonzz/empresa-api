@@ -60,7 +60,8 @@ class ArticleSeeder extends Seeder
                     'name'              => $article['name'],
                     'slug'              => ArticleHelper::slug($article['name'], $user->id),
                     // 'cost'              => 50,
-                    'cost'              => rand(1000, 100000),
+                    // 'cost'              => rand(1000, 100000),
+                    'cost'              => rand(10, 1000),
                     'status'            => isset($article['status']) ? $article['status'] : 'active',
                     'featured'          => isset($article['featured']) ? $article['featured'] : null,
                     // 'stock'             => $article['stock'] ,
@@ -87,7 +88,8 @@ class ArticleSeeder extends Seeder
                         Image::create([
                             'imageable_type'                            => 'article',
                             'imageable_id'                              => $art->id,
-                            env('IMAGE_URL_PROP_NAME', 'image_url')     => env('APP_URL').'/storage/'.$image['url'],
+                            env('IMAGE_URL_PROP_NAME', 'image_url')     => $image['url'],
+                            // env('IMAGE_URL_PROP_NAME', 'image_url')     => env('APP_URL').'/storage/'.$image['url'],
                             'color_id'                                  => isset($image['color_id']) ? $image['color_id'] : null,
                         ]);
                     }    

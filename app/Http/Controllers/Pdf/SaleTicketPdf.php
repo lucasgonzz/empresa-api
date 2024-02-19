@@ -3,8 +3,9 @@
 namespace App\Http\Controllers\Pdf;
 
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
-use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Pdf\AfipQrPdf;
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
@@ -51,6 +52,8 @@ class SaleTicketPdf extends fpdf {
 			$this->x = 2;
 			$this->Cell($this->cell_ancho, 5, 'Tipo comprobante: '.$this->sale->afip_ticket->cbte_letra, $this->b, 1, 'L');
 			$this->x = 2;
+			$this->Cell($this->cell_ancho, 5, 'N° comprobante: '.$this->sale->afip_ticket->cbte_numero, $this->b, 1, 'L');
+			$this->x = 2;
 			$this->Cell($this->cell_ancho, 5, 'CAE: '.$this->sale->afip_ticket->cae, $this->b, 1, 'L');
 			$this->x = 2;
 			$this->Cell($this->cell_ancho, 5, 'Vto cae: '.$this->getCaeExpiredAt(), $this->b, 1, 'L');
@@ -75,6 +78,9 @@ class SaleTicketPdf extends fpdf {
 
 	function Footer() {
 		$this->total();
+
+		$this->qr();
+
 		$this->thanks();
 		// $this->comerciocityInfo();
 	}
@@ -166,6 +172,12 @@ class SaleTicketPdf extends fpdf {
 		$this->y += 10;
 	}
 
+	function qr() {
+		if (!is_null($this->sale->afip_ticket)) {
+			AfipQrPdf::printQr($this, $this->sale, true);
+		}
+	}
+
 	function thanks() {
 	    $this->x = 2;
 	    $this->SetFont('Arial', '', 10);
@@ -215,7 +227,10 @@ class SaleTicketPdf extends fpdf {
 	}
 
 	function getPdfHeight() {
-		$height = 110;
+		$height = 120;
+		if (!is_null($this->sale->afip_ticket)) {
+			$height += 70;
+		}
 		foreach ($this->sale->combos as $combo) {
 			$height += $this->getHeight($combo, 20);
 			foreach ($combo->articles as $article) {

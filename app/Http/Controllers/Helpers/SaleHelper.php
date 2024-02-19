@@ -85,9 +85,9 @@ class SaleHelper extends Controller {
 
     static function saveAfipTicket($sale) {
         if (!is_null($sale->afip_information_id) && $sale->afip_information_id != 0) {
-            $ct = new AfipWsController($sale);
-            $afip_ticket = $ct->init();
-            return $afip_ticket;
+            $ct = new AfipWsController($sale, false);
+            $afip_ticket_result = $ct->init();
+            return $afip_ticket_result;
         } 
     }
 
@@ -115,7 +115,6 @@ class SaleHelper extends Controller {
         Self::check_deleted_articles_from_check($model, $previus_articles);
         if ($from_store && !$model->to_check && !$model->checked) {
             Self::attachCurrentAcountsAndCommissions($model);
-            $afip_ticket = Self::saveAfipTicket($model);
         } else {
             Self::checkNotaCredito($model, $request);
         }

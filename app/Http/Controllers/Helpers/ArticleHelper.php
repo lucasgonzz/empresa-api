@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\RecipeHelper;
@@ -350,18 +351,16 @@ class ArticleHelper {
 
         $article->load('addresses');
         if (!is_null($article) && count($article->addresses) >= 1) {
-            Log::info('------------------------------------');
-            Log::info('Set Stock From Addresses para '.$article->name);
             $stock = 0;
             foreach ($article->addresses as $article_address) {
-                Log::info('sumando: '.$article_address->pivot->amount.' de '.$article_address->street);
                 $stock += $article_address->pivot->amount;
             }
             $article->stock = $stock;
-            Log::info('quedo en: '.$stock);
             $article->timestamps = false;
             $article->save();
-            Log::info('------------------------------------');
+
+            $ct = new InventoryLinkageHelper();
+            $ct->check_is_agotado($article);
         } 
     }
 

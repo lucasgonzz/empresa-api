@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartArticleAmountInsificienteHelper;
+use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Models\Article;
 use App\Models\StockMovement;
 use Illuminate\Http\Request;
@@ -167,6 +168,9 @@ class StockMovementController extends Controller
                 $this->article->timestamps = false;
             }
             $this->article->save();
+
+            $ct = new InventoryLinkageHelper();
+            $ct->check_is_agotado($this->article);
         }
     }
 
@@ -193,11 +197,11 @@ class StockMovementController extends Controller
                     'amount'    => $this->stock_movement->amount,
                 ]);
             } else {
-                Log::info('Se va a actualizar la direccion '.$to_address->street);
-                Log::info('Antes habia '.$to_address->pivot->amount);
-                Log::info('Se van a agregar '.$this->stock_movement->amount);
+                // Log::info('Se va a actualizar la direccion '.$to_address->street);
+                // Log::info('Antes habia '.$to_address->pivot->amount);
+                // Log::info('Se van a agregar '.$this->stock_movement->amount);
                 $new_amount = $to_address->pivot->amount + $this->stock_movement->amount;
-                Log::info('Quedo en  '.$new_amount);
+                // Log::info('Quedo en  '.$new_amount);
                 $this->article->addresses()->updateExistingPivot($this->stock_movement->to_address_id, [
                     'amount'    => $new_amount,
                 ]);

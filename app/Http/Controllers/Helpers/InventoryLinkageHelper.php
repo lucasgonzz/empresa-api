@@ -115,13 +115,13 @@ class InventoryLinkageHelper extends Controller {
 												->where('provider_article_id', $article->id)
 												->first();
 				if (!is_null($client_article)) {
-					// Log::info('Habia article');
-					// Log::info('Costo nuevo: '.$this->getClientArticlePrice($article));
+					Log::info('Habia article');
+					Log::info('Costo nuevo: '.$this->getClientArticlePrice($article));
 					$client_article->cost = $this->getClientArticlePrice($article);
 					$client_article->save();
 					ArticleHelper::setFinalPrice($client_article, $this->client->comercio_city_user_id);
 				} else {
-					// Log::info('No habia article');
+					Log::info('No habia article');
 					$client_article = $this->createClientArticle($article);
 				}
 				$this->sendAddModelNotification('article', $client_article->id, false, $this->client->comercio_city_user_id);
@@ -142,6 +142,7 @@ class InventoryLinkageHelper extends Controller {
 			'category_id'			=> $this->getClientCategoryId($article),
 			'sub_category_id'		=> $this->getClientSubCategoryId($article),
 			'name'					=> $article->name,
+			'slug'					=> $article->slug,
 			'cost'					=> $price,
 			'iva_id'				=> $article->iva_id,
 			'provider_id'			=> $this->provider_for_client->id,
@@ -159,6 +160,72 @@ class InventoryLinkageHelper extends Controller {
         }
 		ArticleHelper::setFinalPrice($client_article, $this->client->comercio_city_user_id);
 		return $client_article;
+	}
+
+	function check_created_image($article, $created_image) {
+
+		$inventory_linkages = InventoryLinkage::where('user_id', UserHelper::userId())
+												->get();
+		if (count($inventory_linkages) >= 1) {
+			foreach ($inventory_linkages as $inventory_linkage) {
+				$client = $inventory_linkage->client;
+
+				$client_article = Article::where('user_id', $client->comercio_city_user_id)
+												->where('provider_article_id', $article->id)
+												->first();
+
+				if (!is_null($client_article)) {
+		            $image = Image::create([
+		                env('IMAGE_URL_PROP_NAME', 'image_url')     => $created_image->{env('IMAGE_URL_PROP_NAME', 'image_url')},
+		                'imageable_id'                              => $client_article->id,
+		                'imageable_type'                            => 'article',
+		                'temporal_id'                               => null,
+		            ]);
+
+					$this->sendAddModelNotification('article', $client_article->id, false, $client->comercio_city_user_id);
+				}
+			}
+		}
+	}
+
+	function check_is_agotado($article) {
+
+		if (!is_null($article->stock)) {
+			$inventory_linkages = InventoryLinkage::where('user_id', UserHelper::userId())
+													->get();
+			if (count($inventory_linkages) >= 1) {
+				foreach ($inventory_linkages as $inventory_linkage) {
+					$client = $inventory_linkage->client;
+
+					$client_article = Article::where('user_id', $client->comercio_city_user_id)
+													->where('provider_article_id', $article->id)
+													->first();
+
+					if (!is_null($client_article)) {
+
+						$save = false;
+
+						// Si el stock del proveedor es 0, se setea el del cliente como agotado
+						if ($article->stock <= 0 && ($client_article->stock != 0 || $client_article->stock == '')) {
+			            	$client_article->stock = 0;
+							$save = true;
+
+						// Si el stock del proveedor no es menor que 0, y del cliente ya estaba agotado, se setea el del cliente como disponible
+						} else if ($article->stock > 0 && $client_article->stock <= 0) {
+			            	$client_article->stock = null;
+							$save = true;
+						}
+
+						if ($save) {
+				            $client_article->save();
+							$this->sendAddModelNotification('article', $client_article->id, false, $client->comercio_city_user_id);
+						}
+					}
+				}
+			}
+		}
+
+
 	}
 
 	function getClientCategoryId($article) {

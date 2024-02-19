@@ -2,8 +2,9 @@
 
 namespace App\Http\Controllers\CommonLaravel;
 
-use App\Http\Controllers\Controller;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Models\Image;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -46,6 +47,12 @@ class ImageController extends Controller
                 'imageable_type'                            => $request->model_name,
                 'temporal_id'                               => $this->getTemporalId($request),
             ]);
+
+            if ($request->model_name == 'article' && !is_null($model)) {
+                $helper = new InventoryLinkageHelper();
+                $helper->check_created_image($model, $image);
+            }
+
         } else {
             if (!is_null($request->model_id)) {
                 $this->deleteImageProp($request->model_name, $request->model_id, $prop_name);
@@ -56,6 +63,7 @@ class ImageController extends Controller
         if (isset($request->image_url_to_delete)) {
             Self::deleteImage($request->image_url_to_delete);
         }
+
         
         return response()->json(['model' => $this->fullModel($request->model_name, $request->model_id), 'image_url' => $name, 'image_model' => $image], 200);
     }

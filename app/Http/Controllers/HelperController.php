@@ -34,6 +34,64 @@ class HelperController extends Controller
         $this->{$method}();
     }
 
+
+    function set_matias_agotados() {
+        $articles = Article::where('user_id', 188)
+                            ->orderBy('id', 'ASC')
+                            ->get();
+        foreach ($articles as $article_matias) {
+            $oscar_article = Article::find($article_matias->provider_article_id);
+
+            if (!is_null($oscar_article) && $oscar_article->stock <= 0) {
+                echo $oscar_article->name.' tiene '.$oscar_article->stock.' </br>';
+                $article_matias->stock = 0;
+                $article_matias->save();
+
+                echo 'Se puso en 0 el '.$article_matias->name.' de Matias</br>';
+            }
+
+        }
+        echo 'Listo';
+    }
+
+    function set_matias_imagenes() {
+        $articles = Article::where('user_id', 188)
+                            ->orderBy('id', 'ASC')
+                            ->doesntHave('images')
+                            ->get();
+        foreach ($articles as $article_matias) {
+            $oscar_article = Article::find($article_matias->provider_article_id);
+
+            if (!is_null($oscar_article) && count($oscar_article->images) >= 1) {
+                $client_article_image = Image::create([
+                    env('IMAGE_URL_PROP_NAME', 'image_url')     => $oscar_article->images[0]->{env('IMAGE_URL_PROP_NAME', 'image_url')},
+                    'imageable_id'                              => $article_matias->id,
+                    'imageable_type'                            => 'article',
+                ]);
+                echo 'Se creo imagen para '.$article_matias->name.' </br>';
+            }
+
+        }
+        echo 'Listo';
+    }
+
+    function set_matias_slug() {
+        $articles = Article::where('user_id', 188)
+                            ->orderBy('id', 'ASC')
+                            ->get();
+        foreach ($articles as $article_matias) {
+            $oscar_article = Article::find($article_matias->provider_article_id);
+
+            if (!is_null($oscar_article)) {
+                $article_matias->slug = $oscar_article->slug;
+                $article_matias->save();
+                echo 'Se corrigio '.$article_matias->name.' </br>';
+            }
+
+        }
+        echo 'Listo';
+    }
+
     function poner_impresas_las_confirmadas() {
         Sale::where('confirmed', 1)
             ->update([

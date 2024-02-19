@@ -80,6 +80,11 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Mercado Libre',
                 'slug' => 'mercado_libre',
             ],
+            [
+                // 13
+                'name' => 'Observaciones en ventas',
+                'slug' => 'sale.observations',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

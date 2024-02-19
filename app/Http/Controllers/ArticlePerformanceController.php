@@ -49,13 +49,6 @@ class ArticlePerformanceController extends Controller
                                 echo '-------------------------------- </br>';
                             }
                         });
-                        // ->get();
-        // dd($sales);
-        // foreach ($sales as $sale) {
-        //     foreach ($sale->articles as $article) {
-        //         $this->add_to_articles($article, $sale);
-        //     }
-        // }
 
         foreach ($this->articulos_vendidos as $article) {
             $article_performance = ArticlePerformance::create([
@@ -66,6 +59,8 @@ class ArticlePerformanceController extends Controller
                 'amount'        => $article['amount'],
                 'provider_id'   => $article['provider_id'],
                 'category_id'   => $article['category_id'],
+
+                // Este $article['created_at'] es la fecha de la venta, ver cuando se agregar a $this->articulos_vendidos
                 'created_at'    => $article['created_at'],
                 'user_id'       => $this->userId(),
             ]);
