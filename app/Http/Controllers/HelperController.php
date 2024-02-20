@@ -34,6 +34,22 @@ class HelperController extends Controller
         $this->{$method}();
     }
 
+    function articulos_sin_categoria() {
+        $articles = Article::where('user_id', 2)
+                            ->orderBy('id', 'ASC')
+                            ->whereNull('category_id')
+                            ->get();
+        foreach ($articles as $article) {
+            echo $article->name.' con sub_category: '.$article->sub_category_id.' </br>';
+            if (!is_null($article->sub_category)) {
+                echo '-------------- </br>';
+                echo 'Deberia pertenecer a '.$article->sub_category->category->name. ' </br>';
+                echo '-------------- </br>';
+            }
+        }
+        echo 'Listo';
+    }
+
 
     function set_matias_agotados() {
         $articles = Article::where('user_id', 188)

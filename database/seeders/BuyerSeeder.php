@@ -19,7 +19,7 @@ class BuyerSeeder extends Seeder
                         ->first();
         $lucas = Buyer::create([
             'num'                       => 1,
-            'name'                      => 'Lucas',
+            'name'                      => 'Lucas gonzalez',
             'surname'                   => 'Gonzalez',
             'city'                      => 'Gualeguay',
             'phone'                     => '+5493444622139',
@@ -30,7 +30,7 @@ class BuyerSeeder extends Seeder
         ]);
         $marcos = Buyer::create([
             'num'                       => 1,
-            'name'                      => 'Marcos',
+            'name'                      => 'Marcos gonzalez',
             'surname'                   => 'Gonzalez',
             'city'                      => 'Gualeguay',
             'phone'                     => '+5493444622139',
