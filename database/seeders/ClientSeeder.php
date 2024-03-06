@@ -38,6 +38,7 @@ class ClientSeeder extends Seeder
                 'name'                  => 'Matias Galvan',
                 'address'               => 'San antonio 23 - Gualeguay, Entre Rios',
                 'cuit'                  => '30671859339',
+                'price_type_id'         => 1,
                 // Cuit Banco la Rioja: 30671859339
                 'razon_social'          => 'MARCOS SRL', 
                 'iva_condition_id'      => 1,

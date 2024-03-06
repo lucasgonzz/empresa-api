@@ -28,25 +28,25 @@ class RecipeSeeder extends Seeder
         ]);
         $articles = [
             [
-                'name'                          => 'Kit 3 Relojes Orlan Rober Classic Aceite Agua Voltímetro',
-                'order_production_status_id'    => 1,
-                'address_id'                    => 1,
-                'amount'                        => 4,
-            ],
-            [
-                'name'                          => 'Amortiguadores de Baul 1945NR@1945NR',
+                'name'                          => 'Kit de Cazoleta con rodamiento, Tope Y Fuelle AX044.1488',
                 'order_production_status_id'    => 1,
                 'address_id'                    => 1,
                 'amount'                        => 1,
             ],
             [
-                'name'                          => 'Batería de auto UB620M',
+                'name'                          => 'Kit de Cazoleta con rodamiento Tope Y Fuelle AX044.1654',
                 'order_production_status_id'    => 1,
                 'address_id'                    => 1,
-                'amount'                        => 10,
+                'amount'                        => 1,
             ],
             [
-                'name'                          => 'Bobina de Encendido VX21894',
+                'name'                          => 'Kit de Buje, Tope Y Fuelle Amortiguador AX044.1142',
+                'order_production_status_id'    => 1,
+                'address_id'                    => 1,
+                'amount'                        => 1,
+            ],
+            [
+                'name'                          => 'Axial Cremallera MO-0064',
                 'order_production_status_id'    => 2,
                 'address_id'                    => 1,
                 'amount'                        => 1,

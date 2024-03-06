@@ -21,6 +21,7 @@ class CreateStockMovementsTable extends Migration
             $table->integer('to_address_id')->nullable();
             $table->integer('provider_id')->nullable();
             $table->integer('sale_id')->nullable();
+            $table->integer('nota_credito_id')->nullable();
             $table->text('concepto')->nullable();
             $table->text('observations')->nullable();
             $table->decimal('amount', 12,2)->nullable();

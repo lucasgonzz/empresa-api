@@ -29,17 +29,23 @@ class RecipeHelper {
 		}
 	}
 
-	static function checkCostFromRecipe($recipe, $instance) {
+	static function checkCostFromRecipe($recipe, $instance, $user_id = null) {
 		if ($recipe->article_cost_from_recipe) {
 			$cost = 0;
 			foreach ($recipe->articles as $article) {
-				$cost += (float)$article->final_price * (float)$article->pivot->amount;
+				$mano_de_obra = 0;
+				$materiales = (float)$article->final_price * (float)$article->pivot->amount;
+
+				if (!is_null($article->costo_mano_de_obra)) {
+					$mano_de_obra = (float)$article->costo_mano_de_obra * (float)$article->pivot->amount;
+				}
+				$cost += $materiales + $mano_de_obra;
 			}
 			$article = $recipe->article;
 			$article->cost = $cost;
 			$article->save();
-			ArticleHelper::setFinalPrice($article);
-        	$instance->sendAddModelNotification('Article', $article->id, false);
+			ArticleHelper::setFinalPrice($article, $user_id);
+        	// $instance->sendAddModelNotification('Article', $article->id, false);
 		}
 	}
 

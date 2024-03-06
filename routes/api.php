@@ -130,9 +130,10 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::resource('budget-status', 'BudgetStatusController');
     Route::resource('afip-information', 'AfipInformationController');
 
-    Route::resource('production-movement', 'ProductionMovementController')->except(['index']);
-    Route::get('production-movement/from-date/{from_date}/{until_date?}', 'ProductionMovementController@index');
+    Route::resource('production-movement', 'ProductionMovementController');
+    Route::get('production-movement/from-date/{from_date?}/{until_date?}', 'ProductionMovementController@index');
     Route::get('production-movement/current-amounts/{article_id}', 'ProductionMovementController@currentAmounts');
+    Route::get('production-movement/current-amounts/all-articles/all-recipes', 'ProductionMovementController@currentAmountsAllArticles');
 
     Route::resource('order-production', 'OrderProductionController');
     Route::resource('order-production-status', 'OrderProductionStatusController');
@@ -200,6 +201,12 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::put('article-variant/{id}', 'ArticleVariantController@update');
 
     Route::resource('payment-method-installment', 'PaymentMethodInstallmentController');
+
+
+
+    // ArticlesPreImport
+    Route::get('articles-pre-import', 'ArticlesPreImportController@index');
+    Route::get('articles-pre-import/from-date/{from_date}/{until_date?}', 'ArticlesPreImportController@index');
 });
 
 

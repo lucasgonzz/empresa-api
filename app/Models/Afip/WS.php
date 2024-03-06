@@ -69,11 +69,13 @@ abstract class WS
         $this->soap_client      = null;
 
         $this->soap_options = array(
-             'soap_version' => SOAP_1_1,
-             'cache_wsdl'   => WSDL_CACHE_NONE,
-             'trace'        => 1,
-             'encoding'     => 'ISO-8859-1',
-             'exceptions'   => 0
+            'soap_version' => SOAP_1_1,
+            'cache_wsdl'   => WSDL_CACHE_NONE,
+            'trace'        => 1,
+            'encoding'     => 'ISO-8859-1',
+            'exceptions'   => 1,
+            'connection_timeout' => 1, // Tiempo límite de conexión en segundos
+            // 'timeout' => 0.01, // Tiempo límite de espera en segundos
         );
 
         if (isset($config['soap_options']) && is_array($config['soap_options'])) {
@@ -136,9 +138,24 @@ abstract class WS
             if (!empty($this->wsdl_cache_file) && (file_exists($this->wsdl_cache_file) || $this->updateWsdlCacheFile())) {
                 $wsdl = $this->wsdl_cache_file;
             }
+            ini_set('default_socket_timeout', 1);
             $this->soap_client = new \SoapClient($wsdl, $this->soap_options);
+            // \Illuminate\Support\Facades\Log::info('Entro a crear soap');
+            // \Illuminate\Support\Facades\Log::info($this->soap_options);
         }
-        $result = $this->soap_client->$name($arguments[0]);
+        \Illuminate\Support\Facades\Log::info('por entrar');
+        try {
+            \Illuminate\Support\Facades\Log::info('entro');
+            // sleep(5);
+            // \Illuminate\Support\Facades\Log::info('paso sleep');
+            $result = $this->soap_client->$name($arguments[0]);
+            \Illuminate\Support\Facades\Log::info('se ejcuto');
+        } catch (SoapFault $e) {
+            // Manejar el error
+            \Illuminate\Support\Facades\Log::info('WS error:');
+            \Illuminate\Support\Facades\Log::info($e->getMessage());
+            // echo 'Error: ' . $e->getMessage();
+        }
 
         file_put_contents(public_path()."/afip/ws/request-ws.xml",$this->soap_client->__getLastRequest());
         file_put_contents(public_path()."/afip/ws/response-ws.xml",$this->soap_client->__getLastResponse());

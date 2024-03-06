@@ -22,6 +22,7 @@ class CreateArticlesTable extends Migration
             $table->text('name')->nullable();
             $table->string('slug')->nullable();
             $table->decimal('cost', 16, 6)->nullable();
+            $table->decimal('costo_mano_de_obra', 16, 6)->nullable();
             $table->decimal('percentage_gain', 8, 2)->nullable();
             $table->decimal('price', 16, 6)->nullable();
             $table->decimal('final_price', 16, 6)->nullable();

@@ -9,7 +9,7 @@ class Recipe extends Model
     protected $guarded = [];
 
     function scopeWithAll($query) {
-        $query->with('article', 'articles.addresses');
+        $query->with('article.images', 'articles.addresses');
     }
 
     function article() {
@@ -17,6 +17,6 @@ class Recipe extends Model
     }
 
     function articles() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'notes', 'order_production_status_id', 'address_id');
+        return $this->belongsToMany('App\Models\Article')->withPivot('amount', 'notes', 'order_production_status_id', 'address_id');
     }
 }

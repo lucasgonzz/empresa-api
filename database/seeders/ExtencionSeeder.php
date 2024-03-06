@@ -77,13 +77,28 @@ class ExtencionSeeder extends Seeder
             ],
             [
                 // 13
+                'name' => 'Observaciones en ventas',
+                'slug' => 'sale.observations',
+            ],
+            [
+                // 14
+                'name' => 'Ordenes de Produccion',
+                'slug' => 'production.order_production',
+            ],
+            [
+                // 15
+                'name' => 'Estados de Produccion',
+                'slug' => 'production.production_movement',
+            ],
+            [
+                // 16
                 'name' => 'Mercado Libre',
                 'slug' => 'mercado_libre',
             ],
             [
-                // 13
-                'name' => 'Observaciones en ventas',
-                'slug' => 'sale.observations',
+                // 17
+                'name' => 'Pre Improtacion de Articulos',
+                'slug' => 'articles_pre_import',
             ],
         ];
         foreach ($extencions as $extencion) {

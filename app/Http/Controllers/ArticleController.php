@@ -66,6 +66,7 @@ class ArticleController extends Controller
         $model->slug                              = ArticleHelper::slug($request->name);
         $model->cost                              = $request->cost;
         $model->cost_in_dollars                   = $request->cost_in_dollars;
+        $model->costo_mano_de_obra                = $request->costo_mano_de_obra;
         $model->provider_cost_in_dollars          = $request->provider_cost_in_dollars;
         $model->apply_provider_percentage_gain    = $request->apply_provider_percentage_gain;
         $model->price                             = $request->price;
@@ -118,6 +119,7 @@ class ArticleController extends Controller
         $model->category_id                       = $request->category_id;
         $model->sub_category_id                   = $request->sub_category_id;
         $model->cost                              = $request->cost;
+        $model->costo_mano_de_obra                = $request->costo_mano_de_obra;
         $model->cost_in_dollars                   = $request->cost_in_dollars;
         $model->provider_cost_in_dollars          = $request->provider_cost_in_dollars;
         $model->brand_id                          = $request->brand_id;
@@ -222,8 +224,13 @@ class ArticleController extends Controller
 
     function destroy($id) {
         $model = Article::find($id);
+
+        $recipes_donde_esta_este_articulo = ArticleHelper::get_recipes_que_tienen_este_articulo_como_insumo($model);
+
         ImageController::deleteModelImages($model);
         $model->delete();
+        ArticleHelper::check_recipes_despues_de_eliminar_articulo($recipes_donde_esta_este_articulo, $this);
+
         $this->sendDeleteModelNotification('article', $model->id);
         return response(null);
     }

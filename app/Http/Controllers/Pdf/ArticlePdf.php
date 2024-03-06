@@ -119,28 +119,31 @@ class ArticlePdf extends fpdf {
 			$this->AddPage();
 		}
 
-		if (count($article->images) >= 1) {
-			if (env('APP_ENV') == 'local') {
-        		$this->printImage($article);
-        		// $this->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 2, $this->y, $this->image_width, $this->image_width);
-        	} else {
-        		$this->printImage($article);
-        		// $img = imagecreatefromwebp($article->images[0]->{env('IMAGE_URL_PROP_NAME', 'image_url')});
-        	}
+		if (!is_null($article)) {
+			if (count($article->images) >= 1) {
+				if (env('APP_ENV') == 'local') {
+	        		$this->printImage($article);
+	        		// $this->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 2, $this->y, $this->image_width, $this->image_width);
+	        	} else {
+	        		$this->printImage($article);
+	        		// $img = imagecreatefromwebp($article->images[0]->{env('IMAGE_URL_PROP_NAME', 'image_url')});
+	        	}
+			}
+
+			$this->x = 5+$this->image_width;
+			$this->Cell($this->provider_code_width, 8, $article->provider_code, $this->b, 0, 'L');
+
+			// $this->x += $this->provider_code_width;
+			$this->MultiCell($this->name_width, 8, $article->name, $this->b, 'L', false);
+
+			$this->y -= 8;
+
+			$this->x += $this->image_width + $this->provider_code_width + $this->name_width -5;
+			$this->Cell($this->price_width, 8, '$'.Numbers::price($article->final_price), $this->b, 0, 'L');	
+
+			$this->y += 48;
 		}
 
-		$this->x = 5+$this->image_width;
-		$this->Cell($this->provider_code_width, 8, $article->provider_code, $this->b, 0, 'L');
-
-		// $this->x += $this->provider_code_width;
-		$this->MultiCell($this->name_width, 8, $article->name, $this->b, 'L', false);
-
-		$this->y -= 8;
-
-		$this->x += $this->image_width + $this->provider_code_width + $this->name_width -5;
-		$this->Cell($this->price_width, 8, '$'.Numbers::price($article->final_price), $this->b, 0, 'L');	
-
-		$this->y += 48;
 	}
 
 }

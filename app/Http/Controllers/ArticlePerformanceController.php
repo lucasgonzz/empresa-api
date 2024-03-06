@@ -62,7 +62,7 @@ class ArticlePerformanceController extends Controller
 
                 // Este $article['created_at'] es la fecha de la venta, ver cuando se agregar a $this->articulos_vendidos
                 'created_at'    => $article['created_at'],
-                'user_id'       => $this->userId(),
+                'user_id'       => $user->id,
             ]);
             echo 'Se creo performance de '.$article_performance->article_name.' con '.$article_performance->amount.' ventas para el mes '.$article_performance->created_at->format('F').' </br>';
 

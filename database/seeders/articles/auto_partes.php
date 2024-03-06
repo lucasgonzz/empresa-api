@@ -1223,6 +1223,7 @@ $articles = [
         'name'              => 'Axial Cremallera MO-0064',
         'stock'             => 10,
         'cost'              => 2000,
+        'costo_mano_de_obra'=> 40,
         // 'price'             => 3000,
         'sub_category_name' => 'Extremos de direccion',
         'provider_id'       => 1,
@@ -1243,6 +1244,7 @@ $articles = [
         'name'              => 'Kit de Buje, Tope Y Fuelle Amortiguador AX044.1142',
         'stock'             => 10,
         'cost'              => 2000,
+        'costo_mano_de_obra'=> 30,
         // 'price'             => 3000,
         'sub_category_name' => 'Kit tren delantero',
         'provider_id'       => 1,
@@ -1259,6 +1261,7 @@ $articles = [
         'name'              => 'Kit de Cazoleta con rodamiento Tope Y Fuelle AX044.1654',
         'stock'             => 10,
         'cost'              => 2000,
+        'costo_mano_de_obra'=> 20,
         // 'price'             => 3000,
         'sub_category_name' => 'Kit tren delantero',
         'provider_id'       => 1,
@@ -1275,10 +1278,35 @@ $articles = [
         'name'              => 'Kit de Cazoleta con rodamiento, Tope Y Fuelle AX044.1488',
         'stock'             => 10,
         'cost'              => 2000,
+        'costo_mano_de_obra'=> 10,
         // 'price'             => 3000,
         'sub_category_name' => 'Kit tren delantero',
         'provider_id'       => 1,
         'images'            => [
+            [
+                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+            ],
+            [
+                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+            ],
+            [
+                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+            ],
+            [
+                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+            ],
+            [
+                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+            ],
+            [
+                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+            ],
+            [
+                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+            ],
+            [
+                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+            ],
             [
                 'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
             ],

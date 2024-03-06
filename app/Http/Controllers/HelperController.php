@@ -4,11 +4,14 @@ namespace App\Http\Controllers;
 
 use App\Exports\SalesExport;
 use App\Http\Controllers\AfipWsController;
+use App\Http\Controllers\ArticlePerformanceController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartArticleAmountInsificienteHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\RecalculateCurrentAcountsHelper;
+use App\Http\Controllers\Helpers\RecipeHelper;
 use App\Models\Article;
 use App\Models\Budget;
 use App\Models\Buyer;
@@ -18,6 +21,7 @@ use App\Models\Image;
 use App\Models\OnlineConfiguration;
 use App\Models\OrderProduction;
 use App\Models\Provider;
+use App\Models\Recipe;
 use App\Models\Sale;
 use App\Models\StockMovement;
 use App\Models\User;
@@ -34,17 +38,60 @@ class HelperController extends Controller
         $this->{$method}();
     }
 
-    function articulos_sin_categoria() {
-        $articles = Article::where('user_id', 2)
+    function article_performances() {
+        for ($meses_atras=6; $meses_atras >= 1 ; $meses_atras--) { 
+            $ct = new ArticlePerformanceController();
+            $ct->setArticlesPerformance('hipermax', $meses_atras);
+            echo 'Se hizo '.$meses_atras.' meses atras </br>';
+        }
+        echo 'Listo';
+    }
+
+    function articulos_eliminados_de_recipes() {
+        $recipes = Recipe::where('user_id', 138)
                             ->orderBy('id', 'ASC')
-                            ->whereNull('category_id')
                             ->get();
-        foreach ($articles as $article) {
-            echo $article->name.' con sub_category: '.$article->sub_category_id.' </br>';
-            if (!is_null($article->sub_category)) {
-                echo '-------------- </br>';
-                echo 'Deberia pertenecer a '.$article->sub_category->category->name. ' </br>';
-                echo '-------------- </br>';
+        foreach ($recipes as $recipe) {
+            foreach ($recipe->articles as $article) {
+                if (!is_null($article->deleted_at)) {
+                    echo $article->name.' </br>';
+                }
+            }
+        }
+
+        echo 'Listo';
+    }
+
+    function quitar_articulos_eliminados_de_recipes() {
+        $recipes = Recipe::where('user_id', 138)
+                            ->orderBy('id', 'ASC')
+                            ->get();
+        foreach ($recipes as $recipe) {
+            $costo_acutal = $recipe->article->cost;
+            RecipeHelper::checkCostFromRecipe($recipe, $this, 138);
+            $recipe->load('article');
+            $cost_nuevo = $recipe->article->cost;
+            if ($costo_acutal != $cost_nuevo) {
+                echo 'Cambio el costo de '.$recipe->article->name.' de '.$costo_acutal.' a '.$cost_nuevo.' </br>';
+            }
+            echo 'Listo';
+        }
+
+    }
+
+    function matias_articulos_sin_categoria() {
+        $matias_articles = Article::where('user_id', 188)
+                            ->orderBy('id', 'ASC')
+                            ->whereNull('sub_category_id')
+                            ->get();
+        foreach ($matias_articles as $matias_article) {
+            $oscar_article = Article::where('id', $matias_article->provider_article_id)
+                                    ->first();
+            if (!is_null($oscar_article)) {
+                $helper = new InventoryLinkageHelper(null, $oscar_article->user_id);
+                $helper->checkArticle($oscar_article);
+                // $oscar_article->load();
+                echo $matias_article->name.' se le puso la categoria </br>';
             }
         }
         echo 'Listo';

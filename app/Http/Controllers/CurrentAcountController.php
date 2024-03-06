@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\CurrentAcountDeletePagoHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
 use App\Http\Controllers\Helpers\DiscountHelper;
+use App\Http\Controllers\Helpers\NotaCreditoHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\PdfPrintCurrentAcounts;
 use App\Http\Controllers\Helpers\SaleHelper;
@@ -154,8 +155,12 @@ class CurrentAcountController extends Controller
         if ($current_acount->status == 'pago_from_client' || $current_acount->status == 'nota_credito') {
             // $ct = new CurrentAcountDeletePagoHelper($model_name, $current_acount);
             // $ct->deletePago();
+            if ($current_acount->status == 'nota_credito') {
+                NotaCreditoHelper::resetUnidadesDevueltas($current_acount);
+            }
             $current_acount->pagando_a()->detach();
-            CurrentAcountHelper::updateSellerCommissionsStatus($current_acount);            
+            CurrentAcountHelper::updateSellerCommissionsStatus($current_acount);
+
         } else {
             CurrentAcountDeleteNotaDebitoHelper::deleteNotaDebito($current_acount, $model_name);
         }

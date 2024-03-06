@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Models\AfipError;
 use App\Models\AfipTicket;
 use App\Models\Afip\WSAA;
 use App\Models\Afip\WSFE;
@@ -25,6 +26,7 @@ class AfipWsController extends Controller
     function __construct($sale) {
         $this->sale = $sale;
         $this->testing = !$this->sale->afip_information->afip_ticket_production;
+        Log::info('AfipWsController sale id: '.$sale->id);
     }
 
     function convertir_utf8($value) {
@@ -83,7 +85,7 @@ class AfipWsController extends Controller
         $wsfe = new WSFE(['testing'=> $this->testing, 'cuit_representada' => $cuit_negocio]);
         $wsfe->setXmlTa(file_get_contents(TA_file));
         $cbte_nro = AfipHelper::getNumeroComprobante($wsfe, $punto_venta, $cbte_tipo);
-        // Log::info('Numero comprobante: '.$cbte_nro);
+        Log::info('Numero comprobante: '.$cbte_nro);
 
         $afip_helper = new AfipHelper($this->sale);
         $importes = $afip_helper->getImportes();
@@ -158,12 +160,14 @@ class AfipWsController extends Controller
         $errors = null;
         if (isset($result->FECAESolicitarResult->Errors)) {
             $errors = $result->FECAESolicitarResult->Errors;
-            // Log::info('Antes');
-            // Log::info((array)$errors);
-
-            // Log::info('Despues');
             $errors = $this->convertir_utf8($errors);
-            // Log::info((array)$errors);
+            foreach ($errors as $error) {
+                AfipError::create([
+                    'message'   => $error['Msg'],
+                    'code'      => $error['Code'],
+                    'sale_id'   => $this->sale->id,
+                ]);
+            }
         }
         return $errors;
     }
@@ -172,18 +176,21 @@ class AfipWsController extends Controller
         $observations = null;
         if (isset($result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones)) {
             $observations = $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones->Obs;
-            // Log::info('Antes');
-            // Log::info((array)$observations);
-
-            // Log::info('Despues');
             $observations = $this->convertir_utf8($observations);
-            // Log::info((array)$observations);
+            foreach ($observations as $observation) {
+                AfipError::create([
+                    'message'   => $observation['Msg'],
+                    'code'      => $observation['Code'],
+                    'sale_id'   => $this->sale->id,
+                ]);
+            }
         }
         return $observations;
     }
 
     function saveAfipTicket($result, $cbte_nro, $importe_total, $moneda_id) {
-        if (!isset($result->FECAESolicitarResult->Errors) && !isset($result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones)) {
+        if (!isset($result->FECAESolicitarResult->Errors)) {
+        // if (!isset($result->FECAESolicitarResult->Errors) && !isset($result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones)) {
             $this->deletePreviusAfipTicket();
             $afip_ticket = AfipTicket::create([
                 'cuit_negocio'      => $result->FECAESolicitarResult->FeCabResp->Cuit,

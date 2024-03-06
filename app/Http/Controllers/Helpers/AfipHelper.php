@@ -89,7 +89,8 @@ class AfipHelper extends Controller {
         }
         $importe = 0;
         $base_imp = 0;
-        if (($this->user->iva_included && is_null($this->article->iva) && $iva == 21) || (!is_null($this->article->iva) && $this->article->iva->percentage == $iva)) {
+        if ((is_null($this->article->iva) && $iva == 21) || (!is_null($this->article->iva) && $this->article->iva->percentage == $iva)) {
+        // if (($this->user->iva_included && is_null($this->article->iva) && $iva == 21) || (!is_null($this->article->iva) && $this->article->iva->percentage == $iva)) {
             $importe = $this->montoIvaDelPrecio() * $this->article->pivot->amount;
             $base_imp = $this->getPriceWithoutIva() * $this->article->pivot->amount;
         }
@@ -113,7 +114,8 @@ class AfipHelper extends Controller {
         } else {
             $price = $this->article->pivot->price;
         }
-        if ($this->user->iva_included || (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0)) {
+        if (is_null($this->article->iva) || (!is_null($this->article->iva && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0))) {
+        // if ($this->user->iva_included || (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0)) {
             $article_iva = 21;
             if (!is_null($this->article->iva)) {
                 $article_iva = $this->article->iva->percentage;
@@ -172,7 +174,8 @@ class AfipHelper extends Controller {
     |
     */
     function montoIvaDelPrecio() {
-        if (($this->user->iva_included && is_null($this->article->iva)) || (!is_null($this->article->iva) && ($this->article->iva->percentage != 'No Gravado' || $this->article->iva->percentage != 'Exento' || $this->article->iva->percentage != 0))) {
+        if (is_null($this->article->iva) || (!is_null($this->article->iva) && ($this->article->iva->percentage != 'No Gravado' || $this->article->iva->percentage != 'Exento' || $this->article->iva->percentage != 0))) {
+        // if (($this->user->iva_included && is_null($this->article->iva)) || (!is_null($this->article->iva) && ($this->article->iva->percentage != 'No Gravado' || $this->article->iva->percentage != 'Exento' || $this->article->iva->percentage != 0))) {
             $iva = 21;
             if (!is_null($this->article->iva)) {
                 $iva = (float)$this->article->iva->percentage;
@@ -188,7 +191,7 @@ class AfipHelper extends Controller {
 
     function getImporteGravado() {
         // if (is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0) {
-        if ($this->user->iva_included || (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0)) {
+        if (is_null($this->article->iva) || (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0)) {
             return $this->getPriceWithoutIva() * $this->article->pivot->amount;
         }
         return 0;

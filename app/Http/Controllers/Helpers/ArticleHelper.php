@@ -30,14 +30,25 @@ use Illuminate\Support\Str;
 class ArticleHelper {
 
     static function checkRecipesForSetPirces($article, $instance) {
+        $recipes = Self::get_recipes_que_tienen_este_articulo_como_insumo($article);
+        foreach ($recipes as $recipe) {
+            RecipeHelper::checkCostFromRecipe($recipe, $instance);
+        }
+    }
+
+    static function check_recipes_despues_de_eliminar_articulo($recipes, $instance) {
+        foreach ($recipes as $recipe) {
+            RecipeHelper::checkCostFromRecipe($recipe, $instance);
+        }
+    }
+
+    static function get_recipes_que_tienen_este_articulo_como_insumo($article) {
         $article_id = $article->id;
         $recipes = Recipe::whereHas('articles', function(Builder $query) use ($article_id) {
                                 $query->where('article_id', $article_id);
                             })
                             ->get();
-        foreach ($recipes as $recipe) {
-            RecipeHelper::checkCostFromRecipe($recipe, $instance);
-        }
+        return $recipes;
     }
 
     static function setArticlesFinalPrice($company_name = null) {

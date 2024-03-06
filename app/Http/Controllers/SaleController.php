@@ -85,6 +85,7 @@ class SaleController extends Controller
 
         $previus_articles = $model->articles;
         Log::info('update a sale N° '.$model->num.'. Id: '.$model->id);
+        Log::info('client_id '.$model->client_id);
         
         foreach ($previus_articles as $article) {
             Log::info('Id: '.$article->id.'. '.$article->name);
@@ -126,6 +127,7 @@ class SaleController extends Controller
         foreach ($model->articles as $article) {
             Log::info('Id: '.$article->id.'. '.$article->name);
         }
+        Log::info('Quedo con client_id '.$model->client_id);
 
         return response()->json(['model' => $this->fullModel('Sale', $model->id)], 200);
     }

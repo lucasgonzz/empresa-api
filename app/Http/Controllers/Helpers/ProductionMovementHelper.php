@@ -26,7 +26,7 @@ class ProductionMovementHelper {
 				}
 			}
 		}
-		Self::checkIsLastStatus($production_movement, $instance);
+		Self::checkIsLastStatus($production_movement, $instance, $increase_stock);
 	}
 
 	static function restar_insumos_en_este_estado($instance, $production_movement, $article_recipe) {
@@ -47,7 +47,11 @@ class ProductionMovementHelper {
 		}
 	}
 
-	static function checkIsLastStatus($production_movement, $instance) {
+
+	// $from_destroy es $increase_stock
+	// Si es false es porque vino desde store
+	// Si es true es porque vino desde delete
+	static function checkIsLastStatus($production_movement, $instance, $from_destroy) {
 		$last_status = OrderProductionStatus::where('user_id', $instance->userId())
 											->whereNotNull('position')
 											->orderBy('position', 'DESC')
@@ -56,8 +60,14 @@ class ProductionMovementHelper {
 			
 			$request = new \Illuminate\Http\Request();
             $request->model_id = $production_movement->article_id;
-            $request->amount = $production_movement->amount;
-            $request->concepto = 'Produccion terminada';
+
+            if ($from_destroy) {
+            	$request->concepto = 'Eliminacion de Prod terminada';
+            	$request->amount = -$production_movement->amount;
+            } else {
+            	$request->concepto = 'Produccion terminada';
+            	$request->amount = $production_movement->amount;
+            }
 
             Log::info('checkIsLastStatus');
             Log::info('count addresses: '.count($production_movement->article->addresses));
@@ -69,8 +79,8 @@ class ProductionMovementHelper {
 			}
 
 			$stock_movement_ct = new StockMovementController();
-            $stock_movement_ct->store($request);
-        	$instance->sendAddModelNotification('article', $production_movement->article->id, false);
+            $stock_movement_ct->store($request, false);
+        	// $instance->sendAddModelNotification('article', $production_movement->article->id, false);
 		}
 	}
 

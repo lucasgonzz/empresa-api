@@ -6,12 +6,31 @@ use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ProductionMovementHelper;
 use App\Models\OrderProductionStatus;
 use App\Models\ProductionMovement;
+use App\Models\Recipe;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class ProductionMovementController extends Controller
 {
 
-    function currentAmounts($article_id) {
+    function currentAmountsAllArticles() {
+        $recipes = Recipe::where('user_id', $this->userId())
+                            ->get();
+
+        Log::info('acaaaa');
+
+        $cantidades_actuales = [];
+        foreach ($recipes as $recipe) {
+            $article = [
+                'name'  => $recipe->article->name,
+            ];
+            $article['cantidades_actuales'] = $this->currentAmounts($recipe->article_id, false);
+            $cantidades_actuales[] = $article;
+        }
+        return response()->json(['cantidades_actuales' => $cantidades_actuales], 200);
+    }
+
+    function currentAmounts($article_id, $return_response = true) {
         $response = [];
         $order_production_statuses = OrderProductionStatus::where('user_id', $this->userId())
                                                             ->whereNotNull('position')
@@ -29,18 +48,25 @@ class ProductionMovementController extends Controller
                 ];
             }
         }
+
+        if (!$return_response) {
+            return $response;
+        }
         return response()->json(['response' => $response], 200);
     }
 
-    public function index($from_date, $until_date = null) {
+    public function index($from_date = null, $until_date = null) {
         $models = ProductionMovement::where('user_id', $this->userId())
                         ->orderBy('created_at', 'DESC')
                         ->withAll();
-        if (!is_null($until_date)) {
-            $models = $models->whereDate('created_at', '>=', $from_date)
-                            ->whereDate('created_at', '<=', $until_date);
-        } else {
-            $models = $models->whereDate('created_at', $from_date);
+
+        if (!is_null($from_date)) {
+            if (!is_null($until_date)) {
+                $models = $models->whereDate('created_at', '>=', $from_date)
+                                ->whereDate('created_at', '<=', $until_date);
+            } else {
+                $models = $models->whereDate('created_at', $from_date);
+            }
         }
 
         $models = $models->get();
@@ -55,6 +81,7 @@ class ProductionMovementController extends Controller
             'order_production_status_id'    => $request->order_production_status_id,
             'amount'                        => $request->amount,
             'current_amount'                => $request->amount,
+            'notes'                         => $request->notes,
             'user_id'                       => $this->userId(),
         ]);
         ProductionMovementHelper::checkRecipe($model, $this);
@@ -70,16 +97,16 @@ class ProductionMovementController extends Controller
 
     public function update(Request $request, $id) {
         $model = ProductionMovement::find($id);
-        $last_amount = $model->amount;
-        $model->employee_id                   = $request->employee_id;
-        $model->article_id                    = $request->article_id;
-        $model->order_production_status_id    = $request->order_production_status_id;
-        // $model->address_id                    = $request->address_id;
-        $model->amount                        = $request->amount;
-        $model->save();
-        ProductionMovementHelper::checkRecipe($model, $this, $last_amount);
-        ProductionMovementHelper::setCurrentAmount($model, $this, $last_amount);
-        $this->sendAddModelNotification('production_movement', $model->id);
+        // $last_amount = $model->amount;
+        // $model->employee_id                   = $request->employee_id;
+        // $model->article_id                    = $request->article_id;
+        // $model->order_production_status_id    = $request->order_production_status_id;
+        // // $model->address_id                    = $request->address_id;
+        // $model->amount                        = $request->amount;
+        // $model->save();
+        // ProductionMovementHelper::checkRecipe($model, $this, $last_amount);
+        // ProductionMovementHelper::setCurrentAmount($model, $this, $last_amount);
+        // $this->sendAddModelNotification('production_movement', $model->id);
         return response()->json(['model' => $this->fullModel('ProductionMovement', $model->id)], 200);
     }
 

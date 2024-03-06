@@ -66,36 +66,39 @@ class ArticleTicketPdf extends fpdf {
 			$this->x = 0;
 		}
 
-		$this->x = $this->start_x;
-		$this->SetFont('Arial', 'B', 12);
-		$this->Cell(70, 8, StringHelper::short($article->name, 30), 1, 1, 'L');
-		
-		$info = null;
-		$this->x = $this->start_x;
-		if (!is_null($this->user->article_ticket_info)) {
-			if ($this->user->article_ticket_info->name == 'Codigo de barras') {
-				$info = $article->bar_code;
-			} else if ($this->user->article_ticket_info->name == 'Codigo de proveedor') {
-				$info = $article->provider_code;
+		if (!is_null($article)) {
+			$this->x = $this->start_x;
+			$this->SetFont('Arial', 'B', 12);
+			$this->Cell(70, 8, StringHelper::short($article->name, 30), 1, 1, 'L');
+			
+			$info = null;
+			$this->x = $this->start_x;
+			if (!is_null($this->user->article_ticket_info)) {
+				if ($this->user->article_ticket_info->name == 'Codigo de barras') {
+					$info = $article->bar_code;
+				} else if ($this->user->article_ticket_info->name == 'Codigo de proveedor') {
+					$info = $article->provider_code;
+				}
 			}
+			if (!is_null($info)) {
+				$this->SetFont('Arial', '', 10);
+				$this->Cell(30, 16, $info, 'LTB', 0, 'L');
+			} else {
+				$this->x += 30;
+			}
+
+			$this->SetFont('Arial', 'B', 27);
+			$this->Cell(40, 16, '$'.Numbers::price($article->final_price), 'RTB', 1, 'R');
+
+			$this->x = $this->start_x;
+			$this->SetFont('Arial', '', 12);
+			$this->Cell(70, 5, $this->user->company_name, 1, 1, 'L');
+
+			$this->x = $this->start_x;
+			$this->x += 70;
+			// dd($this->x);
 		}
-		if (!is_null($info)) {
-			$this->SetFont('Arial', '', 10);
-			$this->Cell(30, 16, $info, 'LTB', 0, 'L');
-		} else {
-			$this->x += 30;
-		}
 
-		$this->SetFont('Arial', 'B', 27);
-		$this->Cell(40, 16, '$'.Numbers::price($article->final_price), 'RTB', 1, 'R');
-
-		$this->x = $this->start_x;
-		$this->SetFont('Arial', '', 12);
-		$this->Cell(70, 5, $this->user->company_name, 1, 1, 'L');
-
-		$this->x = $this->start_x;
-		$this->x += 70;
-		// dd($this->x);
 	}
 
 }

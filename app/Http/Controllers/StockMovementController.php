@@ -34,6 +34,7 @@ class StockMovementController extends Controller
             'amount'            => $request->amount,
             'concepto'          => isset($request->concepto) && !is_null($request->concepto) ? $request->concepto : null,
             'sale_id'           => isset($request->sale_id) && $request->sale_id != 0 ? $request->sale_id : null,
+            'nota_credito_id'   => isset($request->nota_credito_id) && $request->nota_credito_id != 0 ? $request->nota_credito_id : null,
             'provider_id'       => $request->amount >= 1 && isset($request->provider_id) && $request->provider_id != 0 ? $request->provider_id : null,
             'from_address_id'   => $this->getFromAddressId(),
             'to_address_id'     => $this->getToAddressId(),

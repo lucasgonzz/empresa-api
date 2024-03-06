@@ -25,7 +25,7 @@ class InventoryLinkageSeeder extends Seeder
         foreach ($models as $model) {
             $linkage = InventoryLinkage::create($model);
 
-            $inventory_linkage_helper = new InventoryLinkageHelper($linkage);
+            $inventory_linkage_helper = new InventoryLinkageHelper($linkage, 500);
             $inventory_linkage_helper->setClientArticles();
         }
     }

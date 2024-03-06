@@ -131,7 +131,6 @@ class SaleHelper extends Controller {
                 }
                 $haber += $total_item;
 
-                Self::returnToStock($sale, $item);
             }
             Log::info('El total quedo en '.$haber);
             if (count($sale->discounts) >= 1) {
@@ -149,6 +148,9 @@ class SaleHelper extends Controller {
 
             $ct = new Controller();
             $ct->sendAddModelNotification('client', $request->client_id, false);
+
+            Self::returnToStock($sale, $nota_credito, $request->returned_items);
+
             if (!is_null($sale->afip_ticket)) {
                 $afip_helper = new AfipNotaCreditoHelper($sale, $nota_credito);
                 $afip_helper->init();
@@ -156,23 +158,27 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function returnToStock($sale, $item) {
-
-        if (
-            isset($item['return_to_stock']) 
-            && !is_null($item['return_to_stock']) 
-            && (float)$item['return_to_stock'] > 0
-        ) {
-            $ct = new StockMovementController();
-            $request = new \Illuminate\Http\Request();
-            
-            $request->model_id = $item['id'];
-            $request->to_address_id = $sale->address_id;
-            $request->amount = $item['return_to_stock'];
-            // $request->sale_id = $sale->id;
-            $request->concepto = 'Nota credito Venta N° '.$sale->num;
-            $ct->store($request);
+    static function returnToStock($sale, $nota_credito, $items) {
+        // Log::info('returnToStock para nota_credito:');
+        // Log::info((array)$nota_credito);
+        foreach ($items as $item) {
+            if (
+                isset($item['return_to_stock']) 
+                && !is_null($item['return_to_stock']) 
+                && (float)$item['return_to_stock'] > 0
+            ) {
+                $ct = new StockMovementController();
+                $request = new \Illuminate\Http\Request();
+                
+                $request->model_id = $item['id'];
+                $request->to_address_id = $sale->address_id;
+                $request->amount = $item['return_to_stock'];
+                $request->nota_credito_id = $nota_credito->id;
+                $request->concepto = 'Nota credito Venta N° '.$sale->num;
+                $ct->store($request);
+            }
         }
+
     }
 
     static function createNotaCreditoFromDestroy($sale) {
@@ -224,11 +230,11 @@ class SaleHelper extends Controller {
 
     static function check_deleted_articles_from_check($sale, $previus_articles) {
         $sale->load('articles');
-        Log::info('check_deleted_articles_from_check');
-        Log::info('sale->articles:');
-        foreach ($sale->articles as $article) {
-            Log::info($article->name);
-        }
+        // Log::info('check_deleted_articles_from_check');
+        // Log::info('sale->articles:');
+        // foreach ($sale->articles as $article) {
+        //     Log::info($article->name);
+        // }
 
 
         if ($sale->checked && !is_null($previus_articles)) {
@@ -276,12 +282,33 @@ class SaleHelper extends Controller {
         
         foreach ($articles as $article) {
             if (isset($article['is_article'])) {
-                Self::attachArticle($sale, $article);
+
+                if (isset($article['varios_precios']) && is_array($article['varios_precios'])) {
+                    foreach ($article['varios_precios'] as $otro_precio) {
+
+                        $otro_precio['id'] = $article['id'];
+
+                        if ($otro_precio['amount'] == '') {
+                            $otro_precio['amount'] = 1;
+                        }
+
+                        Log::info('attachArticle de $otro_precio:');
+                        Log::info($otro_precio);
+                        Self::attachArticle($sale, $otro_precio);
+
+                    }
+                } else {
+                    Self::attachArticle($sale, $article);
+                }
+
 
                 if (!$sale->to_check && !$sale->checked) {
                     $cancel = false;
                     $amount = $article['amount'];
                     if (isset($article['checked_amount']) && !is_null($article['checked_amount']) && (float)$article['checked_amount'] > 0) {
+                        Log::info('entro a checked_amount');
+                        Log::info('En checked_amount tiene: '.$article['checked_amount']);
+                        Log::info('En amount tiene: '.$article['amount']);
                         if ($article['checked_amount'] == $article['amount']) {
                             $cancel = true;
                         }
@@ -291,6 +318,7 @@ class SaleHelper extends Controller {
                         ArticleHelper::discountStock($article['id'], $amount, $sale);
                         Log::info('se desconto stock del articulo '.$article['id']);
                     } else {
+                        Log::info('Sacando article id '.$article['id']);
                         $sale->articles()->detach($article['id']);
                     }
                 }
@@ -307,7 +335,7 @@ class SaleHelper extends Controller {
             'returned_amount'       => Self::getReturnedAmount($article),
             'delivered_amount'      => Self::getDeliveredAmount($article),
             'discount'              => Self::getDiscount($article),
-            'checked_amount'        => Self::getCheckedAmount($article),
+            'checked_amount'        => Self::getCheckedAmount($sale, $article),
             'created_at'            => Carbon::now(),
         ]);
     }
@@ -399,8 +427,11 @@ class SaleHelper extends Controller {
         return (float)$article['amount'];
     }
 
-    static function getCheckedAmount($article) {
+    static function getCheckedAmount($sale, $article) {
         if (isset($article['checked_amount']) && !is_null($article['checked_amount'])) {
+            if ($sale->confirmed && isset($article['checked_amount']) && !is_null($article['checked_amount']) && (float)$article['checked_amount'] > 0) {
+                return null;
+            }
             return $article['checked_amount'];
         }
         return null;

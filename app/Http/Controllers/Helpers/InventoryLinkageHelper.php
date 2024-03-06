@@ -18,9 +18,14 @@ use Illuminate\Database\Eloquent\Builder;
 class InventoryLinkageHelper extends Controller {
 
 	public $price_types;
+	public $user_id;
 
-	function __construct($inventory_linkage = null) {
+	function __construct($inventory_linkage = null, $user_id = null) {
         set_time_limit(999999);
+		$this->user_id = $user_id;
+		if (is_null($user_id)) {
+			$this->user_id = $this->userId();
+		} 
 		if (!is_null($inventory_linkage)) {
 			$this->inventory_linkage = $inventory_linkage;
 			$this->client = $inventory_linkage->client;
@@ -30,15 +35,19 @@ class InventoryLinkageHelper extends Controller {
 	}
 
 	function setPriceTypes() {
-		$this->price_types = PriceType::where('user_id', $this->userId())
+		$this->price_types = PriceType::where('user_id', $this->user_id)
 											->orderBy('position', 'ASC')
 											->get();
 	}
 
 	function setProviderForClient() {
 		$this->provider_for_client = Provider::where('user_id', $this->inventory_linkage->client->comercio_city_user_id)
-												->where('comercio_city_user_id', $this->userId())
+												->where('comercio_city_user_id', $this->user_id)
 												->first();
+		Log::info('setProviderForClient linkage');
+		Log::info($this->inventory_linkage->client->comercio_city_user_id);
+		Log::info($this->user_id);
+		Log::info((array)$this->provider_for_client);
 	}
 
 	function setClientCategories() {
@@ -102,7 +111,7 @@ class InventoryLinkageHelper extends Controller {
 	}
 
 	function checkArticle($article) {
-		$inventory_linkages = InventoryLinkage::where('user_id', $this->userId())
+		$inventory_linkages = InventoryLinkage::where('user_id', $this->user_id)
 												->get();
 		if (count($inventory_linkages) >= 1) {
 			foreach ($inventory_linkages as $inventory_linkage) {
@@ -118,13 +127,16 @@ class InventoryLinkageHelper extends Controller {
 					Log::info('Habia article');
 					Log::info('Costo nuevo: '.$this->getClientArticlePrice($article));
 					$client_article->cost = $this->getClientArticlePrice($article);
+					
+					$client_article->category_id = $this->getClientCategoryId($article);
+					$client_article->sub_category_id = $this->getClientSubCategoryId($article);
 					$client_article->save();
 					ArticleHelper::setFinalPrice($client_article, $this->client->comercio_city_user_id);
 				} else {
 					Log::info('No habia article');
 					$client_article = $this->createClientArticle($article);
 				}
-				$this->sendAddModelNotification('article', $client_article->id, false, $this->client->comercio_city_user_id);
+				// $this->sendAddModelNotification('article', $client_article->id, false, $this->client->comercio_city_user_id);
 			}
 		}
 	}
@@ -164,7 +176,7 @@ class InventoryLinkageHelper extends Controller {
 
 	function check_created_image($article, $created_image) {
 
-		$inventory_linkages = InventoryLinkage::where('user_id', UserHelper::userId())
+		$inventory_linkages = InventoryLinkage::where('user_id', $this->user_id)
 												->get();
 		if (count($inventory_linkages) >= 1) {
 			foreach ($inventory_linkages as $inventory_linkage) {
@@ -191,7 +203,7 @@ class InventoryLinkageHelper extends Controller {
 	function check_is_agotado($article) {
 
 		if (!is_null($article->stock)) {
-			$inventory_linkages = InventoryLinkage::where('user_id', UserHelper::userId())
+			$inventory_linkages = InventoryLinkage::where('user_id', $this->user_id)
 													->get();
 			if (count($inventory_linkages) >= 1) {
 				foreach ($inventory_linkages as $inventory_linkage) {

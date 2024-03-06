@@ -19,28 +19,30 @@ class Article extends Model
     }
 
     public function getCostoRealAttribute() {
-        $owner = UserHelper::user();
-        $cost = $this->cost;
-        if (!is_null($this->cost) && !is_null($owner)) {
-            if ($this->cost_in_dollars) {
-                if (!is_null($this->provider) && !is_null($this->provider->dolar)) {
-                    $cost = $cost * (float)$this->provider->dolar;
-                } else {
-                    $cost = $cost * $owner->dollar;
+        if (!is_null(Auth()->user())) {
+            $owner = UserHelper::user();
+            $cost = $this->cost;
+            if (!is_null($this->cost) && !is_null($owner)) {
+                if ($this->cost_in_dollars) {
+                    if (!is_null($this->provider) && !is_null($this->provider->dolar)) {
+                        $cost = $cost * (float)$this->provider->dolar;
+                    } else {
+                        $cost = $cost * $owner->dollar;
+                    }
+                }
+                foreach ($this->article_discounts as $discount) {
+                    $cost -= $cost * (float)$discount->percentage / 100;
+                }
+                if (!is_null($this->iva) 
+                    && !$owner->iva_included
+                    && $this->iva->percentage != 0 
+                    && $this->iva->percentage != 'Extento'
+                    && $this->iva->percentage != 'No Gravado') {
+                    $cost += $cost * (float)$this->iva->percentage / 100;
                 }
             }
-            foreach ($this->article_discounts as $discount) {
-                $cost -= $cost * (float)$discount->percentage / 100;
-            }
-            if (!is_null($this->iva) 
-                && !$owner->iva_included
-                && $this->iva->percentage != 0 
-                && $this->iva->percentage != 'Extento'
-                && $this->iva->percentage != 'No Gravado') {
-                $cost += $cost * (float)$this->iva->percentage / 100;
-            }
+            return $cost;
         }
-        return $cost;
     }
 
     function stock_movements() {

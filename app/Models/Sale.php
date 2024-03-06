@@ -16,11 +16,15 @@ class Sale extends Model
     }
 
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles');
+        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors');
     }
 
     public function address() {
         return $this->belongsTo('App\Models\Address');
+    }
+
+    function afip_errors() {
+        return $this->hasMany(AfipError::class);
     }
 
     public function budget() {

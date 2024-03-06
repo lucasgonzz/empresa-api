@@ -200,11 +200,13 @@ class UserSeeder extends Seeder
                 'article_ticket_info_id'                 => isset($model['article_ticket_info_id']) ? $model['article_ticket_info_id'] : null,
                 'total_a_pagar'                 => isset($model['total_a_pagar']) ? $model['total_a_pagar'] : null,
                 'app_url'                       => isset($model['app_url']) ? $model['app_url'] : null,
+                'iva_included'                  => 1,
             ]);
             if (is_null($user->owner_id)) {
 
                 // $user->extencions()->attach([1,2,5,6,8,9,10,13]);
-                $user->extencions()->attach([1,2,5,6,8,9,10,12,13,14]);
+                // $user->extencions()->attach([6,9]);
+                $user->extencions()->attach([1,2,5,6,8,9,10,12,13,14,16,17]);
                 UserConfiguration::create([
                     'current_acount_pagado_details'         => 'Saldado',
                     'current_acount_pagandose_details'      => 'Recibo de pago',

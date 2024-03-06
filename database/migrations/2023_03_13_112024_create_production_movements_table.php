@@ -21,6 +21,7 @@ class CreateProductionMovementsTable extends Migration
             $table->integer('order_production_status_id');
             $table->decimal('amount', 12,2);
             $table->decimal('current_amount', 12,2)->nullable();
+            $table->text('notes')->nullable();
             $table->integer('user_id');
             $table->timestamps();
         });

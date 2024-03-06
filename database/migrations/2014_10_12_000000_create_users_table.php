@@ -54,6 +54,7 @@ class CreateUsersTable extends Migration
             $table->decimal('total_a_pagar', 12,2)->nullable();
             $table->timestamp('last_activity')->nullable();
             $table->string('app_url')->nullable();
+            $table->boolean('show_buyer_messages')->default(true);
             $table->rememberToken();
             
             $table->enum('status', ['commerce', 'admin', 'super']);

@@ -5,6 +5,7 @@ namespace App\Imports;
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\ArticlesPreImportHelper;
 use App\Http\Controllers\Helpers\IvaHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -37,6 +38,10 @@ class ArticleImport implements ToCollection
         $this->updated_models = 0;
         $this->setAddresses();
         $this->setProps();
+
+        if (UserHelper::hasExtencion('articles_pre_import')) {
+            $this->articles_pre_import_helper = new ArticlesPreImportHelper($this->provider_id);
+        }
     }
 
     function setProps() {
@@ -107,13 +112,34 @@ class ArticleImport implements ToCollection
     }
 
     function saveImportHistory() {
-        ImportHistory::create([
-            'user_id'           => UserHelper::userId(),
-            'employee_id'       => UserHelper::userId(false),
-            'model_name'        => 'article',
-            'created_models'    => $this->created_models,
-            'updated_models'    => $this->updated_models,
-        ]);
+        Log::info('______________________ saveImportHistory ______________________');
+        $current_import_history = ImportHistory::where('user_id', UserHelper::userId())
+                                                ->where('employee_id', UserHelper::userId(false))
+                                                ->where('model_name', 'article')
+                                                ->where('updated_at', '>=', Carbon::now()->subMinutes(3))
+                                                ->first();
+
+        if (is_null($current_import_history)) {
+            $import_history = ImportHistory::create([
+                'user_id'           => UserHelper::userId(),
+                'employee_id'       => UserHelper::userId(false),
+                'model_name'        => 'article',
+                'created_models'    => $this->created_models,
+                'updated_models'    => $this->updated_models,
+            ]);
+            Log::info('No hay ImportHistory, se creo con updated_at = '.$import_history->updated_at);
+        } else {
+            Log::info('Habia ImportHistory');
+            Log::info('created_models '.$current_import_history->created_models);
+            Log::info('updated_models '.$current_import_history->updated_models);
+            $current_import_history->created_models += $this->created_models;
+            $current_import_history->updated_models += $this->updated_models;
+            
+            Log::info('Quedaron en:');
+            Log::info('created_models '.$current_import_history->created_models);
+            Log::info('updated_models '.$current_import_history->updated_models);
+            $current_import_history->save();
+        }
     }
 
     function saveArticle($row, $article) {
@@ -148,8 +174,14 @@ class ArticleImport implements ToCollection
         
         if (!is_null($article) && $this->isDataUpdated($article, $data)) {
             $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $article->id);
-            $article->update($data);
-            $this->updated_models++;
+
+            if (UserHelper::hasExtencion('articles_pre_import')) {
+                $this->articles_pre_import_helper->add_article($article, $data);
+            } else {
+                $article->update($data);
+                $this->updated_models++;
+            }
+
         } else if (is_null($article) && $this->create_and_edit) {
             if (!is_null(ImportHelper::getColumnValue($row, 'codigo', $this->columns))) {
                 $data['num'] = ImportHelper::getColumnValue($row, 'codigo', $this->columns);
