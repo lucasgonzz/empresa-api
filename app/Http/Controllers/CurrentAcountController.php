@@ -53,6 +53,7 @@ class CurrentAcountController extends Controller
         $pago = CurrentAcount::create([
             'haber'                             => $request->haber,
             'description'                       => $request->description,
+            'numero_orden_de_compra'            => $request->numero_orden_de_compra,
             'status'                            => 'pago_from_client',
             'user_id'                           => $this->userId(),
             'num_receipt'                       => CurrentAcountHelper::getNumReceipt(),
@@ -153,8 +154,8 @@ class CurrentAcountController extends Controller
         $current_acount = CurrentAcount::find($id);
 
         if ($current_acount->status == 'pago_from_client' || $current_acount->status == 'nota_credito') {
-            // $ct = new CurrentAcountDeletePagoHelper($model_name, $current_acount);
-            // $ct->deletePago();
+            $ct = new CurrentAcountDeletePagoHelper($model_name, $current_acount);
+            $ct->deletePago();
             if ($current_acount->status == 'nota_credito') {
                 NotaCreditoHelper::resetUnidadesDevueltas($current_acount);
             }

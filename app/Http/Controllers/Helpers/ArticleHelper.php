@@ -70,7 +70,10 @@ class ArticleHelper {
     }
 
     static function setFinalPrice($article, $user_id = null) {
-        // Log::info('setFinalPrice article->price '.$article->price);
+        Log::info('setFinalPrice para '.$article->name);
+        if (!is_null($article->provider)) {
+            Log::info('provider: '.$article->provider->name);
+        }
         if (is_null($user_id)) {
             $user = UserHelper::user();
         } else {
@@ -82,7 +85,7 @@ class ArticleHelper {
             $article->save();
         }
         if (is_null($article->price) || $article->price == '') {
-            // Log::info('entor con price null');
+            Log::info('entor con price null');
             $cost = $article->cost;
             if ($article->cost_in_dollars) {
                 if (!is_null($article->provider) && !is_null($article->provider->dolar) && (float)$article->provider->dolar > 0) {
@@ -92,17 +95,19 @@ class ArticleHelper {
                 }
             }
             $final_price = $cost;
+            Log::info('$article->apply_provider_percentage_gain: '.$article->apply_provider_percentage_gain);
             if ($article->apply_provider_percentage_gain) {
+                Log::info('ENTROOO');
                 if (!is_null($article->provider_price_list)) {
                     // Log::info('sumando provider_price_list de '.$article->provider_price_list->percentage);
                     // Log::info('final_price esta en '.$final_price);
                     $final_price = $cost + ($cost * $article->provider_price_list->percentage / 100);
                     // Log::info('final_price quedo en '.$final_price);
                 } else if ((!is_null($article->provider) && $article->provider->percentage_gain)) {
-                    // Log::info('sumando provider->percentage_gain de '.$article->provider->percentage_gain);
-                    // Log::info('final_price esta en '.$final_price);
+                    Log::info('sumando provider->percentage_gain de '.$article->provider->percentage_gain);
+                    Log::info('final_price esta en '.$final_price);
                     $final_price = $cost + ($cost * $article->provider->percentage_gain / 100);
-                    // Log::info('final_price quedo en '.$final_price);
+                    Log::info('final_price quedo en '.$final_price);
                 } else {
                     // Log::info('no se sumo ningun marguen de ganancia de proveedor');
                     $final_price = $cost;

@@ -87,7 +87,7 @@ class ExtencionSeeder extends Seeder
             ],
             [
                 // 15
-                'name' => 'Estados de Produccion',
+                'name' => 'Movimientos de Produccion',
                 'slug' => 'production.production_movement',
             ],
             [
@@ -99,6 +99,16 @@ class ExtencionSeeder extends Seeder
                 // 17
                 'name' => 'Pre Improtacion de Articulos',
                 'slug' => 'articles_pre_import',
+            ],
+            [
+                // 18
+                'name' => 'Guardad cuenta corriente despues de facturar',
+                'slug' => 'guardad_cuenta_corriente_despues_de_facturar',
+            ],
+            [
+                // 19
+                'name' => 'Codigo proveedor en vender',
+                'slug' => 'codigo_proveedor_en_vender',
             ],
         ];
         foreach ($extencions as $extencion) {

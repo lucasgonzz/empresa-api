@@ -28,11 +28,11 @@ class UserSeeder extends Seeder
         $models = [
             [
                 'id'                            => 500,
-                'name'                          => 'Oscar',
+                'name'                          => 'Lucas',
                 'company_name'                  => 'Autopartes Boxes',
                 // 'image_url'                     => null,
                 'image_url'                     => env('APP_URL').'/storage/cubo.jpeg',
-                'doc_number'                    => '123',
+                'doc_number'                    => '1234',
                 'email'                         => 'lucasgonzalez5500@gmail.com',
                 'phone'                         => '3444622139',
                 'password'                      => bcrypt('123'),
@@ -67,11 +67,12 @@ class UserSeeder extends Seeder
             ],
             [
                 'id'                            => 501,
-                'name'                          => 'Matias',
-                'company_name'                  => 'Matias Mayorista',
+                'name'                          => 'Nico',
+                'company_name'                  => 'Ferretodo',
+                'iva_included'                  => 0,
                 // 'image_url'                     => null,
                 'image_url'                     => env('APP_URL').'/storage/cubo.jpeg',
-                'doc_number'                    => '31707719',
+                'doc_number'                    => '123',
                 'email'                         => 'lucasgonzalez210200@gmail.com',
                 'phone'                         => '3444622139',
                 'password'                      => bcrypt('123'),
@@ -205,8 +206,8 @@ class UserSeeder extends Seeder
             if (is_null($user->owner_id)) {
 
                 // $user->extencions()->attach([1,2,5,6,8,9,10,13]);
-                // $user->extencions()->attach([6,9]);
-                $user->extencions()->attach([1,2,5,6,8,9,10,12,13,14,16,17]);
+                $user->extencions()->attach([6,2,9, 15, 17, 18, 19]);
+                // $user->extencions()->attach([1,2,5,6,8,9,10,12,13,14,16,17]);
                 UserConfiguration::create([
                     'current_acount_pagado_details'         => 'Saldado',
                     'current_acount_pagandose_details'      => 'Recibo de pago',

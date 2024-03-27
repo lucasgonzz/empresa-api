@@ -13,7 +13,7 @@ class ArticlesPreImport extends Model
     }
 
     function articles() {
-        return $this->belongsToMany(Article::class)->select('name')->withPivot('costo_actual', 'costo_nuevo');
+        return $this->belongsToMany(Article::class)->select('name', 'provider_code')->withPivot('costo_actual', 'costo_nuevo', 'actualizado');
     }
 
 }

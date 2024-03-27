@@ -15,8 +15,10 @@ use App\Http\Controllers\Helpers\RecipeHelper;
 use App\Models\Article;
 use App\Models\Budget;
 use App\Models\Buyer;
+use App\Models\Category;
 use App\Models\Client;
 use App\Models\CurrentAcount;
+use App\Models\CurrentAcountCurrentAcountPaymentMethod;
 use App\Models\Image;
 use App\Models\OnlineConfiguration;
 use App\Models\OrderProduction;
@@ -24,7 +26,9 @@ use App\Models\Provider;
 use App\Models\Recipe;
 use App\Models\Sale;
 use App\Models\StockMovement;
+use App\Models\SubCategory;
 use App\Models\User;
+use App\Models\UserConfiguration;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -36,6 +40,75 @@ class HelperController extends Controller
 
     function callMethod($method) {
         $this->{$method}();
+    }
+
+    function register_user($name, $doc_number, $company_name, $iva_included, $extencions_id) {
+        $user = User::create([
+            'name'                  => $name,
+            'doc_number'            => $doc_number,
+            'company_name'          => $company_name,
+            'iva_included'          => $iva_included,
+            'password'              => bcrypt('123'),
+            'password'              => bcrypt('123'),
+            'download_articles'     => 1,
+        ]);
+
+        $user->extencions()->attach(explode('-', $extencions_id));
+
+
+        UserConfiguration::create([
+            'current_acount_pagado_details'         => 'Saldado',
+            'current_acount_pagandose_details'      => 'Recibo de pago',
+            'iva_included'                          => 1,
+            'limit_items_in_sale_per_page'          => null,
+            'can_make_afip_tickets'                 => 1,
+            'user_id'                               => $user->id,
+        ]);
+
+        echo 'Usuario creado correctamente';
+    }
+
+    function set_cheques_user_id() {
+
+        $cheques = CurrentAcountCurrentAcountPaymentMethod::where('current_acount_payment_method_id', 1)
+                                                            ->orderBy('created_at', 'ASC')
+                                                            ->get();
+
+        foreach ($cheques as $cheque) {
+            $current_acount = CurrentAcount::find($cheque->current_acount_id);
+            $cheque->user_id = $current_acount->user_id;
+            $cheque->save();
+            echo 'Se le puso user_id '.$current_acount->user_id.' al cheque '.$cheque->bank.' </br>';
+        }
+    }
+ 
+    function articulos_matias_categorias() {
+
+        $sub_categorias_matias = SubCategory::where('user_id', 188)
+                                        ->whereNull('provider_sub_category_id')
+                                        ->get();
+
+        foreach ($sub_categorias_matias as $sub_categoria_matias) {
+            $articles = Article::where('user_id', 188)
+                                ->whereNotNull('provider_article_id')
+                                ->where('sub_category_id', $sub_categoria_matias->id)
+                                ->get();
+            foreach ($articles as $article) {
+                $article->category_id = null;
+                $article->sub_category_id = null;
+                $article->timestamps = false;
+                $article->save();
+                echo 'Se actualizo '.$article->name.' </br>';
+                // echo $article->category->name.' - '.$article->name.' </br>';
+                // if (!is_null($article->sub_category)) {
+                //     echo 'SUB CATEGORIA: '.$article->sub_category->name.' </br>';
+                // }
+            }
+            // echo '--------------------------- </br>';
+        }
+
+        // echo 'Listo';
+
     }
 
     function article_performances() {

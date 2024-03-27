@@ -36,7 +36,7 @@ class SaleSeeder extends Seeder
         $sale = Sale::create([
             'user_id'               => $user->id,
             'num'                   => $ct->num('sales', $user->id),
-            'created_at'            => Carbon::now()->subDays(3),
+            'created_at'            => Carbon::now()->subMonths(2),
             'address_id'            => 1,
             'sale_type_id'          => 1,
             'client_id'             => 1,
@@ -47,7 +47,18 @@ class SaleSeeder extends Seeder
         $sale = Sale::create([
             'user_id'               => $user->id,
             'num'                   => $ct->num('sales', $user->id),
-            'created_at'            => Carbon::now()->subDays(2),
+            'created_at'            => Carbon::now()->subMonths(1),
+            'address_id'            => 1,
+            'sale_type_id'          => 1,
+            'client_id'             => 1,
+            'save_current_acount'   => 1,
+        ]);
+        SaleHelper::attachProperies($sale, $this->setRequest($sale));
+
+        $sale = Sale::create([
+            'user_id'               => $user->id,
+            'num'                   => $ct->num('sales', $user->id),
+            'created_at'            => Carbon::now()->subDays(1),
             'address_id'            => 1,
             'sale_type_id'          => 1,
             'client_id'             => 1,

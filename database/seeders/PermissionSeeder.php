@@ -166,6 +166,11 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'Deposito checkeadas',
                 'en'            => 'deposito_checkeadas',
             ],
+            [
+                'singular'      => 'Ver REPORTES',
+                'plural'        => 'Estadisticas',
+                'en'            => 'reportes',
+            ],
         ];
         foreach ($permissions as $permission) {
             PermissionEmpresa::create([

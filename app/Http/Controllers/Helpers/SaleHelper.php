@@ -36,11 +36,32 @@ use Illuminate\Support\Facades\Log;
 
 class SaleHelper extends Controller {
 
+    static function check_guardad_cuenta_corriente_despues_de_facturar($sale, $instance) {
+        if (UserHelper::hasExtencion('guardad_cuenta_corriente_despues_de_facturar')) {
+            $sale->save_current_acount = 0;
+            $sale->save();
+        }
+    }
+
     static function setPrinted($instance, $sale, $confirmed) {
         if (UserHelper::hasExtencion('check_sales') && $confirmed) {
             $sale->printed = 1;
             $sale->save();
             $instance->sendAddModelNotification('Sale', $sale->id, false);
+        }
+    }
+
+    static function log_client($sale) {
+        $client = $sale->client;
+        if (!is_null($client)) {
+            Log::info('La venta '.$sale->id.' tiene el cliente: '.$client->name.'. Id: '.$client->id);
+        }
+    }
+
+    static function log_articles($sale, $articles) {
+        Log::info('La venta '.$sale->id.' tiene estos articulos:');
+        foreach ($articles as $article) {
+            Log::info('Id: '.$article->id.'. '.$article->name.'. amount: '.$article->pivot->amount.'. checked_amount: '.$article->pivot->checked_amount);
         }
     }
 

@@ -156,7 +156,16 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::post('/current-acount/saldo-inicial', 'CurrentAcountController@saldoInicial');
     Route::delete('/current-acount/{model_name}/{id}', 'CurrentAcountController@delete');
     Route::get('check-saldos/{model_name}/{id}', 'Helpers\CurrentAcountHelper@checkSaldos');
-    
+
+
+    // CurrentAcounts Cheques
+    Route::get('/cheque', 'ChequeController@index');
+
+
+
+    // Reportes
+    Route::get('reportes/{mes_inicio?}/{mes_fin?}', 'ReporteController@index');
+
     // Checks
     Route::get('check/from-date/{from_date?}/{until_date?}', 'CheckController@index');
 
@@ -204,9 +213,18 @@ Route::middleware('auth:sanctum')->group(function() {
 
 
 
-    // ArticlesPreImport
+    // Articles Pre Import
     Route::get('articles-pre-import', 'ArticlesPreImportController@index');
     Route::get('articles-pre-import/from-date/{from_date}/{until_date?}', 'ArticlesPreImportController@index');
+    Route::put('articles-pre-import/update-articles', 'ArticlesPreImportController@updateArticles');
+
+
+    // Articles Pre Import Ranges
+    Route::resource('article-pre-import-range', 'ArticlePreImportRangeController');
+
+
+    // Unidades de medida
+    Route::resource('unidad-medida', 'UnidadMedidaController');
 });
 
 

@@ -21,6 +21,7 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Facades\Excel;
+use Illuminate\Support\Facades\Session;
 
 class ArticleController extends Controller
 {
@@ -176,10 +177,16 @@ class ArticleController extends Controller
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
         $columns = ArticleImportHelper::addAddressesColumns($columns);
-        Log::info('colunbs');
-        Log::info($columns);
-        Excel::import(new ArticleImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id), $request->file('models'));
+        // Log::info('colunbs');
+        // Log::info($columns);
+        Excel::import(new ArticleImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id), $request->file('models'));
+        
         $this->sendUpdateModelsNotification('article');
+
+        $import_history_id = Session::get('import_history_id');
+        $pre_import_id = Session::get('pre_import_id');
+
+        return response()->json(['import_history_id' => $import_history_id, 'pre_import_id' => $pre_import_id], 201);
     }
 
     function export() {

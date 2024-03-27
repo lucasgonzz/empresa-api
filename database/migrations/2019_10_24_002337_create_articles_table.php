@@ -42,13 +42,14 @@ class CreateArticlesTable extends Migration
             $table->integer('provider_price_list_id')->unsigned()->nullable();
             $table->boolean('cost_in_dollars')->default(0)->nullable();
             $table->boolean('provider_cost_in_dollars')->default(0)->nullable();
-            $table->boolean('apply_provider_percentage_gain')->default(1)->nullable();
+            $table->boolean('apply_provider_percentage_gain')->default(1);
             $table->integer('articles_pages')->nullable();
             $table->integer('provider_article_id')->nullable();
             $table->boolean('in_offer')->default(0)->nullable();
             $table->boolean('default_in_vender')->nullable();
             $table->boolean('mercado_libre')->default(true)->nullable();
             $table->timestamp('final_price_updated_at')->nullable();
+            $table->integer('unidad_medida_id')->default(1)->nullable();
             $table->softDeletes();
 
             $table->foreign('user_id')

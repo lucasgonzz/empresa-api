@@ -18,8 +18,8 @@ class CreateImportHistoriesTable extends Migration
             $table->integer('user_id')->unsigned();
             $table->integer('employee_id')->nullable();
             $table->string('model_name');
-            $table->integer('created_models');
-            $table->integer('updated_models');
+            $table->integer('created_models')->default(0);
+            $table->integer('updated_models')->default(0);
             $table->timestamps();
         });
     }

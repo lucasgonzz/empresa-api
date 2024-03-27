@@ -19,6 +19,7 @@ class CreateArticleArticlesPreImportTable extends Migration
             $table->integer('articles_pre_import_id');
             $table->decimal('costo_actual', 18,2)->nullable();
             $table->decimal('costo_nuevo', 18,2)->nullable();
+            $table->boolean('actualizado')->default(0)->nullable();
             $table->timestamps();
         });
     }

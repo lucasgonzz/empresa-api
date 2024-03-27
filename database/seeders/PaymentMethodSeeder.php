@@ -18,15 +18,15 @@ class PaymentMethodSeeder extends Seeder
     public function run()
     {
         $users = User::where('company_name', 'Autopartes Boxes')
-                        ->orWhere('company_name', 'Matias Mayorista')
+                        ->orWhere('company_name', 'Ferretodo')
                         ->get();
         $models = [
             [
                 'name' => 'MercadoPago',
                 'description' => 'Paga Online con tu cuenta de MercadoPago',
                 'payment_method_type_id' => 1,
-                'public_key' => 'TEST-55fdbf12-f638-48a1-a6fe-1dd41c771384',
-                'access_token' => 'TEST-3668585670354328-100112-a353cb99b53860f22fdf7e7b87c4fd8b-163250661',
+                'public_key' => 'TEST-4f17cb64-8711-487f-b5f3-2e363c42c717',
+                'access_token' => 'TEST-8828325407758399-030617-854a278df3d3e7f4b5255a64bc6dca49-163250661',
                 'surchage'  => 100,
             ],
             // [

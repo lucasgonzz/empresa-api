@@ -44,7 +44,7 @@ class BuyerSeeder extends Seeder
     }
 
     function matias() {
-        $user = User::where('company_name', 'Matias Mayorista')
+        $user = User::where('company_name', 'Ferretodo')
                         ->first();
         $marcos = Buyer::create([
             'num'                       => 1,

@@ -349,6 +349,7 @@ class SalePdf extends fpdf {
 		    $this->SetFont('Arial', 'B', 11);
 		    $total_articles = $this->total_articles;
 		    $total_services = $this->total_services;
+
 		    foreach ($this->sale->discounts as $discount) {
 		    	$this->x = $this->start_x;
 		    	$text = '-'.$discount->pivot->percentage.'% '.$discount->name;
@@ -398,6 +399,7 @@ class SalePdf extends fpdf {
 		    	if ($this->sale->surchages_in_services) {
 		    		$total_services += $total_services * floatval($surchage->pivot->percentage) / 100;
 		    	}
+		   		// dd($total_articles);
 		    	$total_with_surchages = $total_articles + $total_services;
 		    	$text .= ' = $'.Numbers::price($total_with_surchages);
 				$this->Cell(

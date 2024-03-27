@@ -68,6 +68,9 @@ class SaleController extends Controller
             'to_check'                          => $request->to_check,
             'user_id'                           => $this->userId(),
         ]);
+
+        SaleHelper::check_guardad_cuenta_corriente_despues_de_facturar($model, $this);
+
         SaleHelper::attachProperies($model, $request);
         SaleProviderOrderHelper::createProviderOrder($model, $this);
         $this->sendAddModelNotification('Sale', $model->id);
@@ -75,6 +78,13 @@ class SaleController extends Controller
         if (!is_null($model->client_id) && is_null($model->current_acount)) {
             Log::info('No se creo cuenta corriente para la venta id '.$model->id);
         }
+
+        Log::info('Se creo la venta num: '.$model->num.' id: '.$model->id.'. $sale->employee_id: '.$model->employee_id.', la sesion la tiene: '.$this->userId(false));
+
+        SaleHelper::log_client($model);
+
+        SaleHelper::log_articles($model, $model->articles);     
+
         return response()->json(['model' => $this->fullModel('Sale', $model->id)], 201);
     }  
 
@@ -86,10 +96,11 @@ class SaleController extends Controller
         $previus_articles = $model->articles;
         Log::info('update a sale N° '.$model->num.'. Id: '.$model->id);
         Log::info('client_id '.$model->client_id);
-        
-        foreach ($previus_articles as $article) {
-            Log::info('Id: '.$article->id.'. '.$article->name);
-        }
+
+        SaleHelper::log_client($model);
+
+        SaleHelper::log_articles($model, $previus_articles);
+
         SaleHelper::detachItems($model);
         
         $previus_client_id                          = $model->client_id;
@@ -119,15 +130,16 @@ class SaleController extends Controller
             SaleHelper::updateCurrentAcountsAndCommissions($model);
         }
 
-        SaleHelper::updatePreivusClient($model, $previus_client_id);
+        // SaleHelper::updatePreivusClient($model, $previus_client_id);
+        if ($previus_client_id != $request->client_id) {
+            Log::info('SE QUISO CAMBIAR EL CLIENTE DE LA VENTA N° '.$model->num.' id '.$model->id.' por el usuario '.Auth()->user()->name.' id '.Auth()->user()->id);
+        }
         $this->sendAddModelNotification('Sale', $model->id);
         SaleHelper::sendUpdateClient($this, $model);
 
-        Log::info('Quedaron estos articulos:');
-        foreach ($model->articles as $article) {
-            Log::info('Id: '.$article->id.'. '.$article->name);
-        }
-        Log::info('Quedo con client_id '.$model->client_id);
+        SaleHelper::log_client($model);
+
+        SaleHelper::log_articles($model, $previus_articles);
 
         return response()->json(['model' => $this->fullModel('Sale', $model->id)], 200);
     }
@@ -135,6 +147,9 @@ class SaleController extends Controller
     public function destroy($id) {
         $model = Sale::find($id);
         Log::info('Se quiere eliminar sale N° '.$model->num.'. id: '.$model->id.'. Por el empleado: '.Auth()->user()->name.', doc: '.Auth()->user()->doc_number);
+        if (!is_null($model->client)) {
+            Log::info('Y pertenece al cliente '.$model->client->name);
+        }
         if (!is_null($model->afip_ticket)) {
             SaleHelper::createNotaCreditoFromDestroy($model);
         } else {
@@ -180,6 +195,7 @@ class SaleController extends Controller
 
     function pdf($id, $with_prices, $with_costs, $confirmed = 0) {
         $sale = Sale::find($id);
+        Log::info('El usuario '.Auth()->user()->name.' id '.Auth()->user()->id.' va a imprimir la venta N° '.$sale->num.' id: '.$sale->id);
         SaleHelper::setPrinted($this, $sale, $confirmed);
         $pdf = new SalePdf($sale, (boolean)$with_prices, (boolean)$with_costs);
     }

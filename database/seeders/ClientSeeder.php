@@ -44,7 +44,7 @@ class ClientSeeder extends Seeder
                 'iva_condition_id'      => 1,
                 'seller_id'             => 1,
                 'user_id'               => $user->id,
-                'comercio_city_user_id' => User::where('company_name', 'Matias Mayorista')->first()->id,
+                'comercio_city_user_id' => User::where('company_name', 'Ferretodo')->first()->id,
             ],
             [
 
@@ -80,7 +80,7 @@ class ClientSeeder extends Seeder
 
     function matias() {
 
-        $user = User::where('company_name', 'Matias Mayorista')
+        $user = User::where('company_name', 'Ferretodo')
                         ->first();
         $models = [
             [

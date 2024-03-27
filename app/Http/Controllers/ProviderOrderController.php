@@ -84,6 +84,7 @@ class ProviderOrderController extends Controller
     public function destroy($id) {
         $model = ProviderOrder::find($id);
         ProviderOrderHelper::deleteCurrentAcount($model);
+        ProviderOrderHelper::resetArticlesStock($model);
         if (!is_null($model->provider)) {
             $model->provider->pagos_checkeados = 0;
             $model->provider->save();

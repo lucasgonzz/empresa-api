@@ -34,14 +34,20 @@ class RecipeSeeder extends Seeder
                 'amount'                        => 1,
             ],
             [
-                'name'                          => 'Kit de Cazoleta con rodamiento Tope Y Fuelle AX044.1654',
+                'name'                          => 'Amortiguadores de Baul 1945NR@1945NR',
                 'order_production_status_id'    => 1,
                 'address_id'                    => 1,
                 'amount'                        => 1,
             ],
             [
-                'name'                          => 'Kit de Buje, Tope Y Fuelle Amortiguador AX044.1142',
+                'name'                          => 'PLACA REGULADOR PH224502',
                 'order_production_status_id'    => 1,
+                'address_id'                    => 1,
+                'amount'                        => 1,
+            ],
+            [
+                'name'                          => 'Batería de auto UB450M',
+                'order_production_status_id'    => 2,
                 'address_id'                    => 1,
                 'amount'                        => 1,
             ],

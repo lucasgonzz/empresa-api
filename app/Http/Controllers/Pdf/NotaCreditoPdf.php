@@ -141,6 +141,7 @@ class NotaCreditoPdf extends fpdf {
 			foreach ($this->model->sale->surchages as $surchage) {
 				$this->total += $this->total * $surchage->pivot->percentage / 100;
 			}
+			// dd($this->model->sale->surchages);
 		}
 		if (count($this->model->articles) >= 1) {
 			$total = $this->total;

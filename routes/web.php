@@ -20,6 +20,13 @@ Route::post('/password-reset/update-password',
 // ------------------------------------------------------------------------------
 
 
+// Registrar nuevo usuario / negocio
+
+Route::get('/register-user/{name}/{doc_number}/{company_name}/{iva_included}/{extencions_id}', 'HelperController@register_user');
+
+
+
+
 // Power Bi
 Route::get('/power-bi/articulos', 'PowerBiController@articulos');
 
@@ -35,6 +42,10 @@ Route::get('/reportes/excel-articulos/{company_name}/{mes}', 'ReporteController@
 
 // Clientes Potenciales
 Route::get('/cliente-potencial/{nombre_negocio}/{email}', 'ClientePotencialController@clientePotencial');
+
+
+// Afip Get Persona 
+Route::get('/get-persona/{cuit}', 'AfipConstanciaInscripcionController@get_constancia_inscripcion');
 
 
 

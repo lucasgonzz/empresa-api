@@ -47,12 +47,12 @@ class OrderSeeder extends Seeder
 
             $articles = [
                 [
-                    'name'          => 'Pintura para cama',
+                    'name'          => 'Prensa Espirales Universal',
                     'amount'        => 10,
                     // 'address_id'    => 1,
                 ],
                 [
-                    'name'          => 'cama una plaza',
+                    'name'          => 'Kit 3 Relojes Orlan Rober Classic Aceite Agua Voltímetro',
                     'amount'        => 1,
                 ],
             ];
@@ -65,6 +65,7 @@ class OrderSeeder extends Seeder
                     'amount'        => $article['amount'],
                     'address_id'    => isset($article['address_id']) ? $article['address_id'] : null,
                     'price'         => $_article->final_price,
+                    'notes'         => 'Esta es una nota bastante larga como para ocupar mucho lugar viste'
                 ]); 
              }     
         }

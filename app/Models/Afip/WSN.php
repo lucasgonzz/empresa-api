@@ -278,11 +278,7 @@ abstract class WSN extends WS
         if ($this->ta_expiration_time < time()) {
             throw new WsnException('El TA está vencido');
         }
-        // $datos = array(
-        //    'token'              => $this->ta_token,
-        //    'sign'               => $this->ta_sign,
-        //    'cuitRepresentada'   => $this->ta_cuit
-        // );
+      
         $datos = array(
             'Auth' => array(
                'Token'              => $this->ta_token,
@@ -290,6 +286,13 @@ abstract class WSN extends WS
                'Cuit'               => $this->ta_cuit
             )
         );
+
+        // $datos = array(
+        //     'token'              => $this->ta_token,
+        //     'sign'               => $this->ta_sign,
+        //     'cuitRepresentada'   => $this->ta_cuit,
+        //     'idPersona'          => '20251231257',
+        // );
 
         // if ($this->for_wsfe) {
         //     $datos = array(

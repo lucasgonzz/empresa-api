@@ -143,19 +143,10 @@ abstract class WS
             // \Illuminate\Support\Facades\Log::info('Entro a crear soap');
             // \Illuminate\Support\Facades\Log::info($this->soap_options);
         }
-        \Illuminate\Support\Facades\Log::info('por entrar');
-        try {
-            \Illuminate\Support\Facades\Log::info('entro');
-            // sleep(5);
-            // \Illuminate\Support\Facades\Log::info('paso sleep');
-            $result = $this->soap_client->$name($arguments[0]);
-            \Illuminate\Support\Facades\Log::info('se ejcuto');
-        } catch (SoapFault $e) {
-            // Manejar el error
-            \Illuminate\Support\Facades\Log::info('WS error:');
-            \Illuminate\Support\Facades\Log::info($e->getMessage());
-            // echo 'Error: ' . $e->getMessage();
-        }
+        \Illuminate\Support\Facades\Log::info('por ejecutar');
+        \Illuminate\Support\Facades\Log::info($arguments[0]);
+        $result = $this->soap_client->$name($arguments[0]);
+        \Illuminate\Support\Facades\Log::info('se ejcuto');
 
         file_put_contents(public_path()."/afip/ws/request-ws.xml",$this->soap_client->__getLastRequest());
         file_put_contents(public_path()."/afip/ws/response-ws.xml",$this->soap_client->__getLastResponse());

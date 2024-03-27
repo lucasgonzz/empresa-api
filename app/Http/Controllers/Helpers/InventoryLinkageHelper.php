@@ -44,10 +44,6 @@ class InventoryLinkageHelper extends Controller {
 		$this->provider_for_client = Provider::where('user_id', $this->inventory_linkage->client->comercio_city_user_id)
 												->where('comercio_city_user_id', $this->user_id)
 												->first();
-		Log::info('setProviderForClient linkage');
-		Log::info($this->inventory_linkage->client->comercio_city_user_id);
-		Log::info($this->user_id);
-		Log::info((array)$this->provider_for_client);
 	}
 
 	function setClientCategories() {
@@ -122,16 +118,19 @@ class InventoryLinkageHelper extends Controller {
 				// Log::info('Buscando article con user_id = '.$client->comercio_city_user_id.' y provider_article_id = '.$article->id);
 				$client_article = Article::where('user_id', $this->client->comercio_city_user_id)
 												->where('provider_article_id', $article->id)
+												->withTrashed()
 												->first();
 				if (!is_null($client_article)) {
 					Log::info('Habia article');
-					Log::info('Costo nuevo: '.$this->getClientArticlePrice($article));
-					$client_article->cost = $this->getClientArticlePrice($article);
-					
-					$client_article->category_id = $this->getClientCategoryId($article);
-					$client_article->sub_category_id = $this->getClientSubCategoryId($article);
-					$client_article->save();
-					ArticleHelper::setFinalPrice($client_article, $this->client->comercio_city_user_id);
+					if (is_null($client_article->deleted_at)) {
+						// Log::info('Costo nuevo: '.$this->getClientArticlePrice($article));
+						$client_article->cost = $this->getClientArticlePrice($article);
+						
+						$client_article->category_id = $this->getClientCategoryId($article);
+						$client_article->sub_category_id = $this->getClientSubCategoryId($article);
+						$client_article->save();
+						ArticleHelper::setFinalPrice($client_article, $this->client->comercio_city_user_id);
+					} 
 				} else {
 					Log::info('No habia article');
 					$client_article = $this->createClientArticle($article);
@@ -241,48 +240,52 @@ class InventoryLinkageHelper extends Controller {
 	}
 
 	function getClientCategoryId($article) {
-		$category = Category::where('user_id', $this->client->comercio_city_user_id)
-							->where('provider_category_id', $article->category_id)
-							->first();
-		if (!is_null($category)) {
-			return $category->id;
-		} else {
-			$provider_category = Category::find($article->category_id);
-			if (!is_null($provider_category)) {
-				$category = Category::create([
-					'num'					=> $this->num('categories', $this->inventory_linkage->client->comercio_city_user_id),
-					'name'					=> $provider_category->name,
-					'image_url'				=> $provider_category->image_url,
-					'user_id'				=> $this->inventory_linkage->client->comercio_city_user_id,
-					'provider_category_id'	=> $provider_category->id,
-				]);
+		if (!is_null($article->category_id)) {
+			$category = Category::where('user_id', $this->client->comercio_city_user_id)
+								->where('provider_category_id', $article->category_id)
+								->first();
+			if (!is_null($category)) {
 				return $category->id;
+			} else {
+				$provider_category = Category::find($article->category_id);
+				if (!is_null($provider_category)) {
+					$category = Category::create([
+						'num'					=> $this->num('categories', $this->inventory_linkage->client->comercio_city_user_id),
+						'name'					=> $provider_category->name,
+						'image_url'				=> $provider_category->image_url,
+						'user_id'				=> $this->inventory_linkage->client->comercio_city_user_id,
+						'provider_category_id'	=> $provider_category->id,
+					]);
+					return $category->id;
+				}
 			}
 		}
 		return null;
 	}
 
 	function getClientSubCategoryId($article) {
-		$sub_category = SubCategory::where('user_id', $this->client->comercio_city_user_id)
-								->where('provider_sub_category_id', $article->sub_category_id)
-								->first();
-		if (!is_null($sub_category)) {
-			return $sub_category->id;
-		} else {
-			$provider_sub_category = SubCategory::find($article->sub_category_id);
-			if (!is_null($provider_sub_category)) {
-
-				$client_category = Category::where('user_id', $this->client->comercio_city_user_id)
-											->where('provider_category_id', $provider_sub_category->category_id)
-											->first();
-				$sub_category = SubCategory::create([
-					'num'						=> $this->num('sub_categories', $this->inventory_linkage->client->comercio_city_user_id),
-					'name'						=> $provider_sub_category->name,
-					'category_id'				=> $client_category->id,
-					'user_id'					=> $this->inventory_linkage->client->comercio_city_user_id,
-					'provider_sub_category_id'	=> $provider_sub_category->id,
-				]);
+		if (!is_null($article->sub_category_id)) {
+			$sub_category = SubCategory::where('user_id', $this->client->comercio_city_user_id)
+									->where('provider_sub_category_id', $article->sub_category_id)
+									->first();
+			if (!is_null($sub_category)) {
 				return $sub_category->id;
+			} else {
+				$provider_sub_category = SubCategory::find($article->sub_category_id);
+				if (!is_null($provider_sub_category)) {
+
+					$client_category = Category::where('user_id', $this->client->comercio_city_user_id)
+												->where('provider_category_id', $provider_sub_category->category_id)
+												->first();
+					$sub_category = SubCategory::create([
+						'num'						=> $this->num('sub_categories', $this->inventory_linkage->client->comercio_city_user_id),
+						'name'						=> $provider_sub_category->name,
+						'category_id'				=> $client_category->id,
+						'user_id'					=> $this->inventory_linkage->client->comercio_city_user_id,
+						'provider_sub_category_id'	=> $provider_sub_category->id,
+					]);
+					return $sub_category->id;
+				}
 			}
 		}
 		return null;

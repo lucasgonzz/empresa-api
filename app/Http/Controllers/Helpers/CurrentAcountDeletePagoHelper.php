@@ -5,12 +5,13 @@ namespace App\Http\Controllers\Helpers;
 use App\Models\CurrentAcount;
 use Illuminate\Support\Facades\Log;
 
-class CUrrentAcountDeletePagoHelper {
+class CurrentAcountDeletePagoHelper {
 		 
 	function __construct($model_name, $pago) {
 		$this->model_name = $model_name;
 		$this->pago = $pago;
 		$this->haber = $pago->haber;
+		Log::info('Entro en CurrentAcountDeletePagoHelper');
 	}
 
 	function deletePago() {
@@ -20,6 +21,7 @@ class CUrrentAcountDeletePagoHelper {
 				if ($current_acount->status == 'pagandose') {
 					$this->haber -= $current_acount->pagandose;
 					$current_acount->pagandose = 0;
+					$current_acount->status = 'sin_pagar';
 					$current_acount->save();
 				} else if ($current_acount->status == 'pagado') {
 					$this->haber -= $current_acount->debe;

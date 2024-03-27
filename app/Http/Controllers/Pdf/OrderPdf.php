@@ -29,9 +29,10 @@ class OrderPdf extends fpdf {
 	function getFields() {
 		return [
 			'C. Barras' => 35,
-			'Nombre' 	=> 75,
+			'Nombre' 	=> 50,
 			'Precio' 	=> 30,
-			'Cantidad'  => 30,
+			'Cantidad'  => 25,
+			'Notas'  	=> 30,
 			'Total' 	=> 30,
 		];
 	}
@@ -110,8 +111,19 @@ class OrderPdf extends fpdf {
 		$this->Cell($this->getFields()['Precio'], $this->line_height, '$'.Numbers::price($model->pivot->price), $this->b, 0, 'L');
 		$this->Cell($this->getFields()['Cantidad'], $this->line_height, $model->pivot->amount, $this->b, 0, 'L');
 
+
+		$this->MultiCell($this->getFields()['Notas'], $this->line_height, $model->pivot->notes, $this->b, 'L', false);
+	    $y_3 = $this->y;
+		$this->x = $this->getFields()['C. Barras']+$this->getFields()['Nombre']+$this->getFields()['C. Barras']+$this->getFields()['Precio']+$this->getFields()['Cantidad']+$this->getFields()['Notas']+5;
+		$this->y = $y_1;
+
 		$this->Cell($this->getFields()['Total'], $this->line_height, '$'.Numbers::price($model->pivot->price * $model->pivot->amount), $this->b, 0, 'L');
-		$this->y = $y_2;
+
+		if ($y_3 > $y_2) {
+			$this->y = $y_3;
+		} else {
+			$this->y = $y_2;
+		}
 
 		$this->Line(5, $this->y, 205, $this->y);
 	}

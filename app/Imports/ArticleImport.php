@@ -5,6 +5,7 @@ namespace App\Imports;
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\ArticlesPreImportHelper;
 use App\Http\Controllers\Helpers\IvaHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
@@ -19,13 +20,14 @@ use App\Models\Provider;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Session;
 use Maatwebsite\Excel\Concerns\ToCollection;
 use Maatwebsite\Excel\Concerns\WithHeadingRow;
 
 class ArticleImport implements ToCollection
 {
     
-    public function __construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id) {
+    public function __construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id) {
         set_time_limit(999999);
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
@@ -33,6 +35,8 @@ class ArticleImport implements ToCollection
         $this->finish_row = $finish_row;
         $this->ct = new Controller();
         $this->provider_id = $provider_id;
+        $this->import_history_id = $import_history_id;
+        $this->pre_import_id = $pre_import_id;
         $this->provider = null;
         $this->created_models = 0;
         $this->updated_models = 0;
@@ -40,7 +44,7 @@ class ArticleImport implements ToCollection
         $this->setProps();
 
         if (UserHelper::hasExtencion('articles_pre_import')) {
-            $this->articles_pre_import_helper = new ArticlesPreImportHelper($this->provider_id);
+            $this->articles_pre_import_helper = new ArticlesPreImportHelper($this->provider_id, $this->pre_import_id);
         }
     }
 
@@ -109,37 +113,29 @@ class ArticleImport implements ToCollection
             $this->num_row++;
         }
         $this->saveImportHistory();
+        return 'hola';
     }
 
     function saveImportHistory() {
-        Log::info('______________________ saveImportHistory ______________________');
-        $current_import_history = ImportHistory::where('user_id', UserHelper::userId())
-                                                ->where('employee_id', UserHelper::userId(false))
-                                                ->where('model_name', 'article')
-                                                ->where('updated_at', '>=', Carbon::now()->subMinutes(3))
-                                                ->first();
+        // Log::info('______________________ saveImportHistory ______________________');
+        if (!is_null($this->import_history_id) && is_numeric($this->import_history_id)) {
+            Log::info('aca:');
+            Log::info($this->import_history_id);
+            $current_import_history = ImportHistory::find($this->import_history_id);
 
-        if (is_null($current_import_history)) {
-            $import_history = ImportHistory::create([
+            $current_import_history->created_models += $this->created_models;
+            $current_import_history->updated_models += $this->updated_models;
+            $current_import_history->save();
+        } else {
+            $current_import_history = ImportHistory::create([
                 'user_id'           => UserHelper::userId(),
                 'employee_id'       => UserHelper::userId(false),
                 'model_name'        => 'article',
                 'created_models'    => $this->created_models,
                 'updated_models'    => $this->updated_models,
             ]);
-            Log::info('No hay ImportHistory, se creo con updated_at = '.$import_history->updated_at);
-        } else {
-            Log::info('Habia ImportHistory');
-            Log::info('created_models '.$current_import_history->created_models);
-            Log::info('updated_models '.$current_import_history->updated_models);
-            $current_import_history->created_models += $this->created_models;
-            $current_import_history->updated_models += $this->updated_models;
-            
-            Log::info('Quedaron en:');
-            Log::info('created_models '.$current_import_history->created_models);
-            Log::info('updated_models '.$current_import_history->updated_models);
-            $current_import_history->save();
-        }
+        } 
+        Session::put('import_history_id', $current_import_history->id);
     }
 
     function saveArticle($row, $article) {
@@ -159,6 +155,9 @@ class ArticleImport implements ToCollection
                 // }
             }
         }
+        if (!ImportHelper::isIgnoredColumn('unidad_medida', $this->columns)) {
+            $data['unidad_medida_id'] = ArticleImportHelper::get_unidad_medida_id(ImportHelper::getColumnValue($row, 'unidad_medida', $this->columns));
+        }
         if (!ImportHelper::isIgnoredColumn('proveedor', $this->columns)) {
             LocalImportHelper::saveProvider(ImportHelper::getColumnValue($row, 'proveedor', $this->columns), $this->ct);
         }
@@ -174,7 +173,7 @@ class ArticleImport implements ToCollection
         
         if (!is_null($article) && $this->isDataUpdated($article, $data)) {
             $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $article->id);
-
+            Log::info('Actualizar '.$article->name);
             if (UserHelper::hasExtencion('articles_pre_import')) {
                 $this->articles_pre_import_helper->add_article($article, $data);
             } else {
@@ -191,16 +190,21 @@ class ArticleImport implements ToCollection
             $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns));
             $data['user_id'] = UserHelper::userId();
             $data['created_at'] = Carbon::now()->subSeconds($this->finish_row - $this->num_row);
+            $data['apply_provider_percentage_gain'] = 1;
             $article = Article::create($data);
             $this->created_models++;
         } 
-        $this->setDiscounts($row, $article);
-        $this->setProvider($row, $article);
+        if (!is_null($article)) {
+            Log::info('Entro con '.$article->name);
+            $this->setDiscounts($row, $article);
+            $this->setProvider($row, $article);
+            Log::info('El provider quedo en '.$article->provider_id);
 
-        $this->setStockAddresses($row, $article);
-        $this->setStockMovement($row, $article);
+            $this->setStockAddresses($row, $article);
+            $this->setStockMovement($row, $article);
 
-        ArticleHelper::setFinalPrice($article);
+            ArticleHelper::setFinalPrice($article);
+        }
     }
 
     function isDataUpdated($article, $data) {
@@ -263,10 +267,10 @@ class ArticleImport implements ToCollection
                         $request->amount = $new_amount;
                         $this->stock_movement_ct->store($request);
                     } else {
-                        Log::info('No se actualizo porque no hubo ningun cambio');
+                        // Log::info('No se actualizo porque no hubo ningun cambio');
                     }
                 }
-                Log::info('---------------------------------');
+                // Log::info('---------------------------------');
             }
         }
         if ($set_stock_from_addresses) {
@@ -283,7 +287,7 @@ class ArticleImport implements ToCollection
             $request->from_excel_import = true;
             $request->amount = $stock_actual - $article->stock;
             $this->stock_movement_ct->store($request);
-            Log::info('se mando a guardar stock_movement de '.$article->name.' con amount = '.$request->amount);
+            // Log::info('se mando a guardar stock_movement de '.$article->name.' con amount = '.$request->amount);
         } 
     }
 
@@ -302,10 +306,18 @@ class ArticleImport implements ToCollection
 
     function setProvider($row, $article) {
         if ($this->provider_id != 0 || !is_null(ImportHelper::getColumnValue($row, 'proveedor', $this->columns))) {
+            $provider_id = null;
             if ($this->provider_id != 0) {
                 $provider_id = $this->provider_id;
             } else {
                 $provider_id = $this->ct->getModelBy('providers', 'name', ImportHelper::getColumnValue($row, 'proveedor', $this->columns), true, 'id');
+            }
+
+            Log::info('setProvider provider_id: '.$provider_id);
+
+            if (!is_null($provider_id)) {
+                $article->provider_id = $provider_id;
+                $article->save();
             }
             // if ($article->provider_id != $provider_id) {
             //     $article->provider_id = $provider_id;

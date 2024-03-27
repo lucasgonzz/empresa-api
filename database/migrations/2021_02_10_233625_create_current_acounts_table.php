@@ -37,6 +37,8 @@ class CreateCurrentAcountsTable extends Migration
 
             $table->integer('user_id')->unsigned()->nullable();
 
+            $table->integer('numero_orden_de_compra')->nullable();
+
             $table->bigInteger('client_id')->unsigned()->nullable();
             // $table->foreign('client_id')->references('id')->on('clients');
             $table->bigInteger('commissioner_id')->unsigned()->nullable();

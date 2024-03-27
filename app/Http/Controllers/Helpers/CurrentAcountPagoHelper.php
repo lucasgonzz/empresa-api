@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\SellerCommissionHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Check;
 use App\Models\CurrentAcount;
 use Carbon\Carbon;
@@ -31,7 +32,7 @@ class CurrentAcountPagoHelper {
             $this->sin_pagar = CurrentAcount::find($this->pago->to_pay_id);
         } else {
             $this->sin_pagar = CurrentAcount::where($this->model_name.'_id', $this->model_id)
-                                            ->where('status', 'sin_pagar')
+                                            ->whereIn('status', ['sin_pagar', 'pagandose'])
                                             // ->where('created_at', '<', $this->pago->created_at)
                                             ->orderBy('created_at', 'ASC')
                                             ->first();
@@ -62,6 +63,7 @@ class CurrentAcountPagoHelper {
             SellerCommissionHelper::checkCommissionStatus($this->sin_pagar, $this->pago);
         } else {
             $this->sin_pagar->pagandose += $this->fondos;
+            $this->sin_pagar->status = 'pagandose';
             $this->savePagadoPor($this->fondos);
             $this->fondos = 0;
         }
@@ -108,6 +110,7 @@ class CurrentAcountPagoHelper {
                                                         'num'                           => $payment_method['num'],
                                                         'credit_card_id'                => $payment_method['credit_card_id'] != 0 ? $payment_method['credit_card_id'] : null,
                                                         'credit_card_payment_plan_id' => $payment_method['credit_card_payment_plan_id'] != 0 ? $payment_method['credit_card_payment_plan_id'] : null,
+                                                        'user_id'   => UserHelper::userId(),
                                                     ]);
         }
     }

@@ -19,6 +19,7 @@ class CreateCurrentAcountCurrentAcountPaymentMethodTable extends Migration
             $table->integer('current_acount_payment_method_id')->unsigned();
             $table->integer('credit_card_id')->nullable()->unsigned();
             $table->integer('credit_card_payment_plan_id')->nullable()->unsigned();
+            $table->integer('user_id')->nullable();
             $table->decimal('amount', 14,2)->nullable();
             $table->string('bank')->nullable();
             $table->timestamp('payment_date')->nullable();

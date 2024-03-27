@@ -31,6 +31,16 @@ class BuyerController extends Controller
         return response()->json(['model' => $this->fullModel('Buyer', $model->id)], 201);
     }  
 
+    public function update(Request $request, $id) {
+        $model = Buyer::find($id);
+        $model->name      = $request->name;
+        $model->email     = $request->email;
+        $model->phone     = $request->phone;
+        $model->save();
+        // $this->sendAddModelNotification('Buyer', $model->id);
+        return response()->json(['model' => $this->fullModel('Buyer', $model->id)], 201);
+    }  
+
     public function show($id) {
         return response()->json(['model' => $this->fullModel('Buyer', $id)], 200);
     }

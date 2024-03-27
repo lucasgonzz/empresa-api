@@ -63,13 +63,91 @@ class ProviderSeeder extends Seeder
                 'comercio_city_user_id' => 1,
             ],
         ];
+        // $models = [
+        //     [
+        //         'num'               => 1,
+        //         'name'              => 'Bermon',
+        //         'percentage_gain'   => 30,
+        //         'email'             => null,
+        //         'address'           => '',
+        //         'user_id'           => 500,
+        //         'comercio_city_user_id' => null,
+        //     ],
+        //     [
+        //         'num'               => 2,
+        //         'name'              => 'CORTIFER',
+        //         'percentage_gain'   => 30,
+        //         'email'             => null,
+        //         'address'           => '',
+        //         'user_id'           => 500,
+        //         'comercio_city_user_id' => null,
+        //     ],
+        //     [
+        //         'num'               => 3,
+        //         'name'              => 'ELECTROMARTINS',
+        //         'percentage_gain'   => 30,
+        //         'email'             => null,
+        //         'address'           => '',
+        //         'user_id'           => 500,
+        //         'comercio_city_user_id' => null,
+        //     ],
+        //     [
+        //         'num'               => 2,
+        //         'name'              => 'EZETA',
+        //         'percentage_gain'   => 30,
+        //         'email'             => null,
+        //         'address'           => '',
+        //         'user_id'           => 500,
+        //         'comercio_city_user_id' => null,
+        //     ],
+        //     [
+        //         'num'               => 2,
+        //         'name'              => 'LESSA',
+        //         'percentage_gain'   => 30,
+        //         'email'             => null,
+        //         'address'           => '',
+        //         'user_id'           => 500,
+        //         'comercio_city_user_id' => null,
+        //     ],
+
+        //     [
+        //         'num'               => 2,
+        //         'name'              => 'PEREZ',
+        //         'percentage_gain'   => 30,
+        //         'email'             => null,
+        //         'address'           => '',
+        //         'user_id'           => 500,
+        //         'comercio_city_user_id' => null,
+        //     ],
+
+        //     [
+        //         'num'               => 2,
+        //         'name'              => 'RERAR',
+        //         'percentage_gain'   => 30,
+        //         'email'             => null,
+        //         'address'           => '',
+        //         'user_id'           => 500,
+        //         'comercio_city_user_id' => null,
+        //     ],
+
+        //     [
+        //         'num'               => 2,
+        //         'name'              => 'SABATINO',
+        //         'percentage_gain'   => 30,
+        //         'email'             => null,
+        //         'address'           => '',
+        //         'user_id'           => 500,
+        //         'comercio_city_user_id' => null,
+        //     ],
+
+        // ];
         foreach ($models as $model) {
             Provider::create($model);
         }
     }
 
     function matias() {
-        $user = User::where('company_name', 'matias mayorista')->first();
+        $user = User::where('company_name', 'Ferretodo')->first();
         $lucas_user = User::where('company_name', 'Autopartes Boxes')->first();
         $lucas_provider = Provider::create([
             'num'                   => 1,

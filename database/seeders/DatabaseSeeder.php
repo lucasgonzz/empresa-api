@@ -29,7 +29,11 @@ class DatabaseSeeder extends Seeder
             $this->call(BudgetStatusSeeder::class);
         } else {
             $this->call(ExtencionSeeder::class);
+
+            $this->call(ArticlePreImportRangeSeeder::class);
+
             // $this->call(PermissionsTableSeeder::class);
+            $this->call(UnidadMedidaSeeder::class);
             $this->call(PermissionSeeder::class);
             // $this->call(FeaturesSeeder::class);
             $this->call(PlanFeatureSeeder::class);
@@ -52,7 +56,7 @@ class DatabaseSeeder extends Seeder
             $this->call(BuyerSeeder::class);
             $this->call(DiscountSeeder::class);
             $this->call(SurchageSeeder::class);
-            $this->call(SaleTypeSeeder::class);
+            // $this->call(SaleTypeSeeder::class);
             $this->call(CommissionSeeder::class);
             // $this->call(CurrentAcountSeeder::class);
             // $this->call(ScheduleSeeder::class);
@@ -60,6 +64,7 @@ class DatabaseSeeder extends Seeder
 
             $this->call(MeLiOrderSeeder::class);
             
+            $this->call(ProviderOrderSeeder::class);
             // $this->call(EmployeeSeeder::class);
             // $this->call(SaleSeeder::class);
             // $this->call(WorkdaySeeder::class);
@@ -76,7 +81,7 @@ class DatabaseSeeder extends Seeder
             // $this->call(LocationSeeder::class);
             $this->call(PaymentMethodTypeSeeder::class);
             // $this->call(CuponSeeder::class);
-            $this->call(PriceTypeSeeder::class);
+            // $this->call(PriceTypeSeeder::class);
             $this->call(BudgetStatusSeeder::class);
             $this->call(BudgetSeeder::class);
             $this->call(RecipeSeeder::class);
@@ -85,14 +90,13 @@ class DatabaseSeeder extends Seeder
             // $this->call(CreditCardSeeder::class);
             // $this->call(CreditCardPaymentPlanSeeder::class);
             $this->call(UpdateFeatureSeeder::class);
-            // $this->call(OrderSeeder::class);
+            $this->call(OrderSeeder::class);
             $this->call(InventoryLinkageScopeSeeder::class);
             $this->call(InventoryLinkageSeeder::class);
             // $this->call(AfipTicketSeeder::class);
             // $this->call(ArticlePropertyTypeSeeder::class);
             // $this->call(ArticlePropertyValueSeeder::class);
             // $this->call(ArticlePropertySeeder::class);
-            // $this->call(ProviderOrderSeeder::class);
             // $this->call(CartSeeder::class);
             $this->call(MessageSeeder::class);
             $this->call(ArticleTicketInfoSeeder::class);

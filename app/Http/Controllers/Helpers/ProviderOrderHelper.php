@@ -88,8 +88,11 @@ class ProviderOrderHelper {
 			if ($data_changed && $article->status == 'active') {
 				$article->save();
 				ArticleHelper::setFinalPrice($article);
-				$ct = new Controller();
-	        	$ct->sendAddModelNotification('article', $article->id, false);
+
+				if (env('APP_ENV') == 'production') {
+					$ct = new Controller();
+		        	$ct->sendAddModelNotification('article', $article->id, false);
+				}
 			}
 		}
 	}
@@ -260,10 +263,10 @@ class ProviderOrderHelper {
 						if (!is_null($provider_order->provider->dolar)) {
 							$cost *= $provider_order->provider->dolar;
 						} else if (!is_null($user->dollar)) {
-							Log::info('cost esta en '.$cost);
-							Log::info('sumando dolar de usuario de '.$user->dollar);
+							// Log::info('cost esta en '.$cost);
+							// Log::info('sumando dolar de usuario de '.$user->dollar);
 							$cost *= $user->dollar;
-							Log::info('cost quedo en '.$cost);
+							// Log::info('cost quedo en '.$cost);
 						}
 					}
 					$total_article = $cost * $article->pivot->received;
@@ -300,6 +303,28 @@ class ProviderOrderHelper {
 			}
 		}
 		return $provider_orders;
+	}
+
+	static function resetArticlesStock($provider_order) {
+		foreach ($provider_order->articles as $article) {
+
+			$ct_stock_movement = new StockMovementController();
+
+			$amount = -$article->pivot->received;
+
+	        $request = new \Illuminate\Http\Request();
+
+	        $request->model_id = $article->id;
+
+			if (count($article->addresses) >= 1 && $article->pivot->address_id) {
+	            $request->to_address_id = $article->pivot->address_id;
+			} 
+
+			$request->amount = $amount;
+			$request->provider_id = $provider_order->provider_id;
+			$request->concepto = 'Eliminacion Pedido Prov N° '.$provider_order->num;
+	        $ct_stock_movement->store($request);
+		}
 	}
 
 }

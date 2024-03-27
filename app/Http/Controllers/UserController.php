@@ -45,7 +45,10 @@ class UserController extends Controller
 
     function update(Request $request, $id) {
         $model = Auth()->user();
+
         $current_dolar                          = $model->dollar;
+        $current_iva_included                   = $model->iva_included;
+
         $model->name                            = $request->name;
         $model->doc_number                      = $request->doc_number;
         $model->dollar                          = $request->dollar;
@@ -62,6 +65,7 @@ class UserController extends Controller
 
         $model->save();
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_dolar, $request->dollar);
+        GeneralHelper::checkNewValuesForArticlesPrices($this, $current_iva_included, $request->iva_included);
         $model = UserHelper::getFullModel();
         return response()->json(['model' => $model], 200);
     }
