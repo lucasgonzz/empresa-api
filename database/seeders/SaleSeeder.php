@@ -25,7 +25,70 @@ class SaleSeeder extends Seeder
      */
     public function run()
     {
-        $this->pagos();
+
+        $this->ventas_sin_pagar();
+
+        // $this->pagos();
+    }
+
+    function ventas_sin_pagar() {
+        $user = User::where('company_name', 'Autopartes Boxes')->first();
+
+        $models = [
+            [
+                'num'           => 1,
+                'client_id'     => 1,
+                'employee_id'   => 3,
+                'save_current_acount'   => 1,
+                'user_id'       => $user->id,
+            ],
+            [
+                'num'           => 2,
+                'client_id'     => 1,
+                'employee_id'   => 504,
+                'save_current_acount'   => 1,
+                'user_id'       => $user->id,
+            ],
+            [
+                'num'           => 3,
+                'client_id'     => 1,
+                'employee_id'   => 503,
+                'save_current_acount'   => 1,
+                'user_id'       => $user->id,
+            ],
+            [
+                'num'           => 4,
+                'client_id'     => 1,
+                'employee_id'   => 504,
+                'save_current_acount'   => 1,
+                'user_id'       => $user->id,
+            ],
+            [
+                'num'           => 5,
+                'client_id'     => 1,
+                'employee_id'   => 504,
+                'save_current_acount'   => 1,
+                'user_id'       => $user->id,
+            ],
+            [
+                'num'           => 6,
+                'client_id'     => 1,
+                'employee_id'   => 504,
+                'save_current_acount'   => 1,
+                'user_id'       => $user->id,
+            ],
+        ];
+
+        for ($dias=5; $dias >= 0 ; $dias--) { 
+
+            $model = $models[$dias];
+
+            $model['created_at'] = Carbon::now()->subDays($dias);
+
+            $sale = Sale::create($model);
+
+            SaleHelper::attachProperies($sale, $this->setRequest($sale));
+        }
     }
 
     function pagos() {

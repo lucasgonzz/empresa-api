@@ -31,6 +31,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $article->discounts_formated,
             $article->price,
             $this->getCostInDollars($article),
+            $this->getUnidadMedida($article),
             $article->final_price,
             $article->created_at,
             $article->updated_at,
@@ -83,6 +84,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             'Descuentos',
             'Precio',
             'Moneda',
+            'Unidad medida',
             'Precio Final',
             'Ingresado',
             'Actualizado',
@@ -98,6 +100,13 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             return 'USD';
         }
         return 'ARS';
+    }
+
+    function getUnidadMedida($article) {
+        if (!is_null($article->unidad_medida)) {
+            return $article->unidad_medida->name;
+        }
+        return null;
     }
 
     function setDiscounts($articles) {

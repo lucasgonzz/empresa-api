@@ -13,6 +13,17 @@ class DatabaseSeeder extends Seeder
      */
     public function run()
     {
+        // $this->call(ExtencionSeeder::class);
+        // $this->call(PermissionSeeder::class);
+        // $this->call(IvaSeeder::class);
+        // $this->call(IvaConditionSeeder::class);
+        // $this->call(CurrentAcountPaymentMethodSeeder::class);
+        // $this->call(BudgetStatusSeeder::class);
+        // $this->call(ProviderOrderStatusSeeder::class);
+        // $this->call(OrderStatusSeeder::class);
+
+        // return;
+
         if (env('FOR_SERVER') == 'la_barraca') {
             $this->call(UserSeeder::class);
             $this->call(ExtencionSeeder::class);
@@ -66,7 +77,7 @@ class DatabaseSeeder extends Seeder
             
             $this->call(ProviderOrderSeeder::class);
             // $this->call(EmployeeSeeder::class);
-            // $this->call(SaleSeeder::class);
+            $this->call(SaleSeeder::class);
             // $this->call(WorkdaySeeder::class);
             // $this->call(ConditionSeeder::class);
             $this->call(TitleSeeder::class);

@@ -64,6 +64,8 @@ class UserSeeder extends Seeder
                     'instagram'                     => 'https://www.instagram.com/lucasgonzz/',
                     'facebook'                      => 'https://www.facebook.com',
                 ],
+                'base_de_datos'                     => 'empresa_prueba_1',
+                'google_custom_search_api_key'      => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
             ],
             [
                 'id'                            => 501,
@@ -104,6 +106,7 @@ class UserSeeder extends Seeder
                     'instagram'                     => 'https://www.instagram.com/lucasgonzz/',
                     'facebook'                      => 'https://www.facebook.com',
                 ],
+                'base_de_datos'                     => 'empresa_prueba_2',
             ],
             [
                 'name'              => 'Marcos',
@@ -202,11 +205,15 @@ class UserSeeder extends Seeder
                 'total_a_pagar'                 => isset($model['total_a_pagar']) ? $model['total_a_pagar'] : null,
                 'app_url'                       => isset($model['app_url']) ? $model['app_url'] : null,
                 'iva_included'                  => 1,
+                'base_de_datos'                 => isset($model['base_de_datos']) ? $model['base_de_datos'] : null,
+                'google_custom_search_api_key'                 => isset($model['google_custom_search_api_key']) ? $model['google_custom_search_api_key'] : null,
+                'dias_alertar_empleados_ventas_no_cobradas'        => 1,
+                'dias_alertar_administradores_ventas_no_cobradas'  => 2,
             ]);
             if (is_null($user->owner_id)) {
 
                 // $user->extencions()->attach([1,2,5,6,8,9,10,13]);
-                $user->extencions()->attach([6,2,9, 15, 17, 18, 19]);
+                $user->extencions()->attach([6,2,9, 15, 17, 18, 19, 20]);
                 // $user->extencions()->attach([1,2,5,6,8,9,10,12,13,14,16,17]);
                 UserConfiguration::create([
                     'current_acount_pagado_details'         => 'Saldado',

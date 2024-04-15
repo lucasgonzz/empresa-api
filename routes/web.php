@@ -22,7 +22,9 @@ Route::post('/password-reset/update-password',
 
 // Registrar nuevo usuario / negocio
 
-Route::get('/register-user/{name}/{doc_number}/{company_name}/{iva_included}/{extencions_id}', 'HelperController@register_user');
+Route::get('/register-user/{name}/{doc_number}/{company_name}/{iva_included}/{extencions_id}/{database?}', 'HelperController@register_user');
+
+// api-pets.comerciocity.com/public/register-user/Mariano/123/Pets/0/6-9
 
 
 

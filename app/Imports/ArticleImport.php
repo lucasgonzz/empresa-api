@@ -43,6 +43,8 @@ class ArticleImport implements ToCollection
         $this->setAddresses();
         $this->setProps();
 
+        $this->import_history_chequeado = false;
+
         if (UserHelper::hasExtencion('articles_pre_import')) {
             $this->articles_pre_import_helper = new ArticlesPreImportHelper($this->provider_id, $this->pre_import_id);
         }
@@ -106,36 +108,45 @@ class ArticleImport implements ToCollection
                                             ->first();
                         $this->saveArticle($row, $article);
                     }
+                } else {
+                    Log::info('Se omitio una fila');
                 } 
             } else if ($this->num_row > $this->finish_row) {
                 break;
             }
             $this->num_row++;
         }
-        $this->saveImportHistory();
-        return 'hola';
+
+        if (!$this->import_history_chequeado) {
+            $this->saveImportHistory();
+        }
     }
 
     function saveImportHistory() {
-        // Log::info('______________________ saveImportHistory ______________________');
+        Log::info('______________________ saveImportHistory ______________________');
         if (!is_null($this->import_history_id) && is_numeric($this->import_history_id)) {
-            Log::info('aca:');
-            Log::info($this->import_history_id);
+            // Log::info('aca:');
+            // Log::info($this->import_history_id);
             $current_import_history = ImportHistory::find($this->import_history_id);
 
             $current_import_history->created_models += $this->created_models;
             $current_import_history->updated_models += $this->updated_models;
             $current_import_history->save();
+
+            Log::info('Se actualizo import_history');
         } else {
             $current_import_history = ImportHistory::create([
                 'user_id'           => UserHelper::userId(),
                 'employee_id'       => UserHelper::userId(false),
                 'model_name'        => 'article',
+                'provider_id'       => $this->provider_id,
                 'created_models'    => $this->created_models,
                 'updated_models'    => $this->updated_models,
             ]);
+            Log::info('Se creo import_history');
         } 
         Session::put('import_history_id', $current_import_history->id);
+        $this->import_history_chequeado = true;
     }
 
     function saveArticle($row, $article) {
@@ -163,6 +174,8 @@ class ArticleImport implements ToCollection
         }
         if (!ImportHelper::isIgnoredColumn('iva', $this->columns)) {
             $data['iva_id'] = LocalImportHelper::getIvaId(ImportHelper::getColumnValue($row, 'iva', $this->columns));
+        } else {
+            $data['iva_id'] = 2;
         }
         if (!ImportHelper::isIgnoredColumn('categoria', $this->columns)) {
             $data['category_id'] = LocalImportHelper::getCategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), $this->ct);
@@ -173,7 +186,7 @@ class ArticleImport implements ToCollection
         
         if (!is_null($article) && $this->isDataUpdated($article, $data)) {
             $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $article->id);
-            Log::info('Actualizar '.$article->name);
+            // Log::info('Actualizar '.$article->name);
             if (UserHelper::hasExtencion('articles_pre_import')) {
                 $this->articles_pre_import_helper->add_article($article, $data);
             } else {
@@ -195,10 +208,10 @@ class ArticleImport implements ToCollection
             $this->created_models++;
         } 
         if (!is_null($article)) {
-            Log::info('Entro con '.$article->name);
+            // Log::info('Entro con '.$article->name);
             $this->setDiscounts($row, $article);
             $this->setProvider($row, $article);
-            Log::info('El provider quedo en '.$article->provider_id);
+            // Log::info('El provider quedo en '.$article->provider_id);
 
             $this->setStockAddresses($row, $article);
             $this->setStockMovement($row, $article);
@@ -238,7 +251,7 @@ class ArticleImport implements ToCollection
         foreach ($this->addresses as $address) {
             $address_excel = (float)ImportHelper::getColumnValue($row, $address->street, $this->columns);
             if (!is_null($address_excel) && $address_excel != 0) {
-                Log::info('Columna '.$address->street.' para articulo '.$article->name.' vino con '.$address_excel);
+                // Log::info('Columna '.$address->street.' para articulo '.$article->name.' vino con '.$address_excel);
                 $request = new \Illuminate\Http\Request();
                 $request->model_id = $article->id;
                 $request->to_address_id = $address->id;
@@ -313,7 +326,7 @@ class ArticleImport implements ToCollection
                 $provider_id = $this->ct->getModelBy('providers', 'name', ImportHelper::getColumnValue($row, 'proveedor', $this->columns), true, 'id');
             }
 
-            Log::info('setProvider provider_id: '.$provider_id);
+            // Log::info('setProvider provider_id: '.$provider_id);
 
             if (!is_null($provider_id)) {
                 $article->provider_id = $provider_id;

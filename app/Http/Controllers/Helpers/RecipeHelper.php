@@ -12,7 +12,9 @@ class RecipeHelper {
 
 	static function attachArticles($recipe, $articles) {
 		$recipe->articles()->sync([]);
+		Log::info('vinieron '.count($articles).' articulos a recipe');
 		foreach ($articles as $article) {
+			Log::info($article['name']);
 			if ($article['status'] == 'inactive') {
 				$art = Article::find($article['id']);
 				$art->bar_code = $article['bar_code'];

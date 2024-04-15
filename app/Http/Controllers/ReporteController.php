@@ -41,8 +41,8 @@ class ReporteController extends Controller
 
         $metodos_de_pago_cc = $this->get_ingresos_pagos_de_cuentas_corrientes($mes_inicio, $mes_fin);
 
-        Log::info('metodos_de_pago_cc');
-        Log::info($metodos_de_pago_cc);
+        // Log::info('metodos_de_pago_cc');
+        // Log::info($metodos_de_pago_cc);
 
         /* 
             Aca sumo los totales de los metodos de pago de lo vendido en mostrador
@@ -320,6 +320,8 @@ class ReporteController extends Controller
 
     function get_payment_methods() {
         $current_acount_payment_methods = CurrentAcountPaymentMethod::all();
+
+        $metodos_de_pago = [];
 
         foreach ($current_acount_payment_methods as $payment_method) {
             $metodos_de_pago[$payment_method->id] = [

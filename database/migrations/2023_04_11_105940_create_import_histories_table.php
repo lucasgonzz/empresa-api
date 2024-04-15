@@ -20,6 +20,7 @@ class CreateImportHistoriesTable extends Migration
             $table->string('model_name');
             $table->integer('created_models')->default(0);
             $table->integer('updated_models')->default(0);
+            $table->integer('provider_id')->nullable();
             $table->timestamps();
         });
     }

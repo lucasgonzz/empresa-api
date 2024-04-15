@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Pdf;
 
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 
 class AfipQrPdf {
@@ -25,7 +26,9 @@ class AfipQrPdf {
 		];
 		$afip_link = 'https://www.afip.gob.ar/fe/qr/?'.base64_encode(json_encode($data));
 		$url = "http://chart.googleapis.com/chart?chs=200x200&cht=qr&chl=$afip_link&.png";
-        $instance->Image($url, 0, $instance->y, 50);
+		if (GeneralHelper::file_exists_2($url)) {
+        	$instance->Image($url, 0, $instance->y, 50);
+		}
 
         // $start_y =+ 10;
         // dd($start_y);

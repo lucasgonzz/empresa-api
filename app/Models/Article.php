@@ -45,6 +45,10 @@ class Article extends Model
         }
     }
 
+    function unidad_medida() {
+        return $this->belongsTo(UnidadMedida::class);
+    }
+
     function stock_movements() {
         return $this->hasMany(StockMovement::class);
     }

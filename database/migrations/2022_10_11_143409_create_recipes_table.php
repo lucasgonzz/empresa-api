@@ -19,6 +19,7 @@ class CreateRecipesTable extends Migration
             $table->integer('article_id')->unsigned();
             $table->boolean('article_cost_from_recipe')->nullable();
             $table->integer('address_id')->nullable();
+            $table->text('observations')->nullable();
             $table->integer('user_id')->unsigned();
             $table->timestamps();
         });

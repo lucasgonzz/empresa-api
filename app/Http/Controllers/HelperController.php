@@ -34,6 +34,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Maatwebsite\Excel\Facades\Excel;
+use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\DB;
 
 class HelperController extends Controller
 {
@@ -42,8 +44,9 @@ class HelperController extends Controller
         $this->{$method}();
     }
 
-    function register_user($name, $doc_number, $company_name, $iva_included, $extencions_id) {
-        $user = User::create([
+    function register_user($name, $doc_number, $company_name, $iva_included, $extencions_id, $database = null) {
+
+        $data = [
             'name'                  => $name,
             'doc_number'            => $doc_number,
             'company_name'          => $company_name,
@@ -51,10 +54,27 @@ class HelperController extends Controller
             'password'              => bcrypt('123'),
             'password'              => bcrypt('123'),
             'download_articles'     => 1,
-        ]);
+            'base_de_datos'         => $database,
+        ];
+
+        $this->store_user($data, $extencions_id);
+        echo 'Usuario creado en la base de datos principal </br>';
+
+
+        // Config::set('database.connections.mysql.database', $database);
+        // DB::purge('mysql');
+        // DB::reconnect('mysql');
+
+        // $this->store_user($data, $extencions_id);
+
+        echo 'Usuario creado en la base de datos: '.$database;
+    }
+
+    function store_user($data, $extencions_id) {
+
+        $user = User::create($data);
 
         $user->extencions()->attach(explode('-', $extencions_id));
-
 
         UserConfiguration::create([
             'current_acount_pagado_details'         => 'Saldado',
@@ -64,8 +84,6 @@ class HelperController extends Controller
             'can_make_afip_tickets'                 => 1,
             'user_id'                               => $user->id,
         ]);
-
-        echo 'Usuario creado correctamente';
     }
 
     function set_cheques_user_id() {
@@ -629,12 +647,37 @@ class HelperController extends Controller
 
     function recaulculateCurrentAcounts($company_name) {
         $user = User::where('company_name', $company_name)->first();
+        $clients = Client::where('user_id', $user->id)
+                            ->get();
+        foreach ($clients as $client) {
+            echo 'Cliente '.$client->name.' </br>';
+            CurrentAcountHelper::checkSaldos('client', $client->id);
+            CurrentAcountHelper::checkPagos('client', $client->id, true);
+            foreach ($client->current_acounts as $current_acount) {
+                echo 'CC del '.date_format($current_acount->created_at, 'd/m/Y').' </br>';
+                if (!is_null($current_acount->debe)) {
+                    if (!is_null($current_acount->sale_id)) {
+                        $current_acount->detalle = 'Venta N°'.$current_acount->sale->num;
+                    } else {
+                        $current_acount->detalle = 'Nota debito';
+                    }
+                } else if (!is_null($current_acount->haber)) {
+                    if ($current_acount->status == 'nota_credito') {
+                        $current_acount->detalle = 'Nota Credito N°'.$current_acount->num_receipt;
+                    } else {
+                        $current_acount->detalle = 'Pago N°'.$current_acount->num_receipt;
+                    }
+                }
+                $current_acount->save();
+            }
+        }
+        return;
         $providers = Provider::where('user_id', $user->id)
                             ->get();
         foreach ($providers as $provider) {
             echo 'Proveedor '.$provider->name.' </br>';
             CurrentAcountHelper::checkSaldos('provider', $provider->id);
-            CurrentAcountHelper::checkPagos('provider', $provider->id);
+            CurrentAcountHelper::checkPagos('provider', $provider->id, true);
             foreach ($provider->current_acounts as $current_acount) {
                 echo 'CC del '.date_format($current_acount->created_at, 'd/m/Y').' </br>';
                 if (!is_null($current_acount->debe)) {
@@ -654,30 +697,6 @@ class HelperController extends Controller
             }
         }
         return;
-        $clients = Client::where('user_id', $user->id)
-                            ->get();
-        foreach ($clients as $client) {
-            echo 'Cliente '.$client->name.' </br>';
-            CurrentAcountHelper::checkSaldos('client', $client->id);
-            CurrentAcountHelper::checkPagos('client', $client->id);
-            foreach ($client->current_acounts as $current_acount) {
-                echo 'CC del '.date_format($current_acount->created_at, 'd/m/Y').' </br>';
-                if (!is_null($current_acount->debe)) {
-                    if (!is_null($current_acount->sale_id)) {
-                        $current_acount->detalle = 'Venta N°'.$current_acount->sale->num;
-                    } else {
-                        $current_acount->detalle = 'Nota debito';
-                    }
-                } else if (!is_null($current_acount->haber)) {
-                    if ($current_acount->status == 'nota_credito') {
-                        $current_acount->detalle = 'Nota Credito N°'.$current_acount->num_receipt;
-                    } else {
-                        $current_acount->detalle = 'Pago N°'.$current_acount->num_receipt;
-                    }
-                }
-                $current_acount->save();
-            }
-        }
     }
 
 
@@ -694,43 +713,43 @@ class HelperController extends Controller
             ];
         } else {
             $_models = [
-                [
-                    'model_name' => 'condition',
-                ],  
-                [
-                    'model_name' => 'title',
-                ],  
-                [
-                    'model_name' => 'location',
-                ],
-                [
-                    'model_name' => 'size',
-                ],
-                [
-                    'model_name' => 'deposit',
-                ],
-                [
-                    'model_name' => 'discount',
-                ],
-                [
-                    'model_name' => 'surchage',
-                ],
-                [
-                    'model_name' => 'price_type',
-                ],
-                [
-                    'model_name' => 'recipe',
-                ],
-                [
-                    'model_name' => 'buyer',
-                ],
-                [
-                    'model_name' => 'address',
-                    'plural'     => 'addresses',
-                ],
-                [
-                    'model_name' => 'sale',
-                ],
+                // [
+                //     'model_name' => 'condition',
+                // ],  
+                // [
+                //     'model_name' => 'title',
+                // ],  
+                // [
+                //     'model_name' => 'location',
+                // ],
+                // [
+                //     'model_name' => 'size',
+                // ],
+                // [
+                //     'model_name' => 'deposit',
+                // ],
+                // [
+                //     'model_name' => 'discount',
+                // ],
+                // [
+                //     'model_name' => 'surchage',
+                // ],
+                // [
+                //     'model_name' => 'price_type',
+                // ],
+                // [
+                //     'model_name' => 'recipe',
+                // ],
+                // [
+                //     'model_name' => 'buyer',
+                // ],
+                // [
+                //     'model_name' => 'address',
+                //     'plural'     => 'addresses',
+                // ],
+                // [
+                //     'model_name' => 'sale',
+                // ],
                 [
                     'model_name' => 'provider',
                 ],
@@ -826,9 +845,9 @@ class HelperController extends Controller
             echo '----------------------- Termino con '.$_model['model_name'].' ------------------------ </br>';
         }
         echo '----------------------- TERMINO ------------------------ </br>';
-        if (!$for_articles) {
-            $user->extencions()->attach([1,2,5,6]);
-        }
+        // if (!$for_articles) {
+            // $user->extencions()->attach([1,2,5,6]);
+        // }
         // $articles = Article::where('status', 'active')
         //                     ->where('user_id', $user->id)
         //                     ->get();

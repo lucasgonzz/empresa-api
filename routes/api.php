@@ -3,7 +3,13 @@
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
-Route::middleware('auth:sanctum')->group(function() {
+// Route::get('user', 'CommonLaravel\AuthController@get_user');
+
+// Route::middleware('auth:sanctum')->get('/user', 'CommonLaravel\AuthController@get_user');
+
+// Route::middleware(['set.user.database'])->group(function() {
+// Route::middleware(['set.user.database', 'auth:sanctum'])->group(function() {
+Route::middleware(['auth:sanctum'])->group(function() {
 
     // CommonLaravel 
     // ----------------------------------------------------------------------------------------------------
@@ -18,7 +24,7 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::put('delete/{model_name}', 'CommonLaravel\DeleteController@delete');
     
     // User
-    Route::get('user', 'CommonLaravel\AuthController@user');
+    Route::get('user', 'CommonLaravel\AuthController@get_user');
     Route::put('user/{id}', 'UserController@update');
     Route::put('user-password', 'CommonLaravel\UserController@updatePassword');
     Route::post('user/last-activity', 'CommonLaravel\UserController@setLastActivity');
@@ -70,6 +76,7 @@ Route::middleware('auth:sanctum')->group(function() {
     Route::get('sale/from-date/{from_date?}/{until_date?}', 'SaleController@index');
     Route::put('sale/update-prices/{id}', 'SaleController@updatePrices');
     Route::get('sale/charts/{from}/{to}', 'SaleController@charts');
+    Route::get('sales-ventas-sin-cobrar', 'SaleController@ventas_sin_cobrar');
     
     // Afip tickets
     Route::post('afip-ticket', 'SaleController@makeAfipTicket');

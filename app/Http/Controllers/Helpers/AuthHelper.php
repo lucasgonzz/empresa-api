@@ -20,6 +20,7 @@ class AuthHelper {
 	}
 
 	function checkUserLastActivity() {
+		Log::info('checkUserLastActivity');
 		$user = Auth()->user();
 		if (is_null($user->last_activity) || is_null($user->session_id) || $this->ya_paso_el_tiempo($user)) {
 			session(['session_id' => time().rand(0,1000)]);

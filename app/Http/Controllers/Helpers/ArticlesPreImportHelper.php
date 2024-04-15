@@ -42,7 +42,7 @@ class ArticlesPreImportHelper {
 				'costo_actual'	=> $article->cost,
 				'costo_nuevo'	=> $data['cost'],
 			]);
-			Log::info('add_article. Se agrego '.$article->name);
+			// Log::info('add_article. Se agrego '.$article->name);
 		}
 	}
 

@@ -56,6 +56,13 @@ class CreateUsersTable extends Migration
             $table->string('app_url')->nullable();
             $table->boolean('show_buyer_messages')->default(true);
             $table->rememberToken();
+
+            $table->string('base_de_datos')->nullable();
+            $table->string('google_custom_search_api_key')->nullable();
+
+            $table->integer('dias_alertar_empleados_ventas_no_cobradas')->nullable();
+            $table->integer('dias_alertar_administradores_ventas_no_cobradas')->nullable();
+
             
             $table->enum('status', ['commerce', 'admin', 'super']);
             $table->softDeletes();

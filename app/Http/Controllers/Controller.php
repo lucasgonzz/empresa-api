@@ -42,8 +42,22 @@ class Controller extends BaseController
         }
     }
 
-    function user() {
-        return User::find($this->userId());
+    function user($from_owner = true) {
+        return User::find($this->userId($from_owner));
+    }
+
+    function is_owner() {
+        $owner_id = $this->userId();
+        $current_user_id = $this->userId(false);
+        return $owner_id == $current_user_id;
+    }
+
+    function is_admin() {
+        $user = $this->user(false);
+        if (is_null($user->owner_id) || $user->admin_access) {
+            return true;
+        }
+        return false;
     }
 
     function getModelBy($table, $prop_name, $prop_value, $from_user = false, $prop_to_return = null, $return_0 = false) {

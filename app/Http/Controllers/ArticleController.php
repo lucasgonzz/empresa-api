@@ -26,6 +26,7 @@ use Illuminate\Support\Facades\Session;
 class ArticleController extends Controller
 {
     function index($last_updated, $status = 'active') {
+        // Log::info('Se esta usando la bbdd = '.config('database.connections.mysql.database'));
         $models = Article::where('user_id', $this->userId())
                             ->where('status', $status)
                             ->where(function($query) use ($last_updated) {
@@ -55,6 +56,7 @@ class ArticleController extends Controller
     }
 
     function store(Request $request) {
+        Log::info('Se esta usando en store la bbdd = '.config('database.connections.mysql.database'));
         $model = new Article();
         $model->num                               = $this->num('articles');
         $model->bar_code                          = $request->bar_code;
@@ -103,10 +105,13 @@ class ArticleController extends Controller
         $inventory_linkage_helper = new InventoryLinkageHelper();
         $inventory_linkage_helper->checkArticle($model);
 
+        Log::info('se guardo article con id: '.$model->id);
+
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 201);
     }
 
     function update(Request $request) {
+        Log::info('Se esta usando la bbdd = '.config('database.connections.mysql.database'));
         $model = Article::find($request->id);
 
         $actual_stock = $model->stock;
@@ -177,16 +182,29 @@ class ArticleController extends Controller
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
         $columns = ArticleImportHelper::addAddressesColumns($columns);
-        // Log::info('colunbs');
-        // Log::info($columns);
-        Excel::import(new ArticleImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id), $request->file('models'));
+
+        if ($request->has('models')) {
+            
+            $archivo_excel_path = $request->file('models')->store('imported_files');
+            Log::info('Se guardo archivo excel en: '.$archivo_excel_path);
+
+        } else if ($request->has('archivo_excel_path')) {
+
+            $archivo_excel_path = $request->archivo_excel_path;
+            Log::info('Ya habia archivo excel en: '.$archivo_excel_path);
+
+        }
+
+        $archivo_excel = storage_path('app/' . $archivo_excel_path);
+
+        Excel::import(new ArticleImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id), $archivo_excel);
         
         $this->sendUpdateModelsNotification('article');
 
         $import_history_id = Session::get('import_history_id');
         $pre_import_id = Session::get('pre_import_id');
 
-        return response()->json(['import_history_id' => $import_history_id, 'pre_import_id' => $pre_import_id], 201);
+        return response()->json(['import_history_id' => $import_history_id, 'pre_import_id' => $pre_import_id, 'archivo_excel_path' => $archivo_excel_path], 201);
     }
 
     function export() {

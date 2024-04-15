@@ -26,6 +26,7 @@ class RecipeController extends Controller
             'article_id'                => $request->article_id,
             'article_cost_from_recipe'  => $request->article_cost_from_recipe,
             'address_id'                => $request->address_id,
+            'observations'              => $request->observations,
             'user_id'                   => $this->userId(),
         ]);
         RecipeHelper::attachArticles($model, $request->articles);
@@ -43,6 +44,7 @@ class RecipeController extends Controller
         $model->article_cost_from_recipe    = $request->article_cost_from_recipe;
         $model->article_id                  = $request->article_id;
         $model->address_id                  = $request->address_id;
+        $model->observations                = $request->observations;
         $model->save();
         RecipeHelper::attachArticles($model, $request->articles);
         RecipeHelper::checkCostFromRecipe($model, $this);

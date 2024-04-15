@@ -78,7 +78,7 @@ class SaleTicketPdf extends fpdf {
 
 	function Footer() {
 
-		$this->total_sale = SaleHelper::getTotalSale($this->sale);
+		$this->total_sale = SaleHelper::getTotalSale($this->sale, false, false);
 
 		$this->total_sin_des_rec();
 
@@ -156,12 +156,12 @@ class SaleTicketPdf extends fpdf {
 
 	function totalItem($item) {
 		$total = $item->pivot->price * $item->pivot->amount;
-		foreach ($this->sale->discounts as $discount) {
-			$total -= $total * $discount->pivot->percentage / 100; 
-		}
-		foreach ($this->sale->surchages as $surchage) {
-			$total += $total * $surchage->pivot->percentage / 100; 
-		}
+		// foreach ($this->sale->discounts as $discount) {
+		// 	$total -= $total * $discount->pivot->percentage / 100; 
+		// }
+		// foreach ($this->sale->surchages as $surchage) {
+		// 	$total += $total * $surchage->pivot->percentage / 100; 
+		// }
 		return '$'.Numbers::Price($total);
 	}
 

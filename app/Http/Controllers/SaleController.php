@@ -224,4 +224,29 @@ class SaleController extends Controller
         $charts = SaleChartHelper::getCharts($this, $from, $until);
         return response()->json(['charts' => $charts], 200);
     }
+
+    function ventas_sin_cobrar() {
+
+        $owner = $this->user();
+
+        $sales = Sale::where('user_id', $this->userId())
+                        ->whereHas('current_acount', function($q) {
+                            return $q->where('status', '!=', 'pagado');
+                        });
+
+        Log::info('is_admin: '.$this->is_admin());
+        Log::info('fecha limite '.Carbon::today()->subDays($owner->dias_alertar_administradores_ventas_no_cobradas));
+        if ($this->is_admin()) {
+            $sales = $sales->whereDate('created_at', '<=', Carbon::today()->subDays($owner->dias_alertar_administradores_ventas_no_cobradas));
+        } else {
+            $sales = $sales->whereDate('created_at', '<=', Carbon::today()->subDays($owner->dias_alertar_empleados_ventas_no_cobradas))
+                            ->where('employee_id', $this->userId(false));
+        }
+
+        $sales = $sales->with('client', 'employee')
+                        ->orderBy('created_at', 'DESC')
+                        ->get();
+
+        return response()->json(['models' => $sales], 200);
+    }
 }

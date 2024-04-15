@@ -44,7 +44,7 @@ class AuthController extends Controller
         return response(null, 200);
     }
 
-    public function user() {
+    public function get_user() {
         if ($this->checkUserLastActivity()) {
             $user = UserHelper::getFullModel(false);
             return response()->json(['user' => $user], 200);

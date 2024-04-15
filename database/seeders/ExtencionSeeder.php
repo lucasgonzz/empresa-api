@@ -110,6 +110,11 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Codigo proveedor en vender',
                 'slug' => 'codigo_proveedor_en_vender',
             ],
+            [
+                // 20
+                'name' => 'Chequear stock de articulos en VENDER',
+                'slug' => 'check_article_stock_en_vender',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([
