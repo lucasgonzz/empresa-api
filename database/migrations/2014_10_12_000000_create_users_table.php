@@ -62,6 +62,7 @@ class CreateUsersTable extends Migration
 
             $table->integer('dias_alertar_empleados_ventas_no_cobradas')->nullable();
             $table->integer('dias_alertar_administradores_ventas_no_cobradas')->nullable();
+            $table->boolean('ver_alertas_de_todos_los_empleados')->nullable();
 
             
             $table->enum('status', ['commerce', 'admin', 'super']);

@@ -645,18 +645,36 @@ class HelperController extends Controller
         echo 'Listo';
     }
 
-    function recaulculateCurrentAcounts($company_name) {
+    function recaulculateCurrentAcounts($company_name, $client_id = null) {
+        set_time_limit(999999);
         $user = User::where('company_name', $company_name)->first();
         $clients = Client::where('user_id', $user->id)
-                            ->get();
+                            ->orderBy('id', 'ASC')
+                            ->where('id', '!=', 7334);
+                            // ->take(50);
+        if (!is_null($client_id)) {
+            $clients = $clients->where('id', '>', $client_id);
+            Log::info('viene por aca');
+            echo 'Filtrando id mayor a '.$client_id.' </br>';
+        }
+        $clients = $clients->get();
+
+        echo 'Desde el id '.$clients[0]->id.' </br>';
+        Log::info('Desde el id '.$clients[0]->id);
+
+        echo(count($clients).' clientes </br>');
+        $index = 1;
         foreach ($clients as $client) {
-            echo 'Cliente '.$client->name.' </br>';
+            echo 'Cliente '.$client->name.' id = '. $client->id .' </br>';
+            Log::info('Cliente '.$client->name.' id = '. $client->id);
+            echo 'Vuelta '.$index.' </br>';
+            $index++;
             CurrentAcountHelper::checkSaldos('client', $client->id);
             CurrentAcountHelper::checkPagos('client', $client->id, true);
             foreach ($client->current_acounts as $current_acount) {
                 echo 'CC del '.date_format($current_acount->created_at, 'd/m/Y').' </br>';
                 if (!is_null($current_acount->debe)) {
-                    if (!is_null($current_acount->sale_id)) {
+                    if (!is_null($current_acount->sale)) {
                         $current_acount->detalle = 'Venta N°'.$current_acount->sale->num;
                     } else {
                         $current_acount->detalle = 'Nota debito';
@@ -671,6 +689,7 @@ class HelperController extends Controller
                 $current_acount->save();
             }
         }
+        echo "Termino";
         return;
         $providers = Provider::where('user_id', $user->id)
                             ->get();

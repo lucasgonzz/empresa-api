@@ -74,7 +74,7 @@ Route::get('delete-clients', 'HelperController@deleteClients');
 Route::get('check-budgets-status/{company_name}', 'HelperController@checkBudgetStatus');
 Route::get('clientes-repetidos/{company_name}', 'HelperController@clientesRepetidos');
 Route::get('clients-sellers', 'HelperController@setClientSeller');
-Route::get('recalculate-current-acounts/{company_name}', 'HelperController@recaulculateCurrentAcounts');
+Route::get('recalculate-current-acounts/{company_name}/{client_id?}', 'HelperController@recaulculateCurrentAcounts');
 Route::get('check-pagos/{model_name}/{model_id}/{si_o_si}', 'Helpers\CurrentAcountHelper@checkPagos');
 Route::get('check-saldos/{model_name}/{id}', 'Helpers\CurrentAcountHelper@checkSaldos');
 Route::get('clients-check-saldos/{model_name}', 'Helpers\CurrentAcountHelper@checkClientsSaldos');

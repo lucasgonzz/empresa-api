@@ -328,6 +328,7 @@ class CurrentAcountHelper {
     static function checkPagos($model_name, $model_id, $si_o_si = false) {
         $model = GeneralHelper::getModelName($model_name)::find($model_id);
         if (!$model->pagos_checkeados || $si_o_si) {
+            echo('Entro a checkPagos para '.$model->name.' </br>');
             $debitos = CurrentAcount::orderBy('created_at', 'ASC')
                                             ->whereNotNull('debe');
             if ($model_name == 'client') {
@@ -359,9 +360,9 @@ class CurrentAcountHelper {
             }
             $model->pagos_checkeados = 1;
             $model->save();
-            Log::info('Se checo los pagos de '.$model->name);
+            echo('Se checo los pagos de '.$model->name.' </br>');
         } else {
-            Log::info('No se chequearon pagos de '.$model->name);
+            echo('No se chequearon pagos de '.$model->name.' </br>');
         }
     }
 

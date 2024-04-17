@@ -85,6 +85,11 @@ class ImageController extends Controller
         $array = explode('/', $image_name);
         $image_name = $array[count($array)-1];
         Log::info('Eliminando imagen: '.$image_name);
+
+
+        $helper = new InventoryLinkageHelper();
+        $helper->delete_image($image_name);
+
         Storage::disk('public')->delete($image_name);
         $image->delete();
         return response()->json(['model' => $this->fullModel($model_name, $model_id)], 200);

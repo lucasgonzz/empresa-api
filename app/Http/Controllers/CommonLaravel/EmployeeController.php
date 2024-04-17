@@ -28,10 +28,12 @@ class EmployeeController extends Controller
         foreach ($request->permissions as $permission) {
             $model->permissions()->attach($permission['id']);
         }
-        $model->name                = $request->name;
-        $model->visible_password    = $request->visible_password;
-        $model->admin_access        = $request->admin_access;
-        $model->password            = bcrypt($request->visible_password);
+        $model->name                                            = $request->name;
+        $model->visible_password                                = $request->visible_password;
+        $model->admin_access                                    = $request->admin_access;
+        $model->dias_alertar_empleados_ventas_no_cobradas       = $request->dias_alertar_empleados_ventas_no_cobradas;
+        $model->ver_alertas_de_todos_los_empleados              = $request->ver_alertas_de_todos_los_empleados;
+        $model->password                                        = bcrypt($request->visible_password);
         if ($model->doc_number == $request->doc_number || !$this->docNumerRegister($request->doc_number)) {
             $model->doc_number          = $request->doc_number;
         }

@@ -2,16 +2,17 @@
 
 namespace App\Http\Controllers\Pdf;
 
-use App\Models\Article;
-use App\Models\Client;
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\CommonLaravel\Helpers\StringHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\PdfArticleHelper;
 use App\Http\Controllers\Helpers\PdfPrintArticles;
 use App\Http\Controllers\Helpers\SaleHelper;
-use App\Http\Controllers\CommonLaravel\Helpers\StringHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Models\Article;
+use App\Models\Client;
 use App\Models\Impression;
 use App\Models\Sale;
 use fpdf;
@@ -284,7 +285,9 @@ class SaleAfipTicketPdf extends fpdf {
 		];
 		$afip_link = 'https://www.afip.gob.ar/fe/qr/?'.base64_encode(json_encode($data));
 		$url = "http://chart.googleapis.com/chart?chs=200x200&cht=qr&chl=$afip_link&.png";
-        $this->Image($url, 0, $this->y, 50);
+		if (GeneralHelper::file_exists_2($url)) {
+        	$this->Image($url, 0, $this->y, 50);
+		}
 
         // $start_y =+ 10;
         // dd($start_y);

@@ -76,7 +76,7 @@ class CurrentAcountPagoHelper {
             'total_pago'    => $this->pago->haber,
             'created_at'    => $this->pago->created_at,
         ]);
-        // Log::info('GUARDANDO EL PAGADO POR DEL PAGO N°'.$this->pago->num_receipt);
+        echo('GUARDANDO EL PAGADO de '.$this->sin_pagar->detalle.' </br>');
         // Log::info('El pagado_por de la '.$this->sin_pagar->detalle.' quedo asi:');
         // foreach ($this->sin_pagar->pagado_por as $pagado_por) {
             // Log::info('El pago N°'.$pagado_por->num_receipt.' pago '.$pagado_por->pivot->pagado.' a la '.CurrentAcount::find($pagado_por->pivot->debe_id)->detalle);

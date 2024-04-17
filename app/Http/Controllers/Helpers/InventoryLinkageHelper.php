@@ -199,6 +199,32 @@ class InventoryLinkageHelper extends Controller {
 		}
 	}
 
+	function delete_image($article, $image_to_delete) {
+
+		$inventory_linkages = InventoryLinkage::where('user_id', $this->user_id)
+												->get();
+		if (count($inventory_linkages) >= 1) {
+			foreach ($inventory_linkages as $inventory_linkage) {
+				$client = $inventory_linkage->client;
+
+				$client_article = Article::where('user_id', $client->comercio_city_user_id)
+												->where('provider_article_id', $article->id)
+												->first();
+
+				if (!is_null($client_article)) {
+					$image = Image::where(env('IMAGE_URL_PROP_NAME', 'image_url'), $image_to_delete->{env('IMAGE_URL_PROP_NAME', 'image_url')})
+									->where('user_id', $client->user_id)
+									->first();
+
+					if (!is_null($image)) {
+						$image->delete();
+						Log::info('Se eliminio imagen del cliente en linkage');
+					}
+				}
+			}
+		}
+	}
+
 	function check_is_agotado($article) {
 
 		if (!is_null($article->stock)) {

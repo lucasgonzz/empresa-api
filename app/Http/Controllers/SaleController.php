@@ -229,21 +229,40 @@ class SaleController extends Controller
 
         $owner = $this->user();
 
+        $user = $this->user(false);
+
+        $dias = $owner->dias_alertar_empleados_ventas_no_cobradas;
+
+        if ($this->is_owner()) {
+            $dias = $owner->dias_alertar_administradores_ventas_no_cobradas;
+        } else if ($this->is_admin() && is_null($user->dias_alertar_empleados_ventas_no_cobradas)) {
+            $dias = $owner->dias_alertar_administradores_ventas_no_cobradas;
+        } else if (!is_null($user->dias_alertar_empleados_ventas_no_cobradas)) {
+            $dias = $user->dias_alertar_empleados_ventas_no_cobradas;
+        }
+
+        $ver_solo_las_ventas_suyas = true;
+
+        if ($this->is_owner()) {
+            $ver_solo_las_ventas_suyas = false;
+        } else if ($user->ver_alertas_de_todos_los_empleados) {
+            $ver_solo_las_ventas_suyas = false;
+        }
+
         $sales = Sale::where('user_id', $this->userId())
                         ->whereHas('current_acount', function($q) {
                             return $q->where('status', '!=', 'pagado');
-                        });
+                        })
+                        ->whereDate('created_at', '<=', Carbon::today()->subDays($dias));
 
-        Log::info('is_admin: '.$this->is_admin());
-        Log::info('fecha limite '.Carbon::today()->subDays($owner->dias_alertar_administradores_ventas_no_cobradas));
-        if ($this->is_admin()) {
-            $sales = $sales->whereDate('created_at', '<=', Carbon::today()->subDays($owner->dias_alertar_administradores_ventas_no_cobradas));
-        } else {
-            $sales = $sales->whereDate('created_at', '<=', Carbon::today()->subDays($owner->dias_alertar_empleados_ventas_no_cobradas))
-                            ->where('employee_id', $this->userId(false));
+        if ($ver_solo_las_ventas_suyas) {
+            $sales = $sales->where('employee_id', $user->id);
         }
 
-        $sales = $sales->with('client', 'employee')
+        Log::info('ventas_sin_cobrar de hace '.$dias.' dias');
+        Log::info('ver_solo_las_ventas_suyas: '.$ver_solo_las_ventas_suyas);
+
+        $sales = $sales->with('client', 'employee', 'current_acount')
                         ->orderBy('created_at', 'DESC')
                         ->get();
 
