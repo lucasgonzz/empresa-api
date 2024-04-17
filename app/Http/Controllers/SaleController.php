@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\CurrentAcountDeleteSaleHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\SaleChartHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\SaleProviderOrderHelper;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
 use App\Http\Controllers\Pdf\SaleDeliveredArticlesPdf;
@@ -19,6 +20,7 @@ use App\Http\Controllers\Pdf\SaleTicketPdf;
 use App\Http\Controllers\SellerCommissionController;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
+use App\Models\SaleModification;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -94,14 +96,19 @@ class SaleController extends Controller
                         ->first();
 
         $previus_articles = $model->articles;
-        Log::info('update a sale N° '.$model->num.'. Id: '.$model->id);
-        Log::info('client_id '.$model->client_id);
+        // Log::info('update a sale N° '.$model->num.'. Id: '.$model->id);
+        // Log::info('client_id '.$model->client_id);
+
+        $sale_modification = SaleModification::create([
+            'sale_id'   => $model->id,
+            'estado_antes_de_actualizar'    => SaleModificationsHelper::get_estado($model),
+        ]);
 
         SaleHelper::log_client($model);
 
         SaleHelper::log_articles($model, $previus_articles);
 
-        SaleHelper::detachItems($model);
+        SaleHelper::detachItems($model, $sale_modification);
         
         $previus_client_id                          = $model->client_id;
         
@@ -120,7 +127,7 @@ class SaleController extends Controller
         $model->updated_at                          = Carbon::now();
         $model->save();
 
-        SaleHelper::attachProperies($model, $request, false, $previus_articles);
+        SaleHelper::attachProperies($model, $request, false, $previus_articles, $sale_modification);
 
         $model->updated_at = Carbon::now();
         $model->save();
@@ -140,6 +147,9 @@ class SaleController extends Controller
         SaleHelper::log_client($model);
 
         SaleHelper::log_articles($model, $previus_articles);
+
+        $sale_modification->estado_despues_de_actualizar = SaleModificationsHelper::get_estado($model);
+        $sale_modification->save();
 
         return response()->json(['model' => $this->fullModel('Sale', $model->id)], 200);
     }

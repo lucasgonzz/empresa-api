@@ -126,7 +126,7 @@ class SaleHelper extends Controller {
         return null;
     }
 
-    static function attachProperies($model, $request, $from_store = true, $previus_articles = null) {
+    static function attachProperies($model, $request, $from_store = true, $previus_articles = null, $sale_modification = null) {
         Self::attachArticles($model, $request->items);
         Self::attachCombos($model, $request->items);
         Self::attachServices($model, $request->items);
@@ -134,10 +134,22 @@ class SaleHelper extends Controller {
         Self::attachSurchages($model, $request->surchages_id);
 
         Self::check_deleted_articles_from_check($model, $previus_articles);
+
+        Self::attach_articulos_despues_de_actualizar($model, $sale_modification);
         if ($from_store && !$model->to_check && !$model->checked) {
             Self::attachCurrentAcountsAndCommissions($model);
         } else {
             Self::checkNotaCredito($model, $request);
+        }
+    }
+
+    static function attach_articulos_despues_de_actualizar($sale, $sale_modification) {
+        if (!is_null($sale_modification)) {
+            foreach ($sale->articles as $article) {
+                $sale_modification->articulos_despues_de_actualizar()->attach($article->id, [
+                    'amount'    => $article->pivot->amount,
+                ]);
+            }
         }
     }
 
@@ -251,12 +263,6 @@ class SaleHelper extends Controller {
 
     static function check_deleted_articles_from_check($sale, $previus_articles) {
         $sale->load('articles');
-        // Log::info('check_deleted_articles_from_check');
-        // Log::info('sale->articles:');
-        // foreach ($sale->articles as $article) {
-        //     Log::info($article->name);
-        // }
-
 
         if ($sale->checked && !is_null($previus_articles)) {
             Log::info('previus_articles:');
@@ -502,7 +508,14 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function detachItems($sale) {
+    static function detachItems($sale, $sale_modification) {
+
+        foreach ($sale->articles as $article) {
+            $sale_modification->articulos_antes_de_actualizar()->attach($article->id, [
+                'amount'    => $article->pivot->amount,
+            ]);
+        }
+
         if (!$sale->to_check && !$sale->checked) {
             foreach ($sale->articles as $article) {
                 if (count($article->addresses) >= 1 && !is_null($sale->address_id)) {

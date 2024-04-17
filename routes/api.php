@@ -77,6 +77,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('sale/update-prices/{id}', 'SaleController@updatePrices');
     Route::get('sale/charts/{from}/{to}', 'SaleController@charts');
     Route::get('sales-ventas-sin-cobrar', 'SaleController@ventas_sin_cobrar');
+
+
+    Route::get('sale-modifications/{sale_id}', 'SaleModificationController@index');
     
     // Afip tickets
     Route::post('afip-ticket', 'SaleController@makeAfipTicket');
