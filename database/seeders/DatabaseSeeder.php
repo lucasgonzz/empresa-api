@@ -95,13 +95,13 @@ class DatabaseSeeder extends Seeder
             // $this->call(PriceTypeSeeder::class);
             $this->call(BudgetStatusSeeder::class);
             $this->call(BudgetSeeder::class);
-            $this->call(RecipeSeeder::class);
+            // $this->call(RecipeSeeder::class);
             // $this->call(OrderProductionSeeder::class);
             $this->call(SuperBudgetSeeder::class);
             // $this->call(CreditCardSeeder::class);
             // $this->call(CreditCardPaymentPlanSeeder::class);
             $this->call(UpdateFeatureSeeder::class);
-            $this->call(OrderSeeder::class);
+            // $this->call(OrderSeeder::class);
             $this->call(InventoryLinkageScopeSeeder::class);
             $this->call(InventoryLinkageSeeder::class);
             // $this->call(AfipTicketSeeder::class);

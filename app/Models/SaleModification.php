@@ -11,11 +11,15 @@ class SaleModification extends Model
     protected $guarded = [];
 
     function scopeWithAll($query) {
-        $query->with('articulos_antes_de_actualizar', 'articulos_despues_de_actualizar');
+        $query->with('articulos_antes_de_actualizar', 'articulos_despues_de_actualizar', 'user');
     }
 
     function sale() {
         return $this->belongsTo(Sale::class);
+    }
+
+    function user() {
+        return $this->belongsTo(User::class);
     }
 
     function articulos_antes_de_actualizar() {

@@ -100,8 +100,9 @@ class SaleController extends Controller
         // Log::info('client_id '.$model->client_id);
 
         $sale_modification = SaleModification::create([
-            'sale_id'   => $model->id,
+            'sale_id'                       => $model->id,
             'estado_antes_de_actualizar'    => SaleModificationsHelper::get_estado($model),
+            'user_id'                       => $this->userId(false),
         ]);
 
         SaleHelper::log_client($model);

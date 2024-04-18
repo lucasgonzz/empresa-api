@@ -46,7 +46,8 @@ class ArticleSeeder extends Seeder
                             ->first();
 
         // require(database_path().'\seeders\articles\ferreteria.php');
-        require(database_path().'\seeders\articles\auto_partes.php');
+        // require(database_path().'\seeders\articles\auto_partes.php');
+        require(database_path().'\seeders\articles\marcos_prueba_deposito.php');
 
         $num = 1;
         $days = count($articles);

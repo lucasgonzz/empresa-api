@@ -45,7 +45,7 @@ class CreateUsersTable extends Migration
             $table->boolean('download_articles')->default(1)->nullable();
             $table->integer('home_position')->nullable();
             $table->boolean('iva_included')->default(false);
-            $table->boolean('ask_amount_in_vender')->default(false);
+            $table->boolean('ask_amount_in_vender')->default(true);
             $table->boolean('discount_stock_from_recipe_after_advance_to_next_status')->default(false);
             $table->decimal('sale_ticket_width', 12,2)->default(58);
             $table->integer('default_current_acount_payment_method_id')->nullable();

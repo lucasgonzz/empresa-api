@@ -18,6 +18,7 @@ class CreateSaleModificationsTable extends Migration
             $table->integer('sale_id');
             $table->string('estado_antes_de_actualizar')->nullable();
             $table->string('estado_despues_de_actualizar')->nullable();
+            $table->integer('user_id');
             $table->timestamps();
         });
     }

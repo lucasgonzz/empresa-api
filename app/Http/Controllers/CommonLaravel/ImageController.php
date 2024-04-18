@@ -87,8 +87,8 @@ class ImageController extends Controller
         Log::info('Eliminando imagen: '.$image_name);
 
 
-        $helper = new InventoryLinkageHelper();
-        $helper->delete_image($image_name);
+        // $helper = new InventoryLinkageHelper();
+        // $helper->delete_image($model, $image_name);
 
         Storage::disk('public')->delete($image_name);
         $image->delete();

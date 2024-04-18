@@ -32,6 +32,7 @@ class CreateOnlineConfigurationsTable extends Migration
             $table->boolean('scroll_infinito_en_home')->default(1)->nullable();
             $table->boolean('save_sale_after_finish_order')->default(1)->nullable();
             $table->string('order_description')->nullable();
+            $table->boolean('show_article_image')->default(1);
             $table->integer('user_id');
             $table->timestamps();
         });

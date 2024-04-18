@@ -1284,7 +1284,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+                'url'       => env('APP_URL').'/storage/fenix.webp',
             ],
             [
                 'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
