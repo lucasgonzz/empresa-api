@@ -27,7 +27,34 @@ Route::get('/register-user/{name}/{doc_number}/{company_name}/{iva_included}/{ex
 // api-pets.comerciocity.com/public/register-user/Mariano/123/Pets/0/6-9
 
 
+// Archivos de intercambio PETS
+Route::get('/leer-archivo-articulos', 'TsvFileController@leer_archivo_articulos');
 
+
+// Cambiar BBDD
+Route::get('/cambiar-bbdd/{company_name}/{bbbdd_destino}', 'BaseDeDatosController@copiar_modelos');
+
+Route::get('/cambiar-bbdd/user/{company_name}/{bbbdd_destino}', 'BaseDeDatosController@copiar_usuario');
+
+Route::get('/cambiar-bbdd/employees/{company_name}/{bbbdd_destino}', 'BaseDeDatosController@copiar_employees');
+
+Route::get('/cambiar-bbdd/clients/{company_name}/{bbbdd_destino}/{from_id?}', 'BaseDeDatosController@copiar_clients');
+
+Route::get('/cambiar-bbdd/providers/{company_name}/{bbbdd_destino}/{from_id?}', 'BaseDeDatosController@copiar_providers');
+
+Route::get('/cambiar-bbdd/orders/{company_name}/{bbbdd_destino}', 'BaseDeDatosController@copiar_orders');
+
+Route::get('/cambiar-bbdd/carts/{company_name}/{bbbdd_destino}', 'BaseDeDatosController@copiar_carts');
+
+Route::get('/cambiar-bbdd/current-acounts/{company_name}/{bbbdd_destino}/{from_id?}', 'BaseDeDatosController@copiar_current_acounts');
+
+Route::get('/cambiar-bbdd/provider-orders/{company_name}/{bbbdd_destino}/{from_id?}', 'BaseDeDatosController@copiar_provider_orders');
+
+Route::get('/cambiar-bbdd/articulos/{company_name}/{bbbdd_destino}/{from_id?}', 'BaseDeDatosController@copiar_articulos');
+
+Route::get('/cambiar-bbdd/ventas/{company_name}/{bbbdd_destino}/{from_id?}', 'BaseDeDatosController@copiar_ventas');
+
+Route::get('/cambiar-bbdd/buyers/{company_name}/{bbbdd_destino}', 'BaseDeDatosController@copiar_buyers');
 
 // Power Bi
 Route::get('/power-bi/articulos', 'PowerBiController@articulos');
@@ -96,7 +123,6 @@ Route::get('home/clients', 'HomeController@clients');
 
 
 // PDF
-// Route::get('sale/pdf/{id}/{with_prices}', 'SaleController@pdf');
 Route::get('sale/pdf/{id}/{with_prices}/{with_costs}/{confirmed?}', 'SaleController@pdf');
 Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
 Route::get('sale/afip-ticket-pdf/{id}', 'SaleController@afipTicketPdf');

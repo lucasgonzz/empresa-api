@@ -95,22 +95,41 @@ class ArticlePdf extends fpdf {
 	function getJpgImage($article) {
 		$img_url = $article->images[0]->{env('IMAGE_URL_PROP_NAME', 'image_url')};
 
-        $array = explode('/', $img_url); 
-        $array_name = $array[count($array)-1];
-        $name = explode('.', $array_name)[0];
-        $extencion = explode('.', $array_name)[1];
+		if (!is_null($image_url)) {
 
-        if (env('APP_ENV') == 'local') {
-        	$jpg_file_url = storage_path().'/app/'.$name.'.jpg';
-        } else {
-        	$jpg_file_url = storage_path().'/app/public/'.$name.'.jpg';
-        }
+	        $array = explode('/', $img_url); 
+	        $array_name = $array[count($array)-1];
+	        $name = explode('.', $array_name)[0];
+	        $extencion = explode('.', $array_name)[1];
 
-        if (!file_exists($jpg_file_url)) {
-            $img = imagecreatefromwebp($img_url);
-            imagejpeg($img, $jpg_file_url, 100);
-        }
-        return $jpg_file_url;
+	        if (env('APP_ENV') == 'local') {
+	        	$jpg_file_url = storage_path().'/app/'.$name.'.jpg';
+	        } else {
+	        	$jpg_file_url = storage_path().'/app/public/'.$name.'.jpg';
+	        }
+
+	        // if (!file_exists($jpg_file_url)) {
+	        //     $img = imagecreatefromwebp($img_url);
+	        //     imagejpeg($img, $jpg_file_url, 100);
+	        // }
+
+			try {
+				$image = imagecreatefromwebp($jpg_file_url);
+				if ($image !== false) {
+					// Procesar la imagen...
+					imagejpeg($image, 'ruta/a/imagen.jpg', 100);
+					// imagedestroy($image);
+				} else {
+					// No se pudo crear la imagen desde WebP
+					// echo 'No se pudo crear la imagen desde WebP';
+				}
+			} catch (Exception $e) {
+				// Error al intentar crear la imagen desde WebP
+				// echo 'Error: ' . $e->getMessage();
+			}
+     	   return $jpg_file_url;
+		}
+
 	}
 
 	function printArticle($article) {

@@ -18,6 +18,10 @@ class Article extends Model
         $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'addresses');
     }
 
+    function price_changes() {
+        return $this->hasMany(PriceChange::class);
+    }
+
     public function getCostoRealAttribute() {
         if (!is_null(Auth()->user())) {
             $owner = UserHelper::user();

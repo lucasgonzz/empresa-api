@@ -44,6 +44,18 @@ class HelperController extends Controller
         $this->{$method}();
     }
 
+    function check_deleted_articles_recipes() {
+        $recipes = Recipe::where('user_id', 138)
+                            ->get();
+        foreach ($recipes as $recipe) {
+            if (is_null($recipe->article)) {
+                $recipe->delete();
+                echo 'Se elimino la receta N° '.$recipe->num.' </br>';
+            }
+        }
+        echo 'Listo';
+    }
+
     function register_user($name, $doc_number, $company_name, $iva_included, $extencions_id, $database = null) {
 
         $data = [

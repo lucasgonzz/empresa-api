@@ -17,8 +17,6 @@ class UpdateController extends Controller
         if ($request->from_filter) {
             $search_ct = new SearchController();
             $models = $search_ct->search($request, $model_name, $request->filter_form);
-            foreach($models as $model) {
-            }
         } else {
             foreach ($request->models_id as $id) {
                 $models[] = $formated_model_name::find($id);

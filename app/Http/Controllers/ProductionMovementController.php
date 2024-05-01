@@ -17,15 +17,15 @@ class ProductionMovementController extends Controller
         $recipes = Recipe::where('user_id', $this->userId())
                             ->get();
 
-        Log::info('acaaaa');
-
         $cantidades_actuales = [];
         foreach ($recipes as $recipe) {
-            $article = [
-                'name'  => $recipe->article->name,
-            ];
-            $article['cantidades_actuales'] = $this->currentAmounts($recipe->article_id, false);
-            $cantidades_actuales[] = $article;
+            if (!is_null($recipe->article)) {
+                $article = [
+                    'name'  => $recipe->article->name,
+                ];
+                $article['cantidades_actuales'] = $this->currentAmounts($recipe->article_id, false);
+                $cantidades_actuales[] = $article;
+            }
         }
         return response()->json(['cantidades_actuales' => $cantidades_actuales], 200);
     }

@@ -10,7 +10,7 @@ class SaleModificationController extends Controller
     function index($sale_id) {
         $models = SaleModification::where('sale_id', $sale_id)
                                     ->withAll()
-                                    ->orderBy('created_at', 'DESC')
+                                    ->orderBy('created_at', 'ASC')
                                     ->get();
         return response()->json(['models' => $models], 200);
     }

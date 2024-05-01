@@ -6,6 +6,7 @@ use App\Exports\ArticleClientsExport;
 use App\Exports\ArticleExport;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
@@ -20,8 +21,8 @@ use App\Models\Article;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Support\Facades\Session;
+use Maatwebsite\Excel\Facades\Excel;
 
 class ArticleController extends Controller
 {
@@ -111,7 +112,7 @@ class ArticleController extends Controller
     }
 
     function update(Request $request) {
-        Log::info('Se esta usando la bbdd = '.config('database.connections.mysql.database'));
+        // Log::info('Se esta usando la bbdd = '.config('database.connections.mysql.database'));
         $model = Article::find($request->id);
 
         $actual_stock = $model->stock;
@@ -182,7 +183,8 @@ class ArticleController extends Controller
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
         $columns = ArticleImportHelper::addAddressesColumns($columns);
-
+        Log::info('Columnas para importar articulos: ');
+        Log::info($columns);
         if ($request->has('models')) {
             
             $archivo_excel_path = $request->file('models')->store('imported_files');
@@ -207,8 +209,16 @@ class ArticleController extends Controller
         return response()->json(['import_history_id' => $import_history_id, 'pre_import_id' => $pre_import_id, 'archivo_excel_path' => $archivo_excel_path], 201);
     }
 
-    function export() {
-        return Excel::download(new ArticleExport, 'comerciocity-articulos_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
+    function export(Request $request) {
+        $models = null;
+        if ($request->has('filters')) {
+            $jsonData = $request->query('filters');
+            $filters = json_decode($jsonData, true);
+
+            $search_ct = new SearchController();
+            $models = $search_ct->search($request, 'article', $filters);
+        }
+        return Excel::download(new ArticleExport($models), 'comerciocity-articulos_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
     }
 
     function clientsExport() {
@@ -252,9 +262,12 @@ class ArticleController extends Controller
 
         $recipes_donde_esta_este_articulo = ArticleHelper::get_recipes_que_tienen_este_articulo_como_insumo($model);
 
+        
         ImageController::deleteModelImages($model);
         $model->delete();
         ArticleHelper::check_recipes_despues_de_eliminar_articulo($recipes_donde_esta_este_articulo, $this);
+
+        ArticleHelper::check_article_recipe_to_delete($model);
 
         $this->sendDeleteModelNotification('article', $model->id);
         return response(null);

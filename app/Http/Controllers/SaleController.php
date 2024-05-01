@@ -44,7 +44,7 @@ class SaleController extends Controller
                             ->orWhere('checked', 1)
                             ->orWhere('confirmed', 1);
         }
-
+        Log::info('Ventas del userId: '.$this->userId());
         $models = $models->get();
         return response()->json(['models' => $models], 200);
     }
@@ -96,19 +96,16 @@ class SaleController extends Controller
                         ->first();
 
         $previus_articles = $model->articles;
-        // Log::info('update a sale N° '.$model->num.'. Id: '.$model->id);
-        // Log::info('client_id '.$model->client_id);
 
-        $sale_modification = SaleModification::create([
-            'sale_id'                       => $model->id,
-            'estado_antes_de_actualizar'    => SaleModificationsHelper::get_estado($model),
-            'user_id'                       => $this->userId(false),
-        ]);
+        $request->items = array_reverse($request->items);
 
-        SaleHelper::log_client($model);
+        $sale_modification = SaleModificationsHelper::create($model, $this);
 
-        SaleHelper::log_articles($model, $previus_articles);
+        // SaleHelper::log_client($model);
 
+        // SaleHelper::log_articles($model, $previus_articles);
+
+        // SaleHelper::detachItems($model);
         SaleHelper::detachItems($model, $sale_modification);
         
         $previus_client_id                          = $model->client_id;
@@ -128,6 +125,7 @@ class SaleController extends Controller
         $model->updated_at                          = Carbon::now();
         $model->save();
 
+        // SaleHelper::attachProperies($model, $request, false, $previus_articles);
         SaleHelper::attachProperies($model, $request, false, $previus_articles, $sale_modification);
 
         $model->updated_at = Carbon::now();
@@ -145,9 +143,9 @@ class SaleController extends Controller
         $this->sendAddModelNotification('Sale', $model->id);
         SaleHelper::sendUpdateClient($this, $model);
 
-        SaleHelper::log_client($model);
+        // SaleHelper::log_client($model);
 
-        SaleHelper::log_articles($model, $previus_articles);
+        // SaleHelper::log_articles($model, $previus_articles);
 
         $sale_modification->estado_despues_de_actualizar = SaleModificationsHelper::get_estado($model);
         $sale_modification->save();
@@ -262,8 +260,12 @@ class SaleController extends Controller
 
         $sales = Sale::where('user_id', $this->userId())
                         ->whereHas('current_acount', function($q) {
-                            return $q->where('status', '!=', 'pagado');
-                        })
+                            return $q->where('status', '!=', 'pagado')
+                                    ->where(function ($query) {
+                                        $query->whereNull('pagandose')
+                                        ->orWhereRaw('debe - pagandose > 300');
+                                    });
+                            })
                         ->whereDate('created_at', '<=', Carbon::today()->subDays($dias));
 
         if ($ver_solo_las_ventas_suyas) {

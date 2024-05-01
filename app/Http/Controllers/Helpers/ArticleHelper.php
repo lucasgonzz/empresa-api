@@ -42,6 +42,12 @@ class ArticleHelper {
         }
     }
 
+    static function check_article_recipe_to_delete($recipes, $instance) {
+        if (!is_null($article->recipe)) {
+            $article->recipe->delete();
+        }
+    }
+
     static function get_recipes_que_tienen_este_articulo_como_insumo($article) {
         $article_id = $article->id;
         $recipes = Recipe::whereHas('articles', function(Builder $query) use ($article_id) {

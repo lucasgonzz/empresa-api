@@ -18,6 +18,7 @@ class CreateArticleSaleModificationDespuesDeActualizar extends Migration
             $table->integer('article_id');
             $table->integer('sale_modification_id');
             $table->decimal('amount')->nullable();
+            $table->decimal('checked_amount')->nullable();
             $table->timestamps();
         });
     }

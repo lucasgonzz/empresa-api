@@ -58,8 +58,8 @@ class ReporteController extends Controller
 
 
 
-        Log::info('mes_inicio despues de ventas');
-        Log::info($mes_inicio);
+        // Log::info('mes_inicio despues de ventas');
+        // Log::info($mes_inicio);
         // Gastos
 
         $total_gastado_result = $this->get_gastos($mes_inicio, $mes_fin);
@@ -91,10 +91,10 @@ class ReporteController extends Controller
     function sumar_metodos_de_pago($metodos_de_pago_ventas_mostrador, $metodos_de_pago_cc) {
         $metodos_de_pago = $this->get_payment_methods();
         foreach ($metodos_de_pago as $id => $metodo_de_pago) {
-            Log::info('sumando '.$metodo_de_pago['nombre'].' en mostrador de '.$metodos_de_pago_ventas_mostrador[$id]['total']);
-            Log::info('y '.$metodo_de_pago['nombre'].' en cc de '.$metodos_de_pago_cc[$id]['total']);
+            // Log::info('sumando '.$metodo_de_pago['nombre'].' en mostrador de '.$metodos_de_pago_ventas_mostrador[$id]['total']);
+            // Log::info('y '.$metodo_de_pago['nombre'].' en cc de '.$metodos_de_pago_cc[$id]['total']);
             $metodos_de_pago[$id]['total'] += $metodos_de_pago_ventas_mostrador[$id]['total'] + $metodos_de_pago_cc[$id]['total'];
-            Log::info('_______________________________');    
+            // Log::info('_______________________________');    
         }
         return $metodos_de_pago;
     }
@@ -116,12 +116,12 @@ class ReporteController extends Controller
 
         $metodos_de_pago = $this->get_payment_methods();
 
-        Log::info('pagos:');
-        Log::info($pagos);
+        // Log::info('pagos:');
+        // Log::info($pagos);
 
         foreach ($pagos as $pago) {
-            Log::info('pago de '.$pago->haber);
-            Log::info($pago->current_acount_payment_methods);
+            // Log::info('pago de '.$pago->haber);
+            // Log::info($pago->current_acount_payment_methods);
             $total += $pago->haber;
             foreach ($pago->current_acount_payment_methods as $payment_method) {
                 $metodos_de_pago[$payment_method->id]['total'] += $payment_method->pivot->amount;
@@ -224,11 +224,11 @@ class ReporteController extends Controller
 
             $gastos_por_mes = [];
 
-            Log::info('mes inicio: '.$mes_inicio);
-            Log::info('mes fin: '.$mes_fin);
+            // Log::info('mes inicio: '.$mes_inicio);
+            // Log::info('mes fin: '.$mes_fin);
 
             while ($mes_inicio->lte($mes_fin)) {
-                Log::info('entro con mes inicio = '.$mes_inicio);
+                // Log::info('entro con mes inicio = '.$mes_inicio);
 
                 $provider_orders = ProviderOrder::where('user_id', $this->userId())
                                                 ->whereDate('created_at', '>=', $mes_inicio)
@@ -269,7 +269,7 @@ class ReporteController extends Controller
             $total = 0;
 
             foreach ($provider_orders as $provider_order) {
-                $total += ProviderOrderHelper::getTotal($provider_order);
+                $total += ProviderOrderHelper::getTotal($provider_order->id);
             }
 
             return [

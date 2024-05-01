@@ -15,6 +15,7 @@ use App\Http\Controllers\Helpers\DiscountHelper;
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SellerCommissionController;
@@ -130,26 +131,20 @@ class SaleHelper extends Controller {
         Self::attachArticles($model, $request->items);
         Self::attachCombos($model, $request->items);
         Self::attachServices($model, $request->items);
+        
         Self::attachDiscounts($model, $request->discounts_id);
         Self::attachSurchages($model, $request->surchages_id);
 
-        Self::check_deleted_articles_from_check($model, $previus_articles);
+        // Self::check_deleted_articles_from_check($model, $previus_articles);
 
-        Self::attach_articulos_despues_de_actualizar($model, $sale_modification);
+        if (!$from_store) {
+            SaleModificationsHelper::attach_articulos_despues_de_actualizar($model, $sale_modification);
+        }
+
         if ($from_store && !$model->to_check && !$model->checked) {
             Self::attachCurrentAcountsAndCommissions($model);
         } else {
             Self::checkNotaCredito($model, $request);
-        }
-    }
-
-    static function attach_articulos_despues_de_actualizar($sale, $sale_modification) {
-        if (!is_null($sale_modification)) {
-            foreach ($sale->articles as $article) {
-                $sale_modification->articulos_despues_de_actualizar()->attach($article->id, [
-                    'amount'    => $article->pivot->amount,
-                ]);
-            }
         }
     }
 
@@ -319,35 +314,22 @@ class SaleHelper extends Controller {
                             $otro_precio['amount'] = 1;
                         }
 
-                        Log::info('attachArticle de $otro_precio:');
-                        Log::info($otro_precio);
+                        // Log::info('attachArticle de $otro_precio:');
+                        // Log::info($otro_precio);
                         Self::attachArticle($sale, $otro_precio);
 
                     }
                 } else {
+                    $amount = Self::getAmount($sale, $article);
+                    if (($sale->to_check || $sale->checked) 
+                        || (!is_null($amount) && $amount > 0) )
                     Self::attachArticle($sale, $article);
                 }
 
 
                 if (!$sale->to_check && !$sale->checked) {
-                    $cancel = false;
-                    $amount = $article['amount'];
-                    if (isset($article['checked_amount']) && !is_null($article['checked_amount']) && (float)$article['checked_amount'] > 0) {
-                        Log::info('entro a checked_amount');
-                        Log::info('En checked_amount tiene: '.$article['checked_amount']);
-                        Log::info('En amount tiene: '.$article['amount']);
-                        if ($article['checked_amount'] == $article['amount']) {
-                            $cancel = true;
-                        }
-                        $amount = $article['checked_amount'];
-                    } 
-                    if (!$cancel) {
-                        ArticleHelper::discountStock($article['id'], $amount, $sale);
-                        Log::info('se desconto stock del articulo '.$article['id']);
-                    } else {
-                        Log::info('Sacando article id '.$article['id']);
-                        $sale->articles()->detach($article['id']);
-                    }
+                    ArticleHelper::discountStock($article['id'], Self::getAmount($sale, $article), $sale);
+                    // Log::info('se desconto stock del articulo '.$article['id']);
                 }
 
             }
@@ -355,6 +337,7 @@ class SaleHelper extends Controller {
     }
 
     static function attachArticle($sale, $article) {
+        Log::info('attachArticle '.$article['name']);
         $sale->articles()->attach($article['id'], [
             'amount'                => Self::getAmount($sale, $article),
             'cost'                  => Self::getCost($article),
@@ -448,9 +431,11 @@ class SaleHelper extends Controller {
     }
 
     static function getAmount($sale, $article) {
-        if ($sale->confirmed && isset($article['checked_amount']) && !is_null($article['checked_amount']) && (float)$article['checked_amount'] > 0) {
+        if ($sale->confirmed && isset($article['checked_amount']) && !is_null($article['checked_amount'])) {
+            // Log::info('amount de '.$article['checked_amount']);
             return (float)$article['checked_amount'];
         }
+        // Log::info('amount de '.$article['amount']);
         return (float)$article['amount'];
     }
 
@@ -510,36 +495,36 @@ class SaleHelper extends Controller {
 
     static function detachItems($sale, $sale_modification) {
 
-        foreach ($sale->articles as $article) {
-            $sale_modification->articulos_antes_de_actualizar()->attach($article->id, [
-                'amount'    => $article->pivot->amount,
-            ]);
-        }
+        SaleModificationsHelper::attach_articulos_antes_de_actualizar($sale, $sale_modification);
 
         if (!$sale->to_check && !$sale->checked) {
-            foreach ($sale->articles as $article) {
-                if (count($article->addresses) >= 1 && !is_null($sale->address_id)) {
-                    foreach ($article->addresses as $article_address) {
-                        if ($article_address->pivot->address_id == $sale->address_id) {
-                            $new_amount = $article_address->pivot->amount + $article->pivot->amount;
-                            $article->addresses()->updateExistingPivot($article_address->id, [
-                                'amount'    => $new_amount,
-                            ]);
-                        }
-                    }
-                } else if (!is_null($article->stock)) {
-                    $stock = 0;
-                    $stock = (int)$article->pivot->amount;
-                    $article->stock += $stock;
-                    $article->save();
-                }
-                Self::deleteStockMovement($sale, $article);
-            }
+            Self::restaurar_stock($sale);
         }
 
         $sale->articles()->detach();
         $sale->combos()->detach();
         $sale->services()->detach();
+    }
+
+    static function restaurar_stock($sale) {
+        foreach ($sale->articles as $article) {
+            if (count($article->addresses) >= 1 && !is_null($sale->address_id)) {
+                foreach ($article->addresses as $article_address) {
+                    if ($article_address->pivot->address_id == $sale->address_id) {
+                        $new_amount = $article_address->pivot->amount + $article->pivot->amount;
+                        $article->addresses()->updateExistingPivot($article_address->id, [
+                            'amount'    => $new_amount,
+                        ]);
+                    }
+                }
+            } else if (!is_null($article->stock)) {
+                $stock = 0;
+                $stock = (int)$article->pivot->amount;
+                $article->stock += $stock;
+                $article->save();
+            }
+            Self::deleteStockMovement($sale, $article);
+        }
     }
 
     static function deleteStockMovement($sale, $article) {

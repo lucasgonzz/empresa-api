@@ -23,10 +23,10 @@ class SaleModification extends Model
     }
 
     function articulos_antes_de_actualizar() {
-        return $this->belongsToMany(Article::class, 'article_sale_modification_antes_de_actualizar')->withPivot('amount');
+        return $this->belongsToMany(Article::class, 'article_sale_modification_antes_de_actualizar')->withPivot('amount', 'checked_amount');
     }
 
     function articulos_despues_de_actualizar() {
-        return $this->belongsToMany(Article::class, 'article_sale_modification_despues_de_actualizar')->withPivot('amount');
+        return $this->belongsToMany(Article::class, 'article_sale_modification_despues_de_actualizar')->withPivot('amount', 'checked_amount');
     }
 }

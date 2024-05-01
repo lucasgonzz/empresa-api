@@ -13,6 +13,12 @@ use Illuminate\Support\Facades\Log;
 class ArticleExport implements FromCollection, WithHeadings, WithMapping
 {
 
+    public $models = null;
+
+    function __construct($models) {
+        $this->models = $models;
+    }
+
     public function map($article): array
     {
         $map = [
@@ -45,16 +51,20 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
     public function collection()
     {
         set_time_limit(999999);
-        $articles = Article::where('user_id', UserHelper::userId())
-                        // ->select('bar_code', 'provider_code', 'name', 'iva_id', 'cost', 'percentage_gain', 'price', 'stock', 'stock_min', 'created_at', 'updated_at')
-                        ->where('status', 'active')
-                        ->with('iva')
-                        ->with('article_discounts')
-                        ->with('providers')
-                        ->with('sub_category')
-                        ->with('addresses')
-                        ->orderBy('created_at', 'DESC')
-                        ->get();
+        if (!is_null($this->models)) {
+            $articles = $this->models;
+        } else {
+            $articles = Article::where('user_id', UserHelper::userId())
+                            // ->select('bar_code', 'provider_code', 'name', 'iva_id', 'cost', 'percentage_gain', 'price', 'stock', 'stock_min', 'created_at', 'updated_at')
+                            ->where('status', 'active')
+                            ->with('iva')
+                            ->with('article_discounts')
+                            ->with('providers')
+                            ->with('sub_category')
+                            ->with('addresses')
+                            ->orderBy('created_at', 'DESC')
+                            ->get();
+        }
         // $articles = ArticleHelper::setPrices($articles);
         $articles = $this->setDiscounts($articles);
         // $articles = ArticleHelper::setDiscount($articles);

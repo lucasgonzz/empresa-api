@@ -2,7 +2,7 @@
 
 $articles = [];
 
-for ($num=1; $num <= 30 ; $num++) { 
+for ($num=30; $num >= 1 ; $num--) { 
     $article = [
         'featured'          => null,
         'bar_code'          => $num,
@@ -15,7 +15,7 @@ for ($num=1; $num <= 30 ; $num++) {
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/pinza.jpg',
+                'url'       => env('APP_URL').'/storage/pinza.jpeg',
             ],
         ],
     ];
@@ -23,4 +23,3 @@ for ($num=1; $num <= 30 ; $num++) {
     $articles[] = $article;
 }
 
-return $articles;

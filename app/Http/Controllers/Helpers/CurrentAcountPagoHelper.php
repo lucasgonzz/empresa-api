@@ -19,6 +19,7 @@ class CurrentAcountPagoHelper {
     public $sin_pagar;
 
     function __construct($model_name, $model_id, $pago) {
+
         $this->model_name = $model_name;
         $this->model_id = $model_id;
         $this->pago = $pago;
@@ -28,6 +29,7 @@ class CurrentAcountPagoHelper {
     }
 
     function setSinPagar() {
+
         if (!is_null($this->pago->to_pay_id) && is_null($this->sin_pagar)) {
             $this->sin_pagar = CurrentAcount::find($this->pago->to_pay_id);
         } else {
@@ -37,6 +39,9 @@ class CurrentAcountPagoHelper {
                                             ->orderBy('created_at', 'ASC')
                                             ->first();
         }
+
+        // Log::info('Sin pagar:');
+        // Log::info($this->sin_pagar->toArray());
     }
 
     function init() {
@@ -77,7 +82,7 @@ class CurrentAcountPagoHelper {
             'created_at'    => $this->pago->created_at,
         ]);
         echo('GUARDANDO EL PAGADO de '.$this->sin_pagar->detalle.' </br>');
-        // Log::info('El pagado_por de la '.$this->sin_pagar->detalle.' quedo asi:');
+        Log::info('El pagado_por de la '.$this->sin_pagar->detalle.' quedo asi:');
         // foreach ($this->sin_pagar->pagado_por as $pagado_por) {
             // Log::info('El pago N°'.$pagado_por->num_receipt.' pago '.$pagado_por->pivot->pagado.' a la '.CurrentAcount::find($pagado_por->pivot->debe_id)->detalle);
         // }
@@ -109,7 +114,8 @@ class CurrentAcountPagoHelper {
                                                         'payment_date'                  => $payment_method['payment_date'],
                                                         'num'                           => $payment_method['num'],
                                                         'credit_card_id'                => $payment_method['credit_card_id'] != 0 ? $payment_method['credit_card_id'] : null,
-                                                        'credit_card_payment_plan_id' => $payment_method['credit_card_payment_plan_id'] != 0 ? $payment_method['credit_card_payment_plan_id'] : null,
+                                                        'credit_card_payment_plan_id' => $payment_method['credit_card_payment_plan_id'] != 0 ? $payment_method['
+                                                        credit_card_payment_plan_id'] : null,
                                                         'user_id'   => UserHelper::userId(),
                                                     ]);
         }

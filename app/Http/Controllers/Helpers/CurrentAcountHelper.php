@@ -6,6 +6,7 @@ use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CurrentAcountController;
 use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
+use App\Http\Controllers\Helpers\DatabaseHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SellerCommissionHelper;
@@ -326,9 +327,11 @@ class CurrentAcountHelper {
     }
 
     static function checkPagos($model_name, $model_id, $si_o_si = false) {
+
         $model = GeneralHelper::getModelName($model_name)::find($model_id);
         if (!$model->pagos_checkeados || $si_o_si) {
             echo('Entro a checkPagos para '.$model->name.' </br>');
+            
             $debitos = CurrentAcount::orderBy('created_at', 'ASC')
                                             ->whereNotNull('debe');
             if ($model_name == 'client') {
@@ -343,6 +346,7 @@ class CurrentAcountHelper {
                 $debito->pagandose = 0;
                 $debito->status = 'sin_pagar';
                 $debito->save();
+                echo 'Se puso sin pagar debito de '.$debito->debe.' </br>';
             }
 
             $pagos = CurrentAcount::orderBy('created_at', 'ASC')
@@ -357,6 +361,7 @@ class CurrentAcountHelper {
             foreach ($pagos as $pago) {
                 $pago_helper = new CurrentAcountPagoHelper($model_name, $model_id, $pago);
                 $pago_helper->init();
+                echo 'Se llampo a pago_helper </br>';
             }
             $model->pagos_checkeados = 1;
             $model->save();

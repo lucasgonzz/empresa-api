@@ -248,40 +248,43 @@ class ProviderOrderHelper {
 		$provider_order = ProviderOrder::find($id);
 		$user = UserHelper::getFullModel();
 		$total = 0;
-		if ((boolean)$provider_order->total_from_provider_order_afip_tickets) {
-			foreach ($provider_order->provider_order_afip_tickets as $afip_ticket) {
-				$total += $afip_ticket->total;
-			}
-		} else {
-			foreach ($provider_order->articles as $article) {
-				if (($article->pivot->cost != '' || $article->pivot->received_cost != '') && $article->pivot->received > 0) {
-					$cost = $article->pivot->cost;
-					if (!is_null($article->pivot->received_cost)) {
-						$cost = $article->pivot->received_cost;
-					}
-					if ($article->pivot->cost_in_dollars) {
-						if (!is_null($provider_order->provider->dolar)) {
-							$cost *= $provider_order->provider->dolar;
-						} else if (!is_null($user->dollar)) {
-							// Log::info('cost esta en '.$cost);
-							// Log::info('sumando dolar de usuario de '.$user->dollar);
-							$cost *= $user->dollar;
-							// Log::info('cost quedo en '.$cost);
+		if (!is_null($provider_order)) {
+			
+			if ((boolean)$provider_order->total_from_provider_order_afip_tickets) {
+				foreach ($provider_order->provider_order_afip_tickets as $afip_ticket) {
+					$total += $afip_ticket->total;
+				}
+			} else {
+				foreach ($provider_order->articles as $article) {
+					if (($article->pivot->cost != '' || $article->pivot->received_cost != '') && $article->pivot->received > 0) {
+						$cost = $article->pivot->cost;
+						if (!is_null($article->pivot->received_cost)) {
+							$cost = $article->pivot->received_cost;
 						}
+						if ($article->pivot->cost_in_dollars) {
+							if (!is_null($provider_order->provider->dolar)) {
+								$cost *= $provider_order->provider->dolar;
+							} else if (!is_null($user->dollar)) {
+								// Log::info('cost esta en '.$cost);
+								// Log::info('sumando dolar de usuario de '.$user->dollar);
+								$cost *= $user->dollar;
+								// Log::info('cost quedo en '.$cost);
+							}
+						}
+						$total_article = $cost * $article->pivot->received;
+						if ($provider_order->total_with_iva && !is_null($article->pivot->iva_id) && $article->pivot->iva_id != 0) {
+							$ct = new Controller();
+							$iva = $ct->getModelBy('ivas', 'id', $article->pivot->iva_id);
+							if ($iva->percentage != 'No Gravado' && $iva->percentage != 'Exento' && $iva->percentage != 0)
+							$total_article += $total_article * $iva->percentage / 100;
+						}
+						$total += $total_article;
 					}
-					$total_article = $cost * $article->pivot->received;
-					if ($provider_order->total_with_iva && !is_null($article->pivot->iva_id) && $article->pivot->iva_id != 0) {
-						$ct = new Controller();
-						$iva = $ct->getModelBy('ivas', 'id', $article->pivot->iva_id);
-						if ($iva->percentage != 'No Gravado' && $iva->percentage != 'Exento' && $iva->percentage != 0)
-						$total_article += $total_article * $iva->percentage / 100;
-					}
-					$total += $total_article;
 				}
 			}
-		}
-		foreach ($provider_order->provider_order_extra_costs as $extra_cost) {
-			$total += $extra_cost->value;
+			foreach ($provider_order->provider_order_extra_costs as $extra_cost) {
+				$total += $extra_cost->value;
+			}
 		}
 		return $total;
 	}

@@ -70,36 +70,43 @@ class ArticleImport implements ToCollection
     }
 
     function checkRow($row) {
-        return !is_null(ImportHelper::getColumnValue($row, 'nombre', $this->columns));
+        return !is_null(ImportHelper::getColumnValue($row, 'nombre', $this->columns)) || !is_null(ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns)) || !is_null(ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns)) || !is_null(ImportHelper::getColumnValue($row, 'numero', $this->columns));
     }
 
     public function collection(Collection $rows) {
         $this->num_row = 1;
+        Log::info('finish_row '.$this->finish_row);
         if (is_null($this->finish_row) || $this->finish_row == '') {
             $this->finish_row = count($rows);
         } 
         foreach ($rows as $row) {
+            Log::info('Fila N° '.$this->num_row);
             if ($this->num_row >= $this->start_row && $this->num_row <= $this->finish_row) {
                 if ($this->checkRow($row)) {
+                    Log::info('Entro con la fila N° '.$this->num_row);
                     if (!is_null(ImportHelper::getColumnValue($row, 'numero', $this->columns))) {
+                        Log::info('Buscando por el N°');
                         $article = Article::where('user_id', UserHelper::userId())
                                             ->where('num', ImportHelper::getColumnValue($row, 'numero', $this->columns))
                                             ->where('status', 'active')
                                             ->first();
                         $this->saveArticle($row, $article);
                     } else if (!is_null(ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns))) {
+                        Log::info('Buscando por el codigo_de_barras');
                         $article = Article::where('user_id', UserHelper::userId())
                                             ->where('bar_code', ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns))
                                             ->where('status', 'active')
                                             ->first();
                         $this->saveArticle($row, $article);
                     } else if (!is_null(ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns))) {
+                        Log::info('Buscando por el codigo_de_proveedor');
                         $article = Article::where('user_id', UserHelper::userId())
                                             ->where('provider_code', ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns))
                                             ->where('status', 'active')
                                             ->first();
                         $this->saveArticle($row, $article);
                     } else {
+                        Log::info('Buscando por el nombre');
                         $article = Article::where('user_id', UserHelper::userId())
                                             ->whereNull('bar_code')
                                             ->whereNull('provider_code')
@@ -109,7 +116,7 @@ class ArticleImport implements ToCollection
                         $this->saveArticle($row, $article);
                     }
                 } else {
-                    Log::info('Se omitio una fila');
+                    Log::info('Se omitio una fila N° '.$this->num_row);
                 } 
             } else if ($this->num_row > $this->finish_row) {
                 break;
@@ -155,15 +162,6 @@ class ArticleImport implements ToCollection
         foreach ($this->props_to_set as $key => $value) {
             if (!ImportHelper::isIgnoredColumn($value, $this->columns)) {
                 $data[$key] = ImportHelper::getColumnValue($row, $value, $this->columns);
-                // if ($key == 'stock') {
-                //     if (!is_null($article) && $article->stock != ImportHelper::getColumnValue($row, $value, $this->columns)) {
-                //         $this->save_stock_movement = true;
-                //     } else {
-                //         $this->save_stock_movement = true;
-                //     }
-                // } else {
-                //     $data[$key] = ImportHelper::getColumnValue($row, $value, $this->columns);
-                // }
             }
         }
         if (!ImportHelper::isIgnoredColumn('unidad_medida', $this->columns)) {
@@ -186,7 +184,7 @@ class ArticleImport implements ToCollection
         
         if (!is_null($article) && $this->isDataUpdated($article, $data)) {
             $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $article->id);
-            // Log::info('Actualizar '.$article->name);
+            Log::info('Actualizar '.$article->name);
             if (UserHelper::hasExtencion('articles_pre_import')) {
                 $this->articles_pre_import_helper->add_article($article, $data);
             } else {

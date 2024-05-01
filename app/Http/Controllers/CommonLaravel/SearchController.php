@@ -23,15 +23,15 @@ class SearchController extends Controller
                 if ($filter['type'] == 'number') {
                     if ($filter['number_type'] == 'min' && $filter['value'] != '') {
                         $models = $models->where($filter['key'], '<', $filter['value']);
-                        // Log::info('Filtrando por number '.$filter['text'].' min');
+                        Log::info('Filtrando por number '.$filter['text'].' min');
                     }
                     if ($filter['number_type'] == 'equal' && $filter['value'] != '') {
                         $models = $models->where($filter['key'], '=', $filter['value']);
-                        // Log::info('Filtrando por number '.$filter['text'].' igual');
+                        Log::info('Filtrando por number '.$filter['text'].' igual');
                     }
                     if ($filter['number_type'] == 'max' && $filter['value'] != '') {
                         $models = $models->where($filter['key'], '>', $filter['value']);
-                        // Log::info('Filtrando por number '.$filter['text'].' max');
+                        Log::info('Filtrando por number '.$filter['text'].' max');
                     }
                 } else if (($filter['type'] == 'text' || $filter['type'] == 'textarea') && $filter['value'] != '') {
                     if ($filter['key'] == 'bar_code') {
@@ -39,16 +39,16 @@ class SearchController extends Controller
                     } else {
                         $models = $models->where($filter['key'], 'like', '%'.$filter['value'].'%');
                     }
-                    // Log::info('Filtrando por text '.$filter['text']);
+                    Log::info('Filtrando por text '.$filter['text']);
                 } else if ($filter['type'] == 'search' && $filter['value'] != 0) {
                     $models = $models->where($filter['key'], $filter['value']);
                     Log::info('Filtrando por text '.$filter['text'].' value = '.$filter['value']);
                 } else if ($filter['type'] == 'boolean' && $filter['value'] != -1) {
                     $models = $models->where($filter['key'], $filter['value']);
-                    // Log::info('Filtrando por boolean '.$filter['text']);
+                    Log::info('Filtrando por boolean '.$filter['text']);
                 } else if ($filter['type'] != 'boolean' && $filter['value'] != 0) {
                     $models = $models->where($filter['key'], $filter['value']);
-                    // Log::info('Filtrando por value '.$filter['text']);
+                    Log::info('Filtrando por value '.$filter['text']);
                 }
             }
         }
