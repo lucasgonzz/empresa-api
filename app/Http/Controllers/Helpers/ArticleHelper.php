@@ -75,18 +75,22 @@ class ArticleHelper {
         }
     }
 
-    static function setFinalPrice($article, $user_id = null) {
+    static function setFinalPrice($article, $user_id = null, $user = null) {
         // Log::info('setFinalPrice para '.$article->name);
         // if (!is_null($article->provider)) {
             // Log::info('provider: '.$article->provider->name);
         // }
         // Log::info('user_id: '.$user_id);
         // Log::info('Se esta usando la base_de_datos: '.config('database.connections.mysql.database'));
-        if (is_null($user_id)) {
-            $user = UserHelper::user();
-        } else {
-            $user = User::find($user_id);
+        
+        if (is_null($user)) {
+            if (is_null($user_id)) {
+                $user = UserHelper::user();
+            } else {
+                $user = User::find($user_id);
+            }
         }
+
         $current_final_price = $article->final_price;
         if (!is_null($article->percentage_gain) || ($article->apply_provider_percentage_gain && !is_null($article->provider) && !is_null($article->provider->percentage_gain))) {
             $article->price = null;

@@ -23,6 +23,7 @@ class Article extends Model
     }
 
     public function getCostoRealAttribute() {
+        return $this->cost;
         if (!is_null(Auth()->user())) {
             $owner = UserHelper::user();
             $cost = $this->cost;

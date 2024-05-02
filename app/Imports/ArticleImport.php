@@ -43,6 +43,8 @@ class ArticleImport implements ToCollection
         $this->setAddresses();
         $this->setProps();
 
+        $this->user = UserHelper::user();
+
         $this->import_history_chequeado = false;
 
         if (UserHelper::hasExtencion('articles_pre_import')) {
@@ -223,7 +225,7 @@ class ArticleImport implements ToCollection
             $this->setStockAddresses($row, $article);
             $this->setStockMovement($row, $article);
 
-            ArticleHelper::setFinalPrice($article);
+            ArticleHelper::setFinalPrice($article, null, $this->user);
         }
     }
 
