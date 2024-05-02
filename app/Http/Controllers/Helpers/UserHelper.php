@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Log;
 class UserHelper {
 
 	static function userId($from_owner = true) {
+        Log::info('-----------------> entro a userId');
         $user = Auth()->user();
         if (is_null($user) && env('APP_ENV') == 'local') {
             $user = User::where('company_name', 'Autopartes Boxes')->first();
@@ -26,10 +27,12 @@ class UserHelper {
     }
 
     static function user() {
+        Log::info('-----------------> entro a user');
         return User::find(Self::userId());
     }
 
     static function getFullModel($id = null) {
+        Log::info('-----------------> entro a getFullModel');
         if (is_null($id)) {
             $id = Self::userId();
         }

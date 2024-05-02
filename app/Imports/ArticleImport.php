@@ -28,7 +28,7 @@ class ArticleImport implements ToCollection
 {
     
     public function __construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id) {
-        set_time_limit(999999);
+        set_time_limit(99999999);
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
         $this->start_row = $start_row;
@@ -149,11 +149,20 @@ class ArticleImport implements ToCollection
                 'provider_id'       => $this->provider_id,
                 'created_models'    => $this->created_models,
                 'updated_models'    => $this->updated_models,
+                'observations'      => $this->get_observations(),
             ]);
             Log::info('Se creo import_history');
         } 
         Session::put('import_history_id', $current_import_history->id);
         $this->import_history_chequeado = true;
+    }
+
+    function get_observations() {
+        $observations = 'Columnas para importar: ';
+        foreach ($this->columns as $nombre_columna => $key) {
+            $observations .= $nombre_columna . ' ' . ' en la posicion '. $key . '. ';
+        }
+        return $observations;
     }
 
     function saveArticle($row, $article) {

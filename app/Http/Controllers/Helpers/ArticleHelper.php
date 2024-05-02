@@ -42,7 +42,7 @@ class ArticleHelper {
         }
     }
 
-    static function check_article_recipe_to_delete($recipes, $instance) {
+    static function check_article_recipe_to_delete($article) {
         if (!is_null($article->recipe)) {
             $article->recipe->delete();
         }

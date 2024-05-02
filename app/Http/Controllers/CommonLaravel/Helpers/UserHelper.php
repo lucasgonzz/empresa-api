@@ -4,10 +4,12 @@ namespace App\Http\Controllers\CommonLaravel\Helpers;
 
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
 
 class UserHelper {
 	
 	static function userId($get_owner = true) {
+        Log::info('-----------------> entro a userId');
         $user = Auth()->user();
         if (is_null($user) && env('APP_ENV') == 'local') {
             $user = User::where('company_name', str_replace('_', ' ', env('DEFAULT_COMPANY_NAME')))->first();
@@ -25,10 +27,12 @@ class UserHelper {
     }
 
     static function user() {
+        Log::info('-----------------> entro a user');
         return User::find(Self::userId());
     }
 
     static function getFullModel($get_owner = true) {
+        Log::info('-----------------> entro a getFullModel');
         $user = User::where('id', self::userId($get_owner))
                     ->withAll()
                     ->first();

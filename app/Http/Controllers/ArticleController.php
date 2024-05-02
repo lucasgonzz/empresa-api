@@ -183,8 +183,8 @@ class ArticleController extends Controller
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
         $columns = ArticleImportHelper::addAddressesColumns($columns);
-        Log::info('Columnas para importar articulos: ');
-        Log::info($columns);
+        // Log::info('Columnas para importar articulos: ');
+        // Log::info($columns);
         if ($request->has('models')) {
             
             $archivo_excel_path = $request->file('models')->store('imported_files');
@@ -262,12 +262,12 @@ class ArticleController extends Controller
 
         $recipes_donde_esta_este_articulo = ArticleHelper::get_recipes_que_tienen_este_articulo_como_insumo($model);
 
+        ArticleHelper::check_article_recipe_to_delete($model);
         
         ImageController::deleteModelImages($model);
         $model->delete();
         ArticleHelper::check_recipes_despues_de_eliminar_articulo($recipes_donde_esta_este_articulo, $this);
 
-        ArticleHelper::check_article_recipe_to_delete($model);
 
         $this->sendDeleteModelNotification('article', $model->id);
         return response(null);
