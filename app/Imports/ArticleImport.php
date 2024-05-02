@@ -28,7 +28,10 @@ class ArticleImport implements ToCollection
 {
     
     public function __construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id) {
-        set_time_limit(99999999);
+        set_time_limit(9999999999);
+
+        $this->user = UserHelper::user();
+
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
         $this->start_row = $start_row;
@@ -43,7 +46,6 @@ class ArticleImport implements ToCollection
         $this->setAddresses();
         $this->setProps();
 
-        $this->user = UserHelper::user();
 
         $this->import_history_chequeado = false;
 
@@ -66,7 +68,7 @@ class ArticleImport implements ToCollection
     }
 
     function setAddresses() {
-        $this->addresses = Address::where('user_id', UserHelper::userId())
+        $this->addresses = Address::where('user_id', $this->user->id)
                                     ->get();
         $this->stock_movement_ct = new StockMovementController();
     }
@@ -88,28 +90,28 @@ class ArticleImport implements ToCollection
                     Log::info('Entro con la fila N° '.$this->num_row);
                     if (!is_null(ImportHelper::getColumnValue($row, 'numero', $this->columns))) {
                         Log::info('Buscando por el N°');
-                        $article = Article::where('user_id', UserHelper::userId())
+                        $article = Article::where('user_id', $this->user->id)
                                             ->where('num', ImportHelper::getColumnValue($row, 'numero', $this->columns))
                                             ->where('status', 'active')
                                             ->first();
                         $this->saveArticle($row, $article);
                     } else if (!is_null(ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns))) {
                         Log::info('Buscando por el codigo_de_barras');
-                        $article = Article::where('user_id', UserHelper::userId())
+                        $article = Article::where('user_id', $this->user->id)
                                             ->where('bar_code', ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns))
                                             ->where('status', 'active')
                                             ->first();
                         $this->saveArticle($row, $article);
                     } else if (!is_null(ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns))) {
                         Log::info('Buscando por el codigo_de_proveedor');
-                        $article = Article::where('user_id', UserHelper::userId())
+                        $article = Article::where('user_id', $this->user->id)
                                             ->where('provider_code', ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns))
                                             ->where('status', 'active')
                                             ->first();
                         $this->saveArticle($row, $article);
                     } else {
                         Log::info('Buscando por el nombre');
-                        $article = Article::where('user_id', UserHelper::userId())
+                        $article = Article::where('user_id', $this->user->id)
                                             ->whereNull('bar_code')
                                             ->whereNull('provider_code')
                                             ->where('name', ImportHelper::getColumnValue($row, 'nombre', $this->columns))
@@ -145,7 +147,7 @@ class ArticleImport implements ToCollection
             Log::info('Se actualizo import_history');
         } else {
             $current_import_history = ImportHistory::create([
-                'user_id'           => UserHelper::userId(),
+                'user_id'           => $this->user->id,
                 'employee_id'       => UserHelper::userId(false),
                 'model_name'        => 'article',
                 'provider_id'       => $this->provider_id,
@@ -210,7 +212,7 @@ class ArticleImport implements ToCollection
                 $data['num'] = $this->ct->num('articles');
             }
             $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns));
-            $data['user_id'] = UserHelper::userId();
+            $data['user_id'] = $this->user->id;
             $data['created_at'] = Carbon::now()->subSeconds($this->finish_row - $this->num_row);
             $data['apply_provider_percentage_gain'] = 1;
             $article = Article::create($data);
