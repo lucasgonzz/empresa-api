@@ -23,14 +23,26 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Session;
 use Maatwebsite\Excel\Concerns\ToCollection;
 use Maatwebsite\Excel\Concerns\WithHeadingRow;
+// use Maatwebsite\Excel\Concerns\WithChunkReading;
 
 class ArticleImport implements ToCollection
 {
+
+
+    // public function chunkSize(): int
+    // {
+    //     return 100;
+    // }
     
-    public function __construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id) {
+    public function __construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user) {
         set_time_limit(9999999999);
 
-        $this->user = UserHelper::user();
+        Log::info('Se creo ArticleImport');
+
+        Log::info('user param:');
+        Log::info((array)$user);
+
+        $this->user = $user;
 
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
@@ -46,13 +58,38 @@ class ArticleImport implements ToCollection
         $this->setAddresses();
         $this->setProps();
 
+        $this->props_para_actualizar = [
+            'id',
+            'num',
+            'name',
+            'bar_code',
+            'provider_code',
+            'stock_min',
+            'iva_id',
+            'cost',
+            'cost_in_dollars',
+            'percentage_gain',
+            'price',
+            'category_id',
+            'sub_category_id',
+            'stock',
+        ];
+
+        $this->articulos_para_crear = [];
+        $this->articulos_para_actualizar = [];
+
+        $this->existing_articles = ArticleImportHelper::set_existing_articles($this->user, $this->props_para_actualizar, $this->provider_id);
+
 
         $this->import_history_chequeado = false;
 
-        if (UserHelper::hasExtencion('articles_pre_import')) {
+        if (UserHelper::hasExtencion('articles_pre_import', $this->user)) {
             $this->articles_pre_import_helper = new ArticlesPreImportHelper($this->provider_id, $this->pre_import_id);
         }
+
+        $this->trabajo_terminado = false;
     }
+
 
     function setProps() {
         $this->props_to_set = [
@@ -79,173 +116,204 @@ class ArticleImport implements ToCollection
 
     public function collection(Collection $rows) {
         $this->num_row = 1;
-        Log::info('finish_row '.$this->finish_row);
+
         if (is_null($this->finish_row) || $this->finish_row == '') {
             $this->finish_row = count($rows);
         } 
+
+        Log::info('existing_articles: '.count($this->existing_articles));
+
         foreach ($rows as $row) {
-            Log::info('Fila N° '.$this->num_row);
+            // Log::info('Fila N° '.$this->num_row);
             if ($this->num_row >= $this->start_row && $this->num_row <= $this->finish_row) {
                 if ($this->checkRow($row)) {
                     Log::info('Entro con la fila N° '.$this->num_row);
-                    if (!is_null(ImportHelper::getColumnValue($row, 'numero', $this->columns))) {
-                        Log::info('Buscando por el N°');
-                        $article = Article::where('user_id', $this->user->id)
-                                            ->where('num', ImportHelper::getColumnValue($row, 'numero', $this->columns))
-                                            ->where('status', 'active')
-                                            ->first();
-                        $this->saveArticle($row, $article);
-                    } else if (!is_null(ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns))) {
-                        Log::info('Buscando por el codigo_de_barras');
-                        $article = Article::where('user_id', $this->user->id)
-                                            ->where('bar_code', ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns))
-                                            ->where('status', 'active')
-                                            ->first();
-                        $this->saveArticle($row, $article);
-                    } else if (!is_null(ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns))) {
-                        Log::info('Buscando por el codigo_de_proveedor');
-                        $article = Article::where('user_id', $this->user->id)
-                                            ->where('provider_code', ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns))
-                                            ->where('status', 'active')
-                                            ->first();
-                        $this->saveArticle($row, $article);
-                    } else {
-                        Log::info('Buscando por el nombre');
-                        $article = Article::where('user_id', $this->user->id)
-                                            ->whereNull('bar_code')
-                                            ->whereNull('provider_code')
-                                            ->where('name', ImportHelper::getColumnValue($row, 'nombre', $this->columns))
-                                            ->where('status', 'active')
-                                            ->first();
-                        $this->saveArticle($row, $article);
+
+
+                    $num = ImportHelper::getColumnValue($row, 'numero', $this->columns);
+                    $bar_code = ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns);
+                    $provider_code = ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns);
+                    $name = ImportHelper::getColumnValue($row, 'nombre', $this->columns);
+
+                    $articulo_encontrado = null;
+
+                    if (!is_null($num) && isset($this->existing_articles[$num])) {
+                        $articulo_encontrado = $this->existing_articles[$num];
+                        Log::info('Buscando por num');
+                    } else if (!is_null($provider_code)) {
+                        Log::info('Buscando por provider_code');
+                        foreach ($this->existing_articles as $existing_article) {
+                            if ($existing_article['provider_code'] === $provider_code) {
+                                $articulo_encontrado = $existing_article;
+                                Log::info('encontro');
+                                break;
+                            }
+                        }
+                    } else if (!is_null($bar_code)) {
+                        Log::info('Buscando por bar_code');
+                        foreach ($this->existing_articles as $existing_article) {
+                            if ($existing_article['bar_code'] === $bar_code) {
+                                $articulo_encontrado = $existing_article;
+                                Log::info('encontro');
+                                break;
+                            }
+                        }
+                    } else if (!is_null($name)) {
+                        Log::info('Buscando por name');
+                        foreach ($this->existing_articles as $existing_article) {
+                            if ($existing_article['name'] === $name) {
+                                $articulo_encontrado = $existing_article;
+                                Log::info('encontro');
+                                break;
+                            }
+                        }
                     }
+                        
+
+                    $this->saveArticle($row, $articulo_encontrado);
+
+
                 } else {
                     Log::info('Se omitio una fila N° '.$this->num_row);
                 } 
             } else if ($this->num_row > $this->finish_row) {
+                Log::info('Se acabaron las filas');
                 break;
             }
             $this->num_row++;
         }
 
-        if (!$this->import_history_chequeado) {
-            $this->saveImportHistory();
+        if (!$this->trabajo_terminado) {
+            $this->crear_articulos();
+
+            $this->actualizar_articulos();
+
+
+            ArticleImportHelper::create_import_history($this->user, $this->provider_id, $this->created_models, $this->updated_models, $this->columns);
+
+            ArticleImportHelper::enviar_notificacion($this->user);
+            
+            $this->trabajo_terminado = true;
+        }
+
+
+    }
+
+    function crear_articulos() {
+
+        Log::info(count($this->articulos_para_crear).' articulos para crear:');
+
+        Article::insert($this->articulos_para_crear);
+
+        ArticleImportHelper::set_articles_num($this->user, $this->ct);
+    }
+
+    function actualizar_articulos() {
+        $ids = array_keys($this->articulos_para_actualizar);
+        $updatedData = array_values($this->articulos_para_actualizar);
+
+        Log::info(count($this->articulos_para_actualizar).' articulos para actualizar:');
+
+        foreach ($this->articulos_para_actualizar as $article_id => $article_data) {
+            Article::where('id', $article_id)->update($article_data);
         }
     }
 
-    function saveImportHistory() {
-        Log::info('______________________ saveImportHistory ______________________');
-        if (!is_null($this->import_history_id) && is_numeric($this->import_history_id)) {
-            // Log::info('aca:');
-            // Log::info($this->import_history_id);
-            $current_import_history = ImportHistory::find($this->import_history_id);
-
-            $current_import_history->created_models += $this->created_models;
-            $current_import_history->updated_models += $this->updated_models;
-            $current_import_history->save();
-
-            Log::info('Se actualizo import_history');
-        } else {
-            $current_import_history = ImportHistory::create([
-                'user_id'           => $this->user->id,
-                'employee_id'       => UserHelper::userId(false),
-                'model_name'        => 'article',
-                'provider_id'       => $this->provider_id,
-                'created_models'    => $this->created_models,
-                'updated_models'    => $this->updated_models,
-                'observations'      => $this->get_observations(),
-            ]);
-            Log::info('Se creo import_history');
-        } 
-        Session::put('import_history_id', $current_import_history->id);
-        $this->import_history_chequeado = true;
-    }
-
-    function get_observations() {
-        $observations = 'Columnas para importar: ';
-        foreach ($this->columns as $nombre_columna => $key) {
-            $observations .= $nombre_columna . ' ' . ' en la posicion '. $key . '. ';
-        }
-        return $observations;
-    }
-
-    function saveArticle($row, $article) {
+    function saveArticle($row, $articulo_existente) {
         $data = [];
+
         $this->save_stock_movement = false;
+        
         foreach ($this->props_to_set as $key => $value) {
             if (!ImportHelper::isIgnoredColumn($value, $this->columns)) {
                 $data[$key] = ImportHelper::getColumnValue($row, $value, $this->columns);
+                // Log::info('Agregando '.$value.' con '.ImportHelper::getColumnValue($row, $value, $this->columns));
             }
         }
+
         if (!ImportHelper::isIgnoredColumn('unidad_medida', $this->columns)) {
             $data['unidad_medida_id'] = ArticleImportHelper::get_unidad_medida_id(ImportHelper::getColumnValue($row, 'unidad_medida', $this->columns));
         }
+
         if (!ImportHelper::isIgnoredColumn('proveedor', $this->columns)) {
             LocalImportHelper::saveProvider(ImportHelper::getColumnValue($row, 'proveedor', $this->columns), $this->ct);
         }
+
         if (!ImportHelper::isIgnoredColumn('iva', $this->columns)) {
             $data['iva_id'] = LocalImportHelper::getIvaId(ImportHelper::getColumnValue($row, 'iva', $this->columns));
-        } else {
+        } else if (is_null($articulo_existente)) {
             $data['iva_id'] = 2;
         }
+
         if (!ImportHelper::isIgnoredColumn('categoria', $this->columns)) {
             $data['category_id'] = LocalImportHelper::getCategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), $this->ct);
         }
+
         if (!ImportHelper::isIgnoredColumn('categoria', $this->columns)) {
             $data['sub_category_id'] = LocalImportHelper::getSubcategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), ImportHelper::getColumnValue($row, 'sub_categoria', $this->columns), $this->ct);
         }
         
-        if (!is_null($article) && $this->isDataUpdated($article, $data)) {
-            $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $article->id);
-            Log::info('Actualizar '.$article->name);
-            if (UserHelper::hasExtencion('articles_pre_import')) {
-                $this->articles_pre_import_helper->add_article($article, $data);
+        if (!is_null($articulo_existente) && $this->isDataUpdated($articulo_existente, $data)) {
+
+            $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $articulo_existente['id'], $this->user->id);
+
+            if (UserHelper::hasExtencion('articles_pre_import', $this->user)) {
+
+                $this->articles_pre_import_helper->add_article($articulo_existente, $data);
+
             } else {
-                $article->update($data);
+
+                Log::info('Actualizar '.$articulo_existente['name']);
+                
+                $this->articulos_para_actualizar[$articulo_existente['id']] = $data;
+
                 $this->updated_models++;
             }
 
-        } else if (is_null($article) && $this->create_and_edit) {
-            if (!is_null(ImportHelper::getColumnValue($row, 'codigo', $this->columns))) {
-                $data['num'] = ImportHelper::getColumnValue($row, 'codigo', $this->columns);
-            } else {
-                $data['num'] = $this->ct->num('articles');
+        } else if (is_null($articulo_existente) && $this->create_and_edit) {
+            // if (!is_null(ImportHelper::getColumnValue($row, 'codigo', $this->columns))) {
+            //     $data['num'] = ImportHelper::getColumnValue($row, 'codigo', $this->columns);
+            // } else {
+            //     $data['num'] = $this->ct->num('articles');
+            // }
+            if (!is_null(ImportHelper::getColumnValue($row, 'nombre', $this->columns))) {
+                $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), null, $this->user->id);
             }
-            $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns));
             $data['user_id'] = $this->user->id;
             $data['created_at'] = Carbon::now()->subSeconds($this->finish_row - $this->num_row);
             $data['apply_provider_percentage_gain'] = 1;
-            $article = Article::create($data);
+
+            $this->articulos_para_crear[] = $data;
+
+            // $articulo_existente = Article::create($data);
             $this->created_models++;
         } 
-        if (!is_null($article)) {
-            // Log::info('Entro con '.$article->name);
-            $this->setDiscounts($row, $article);
-            $this->setProvider($row, $article);
-            // Log::info('El provider quedo en '.$article->provider_id);
+        // if (!is_null($article)) {
 
-            $this->setStockAddresses($row, $article);
-            $this->setStockMovement($row, $article);
+        //     $this->setDiscounts($row, $article);
+        //     $this->setProvider($row, $article);
 
-            ArticleHelper::setFinalPrice($article, null, $this->user);
-        }
+        //     $this->setStockAddresses($row, $article);
+        //     $this->setStockMovement($row, $article);
+
+        //     ArticleHelper::setFinalPrice($article, null, $this->user);
+        // }
     }
 
     function isDataUpdated($article, $data) {
-        return  (isset($data['name']) && $data['name']                          != $article->name) ||
-                (isset($data['bar_code']) && $data['bar_code']                  != $article->bar_code) ||
-                (isset($data['provider_code']) && $data['provider_code']        != $article->provider_code) ||
-                (isset($data['stock_min']) && $data['stock_min']                != $article->stock_min) ||
-                (isset($data['iva_id']) && $data['iva_id']                      != $article->iva_id) ||
-                (isset($data['cost']) && $data['cost']                          != $article->cost) ||
-                (isset($data['cost_in_dollars']) && $data['cost_in_dollars']    != $article->cost_in_dollars) ||
-                (isset($data['percentage_gain']) && $data['percentage_gain']    != $article->percentage_gain) ||
-                (isset($data['price']) && $data['price']                        != $article->price) ||
-                (isset($data['category_id']) && $data['category_id']            != $article->category_id) ||
-                (isset($data['sub_category_id']) && $data['sub_category_id']    != $article->sub_category_id) ||
-                (isset($data['stock']) && $data['stock']                        != $article->stock);
+        return  (isset($data['name']) && $data['name']                          != $article['name']) ||
+                (isset($data['bar_code']) && $data['bar_code']                  != $article['bar_code']) ||
+                (isset($data['provider_code']) && $data['provider_code']        != $article['provider_code']) ||
+                (isset($data['stock_min']) && $data['stock_min']                != $article['stock_min']) ||
+                (isset($data['iva_id']) && $data['iva_id']                      != $article['iva_id']) ||
+                (isset($data['cost']) && $data['cost']                          != $article['cost']) ||
+                (isset($data['cost_in_dollars']) && $data['cost_in_dollars']    != $article['cost_in_dollars']) ||
+                (isset($data['percentage_gain']) && $data['percentage_gain']    != $article['percentage_gain']) ||
+                (isset($data['price']) && $data['price']                        != $article['price']) ||
+                (isset($data['category_id']) && $data['category_id']            != $article['category_id']) ||
+                (isset($data['sub_category_id']) && $data['sub_category_id']    != $article['sub_category_id']) ||
+                (isset($data['stock']) && $data['stock']                        != $article['stock']);
     }
-
     function isFirstRow($row) {
         return ImportHelper::getColumnValue($row, 'nombre', $this->columns) == 'Nombre';
     }
@@ -337,21 +405,10 @@ class ArticleImport implements ToCollection
                 $provider_id = $this->ct->getModelBy('providers', 'name', ImportHelper::getColumnValue($row, 'proveedor', $this->columns), true, 'id');
             }
 
-            // Log::info('setProvider provider_id: '.$provider_id);
-
             if (!is_null($provider_id)) {
                 $article->provider_id = $provider_id;
                 $article->save();
             }
-            // if ($article->provider_id != $provider_id) {
-            //     $article->provider_id = $provider_id;
-            //     $article->save();
-            //     $article->providers()->attach($provider_id, [
-            //                                     'amount' => ImportHelper::getColumnValue($row, 'stock_actual', $this->columns),
-            //                                     'cost'   => ImportHelper::getColumnValue($row, 'costo', $this->columns),
-            //                                     'price'  => ImportHelper::getColumnValue($row, 'precio', $this->columns),
-            //                                 ]);
-            // }
         }
     }
 }

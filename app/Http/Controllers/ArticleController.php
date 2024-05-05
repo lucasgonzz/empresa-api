@@ -10,6 +10,7 @@ use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Pdf\ArticleListPdf;
 use App\Http\Controllers\Pdf\ArticlePdf;
 use App\Http\Controllers\Pdf\ArticleTicketPdf;
@@ -17,6 +18,7 @@ use App\Http\Controllers\StockMovementController;
 use App\Imports\ArticleImport;
 use App\Imports\LocationImport;
 use App\Imports\ProvinciaImport;
+use App\Jobs\ProcessArticleImport;
 use App\Models\Article;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -30,10 +32,10 @@ class ArticleController extends Controller
         // Log::info('Se esta usando la bbdd = '.config('database.connections.mysql.database'));
         $models = Article::where('user_id', $this->userId())
                             ->where('status', $status)
-                            ->where(function($query) use ($last_updated) {
-                                $query->where('updated_at', '>', $last_updated);
-                                $query->orWhere('final_price_updated_at', '>', $last_updated);
-                            })
+                            // ->where(function($query) use ($last_updated) {
+                            //     $query->where('updated_at', '>', $last_updated);
+                            //     $query->orWhere('final_price_updated_at', '>', $last_updated);
+                            // })
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
                             ->paginate(200);
@@ -183,30 +185,34 @@ class ArticleController extends Controller
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
         $columns = ArticleImportHelper::addAddressesColumns($columns);
-        // Log::info('Columnas para importar articulos: ');
-        // Log::info($columns);
         if ($request->has('models')) {
             
             $archivo_excel_path = $request->file('models')->store('imported_files');
-            Log::info('Se guardo archivo excel en: '.$archivo_excel_path);
 
         } else if ($request->has('archivo_excel_path')) {
 
             $archivo_excel_path = $request->archivo_excel_path;
-            Log::info('Ya habia archivo excel en: '.$archivo_excel_path);
 
         }
 
         $archivo_excel = storage_path('app/' . $archivo_excel_path);
-
-        Excel::import(new ArticleImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id), $archivo_excel);
         
-        $this->sendUpdateModelsNotification('article');
+        ProcessArticleImport::dispatch($archivo_excel, $columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id, UserHelper::user());
 
-        $import_history_id = Session::get('import_history_id');
-        $pre_import_id = Session::get('pre_import_id');
+        return response(null, 200);
+        
+        // Excel::queueImport(new ProcessArticleImport($archivo_excel, $columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id), $archivo_excel);
 
-        return response()->json(['import_history_id' => $import_history_id, 'pre_import_id' => $pre_import_id, 'archivo_excel_path' => $archivo_excel_path], 201);
+        // ProcessArticleImport::dispatch($archivo_excel, $columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id);
+
+        // Excel::import(new ArticleImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id), $archivo_excel);
+        
+        // $this->sendUpdateModelsNotification('article');
+
+        // $import_history_id = Session::get('import_history_id');
+        // $pre_import_id = Session::get('pre_import_id');
+
+        // return response()->json(['import_history_id' => $import_history_id, 'pre_import_id' => $pre_import_id, 'archivo_excel_path' => $archivo_excel_path], 201);
     }
 
     function export(Request $request) {

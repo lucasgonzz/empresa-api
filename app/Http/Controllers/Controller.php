@@ -142,11 +142,12 @@ class Controller extends BaseController
         Auth()->user()->notify(new DeletedModel($model_name, $model_id, $check_added_by, $for_user_id));
     }
 
-    function sendUpdateModelsNotification($model_name, $check_added_by = true, $for_user_id = null) {
-        if (is_null($for_user_id)) {
-            $for_user_id = $this->userId();
+    function sendUpdateModelsNotification($model_name, $check_added_by = true, $for_user = null) {
+        if (is_null($for_user)) {
+            $for_user = $this->user();
         }
-        Auth()->user()->notify(new UpdateModels($model_name, $check_added_by, $for_user_id));
+        $for_user->notify(new UpdateModels($model_name, $check_added_by, $for_user->id));
+        // Auth()->user()->notify(new UpdateModels($model_name, $check_added_by, $for_user_id));
     }
 
     function num($table, $user_id = null, $prop_to_check = 'user_id', $prop_value = null) {

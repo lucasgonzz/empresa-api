@@ -13,6 +13,7 @@ class DatabaseProviderHelper {
         $provider = Provider::where('user_id', $user->id)
                         ->where('id', '>=', $from_id)
                         ->with('provider_price_lists')
+                        ->orderBy('created_at', 'ASC')
                         ->get();
 
         DatabaseHelper::set_user_conecction($bbdd_destino);
@@ -35,6 +36,8 @@ class DatabaseProviderHelper {
                 'saldo'                 => $provider->saldo, 
                 'comercio_city_user_id' => $provider->comercio_city_user_id, 
                 'user_id'               => $provider->user_id,
+                'created_at'            => $provider->created_at,
+                'updated_at'            => $provider->updated_at,
             ]);
 
             echo 'Se creo provider id '.$created_provider->id.' </br>';

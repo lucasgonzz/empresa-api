@@ -50,6 +50,8 @@ class DatabaseOrderHelper {
                     echo 'Se creo order id: '.$created_order->id.' </br>';
 
                     Self::attach_articles($created_order, $order);
+                } else {
+                    echo 'NO se creo order id: '.$order->id.' </br>';
                 }
             }
         }

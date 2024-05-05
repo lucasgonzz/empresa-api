@@ -517,10 +517,13 @@ class ArticleHelper {
         return $variant['stock'];
     }
 
-    static function slug($name, $ignore_id = null) {
+    static function slug($name, $ignore_id = null, $user_id = null) {
+        if (is_null($user_id)) {
+            $user_id = UserHelper::userId();
+        }
         $index = 1;
         $slug = Str::slug($name);
-        $repeated_article = Article::where('user_id', UserHelper::userId())
+        $repeated_article = Article::where('user_id', $user_id)
                                     ->where('slug', $slug);
         if (!is_null($ignore_id)) {
             $repeated_article = $repeated_article->where('id', '!=', $ignore_id);
@@ -530,7 +533,7 @@ class ArticleHelper {
         while (!is_null($repeated_article)) {
             $slug = substr($slug, 0, strlen($name));
             $slug .= '-'.$index;
-            $repeated_article = Article::where('user_id', UserHelper::userId())
+            $repeated_article = Article::where('user_id', $user_id)
                                         ->where('slug', $slug)
                                         ->first();
             $index++;

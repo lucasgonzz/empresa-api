@@ -19,6 +19,7 @@ class DatabaseArticleHelper {
                                 ->orderBy('id', 'ASC')
                                 ->where('id', '>=', $from_id)
                                 ->with('descriptions', 'images', 'price_changes' ,'stock_movements', 'addresses')
+                                ->withTrashed()
                                 ->get();
 
             DatabaseHelper::set_user_conecction($bbdd_destino);

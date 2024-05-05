@@ -37,9 +37,9 @@ class ArticlesPreImportHelper {
 	}
 
 	function add_article($article, $data) {
-		if ($article->cost != $data['cost']) {
-			$this->current_pre_import->articles()->attach($article->id, [
-				'costo_actual'	=> $article->cost,
+		if ($article['cost'] != $data['cost']) {
+			$this->current_pre_import->articles()->attach($article['id'], [
+				'costo_actual'	=> $article['cost'],
 				'costo_nuevo'	=> $data['cost'],
 			]);
 			// Log::info('add_article. Se agrego '.$article->name);

@@ -29,6 +29,8 @@ class LocalImportHelper {
                     'haber'     => !$is_for_debe ? $saldo_inicial : null,
                     'saldo'     => $saldo_inicial,
                 ]);
+                $model->saldo = $saldo_inicial;
+                $model->save();
             }
         }
 	}

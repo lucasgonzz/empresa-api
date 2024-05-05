@@ -12,6 +12,8 @@ class DatabaseClientsHelper {
     static function copiar_clients($user, $bbdd_destino, $from_id) {
         $clients = Client::where('user_id', $user->id)
                         ->where('id', '>=', $from_id)
+                        ->withTrashed()
+                        ->orderBy('created_at', 'ASC')
                         ->get();
 
 
@@ -38,6 +40,8 @@ class DatabaseClientsHelper {
                 'comercio_city_user_id'       => $client->comercio_city_user_id,
                 'seller_id'                   => $client->seller_id,
                 'user_id'                     => $client->user_id,
+                'created_at'                  => $client->created_at,
+                'updated_at'                  => $client->updated_at,
             ]);
 
             echo 'Se creo client id '.$created_client->id.' </br>';
@@ -53,10 +57,11 @@ class DatabaseClientsHelper {
         DatabaseHelper::set_user_conecction(env('DB_DATABASE'), false);
 
         $current_acounts = CurrentAcount::where('client_id', $created_client->id)
-                        ->orderBy('id', 'ASC')
-                        // ->where('id', '>=', $from_id)
-                        // ->with('pagado_por', 'pagando_a')
-                        ->get();
+                                            ->orderBy('id', 'ASC')
+                                            ->with('current_acount_payment_methods')
+                                            // ->where('id', '>=', $from_id)
+                                            // ->with('pagado_por', 'pagando_a')
+                                            ->get();
 
         DatabaseHelper::set_user_conecction($bbdd_destino);
 
@@ -99,8 +104,8 @@ class DatabaseClientsHelper {
                     'payment_date'                  => $payment_method->pivot->payment_date,
                     'num'                           => $payment_method->pivot->num,
                     'credit_card_id'                => $payment_method->pivot->credit_card_id,
-                    'credit_card_payment_plan_id' => $payment_method->pivot->credit_card_payment_plan_id,
-                    'user_id'                   => $client->user_id,
+                    'credit_card_payment_plan_id'   => $payment_method->pivot->credit_card_payment_plan_id,
+                    'user_id'                       => $created_client->user_id,
                 ]);
 
                 echo 'Se agergo metodo de pago '.$payment_method->name.' </br>';

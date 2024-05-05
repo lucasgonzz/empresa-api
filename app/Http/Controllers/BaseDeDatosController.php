@@ -23,7 +23,7 @@ use Illuminate\Support\Str;
 class BaseDeDatosController extends Controller
 {
 
-    // Copiar las carts y sus articulos
+    // Copiar las recipes
 
     function copiar_usuario($company_name, $bbdd_destino) {
         DatabaseUserHelper::copiar_usuario($this->get_user($company_name), $bbdd_destino);
@@ -86,6 +86,7 @@ class BaseDeDatosController extends Controller
 
                 $models = $table::where('user_id', $user->id)
                                 ->orderBy('id', 'ASC')
+                                // ->withTrashed()
                                 ->get();
 
                 
@@ -204,13 +205,13 @@ class BaseDeDatosController extends Controller
         // 'article_variants',  
         // 'bar_codes',
         'brands',
-        'budgets',
-        'buyers', 
+        // 'budgets',
+        // 'buyers', 
         // 'buyer_messages',
         // 'buyer_message_default_responses',
         // 'calls',
         // 'cards',
-        'carts',  
+        // 'carts',  
         'categories',
         // 'category_inventory_linkage',  
         // 'checks', 
@@ -311,7 +312,7 @@ class BaseDeDatosController extends Controller
         // 'provider_order_statuses',
         // 'provider_price_lists',
         // 'questions',
-        'recipes',
+        // 'recipes',
         // 'sales',  
         // 'sale_service',   
         // 'sale_surchage',  

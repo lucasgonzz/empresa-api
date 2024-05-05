@@ -17,20 +17,30 @@ class DatabaseBuyerHelper {
         DatabaseHelper::set_user_conecction($bbdd_destino);
 
         foreach ($buyers as $buyer) {
-            $created_buyer = Buyer::create([
-                'id'                        => $buyer->id,
-                'num'                       => $buyer->num,
-                'name'                      => $buyer->name,
-                'email'                     => $buyer->email,
-                'phone'                     => $buyer->phone,
-                'password'                  => $buyer->password,
-                'comercio_city_client_id'   => $buyer->comercio_city_client_id,
-                'user_id'                   => $buyer->user_id,
-            ]);
 
-            foreach ($buyer->messages as $message) {
-                Message::create($message->toArray());
+            $ya_esta = Buyer::find($buyer->id);
+
+            if (is_null($ya_esta)) {
+                $created_buyer = Buyer::create([
+                    'id'                        => $buyer->id,
+                    'num'                       => $buyer->num,
+                    'name'                      => $buyer->name,
+                    'email'                     => $buyer->email,
+                    'phone'                     => $buyer->phone,
+                    'password'                  => $buyer->password,
+                    'comercio_city_client_id'   => $buyer->comercio_city_client_id,
+                    'user_id'                   => $buyer->user_id,
+                ]);
+
+                foreach ($buyer->messages as $message) {
+                    Message::create($message->toArray());
+                }
+
+                echo 'se creo buyer id '.$created_buyer->id.' </br>';
+            } else {
+                echo 'NO se creo buyer id '.$buyer->id.' </br>';
             }
+
 
             // foreach ($buyer->addresses as $address) {
             //     Address::create($address->toArray());

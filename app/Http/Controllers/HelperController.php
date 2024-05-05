@@ -665,7 +665,7 @@ class HelperController extends Controller
                             ->where('id', '!=', 7334);
                             // ->take(50);
         if (!is_null($client_id)) {
-            $clients = $clients->where('id', '>', $client_id);
+            $clients = $clients->where('id', '>=', $client_id);
             Log::info('viene por aca');
             echo 'Filtrando id mayor a '.$client_id.' </br>';
         }

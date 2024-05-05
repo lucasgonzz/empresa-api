@@ -26,7 +26,9 @@ class DatabaseProviderOrderHelper {
                 'provider_id'                               => $provider_order->provider_id,
                 'provider_order_status_id'                  => $provider_order->provider_order_status_id,
                 'days_to_advise'                            => $provider_order->days_to_advise,
-                'user_id'                                   => $provider_order->user_id
+                'user_id'                                   => $provider_order->user_id,
+                'created_at'                                => $provider_order->created_at,
+                'updated_at'                                => $provider_order->updated_at,
             ]);
 
             foreach ($provider_order->articles as $article) {

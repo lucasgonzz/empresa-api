@@ -14,8 +14,8 @@ class Provider extends Model
     protected $guarded = [];
 
     function scopeWithAll($query) {
-        $query->with('iva_condition', 'comercio_city_user', 'provider_price_lists', 'location')
-            ->withCount('current_acounts');
+        $query->with('iva_condition', 'comercio_city_user', 'provider_price_lists', 'location');
+        // $query->with('iva_condition', 'comercio_city_user', 'provider_price_lists', 'location')->withCount('current_acounts');
     }
 
     function provider_price_lists() {

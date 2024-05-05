@@ -42,6 +42,8 @@ class DatabaseSaleHelper {
                         'surchages_in_services'             => $sale->surchages_in_services,
                         'employee_id'                       => $sale->employee_id,
                         'to_check'                          => $sale->to_check,
+                        'checked'                           => $sale->checked,
+                        'confirmed'                         => $sale->confirmed,
                         'user_id'                           => $sale->user_id,
                         'printed'                           => $sale->printed,
                         'created_at'                        => $sale->created_at,
