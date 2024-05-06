@@ -45,7 +45,7 @@ class ArticleImportHelper {
 							->get();
 
 		foreach ($articles as $article) {
-			$article->num = $ct->num('articles');
+			$article->num = $ct->num('articles', null, 'user_id', $user->id);
 			$article->save();
 		}
 	}

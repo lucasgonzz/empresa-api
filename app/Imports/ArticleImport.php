@@ -205,6 +205,8 @@ class ArticleImport implements ToCollection
 
         Article::insert($this->articulos_para_crear);
 
+        Log::info('Se crearon:');
+        
         ArticleImportHelper::set_articles_num($this->user, $this->ct);
     }
 
