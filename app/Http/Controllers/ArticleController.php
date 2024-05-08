@@ -197,7 +197,7 @@ class ArticleController extends Controller
 
         $archivo_excel = storage_path('app/' . $archivo_excel_path);
         
-        ProcessArticleImport::dispatch($archivo_excel, $columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id, UserHelper::user());
+        ProcessArticleImport::dispatch($archivo_excel, $columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id, UserHelper::user(), Auth()->user()->id, $archivo_excel_path);
 
         return response(null, 200);
         
@@ -263,7 +263,7 @@ class ArticleController extends Controller
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 200);
     }
 
-    function destroy($id) {
+    function destroy($id, $send_notification = true) {
         $model = Article::find($id);
 
         $recipes_donde_esta_este_articulo = ArticleHelper::get_recipes_que_tienen_este_articulo_como_insumo($model);
@@ -274,8 +274,10 @@ class ArticleController extends Controller
         $model->delete();
         ArticleHelper::check_recipes_despues_de_eliminar_articulo($recipes_donde_esta_este_articulo, $this);
 
+        if ($send_notification) {
+            $this->sendDeleteModelNotification('article', $model->id);
+        }
 
-        $this->sendDeleteModelNotification('article', $model->id);
         return response(null);
     }
 

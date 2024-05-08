@@ -75,7 +75,7 @@ class ArticleHelper {
         }
     }
 
-    static function setFinalPrice($article, $user_id = null, $user = null) {
+    static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null) {
         // Log::info('setFinalPrice para '.$article->name);
         // if (!is_null($article->provider)) {
             // Log::info('provider: '.$article->provider->name);
@@ -161,7 +161,7 @@ class ArticleHelper {
         if ($current_final_price != $article->final_price) {
             $article->previus_final_price = $current_final_price; 
             $article->final_price_updated_at = Carbon::now();
-            PriceChangeController::store($article);
+            PriceChangeController::store($article, $auth_user_id);
         }
 
         // echo($article->name.' final_price: '.$article->final_price.' </br>');

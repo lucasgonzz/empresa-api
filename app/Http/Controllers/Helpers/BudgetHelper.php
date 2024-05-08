@@ -30,7 +30,11 @@ class BudgetHelper {
 		Self::deleteCurrentAcount($budget);
 	    Self::deleteSale($budget);
 		if ($budget->budget_status->name == 'Confirmado') {
-			Self::saveCurrentAcount($budget);
+
+			if (!UserHelper::hasExtencion('check_sales')) {
+				Self::saveCurrentAcount($budget);
+			}
+
 	        Self::saveSale($budget);
 		} 
 	    CurrentAcountHelper::checkSaldos('client', $budget->client_id);
@@ -44,8 +48,10 @@ class BudgetHelper {
 	            'user_id' 				=> UserHelper::userId(),
 	            'client_id' 			=> $budget->client_id,
 	            'budget_id' 			=> $budget->id,
+	            'observations' 			=> $budget->observations,
             	'employee_id'           => SaleHelper::getEmployeeId(),
-	            'save_current_acount' 	=> 0,
+	            'save_current_acount' 	=> UserHelper::hasExtencion('check_sales') ? 1 : 0,
+	            'to_check'				=> UserHelper::hasExtencion('check_sales') ? 1 : 0,
 	        ]);
 	        Self::attachSaleArticles($sale, $budget);
 	        Self::attachSaleDiscountsAndSurchages($sale, $budget);
@@ -54,13 +60,30 @@ class BudgetHelper {
 	}
 
 	static function attachSaleArticles($sale, $budget) {
+		$has_extencion_check_sales = UserHelper::hasExtencion('check_sales');
 		foreach($budget->articles as $article) {
 			$sale->articles()->attach($article->id, [
-				'amount'	=> $article->pivot->amount,
-				'price'	    => $article->pivot->price,
-				'discount'	=> $article->pivot->bonus,
+				'amount'			=> $article->pivot->amount,
+				'checked_amount'	=> Self::get_checked_amount($has_extencion_check_sales, $article),
+				'price'	    		=> $article->pivot->price,
+				'discount'			=> $article->pivot->bonus,
 			]);
 		}
+	}
+
+	static function get_checked_amount($has_extencion_check_sales, $article) {
+		$checked_amount = null;
+		if ($has_extencion_check_sales) {
+			$stock_actual = $article->stock;
+			if ($article->pivot->amount > $stock_actual) {
+				if ($stock_actual < 0) {
+					$checked_amount = 0;
+				} else {
+					$checked_amount = $stock_actual;
+				}
+			}
+		}
+		return $checked_amount;
 	}
 
 	static function attachSaleDiscountsAndSurchages($sale, $budget) {

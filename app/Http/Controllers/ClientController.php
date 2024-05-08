@@ -40,6 +40,7 @@ class ClientController extends Controller
             'saldo'                     => $request->saldo,
             'comercio_city_user_id'     => $request->comercio_city_user_id,
             'seller_id'                 => $request->seller_id,
+            'pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar'                 => $request->pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar,
             'user_id'                   => $this->userId(),
         ]);
         $this->sendAddModelNotification('Client', $model->id);
@@ -67,6 +68,7 @@ class ClientController extends Controller
         $model->saldo                       = $request->saldo;
         $model->comercio_city_user_id       = $request->comercio_city_user_id;
         $model->seller_id                   = $request->seller_id;
+        $model->pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar                   = $request->pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar;
         $model->save();
         $this->sendAddModelNotification('Client', $model->id);
         return response()->json(['model' => $this->fullModel('Client', $model->id)], 200);

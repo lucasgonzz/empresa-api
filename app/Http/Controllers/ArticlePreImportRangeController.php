@@ -19,8 +19,7 @@ class ArticlePreImportRangeController extends Controller
 
     public function store(Request $request) {
         $model = ArticlePreImportRange::create([
-            'num'                   => $this->num('ArticlePreImportRange'),
-            'name'                  => $request->name,
+            // 'name'                  => $request->name,
             'min'                   => $request->min,
             'max'                   => $request->max,
             'color'                 => $request->color,
@@ -36,7 +35,6 @@ class ArticlePreImportRangeController extends Controller
 
     public function update(Request $request, $id) {
         $model = ArticlePreImportRange::find($id);
-        $model->name                = $request->name;
         $model->min                 = $request->min;
         $model->max                 = $request->max;
         $model->color               = $request->color;

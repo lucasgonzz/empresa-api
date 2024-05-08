@@ -214,7 +214,7 @@ class UserSeeder extends Seeder
 
                 // $user->extencions()->attach([1,2,5,6,8,9,10,13]);
                 // $user->extencions()->attach([6,2,9, 15, 17, 18, 19, 20]);
-                $user->extencions()->attach([1,2,5,6,8,9,10,12,13,14,16]);
+                $user->extencions()->attach([1,2,5,6,8,9,10,12,13,14,16,17,18,20]);
                 
                 UserConfiguration::create([
                     'current_acount_pagado_details'         => 'Saldado',
@@ -229,11 +229,12 @@ class UserSeeder extends Seeder
                     'iva_condition_id'      => 1,
                     'razon_social'          => 'Empresa de '.$user->company_name,
                     'domicilio_comercial'   => 'Pellegrini 1876',
-                    'cuit'                  => '20175018841',
+                    'cuit'                  => '20381712010',
                     // 20175018841 papa 
                     // 20167430490 felix
+                    // 20381712010 Nico Ferretodo
                     'punto_venta'           => 4,
-                    'ingresos_brutos'       => '20175018841',
+                    'ingresos_brutos'       => '20381712010',
                     'inicio_actividades'    => Carbon::now()->subYears(5),
                     'user_id'               => $user->id,
                 ]);

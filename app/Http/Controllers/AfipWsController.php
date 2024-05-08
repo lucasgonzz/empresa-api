@@ -24,7 +24,8 @@ class AfipWsController extends Controller
     public $sale;
     public $errors;
     public $observations;
-    public $monto_minimo_para_factura_de_credito = 546737;
+    public $monto_minimo_para_factura_de_credito = 1357480;
+    // public $monto_minimo_para_factura_de_credito = 546737;
 
     function __construct($sale) {
         Log::info('AfipWsController __construct');
@@ -182,6 +183,9 @@ class AfipWsController extends Controller
             }
             $invoice['FeCAEReq']['FeDetReq']['FECAEDetRequest']['Iva'] = $ivas;
         }
+        
+        Log::info('invoice:');
+        Log::info((array)$invoice);
 
         // Se visualiza el resultado con el CAE correspondiente al comprobante.
         $result = $this->wsfe->FECAESolicitar($invoice);
@@ -218,14 +222,26 @@ class AfipWsController extends Controller
     function checkObservations($result) {
         $observations = null;
         if (isset($result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones)) {
-            $observations = $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones->Obs;
-            $observations = $this->convertir_utf8($observations);
-            foreach ($observations as $observation) {
+            $observations = (array)$result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones->Obs;
+            // $observations = $this->convertir_utf8($observations);
+            Log::info('observations:');
+            Log::info($observations);
+            if (isset($observations['Msg'])) {
                 AfipError::create([
-                    'message'   => $observation['Msg'],
-                    'code'      => $observation['Code'],
+                    'message'   => $observations['Msg'],
+                    'code'      => $observations['Code'],
                     'sale_id'   => $this->sale->id,
                 ]);
+            } else {
+                foreach ($observations as $observation) {
+                    // Log::info('observation:');
+                    // Log::info($observation);
+                    AfipError::create([
+                        'message'   => $observation['Msg'],
+                        'code'      => $observation['Code'],
+                        'sale_id'   => $this->sale->id,
+                    ]);
+                }
             }
         }
         $this->observations = $observations;
@@ -422,7 +438,9 @@ class AfipWsController extends Controller
     function check_guardad_cuenta_corriente_despues_de_facturar() {
         if (UserHelper::hasExtencion('guardad_cuenta_corriente_despues_de_facturar')) {
 
-            if ($this->sale->afip_ticket->resultado == 'A') {
+            if ($this->sale->afip_ticket->resultado == 'A' 
+                && !is_null($this->sale->client)
+                && !$this->sale->client->pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar) {
                 $this->sale->save_current_acount = 1;
                 $this->sale->save();
 

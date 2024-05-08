@@ -31,7 +31,7 @@ class DeletedModel extends Notification {
     }
 
     public function broadcastOn() {
-        return 'added_model.'.$this->for_user_id;
+        return 'deleted_model.'.$this->for_user_id;
     }
 
     public function toBroadcast($notifiable) {

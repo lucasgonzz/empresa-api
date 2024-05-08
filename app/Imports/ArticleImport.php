@@ -34,15 +34,17 @@ class ArticleImport implements ToCollection
     //     return 100;
     // }
     
-    public function __construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user) {
+    public function __construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id, $archivo_excel_path) {
         set_time_limit(9999999999);
 
         Log::info('Se creo ArticleImport');
 
-        Log::info('user param:');
-        Log::info((array)$user);
+        // Log::info('user param:');
+        // Log::info((array)$user);
 
         $this->user = $user;
+        $this->auth_user_id = $auth_user_id;
+        $this->archivo_excel_path = $archivo_excel_path;
 
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
@@ -122,6 +124,7 @@ class ArticleImport implements ToCollection
         } 
 
         Log::info('existing_articles: '.count($this->existing_articles));
+        // Log::info($this->existing_articles);
 
         foreach ($rows as $row) {
             // Log::info('Fila N° '.$this->num_row);
@@ -143,7 +146,8 @@ class ArticleImport implements ToCollection
                     } else if (!is_null($provider_code)) {
                         Log::info('Buscando por provider_code');
                         foreach ($this->existing_articles as $existing_article) {
-                            if ($existing_article['provider_code'] === $provider_code) {
+                            // Log::info('comparando '.$existing_article['provider_code'].' con '.$provider_code);
+                            if ($existing_article['provider_code'] == $provider_code) {
                                 $articulo_encontrado = $existing_article;
                                 Log::info('encontro');
                                 break;
@@ -152,7 +156,7 @@ class ArticleImport implements ToCollection
                     } else if (!is_null($bar_code)) {
                         Log::info('Buscando por bar_code');
                         foreach ($this->existing_articles as $existing_article) {
-                            if ($existing_article['bar_code'] === $bar_code) {
+                            if ($existing_article['bar_code'] == $bar_code) {
                                 $articulo_encontrado = $existing_article;
                                 Log::info('encontro');
                                 break;
@@ -161,15 +165,16 @@ class ArticleImport implements ToCollection
                     } else if (!is_null($name)) {
                         Log::info('Buscando por name');
                         foreach ($this->existing_articles as $existing_article) {
-                            if ($existing_article['name'] === $name) {
+                            if ($existing_article['name'] == $name) {
                                 $articulo_encontrado = $existing_article;
                                 Log::info('encontro');
                                 break;
                             }
                         }
                     }
-                        
 
+                    Log::info('sigue por aca');
+                        
                     $this->saveArticle($row, $articulo_encontrado);
 
 
@@ -184,12 +189,11 @@ class ArticleImport implements ToCollection
         }
 
         if (!$this->trabajo_terminado) {
-            $this->crear_articulos();
+            // $this->crear_articulos();
 
-            $this->actualizar_articulos();
+            // $this->actualizar_articulos();
 
-
-            ArticleImportHelper::create_import_history($this->user, $this->provider_id, $this->created_models, $this->updated_models, $this->columns);
+            ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path);
 
             ArticleImportHelper::enviar_notificacion($this->user);
             
@@ -222,6 +226,7 @@ class ArticleImport implements ToCollection
     }
 
     function saveArticle($row, $articulo_existente) {
+        Log::info('saveArticle para row N° '.$this->num_row);
         $data = [];
 
         $this->save_stock_movement = false;
@@ -254,30 +259,38 @@ class ArticleImport implements ToCollection
         if (!ImportHelper::isIgnoredColumn('categoria', $this->columns)) {
             $data['sub_category_id'] = LocalImportHelper::getSubcategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), ImportHelper::getColumnValue($row, 'sub_categoria', $this->columns), $this->ct);
         }
+
+        $article = null;
         
         if (!is_null($articulo_existente) && $this->isDataUpdated($articulo_existente, $data)) {
-
+            Log::info('Habia articulo');
             $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $articulo_existente['id'], $this->user->id);
 
             if (UserHelper::hasExtencion('articles_pre_import', $this->user)) {
+                
+                Log::info('Se agrego a pre_import la N° '.$this->num_row);
 
                 $this->articles_pre_import_helper->add_article($articulo_existente, $data);
 
             } else {
 
-                Log::info('Actualizar '.$articulo_existente['name']);
+
+                $article = Article::find($articulo_existente['id']);
+
+                $article->update($data);
+
+                // $article = Article::where('id', $articulo_existente['id'])->update($data);
+
+                Log::info('Se actualizo '.$articulo_existente['name']);
                 
-                $this->articulos_para_actualizar[$articulo_existente['id']] = $data;
+                // $this->articulos_para_actualizar[$articulo_existente['id']] = $data;
 
                 $this->updated_models++;
             }
 
         } else if (is_null($articulo_existente) && $this->create_and_edit) {
-            // if (!is_null(ImportHelper::getColumnValue($row, 'codigo', $this->columns))) {
-            //     $data['num'] = ImportHelper::getColumnValue($row, 'codigo', $this->columns);
-            // } else {
-            //     $data['num'] = $this->ct->num('articles');
-            // }
+
+           
             if (!is_null(ImportHelper::getColumnValue($row, 'nombre', $this->columns))) {
                 $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), null, $this->user->id);
             }
@@ -285,21 +298,35 @@ class ArticleImport implements ToCollection
             $data['created_at'] = Carbon::now()->subSeconds($this->finish_row - $this->num_row);
             $data['apply_provider_percentage_gain'] = 1;
 
-            $this->articulos_para_crear[] = $data;
+            $data['num'] = $this->ct->num('articles', null, 'user_id', $this->user->id);
 
-            // $articulo_existente = Article::create($data);
+
+            $article = Article::create($data);
+
+            Log::info('Se creo');
+
+            // $this->articulos_para_crear[] = $data;
+
             $this->created_models++;
-        } 
-        // if (!is_null($article)) {
+        } else {
+            Log::info('No entro a ningun lado la N° '.$this->num_row);
+        }
+        if (!is_null($article)) {
+            
+            Log::info('$article no es null:');
+            // Log::info((array)$article);
 
-        //     $this->setDiscounts($row, $article);
-        //     $this->setProvider($row, $article);
+            $this->setDiscounts($row, $article);
+            $this->setProvider($row, $article);
 
-        //     $this->setStockAddresses($row, $article);
-        //     $this->setStockMovement($row, $article);
+            $this->setStockAddresses($row, $article);
+            $this->setStockMovement($row, $article);
 
-        //     ArticleHelper::setFinalPrice($article, null, $this->user);
-        // }
+            ArticleHelper::setFinalPrice($article, null, $this->user, $this->auth_user_id);
+        }
+    }
+
+    function actualizar_articulo($articulo_existente, $data) {
     }
 
     function isDataUpdated($article, $data) {

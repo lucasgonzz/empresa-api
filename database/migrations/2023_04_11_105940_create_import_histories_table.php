@@ -22,6 +22,7 @@ class CreateImportHistoriesTable extends Migration
             $table->integer('updated_models')->default(0);
             $table->integer('provider_id')->nullable();
             $table->text('observations')->nullable();
+            $table->text('excel_url')->nullable();
             $table->timestamps();
         });
     }

@@ -29,12 +29,21 @@ class DeleteController extends Controller
             // }
         }
         $models_response = [];
+        
+        $send_notification = true;
+        if (count($models) > 300) {
+            $send_notification = false;
+        }
         foreach ($models as $model) {
             $controller_name = 'App\\Http\\Controllers\\'.ucfirst($model_name).'Controller';
             $controller = new $controller_name();
-            $controller->destroy($model->id);
-            // ImageController::deleteModelImages($model);
-            // $model->delete();
+
+            if ($model_name == 'article') {
+                $controller->destroy($model->id, $send_notification);
+            } else {
+                $controller->destroy($model->id);
+            }
+            
         }
         return response()->json(['models' => $models], 200);
     }

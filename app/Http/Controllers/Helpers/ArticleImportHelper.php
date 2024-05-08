@@ -8,26 +8,41 @@ use App\Models\Address;
 use App\Models\Article;
 use App\Models\ImportHistory;
 use App\Models\UnidadMedida;
+use App\Notifications\GlobalNotification;
 use Illuminate\Support\Facades\Log;
 
 class ArticleImportHelper {
 
 	static function enviar_notificacion($user) {
-		$ct = new Controller();
-        $ct->sendUpdateModelsNotification('article', false, $user);
+        $functions_to_execute = [
+        	[
+        		'btn_text'		=> 'Actualizar lista de articulos',
+        		'function_name'	=> 'update_articles_after_import',
+        		'btn_variant'	=> 'primary',
+        	],
+        ];
+
+        $user->notify(new GlobalNotification(
+		    'Importacion de Excel finalizada correctamente',
+		    'success',
+		    $functions_to_execute,
+		    $user->id,
+		    false,
+        ));
 	}
 
-    static function create_import_history($user, $provider_id, $created_models, $updated_models, $columns) {
+    static function create_import_history($user, $auth_user_id, $provider_id, $created_models, $updated_models, $columns, $archivo_excel_path) {
         ImportHistory::create([
             'user_id'           => $user->id,
-            'employee_id'       => UserHelper::userId(false),
+            'employee_id'       => $auth_user_id,
             'model_name'        => 'article',
             'provider_id'       => $provider_id,
             'created_models'    => $created_models,
             'updated_models'    => $updated_models,
             'observations'      => Self::get_observations($columns),
+            'excel_url'			=> $archivo_excel_path,
         ]);
-        Log::info('Se creo ImportHistory');
+        Log::info('Se creo ImportHistory con '.$created_models.' creados y '.$updated_models.' actualizados con provider_id: '.$provider_id);
     }
 
     static function get_observations($columns) {
@@ -51,14 +66,19 @@ class ArticleImportHelper {
 	}
 
     static function set_existing_articles($user, $props_para_actualizar, $provider_id) {
+		Log::info('set_existing_articles provider_id de '.$provider_id);
+
         $_existing_articles = Article::where('user_id', $user->id)
                                             ->where('status', 'active');
 
 		if (!is_null($provider_id) && $provider_id != 0) {
 			$_existing_articles = $_existing_articles->where('provider_id', $provider_id);
+			Log::info('Filtrando por provider_id de '.$provider_id);
 		}
 
 		$_existing_articles = $_existing_articles->get($props_para_actualizar);
+
+		Log::info(count($_existing_articles).' filtrados');
 
         $existing_articles = [];
         foreach ($_existing_articles as $existing_article) {

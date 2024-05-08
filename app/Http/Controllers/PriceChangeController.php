@@ -16,13 +16,16 @@ class PriceChangeController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
-    static function store($article) {
+    static function store($article, $auth_user_id = null) {
+        if (is_null($auth_user_id)) {
+            $auth_user_id = UserHelper::userId(false);
+        }
         PriceChange::create([
             'article_id'    => $article->id,
             'cost'          => $article->cost,
             'price'         => $article->price,
             'final_price'   => $article->final_price,
-            'employee_id'   => UserHelper::userId(false),
+            'employee_id'   => $auth_user_id,
         ]);
     }
 }

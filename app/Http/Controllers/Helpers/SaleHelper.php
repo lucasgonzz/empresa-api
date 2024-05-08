@@ -38,10 +38,18 @@ use Illuminate\Support\Facades\Log;
 class SaleHelper extends Controller {
 
     static function check_guardad_cuenta_corriente_despues_de_facturar($sale, $instance) {
-        if (UserHelper::hasExtencion('guardad_cuenta_corriente_despues_de_facturar')) {
+        if (UserHelper::hasExtencion('guardad_cuenta_corriente_despues_de_facturar')
+            && !Self::al_cliente_se_le_factura_en_el_acto($sale) ) {
             $sale->save_current_acount = 0;
             $sale->save();
         }
+    }
+
+    static function al_cliente_se_le_factura_en_el_acto($sale) {
+        if (!is_null($sale->client) && $sale->client->pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar) {
+            return true;            
+        }
+        return false;
     }
 
     static function setPrinted($instance, $sale, $confirmed) {

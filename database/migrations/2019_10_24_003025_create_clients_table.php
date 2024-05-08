@@ -35,6 +35,7 @@ class CreateClientsTable extends Migration
             $table->bigInteger('seller_id')->nullable()->unsigned();
             $table->boolean('pagos_checkeados')->default(0);
             $table->string('status')->default('active');
+            $table->boolean('pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar')->default(0);
             $table->softDeletes();
 
 
