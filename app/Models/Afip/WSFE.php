@@ -47,6 +47,8 @@ class WSFE extends WSN
             $config['wsdl_cache_file']  = $this->testing ? public_path().'/afip/wsdl/wsfehomo_wsdl.xml' : public_path().'/afip/wsdl/wsfe_wsdl.xml';
         }
 
+        $config['for_constancia_de_inscripcion'] = false;
+
         parent::__construct($config);
     }
 

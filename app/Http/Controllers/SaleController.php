@@ -63,6 +63,7 @@ class SaleController extends Controller
             'current_acount_payment_method_id'  => SaleHelper::getCurrentAcountPaymentMethodId($request),
             'afip_information_id'               => $request->afip_information_id,
             'save_current_acount'               => $request->save_current_acount,
+            'omitir_en_cuenta_corriente'        => $request->omitir_en_cuenta_corriente,
             'price_type_id'                     => $request->price_type_id,
             'discounts_in_services'             => $request->discounts_in_services,
             'surchages_in_services'             => $request->surchages_in_services,
@@ -202,11 +203,11 @@ class SaleController extends Controller
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
     }
 
-    function pdf($id, $with_prices, $with_costs, $confirmed = 0) {
+    function pdf($id, $with_prices, $with_costs, $precios_netos, $confirmed = 0) {
         $sale = Sale::find($id);
         Log::info('El usuario '.Auth()->user()->name.' id '.Auth()->user()->id.' va a imprimir la venta N° '.$sale->num.' id: '.$sale->id);
         SaleHelper::setPrinted($this, $sale, $confirmed);
-        $pdf = new SalePdf($sale, (boolean)$with_prices, (boolean)$with_costs);
+        $pdf = new SalePdf($sale, (boolean)$with_prices, (boolean)$with_costs, (boolean)$precios_netos);
     }
 
     function afipTicketPdf($id) {

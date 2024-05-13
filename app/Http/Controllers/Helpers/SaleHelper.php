@@ -300,7 +300,9 @@ class SaleHelper extends Controller {
     }
 
     static function attachCurrentAcountsAndCommissions($sale) {
-        if (!is_null($sale->client_id) && $sale->save_current_acount) {
+        if (!is_null($sale->client_id) 
+            && $sale->save_current_acount
+            && !$sale->omitir_en_cuenta_corriente) {
             $helper = new CurrentAcountAndCommissionHelper($sale);
             $helper->attachCommissionsAndCurrentAcounts();
 

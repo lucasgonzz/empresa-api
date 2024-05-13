@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Pdf;
 
 use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
+use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\ImageHelper;
@@ -14,7 +15,7 @@ require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class SalePdf extends fpdf {
 
-	function __construct($sale, $with_prices, $with_costs, $save_doc_as = false) {
+	function __construct($sale, $with_prices, $with_costs, $precios_netos, $save_doc_as = false) {
 		parent::__construct();
 		$this->SetAutoPageBreak(false);
 		$this->start_x = 5;
@@ -22,11 +23,18 @@ class SalePdf extends fpdf {
 		$this->line_height = 5;
 		$this->table_header_line_height = 7;
 		
-		$this->user = UserHelper::getFullModel();
 		$this->sale = $sale;
+		
+		$this->user = UserHelper::getFullModel();
+        $this->afip_helper = new AfipHelper($this->sale);
+
 		$this->with_prices = $with_prices;
 		$this->with_costs = $with_costs;
-		$this->total_sale = SaleHelper::getTotalSale($this->sale, false, false);
+		$this->precios_netos = $precios_netos;
+		$this->total_sale = 0;
+
+		// Sumar descuentos y recargos
+		// $this->total_sale = SaleHelper::getTotalSale($this->sale, false, false);
 		$this->total_articles = 0;
 		$this->total_services = 0;
 		$this->AddPage();
@@ -135,13 +143,15 @@ class SalePdf extends fpdf {
 		$this->SetLineWidth(.1);
 		$index = 1;
 		foreach ($this->sale->articles as $article) {
-			// $this->total_articles += SaleHelper::getTotalItem($article);
+			// $this->total_articles += $this->get_price($article);
 			$this->printItem($index, $article);
+			$this->total_sale += $this->get_price($article);
 			$index++;
 		}
 		foreach ($this->sale->services as $service) {
-			// $this->total_services += SaleHelper::getTotalItem($service);
+			// $this->total_services += $this->get_price($service);
 			$this->printItem($index, $service);
+			$this->total_sale += $this->get_price($service);
 			$index++;
 		}
 	}
@@ -178,10 +188,12 @@ class SalePdf extends fpdf {
 
 	function setTotales() {
 		foreach ($this->sale->articles as $article) {
-			$this->total_articles += SaleHelper::getTotalItem($article);
+			$this->total_articles += $this->sub_total($article);
+			// $this->tal_articles += SaleHelper::getTotalItem($article);
 		}
 		foreach ($this->sale->services as $service) {
-			$this->total_services += SaleHelper::getTotalItem($service);
+			$this->total_services += $this->sub_total($service);
+			// $this->total_services += SaleHelper::getTotalItem($service);
 		}
 	}
 
@@ -249,7 +261,7 @@ class SalePdf extends fpdf {
 			$this->Cell(
 				$this->getFields()['Precio'], 
 				$this->line_height, 
-				'$'.$item->pivot->price, 
+				'$'.Numbers::price($this->get_price($item)), 
 				$this->b, 
 				0, 
 				'C'
@@ -273,7 +285,7 @@ class SalePdf extends fpdf {
 			$this->Cell(
 				$this->getFields()['Sub total'], 
 				$this->line_height, 
-				'$'.SaleHelper::getTotalItem($item), 
+				'$'.Numbers::price($this->sub_total($item)),
 				$this->b, 
 				0, 
 				'C'
@@ -287,6 +299,29 @@ class SalePdf extends fpdf {
 			$width = 5 + $this->getFields()['#'] + $this->getFields()['Num'] + $this->getFields()['Codigo'] + $this->getFields()['Nombre'] + $this->getFields()['Cant'];
 			$this->Line($this->start_x, $this->y, $width, $this->y);
 		}
+	}
+
+	function sub_total($item) {
+
+        $amount = $item->pivot->amount;
+        
+        $total = $this->get_price($item) * $amount;
+        if (!is_null($item->pivot->discount)) {
+            $total -= $total * ($item->pivot->discount / 100);
+        }
+        return $total;
+	}
+
+	function get_price($item) {
+		if ($this->precios_netos && $this->is_article($item)) {
+			return $this->afip_helper->getArticlePrice($this->sale, $item, true);
+		} else {
+			return $item->pivot->price;
+		}
+	}
+
+	function is_article($item) {
+		return isset($item->bar_code);
 	}
 
 	function commissions() {
@@ -368,7 +403,7 @@ class SalePdf extends fpdf {
 					'L'
 				);
 		    }
-		    if ($total_services > 0) {
+		    if (count($this->sale->services) > 0) {
 		    	$this->x = $this->start_x;
 		    	if ($this->sale->discounts_in_services) {
 		    		$text = 'Se aplican descuentos a los servicios';
@@ -411,7 +446,7 @@ class SalePdf extends fpdf {
 					'L'
 				);
 		    }
-		    if ($total_services > 0) {
+		    if (count($this->sale->services) > 0) {
 		    	$this->x = $this->start_x;
 		    	if ($this->sale->surchages_in_services) {
 		    		$text = 'Se aplican recargos a los servicios';

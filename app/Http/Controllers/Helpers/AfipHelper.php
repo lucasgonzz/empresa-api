@@ -120,7 +120,7 @@ class AfipHelper extends Controller {
             if (!is_null($this->article->iva)) {
                 $article_iva = $this->article->iva->percentage;
             }
-            return $price / (($article_iva / 100) + 1); 
+            return $price / (((float)$article_iva / 100) + 1); 
         } 
         return $price;
     }
@@ -145,10 +145,10 @@ class AfipHelper extends Controller {
         return $price;
     }
 
-    function getArticlePrice($sale, $article) {
+    function getArticlePrice($sale, $article, $precio_neto_sin_iva = false) {
         $this->article = $article;
         $price = $this->article->pivot->price;
-        if ($this->isBoletaA()) {
+        if ($precio_neto_sin_iva || $this->isBoletaA()) {
             if (!is_null($article->iva) && $article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento' && $article->iva->percentage != 0) {
                 return $this->getPriceWithoutIva();
             } 
@@ -233,7 +233,9 @@ class AfipHelper extends Controller {
         $result = $wsfe->FECompUltimoAutorizado($pto_vta);
         Log::info('getNumeroComprobante');
         Log::info((array)$result);
-        return $result->FECompUltimoAutorizadoResult->CbteNro + 1;
+        if (!$result['hubo_un_error']) {
+            return $result['result']->FECompUltimoAutorizadoResult->CbteNro + 1;
+        } 
     }
 
 }

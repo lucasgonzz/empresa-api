@@ -112,7 +112,7 @@ Route::get('prueba', function() {
 	dd(App\Http\Controllers\Helpers\PaywayHelper::getPaymentMethodId('Visa'));
 });
 
-Route::get('get-persona', 'AfipWsController@getPersona');
+// Route::get('get-persona', 'AfipWsController@getPersona');
 
 // HOME
 // Registro
@@ -123,7 +123,7 @@ Route::get('home/clients', 'HomeController@clients');
 
 
 // PDF
-Route::get('sale/pdf/{id}/{with_prices}/{with_costs}/{confirmed?}', 'SaleController@pdf');
+Route::get('sale/pdf/{id}/{with_prices}/{with_costs}/{precios_netos}/{confirmed?}', 'SaleController@pdf');
 Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
 Route::get('sale/afip-ticket-pdf/{id}', 'SaleController@afipTicketPdf');
 Route::get('sale/delivered-articles-pdf/{id}', 'SaleController@deliveredArticlesPdf');

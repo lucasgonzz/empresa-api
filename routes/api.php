@@ -101,6 +101,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('current-acount-payment-method', 'CurrentAcountPaymentMethodController');
     Route::resource('client', 'ClientController');
     Route::post('client/excel/import', 'ClientController@import');
+    Route::get('client/get-afip-information-by-cuit/{cuit}', 'ClientController@get_afip_information_by_cuit');
+
     Route::resource('seller', 'SellerController');
     Route::resource('price-type', 'PriceTypeController');
 

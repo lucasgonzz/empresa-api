@@ -41,6 +41,9 @@ class CreateSalesTable extends Migration
             $table->text('observations')->nullable();
             $table->integer('user_id')->unsigned()->nullable();
 
+
+            $table->boolean('omitir_en_cuenta_corriente')->default(0)->nullable();
+
             $table->foreign('user_id')
                     ->references('id')->on('users');
             $table->foreign('client_id')

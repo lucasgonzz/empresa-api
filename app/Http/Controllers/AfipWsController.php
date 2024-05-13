@@ -190,16 +190,20 @@ class AfipWsController extends Controller
         // Se visualiza el resultado con el CAE correspondiente al comprobante.
         $result = $this->wsfe->FECAESolicitar($invoice);
         
-        Log::info('Resultado:');
-        Log::info((array)$result);
 
-        // return;
+        if (!$result['hubo_un_error']) {
+            Log::info('Resultado:');
+            Log::info((array)$result);
 
-        $this->checkObservations($result);
+            $result = $result['result'];
 
-        $this->checkErrors($result);
+            $this->checkObservations($result);
 
-        $this->update_afip_ticket($result, $importes['total'], $moneda_id);
+            $this->checkErrors($result);
+
+            $this->update_afip_ticket($result, $importes['total'], $moneda_id);
+        }
+
 
     }
 

@@ -34,7 +34,7 @@ class SearchController extends Controller
                         Log::info('Filtrando por number '.$filter['text'].' max');
                     }
                 } else if (($filter['type'] == 'text' || $filter['type'] == 'textarea') && $filter['value'] != '') {
-                    if ($filter['key'] == 'bar_code') {
+                    if ($filter['key'] == 'bar_code' || $filter['key'] == 'provider_code') {
                         $models = $models->where($filter['key'], $filter['value']);
                     } else {
                         $models = $models->where($filter['key'], 'like', '%'.$filter['value'].'%');

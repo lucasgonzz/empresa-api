@@ -5,6 +5,7 @@ namespace Database\Seeders;
 use App\Http\Controllers\Controller;
 use App\Models\Address;
 use App\Models\AfipInformation;
+use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
 use App\Models\User;
 use App\Models\UserConfiguration;
@@ -47,7 +48,6 @@ class UserSeeder extends Seeder
                 'plan_id'                       => 3,
                 'plan_discount'                 => 27,
                 'article_ticket_info_id'        => 1,
-                // 'app_url'                       => 'https://comerciocity.com',
                 'online_configuration'          => [
                     'online_price_type_id'          => 1,
                     'register_to_buy'               => 1,
@@ -66,6 +66,29 @@ class UserSeeder extends Seeder
                 ],
                 'base_de_datos'                     => 'empresa_prueba_1',
                 'google_custom_search_api_key'      => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
+                'extencions'                        => [
+                    'budgets',
+                    'production',
+                    // 'combos',
+                    'sales.hide',
+                    'acopios',
+                    'online',
+                    'article.costo_real',
+                    'bar_code_scanner',
+                    'comerciocity_interno',
+                    'articles_default_in_vender',
+                    'article_num_in_online',
+                    'check_sales',
+                    'sale.observations',
+                    'production.order_production',
+                    'production.production_movement',
+                    'mercado_libre',
+                    'articles_pre_import',
+                    'guardad_cuenta_corriente_despues_de_facturar',
+                    'codigo_proveedor_en_vender',
+                    'check_article_stock_en_vender',
+                    'ask_save_current_acount',
+                ],  
             ],
             [
                 'id'                            => 501,
@@ -118,36 +141,6 @@ class UserSeeder extends Seeder
                 'visible_password'  => null,
                 'home_position'                 => 2,
             ],
-            // [
-            //     'name'              => 'Juliana',
-            //     'company_name'      => 'Marcos',
-            //     'image_url'         => env('APP_URL').'/storage/pinocho.png',
-            //     'doc_number'        => '123456',
-            //     'email'             => 'marcosgonzalez5500@gmail.com',
-            //     'password'          => bcrypt('1234'),
-            //     'visible_password'  => null,
-            //     'home_position'                 => 2,
-            // ],
-            // [
-            //     'name'              => 'Inidca',
-            //     'company_name'      => 'Marcos',
-            //     'image_url'         => env('APP_URL').'/storage/indica.png',
-            //     'doc_number'        => '1234',
-            //     'email'             => 'marcosgonzalez5500@gmail.com',
-            //     'password'          => bcrypt('1234'),
-            //     'visible_password'  => null,
-            //     'home_position'                 => 2,
-            // ],
-            // [
-            //     'name'              => 'Calie',
-            //     'company_name'      => 'Marcos',
-            //     'image_url'         => env('APP_URL').'/storage/cali.png',
-            //     'doc_number'        => '1234',
-            //     'email'             => 'marcosgonzalez5500@gmail.com',
-            //     'password'          => bcrypt('1234'),
-            //     'visible_password'  => null,
-            //     'home_position'                 => 2,
-            // ],
             [
                 'name'              => 'Patricio',
                 'doc_number'        => '1',
@@ -212,9 +205,13 @@ class UserSeeder extends Seeder
             ]);
             if (is_null($user->owner_id)) {
 
-                // $user->extencions()->attach([1,2,5,6,8,9,10,13]);
-                // $user->extencions()->attach([6,2,9, 15, 17, 18, 19, 20]);
-                $user->extencions()->attach([1,2,5,6,8,9,10,12,13,14,16,17,18,20]);
+                if (isset($model['extencions'])) {
+                    foreach ($model['extencions'] as $extencion_slug) {
+                        $extencion = ExtencionEmpresa::where('slug', $extencion_slug)
+                                                    ->first();
+                        $user->extencions()->attach($extencion->id);
+                    }
+                }
                 
                 UserConfiguration::create([
                     'current_acount_pagado_details'         => 'Saldado',

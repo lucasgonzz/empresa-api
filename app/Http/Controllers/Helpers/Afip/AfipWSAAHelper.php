@@ -6,23 +6,24 @@ use Illuminate\Support\Facades\Log;
 
 class AfipWSAAHelper {
 	
-	function __construct($testing) {
+	function __construct($testing, $ws_name = 'wsfe') {
 		$this->testing = $testing;
+        $this->ws_name = $ws_name;
 		$this->define();
 	}
 
     function define() {
         if (!defined('TRA_xml')) {
-            define ('TRA_xml', public_path().'/afip/wsaa/TRA.xml'); 
+            define ('TRA_xml', public_path().'/afip/wsaa/'.$this->ws_name.'/TRA.xml'); 
         }
         if (!defined('TRA_tmp')) {
-            define ('TRA_tmp', public_path().'/afip/wsaa/TRA.tmp'); 
+            define ('TRA_tmp', public_path().'/afip/wsaa/'.$this->ws_name.'/TRA.tmp'); 
         }
         if (!defined('TA_file')) {
-            define ('TA_file', public_path().'/afip/wsaa/TA.xml'); 
+            define ('TA_file', public_path().'/afip/wsaa/'.$this->ws_name.'/TA.xml'); 
         }
         if (!defined('CMS_file')) {
-            define ('CMS_file', public_path().'/afip/wsaa/CMS.txt'); 
+            define ('CMS_file', public_path().'/afip/wsaa/'.$this->ws_name.'/CMS.txt'); 
         }
 
         // define ('TRA_xml', public_path().'/afip/wsaa/TRA.xml'); 
@@ -114,8 +115,8 @@ class AfipWSAAHelper {
             'exceptions' => 0
         ));
         $results = $client->loginCms(array('in0'=>$cms));
-        file_put_contents(public_path()."/afip/wsaa/request.xml",$client->__getLastRequest());
-        file_put_contents(public_path()."/afip/wsaa/response.xml",$client->__getLastResponse());
+        file_put_contents(public_path()."/afip/wsaa/".$this->ws_name."/request.xml",$client->__getLastRequest());
+        file_put_contents(public_path()."/afip/wsaa/".$this->ws_name."/response.xml",$client->__getLastResponse());
         if (is_soap_fault($results)) {
             Log::info("SOAP Fault: ".$results->faultcode."\n".$results->faultstring);
             exit("SOAP Fault: ".$results->faultcode."\n".$results->faultstring."\n");

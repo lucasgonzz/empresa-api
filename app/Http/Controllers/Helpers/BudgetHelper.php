@@ -31,9 +31,14 @@ class BudgetHelper {
 	    Self::deleteSale($budget);
 		if ($budget->budget_status->name == 'Confirmado') {
 
-			if (!UserHelper::hasExtencion('check_sales')) {
-				Self::saveCurrentAcount($budget);
-			}
+			// if (!UserHelper::hasExtencion('check_sales')) {
+
+			// 	if (!UserHelper::hasExtencion('guardad_cuenta_corriente_despues_de_facturar')
+			// 		|| (!is_null($budget->client) && $budget->client->pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar ) ) {
+
+			// 		Self::saveCurrentAcount($budget);
+			// 	}
+			// }
 
 	        Self::saveSale($budget);
 		} 
@@ -50,13 +55,28 @@ class BudgetHelper {
 	            'budget_id' 			=> $budget->id,
 	            'observations' 			=> $budget->observations,
             	'employee_id'           => SaleHelper::getEmployeeId(),
-	            'save_current_acount' 	=> UserHelper::hasExtencion('check_sales') ? 1 : 0,
+	            'save_current_acount' 	=> Self::get_guardar_cuenta_corriente($budget),
 	            'to_check'				=> UserHelper::hasExtencion('check_sales') ? 1 : 0,
 	        ]);
 	        Self::attachSaleArticles($sale, $budget);
 	        Self::attachSaleDiscountsAndSurchages($sale, $budget);
+
+	        if (!$sale->to_check) {
+	        	SaleHelper::attachCurrentAcountsAndCommissions($sale);
+	        }
+
+
         	$ct->sendAddModelNotification('Sale', $sale->id, false);
 		}
+	}
+
+	static function get_guardar_cuenta_corriente($budget) {
+		if (UserHelper::hasExtencion('guardad_cuenta_corriente_despues_de_facturar')) {
+			if (!is_null($budget->client) && !$budget->client->pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar) {
+				return false;
+			}
+		}
+		return true;		
 	}
 
 	static function attachSaleArticles($sale, $budget) {

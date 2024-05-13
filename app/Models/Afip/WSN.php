@@ -70,7 +70,7 @@ abstract class WSN extends WS
         $this->ta_token             = null;
         $this->ta_sign              = null;
         $this->cuit_representada    = $config['cuit_representada'];
-        // $this->for_wsfe             = isset($config['for_wsfe']) ? $config['for_wsfe'] : false;
+        $this->for_constancia_de_inscripcion = $config['for_constancia_de_inscripcion'];
         parent::__construct($config);
     }
 
@@ -278,48 +278,36 @@ abstract class WSN extends WS
         if ($this->ta_expiration_time < time()) {
             throw new WsnException('El TA está vencido');
         }
-      
-        $datos = array(
-            'Auth' => array(
-               'Token'              => $this->ta_token,
-               'Sign'               => $this->ta_sign,
-               'Cuit'               => $this->ta_cuit
-            )
-        );
+        if ($this->for_constancia_de_inscripcion) {
 
-        // $datos = array(
-        //     'token'              => $this->ta_token,
-        //     'sign'               => $this->ta_sign,
-        //     'cuitRepresentada'   => $this->ta_cuit,
-        //     'idPersona'          => '20251231257',
-        // );
+            $datos = array(
+                'token'              => $this->ta_token,
+                'sign'               => $this->ta_sign,
+                'cuitRepresentada'   => $this->ta_cuit,
+                'idPersona'          => $arguments[0]['idPersona'],
+            );
 
-        // if ($this->for_wsfe) {
-        //     $datos = array(
-        //         'Auth' => array(
-        //            'Token'              => $this->ta_token,
-        //            'Sign'               => $this->ta_sign,
-        //            'Cuit'               => $this->ta_cuit
-        //         )
-        //     );
-        // } else {
-        //     $datos = array(
-        //         'authRequest' => array(
-        //            'token'              => $this->ta_token,
-        //            'sign'               => $this->ta_sign,
-        //            'cuitRepresentada'   => $this->ta_cuit
-        //         )
-        //     );
-        // }
+        } else {
+
+            $datos = array(
+                'Auth' => array(
+                   'Token'              => $this->ta_token,
+                   'Sign'               => $this->ta_sign,
+                   'Cuit'               => $this->ta_cuit
+                )
+            );
+            
+            if (isset($arguments[0])) {
+                $datos += $arguments[0];
+            }
+
+        }
 
 
         // print_r('Se le manda el token: '.$this->ta_token.'</br>');
         // print_r('Se le manda el sign: '.$this->ta_sign.'</br>');
         // print_r('Para la CUIT: '.$this->ta_cuit.'</br>');
 
-        if (isset($arguments[0])) {
-            $datos += $arguments[0];
-        }
 
         // Log::info('datos:');
         // Log::info($datos);

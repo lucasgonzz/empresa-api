@@ -41,57 +41,59 @@ class ProviderOrderHelper {
 		if ($_article['pivot']['received'] > 0) {
 			$data_changed = false;
 			$article = Article::find($_article['id']);
-			if (is_null($article->stock)) {
-				$article->stock = 0;
-				$article->save();
-			}
-			if ($_article['pivot']['update_cost']) {
-				$cost = null;
-				if (isset($_article['pivot']['received_cost']) && $_article['pivot']['received_cost'] != '') {
-					$cost = $_article['pivot']['received_cost'];
-				} else if (isset($_article['pivot']['cost']) && $_article['pivot']['cost'] != '') {
-					$cost = $_article['pivot']['cost'];
+			if (!is_null($article)) {
+				if (is_null($article->stock)) {
+					$article->stock = 0;
+					$article->save();
 				}
-				if (!is_null($cost) && $article->cost != $cost) {
-					$article->cost = $cost;
+				if ($_article['pivot']['update_cost']) {
+					$cost = null;
+					if (isset($_article['pivot']['received_cost']) && $_article['pivot']['received_cost'] != '') {
+						$cost = $_article['pivot']['received_cost'];
+					} else if (isset($_article['pivot']['cost']) && $_article['pivot']['cost'] != '') {
+						$cost = $_article['pivot']['cost'];
+					}
+					if (!is_null($cost) && $article->cost != $cost) {
+						$article->cost = $cost;
+						$data_changed = true;
+					}
+				}
+				if ($_article['pivot']['cost_in_dollars']) {
+					$article->cost_in_dollars = 1;
+					$article->provider_cost_in_dollars = 1;
+					$data_changed = true;
+				} else {
+					$article->cost_in_dollars = 0;
+					$article->provider_cost_in_dollars = 0;
 					$data_changed = true;
 				}
-			}
-			if ($_article['pivot']['cost_in_dollars']) {
-				$article->cost_in_dollars = 1;
-				$article->provider_cost_in_dollars = 1;
-				$data_changed = true;
-			} else {
-				$article->cost_in_dollars = 0;
-				$article->provider_cost_in_dollars = 0;
-				$data_changed = true;
-			}
-			if (!is_null($_article['pivot']['iva_id']) && $_article['pivot']['iva_id'] != 0 && $article->iva_id != $_article['pivot']['iva_id']) {
-				$article->iva_id = $_article['pivot']['iva_id'];
-				// Log::info('Nuevo iva');
-				$data_changed = true;
-			}
-			if (!isset($last_received[$article->id]) || $_article['pivot']['received'] != $last_received[$article->id]) {
-				// Log::info('Nuevo stock');
-				$data_changed = true;
-			}
+				if (!is_null($_article['pivot']['iva_id']) && $_article['pivot']['iva_id'] != 0 && $article->iva_id != $_article['pivot']['iva_id']) {
+					$article->iva_id = $_article['pivot']['iva_id'];
+					// Log::info('Nuevo iva');
+					$data_changed = true;
+				}
+				if (!isset($last_received[$article->id]) || $_article['pivot']['received'] != $last_received[$article->id]) {
+					// Log::info('Nuevo stock');
+					$data_changed = true;
+				}
 
-			$data_changed = Self::saveStockMovement($provider_order, $_article, $article, $last_received, $data_changed);
+				$data_changed = Self::saveStockMovement($provider_order, $_article, $article, $last_received, $data_changed);
 
-			if ($article->status == 'inactive' && $_article['pivot']['add_to_articles']) {
-				$article->status = 'active';
-				$article->apply_provider_percentage_gain = 1;
-				$article->created_at = Carbon::now();
-				$data_changed = true;
-			}
-			
-			if ($data_changed && $article->status == 'active') {
-				$article->save();
-				ArticleHelper::setFinalPrice($article);
+				if ($article->status == 'inactive' && $_article['pivot']['add_to_articles']) {
+					$article->status = 'active';
+					$article->apply_provider_percentage_gain = 1;
+					$article->created_at = Carbon::now();
+					$data_changed = true;
+				}
+				
+				if ($data_changed && $article->status == 'active') {
+					$article->save();
+					ArticleHelper::setFinalPrice($article);
 
-				if (env('APP_ENV') == 'production') {
-					$ct = new Controller();
-		        	$ct->sendAddModelNotification('article', $article->id, false);
+					if (env('APP_ENV') == 'production' && isset($_article['add_to_articles']) && $_article['add_to_articles']) {
+						$ct = new Controller();
+			        	$ct->sendAddModelNotification('article', $article->id, false);
+					}
 				}
 			}
 		}

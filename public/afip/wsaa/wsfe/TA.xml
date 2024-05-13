@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<loginTicketResponse version="1.0">
+    <header>
+        <source>CN=wsaahomo, O=AFIP, C=AR, SERIALNUMBER=CUIT 33693450239</source>
+        <destination>SERIALNUMBER=CUIT 20381712010, CN=comerciocitypruebas</destination>
+        <uniqueId>1839840385</uniqueId>
+        <generationTime>2024-05-13T09:51:05.975-03:00</generationTime>
+        <expirationTime>2024-05-13T21:51:05.975-03:00</expirationTime>
+    </header>
+    <credentials>
+        <token>PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9InllcyI/Pgo8c3NvIHZlcnNpb249IjIuMCI+CiAgICA8aWQgc3JjPSJDTj13c2FhaG9tbywgTz1BRklQLCBDPUFSLCBTRVJJQUxOVU1CRVI9Q1VJVCAzMzY5MzQ1MDIzOSIgZHN0PSJDTj13c2ZlLCBPPUFGSVAsIEM9QVIiIHVuaXF1ZV9pZD0iNTQxMjIzMjM3IiBnZW5fdGltZT0iMTcxNTYwNDYwNSIgZXhwX3RpbWU9IjE3MTU2NDc4NjUiLz4KICAgIDxvcGVyYXRpb24gdHlwZT0ibG9naW4iIHZhbHVlPSJncmFudGVkIj4KICAgICAgICA8bG9naW4gZW50aXR5PSIzMzY5MzQ1MDIzOSIgc2VydmljZT0id3NmZSIgdWlkPSJTRVJJQUxOVU1CRVI9Q1VJVCAyMDM4MTcxMjAxMCwgQ049Y29tZXJjaW9jaXR5cHJ1ZWJhcyIgYXV0aG1ldGhvZD0iY21zIiByZWdtZXRob2Q9IjIyIj4KICAgICAgICAgICAgPHJlbGF0aW9ucz4KICAgICAgICAgICAgICAgIDxyZWxhdGlvbiBrZXk9IjIwMzgxNzEyMDEwIiByZWx0eXBlPSI0Ii8+CiAgICAgICAgICAgIDwvcmVsYXRpb25zPgogICAgICAgIDwvbG9naW4+CiAgICA8L29wZXJhdGlvbj4KPC9zc28+Cg==</token>
+        <sign>dAwo4xUGZZGYQz7xpfA3A+AsBYCgPVMvMaHS0dyCL66K0K0EvYTG33eosTJ0uK1/A+8IB/MvKR5s7exMYGk6VDXJzKckjbjIGY2AjsxOYKzOcRGHOPkc1qazOl5WF5UoFRXK58eqmn0nNF2N+h2cJ3z/iP5nKzW3byjbaItWtro=</sign>
+    </credentials>
+</loginTicketResponse>

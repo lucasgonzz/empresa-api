@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Exports\ClientExport;
+use App\Http\Controllers\AfipConstanciaInscripcionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Imports\ClientImport;
@@ -93,5 +94,26 @@ class ClientController extends Controller
 
     function getCuit($cuit) {
         return str_replace('-', '', $cuit);
+    }
+
+    function get_afip_information_by_cuit($cuit) {
+        $ct = new AfipConstanciaInscripcionController();
+        $data = $ct->get_constancia_inscripcion($cuit);
+
+        if ($data['hubo_un_error']) {
+            return response()->json([
+                'hubo_un_error'     => true,
+                'error'             => $data['error'],
+            ]);
+        } else {
+            $client_model = Client::where('user_id', $this->userId())
+                                    ->where('cuit', $cuit)
+                                    ->withAll()
+                                    ->first();
+            return response()->json([
+                'client_model'  => $client_model,
+                'afip_data'     => $data['afip_data'],
+            ]);
+        }
     }
 }

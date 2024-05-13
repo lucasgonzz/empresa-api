@@ -133,6 +133,9 @@ abstract class WS
      */
     public function __call($name, array $arguments)
     {
+        $hubo_un_error = false;
+        $result = null;
+        $error = null;
         if (is_null($this->soap_client)) {
             $wsdl = $this->wsdl_url;
             if (!empty($this->wsdl_cache_file) && (file_exists($this->wsdl_cache_file) || $this->updateWsdlCacheFile())) {
@@ -143,15 +146,26 @@ abstract class WS
             // \Illuminate\Support\Facades\Log::info('Entro a crear soap');
             // \Illuminate\Support\Facades\Log::info($this->soap_options);
         }
-        \Illuminate\Support\Facades\Log::info('por ejecutar');
-        \Illuminate\Support\Facades\Log::info($arguments[0]);
-        $result = $this->soap_client->$name($arguments[0]);
-        \Illuminate\Support\Facades\Log::info('se ejcuto');
+        // \Illuminate\Support\Facades\Log::info('por ejecutar');
+        // \Illuminate\Support\Facades\Log::info($arguments[0]);
+
+        try {
+            $result = $this->soap_client->$name($arguments[0]);
+        } catch(\SoapFault $e) {
+            $hubo_un_error = true;
+            $error = $e->getMessage();
+        }
+
+        // \Illuminate\Support\Facades\Log::info('se ejcuto');
 
         file_put_contents(public_path()."/afip/ws/request-ws.xml",$this->soap_client->__getLastRequest());
         file_put_contents(public_path()."/afip/ws/response-ws.xml",$this->soap_client->__getLastResponse());
         
-        return $result;
+        return [
+            'hubo_un_error' => $hubo_un_error,
+            'result'        => $result,
+            'error'         => $error,
+        ];
     }
     
     /**

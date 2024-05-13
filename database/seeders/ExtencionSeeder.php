@@ -115,6 +115,11 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Chequear stock de articulos en VENDER',
                 'slug' => 'check_article_stock_en_vender',
             ],
+            [
+                // 21
+                'name' => 'Preguntar si se quiere o no guardar una venta en la cuenta corriente',
+                'slug' => 'ask_save_current_acount',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

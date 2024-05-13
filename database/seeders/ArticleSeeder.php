@@ -57,7 +57,8 @@ class ArticleSeeder extends Seeder
                 $art = Article::create([
                     'num'                   => $num,
                     'bar_code'              => $article['bar_code'],
-                    'provider_code'         => $article['provider_code'],
+                    'provider_code'         => 'p/'.$num,
+                    // 'provider_code'         => $article['provider_code'],
                     'name'                  => $article['name'],
                     'slug'                  => ArticleHelper::slug($article['name'], $user->id),
                     // 'cost'               => 50,
