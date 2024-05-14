@@ -145,13 +145,13 @@ class SalePdf extends fpdf {
 		foreach ($this->sale->articles as $article) {
 			// $this->total_articles += $this->get_price($article);
 			$this->printItem($index, $article);
-			$this->total_sale += $this->get_price($article);
+			$this->total_sale += $this->sub_total($article);
 			$index++;
 		}
 		foreach ($this->sale->services as $service) {
 			// $this->total_services += $this->get_price($service);
 			$this->printItem($index, $service);
-			$this->total_sale += $this->get_price($service);
+			$this->total_sale += $this->sub_total($service);
 			$index++;
 		}
 	}
@@ -321,7 +321,7 @@ class SalePdf extends fpdf {
 	}
 
 	function is_article($item) {
-		return isset($item->bar_code);
+		return isset($item->num);
 	}
 
 	function commissions() {

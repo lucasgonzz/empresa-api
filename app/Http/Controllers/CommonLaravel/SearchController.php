@@ -37,6 +37,7 @@ class SearchController extends Controller
                     if ($filter['key'] == 'bar_code' || $filter['key'] == 'provider_code') {
                         $models = $models->where($filter['key'], $filter['value']);
                     } else {
+
                         $models = $models->where($filter['key'], 'like', '%'.$filter['value'].'%');
                     }
                     Log::info('Filtrando por text '.$filter['text']);
@@ -95,10 +96,18 @@ class SearchController extends Controller
         $model_name = GeneralHelper::getModelName($model_name);
         $models = $model_name::where('user_id', $this->userId())
                                 ->withAll();
-        if ($request->prop_to_filter['key'] == 'bar_code') {
+        if ($request->prop_to_filter['key'] == 'bar_code' || $request->prop_to_filter['key'] == 'provider_code') {
             $models = $models->where($request->prop_to_filter['key'], $request->query_value);
         } else {
-            $models = $models->where($request->prop_to_filter['key'], 'like', '%'.$request->query_value.'%');
+
+            $keywords = explode(' ', $request->query_value);
+
+            foreach ($keywords as $keyword) {
+                $query = $request->prop_to_filter['key'].' LIKE ?';
+                $models->whereRaw($query, ["%$keyword%"]);
+            }
+
+            // $models = $models->where($request->prop_to_filter['key'], 'like', '%'.$request->query_value.'%');
         }
         if (isset($request->depends_on_key)) {
             $models = $models->where($request->depends_on_key, $request->depends_on_value);
