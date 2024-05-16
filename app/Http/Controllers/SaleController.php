@@ -69,6 +69,7 @@ class SaleController extends Controller
             'surchages_in_services'             => $request->surchages_in_services,
             'employee_id'                       => SaleHelper::getEmployeeId($request),
             'to_check'                          => $request->to_check,
+            'numero_orden_de_compra'            => $request->numero_orden_de_compra,
             'user_id'                           => $this->userId(),
         ]);
 
@@ -122,11 +123,12 @@ class SaleController extends Controller
         $model->checked                             = $request->checked;
         $model->confirmed                           = $request->confirmed;
         $model->client_id                           = $request->client_id;
+        $model->omitir_en_cuenta_corriente          = $request->omitir_en_cuenta_corriente;
+        $model->numero_orden_de_compra              = $request->numero_orden_de_compra;
         $model->employee_id                         = SaleHelper::getEmployeeId($request);
         $model->updated_at                          = Carbon::now();
         $model->save();
 
-        // SaleHelper::attachProperies($model, $request, false, $previus_articles);
         SaleHelper::attachProperies($model, $request, false, $previus_articles, $sale_modification);
 
         $model->updated_at = Carbon::now();
@@ -137,16 +139,10 @@ class SaleController extends Controller
             SaleHelper::updateCurrentAcountsAndCommissions($model);
         }
 
-        // SaleHelper::updatePreivusClient($model, $previus_client_id);
-        if ($previus_client_id != $request->client_id) {
-            Log::info('SE QUISO CAMBIAR EL CLIENTE DE LA VENTA N° '.$model->num.' id '.$model->id.' por el usuario '.Auth()->user()->name.' id '.Auth()->user()->id);
-        }
+        
         $this->sendAddModelNotification('Sale', $model->id);
         SaleHelper::sendUpdateClient($this, $model);
 
-        // SaleHelper::log_client($model);
-
-        // SaleHelper::log_articles($model, $previus_articles);
 
         $sale_modification->estado_despues_de_actualizar = SaleModificationsHelper::get_estado($model);
         $sale_modification->save();
@@ -172,7 +168,9 @@ class SaleController extends Controller
                 $this->sendAddModelNotification('client', $model->client_id, false);
             }
             foreach ($model->articles as $article) {
-                ArticleHelper::resetStock($article, $article->pivot->amount, $model);
+                if (!is_null($article->stock)) {
+                    ArticleHelper::resetStock($article, $article->pivot->amount, $model);
+                }
                 // ArticleHelper::setArticleStockFromAddresses($article);
             }
             $model->delete();
@@ -266,7 +264,10 @@ class SaleController extends Controller
                                         $query->whereNull('pagandose')
                                         ->orWhereRaw('debe - pagandose > 300');
                                     });
-                            })
+                        })
+                        ->whereHas('client', function ($query) {
+                            $query->where('saldo', '>', 300);
+                        })
                         ->whereDate('created_at', '<=', Carbon::today()->subDays($dias));
 
         if ($ver_solo_las_ventas_suyas) {

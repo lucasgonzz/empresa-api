@@ -11,8 +11,8 @@ class UserHelper {
 	static function userId($from_owner = true) {
         Log::info('-----------------> entro a userId');
         $user = Auth()->user();
-        Log::info('Auth user:');
-        Log::info($user);
+        // Log::info('Auth user:');
+        // Log::info($user);
         if (is_null($user) && env('APP_ENV') == 'local') {
             $user = User::where('company_name', 'Autopartes Boxes')->first();
             return $user->id;

@@ -263,7 +263,7 @@ class InventoryLinkageHelper extends Controller {
 
 						if ($save) {
 				            $client_article->save();
-							$this->sendAddModelNotification('article', $client_article->id, false, $client->comercio_city_user_id);
+							// $this->sendAddModelNotification('article', $client_article->id, false, $client->comercio_city_user_id);
 						}
 					}
 				}

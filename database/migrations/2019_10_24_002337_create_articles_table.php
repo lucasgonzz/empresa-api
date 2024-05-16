@@ -50,6 +50,7 @@ class CreateArticlesTable extends Migration
             $table->boolean('mercado_libre')->default(true)->nullable();
             $table->timestamp('final_price_updated_at')->nullable();
             $table->integer('unidad_medida_id')->default(1)->nullable();
+            $table->integer('unidades_individuales')->nullable();
             $table->softDeletes();
 
             $table->foreign('user_id')

@@ -90,6 +90,7 @@ class SaleHelper extends Controller {
         $sale = Sale::where($model_name.'_id', $model_id)
                         ->first();
         if (!is_null($sale)) {
+            Log::info('Se quiere eliminar sale N° '.$sale->num.'. id: '.$sale->id.'. Por el empleado: '.Auth()->user()->name.', doc: '.Auth()->user()->doc_number);
             $sale->delete();
             $instance->sendDeleteModelNotification('sale', $sale->id, false);
         }
@@ -337,13 +338,24 @@ class SaleHelper extends Controller {
                 }
 
 
-                if (!$sale->to_check && !$sale->checked) {
-                    ArticleHelper::discountStock($article['id'], Self::getAmount($sale, $article), $sale);
+                if (!$sale->to_check && !$sale->checked && Self::usa_stock($article)) {
+                    $amount = Self::getAmount($sale, $article);
+                    if ($amount > 0) {
+                        ArticleHelper::discountStock($article['id'], $amount, $sale);
+                    }
                     // Log::info('se desconto stock del articulo '.$article['id']);
                 }
 
             }
         }
+    }
+
+    static function usa_stock($article) {
+        $_article = Article::find($article['id']);
+        if (!is_null($_article)) {
+            return !is_null($_article->stock);
+        }
+        return false;
     }
 
     static function attachArticle($sale, $article) {
@@ -403,17 +415,21 @@ class SaleHelper extends Controller {
     }
 
     static function updateCurrentAcountsAndCommissions($sale) {
+
         Self::deleteCurrentAcountFromSale($sale);
         Self::deleteSellerCommissionsFromSale($sale);
 
-        $helper = new CurrentAcountAndCommissionHelper($sale);
-        $helper->attachCommissionsAndCurrentAcounts();
+        if (!$sale->omitir_en_cuenta_corriente) {
+            
+            $helper = new CurrentAcountAndCommissionHelper($sale);
+            $helper->attachCommissionsAndCurrentAcounts();
 
-        $sale->client->pagos_checkeados = 0;
-        $sale->client->save();
+            $sale->client->pagos_checkeados = 0;
+            $sale->client->save();
 
-        CurrentAcountHelper::checkSaldos('client', $sale->client_id);
+            CurrentAcountHelper::checkSaldos('client', $sale->client_id);
 
+        }
     }
 
     static function deleteCurrentAcountFromSale($sale) {

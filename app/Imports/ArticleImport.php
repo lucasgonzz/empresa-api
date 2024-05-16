@@ -408,7 +408,7 @@ class ArticleImport implements ToCollection
             $request->from_excel_import = true;
             $request->amount = $stock_actual - $article->stock;
             $this->stock_movement_ct->store($request);
-            // Log::info('se mando a guardar stock_movement de '.$article->name.' con amount = '.$request->amount);
+            Log::info('se mando a guardar stock_movement de '.$article->name.' con amount = '.$request->amount);
         } 
     }
 

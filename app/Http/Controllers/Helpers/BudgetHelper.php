@@ -2,19 +2,20 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Models\Article;
-use App\Models\Budget;
-use App\Models\CurrentAcount;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
-use App\Notifications\BudgetCreated;
-use App\Notifications\CreatedSale;
+use App\Http\Controllers\SaleController;
+use App\Models\Article;
+use App\Models\Budget;
+use App\Models\CurrentAcount;
 use App\Models\OrderProduction;
 use App\Models\Sale;
+use App\Notifications\BudgetCreated;
+use App\Notifications\CreatedSale;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
@@ -149,7 +150,10 @@ class BudgetHelper {
 		$sale = Sale::where('budget_id', $budget->id)
 										->first();
 		if (!is_null($sale)) {
-			$sale->delete();
+			Log::info(Auth()->user()->name.' va a eliminar la venta N° '.$sale->num.' por actualizar el presupuesto N° '.$budget->num);
+			$ct = new SaleController();
+			$ct->destroy($sale->id);
+			// $sale->delete();
 			return true;
 		}
 		return false;

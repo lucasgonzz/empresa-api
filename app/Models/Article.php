@@ -160,7 +160,7 @@ class Article extends Model
     }
 
     function sales() {
-        return $this->belongsToMany('App\Models\Sale')->latest();
+        return $this->belongsToMany('App\Models\Sale')->latest()->withPivot('amount', 'returned_amount');
     }
 
     function budgets() {

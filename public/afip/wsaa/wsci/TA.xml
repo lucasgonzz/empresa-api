@@ -3,12 +3,12 @@
     <header>
         <source>CN=wsaa, O=AFIP, C=AR, SERIALNUMBER=CUIT 33693450239</source>
         <destination>SERIALNUMBER=CUIT 20423548984, CN=comerciocity-alias</destination>
-        <uniqueId>585142158</uniqueId>
-        <generationTime>2024-05-13T15:39:21.802-03:00</generationTime>
-        <expirationTime>2024-05-14T03:39:21.802-03:00</expirationTime>
+        <uniqueId>1586040703</uniqueId>
+        <generationTime>2024-05-15T16:54:10.269-03:00</generationTime>
+        <expirationTime>2024-05-16T04:54:10.269-03:00</expirationTime>
     </header>
     <credentials>
-        <token>PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9InllcyI/Pgo8c3NvIHZlcnNpb249IjIuMCI+CiAgICA8aWQgc3JjPSJDTj13c2FhLCBPPUFGSVAsIEM9QVIsIFNFUklBTE5VTUJFUj1DVUlUIDMzNjkzNDUwMjM5IiB1bmlxdWVfaWQ9IjIzMDE0OTk5MDMiIGdlbl90aW1lPSIxNzE1NjI1NTAxIiBleHBfdGltZT0iMTcxNTY2ODc2MSIvPgogICAgPG9wZXJhdGlvbiB0eXBlPSJsb2dpbiIgdmFsdWU9ImdyYW50ZWQiPgogICAgICAgIDxsb2dpbiBlbnRpdHk9IjMzNjkzNDUwMjM5IiBzZXJ2aWNlPSJ3c19zcl9jb25zdGFuY2lhX2luc2NyaXBjaW9uIiB1aWQ9IlNFUklBTE5VTUJFUj1DVUlUIDIwNDIzNTQ4OTg0LCBDTj1jb21lcmNpb2NpdHktYWxpYXMiIGF1dGhtZXRob2Q9ImNtcyIgcmVnbWV0aG9kPSIyMiI+CiAgICAgICAgICAgIDxyZWxhdGlvbnM+CiAgICAgICAgICAgICAgICA8cmVsYXRpb24ga2V5PSIyMDQyMzU0ODk4NCIgcmVsdHlwZT0iNCIvPgogICAgICAgICAgICA8L3JlbGF0aW9ucz4KICAgICAgICA8L2xvZ2luPgogICAgPC9vcGVyYXRpb24+Cjwvc3NvPgo=</token>
-        <sign>ojSrW2oUVVvrq2ZlN4khccUBxxblSscI14zSx9pkM79WLoZT9+HGB3lBynmirDyt871jcrOM1nFIFxIh11qICua2Y/Q2C3vnI60XF8CVMEOjCJPCh4o9BgtpdrryHsnHclG2g3XnQBZ9jfK8AdHsqjHIyZSTURtpj1qShu6PQ7g=</sign>
+        <token>PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9InllcyI/Pgo8c3NvIHZlcnNpb249IjIuMCI+CiAgICA8aWQgc3JjPSJDTj13c2FhLCBPPUFGSVAsIEM9QVIsIFNFUklBTE5VTUJFUj1DVUlUIDMzNjkzNDUwMjM5IiB1bmlxdWVfaWQ9IjQyNjgwODQ3ODIiIGdlbl90aW1lPSIxNzE1ODAyNzkwIiBleHBfdGltZT0iMTcxNTg0NjA1MCIvPgogICAgPG9wZXJhdGlvbiB0eXBlPSJsb2dpbiIgdmFsdWU9ImdyYW50ZWQiPgogICAgICAgIDxsb2dpbiBlbnRpdHk9IjMzNjkzNDUwMjM5IiBzZXJ2aWNlPSJ3c19zcl9jb25zdGFuY2lhX2luc2NyaXBjaW9uIiB1aWQ9IlNFUklBTE5VTUJFUj1DVUlUIDIwNDIzNTQ4OTg0LCBDTj1jb21lcmNpb2NpdHktYWxpYXMiIGF1dGhtZXRob2Q9ImNtcyIgcmVnbWV0aG9kPSIyMiI+CiAgICAgICAgICAgIDxyZWxhdGlvbnM+CiAgICAgICAgICAgICAgICA8cmVsYXRpb24ga2V5PSIyMDQyMzU0ODk4NCIgcmVsdHlwZT0iNCIvPgogICAgICAgICAgICA8L3JlbGF0aW9ucz4KICAgICAgICA8L2xvZ2luPgogICAgPC9vcGVyYXRpb24+Cjwvc3NvPgo=</token>
+        <sign>azemY1PM69hNm8bykykUus6O1GC0iNZ0Fr51me9za0lMCtRqG+Wch6NkfuakogXzXCwd6Hj9Q1pfnbAqHbFX3SzyZvDJTozZnSlCJccLFjq80MCAtBqw+v/Rlb+ReLfy9ix+kVzyFgTc3JNSLY5JB71fmRTKuVKFkrVfPP464fA=</sign>
     </credentials>
 </loginTicketResponse>

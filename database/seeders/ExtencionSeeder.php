@@ -120,6 +120,16 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Preguntar si se quiere o no guardar una venta en la cuenta corriente',
                 'slug' => 'ask_save_current_acount',
             ],
+            [
+                // 22
+                'name' => 'Numero orden de compra para las ventas',
+                'slug' => 'numero_orden_de_compra_para_las_ventas',
+            ],
+            [
+                // 23
+                'name' => 'Unidades individuales para los articulos',
+                'slug' => 'unidades_individuales_en_articulos',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

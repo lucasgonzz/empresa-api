@@ -39,6 +39,7 @@ class CreateSalesTable extends Migration
             $table->boolean('confirmed')->unsigned()->default(0);
             $table->boolean('printed')->default(0);
             $table->text('observations')->nullable();
+            $table->integer('numero_orden_de_compra')->nullable();
             $table->integer('user_id')->unsigned()->nullable();
 
 

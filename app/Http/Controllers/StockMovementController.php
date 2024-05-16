@@ -22,8 +22,6 @@ class StockMovementController extends Controller
     }
 
     function store(Request $request, $set_updated_at = true) {
-        // Log::info('Entro con request:');
-        // Log::info($request);
         $this->set_updated_at = $set_updated_at;
         $this->request = $request;
         $this->article_id = $request->model_id;
@@ -38,7 +36,7 @@ class StockMovementController extends Controller
             'provider_id'       => $request->amount >= 1 && isset($request->provider_id) && $request->provider_id != 0 ? $request->provider_id : null,
             'from_address_id'   => $this->getFromAddressId(),
             'to_address_id'     => $this->getToAddressId(),
-            'observations'      => isset($request->observations) ? $request->observations : null,
+            'observations'      => isset($request->observations) ? $request->observations : '',
             'employee_id'       => UserHelper::userId(false),
             'user_id'           => UserHelper::userId(),
         ]);
@@ -69,11 +67,42 @@ class StockMovementController extends Controller
     }
 
     function setStockResultante() {
-        if (!is_null($this->article)) {
-            $this->stock_movement->stock_resultante = $this->article->stock;
+        $stock_movement_anterior = StockMovement::where('article_id', $this->article->id)
+                                                ->orderBy('created_at', 'DESC')
+                                                ->where('id', '!=', $this->stock_movement->id)
+                                                ->first();
+
+        if (!is_null($stock_movement_anterior)) {
+
+            $stock_resultante = null;
+            
+            if (!is_null($this->stock_movement->sale)) {
+
+                $stock_resultante = $stock_movement_anterior->stock_resultante - $this->stock_movement->amount;
+
+            } else {
+
+                $stock_resultante = $stock_movement_anterior->stock_resultante + $this->stock_movement->amount;
+
+            }
+
+            if ($stock_resultante != $this->article->stock) {
+
+                $this->stock_movement->observations .= ' El stock resultante es distinto al stock actual ('.$this->article->stock.')';
+
+            } 
+
+            $this->stock_movement->stock_resultante = $stock_resultante;
+
         } else {
             $this->stock_movement->stock_resultante = $this->stock_movement->amount;
         }
+
+        // if (!is_null($this->article)) {
+        //     $this->stock_movement->stock_resultante = $this->article->stock;
+        // } else {
+        //     $this->stock_movement->stock_resultante = $this->stock_movement->amount;
+        // }
         $this->stock_movement->save();
     }
 

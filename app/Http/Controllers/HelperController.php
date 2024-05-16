@@ -56,6 +56,39 @@ class HelperController extends Controller
         echo 'Listo';
     }
 
+    function check_stock() {
+        $article_id = 93016;
+        $article = Article::find($article_id);
+
+        $primer_movimiento_de_stock = StockMovement::where('article_id', $article_id)
+                                                    ->orderBy('created_at', 'ASC')
+                                                    ->first();
+
+        if (!is_null($primer_movimiento_de_stock)) {
+            echo 'Primer movimiento de stock amount: '.$primer_movimiento_de_stock->amount.'. Stock en ese momento: '.$primer_movimiento_de_stock->stock_resultante.' </br>';
+
+            $stock_inicial = (float)$primer_movimiento_de_stock->stock_resultante;
+            
+            foreach ($article->sales as $sale) {
+                if (!$sale->to_check && !$sale->checked) {
+                    echo 'Restando '.$sale->pivot->amount.' de la venta N° '.$sale->num.' <br>';
+                    $stock_inicial -= (float)$sale->pivot->amount;
+
+                    if (!is_null($sale->pivot->returned_amount)) {
+                        $stock_inicial += (float)$sale->pivot->returned_amount;
+                        echo 'Devolviendo '.$sale->pivot->returned_amount.' <br>';
+                    }
+
+                    echo 'Quedo en '.$stock_inicial.' <br>';
+                    echo '--------------- <br>';
+                }
+            }
+
+            echo 'El stock deberia ser de: '.$stock_inicial.' <br>';
+            echo 'Y es de: '.$article->stock.' <br>';
+        }
+    }
+
     function register_user($name, $doc_number, $company_name, $iva_included, $extencions_id, $database = null) {
 
         $data = [

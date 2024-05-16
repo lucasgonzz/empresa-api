@@ -56,7 +56,8 @@ class ArticleSeeder extends Seeder
             foreach ($articles as $article) {
                 $art = Article::create([
                     'num'                   => $num,
-                    'bar_code'              => $article['bar_code'],
+                    'bar_code'              => '00'.$num,
+                    // 'bar_code'              => $article['bar_code'],
                     'provider_code'         => 'p/'.$num,
                     // 'provider_code'         => $article['provider_code'],
                     'name'                  => $article['name'],
