@@ -37,6 +37,13 @@ use Illuminate\Support\Facades\Log;
 
 class SaleHelper extends Controller {
 
+    static function get_terminada() {
+        if (UserHelper::hasExtencion('check_sales')) {
+            return 0;
+        }
+        return 1;
+    }
+
     static function check_guardad_cuenta_corriente_despues_de_facturar($sale, $instance) {
         if (UserHelper::hasExtencion('guardad_cuenta_corriente_despues_de_facturar')
             && !Self::al_cliente_se_le_factura_en_el_acto($sale) ) {

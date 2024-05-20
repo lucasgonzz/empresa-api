@@ -34,13 +34,17 @@ class CreateSalesTable extends Migration
             $table->integer('order_production_id')->unsigned()->nullable();
             $table->boolean('discounts_in_services')->unsigned()->default(1);
             $table->boolean('surchages_in_services')->unsigned()->default(1);
+
             $table->boolean('to_check')->unsigned()->default(0);
             $table->boolean('checked')->unsigned()->default(0);
             $table->boolean('confirmed')->unsigned()->default(0);
+            
             $table->boolean('printed')->default(0);
             $table->text('observations')->nullable();
-            $table->integer('numero_orden_de_compra')->nullable();
+            $table->string('numero_orden_de_compra', 121)->nullable();
             $table->integer('user_id')->unsigned()->nullable();
+
+            $table->boolean('terminada')->nullable()->default(1);
 
 
             $table->boolean('omitir_en_cuenta_corriente')->default(0)->nullable();

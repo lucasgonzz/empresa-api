@@ -29,7 +29,7 @@ class UserSeeder extends Seeder
         $models = [
             [
                 'id'                            => 500,
-                'name'                          => 'Lucas',
+                'name'                          => 'Ibarra',
                 'company_name'                  => 'Autopartes Boxes',
                 // 'image_url'                     => null,
                 'image_url'                     => env('APP_URL').'/storage/icon.png',
@@ -179,6 +179,8 @@ class UserSeeder extends Seeder
                 ],
             ],
         ];
+
+
         foreach ($models as $model) {
             $user = User::create([
                 'id'                            => isset($model['id']) ? $model['id'] : null,  
@@ -205,6 +207,8 @@ class UserSeeder extends Seeder
                 'dias_alertar_empleados_ventas_no_cobradas'        => 1,
                 'dias_alertar_administradores_ventas_no_cobradas'  => 2,
             ]);
+
+            
             if (is_null($user->owner_id)) {
 
                 if (isset($model['extencions'])) {

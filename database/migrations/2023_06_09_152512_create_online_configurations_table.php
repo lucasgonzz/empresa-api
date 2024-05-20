@@ -16,6 +16,7 @@ class CreateOnlineConfigurationsTable extends Migration
         Schema::create('online_configurations', function (Blueprint $table) {
             $table->id();
             $table->boolean('pausar_tienda_online')->default(0)->nullable();
+            $table->text('tipo_de_precio')->nullable();
             $table->integer('online_price_type_id')->nullable();
             $table->decimal('online_price_surchage', 12,2)->nullable();
             $table->string('instagram')->nullable();

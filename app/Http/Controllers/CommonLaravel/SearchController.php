@@ -2,9 +2,9 @@
 
 namespace App\Http\Controllers\CommonLaravel;
 
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
-use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -106,10 +106,12 @@ class SearchController extends Controller
         return response()->json(['model' => $this->fullModel($_model_name, $model->id)], 201);
     }
 
-    function searchFromModal(Request $request, $model_name) {
-        $model_name = GeneralHelper::getModelName($model_name);
+
+    function searchFromModal(Request $request, $model_name_param) {
+        $model_name = GeneralHelper::getModelName($model_name_param);
         $models = $model_name::where('user_id', $this->userId())
                                 ->withAll();
+
         if ($request->prop_to_filter['key'] == 'bar_code' || $request->prop_to_filter['key'] == 'provider_code') {
             $models = $models->where($request->prop_to_filter['key'], $request->query_value);
         } else {
@@ -125,6 +127,9 @@ class SearchController extends Controller
         }
         if (isset($request->depends_on_key)) {
             $models = $models->where($request->depends_on_key, $request->depends_on_value);
+        }
+        if ($model_name_param == 'article' || $model_name_param == 'client' || $model_name_param == 'provider') {
+            $models = $models->where('status', 'active');
         }
         $models = $models->get();
         return response()->json(['models' => $models], 200);

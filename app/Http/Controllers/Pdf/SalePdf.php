@@ -103,11 +103,18 @@ class SalePdf extends fpdf {
 		];
 	}
 
+	function get_title() {
+		if ($this->precios_netos) {
+			return 'Venta Pre netos';
+		}
+		return 'Venta';
+	}
+
 	function Header() {
 		$data = [
 			'num' 				=> $this->sale->num,
 			'date'				=> $this->sale->created_at,
-			'title' 			=> 'Venta',
+			'title' 			=> $this->get_title(),
 			'model_info'		=> $this->sale->client,
 			'model_props' 		=> $this->getModelProps(),
 			'fields' 			=> $this->getFields(),
@@ -124,6 +131,7 @@ class SalePdf extends fpdf {
 	}
 
 	function Footer() {
+		$this->print_numero_orden_de_compra();
 		if ($this->with_prices) {
 			$this->total();
 			$this->totalCosts();
@@ -136,6 +144,22 @@ class SalePdf extends fpdf {
 			$this->totalFinal();
 		}
 		PdfHelper::comerciocityInfo($this, $this->y);
+	}
+
+	function print_numero_orden_de_compra() {
+		if (!is_null($this->sale->numero_orden_de_compra)) {
+
+			$this->SetFont('Arial', 'B', 11);
+
+			$this->Cell(
+				200, 
+				10, 
+				'N° Orden de compra: '.$this->sale->numero_orden_de_compra, 
+				$this->b, 
+				1, 
+				'L'
+			);
+		}
 	}
 
 	function items() {
@@ -466,7 +490,7 @@ class SalePdf extends fpdf {
 	}
 
 	function totalFinal() {
-		if (count($this->sale->discounts) >= 1 || count($this->sale->surchages) >= 1 || count($this->sale->seller_commissions) >= 1) {
+		if ((count($this->sale->discounts) >= 1 || count($this->sale->surchages) >= 1 || count($this->sale->seller_commissions) >= 1) && !$this->precios_netos) {
 	    	$this->SetFont('Arial', 'B', 12);
 	    	$this->x = 5;
 	    	$this->y += 2;

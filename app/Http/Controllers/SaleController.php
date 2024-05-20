@@ -28,23 +28,31 @@ use Illuminate\Support\Facades\Log;
 class SaleController extends Controller
 {
 
+
     public function index($from_date = null, $until_date = null) {
         $models = Sale::where('user_id', $this->userId())
                         ->orderBy('created_at', 'DESC')
                         ->withAll();
+
         if (!is_null($from_date)) {
+            $models = $models->where('terminada', 1);
+
             if (!is_null($until_date)) {
                 $models = $models->whereDate('created_at', '>=', $from_date)
                                 ->whereDate('created_at', '<=', $until_date);
             } else {
                 $models = $models->whereDate('created_at', $from_date);
             }
+
         } else {
-            $models = $models->where('to_check', 1)
-                            ->orWhere('checked', 1)
-                            ->orWhere('confirmed', 1);
+
+            $models = $models->where(function($query) {
+                        $query->where('to_check', 1)
+                              ->orWhere('checked', 1)
+                              ->orWhere('confirmed', 1);
+                    })->where('terminada', 0);
+            
         }
-        Log::info('Ventas del userId: '.$this->userId());
         $models = $models->get();
         return response()->json(['models' => $models], 200);
     }
@@ -70,24 +78,29 @@ class SaleController extends Controller
             'employee_id'                       => SaleHelper::getEmployeeId($request),
             'to_check'                          => $request->to_check,
             'numero_orden_de_compra'            => $request->numero_orden_de_compra,
+            'terminada'                         => SaleHelper::get_terminada(),
             'user_id'                           => $this->userId(),
         ]);
 
         SaleHelper::check_guardad_cuenta_corriente_despues_de_facturar($model, $this);
 
         SaleHelper::attachProperies($model, $request);
+
         SaleProviderOrderHelper::createProviderOrder($model, $this);
+
         $this->sendAddModelNotification('Sale', $model->id);
+
         SaleHelper::sendUpdateClient($this, $model);
+
         if (!is_null($model->client_id) && is_null($model->current_acount)) {
             Log::info('No se creo cuenta corriente para la venta id '.$model->id);
         }
 
         Log::info('Se creo la venta num: '.$model->num.' id: '.$model->id.'. $sale->employee_id: '.$model->employee_id.', la sesion la tiene: '.$this->userId(false));
 
-        SaleHelper::log_client($model);
+        // SaleHelper::log_client($model);
 
-        SaleHelper::log_articles($model, $model->articles);     
+        // SaleHelper::log_articles($model, $model->articles);     
 
         return response()->json(['model' => $this->fullModel('Sale', $model->id)], 201);
     }  
@@ -259,11 +272,8 @@ class SaleController extends Controller
 
         $sales = Sale::where('user_id', $this->userId())
                         ->whereHas('current_acount', function($q) {
-                            return $q->where('status', '!=', 'pagado')
-                                    ->where(function ($query) {
-                                        $query->whereNull('pagandose')
-                                        ->orWhereRaw('debe - pagandose > 300');
-                                    });
+                            return $q->where('status', 'sin_pagar')
+                                        ->orWhere('status', 'pagandose');
                         })
                         ->whereHas('client', function ($query) {
                             $query->where('saldo', '>', 300);
@@ -283,4 +293,14 @@ class SaleController extends Controller
 
         return response()->json(['models' => $sales], 200);
     }
+
+    function set_terminada($sale_id) {
+        $sale = Sale::find($sale_id);
+        if (!is_null($sale)) {
+            $sale->terminada = 1;
+            $sale->save();
+        }
+        return response()->json(['sale' => $this->fullModel('Sale', $sale_id)], 201);
+    }
+
 }
