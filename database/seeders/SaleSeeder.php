@@ -77,9 +77,16 @@ class SaleSeeder extends Seeder
                 'save_current_acount'   => 1,
                 'user_id'       => $user->id,
             ],
+            [
+                'num'           => 7,
+                'client_id'     => 1,
+                'employee_id'   => 504,
+                'save_current_acount'   => 1,
+                'user_id'       => $user->id,
+            ],
         ];
 
-        for ($dias=5; $dias >= 0 ; $dias--) { 
+        for ($dias=6; $dias >= 0 ; $dias--) { 
 
             $model = $models[$dias];
 
@@ -277,6 +284,7 @@ class SaleSeeder extends Seeder
                 'is_article'    => true,
                 'amount'        => rand(1,7),
                 'cost'          => $article->cost,
+                'name'          => $article->name,
                 'price_vender'  => $article->final_price,
             ];
             $request->items[] = $_article; 

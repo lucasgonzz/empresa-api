@@ -326,14 +326,17 @@ class CurrentAcountHelper {
         // Log::info('se actualizo saldo del modelo '.$model->name.' a '.$model->saldo);
     }
 
+
     static function checkPagos($model_name, $model_id, $si_o_si = false) {
+
+        Log::info('checkPagos');
 
         $model = GeneralHelper::getModelName($model_name)::find($model_id);
         if (!$model->pagos_checkeados || $si_o_si) {
-            echo('Entro a checkPagos para '.$model->name.' </br>');
+            // echo('Entro a checkPagos para '.$model->name.' </br>');
             
             $debitos = CurrentAcount::orderBy('created_at', 'ASC')
-                                            ->whereNotNull('debe');
+                                    ->whereNotNull('debe');
             if ($model_name == 'client') {
                 $debitos = $debitos->where('client_id', $model_id);
             } else {
@@ -346,7 +349,7 @@ class CurrentAcountHelper {
                 $debito->pagandose = 0;
                 $debito->status = 'sin_pagar';
                 $debito->save();
-                echo 'Se puso sin pagar debito de '.$debito->debe.' </br>';
+                // echo 'Se puso sin pagar debito de '.$debito->debe.' </br>';
             }
 
             $pagos = CurrentAcount::orderBy('created_at', 'ASC')
@@ -365,9 +368,9 @@ class CurrentAcountHelper {
             }
             $model->pagos_checkeados = 1;
             $model->save();
-            echo('Se checo los pagos de '.$model->name.' </br>');
+            // echo('Se checo los pagos de '.$model->name.' </br>');
         } else {
-            echo('No se chequearon pagos de '.$model->name.' </br>');
+            // echo('No se chequearon pagos de '.$model->name.' </br>');
         }
     }
 

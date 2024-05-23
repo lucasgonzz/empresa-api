@@ -13,6 +13,23 @@ use Illuminate\Support\Facades\Log;
 class ProductionMovementController extends Controller
 {
 
+    function esElUltimoCreado($production_movement_id, $article_id) {
+        
+        $es_el_ultimo = false;
+
+        $last_production_movement = ProductionMovement::where('article_id', $article_id)
+                                                        ->orderBy('created_at', 'DESC')
+                                                        ->first();
+
+
+        if ($last_production_movement->id == $production_movement_id) {
+            $es_el_ultimo = true;
+        }
+
+        return response()->json(['es_el_ultimo' => $es_el_ultimo], 200);
+
+    }
+
     function currentAmountsAllArticles() {
         $recipes = Recipe::where('user_id', $this->userId())
                             ->get();

@@ -44,6 +44,8 @@ class CurrentAcountCheckSaldosHelper {
     }
 
     static function procesarPagos($model_name, $model_id) {
+
+        Log::info('Entro a procesarPagos');
         
         Self::resetDebitos($model_name, $model_id);
 

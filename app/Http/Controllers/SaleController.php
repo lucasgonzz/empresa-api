@@ -180,11 +180,13 @@ class SaleController extends Controller
                 CurrentAcountHelper::checkSaldos('client', $model->client_id);
                 $this->sendAddModelNotification('client', $model->client_id, false);
             }
-            foreach ($model->articles as $article) {
-                if (!is_null($article->stock)) {
-                    ArticleHelper::resetStock($article, $article->pivot->amount, $model);
+            if (!$model->to_check && !$model->checked) {
+                foreach ($model->articles as $article) {
+                    if (!is_null($article->stock)) {
+                        ArticleHelper::resetStock($article, $article->pivot->amount, $model);
+                    }
+                    // ArticleHelper::setArticleStockFromAddresses($article);
                 }
-                // ArticleHelper::setArticleStockFromAddresses($article);
             }
             $model->delete();
             $this->sendDeleteModelNotification('sale', $model->id);
@@ -273,11 +275,15 @@ class SaleController extends Controller
         $sales = Sale::where('user_id', $this->userId())
                         ->whereHas('current_acount', function($q) {
                             return $q->where('status', 'sin_pagar')
-                                        ->orWhere('status', 'pagandose');
+                                        ->orWhere('status', 'pagandose')
+                                        ->where(function ($query) {
+                                            $query->whereNull('pagandose')
+                                            ->orWhereRaw('debe - pagandose > 300');
+                                        });
                         })
-                        ->whereHas('client', function ($query) {
-                            $query->where('saldo', '>', 300);
-                        })
+                        // ->whereHas('client', function ($query) {
+                        //     $query->where('saldo', '>', 300);
+                        // })
                         ->whereDate('created_at', '<=', Carbon::today()->subDays($dias));
 
         if ($ver_solo_las_ventas_suyas) {

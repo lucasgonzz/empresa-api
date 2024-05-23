@@ -47,12 +47,12 @@ class OrderSeeder extends Seeder
 
             $articles = [
                 [
-                    'name'          => 'Articulo 1',
+                    'name'          => 'Prensa Espirales Universal',
                     'amount'        => 10,
                     // 'address_id'    => 1,
                 ],
                 [
-                    'name'          => 'Articulo 2',
+                    'name'          => 'Kit 3 Relojes Orlan Rober Classic Aceite Agua Voltímetro',
                     'amount'        => 1,
                 ],
             ];

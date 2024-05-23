@@ -157,6 +157,18 @@ class ProductionMovementHelper {
 		}
 	}
 
+
+	/*
+		
+		* Si el movimiento NO pertenece al PRIMER estado de produccion:
+			1- Se busca el estado de produccion anterior al estado de produccion del movimiento
+				que se quiere eliminar
+			2- Su busca el ultimo movimineto que pertenezca a ese estado anterior
+			3- Se aumenta la cantidad actual de ese movimiento previo con las cantidades que se
+				estan eliminando 
+
+	*/
+
 	static function delete($production_movement, $instance) {
 		if ($production_movement->order_production_status->position > 1) {
 			$previus_production_status = OrderProductionStatus::where('user_id', $instance->userId())
@@ -168,10 +180,10 @@ class ProductionMovementHelper {
 															->where('order_production_status_id', $previus_production_status->id)
 															->first();
 			if (!is_null($previus_production_movement)) {
-				Log::info('Se actualizo current_amount del order_status: '.$previus_production_movement->order_production_status->name.'. Tenia '.$previus_production_movement->current_amount);
+
 				$previus_production_movement->current_amount += $production_movement->amount;
 				$previus_production_movement->save();
-				Log::info('Ahora tiene '.$previus_production_movement->current_amount);
+				
 			} 
 		}
 	}

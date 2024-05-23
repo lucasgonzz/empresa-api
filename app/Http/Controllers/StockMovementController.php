@@ -17,7 +17,9 @@ class StockMovementController extends Controller
     function index($article_id) {
         $models = StockMovement::where('article_id', $article_id)
                                 ->orderBy('created_at', 'DESC')
+                                ->select('temporal_id', 'article_id', 'from_address_id', 'to_address_id', 'provider_id', 'sale_id', 'nota_credito_id', 'concepto', 'observations', 'amount', 'employee_id', 'user_id')
                                 ->get();
+                                
         return response()->json(['models' => $models], 200);
     }
 
@@ -42,8 +44,10 @@ class StockMovementController extends Controller
         ]);
 
 
-        // Log::info('StockMovement para '.$this->article->name);
-        // Log::info('Stock previo '.$this->article->stock);
+        if (!is_null($this->article)) {
+            Log::info('StockMovement para '.$this->article->name);
+            Log::info('Stock previo '.$this->article->stock);
+        }
         // Log::info('Cantidad del Movimiento '.$this->stock_movement->amount);
 
         $this->setConcepto();
@@ -67,43 +71,55 @@ class StockMovementController extends Controller
     }
 
     function setStockResultante() {
-        $stock_movement_anterior = StockMovement::where('article_id', $this->article->id)
-                                                ->orderBy('created_at', 'DESC')
-                                                ->where('id', '!=', $this->stock_movement->id)
-                                                ->first();
+        if (!is_null($this->article)) {
 
-        if (!is_null($stock_movement_anterior)) {
+            $stock_movement_anterior = StockMovement::where('article_id', $this->article->id)
+                                                    ->orderBy('created_at', 'DESC')
+                                                    ->where('id', '!=', $this->stock_movement->id)
+                                                    ->first();
 
-            $stock_resultante = null;
-            
-            if (!is_null($this->stock_movement->sale)) {
+            if (!is_null($stock_movement_anterior)) {
 
-                $stock_resultante = $stock_movement_anterior->stock_resultante - $this->stock_movement->amount;
+                Log::info('Habia stock_movement_anterior');
+
+                $stock_resultante = null;
+                
+                if (!is_null($this->stock_movement->sale)) {
+
+                    Log::info('stock_resultante = '.$stock_movement_anterior->stock_resultante.' - '.$this->stock_movement->amount.': ');
+
+                    $stock_resultante = (float)$stock_movement_anterior->stock_resultante - (float)$this->stock_movement->amount;
+
+                    Log::info($stock_resultante);
+                } else {
+
+                    Log::info('stock_resultante = '.$stock_movement_anterior->stock_resultante.' + '.$this->stock_movement->amount.': ');
+
+                    $stock_resultante = (float)$stock_movement_anterior->stock_resultante + (float)$this->stock_movement->amount;
+                    Log::info($stock_resultante);
+
+                }
+
+                Log::info('El stock a todo esto es de '.$this->article->stock);
+
+                if ($stock_resultante != $this->article->stock) {
+
+                    $this->stock_movement->observations .= ' El stock resultante es distinto al stock actual ('.$this->article->stock.')';
+
+                } 
+
+                $this->stock_movement->stock_resultante = $stock_resultante;
 
             } else {
-
-                $stock_resultante = $stock_movement_anterior->stock_resultante + $this->stock_movement->amount;
-
+                Log::info('No habia stock_movement_anterior, el stock_resultante quedo en '.$this->stock_movement->amount);
+                $this->stock_movement->stock_resultante = $this->stock_movement->amount;
             }
 
-            if ($stock_resultante != $this->article->stock) {
-
-                $this->stock_movement->observations .= ' El stock resultante es distinto al stock actual ('.$this->article->stock.')';
-
-            } 
-
-            $this->stock_movement->stock_resultante = $stock_resultante;
-
+            $this->stock_movement->save();
         } else {
             $this->stock_movement->stock_resultante = $this->stock_movement->amount;
+            $this->stock_movement->save();
         }
-
-        // if (!is_null($this->article)) {
-        //     $this->stock_movement->stock_resultante = $this->article->stock;
-        // } else {
-        //     $this->stock_movement->stock_resultante = $this->stock_movement->amount;
-        // }
-        $this->stock_movement->save();
     }
 
     function getFromAddressId() {
@@ -188,16 +204,20 @@ class StockMovementController extends Controller
             $this->article->save();
         }
         if (!is_null($this->article->stock) && !count($this->article->addresses) >= 1) {
+            Log::info($this->article->name.' tiene '.$this->article->stock.' de stock');
             if (!is_null($this->stock_movement->sale)) {
-                // Log::info('Descontando stock global por venta');
+                Log::info('Descontando '.$this->stock_movement->amount.' stock global por venta a '.$this->article->name);
                 $this->article->stock -= (float)$this->stock_movement->amount;
             } else {
+                Log::info('Aumentando '.$this->stock_movement->amount.' stock global por venta a '.$this->article->name);
                 $this->article->stock += (float)$this->stock_movement->amount;
             }
             if (!$this->set_updated_at) {
                 $this->article->timestamps = false;
             }
             $this->article->save();
+
+            Log::info($this->article->name.' quedo en '.$this->article->stock.' de stock');
 
             $ct = new InventoryLinkageHelper();
             $ct->check_is_agotado($this->article);

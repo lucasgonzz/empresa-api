@@ -147,6 +147,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('production-movement/from-date/{from_date?}/{until_date?}', 'ProductionMovementController@index');
     Route::get('production-movement/current-amounts/{article_id}', 'ProductionMovementController@currentAmounts');
     Route::get('production-movement/current-amounts/all-articles/all-recipes', 'ProductionMovementController@currentAmountsAllArticles');
+    Route::get('production-movement/es-el-ultimo-creado/{production_movement_id}/{article_id}', 'ProductionMovementController@esElUltimoCreado');
 
     Route::resource('order-production', 'OrderProductionController');
     Route::resource('order-production-status', 'OrderProductionStatusController');

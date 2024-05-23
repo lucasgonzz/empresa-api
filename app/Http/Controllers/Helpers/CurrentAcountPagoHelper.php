@@ -19,16 +19,18 @@ class CurrentAcountPagoHelper {
     public $sin_pagar;
 
     function __construct($model_name, $model_id, $pago) {
-
+        Log::info('procesando '.$pago->detalle);
         $this->model_name = $model_name;
         $this->model_id = $model_id;
         $this->pago = $pago;
         $this->fondos = $pago->haber;
+        $this->sin_pagar = null;
         $this->setSinPagar();
-        Log::info('Porcesando '.$pago->detalle);
     }
 
     function setSinPagar() {
+
+        Log::info('setSinPagar');
 
         if (!is_null($this->pago->to_pay_id) && is_null($this->sin_pagar)) {
             $this->sin_pagar = CurrentAcount::find($this->pago->to_pay_id);
@@ -39,9 +41,6 @@ class CurrentAcountPagoHelper {
                                             ->orderBy('created_at', 'ASC')
                                             ->first();
         }
-
-        // Log::info('Sin pagar:');
-        // Log::info($this->sin_pagar->toArray());
     }
 
     function init() {
@@ -49,7 +48,7 @@ class CurrentAcountPagoHelper {
             $this->procesarPago();
             $this->setSinPagar();
         }
-        // $this->setModelPagosCheckeados();
+        $this->setModelPagosCheckeados();
     }
 
     function setModelPagosCheckeados() {
@@ -81,8 +80,8 @@ class CurrentAcountPagoHelper {
             'total_pago'    => $this->pago->haber,
             'created_at'    => $this->pago->created_at,
         ]);
-        echo('GUARDANDO EL PAGADO de '.$this->sin_pagar->detalle.' </br>');
-        Log::info('El pagado_por de la '.$this->sin_pagar->detalle.' quedo asi:');
+        Log::info('GUARDANDO EL PAGADO de '.$this->sin_pagar->detalle);
+        // Log::info('El pagado_por de la '.$this->sin_pagar->detalle.' quedo asi:');
         // foreach ($this->sin_pagar->pagado_por as $pagado_por) {
             // Log::info('El pago N°'.$pagado_por->num_receipt.' pago '.$pagado_por->pivot->pagado.' a la '.CurrentAcount::find($pagado_por->pivot->debe_id)->detalle);
         // }
@@ -103,6 +102,7 @@ class CurrentAcountPagoHelper {
     }
 
     static function attachPaymentMethods($pago, $payment_methods) {
+        Log::info('attachPaymentMethods');
         foreach ($payment_methods as $payment_method) {
             $amount = $payment_method['amount'];
             if ($amount == '' || is_null($amount)) {

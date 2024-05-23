@@ -6,12 +6,15 @@ use App\Exports\SalesExport;
 use App\Http\Controllers\AfipWsController;
 use App\Http\Controllers\ArticlePerformanceController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartArticleAmountInsificienteHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\RecalculateCurrentAcountsHelper;
 use App\Http\Controllers\Helpers\RecipeHelper;
+use App\Jobs\ProcessCheckInventoryLinkages;
+use App\Jobs\ProcessRecalculateCurrentAcounts;
 use App\Models\Article;
 use App\Models\Budget;
 use App\Models\Buyer;
@@ -20,6 +23,7 @@ use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\CurrentAcountCurrentAcountPaymentMethod;
 use App\Models\Image;
+use App\Models\InventoryLinkage;
 use App\Models\OnlineConfiguration;
 use App\Models\OrderProduction;
 use App\Models\Provider;
@@ -31,17 +35,17 @@ use App\Models\User;
 use App\Models\UserConfiguration;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Maatwebsite\Excel\Facades\Excel;
-use Illuminate\Support\Facades\Config;
-use Illuminate\Support\Facades\DB;
 
 class HelperController extends Controller
 {
 
-    function callMethod($method) {
-        $this->{$method}();
+    function callMethod($method, $param = null) {
+        $this->{$method}($param);
     }
 
     function check_deleted_articles_recipes() {
@@ -54,6 +58,16 @@ class HelperController extends Controller
             }
         }
         echo 'Listo';
+    }
+
+    function check_inventory_linkages($company_name) {
+
+        $user = User::where('company_name', $company_name)
+                        ->first();
+
+        ProcessCheckInventoryLinkages::dispatch($user);
+
+        echo 'Se despacho';
     }
 
     function check_stock() {
@@ -691,76 +705,8 @@ class HelperController extends Controller
     }
 
     function recaulculateCurrentAcounts($company_name, $client_id = null) {
-        set_time_limit(999999);
-        $user = User::where('company_name', $company_name)->first();
-        $clients = Client::where('user_id', $user->id)
-                            ->orderBy('id', 'ASC')
-                            ->where('id', '!=', 7334);
-                            // ->take(50);
-        if (!is_null($client_id)) {
-            $clients = $clients->where('id', '>=', $client_id);
-            Log::info('viene por aca');
-            echo 'Filtrando id mayor a '.$client_id.' </br>';
-        }
-        $clients = $clients->get();
-
-        echo 'Desde el id '.$clients[0]->id.' </br>';
-        Log::info('Desde el id '.$clients[0]->id);
-
-        echo(count($clients).' clientes </br>');
-        $index = 1;
-        foreach ($clients as $client) {
-            echo 'Cliente '.$client->name.' id = '. $client->id .' </br>';
-            Log::info('Cliente '.$client->name.' id = '. $client->id);
-            echo 'Vuelta '.$index.' </br>';
-            $index++;
-            CurrentAcountHelper::checkSaldos('client', $client->id);
-            CurrentAcountHelper::checkPagos('client', $client->id, true);
-            foreach ($client->current_acounts as $current_acount) {
-                echo 'CC del '.date_format($current_acount->created_at, 'd/m/Y').' </br>';
-                if (!is_null($current_acount->debe)) {
-                    if (!is_null($current_acount->sale)) {
-                        $current_acount->detalle = 'Venta N°'.$current_acount->sale->num;
-                    } else {
-                        $current_acount->detalle = 'Nota debito';
-                    }
-                } else if (!is_null($current_acount->haber)) {
-                    if ($current_acount->status == 'nota_credito') {
-                        $current_acount->detalle = 'Nota Credito N°'.$current_acount->num_receipt;
-                    } else {
-                        $current_acount->detalle = 'Pago N°'.$current_acount->num_receipt;
-                    }
-                }
-                $current_acount->save();
-            }
-        }
-        echo "Termino";
-        return;
-        $providers = Provider::where('user_id', $user->id)
-                            ->get();
-        foreach ($providers as $provider) {
-            echo 'Proveedor '.$provider->name.' </br>';
-            CurrentAcountHelper::checkSaldos('provider', $provider->id);
-            CurrentAcountHelper::checkPagos('provider', $provider->id, true);
-            foreach ($provider->current_acounts as $current_acount) {
-                echo 'CC del '.date_format($current_acount->created_at, 'd/m/Y').' </br>';
-                if (!is_null($current_acount->debe)) {
-                    if (!is_null($current_acount->provider_order_id)) {
-                        $current_acount->detalle = 'Pedido N°'.$current_acount->provider_order->num;
-                    } else {
-                        $current_acount->detalle = 'Nota debito';
-                    }
-                } else if (!is_null($current_acount->haber)) {
-                    if ($current_acount->status == 'nota_credito') {
-                        $current_acount->detalle = 'Nota Credito N°'.$current_acount->num_receipt;
-                    } else {
-                        $current_acount->detalle = 'Pago N°'.$current_acount->num_receipt;
-                    }
-                }
-                $current_acount->save();
-            }
-        }
-        return;
+        ProcessRecalculateCurrentAcounts::dispatch($company_name);
+        echo 'Se mando a fila ProcessRecalculateCurrentAcounts';
     }
 
 

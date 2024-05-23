@@ -161,7 +161,7 @@ class ArticleHelper {
         if ($current_final_price != $article->final_price) {
             $article->previus_final_price = $current_final_price; 
             $article->final_price_updated_at = Carbon::now();
-            PriceChangeController::store($article, $auth_user_id);
+            // PriceChangeController::store($article, $auth_user_id);
         }
 
         // echo($article->name.' final_price: '.$article->final_price.' </br>');

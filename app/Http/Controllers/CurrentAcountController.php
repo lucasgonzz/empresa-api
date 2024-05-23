@@ -50,6 +50,7 @@ class CurrentAcountController extends Controller
     }
 
     public function pago(Request $request) {
+        Log::info('Entro guardar pago');
         $pago = CurrentAcount::create([
             'haber'                             => $request->haber,
             'description'                       => $request->description,
@@ -77,7 +78,11 @@ class CurrentAcountController extends Controller
             CurrentAcountHelper::checkCurrentAcountSaldo($request->model_name, $request->model_id);
             CurrentAcountHelper::updateModelSaldo($pago, $request->model_name, $request->model_id);
         }
+        
+        CurrentAcountHelper::checkPagos($request->model_name, $request->model_id, true);
+
         $this->sendAddModelNotification($request->model_name, $request->model_id);
+        Log::info('Terminando de guardar pago');
         return response()->json(['current_acount' => $pago], 201);
     }
 
@@ -154,12 +159,13 @@ class CurrentAcountController extends Controller
         $current_acount = CurrentAcount::find($id);
 
         if ($current_acount->status == 'pago_from_client' || $current_acount->status == 'nota_credito') {
-            $ct = new CurrentAcountDeletePagoHelper($model_name, $current_acount);
-            $ct->deletePago();
+
+            // $ct = new CurrentAcountDeletePagoHelper($model_name, $current_acount);
+            // $ct->deletePago();
             if ($current_acount->status == 'nota_credito') {
                 NotaCreditoHelper::resetUnidadesDevueltas($current_acount);
             }
-            $current_acount->pagando_a()->detach();
+            // $current_acount->pagando_a()->detach();
             CurrentAcountHelper::updateSellerCommissionsStatus($current_acount);
 
         } else {
@@ -175,7 +181,11 @@ class CurrentAcountController extends Controller
         $model = GeneralHelper::getModelName($model_name)::find($model_id);
         $model->pagos_checkeados = 0;
         $model->save();
+        
         CurrentAcountHelper::checkSaldos($model_name, $model_id);
+        
+        CurrentAcountHelper::checkPagos($model_name, $model_id, true);
+
         $this->sendAddModelNotification($model_name, $model_id, false);
     }
 

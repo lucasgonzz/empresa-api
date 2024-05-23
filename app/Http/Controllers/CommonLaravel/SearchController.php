@@ -112,26 +112,62 @@ class SearchController extends Controller
         $models = $model_name::where('user_id', $this->userId())
                                 ->withAll();
 
-        if ($request->prop_to_filter['key'] == 'bar_code' || $request->prop_to_filter['key'] == 'provider_code') {
-            $models = $models->where($request->prop_to_filter['key'], $request->query_value);
-        } else {
+        $models = $models->where(function ($query) use ($request, $model_name_param) {
+            foreach ($request->props_to_filter as $prop_to_filter) {
 
-            $keywords = explode(' ', $request->query_value);
+                $query->orWhere(function ($subQuery) use ($prop_to_filter, $request) {
+                    if ($prop_to_filter == 'bar_code' || $prop_to_filter == 'provider_code') {
+                        $subQuery->where($prop_to_filter, $request->query_value);
+                    } else {
+                        $keywords = explode(' ', $request->query_value);
+                        foreach ($keywords as $keyword) {
+                            $subQuery->orWhereRaw($prop_to_filter . ' LIKE ?', ["%$keyword%"]);
+                        }
+                    }
+                });
 
-            foreach ($keywords as $keyword) {
-                $query = $request->prop_to_filter['key'].' LIKE ?';
-                $models->whereRaw($query, ["%$keyword%"]);
             }
 
-            // $models = $models->where($request->prop_to_filter['key'], 'like', '%'.$request->query_value.'%');
-        }
-        if (isset($request->depends_on_key)) {
-            $models = $models->where($request->depends_on_key, $request->depends_on_value);
-        }
-        if ($model_name_param == 'article' || $model_name_param == 'client' || $model_name_param == 'provider') {
-            $models = $models->where('status', 'active');
-        }
+            if (isset($request->depends_on_key)) {
+                $query->where($request->depends_on_key, $request->depends_on_value);
+            }
+
+            if ($model_name_param == 'article' || $model_name_param == 'client' || $model_name_param == 'provider') {
+                $query->where('status', 'active');
+            }
+        });
+
         $models = $models->get();
+
+
+        // foreach ($request->props_to_filter as $prop_to_filter) {
+
+        //     if ($prop_to_filter['key'] == 'bar_code' || $prop_to_filter['key'] == 'provider_code') {
+
+        //         $models = $models->where($prop_to_filter['key'], $request->query_value);
+
+        //     } else {
+
+        //         $keywords = explode(' ', $request->query_value);
+
+        //         foreach ($keywords as $keyword) {
+        //             $query = $prop_to_filter['key'].' LIKE ?';
+        //             $models->whereRaw($query, ["%$keyword%"]);
+        //         }
+
+        //         // $models = $models->where($prop_to_filter['key'], 'like', '%'.$request->query_value.'%');
+        //     }
+        //     if (isset($request->depends_on_key)) {
+        //         $models = $models->where($request->depends_on_key, $request->depends_on_value);
+        //     }
+        //     if ($model_name_param == 'article' || $model_name_param == 'client' || $model_name_param == 'provider') {
+        //         $models = $models->where('status', 'active');
+        //     }
+
+        // }
+
+        // $models = $models->get();
+        
         return response()->json(['models' => $models], 200);
     } 
 }

@@ -81,7 +81,7 @@ Route::get('/get-persona/{cuit}', 'AfipConstanciaInscripcionController@get_const
 Route::get('/super-budget', 'SuperBudgetController@pdf');
 
 
-Route::get('helpers/{method}', 'HelperController@callMethod');
+Route::get('helpers/{method}/{param?}', 'HelperController@callMethod');
 
 Route::get('recaulculate-cc-sales-debe/{client_id}', 'Helpers\CurrentAcountHelper@recalculateCurrentAcountsSalesDebe');
 
