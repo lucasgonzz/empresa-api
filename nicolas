@@ -1,0 +1,497 @@
+[33mcommit 57727879a338ed3bdb463f9a606d8b18ec2296f6[m[33m ([m[1;36mHEAD -> [m[1;32mprueba1[m[33m, [m[1;31morigin/prueba1[m[33m)[m
+Author: NicolasAgustinIbarra <nicoibarra099@gmail.com>
+Date:   Mon May 27 12:13:32 2024 -0300
+
+    Se creo archivo migracion y modelo
+
+[33mcommit 74049d21f5c13f8f3f7ab9bf6dc64d4eb4470cd2[m[33m ([m[1;31morigin/master[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmaster[m[33m)[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Mon May 27 10:40:18 2024 -0300
+
+    .
+
+[33mcommit 4561deaee83fa116f5689cb1305a08f57fd7cbee[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Thu May 23 17:30:53 2024 -0300
+
+    .
+
+[33mcommit 45420faaa021c5111c9316308f0d438c97d6acc2[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Mon May 20 13:29:33 2024 -0300
+
+    .
+
+[33mcommit 946f5742ea17785528dba57cb66ac533687454d9[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Thu May 16 09:27:03 2024 -0300
+
+    .
+
+[33mcommit e1a24f2bef37d14f4d4ff80d51aec689f54db1b5[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Tue May 14 09:05:43 2024 -0300
+
+    .
+
+[33mcommit 5acea7a04c693bd6fe1464ff11c80458367908e9[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Mon May 13 16:48:08 2024 -0300
+
+    .
+
+[33mcommit a209159c44760d1d99a5dba0b8d33acb797b4db8[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Wed May 8 14:48:07 2024 -0300
+
+    .
+
+[33mcommit 9b396123d0413f9084b5ce401ed5fbf81d01bbb7[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Mon May 6 09:25:34 2024 -0300
+
+    .
+
+[33mcommit 2370532c56672ba544afd8166753400ad11a75fe[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Sun May 5 14:28:54 2024 -0300
+
+    .
+
+[33mcommit 9d258c64bcb6d2178227492954a4f3468c800487[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Thu May 2 09:17:23 2024 -0300
+
+    :
+
+[33mcommit e26425c7eb7419a2e601c45cfe4bd4dfbeca7a8e[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Thu May 2 00:45:35 2024 -0300
+
+    .
+
+[33mcommit eb4f41398c6787a5b22bd1b4c2a76deeebc31388[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Thu May 2 00:36:54 2024 -0300
+
+    .
+
+[33mcommit b63aec9071dcb1d2a6bc2adb29ebfaeb1fb38615[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Wed May 1 09:30:11 2024 -0300
+
+    .
+
+[33mcommit 3be29eb176adb4d611781a06bc71e08ab9daa426[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Thu Apr 18 11:38:41 2024 -0300
+
+    .
+
+[33mcommit 0d4900b5962454ac90688f5ab8e334b2fb70a42f[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Wed Apr 17 17:13:20 2024 -0300
+
+    .
+
+[33mcommit 1a1a914ff22c54adb7a5a4eaaf4f2b6d2b792d1e[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Wed Apr 17 17:04:16 2024 -0300
+
+    .
+
+[33mcommit c63ddace1f5fd2f7865d8d4fedec27a7f3297f37[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Wed Apr 17 15:46:06 2024 -0300
+
+    .
+
+[33mcommit fd97b6de061fc30959dea68b3782138177c26302[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Mon Apr 15 11:09:40 2024 -0300
+
+    .
+
+[33mcommit f18a925269286dd32124615cbe32f1e0daa1a9d2[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Wed Mar 27 14:20:01 2024 -0300
+
+    .
+
+[33mcommit 53198fc9217c47d3ea7a679411bf2112ae6be866[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Wed Mar 6 20:48:39 2024 -0300
+
+    .
+
+[33mcommit 8a1d46752ab2aeac81177023c25eeb2a53019626[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Tue Feb 20 16:40:27 2024 -0300
+
+    .
+
+[33mcommit d894101c65e5384ae21792f1575845874c4d0a03[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Mon Feb 19 09:57:19 2024 -0300
+
+    .
+
+[33mcommit 198964cfa28dfae781f185b5f8bf12819fc730d8[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Thu Feb 8 17:31:02 2024 -0300
+
+    :
+
+[33mcommit 93ada4176c185248e834ac905d94a122243df047[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Tue Feb 6 09:55:33 2024 -0300
+
+    .
+
+[33mcommit 09767c69c7316cd194b2c9f1c43b715b6f27ae84[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Tue Feb 6 09:30:45 2024 -0300
+
+    .
+
+[33mcommit 00cd1bbfb3ab21f34058973b6c56cec2e0c39699[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Wed Jan 31 14:43:44 2024 -0300
+
+    .
+
+[33mcommit bc26b350fd340cd9b7960058b663b7c9a1b5c43c[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Wed Jan 10 12:12:21 2024 -0300
+
+    .
+
+[33mcommit 6b2ba2af1213db4a6dbcec83c059d4a383c69774[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Fri Dec 8 09:34:21 2023 -0300
+
+    .
+
+[33mcommit 93b6a07f1d921574515a32234b0566ad8a0ddb76[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Mon Dec 4 09:52:36 2023 -0300
+
+    .
+
+[33mcommit 0eb01ae3fa37b656b11f0e5f408b59e5865afa6a[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Tue Nov 28 09:19:59 2023 -0300
+
+    .
+
+[33mcommit af6dc2650e70a5d7f950e97dbe9156f3d0495246[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Fri Nov 24 10:30:07 2023 -0300
+
+    .
+
+[33mcommit f6fde391aa0ecd92de7b0a8c6bcea42061824b45[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Tue Nov 21 10:10:18 2023 -0300
+
+    .
+
+[33mcommit 7b56597881bec79c0f66a6996a37e4a9f19b7e00[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Thu Nov 9 13:21:03 2023 -0300
+
+    .
+
+[33mcommit 2b31b1c7db3cc704e07ce0a6f3e6976778ccb548[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Wed Nov 8 10:40:00 2023 -0300
+
+    .
+
+[33mcommit 8562a1e9e6feaad6bbc016d82a2a18a686d530df[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Thu Oct 26 14:37:24 2023 -0300
+
+    .
+
+[33mcommit bbcdb639486aab8f98517b69162de056829aec2b[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Wed Oct 25 11:57:08 2023 -0300
+
+    .
+
+[33mcommit 78ad8cec8e0cb1574c0a50766ff3d760f0ac0108[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Mon Oct 23 11:58:54 2023 -0300
+
+    .
+
+[33mcommit 6081f00a7f3f9200d1bb4662678f69f813280633[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Wed Oct 4 10:34:06 2023 -0300
+
+    .
+
+[33mcommit de4dd5971a2d2ca699c740301a77774a8db685e8[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Mon Oct 2 11:02:38 2023 -0300
+
+    .
+
+[33mcommit 676ce4e0eabc062d2ace9eb29a8d7112dd46524d[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Wed Sep 27 11:34:36 2023 -0300
+
+    .
+
+[33mcommit c2821c4ef5e62e518a36412c5aa0b3a70a200c16[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Mon Sep 25 10:54:27 2023 -0300
+
+    .
+
+[33mcommit 5be08dbfab3878e7199d6fbca163eaa491a07548[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Thu Sep 21 12:04:08 2023 -0300
+
+    .
+
+[33mcommit 38a617a65a16c24ab1a0663d84c97be4c8718ce4[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Tue Sep 19 11:22:17 2023 -0300
+
+    .
+
+[33mcommit b061ba23286807844dd687e1f7dacd71912a6a69[m
+Author: lucas <lucasgonzalez5500@gmail.com>
+Date:   Fri Sep 15 12:13:08 2023 -0300
+
+    .
+
+[33mcommit 776140037be9cce4896c519777692b201385b24a[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Tue Sep 12 15:37:59 2023 -0300
+
+    .
+
+[33mcommit e92bf07b8061f76357bd37aabb2c9e3e5a151218[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Tue Sep 5 10:42:43 2023 -0300
+
+    .
+
+[33mcommit 55d3b0f3418a9c5c800ee3bdffd30739dbe9156d[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Mon Aug 28 21:01:12 2023 -0300
+
+    .
+
+[33mcommit d1524e3175c375b4477e71cb49b8e2109a743d18[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Thu Aug 17 12:14:08 2023 -0300
+
+    :
+
+[33mcommit 75188dfd180dab1d38a1ceff470f01a0b2bc885d[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Wed Aug 16 09:34:54 2023 -0300
+
+    .
+
+[33mcommit 92da61688caef606881a1edabd0d2d37dc58a42a[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Wed Aug 2 11:29:53 2023 -0300
+
+    .
+
+[33mcommit d4584749c5dfa18e40dd9d25cdb3c5632d8f5278[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Mon Jul 24 09:57:26 2023 -0300
+
+    .
+
+[33mcommit f330e75d367ed53e103eda2ef0cf1fd6a249c980[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Tue Jul 18 11:58:30 2023 -0300
+
+    .
+
+[33mcommit d4fa263135b12b3f341ceaaf678b8df6e37469ff[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Thu Jul 6 18:51:12 2023 -0300
+
+    .
+
+[33mcommit b75e14017133e29f79d81c511f9a46b924eada38[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Thu Jun 22 21:04:48 2023 -0300
+
+    .
+
+[33mcommit a8bc9111b098f77b18eac7322c21ab6c787fddea[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Thu Jun 22 10:50:54 2023 -0300
+
+    .
+
+[33mcommit 17dc9622783f8d3bb48fb74ec5ed3f6ffb27c152[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Thu Jun 15 09:31:34 2023 -0300
+
+    .
+
+[33mcommit cabb11ce36b0d34f1f2d4ce004afef4bd961c3c4[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Tue Jun 6 10:09:35 2023 -0300
+
+    .
+
+[33mcommit 3d96daf0b4f7d067e38adccdb0d773794e87222b[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Sun Jun 4 18:34:08 2023 -0300
+
+    .
+
+[33mcommit 5daff41f5a87af3e3a7018bb10849ffbe304cfb9[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Tue May 30 11:25:30 2023 -0300
+
+    .
+
+[33mcommit 3d0f070abd5c84971debaf8f374b3a247fb362b8[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Wed May 24 11:18:19 2023 -0300
+
+    .
+
+[33mcommit abaadae36f16a6b02e016741713917ff11e99ecf[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Tue May 23 10:57:54 2023 -0300
+
+    .
+
+[33mcommit b83869f916ea7164e9ffbe2c1114a1b680bdc759[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Mon May 22 11:06:45 2023 -0300
+
+    .
+
+[33mcommit e05443c0654dd2428548b57067db715fc5019c5d[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Thu May 18 10:53:30 2023 -0300
+
+    .
+
+[33mcommit a760295c3784e9db0f0bae2fc3ad6a3c67410f5f[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Wed May 17 10:14:41 2023 -0300
+
+    .
+
+[33mcommit 461db47f0b82903ed94f6c69f0f366fd0da360c1[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Tue May 16 10:44:24 2023 -0300
+
+    .
+
+[33mcommit 2c979c5df1c545e655ba24638c3a449fc3a8fd70[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Wed May 10 10:46:59 2023 -0300
+
+    .
+
+[33mcommit 4b91f264d9c67290196aaa024071d9a20d32ce84[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Mon May 8 09:51:42 2023 -0300
+
+    .
+
+[33mcommit c8b8805a80c96a066118a8471f95d185d0558612[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Mon May 1 22:37:41 2023 -0300
+
+    .
+
+[33mcommit a0d0cd990a77e406c010e1e8bfbb5ac9f93a13f5[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Fri Apr 28 10:17:17 2023 -0300
+
+    .
+
+[33mcommit 4ab74b0ebe4499b444b0e58e2749c846cd074dad[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Thu Apr 27 09:01:59 2023 -0300
+
+    .
+
+[33mcommit 98c871ed46141764874a5269a8997c621a1c077d[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Tue Apr 25 21:17:40 2023 -0300
+
+    .
+
+[33mcommit 9197e65e4dc1f28ab7244b59ed646e6c138bc20a[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Mon Apr 24 10:26:08 2023 -0300
+
+    .
+
+[33mcommit 90b55f61504fc79b649dcca2f95a0200c64d6c31[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Wed Apr 19 09:33:36 2023 -0300
+
+    .
+
+[33mcommit 86dff5886acdee4f9a36d7672419aa83977a9b98[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Fri Apr 14 11:07:26 2023 -0300
+
+    .
+
+[33mcommit 11db830cb18e5f030350d174cba3de32783ba261[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Thu Apr 13 10:08:38 2023 -0300
+
+    .
+
+[33mcommit 02e06b864525c6d19ba19a5f1aff7dd33e48edd8[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Tue Apr 11 10:24:37 2023 -0300
+
+    .
+
+[33mcommit 38058741ea71aee2e7070c6e1cccd3b2bc864da3[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Mon Apr 10 11:31:16 2023 -0300
+
+    .
+
+[33mcommit b53caef959412e7e678846e23420300b44d51b52[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Fri Apr 7 15:27:54 2023 -0300
+
+    Add LocalStorage
+
+[33mcommit 3f5a2feffe920c58a8b978e0bfa88fa1da48a7ca[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Mon Apr 3 15:34:24 2023 -0300
+
+    .
+
+[33mcommit 29e0330c6e81ecbf88ede3e943b4612d44b31040[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Sat Apr 1 11:29:36 2023 -0300
+
+    .
+
+[33mcommit 308cf0466aa82ab98c2518a869e068ef7e216d15[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Thu Mar 30 12:34:21 2023 -0300
+
+    First commit
+
+[33mcommit b9062d7d122466010cbdc1a645a9b8b1bbd80bd3[m
+Author: Lucas Gonzalez <lucasgonzalez5500@gmail.com>
+Date:   Fri Mar 24 17:29:13 2023 -0300
+
+    First commit

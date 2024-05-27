@@ -15,7 +15,10 @@ class CreateArticlePricesTable extends Migration
     {
         Schema::create('article_prices', function (Blueprint $table) {
             $table->id();
-            $table->timestamps();
+            $table->string('provider_code',30);
+            $table->integer('price_type_id');
+            $table->decimal('price',20,2);
+        
         });
     }
 
