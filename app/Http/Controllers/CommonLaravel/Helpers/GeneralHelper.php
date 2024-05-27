@@ -48,7 +48,7 @@ class GeneralHelper {
         return $result;
     }
 
-    function get_decimal_value($number) {
+    static function get_decimal_value($number) {
 
         $number = str_replace(',', '.', $number);
         

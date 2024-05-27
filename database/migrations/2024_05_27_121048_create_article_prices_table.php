@@ -18,6 +18,8 @@ class CreateArticlePricesTable extends Migration
             $table->string('provider_code',30);
             $table->integer('price_type_id');
             $table->decimal('price',20,2);
+            $table->integer('user_id');
+            $table->timestamps();
         
         });
     }
