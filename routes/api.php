@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\Route;
 // Route::middleware(['set.user.database', 'auth:sanctum'])->group(function() {
 Route::middleware(['auth:sanctum'])->group(function() {
 
+    // HOLA
+
     // CommonLaravel 
     // ----------------------------------------------------------------------------------------------------
     // Generals
