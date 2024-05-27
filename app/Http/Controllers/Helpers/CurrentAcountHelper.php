@@ -323,6 +323,7 @@ class CurrentAcountHelper {
             $model->saldo = 0;
         }
         $model->save();
+        return $model;
         // Log::info('se actualizo saldo del modelo '.$model->name.' a '.$model->saldo);
     }
 
@@ -364,7 +365,7 @@ class CurrentAcountHelper {
             foreach ($pagos as $pago) {
                 $pago_helper = new CurrentAcountPagoHelper($model_name, $model_id, $pago);
                 $pago_helper->init();
-                echo 'Se llampo a pago_helper </br>';
+                echo 'Se llampo a pago_helper para '.$model_id;
             }
             $model->pagos_checkeados = 1;
             $model->save();

@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\RecalculateCurrentAcountsHelper;
 use App\Http\Controllers\Helpers\RecipeHelper;
 use App\Jobs\ProcessCheckInventoryLinkages;
+use App\Jobs\ProcessCheckSaldos;
 use App\Jobs\ProcessRecalculateCurrentAcounts;
 use App\Models\Article;
 use App\Models\Budget;
@@ -687,11 +688,8 @@ class HelperController extends Controller
 
     function checkClientsSaldos($company_name) {
         $user = User::where('company_name', $company_name)->first();
-        $clients = Client::where('user_id', $user->id)
-                            ->get();
-        foreach ($clients as $client) {
-            CurrentAcountHelper::checkSaldos('client', $client->id);
-        }
+        ProcessCheckSaldos::dispatch($user);
+        echo 'se despacho';
     }
 
     function setClientesOscar() {

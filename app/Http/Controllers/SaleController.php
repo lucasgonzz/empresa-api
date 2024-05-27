@@ -274,16 +274,17 @@ class SaleController extends Controller
 
         $sales = Sale::where('user_id', $this->userId())
                         ->whereHas('current_acount', function($q) {
-                            return $q->where('status', 'sin_pagar')
+                            return $q->where('debe', '>', 0)
+                                        ->where('status', 'sin_pagar')
                                         ->orWhere('status', 'pagandose')
                                         ->where(function ($query) {
                                             $query->whereNull('pagandose')
                                             ->orWhereRaw('debe - pagandose > 300');
                                         });
                         })
-                        // ->whereHas('client', function ($query) {
-                        //     $query->where('saldo', '>', 300);
-                        // })
+                        ->whereHas('client', function ($query) {
+                            $query->where('saldo', '>', 300);
+                        })
                         ->whereDate('created_at', '<=', Carbon::today()->subDays($dias));
 
         if ($ver_solo_las_ventas_suyas) {

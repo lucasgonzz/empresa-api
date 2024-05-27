@@ -67,5 +67,6 @@ class ProcessRecalculateCurrentAcounts implements ShouldQueue
             }
             Log::info('Se recalcularon las cuentas corrientes de '.$client->name);
         }
+        Log::info('termino');
     }
 }

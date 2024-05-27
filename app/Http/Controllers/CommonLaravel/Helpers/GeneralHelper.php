@@ -47,6 +47,15 @@ class GeneralHelper {
         }
         return $result;
     }
+
+    function get_decimal_value($number) {
+
+        $number = str_replace(',', '.', $number);
+        
+        $number = (float)$number;
+
+        return $number;
+    }
     
     function file_exists_2($filePath) {
         $file_headers = @get_headers($filePath);
