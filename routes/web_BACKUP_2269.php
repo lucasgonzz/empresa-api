@@ -29,8 +29,12 @@ Route::get('/register-user/{name}/{doc_number}/{company_name}/{iva_included}/{ex
 
 // Archivos de intercambio PETS
 Route::get('/leer-archivo-articulos', 'TsvFileController@leer_archivo_articulos');
+<<<<<<< HEAD
 Route::get('/leer-archivo-clientes', 'TsvFileController@leer_archivo_clientes');
+
+=======
 Route::get('/leer-archivo-precios', 'TsvFileController@leer_archivo_precios');
+>>>>>>> master
 
 // Cambiar BBDD
 Route::get('/cambiar-bbdd/{company_name}/{bbbdd_destino}', 'BaseDeDatosController@copiar_modelos');

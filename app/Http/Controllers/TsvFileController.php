@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Jobs\ProcessArchivoDeIntercambioClientes;
 use App\Jobs\ProcessArchivoDeIntercambioProductos;
+use App\Jobs\ProcessArchivoDeIntercambioPrecios;
 use App\Models\Article;
 use Illuminate\Http\Request;
 
@@ -18,6 +19,10 @@ class TsvFileController extends Controller
 
         echo 'Se despacho!';
 
+    }
+    function leer_archivo_precios(){
+        ProcessArchivoDeIntercambioPrecios::dispatch($this->user_id);
+        echo 'Se despacharon los precios!';
     }
 
     function leer_archivo_clientes() {
