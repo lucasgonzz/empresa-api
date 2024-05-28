@@ -273,7 +273,7 @@ class SaleSeeder extends Seeder
     function setRequest($sale) {
         $request = new \stdClass();
         $request->items = [];
-        $request->discounts_id = [];
+        $request->discounts = [];
         $request->surchages_id = [];
         $request->client_id = $sale->id;
         $articles = Article::take(7)

@@ -90,6 +90,7 @@ class UserSeeder extends Seeder
                     'ask_save_current_acount',
                     'unidades_individuales_en_articulos',
                     'numero_orden_de_compra_para_las_ventas',
+                    'maximo_descuento_posible_por_articulo_en_vender',
                 ],  
             ],
             [

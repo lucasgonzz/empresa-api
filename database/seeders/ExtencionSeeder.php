@@ -130,6 +130,11 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Unidades individuales para los articulos',
                 'slug' => 'unidades_individuales_en_articulos',
             ],
+            [
+                // 24
+                'name' => 'Mostrar maximo descuento posible para un articulo en VENDER',
+                'slug' => 'maximo_descuento_posible_por_articulo_en_vender',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

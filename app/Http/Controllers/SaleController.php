@@ -78,7 +78,7 @@ class SaleController extends Controller
             'employee_id'                       => SaleHelper::getEmployeeId($request),
             'to_check'                          => $request->to_check,
             'numero_orden_de_compra'            => $request->numero_orden_de_compra,
-            'terminada'                         => SaleHelper::get_terminada(),
+            'terminada'                         => SaleHelper::get_terminada($request->to_check),
             'user_id'                           => $this->userId(),
         ]);
 

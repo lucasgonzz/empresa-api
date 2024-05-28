@@ -37,8 +37,8 @@ use Illuminate\Support\Facades\Log;
 
 class SaleHelper extends Controller {
 
-    static function get_terminada() {
-        if (UserHelper::hasExtencion('check_sales')) {
+    static function get_terminada($to_check) {
+        if (UserHelper::hasExtencion('check_sales') && $to_check) {
             return 0;
         }
         return 1;
@@ -148,8 +148,8 @@ class SaleHelper extends Controller {
         Self::attachCombos($model, $request->items);
         Self::attachServices($model, $request->items);
         
-        Self::attachDiscounts($model, $request->discounts_id);
-        Self::attachSurchages($model, $request->surchages_id);
+        Self::attachDiscounts($model, $request->discounts);
+        Self::attachSurchages($model, $request->surchages);
 
         // Self::check_deleted_articles_from_check($model, $previus_articles);
 
@@ -252,9 +252,9 @@ class SaleHelper extends Controller {
         $afip_helper->init();
     }
 
-    static function attachDiscounts($sale, $discounts_id) {
+    static function attachDiscounts($sale, $discounts) {
         $sale->discounts()->detach();
-        $discounts = GeneralHelper::getModelsFromId('Discount', $discounts_id);
+        // $discounts = GeneralHelper::getModelsFromId('Discount', $discounts_id);
         foreach ($discounts as $discount) {
             $sale->discounts()->attach($discount['id'], [
                 'percentage' => $discount['percentage'],
@@ -262,9 +262,9 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function attachSurchages($sale, $surchages_id) {
+    static function attachSurchages($sale, $surchages) {
         $sale->surchages()->detach();
-        $surchages = GeneralHelper::getModelsFromId('Surchage', $surchages_id);
+        // $surchages = GeneralHelper::getModelsFromId('Surchage', $surchages_id);
         foreach ($surchages as $surchage) {
             $sale->surchages()->attach($surchage['id'], [
                 'percentage' => $surchage['percentage']
