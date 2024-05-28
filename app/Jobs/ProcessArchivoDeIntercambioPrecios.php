@@ -33,7 +33,7 @@ class ProcessArchivoDeIntercambioPrecios implements ShouldQueue
 
     private function deleteArticles()
     {
-        Article::where('user_id', $this->user_id)->delete();
+        ArticlePrice::where('user_id', $this->user_id)->delete();
         Log::info('Se eliminaron todos los artículos del usuario ' . $this->user_id);
     }
 
@@ -51,38 +51,19 @@ class ProcessArchivoDeIntercambioPrecios implements ShouldQueue
                 Log::info($data);
 
                 $article_info = [
-                    'provider_code' => $data[0],
-                    'price_type_id' =>  $data[1], 
-                    'price' => GeneralHelper::get_decimal_value($data[3]),
-                    'user_id' => $this->user_id,
+                    'provider_code'     => $data[0],
+                    'price_type_id'     => $data[1], 
+                    'price'             => GeneralHelper::get_decimal_value($data[3]),
+                    'user_id'           => $this->user_id,
                 ];
 
-                $article_price_ya_creado = $this->articulo_precio_registrado($article_info);
+                Log::info('Se va a crear precio de articulo con:');
+                Log::info($article_info);
 
-                if (!is_null($article_price_ya_creado)) {
-                    $article_price_ya_creado->update($article_info);
+                ArticlePrice::create($article_info);
 
-                    Log::info('Se actualizó precio de articulo con código ' . $article_price_ya_creado->provider_code);
-                } else {
-                    $article_info['user_id'] = $this->user_id;
-
-                    Log::info('Se va a crear precio de articulo con:');
-                    Log::info($article_info);
-
-                    ArticlePrice::create($article_info);
-
-                    Log::info('Se CREO precio de articulo con código ' . $article_info['provider_code']);
-                }
+                Log::info('Se CREO precio de articulo con código ' . $article_info['provider_code']);
             }
         }
-    }
-
-    function articulo_precio_registrado($article_info)
-    {
-        $article_price = ArticlePrice::where('user_id', $this->user_id)
-            ->where('provider_code', $article_info['provider_code'])
-            ->first();
-
-        return $article_price;
     }
 }
