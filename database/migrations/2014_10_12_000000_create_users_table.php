@@ -69,6 +69,7 @@ class CreateUsersTable extends Migration
             $table->enum('status', ['commerce', 'admin', 'super']);
             $table->softDeletes();
 
+            $table->boolean('use_archivos_de_intercambio')->nullable();
             // $table->foreign('owner_id')->references('id')->on('users');
             // $table->foreign('admin_id')->references('id')->on('users');
             $table->timestamps();
