@@ -11,13 +11,13 @@ use Illuminate\Http\Request;
 class TsvFileController extends Controller
 {
 
-    public $user_id = 500;
+    public $user_id = 600;
     
     function leer_archivo_articulos() {
 
         ProcessArchivoDeIntercambioProductos::dispatch($this->user_id);
 
-        echo 'Se despacho!';
+        echo 'Se despacharon los articulos!';
 
     }
     function leer_archivo_precios(){
@@ -29,24 +29,8 @@ class TsvFileController extends Controller
 
         ProcessArchivoDeIntercambioClientes::dispatch($this->user_id);
 
-        echo 'Se despacho!';
+        echo 'Se despacharon los clientes!';
 
     }
-
-    //  Codigo  3107
-    // Descripcion BAGGIO MULTIFRUTA 8 X 1000 CC.
-    // A   1
-    // Familia 4
-    // NFamilia   JUGOS BRIK 
-    // Rubro   30
-    // NRubro  BRIK X 1000 CC.
-    // Marca   1
-    // NMarca  BEBIDAS
-    // Stock   3041
-    // Alicuota  1  
-    // Barra   7790036559223
-    // Peso    1
-    // Minimo  4
-    // Multiplo 4
 
 }

@@ -119,10 +119,6 @@ class ProcessArchivoDeIntercambioClientes implements ShouldQueue
 
 
     function convert_to_utf8($string) {
-        $encoding = mb_detect_encoding($string, mb_detect_order(), true);
-        if ($encoding !== 'UTF-8') {
-            $string = iconv($encoding, 'UTF-8', $string);
-        }
-        return $string;
+        return utf8_encode($string);
     }
 }
