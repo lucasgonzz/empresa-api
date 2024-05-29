@@ -168,25 +168,77 @@ class SaleHelper extends Controller {
         if ($request->save_nota_credito) {
             sleep(1);
             $haber = 0;
+
             foreach ($request->returned_items as $item) {
+
+                Log::info('item:');
+                Log::info($item);
+
                 $total_item = (float)$item['price_vender'] * (float)$item['returned_amount'];
+
                 if (!is_null($item['discount']) && $item['discount'] != 0) {
                     $total_item -= $total_item * $item['discount'] / 100;
                 }
+
+                /*
+                    * Aplica los descuentos de la venta si:
+                    La venta tiene descuentos 
+                    Y
+                    Si es un articulo (a los cuales SIEMPRE se le aplican los descuentos de la venta)
+                    O (en caso que no sea un articulo, osea que es un SERVICIO) la venta tiene en TRUE discounts_in_services
+                */
+                if (
+                    count($sale->discounts) >= 1
+                    && (
+                        (isset($item['is_article']) && $item['is_article'])
+                        || $sale->discounts_in_services
+                    )
+                ) {
+
+
+                    foreach ($sale->discounts as $discount) {
+
+                        Log::info('Aplicando descuento del '.$discount->pivot->percentage.'% a '.$item['name']);
+                        Log::info('is_article: '.isset($item['is_article']) && $item['is_article'] ? 'Es articulo' : 'es servicio');
+                        Log::info('surchages_in_services: '.$sale->surchages_in_services);
+
+                        $total_item -= (float)$discount->pivot->percentage * $total_item / 100;
+                    }
+
+                }
+
+                /*
+                    * Aplica los recargos de la venta si:
+                    La venta tiene recargos 
+                    Y
+                    Si es un articulo (a los cuales SIEMPRE se le aplican los recargos de la venta)
+                    O (en caso que no sea un articulo, osea que es un SERVICIO) la venta tiene en TRUE surchages_in_services
+                */
+                if (
+                    count($sale->surchages) >= 1
+                    && (
+                        (isset($item['is_article']) && $item['is_article'])
+                        || $sale->surchages_in_services
+                    )
+                ) {
+
+
+                    foreach ($sale->surchages as $surchage) {
+
+                        Log::info('Aplicando recargo del '.$surchage->pivot->percentage.'% a '.$item['name']);
+                        Log::info('is_article: '.isset($item['is_article']) && $item['is_article'] ? 'Es articulo' : 'es servicio');
+                        Log::info('surchages_in_services: '.$sale->surchages_in_services);
+
+                        $total_item += (float)$surchage->pivot->percentage * $total_item / 100;
+                    }
+
+                }
+
+
                 $haber += $total_item;
 
             }
-            Log::info('El total quedo en '.$haber);
-            if (count($sale->discounts) >= 1) {
-                foreach ($sale->discounts as $discount) {
-                    $haber -= (float)$discount->pivot->percentage * $haber / 100;
-                }
-            }
-            if (count($sale->surchages) >= 1) {
-                foreach ($sale->surchages as $surchage) {
-                    $haber += (float)$surchage->pivot->percentage * $haber / 100;
-                }
-            }
+
             $nota_credito = CurrentAcountHelper::notaCredito($haber, $request->nota_credito_description, 'client', $request->client_id, $sale->id, $request->returned_items);
             CurrentAcountHelper::checkSaldos('client', $request->client_id);
 

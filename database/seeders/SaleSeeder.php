@@ -274,7 +274,7 @@ class SaleSeeder extends Seeder
         $request = new \stdClass();
         $request->items = [];
         $request->discounts = [];
-        $request->surchages_id = [];
+        $request->surchages = [];
         $request->client_id = $sale->id;
         $articles = Article::take(7)
                             ->get();
