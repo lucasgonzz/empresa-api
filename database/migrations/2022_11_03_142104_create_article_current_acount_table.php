@@ -19,6 +19,7 @@ class CreateArticleCurrentAcountTable extends Migration
             $table->integer('current_acount_id')->unsigned();
             $table->decimal('amount', 12,2)->nullable();
             $table->decimal('price', 12,2)->nullable();
+            $table->decimal('discount', 12,2)->nullable();
             $table->timestamps();
         });
     }

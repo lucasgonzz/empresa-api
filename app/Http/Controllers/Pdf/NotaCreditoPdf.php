@@ -27,9 +27,10 @@ class NotaCreditoPdf extends fpdf {
 	function getFields() {
 		return [
 			'Codigo' 	=> 40,
-			'Producto/Servicio' 	=> 90,
+			'Producto/Servicio' 	=> 70,
 			'Precio' 	=> 20,
 			'Cant' 		=> 20,
+			'Desc' 		=> 20,
 			'Total' 	=> 30,
 		];
 	}
@@ -87,6 +88,7 @@ class NotaCreditoPdf extends fpdf {
 		    	$this->x = 5 + $this->getFields()['Codigo'] + $this->getFields()['Producto/Servicio'];
 				$this->Cell($this->getFields()['Precio'], 5, '$'.Numbers::price($article->pivot->price), $this->b, 0, 'C');
 				$this->Cell($this->getFields()['Cant'], 5, $article->pivot->amount, $this->b, 0, 'C');
+				$this->Cell($this->getFields()['Desc'], 5, $article->pivot->discount, $this->b, 0, 'C');
 				$this->Cell($this->getFields()['Total'], 5, $this->getTotal($article), $this->b, 0, 'C');
 				$this->y = $y_2;
 				$this->x = 5;
@@ -109,7 +111,8 @@ class NotaCreditoPdf extends fpdf {
 		    	$this->x = 5 + $this->getFields()['Codigo'] + $this->getFields()['Producto/Servicio'];
 				$this->Cell($this->getFields()['Precio'], 5, '$'.Numbers::price($service->pivot->price), $this->b, 0, 'C');
 				$this->Cell($this->getFields()['Cant'], 5, $service->pivot->amount, $this->b, 0, 'C');
-				$this->Cell($this->getFields()['Total'], 5, $this->getTotal($service), $this->b, 0, 'C');
+				$this->Cell($this->getFields()['Desc'], 5, $service->pivot->discount, $this->b, 0, 'C');
+				$this->Cell($this->getFields()['Total'], 5, $this->getTotal($service, false), $this->b, 0, 'C');
 				$this->y = $y_2;
 				$this->x = 5;
 				$this->Line(5, $this->y, 205, $this->y);
@@ -127,27 +130,67 @@ class NotaCreditoPdf extends fpdf {
 		}
 	}
 
-	function getTotal($article) {
-		$total = (float)$article->pivot->amount * $article->pivot->price;
-		$this->total += $total;
+	function getTotal($item, $is_article = true) {
+
+		$total = (float)$item->pivot->amount * $item->pivot->price;
+
+		if (!is_null($item->pivot->discount) && (float)$item->pivot->discount > 0) {
+            $total -= $total * (float)$item->pivot->discount / 100; 
+		}
+
+		$total_para_sumar_a_global = $total;
+
+		if (!is_null($this->model->sale)) {
+
+			if ($is_article || $this->model->sale->discounts_in_services) {
+
+				foreach ($this->model->sale->discounts as $discount) {
+					$total_para_sumar_a_global -= $total_para_sumar_a_global * $discount->pivot->percentage / 100;
+				}
+
+			}
+
+			if ($is_article || $this->model->sale->surchages_in_services) {
+
+				foreach ($this->model->sale->surchages as $surchage) {
+					$total_para_sumar_a_global += $total_para_sumar_a_global * $surchage->pivot->percentage / 100;
+				}
+
+			}
+			// dd($this->model->sale->surchages);
+		}
+
+		$this->total += $total_para_sumar_a_global;
 		return '$'.Numbers::price($total);
 	}
 
 	function Footer() {
-		if (!is_null($this->model->sale)) {
-			foreach ($this->model->sale->discounts as $discount) {
-				$this->total -= $this->total * $discount->pivot->percentage / 100;
-			}
-			foreach ($this->model->sale->surchages as $surchage) {
-				$this->total += $this->total * $surchage->pivot->percentage / 100;
-			}
-			// dd($this->model->sale->surchages);
-		}
+
 		if (count($this->model->articles) >= 1) {
 			$total = $this->total;
 		} else {
 			$total = $this->model->haber;
 		}
+
+		if (!is_null($this->model->sale)) {
+
+			$this->SetFont('Arial', 'B', 10);
+
+
+			foreach ($this->model->sale->discounts as $discount) {
+				$this->x = 5;
+				$this->Cell(200, 5, '- '.$discount->name.' '.$discount->pivot->percentage.'%', $this->b, 1, 'R');
+			}
+
+			foreach ($this->model->sale->surchages as $surchage) {
+				$this->x = 5;
+				$this->Cell(200, 5, '+ '.$surchage->name.' '.$surchage->pivot->percentage.'%', $this->b, 1, 'R');
+			}
+
+			$this->SetFont('Arial', '', 8);
+
+		}
+
 		PdfHelper::total($this, $total);
 		PdfHelper::comerciocityInfo($this, $this->y);
 	}

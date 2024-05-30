@@ -157,8 +157,9 @@ class CurrentAcountHelper {
             foreach ($items as $item) {
                 if (isset($item['is_article'])) {
                     $nota_credito->articles()->attach($item['id'], [
-                                                        'amount' => $item['returned_amount'],
-                                                        'price'  => $item['price_vender'],
+                                                        'amount'    => $item['returned_amount'],
+                                                        'price'     => $item['price_vender'],
+                                                        'discount'  => $item['discount'],
                                                     ]);
                 }
             }
@@ -172,8 +173,9 @@ class CurrentAcountHelper {
                 if (isset($item['is_service'])) {
                     Log::info('attach service '.$item['id']);
                     $nota_credito->services()->attach($item['id'], [
-                                                        'amount' => $item['returned_amount'],
-                                                        'price'  => $item['price_vender'],
+                                                        'amount'    => $item['returned_amount'],
+                                                        'price'     => $item['price_vender'],
+                                                        'discount'  => $item['discount'],
                                                     ]);
                 }
             }
