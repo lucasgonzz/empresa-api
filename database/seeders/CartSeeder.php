@@ -22,7 +22,7 @@ class CartSeeder extends Seeder
         $buyers = Buyer::where('user_id', $user->id)
                             ->get();
 
-        $articles = Article::where('name', 'Pintura para cama')
+        $articles = Article::where('user_id', $user->id)
                             ->get();
 
         foreach ($buyers as $buyer) {
@@ -32,7 +32,7 @@ class CartSeeder extends Seeder
             ]);
             foreach ($articles as $article) {
                 $cart->articles()->attach($article->id, [
-                    'amount'    => 5,
+                    'amount'    => rand(1,6),
                     'price'     => $article->final_price,
                 ]);
             }

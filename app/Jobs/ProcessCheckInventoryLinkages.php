@@ -24,7 +24,7 @@ class ProcessCheckInventoryLinkages implements ShouldQueue
     public function __construct($user)
     {
         $this->user = $user;
-        Log::info('Se llamo al __construct');
+        Log::info('Se llamo al __construct ProcessCheckInventoryLinkages');
     }
 
     /**
@@ -37,7 +37,7 @@ class ProcessCheckInventoryLinkages implements ShouldQueue
         $inventory_linkages = InventoryLinkage::where('user_id', $this->user->id)
                                             ->get();
 
-        Log::info('Se llamo al handle');
+        Log::info('Se llamo al handle ProcessCheckInventoryLinkages');
 
         $articles = Article::where('user_id', $this->user->id)
                             ->where('status', 'active')
@@ -46,6 +46,7 @@ class ProcessCheckInventoryLinkages implements ShouldQueue
         Log::info(count($articles).' articulos');
         
         $vuelta = 1;
+        $actualizados = 0;
         foreach ($inventory_linkages as $inventory_linkage) {
 
             $articulos_con_nombre_distintos = [];
@@ -55,7 +56,6 @@ class ProcessCheckInventoryLinkages implements ShouldQueue
 
             foreach ($articles as $article) {
 
-                Log::info('vuelta '.$vuelta);
                 $vuelta++;
 
                 $client_article = Article::where('provider_article_id', $article->id)
@@ -68,30 +68,23 @@ class ProcessCheckInventoryLinkages implements ShouldQueue
 
                     if ($client_article->name != $article->name || $client_article->cost != $article->final_price) {
 
-                        Log::info('Articulo '.$article->name);
-                        
-                        if ($client_article->name != $article->name) {
-                            // Log::info('El articulo '.$article->name.' de '.$this->user->name.', '.$inventory_linkage->client->name.' lo tiene como '.$client_article->name);
-                            $articulos_con_nombre_distintos[] = $article;
-                        }
-
                         if ($client_article->cost != $article->final_price) {
-                            // Log::info('El articulo de '.$this->user->name.' tiene precio de $'.Numbers::price($article->final_price).', pero '.$inventory_linkage->client->name.' lo tiene a $'.Numbers::price($client_article->cost));
-                            // Log::info($this->user->name.' lo actualizo el '.$article->updated_at->format('d-m-y h:m').' y '.$inventory_linkage->client->name.' el '.$client_article->created_at->format('d-m-y h:m'));
                             $articulos_con_precio_distintos[] = $article;
 
                             $previus_cost = $client_article->cost;
                             
+                            $client_article->stock = $article->stock;
+
                             $client_article->cost = $article->final_price;
+
                             $client_article->save();
+
                             ArticleHelper::setFinalPrice($client_article, $inventory_linkage->client->comercio_city_user_id, $client_comerciocity_user);
 
                             Log::info('Se actualizo el precio de '.$client_article->name.' paso de $'.Numbers::price($previus_cost).' a '.Numbers::price($client_article->cost));
-                        }
 
-                        Log::info(' ');
-                        Log::info('------------------------------ ');
-                        Log::info(' ');
+                            $actualizados++;
+                        }
                     }
 
                 }
@@ -99,12 +92,8 @@ class ProcessCheckInventoryLinkages implements ShouldQueue
 
             }
 
-            Log::info(' ');
-            Log::info(' ');
-            Log::info(' ');
             Log::info('------------------------------------------------------- ');
-            Log::info('Hay '.count($articulos_con_nombre_distintos).' con nombre distinto ');
-            Log::info('Hay '.count($articulos_con_precio_distintos).' con precio distinto ');
+            Log::info('Se actualizaron '.$actualizados.' articulos');
 
         }
     }

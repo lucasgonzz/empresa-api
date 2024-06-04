@@ -121,7 +121,7 @@ class SearchController extends Controller
                     } else {
                         $keywords = explode(' ', $request->query_value);
                         foreach ($keywords as $keyword) {
-                            $subQuery->orWhereRaw($prop_to_filter . ' LIKE ?', ["%$keyword%"]);
+                            $subQuery->whereRaw($prop_to_filter . ' LIKE ?', ["%$keyword%"]);
                         }
                     }
                 });
