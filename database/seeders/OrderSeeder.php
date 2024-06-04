@@ -19,7 +19,7 @@ class OrderSeeder extends Seeder
     public function run()
     {
         $user = User::where('company_name', 'Autopartes Boxes')->first();
-        $buyer = Buyer::where('user_id', $user->id)->first();
+        $buyer = Buyer::where('email', 'lucasgonzalez210200@gmail.com')->first();
         $models = [
             [
                 'buyer_id'          => $buyer->id,
@@ -45,26 +45,14 @@ class OrderSeeder extends Seeder
                 'user_id'               => $user->id,
             ]);
 
-            $articles = [
-                [
-                    'name'          => 'Prensa Espirales Universal',
-                    'amount'        => 10,
-                    // 'address_id'    => 1,
-                ],
-                [
-                    'name'          => 'Kit 3 Relojes Orlan Rober Classic Aceite Agua Voltímetro',
-                    'amount'        => 1,
-                ],
-            ];
+            $articles = Article::where('user_id', $user->id)
+                                ->get();
 
             foreach ($articles as $article) {
-                $_article = Article::where('name', $article['name'])
-                                    ->first();
-
-                $order->articles()->attach($_article->id, [
-                    'amount'        => $article['amount'],
-                    'address_id'    => isset($article['address_id']) ? $article['address_id'] : null,
-                    'price'         => $_article->final_price,
+                
+                $order->articles()->attach($article->id, [
+                    'amount'        => rand(1,20),
+                    'price'         => $article->final_price,
                     'notes'         => 'Esta es una nota bastante larga como para ocupar mucho lugar viste'
                 ]); 
              }     

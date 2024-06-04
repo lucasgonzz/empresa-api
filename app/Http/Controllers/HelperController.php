@@ -61,6 +61,68 @@ class HelperController extends Controller
         echo 'Listo';
     }
 
+    function recalculate_stock_resultante_from_user($company_name) {
+
+        $user = User::where('company_name', $company_name)
+                        ->first();
+
+
+        $articles = Article::where('user_id', $user->id)
+                            ->get();
+
+        foreach ($articles as $article) {
+            $this->recalculate_stock_resultante($article);
+            echo '---- </br>';
+        }
+
+        echo 'Listo';
+
+    }
+
+    function recalculate_stock_resultante($article_id) {
+
+        if (!is_object($article_id)) {
+            $article = Article::find($article_id);
+        } else {
+            $article = $article_id;
+        }
+
+        $stock_movements = StockMovement::where('article_id', $article->id)
+                                        ->orderBy('created_at', 'ASC')
+                                        ->get();
+
+        $stock_resultante = (float)$stock_movements[0]->stock_resultante;
+        
+        echo 'Articulo: '.$article->name.' </br>';
+
+        echo 'Cantidad de primero stock_movement: '.$stock_resultante.' </br>';
+
+        $index = 0;
+        foreach ($stock_movements as $stock_movement) {
+            
+            if ($index > 0) {
+                if (!is_null($stock_movement->sale_id)) {
+                    $stock_resultante -= (float)$stock_movement->amount;
+                    echo 'Se resto (-)'.$stock_movement->amount.' por: '.$stock_movement->concepto.' y quedo en: '. $stock_resultante .' </br>';
+                } else {
+                    $stock_resultante += (float)$stock_movement->amount;
+                    echo 'Se sumo (+)'.$stock_movement->amount.' por: '.$stock_movement->concepto.' y quedo en: '. $stock_resultante .' </br>';
+                }
+            }
+            $index++;
+        }
+
+        echo 'El articulo '.$article->name.' tendria que tener '.$stock_resultante.' y tiene un stock actual de '.$article->stock.' </br>';
+
+        if ($stock_resultante == $article->stock) {
+            echo 'SI </br>';
+        } else {
+            echo '------> NO <--------  </br>';
+        }
+
+
+    }
+
     function check_inventory_linkages($company_name) {
 
         $user = User::where('company_name', $company_name)

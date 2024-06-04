@@ -103,7 +103,7 @@ class DatabaseSeeder extends Seeder
             // $this->call(ArticlePropertyTypeSeeder::class);
             // $this->call(ArticlePropertyValueSeeder::class);
             // $this->call(ArticlePropertySeeder::class);
-            // $this->call(CartSeeder::class);
+            $this->call(CartSeeder::class);
             $this->call(MessageSeeder::class);
             $this->call(ArticleTicketInfoSeeder::class);
             // $this->call(ArticlePerformanceSeeder::class);
