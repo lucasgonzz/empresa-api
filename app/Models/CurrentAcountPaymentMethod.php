@@ -8,6 +8,10 @@ class CurrentAcountPaymentMethod extends Model
 {
     protected $guarded = [];
 
+    public function sales(){
+        return $this->belongsToMany(Sale::class);
+    }
+
     function scopeWithAll($q) {
         
     }

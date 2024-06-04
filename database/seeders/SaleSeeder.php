@@ -275,6 +275,7 @@ class SaleSeeder extends Seeder
         $request->items = [];
         $request->discounts = [];
         $request->surchages = [];
+        $request->metodos_de_pago_seleccionados = [];
         $request->client_id = $sale->id;
         $articles = Article::take(7)
                             ->get();
@@ -289,6 +290,27 @@ class SaleSeeder extends Seeder
             ];
             $request->items[] = $_article; 
         }
+
+        $alAzar = rand(2,4);
+
+        for ($i= 0; $i < $alAzar ; $i++) { 
+            
+            $precioTotal = 0;
+           
+            foreach ($request->items as $item) {
+
+                $precioTotal += $item['amount'] * $item['price_vender'];
+            };
+
+            $_metodosDePagoAlAzar =[
+                    'id'        => rand(1,5),
+                    'monto'    => $precioTotal / $alAzar,
+            ];
+           
+           $request->metodos_de_pago_seleccionados[] = $_metodosDePagoAlAzar;
+        };
+
+
         return $request;
     }
 }

@@ -10,13 +10,17 @@ class Sale extends Model
     use SoftDeletes;
     
     protected $guarded = [];
+    
+    public function current_acount_payment_methods(){
+        return $this->belongsToMany(CurrentAcountPaymentMethod::class)->withPivot("amount");
+    }
 
     public function impressions() {
         return $this->hasMany('App\Models\Impression');
     }
 
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'current_acount');
+        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'current_acount', 'current_acount_payment_methods');
     }
 
     function sale_modifications() {

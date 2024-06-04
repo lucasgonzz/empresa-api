@@ -35,6 +35,7 @@ use App\Models\Variant;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
+
 class SaleHelper extends Controller {
 
     static function get_terminada($to_check) {
@@ -150,7 +151,7 @@ class SaleHelper extends Controller {
         
         Self::attachDiscounts($model, $request->discounts);
         Self::attachSurchages($model, $request->surchages);
-
+        Self::attachSelectedPaymentMethods($model, $request);
         // Self::check_deleted_articles_from_check($model, $previus_articles);
 
         if (!$from_store) {
@@ -164,6 +165,17 @@ class SaleHelper extends Controller {
         }
     }
 
+    static function attachSelectedPaymentMethods($sale, $request){
+        $sale->current_acount_payment_methods()->detach();
+
+        foreach ($request->metodos_de_pago_seleccionados as $metodoDePago) {
+          
+            $sale->current_acount_payment_methods()->attach($metodoDePago['id'],[
+                'amount' => $metodoDePago['monto'],
+            ]);
+            
+        }
+    }
     static function checkNotaCredito($sale, $request) {
         if ($request->save_nota_credito) {
             sleep(1);
