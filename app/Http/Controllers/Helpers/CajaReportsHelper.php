@@ -46,15 +46,20 @@ class CajaReportsHelper {
         }
 		$sales = $sales->get();
 		foreach ($sales as $sale) {
-			// $total += SaleHelper::getTotalSale($sale);
 			if (is_null($sale->current_acount)) {
 				if (is_null($sale->current_acount_payment_method)) {
-					$sale_payment_methods['Efectivo'] += SaleHelper::getTotalSale($sale);
+					if (count($sale->current_acount_payment_methods) >= 1) {
+						foreach ($sale->current_acount_payment_methods as $current_acount_payment_method) {
+							$sale_payment_methods[$current_acount_payment_method->name] += $current_acount_payment_method->pivot->amount;
+						}
+					} else {
+						$sale_payment_methods['Efectivo'] += SaleHelper::getTotalSale($sale);
+					}
 				} else {
 					$sale_payment_methods[$sale->current_acount_payment_method->name] += SaleHelper::getTotalSale($sale);
 				}
 			}
-		}
+    	}
 
 		$current_acounts = CurrentAcount::where('user_id', $instance->userId())
 										->whereNotNull('haber')
