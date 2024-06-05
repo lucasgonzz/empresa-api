@@ -71,11 +71,35 @@ class HelperController extends Controller
                             ->get();
 
         foreach ($articles as $article) {
-            $this->recalculate_stock_resultante($article);
+            $this->set_stock_resultante_del_ultimo($article);
+            // $this->recalculate_stock_resultante($article);
+            
             echo '---- </br>';
         }
 
         echo 'Listo';
+
+    }
+
+    function set_stock_resultante_del_ultimo($article_id) {
+
+        if (!is_object($article_id)) {
+            $article = Article::find($article_id);
+        } else {
+            $article = $article_id;
+        }
+
+
+        $last_stock_movement = StockMovement::where('article_id', $article->id)
+                                            ->orderBy('created_at', 'DESC')
+                                            ->first();
+
+        if (!is_null($last_stock_movement)) {
+            $last_stock_movement->stock_resultante = $article->stock;
+            $last_stock_movement->observations = 'Se seteo stock resultante con el stock actual';
+            $last_stock_movement->save();
+            echo $article->name.' se seteo last_stock_movement </br>';
+        }
 
     }
 

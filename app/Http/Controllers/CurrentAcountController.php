@@ -79,7 +79,7 @@ class CurrentAcountController extends Controller
             CurrentAcountHelper::updateModelSaldo($pago, $request->model_name, $request->model_id);
         }
         
-        CurrentAcountHelper::checkPagos($request->model_name, $request->model_id, true);
+        // CurrentAcountHelper::checkPagos($request->model_name, $request->model_id, true);
 
         $this->sendAddModelNotification($request->model_name, $request->model_id);
         Log::info('Terminando de guardar pago');
