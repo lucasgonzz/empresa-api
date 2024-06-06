@@ -17,7 +17,7 @@ class StockMovementController extends Controller
     function index($article_id) {
         $models = StockMovement::where('article_id', $article_id)
                                 ->orderBy('created_at', 'DESC')
-                                ->select('temporal_id', 'article_id', 'from_address_id', 'to_address_id', 'provider_id', 'sale_id', 'nota_credito_id', 'concepto', 'observations', 'amount', 'employee_id', 'user_id')
+                                // ->select('temporal_id', 'article_id', 'from_address_id', 'to_address_id', 'provider_id', 'sale_id', 'nota_credito_id', 'concepto', 'observations', 'amount', 'employee_id', 'user_id')
                                 ->get();
                                 
         return response()->json(['models' => $models], 200);

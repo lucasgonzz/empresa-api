@@ -16,6 +16,7 @@ use App\Http\Controllers\Helpers\RecipeHelper;
 use App\Jobs\ProcessCheckInventoryLinkages;
 use App\Jobs\ProcessCheckSaldos;
 use App\Jobs\ProcessRecalculateCurrentAcounts;
+use App\Jobs\ProcessSetStockResultante;
 use App\Models\Article;
 use App\Models\Budget;
 use App\Models\Buyer;
@@ -66,41 +67,7 @@ class HelperController extends Controller
         $user = User::where('company_name', $company_name)
                         ->first();
 
-
-        $articles = Article::where('user_id', $user->id)
-                            ->get();
-
-        foreach ($articles as $article) {
-            $this->set_stock_resultante_del_ultimo($article);
-            // $this->recalculate_stock_resultante($article);
-            
-            echo '---- </br>';
-        }
-
-        echo 'Listo';
-
-    }
-
-    function set_stock_resultante_del_ultimo($article_id) {
-
-        if (!is_object($article_id)) {
-            $article = Article::find($article_id);
-        } else {
-            $article = $article_id;
-        }
-
-
-        $last_stock_movement = StockMovement::where('article_id', $article->id)
-                                            ->orderBy('created_at', 'DESC')
-                                            ->first();
-
-        if (!is_null($last_stock_movement)) {
-            $last_stock_movement->stock_resultante = $article->stock;
-            $last_stock_movement->observations = 'Se seteo stock resultante con el stock actual';
-            $last_stock_movement->save();
-            echo $article->name.' se seteo last_stock_movement </br>';
-        }
-
+        ProcessSetStockResultante::dispatch($user);
     }
 
     function recalculate_stock_resultante($article_id) {

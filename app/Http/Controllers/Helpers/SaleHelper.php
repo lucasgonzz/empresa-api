@@ -151,11 +151,11 @@ class SaleHelper extends Controller {
         
         Self::attachDiscounts($model, $request->discounts);
         Self::attachSurchages($model, $request->surchages);
-        Self::attachSelectedPaymentMethods($model, $request);
-        // Self::check_deleted_articles_from_check($model, $previus_articles);
 
         if (!$from_store) {
             SaleModificationsHelper::attach_articulos_despues_de_actualizar($model, $sale_modification);
+        } else {
+            Self::attachSelectedPaymentMethods($model, $request);
         }
 
         if ($from_store && !$model->to_check && !$model->checked) {
