@@ -38,6 +38,13 @@ use Illuminate\Support\Facades\Log;
 
 class SaleHelper extends Controller {
 
+    static function get_se_esta_confirmando($request, $sale) {
+        if ($request->confirmed && $sale->checked) {
+            return true;
+        }
+        return false;
+    }
+
     static function get_terminada($to_check) {
         if (UserHelper::hasExtencion('check_sales') && $to_check) {
             return 0;
@@ -144,8 +151,9 @@ class SaleHelper extends Controller {
         return null;
     }
 
-    static function attachProperies($model, $request, $from_store = true, $previus_articles = null, $sale_modification = null) {
-        Self::attachArticles($model, $request->items);
+    static function attachProperies($model, $request, $from_store = true, $previus_articles = null, $sale_modification = null, $se_esta_confirmando_por_primera_vez = false) {
+
+        Self::attachArticles($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
         Self::attachCombos($model, $request->items);
         Self::attachServices($model, $request->items);
         
@@ -382,12 +390,13 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function attachArticles($sale, $articles) {
+    static function attachArticles($sale, $articles, $previus_articles, $se_esta_confirmando_por_primera_vez) {
         
         foreach ($articles as $article) {
             if (isset($article['is_article'])) {
 
                 if (isset($article['varios_precios']) && is_array($article['varios_precios'])) {
+
                     foreach ($article['varios_precios'] as $otro_precio) {
 
                         $otro_precio['id'] = $article['id'];
@@ -396,25 +405,27 @@ class SaleHelper extends Controller {
                             $otro_precio['amount'] = 1;
                         }
 
-                        // Log::info('attachArticle de $otro_precio:');
-                        // Log::info($otro_precio);
                         Self::attachArticle($sale, $otro_precio);
 
                     }
                 } else {
-                    $amount = Self::getAmount($sale, $article);
-                    if (($sale->to_check || $sale->checked) 
-                        || (!is_null($amount) && $amount > 0) )
+
+                    // $amount = Self::getAmount($sale, $article);
+                    
+                    // if (($sale->to_check || $sale->checked) 
+                    //     || (!is_null($amount) && $amount > 0) )
+
                     Self::attachArticle($sale, $article);
                 }
 
 
                 if (!$sale->to_check && !$sale->checked && Self::usa_stock($article)) {
+
                     $amount = Self::getAmount($sale, $article);
+                    
                     if ($amount > 0) {
-                        ArticleHelper::discountStock($article['id'], $amount, $sale);
+                        ArticleHelper::discountStock($article['id'], $amount, $sale, $previus_articles, $se_esta_confirmando_por_primera_vez);
                     }
-                    // Log::info('se desconto stock del articulo '.$article['id']);
                 }
 
             }
@@ -430,7 +441,6 @@ class SaleHelper extends Controller {
     }
 
     static function attachArticle($sale, $article) {
-        Log::info('attachArticle '.$article['name']);
         $sale->articles()->attach($article['id'], [
             'amount'                => Self::getAmount($sale, $article),
             'cost'                  => Self::getCost($article),
@@ -529,10 +539,8 @@ class SaleHelper extends Controller {
 
     static function getAmount($sale, $article) {
         if ($sale->confirmed && isset($article['checked_amount']) && !is_null($article['checked_amount'])) {
-            // Log::info('amount de '.$article['checked_amount']);
             return (float)$article['checked_amount'];
         }
-        // Log::info('amount de '.$article['amount']);
         return (float)$article['amount'];
     }
 
@@ -594,9 +602,9 @@ class SaleHelper extends Controller {
 
         SaleModificationsHelper::attach_articulos_antes_de_actualizar($sale, $sale_modification);
 
-        if (!$sale->to_check && !$sale->checked) {
-            Self::restaurar_stock($sale);
-        }
+        // if (!$sale->to_check && !$sale->checked) {
+        //     Self::restaurar_stock($sale);
+        // }
 
         $sale->articles()->detach();
         $sale->combos()->detach();
@@ -620,7 +628,7 @@ class SaleHelper extends Controller {
                 $article->stock += $stock;
                 $article->save();
             }
-            Self::deleteStockMovement($sale, $article);
+            // Self::deleteStockMovement($sale, $article);
         }
     }
 

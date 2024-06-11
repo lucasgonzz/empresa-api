@@ -44,10 +44,10 @@ class StockMovementController extends Controller
         ]);
 
 
-        if (!is_null($this->article)) {
-            Log::info('StockMovement para '.$this->article->name);
-            Log::info('Stock previo '.$this->article->stock);
-        }
+        // if (!is_null($this->article)) {
+        //     Log::info('StockMovement para '.$this->article->name);
+        //     Log::info('Stock previo '.$this->article->stock);
+        // }
         // Log::info('Cantidad del Movimiento '.$this->stock_movement->amount);
 
         $this->setConcepto();
@@ -80,38 +80,11 @@ class StockMovementController extends Controller
 
             if (!is_null($stock_movement_anterior)) {
 
-                Log::info('Habia stock_movement_anterior');
-
-                $stock_resultante = null;
-                
-                if (!is_null($this->stock_movement->sale)) {
-
-                    Log::info('stock_resultante = '.$stock_movement_anterior->stock_resultante.' - '.$this->stock_movement->amount.': ');
-
-                    $stock_resultante = (float)$stock_movement_anterior->stock_resultante - (float)$this->stock_movement->amount;
-
-                    Log::info($stock_resultante);
-                } else {
-
-                    Log::info('stock_resultante = '.$stock_movement_anterior->stock_resultante.' + '.$this->stock_movement->amount.': ');
-
-                    $stock_resultante = (float)$stock_movement_anterior->stock_resultante + (float)$this->stock_movement->amount;
-                    Log::info($stock_resultante);
-
-                }
-
-                Log::info('El stock a todo esto es de '.$this->article->stock);
-
-                if ($stock_resultante != $this->article->stock) {
-
-                    $this->stock_movement->observations .= ' El stock resultante es distinto al stock actual ('.$this->article->stock.')';
-
-                } 
+                $stock_resultante = (float)$stock_movement_anterior->stock_resultante + (float)$this->stock_movement->amount;
 
                 $this->stock_movement->stock_resultante = $stock_resultante;
 
             } else {
-                Log::info('No habia stock_movement_anterior, el stock_resultante quedo en '.$this->stock_movement->amount);
                 $this->stock_movement->stock_resultante = $this->stock_movement->amount;
             }
 
@@ -120,6 +93,20 @@ class StockMovementController extends Controller
             $this->stock_movement->stock_resultante = $this->stock_movement->amount;
             $this->stock_movement->save();
         }
+
+        $this->set_stock_actual_in_observations();
+
+    }
+
+    function set_stock_actual_in_observations() {
+
+        if (!is_null($this->stock_movement->observations)) {
+            $this->stock_movement->observations .= ' '.$this->article->stock;
+        } else {
+            $this->stock_movement->observations = $this->article->stock;
+        }
+        $this->stock_movement->save();
+
     }
 
     function getFromAddressId() {
@@ -199,25 +186,26 @@ class StockMovementController extends Controller
     }
 
     function checkGlobalStock() {
+
         if (is_null($this->article->stock)) {
             $this->article->stock = 0;
             $this->article->save();
         }
+
         if (!is_null($this->article->stock) && !count($this->article->addresses) >= 1) {
-            Log::info($this->article->name.' tiene '.$this->article->stock.' de stock');
-            if (!is_null($this->stock_movement->sale)) {
-                Log::info('Descontando '.$this->stock_movement->amount.' stock global por venta a '.$this->article->name);
-                $this->article->stock -= (float)$this->stock_movement->amount;
-            } else {
-                Log::info('Aumentando '.$this->stock_movement->amount.' stock global por venta a '.$this->article->name);
-                $this->article->stock += (float)$this->stock_movement->amount;
-            }
+
+            /*
+                Se aumenta el stock del articulo con la amount del stock_movement
+                Ya que, si es una venta, amount va a ser negativo
+            */
+                
+            $this->article->stock += (float)$this->stock_movement->amount;
+
             if (!$this->set_updated_at) {
                 $this->article->timestamps = false;
             }
+            
             $this->article->save();
-
-            Log::info($this->article->name.' quedo en '.$this->article->stock.' de stock');
 
             $ct = new InventoryLinkageHelper();
             $ct->check_is_agotado($this->article);
@@ -235,23 +223,33 @@ class StockMovementController extends Controller
             * Importacion de excel
     */
     function checkToAddress() {
+
         if (!is_null($this->stock_movement->to_address_id) && $this->articleHasAddresses()) {
+            
+            $this->article->load('addresses');
+            
             $to_address = null;
             foreach ($this->article->addresses as $address) {
                 if ($address->id == $this->stock_movement->to_address_id) {
                     $to_address = $address;
                 }
             }
+            
             if (is_null($to_address)) {
+
+                /*
+                    Si la direccion destino es null  
+                    se le attach esa direccion y se le pone como cantidad inicial la cantidad del movimineto 
+                    de deposito
+                    Ya que siempre va a ser positiva
+                */
                 $this->article->addresses()->attach($this->stock_movement->to_address_id, [
                     'amount'    => $this->stock_movement->amount,
                 ]);
+
             } else {
-                // Log::info('Se va a actualizar la direccion '.$to_address->street);
-                // Log::info('Antes habia '.$to_address->pivot->amount);
-                // Log::info('Se van a agregar '.$this->stock_movement->amount);
+
                 $new_amount = $to_address->pivot->amount + $this->stock_movement->amount;
-                // Log::info('Quedo en  '.$new_amount);
                 $this->article->addresses()->updateExistingPivot($this->stock_movement->to_address_id, [
                     'amount'    => $new_amount,
                 ]);
@@ -270,24 +268,36 @@ class StockMovementController extends Controller
     */
     function checkFromAddress() {
         if (!is_null($this->stock_movement->from_address_id) && count($this->article->addresses) >= 1) {
-            // Log::info('checkFromAddress para '.$this->article->name);
+            
+            $this->article->load('addresses');
+
+            Log::info('checkFromAddress addresses: ');
+            
             $from_address = null;
+
             foreach ($this->article->addresses as $address) {
+                Log::info($address->street.': '.$address->pivot->amount);
                 if ($address->id == $this->stock_movement->from_address_id) {
                     $from_address = $address;
                 }
             }
+
             if (!is_null($from_address)) {
-                $new_amount = (float)$from_address->pivot->amount - (float)$this->stock_movement->amount;
+
+                /* 
+                    Ahora se va a sumar la cantidad
+                    Porque si es una venta, va a ser un valor negativo
+                */
+                $new_amount = (float)$from_address->pivot->amount + (float)$this->stock_movement->amount;
+                // $new_amount = (float)$from_address->pivot->amount - (float)$this->stock_movement->amount;
+
+                Log::info('from_address: '.$from_address->pivot->amount);
+                Log::info('+ : '.$this->stock_movement->amount);
 
                 $this->article->addresses()->updateExistingPivot($from_address->id, [
                     'amount'    => $new_amount,
                 ]);
-                // Log::info('Se actualizo la direccion '.$from_address->street.' de '.$from_address->pivot->amount. ' a '.$new_amount);
-            } else {
-                // Log::info('no se encontro la direccion from_address');
             }
-            // Log::info('------------------------------------------');
         }
     }
 }

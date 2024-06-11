@@ -80,7 +80,7 @@ class ArticleImport implements ToCollection
         $this->articulos_para_crear = [];
         $this->articulos_para_actualizar = [];
 
-        $this->existing_articles = ArticleImportHelper::set_existing_articles($this->user, $this->props_para_actualizar, $this->provider_id);
+        // $this->existing_articles = ArticleImportHelper::set_existing_articles($this->user, $this->props_para_actualizar, $this->provider_id);
 
 
         $this->import_history_chequeado = false;
@@ -123,9 +123,6 @@ class ArticleImport implements ToCollection
             $this->finish_row = count($rows);
         } 
 
-        Log::info('existing_articles: '.count($this->existing_articles));
-        // Log::info($this->existing_articles);
-
         foreach ($rows as $row) {
             // Log::info('Fila N° '.$this->num_row);
             if ($this->num_row >= $this->start_row && $this->num_row <= $this->finish_row) {
@@ -138,45 +135,9 @@ class ArticleImport implements ToCollection
                     $provider_code = ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns);
                     $name = ImportHelper::getColumnValue($row, 'nombre', $this->columns);
 
-                    $articulo_encontrado = null;
+                    $this->articulo_existente = ArticleImportHelper::get_articulo_encontrado($this->user, $row, $this->columns);
 
-                    if (!is_null($num) && isset($this->existing_articles[$num])) {
-                        $articulo_encontrado = $this->existing_articles[$num];
-                        Log::info('Buscando por num');
-                    } else if (!is_null($provider_code)) {
-                        Log::info('Buscando por provider_code');
-                        foreach ($this->existing_articles as $existing_article) {
-                            // Log::info('comparando '.$existing_article['provider_code'].' con '.$provider_code);
-                            if ($existing_article['provider_code'] == $provider_code) {
-                                $articulo_encontrado = $existing_article;
-                                Log::info('encontro');
-                                break;
-                            }
-                        }
-                    } else if (!is_null($bar_code)) {
-                        Log::info('Buscando por bar_code');
-                        foreach ($this->existing_articles as $existing_article) {
-                            if ($existing_article['bar_code'] == $bar_code) {
-                                $articulo_encontrado = $existing_article;
-                                Log::info('encontro');
-                                break;
-                            }
-                        }
-                    } else if (!is_null($name)) {
-                        Log::info('Buscando por name');
-                        foreach ($this->existing_articles as $existing_article) {
-                            if ($existing_article['name'] == $name) {
-                                $articulo_encontrado = $existing_article;
-                                Log::info('encontro');
-                                break;
-                            }
-                        }
-                    }
-
-                    Log::info('sigue por aca');
-                        
-                    $this->saveArticle($row, $articulo_encontrado);
-
+                    $this->saveArticle($row);
 
                 } else {
                     Log::info('Se omitio una fila N° '.$this->num_row);
@@ -189,9 +150,6 @@ class ArticleImport implements ToCollection
         }
 
         if (!$this->trabajo_terminado) {
-            // $this->crear_articulos();
-
-            // $this->actualizar_articulos();
 
             ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path);
 
@@ -203,29 +161,7 @@ class ArticleImport implements ToCollection
 
     }
 
-    function crear_articulos() {
-
-        Log::info(count($this->articulos_para_crear).' articulos para crear:');
-
-        Article::insert($this->articulos_para_crear);
-
-        Log::info('Se crearon:');
-        
-        ArticleImportHelper::set_articles_num($this->user, $this->ct);
-    }
-
-    function actualizar_articulos() {
-        $ids = array_keys($this->articulos_para_actualizar);
-        $updatedData = array_values($this->articulos_para_actualizar);
-
-        Log::info(count($this->articulos_para_actualizar).' articulos para actualizar:');
-
-        foreach ($this->articulos_para_actualizar as $article_id => $article_data) {
-            Article::where('id', $article_id)->update($article_data);
-        }
-    }
-
-    function saveArticle($row, $articulo_existente) {
+    function saveArticle($row) {
         Log::info('saveArticle para row N° '.$this->num_row);
         $data = [];
 
@@ -248,7 +184,7 @@ class ArticleImport implements ToCollection
 
         if (!ImportHelper::isIgnoredColumn('iva', $this->columns)) {
             $data['iva_id'] = LocalImportHelper::getIvaId(ImportHelper::getColumnValue($row, 'iva', $this->columns));
-        } else if (is_null($articulo_existente)) {
+        } else if (is_null($this->articulo_existente)) {
             $data['iva_id'] = 2;
         }
 
@@ -262,33 +198,30 @@ class ArticleImport implements ToCollection
 
         $article = null;
         
-        if (!is_null($articulo_existente) && $this->isDataUpdated($articulo_existente, $data)) {
-            Log::info('Habia articulo');
-            $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $articulo_existente['id'], $this->user->id);
+        if (!is_null($this->articulo_existente) && $this->isDataUpdated($row, $data)) {
+            Log::info('Hubo cambios');
+            $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $this->articulo_existente->id, $this->user->id);
 
             if (UserHelper::hasExtencion('articles_pre_import', $this->user)) {
                 
                 Log::info('Se agrego a pre_import la N° '.$this->num_row);
 
-                $this->articles_pre_import_helper->add_article($articulo_existente, $data);
+                $this->articles_pre_import_helper->add_article($this->articulo_existente, $data);
 
             } else {
 
-
-                $article = Article::find($articulo_existente['id']);
+                $article = Article::find($this->articulo_existente->id);
 
                 $article->update($data);
 
-                // $article = Article::where('id', $articulo_existente['id'])->update($data);
+                Log::info('Se actualizo '.$this->articulo_existente->name);
 
-                Log::info('Se actualizo '.$articulo_existente['name']);
-                
-                // $this->articulos_para_actualizar[$articulo_existente['id']] = $data;
+                $this->articulo_existente = $article;
 
                 $this->updated_models++;
             }
 
-        } else if (is_null($articulo_existente) && $this->create_and_edit) {
+        } else if (is_null($this->articulo_existente) && $this->create_and_edit) {
 
            
             if (!is_null(ImportHelper::getColumnValue($row, 'nombre', $this->columns))) {
@@ -303,46 +236,69 @@ class ArticleImport implements ToCollection
 
             $article = Article::create($data);
 
+            $this->articulo_existente = $article;
+
             Log::info('Se creo');
 
-            // $this->articulos_para_crear[] = $data;
-
             $this->created_models++;
+
         } else {
             Log::info('No entro a ningun lado la N° '.$this->num_row);
         }
-        if (!is_null($article)) {
+
+        if (!is_null($this->articulo_existente)) {
             
             Log::info('$article no es null:');
             // Log::info((array)$article);
 
-            $this->setDiscounts($row, $article);
-            $this->setProvider($row, $article);
+            $this->setDiscounts($row);
+            $this->setProvider($row);
 
-            $this->setStockAddresses($row, $article);
-            $this->setStockMovement($row, $article);
+            $this->setStockAddresses($row);
+            $this->setStockMovement($row);
 
-            ArticleHelper::setFinalPrice($article, null, $this->user, $this->auth_user_id);
+            ArticleHelper::setFinalPrice($this->articulo_existente, null, $this->user, $this->auth_user_id);
         }
     }
 
-    function actualizar_articulo($articulo_existente, $data) {
+    function isDataUpdated($row, $data) {
+        return  (isset($data['name']) && $data['name']                          != $this->articulo_existente->name) ||
+                (isset($data['bar_code']) && $data['bar_code']                  != $this->articulo_existente->bar_code) ||
+                (isset($data['provider_code']) && $data['provider_code']        != $this->articulo_existente->provider_code) ||
+                (isset($data['stock_min']) && $data['stock_min']                != $this->articulo_existente->stock_min) ||
+                (isset($data['iva_id']) && $data['iva_id']                      != $this->articulo_existente->iva_id) ||
+                (isset($data['cost']) && $data['cost']                          != $this->articulo_existente->cost) ||
+                (isset($data['cost_in_dollars']) && $data['cost_in_dollars']    != $this->articulo_existente->cost_in_dollars) ||
+                (isset($data['percentage_gain']) && $data['percentage_gain']    != $this->articulo_existente->percentage_gain) ||
+                (isset($data['price']) && $data['price']                        != $this->articulo_existente->price) ||
+                (isset($data['category_id']) && $data['category_id']            != $this->articulo_existente->category_id) ||
+                (isset($data['sub_category_id']) && $data['sub_category_id']    != $this->articulo_existente->sub_category_id);
     }
 
-    function isDataUpdated($article, $data) {
-        return  (isset($data['name']) && $data['name']                          != $article['name']) ||
-                (isset($data['bar_code']) && $data['bar_code']                  != $article['bar_code']) ||
-                (isset($data['provider_code']) && $data['provider_code']        != $article['provider_code']) ||
-                (isset($data['stock_min']) && $data['stock_min']                != $article['stock_min']) ||
-                (isset($data['iva_id']) && $data['iva_id']                      != $article['iva_id']) ||
-                (isset($data['cost']) && $data['cost']                          != $article['cost']) ||
-                (isset($data['cost_in_dollars']) && $data['cost_in_dollars']    != $article['cost_in_dollars']) ||
-                (isset($data['percentage_gain']) && $data['percentage_gain']    != $article['percentage_gain']) ||
-                (isset($data['price']) && $data['price']                        != $article['price']) ||
-                (isset($data['category_id']) && $data['category_id']            != $article['category_id']) ||
-                (isset($data['sub_category_id']) && $data['sub_category_id']    != $article['sub_category_id']) ||
-                (isset($data['stock']) && $data['stock']                        != $article['stock']);
-    }
+    // function cambio_el_stock_por_direccion($row, $data) {
+        
+    //     $cambio = false;
+
+    //     foreach ($this->addresses as $address)  {
+
+    //         $address_excel = (float)ImportHelper::getColumnValue($row, $address->street, $this->columns);
+
+    //         foreach ($this->articulo_existente->addresses as $article_address) {
+
+    //             if ($article_address->id == $address->id) {
+
+    //                 if ((float)$address_excel != (float)$article_address->pivot->amount) {
+    //                     $cambio = true;
+    //                 }
+
+    //             }
+
+    //         }
+    //     }
+
+    //     return $cambio;
+    // }
+
     function isFirstRow($row) {
         return ImportHelper::getColumnValue($row, 'nombre', $this->columns) == 'Nombre';
     }
@@ -354,19 +310,19 @@ class ArticleImport implements ToCollection
         return 0;
     }
 
-    function setStockAddresses($row, $article) {
+    function setStockAddresses($row) {
         $set_stock_from_addresses = false;
         foreach ($this->addresses as $address) {
             $address_excel = (float)ImportHelper::getColumnValue($row, $address->street, $this->columns);
             if (!is_null($address_excel) && $address_excel != 0) {
-                // Log::info('Columna '.$address->street.' para articulo '.$article->name.' vino con '.$address_excel);
+                Log::info('Columna '.$address->street.' para articulo '.$this->articulo_existente->name.' vino con '.$address_excel);
                 $request = new \Illuminate\Http\Request();
-                $request->model_id = $article->id;
+                $request->model_id = $this->articulo_existente->id;
                 $request->to_address_id = $address->id;
                 $request->from_excel_import = true;
 
                 $finded_address = null;
-                foreach ($article->addresses as $article_address) {
+                foreach ($this->articulo_existente->addresses as $article_address) {
                     if ($article_address->id == $address->id) {
                         $finded_address = $article_address;
                     }
@@ -374,7 +330,7 @@ class ArticleImport implements ToCollection
 
                 if (is_null($finded_address)) {
 
-                    $article->addresses()->attach($address->id);
+                    $this->articulo_existente->addresses()->attach($address->id);
 
                     $request->amount = $address_excel;
                     $set_stock_from_addresses = true;
@@ -395,24 +351,24 @@ class ArticleImport implements ToCollection
             }
         }
         if ($set_stock_from_addresses) {
-            ArticleHelper::setArticleStockFromAddresses($article);
+            ArticleHelper::setArticleStockFromAddresses($this->articulo_existente);
         }
     }
 
-    function setStockMovement($row, $article) {
+    function setStockMovement($row) {
         $stock_actual = ImportHelper::getColumnValue($row, 'stock_actual', $this->columns);
-        if (!count($article->addresses) >= 1
-            && $article->stock != $stock_actual) {
+        if (!count($this->articulo_existente->addresses) >= 1
+            && $this->articulo_existente->stock != $stock_actual) {
             $request = new \Illuminate\Http\Request();
-            $request->model_id = $article->id;
+            $request->model_id = $this->articulo_existente->id;
             $request->from_excel_import = true;
-            $request->amount = $stock_actual - $article->stock;
+            $request->amount = $stock_actual - $this->articulo_existente->stock;
             $this->stock_movement_ct->store($request);
-            Log::info('se mando a guardar stock_movement de '.$article->name.' con amount = '.$request->amount);
+            Log::info('se mando a guardar stock_movement de '.$this->articulo_existente->name.' con amount = '.$request->amount);
         } 
     }
 
-    function setDiscounts($row, $article) {
+    function setDiscounts($row) {
         if (!is_null(ImportHelper::getColumnValue($row, 'descuentos', $this->columns))) {
             $_discounts = explode('_', ImportHelper::getColumnValue($row, 'descuentos', $this->columns));
             $discounts = [];
@@ -421,11 +377,11 @@ class ArticleImport implements ToCollection
                 $discount->percentage = $_discount;
                 $discounts[] = $discount;
             } 
-            ArticleHelper::setDiscounts($article, $discounts);
+            ArticleHelper::setDiscounts($this->articulo_existente, $discounts);
         }
     }
 
-    function setProvider($row, $article) {
+    function setProvider($row) {
         if ($this->provider_id != 0 || !is_null(ImportHelper::getColumnValue($row, 'proveedor', $this->columns))) {
             $provider_id = null;
             if ($this->provider_id != 0) {
@@ -435,8 +391,8 @@ class ArticleImport implements ToCollection
             }
 
             if (!is_null($provider_id)) {
-                $article->provider_id = $provider_id;
-                $article->save();
+                $this->articulo_existente->provider_id = $provider_id;
+                $this->articulo_existente->save();
             }
         }
     }

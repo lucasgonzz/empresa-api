@@ -27,9 +27,7 @@ class SaleModificationsHelper {
     }
 
     static function attach_articulos_despues_de_actualizar($sale, $sale_modification) {
-        Log::info('');
-        Log::info('________________________________________');
-        Log::info('attach_articulos_despues_de_actualizar');
+        
         if (!is_null($sale_modification)) {
             $sale->load('articles');
             foreach ($sale->articles as $article) {
@@ -42,14 +40,10 @@ class SaleModificationsHelper {
                 ]);
             }
         }
-        Log::info('________________________________________');
-        Log::info('');
     }
 
     static function attach_articulos_antes_de_actualizar($sale, $sale_modification) {
-        Log::info('');
-        Log::info('________________________________________');
-        Log::info('attach_articulos_antes_de_actualizar');
+
         if (!is_null($sale_modification)) {
             $sale->load('articles');
             foreach ($sale->articles as $article) {
@@ -62,8 +56,6 @@ class SaleModificationsHelper {
                 ]);
             }
         }
-        Log::info('________________________________________');
-        Log::info('');
     }
 
     static function get_amount($article) {

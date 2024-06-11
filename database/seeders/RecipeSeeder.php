@@ -28,7 +28,7 @@ class RecipeSeeder extends Seeder
         ]);
         $articles = [
             [
-                'name'                          => 'Kit de Cazoleta con rodamiento, Tope Y Fuelle AX044.1488',
+                'name'                          => 'Kit 1',
                 'order_production_status_id'    => 1,
                 'address_id'                    => 1,
                 'amount'                        => 1,

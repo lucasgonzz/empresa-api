@@ -15,7 +15,9 @@ class ProductionMovementHelper {
 	static function checkRecipe($production_movement, $instance, $last_amount = 0, $increase_stock = false) {
 		if (!is_null($production_movement->article->recipe)) {
 			foreach ($production_movement->article->recipe->articles as $article_recipe) {
-				if (Self::restar_insumos_en_este_estado($instance, $production_movement, $article_recipe)) {
+				if (!is_null($article_recipe->pivot->order_production_status_id)
+					&& $article_recipe->pivot->order_production_status_id != 0
+					&& Self::restar_insumos_en_este_estado($instance, $production_movement, $article_recipe)) {
 					// Log::info('--------------------------');
 					// Log::info('Entro en receta de '.$production_movement->article->name.'. En Paso productivo '.$production_movement->order_production_status->name.' con insumo '.$article_recipe->name. ' que en la reseta esta en el paso '.$pivot_order_production_status->name);
 					if ($increase_stock) {
@@ -31,6 +33,8 @@ class ProductionMovementHelper {
 
 	static function restar_insumos_en_este_estado($instance, $production_movement, $article_recipe) {
 		$user = UserHelper::getFullModel();
+
+		// Log::info($article_recipe->name.' order_production_status_id: '.$article_recipe->pivot->order_production_status_id);
 
 		$pivot_order_production_status = $instance->getModelBy('order_production_statuses', 'id', $article_recipe->pivot->order_production_status_id);
 		
@@ -93,7 +97,7 @@ class ProductionMovementHelper {
 			$stock_movement_ct = new StockMovementController();
     		$request = new \Illuminate\Http\Request();
 			$request->model_id = $article_recipe->id;
-			$request->amount = $amount_to_discount;
+			$request->amount = -$amount_to_discount;
 			$request->concepto = 'Prod. '.$production_movement->article->name;
 			
 			if (!is_null($article_recipe->pivot->address_id) && count($article_recipe->addresses) >= 1) {

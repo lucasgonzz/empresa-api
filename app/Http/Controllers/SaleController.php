@@ -116,11 +116,8 @@ class SaleController extends Controller
 
         $sale_modification = SaleModificationsHelper::create($model, $this);
 
-        // SaleHelper::log_client($model);
+        $se_esta_confirmando = SaleHelper::get_se_esta_confirmando($request, $model);
 
-        // SaleHelper::log_articles($model, $previus_articles);
-
-        // SaleHelper::detachItems($model);
         SaleHelper::detachItems($model, $sale_modification);
         
         $previus_client_id                          = $model->client_id;
@@ -142,7 +139,7 @@ class SaleController extends Controller
         $model->updated_at                          = Carbon::now();
         $model->save();
 
-        SaleHelper::attachProperies($model, $request, false, $previus_articles, $sale_modification);
+        SaleHelper::attachProperies($model, $request, false, $previus_articles, $sale_modification, $se_esta_confirmando);
 
         $model->updated_at = Carbon::now();
         $model->save();

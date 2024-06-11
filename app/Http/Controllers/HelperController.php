@@ -50,6 +50,38 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function borrar_stock_movements_de_production_movement($article_id) {
+        $article_recipe = Article::find($article_id);
+
+        foreach ($article_recipe->recipe->articles as $insumo) {
+            echo 'Insumo '.$insumo->name.' </br>';
+            $stock_movements = StockMovement::where('article_id', $insumo->id)
+                                            ->whereDate('created_at', Carbon::now())
+                                            ->orderBy('created_at', 'ASC')
+                                            ->get();
+
+            $vuelta = 1;
+
+            foreach ($stock_movements as $stock_movement) {
+                if ($vuelta == 1) {
+
+                    if (preg_match('/\((\d+)\)$/', $stock_movement->observations, $matches)) {
+                        $numero = $matches[1];
+                        echo "El número es: " . $numero.' </br>';
+                        $insumo->stock = (float)$numero;
+                        $insumo->save();
+                    } 
+
+                } else {
+                    $stock_movement->delete();
+                }
+
+                $vuelta++; 
+            }
+        }
+        echo 'termino';
+    }
+
     function check_deleted_articles_recipes() {
         $recipes = Recipe::where('user_id', 138)
                             ->get();

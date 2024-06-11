@@ -10,6 +10,7 @@ use App\Models\ImportHistory;
 use App\Models\UnidadMedida;
 use App\Notifications\GlobalNotification;
 use Illuminate\Support\Facades\Log;
+use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 
 class ArticleImportHelper {
 
@@ -65,9 +66,41 @@ class ArticleImportHelper {
 		}
 	}
 
-    static function set_existing_articles($user, $props_para_actualizar, $provider_id) {
-		Log::info('set_existing_articles provider_id de '.$provider_id);
+	static function get_articulo_encontrado($user, $row, $columns) {
 
+        $num 			= ImportHelper::getColumnValue($row, 'numero', $columns);
+        $bar_code 		= ImportHelper::getColumnValue($row, 'codigo_de_barras', $columns);
+        $provider_code 	= ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $columns);
+        $name 			= ImportHelper::getColumnValue($row, 'nombre', $columns);
+
+        $article = Article::where('user_id', $user->id)
+                            ->where('status', 'active');
+
+        if (!is_null($num)) {
+
+            $article = $article->where('num', $num);
+
+        } else if (!is_null($provider_code)) {
+                
+            $article = $article->where('provider_code', $provider_code);
+
+        } else if (!is_null($bar_code)) {
+
+            $article = $article->where('bar_code', $bar_code);
+
+        } else if (!is_null($name)) {
+
+            $article = $article->where('name', $name);
+            
+        }
+
+        $article = $article->first();
+
+        return $article;
+
+	}
+
+    static function set_existing_articles($user, $props_para_actualizar, $provider_id) {
         $_existing_articles = Article::where('user_id', $user->id)
                                             ->where('status', 'active');
 
@@ -80,11 +113,13 @@ class ArticleImportHelper {
 
 		Log::info(count($_existing_articles).' filtrados');
 
-        $existing_articles = [];
-        foreach ($_existing_articles as $existing_article) {
-            $existing_articles[$existing_article->num] = $existing_article->toArray();
-        }
-        return $existing_articles;
+        return $_existing_articles;
+
+        // $existing_articles = [];
+        // foreach ($_existing_articles as $existing_article) {
+        //     $existing_articles[$existing_article->num] = $existing_article->toArray();
+        // }
+        // return $existing_articles;
     }
 	
 	static function addAddressesColumns($columns) {

@@ -354,13 +354,61 @@ class ArticleHelper {
         }
     }
 
-    static function discountStock($id, $amount, $sale) {
+    static function discountStock($id, $amount, $sale, $previus_articles, $se_esta_confirmando_por_primera_vez = false) {
         $article = new \stdClass();
         $article->id = $id;
-        Self::storeStockMovement($article, $sale->id, $amount, $sale->address_id);
+
+        $res = Self::get_amount_for_stock_movement($sale, $article, $amount, $previus_articles, $se_esta_confirmando_por_primera_vez);
+        
+        $concepto = $res['concepto'];
+        $amount = $res['amount'];
+
+        if ($amount != 0) {
+            Self::storeStockMovement($article, $sale->id, $amount, $sale->address_id, null, $concepto);
+        }
+ 
+    }
+
+
+
+    /*
+        Chequeo si hay previus_articles
+            * Si hay, es porque se esta editando una venta
+                Entonces busco la cantidad previa 
+                    Si la encuentro, obtengo la direfencia entre la cantidad previa y la nueva
+                    Si no la encuentro, retorno la cantidad original y el concepto de Venta
+
+            * Si no hay, retorno la cantidad original y el concepto de Venta
+    */
+
+    static function get_amount_for_stock_movement($sale, $article, $amount, $previus_articles, $se_esta_confirmando_por_primera_vez) {
+        if (!is_null($previus_articles) && !$se_esta_confirmando_por_primera_vez) {
+            $previus_amount = null;
+            $new_amount = null;
+
+            foreach ($previus_articles as $previus_article) {
+                if ($previus_article->id == $article->id) {
+                    $previus_amount = $previus_article->pivot->amount;
+                }
+            }
+
+            if (!is_null($previus_amount)) {
+                $new_amount = (float)$previus_amount - (float)$amount;
+
+                return [
+                    'amount'    => $new_amount,
+                    'concepto'  => 'Act. Venta N° '.$sale->num,
+                ];
+            }
+        }
+        return [
+            'amount'    => -(float)$amount,
+            'concepto'  => 'Venta N° '.$sale->num,
+        ];
     }
 
     static function storeStockMovement($article, $sale_id, $amount, $from_address_id = null, $to_address_id = null, $concepto = null) {
+
         $ct = new StockMovementController();
         $request = new \Illuminate\Http\Request();
         
@@ -370,6 +418,7 @@ class ArticleHelper {
         $request->amount = $amount;
         $request->sale_id = $sale_id;
         $request->concepto = $concepto;
+
         $ct->store($request, false);
     }
 
