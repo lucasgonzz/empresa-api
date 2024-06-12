@@ -23,7 +23,20 @@ class StockMovementController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
-    function store(Request $request, $set_updated_at = true) {
+    function store(Request $request, $set_updated_at = true, $owner = null, $auth_user_id = null) {
+
+        if (!is_null($owner)) {
+            $this->user_id = $owner->id;
+        } else {
+            $this->user_id = UserHelper::userId();
+        }
+
+        if (!is_null($auth_user_id)) {
+            $employee_id = $auth_user_id;
+        } else {
+            $employee_id = UserHelper::userId(false);
+        }
+
         $this->set_updated_at = $set_updated_at;
         $this->request = $request;
         $this->article_id = $request->model_id;
@@ -39,8 +52,8 @@ class StockMovementController extends Controller
             'from_address_id'   => $this->getFromAddressId(),
             'to_address_id'     => $this->getToAddressId(),
             'observations'      => isset($request->observations) ? $request->observations : '',
-            'employee_id'       => UserHelper::userId(false),
-            'user_id'           => UserHelper::userId(),
+            'employee_id'       => $employee_id,
+            'user_id'           => $this->user_id,
         ]);
 
 
@@ -100,12 +113,14 @@ class StockMovementController extends Controller
 
     function set_stock_actual_in_observations() {
 
-        if (!is_null($this->stock_movement->observations)) {
-            $this->stock_movement->observations .= ' '.$this->article->stock;
-        } else {
-            $this->stock_movement->observations = $this->article->stock;
+        if (!is_null($this->article)) {
+            if (!is_null($this->stock_movement->observations)) {
+                $this->stock_movement->observations .= ' '.$this->article->stock;
+            } else {
+                $this->stock_movement->observations = $this->article->stock;
+            }
+            $this->stock_movement->save();
         }
-        $this->stock_movement->save();
 
     }
 
@@ -169,7 +184,7 @@ class StockMovementController extends Controller
     
             ArticleHelper::checkAdvises($this->article);
 
-            ArticleHelper::setArticleStockFromAddresses($this->article);
+            ArticleHelper::setArticleStockFromAddresses($this->article, false);
 
             if ($this->stock_movement->concepto != 'Movimiento de depositos') {
                 CartArticleAmountInsificienteHelper::checkCartsAmounts($this->article);
@@ -207,8 +222,11 @@ class StockMovementController extends Controller
             
             $this->article->save();
 
-            $ct = new InventoryLinkageHelper();
-            $ct->check_is_agotado($this->article);
+            if (!isset($this->request->from_excel_import) || !$this->request->from_excel_import) {
+                $ct = new InventoryLinkageHelper(null, $this->user_id);
+                $ct->check_is_agotado($this->article);
+            }
+
         }
     }
 

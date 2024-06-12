@@ -35,16 +35,16 @@ class LocalImportHelper {
         }
 	}
 
-	static function getCategoryId($categoria, $ct) {
+	static function getCategoryId($categoria, $ct, $owner) {
 		if ($categoria != '') {
-			$category = Category::where('user_id', UserHelper::userId())
+			$category = Category::where('user_id', $owner->id)
 								->where('name', $categoria)
 								->first();
 			if (is_null($category)) {
 				$category = Category::create([
-					'num' 		=> $ct->num('categories'),
+	        		'num'		=> $ct->num('categories', $owner->id, 'user_id', $owner->id),
 					'name' 		=> $categoria,
-					'user_id' 	=> UserHelper::userId(),
+					'user_id' 	=> $owner->id,
 				]);
 			}
 			return $category->id;
@@ -52,9 +52,9 @@ class LocalImportHelper {
 		return null;
 	}
 
-	static function getSubcategoryId($categoria, $sub_categoria, $ct) {
+	static function getSubcategoryId($categoria, $sub_categoria, $ct, $owner) {
 		if ($categoria != '' && $sub_categoria != '') {
-			$category = Category::where('user_id', UserHelper::userId())
+			$category = Category::where('user_id', $owner->id)
 								->where('name', $categoria)
 								->first();
 			// if (is_null($category)) {
@@ -64,16 +64,16 @@ class LocalImportHelper {
 			// 		'user_id' 	=> UserHelper::userId(),
 			// 	]);
 			// }
-			$sub_category = SubCategory::where('user_id', UserHelper::userId())
+			$sub_category = SubCategory::where('user_id', $owner->id)
 										->where('name', $sub_categoria)
 										->where('category_id', $category->id)
 										->first();
 			if (is_null($sub_category)) {
 				$sub_category = SubCategory::create([
-					'num' 			=> $ct->num('sub_categories'),
+	        		'num'			=> $ct->num('sub_categories', $owner->id, 'user_id', $owner->id),
 					'name' 			=> $sub_categoria,
 					'category_id' 	=> $category->id,
-					'user_id'		=> UserHelper::userId(),
+					'user_id'		=> $owner->id,
 				]);
 			}
 			return $sub_category->id;
@@ -102,14 +102,14 @@ class LocalImportHelper {
 	    }
 	}
 
-	static function saveProvider($proveedor, $ct) {
+	static function saveProvider($proveedor, $ct, $owner) {
 		if ($proveedor != 'Sin especificar' && $proveedor != '') {
 	        $data = [
-	        	'num'		=> $ct->num('providers'),
+	        	'num'		=> $ct->num('providers', $owner->id, 'user_id', $owner->id),
                 'name'      => $proveedor,
-                'user_id'   => $ct->userId(),
+                'user_id'   => $owner->id,
             ];
-	        $ct->createIfNotExist('providers', 'name', $proveedor, $data);
+	        $ct->createIfNotExist('providers', 'name', $proveedor, $data, true, $owner->id);
 	    }
 	}
 

@@ -48,7 +48,25 @@ class ProcessSetStockResultante implements ShouldQueue
             $last_stock_movement->stock_resultante = $article->stock;
             $last_stock_movement->observations = 'Se seteo stock resultante con el stock actual';
             $last_stock_movement->save();
+
+            $this->limpiar_stock_resultante_de_los_anteriores($last_stock_movement);
+
         }
 
+
+    }
+
+    function limpiar_stock_resultante_de_los_anteriores($last_stock_movement) {
+
+        $stock_movements_anteriories = StockMovement::where('article_id', $article->id)
+                                                    ->where('id', '!=', $last_stock_movement->id)
+                                                    ->orderBy('created_at', 'DESC')
+                                                    ->get();
+
+        foreach ($stock_movements_anteriories as $stock_movement) {
+            $stock_movement->observations = null;
+            $stock_movement->stock_resultante = null;
+            $stock_movement->save();
+        }
     }
 }

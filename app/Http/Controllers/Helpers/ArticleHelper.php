@@ -422,7 +422,7 @@ class ArticleHelper {
         $ct->store($request, false);
     }
 
-    static function setArticleStockFromAddresses($article) {
+    static function setArticleStockFromAddresses($article, $check_linkage = true) {
         if (!is_object($article)) {
             $article = Article::find($article['id']);
         }
@@ -437,8 +437,10 @@ class ArticleHelper {
             $article->timestamps = false;
             $article->save();
 
-            $ct = new InventoryLinkageHelper();
-            $ct->check_is_agotado($article);
+            if ($check_linkage) {
+                $ct = new InventoryLinkageHelper();
+                $ct->check_is_agotado($article);
+            }
         } 
     }
 

@@ -179,7 +179,7 @@ class ArticleImport implements ToCollection
         }
 
         if (!ImportHelper::isIgnoredColumn('proveedor', $this->columns)) {
-            LocalImportHelper::saveProvider(ImportHelper::getColumnValue($row, 'proveedor', $this->columns), $this->ct);
+            LocalImportHelper::saveProvider(ImportHelper::getColumnValue($row, 'proveedor', $this->columns), $this->ct, $this->user);
         }
 
         if (!ImportHelper::isIgnoredColumn('iva', $this->columns)) {
@@ -189,11 +189,11 @@ class ArticleImport implements ToCollection
         }
 
         if (!ImportHelper::isIgnoredColumn('categoria', $this->columns)) {
-            $data['category_id'] = LocalImportHelper::getCategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), $this->ct);
+            $data['category_id'] = LocalImportHelper::getCategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), $this->ct, $this->user);
         }
 
         if (!ImportHelper::isIgnoredColumn('categoria', $this->columns)) {
-            $data['sub_category_id'] = LocalImportHelper::getSubcategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), ImportHelper::getColumnValue($row, 'sub_categoria', $this->columns), $this->ct);
+            $data['sub_category_id'] = LocalImportHelper::getSubcategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), ImportHelper::getColumnValue($row, 'sub_categoria', $this->columns), $this->ct, $this->user);
         }
 
         $article = null;
@@ -334,7 +334,7 @@ class ArticleImport implements ToCollection
 
                     $request->amount = $address_excel;
                     $set_stock_from_addresses = true;
-                    $this->stock_movement_ct->store($request);
+                    $this->stock_movement_ct->store($request, true, $this->user, $this->auth_user_id);
 
                 } else {
                     $cantidad_anterior = $finded_address->pivot->amount;
@@ -342,7 +342,7 @@ class ArticleImport implements ToCollection
                         $set_stock_from_addresses = true;
                         $new_amount = $address_excel - $cantidad_anterior;
                         $request->amount = $new_amount;
-                        $this->stock_movement_ct->store($request);
+                        $this->stock_movement_ct->store($request, true, $this->user, $this->auth_user_id);
                     } else {
                         // Log::info('No se actualizo porque no hubo ningun cambio');
                     }
@@ -351,7 +351,7 @@ class ArticleImport implements ToCollection
             }
         }
         if ($set_stock_from_addresses) {
-            ArticleHelper::setArticleStockFromAddresses($this->articulo_existente);
+            ArticleHelper::setArticleStockFromAddresses($this->articulo_existente, false);
         }
     }
 
@@ -363,7 +363,7 @@ class ArticleImport implements ToCollection
             $request->model_id = $this->articulo_existente->id;
             $request->from_excel_import = true;
             $request->amount = $stock_actual - $this->articulo_existente->stock;
-            $this->stock_movement_ct->store($request);
+            $this->stock_movement_ct->store($request, true, $this->user, $this->auth_user_id);
             Log::info('se mando a guardar stock_movement de '.$this->articulo_existente->name.' con amount = '.$request->amount);
         } 
     }
@@ -387,7 +387,7 @@ class ArticleImport implements ToCollection
             if ($this->provider_id != 0) {
                 $provider_id = $this->provider_id;
             } else {
-                $provider_id = $this->ct->getModelBy('providers', 'name', ImportHelper::getColumnValue($row, 'proveedor', $this->columns), true, 'id');
+                $provider_id = $this->ct->getModelBy('providers', 'name', ImportHelper::getColumnValue($row, 'proveedor', $this->columns), true, 'id', false, $this->user->id);
             }
 
             if (!is_null($provider_id)) {

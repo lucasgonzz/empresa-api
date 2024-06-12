@@ -60,11 +60,14 @@ class Controller extends BaseController
         return false;
     }
 
-    function getModelBy($table, $prop_name, $prop_value, $from_user = false, $prop_to_return = null, $return_0 = false) {
+    function getModelBy($table, $prop_name, $prop_value, $from_user = false, $prop_to_return = null, $return_0 = false, $user_id = null) {
         $model = DB::table($table)
                     ->where($prop_name, $prop_value);
         if ($from_user) {
-            $model = $model->where('user_id', $this->userId());
+            if (is_null($user_id)) {
+                $user_id = $this->userId();
+            }
+            $model = $model->where('user_id', $user_id);
         }
         $model = $model->first();
         if (!is_null($model) && !is_null($prop_to_return)) {
@@ -164,11 +167,14 @@ class Controller extends BaseController
         return $last->num + 1;
     }
 
-    function createIfNotExist($table, $prop_name, $prop_value, $data_to_insert, $from_user = true) {
+    function createIfNotExist($table, $prop_name, $prop_value, $data_to_insert, $from_user = true, $user_id = false) {
         $model = DB::table($table)
                     ->where($prop_name, $prop_value);
         if ($from_user) {
-            $model = $model->where('user_id', $this->userId());
+            if (is_null($user_id)) {
+                $user_id = $this->userId();
+            }
+            $model = $model->where('user_id', $user_id);
         }
         $model = $model->first();
         if (is_null($model)) {
