@@ -160,10 +160,10 @@ class SaleHelper extends Controller {
         Self::attachDiscounts($model, $request->discounts);
         Self::attachSurchages($model, $request->surchages);
 
+        Self::attachSelectedPaymentMethods($model, $request);
+        
         if (!$from_store) {
             SaleModificationsHelper::attach_articulos_despues_de_actualizar($model, $sale_modification);
-        } else {
-            Self::attachSelectedPaymentMethods($model, $request);
         }
 
         if ($from_store && !$model->to_check && !$model->checked) {
@@ -176,12 +176,14 @@ class SaleHelper extends Controller {
     static function attachSelectedPaymentMethods($sale, $request){
         $sale->current_acount_payment_methods()->detach();
 
-        foreach ($request->metodos_de_pago_seleccionados as $metodoDePago) {
-          
-            $sale->current_acount_payment_methods()->attach($metodoDePago['id'],[
-                'amount' => $metodoDePago['monto'],
-            ]);
-            
+        if (!$sale->current_acount_payment_method_id) {
+            foreach ($request->metodos_de_pago_seleccionados as $metodoDePago) {
+              
+                $sale->current_acount_payment_methods()->attach($metodoDePago['id'],[
+                    'amount' => $metodoDePago['monto'],
+                ]);
+                
+            }
         }
     }
     static function checkNotaCredito($sale, $request) {
@@ -410,12 +412,13 @@ class SaleHelper extends Controller {
                     }
                 } else {
 
-                    // $amount = Self::getAmount($sale, $article);
+                    $amount = Self::getAmount($sale, $article);
                     
-                    // if (($sale->to_check || $sale->checked) 
-                    //     || (!is_null($amount) && $amount > 0) )
+                    if (($sale->to_check || $sale->checked) 
+                        || (!is_null($amount) && $amount > 0) ) {
+                        Self::attachArticle($sale, $article);
+                    }
 
-                    Self::attachArticle($sale, $article);
                 }
 
 

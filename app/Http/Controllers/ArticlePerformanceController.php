@@ -67,6 +67,7 @@ class ArticlePerformanceController extends Controller
             echo 'Se creo performance de '.$article_performance->article_name.' con '.$article_performance->amount.' ventas para el mes '.$article_performance->created_at->format('F').' </br>';
 
         }
+        echo 'termino';
     }
 
     function add_to_articles($article, $sale) {

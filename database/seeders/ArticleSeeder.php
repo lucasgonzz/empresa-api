@@ -89,6 +89,7 @@ class ArticleSeeder extends Seeder
                 // $id+;
                 if (isset($article['images'])) {
                     foreach ($article['images'] as $image) { 
+                        // $image['url']   = 'https://api-prueba.comerciocity.com/public/storage/171837091695431.webp';
                         Image::create([
                             'imageable_type'                            => 'article',
                             'imageable_id'                              => $art->id,

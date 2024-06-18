@@ -50,6 +50,36 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function check_unidades_en_0() {
+        $sales = Sale::where('confirmed', 1)
+                        ->whereDate('created_at', '>=', Carbon::today()->subDays(5))
+                        ->where('user_id', 121)
+                        ->get();
+
+        $venta_con_articulos_en_0 = [];
+
+        foreach ($sales as $sale) {
+            foreach ($sale->articles as $article) {
+                if ($article->pivot->amount == 0) {
+                    if (!$this->containsObject($venta_con_articulos_en_0, $sale)) {
+                        $venta_con_articulos_en_0[] = $sale;
+                    }
+                }
+            }
+        }
+
+        dd($venta_con_articulos_en_0);
+    }
+
+    function containsObject($array, $object) {
+        foreach ($array as $item) {
+            if ($item->is($object)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     function borrar_stock_movements_de_production_movement($article_id) {
         $article_recipe = Article::find($article_id);
 

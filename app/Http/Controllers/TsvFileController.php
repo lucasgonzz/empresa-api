@@ -12,6 +12,14 @@ class TsvFileController extends Controller
 {
 
     public $user_id = 600;
+
+    function __construct() {
+        if (env('APP_ENV') == 'local') {
+            $this->user_id = 500;
+        } else {
+            $this->user_id = 600;
+        }
+    }
     
     function leer_archivo_articulos() {
 

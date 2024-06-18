@@ -92,45 +92,123 @@ class ArticlePdf extends fpdf {
 
 	}
 
+
+
 	function getJpgImage($article) {
 		$img_url = $article->images[0]->{env('IMAGE_URL_PROP_NAME', 'image_url')};
 
-		if (!is_null($image_url)) {
+		$img_url = 'https://api-colman-prueba.comerciocity.com/public/storage/171699179550596.webp';
 
+		if (!is_null($img_url)) {
 	        $array = explode('/', $img_url); 
-	        $array_name = $array[count($array)-1];
+	        $array_name = end($array);
 	        $name = explode('.', $array_name)[0];
-	        $extencion = explode('.', $array_name)[1];
+	        $extension = strtolower(pathinfo($array_name, PATHINFO_EXTENSION));
 
 	        if (env('APP_ENV') == 'local') {
-	        	$jpg_file_url = storage_path().'/app/'.$name.'.jpg';
+	        	// $jpg_file_url = storage_path('app/' . $name . '.jpg');
+	        	$jpg_file_url = storage_path('app/public/' . $name . '.jpg');
 	        } else {
-	        	$jpg_file_url = storage_path().'/app/public/'.$name.'.jpg';
+	        	$jpg_file_url = storage_path('app/public/' . $name . '.jpg');
 	        }
 
-	        // if (!file_exists($jpg_file_url)) {
-	        //     $img = imagecreatefromwebp($img_url);
-	        //     imagejpeg($img, $jpg_file_url, 100);
-	        // }
 
-			try {
-				$image = imagecreatefromwebp($jpg_file_url);
-				if ($image !== false) {
-					// Procesar la imagen...
-					imagejpeg($image, 'ruta/a/imagen.jpg', 100);
-					// imagedestroy($image);
-				} else {
-					// No se pudo crear la imagen desde WebP
-					// echo 'No se pudo crear la imagen desde WebP';
-				}
-			} catch (Exception $e) {
-				// Error al intentar crear la imagen desde WebP
-				// echo 'Error: ' . $e->getMessage();
-			}
-     	   return $jpg_file_url;
+	        // Convertir a JPG si la imagen es WEBP
+	        if ($extension === 'webp') {
+	            if (!file_exists($jpg_file_url)) {
+	                try {
+	                    $image = imagecreatefromwebp($img_url);
+	                    if ($image !== false) {
+	                        imagejpeg($image, $jpg_file_url, 100);
+	                        imagedestroy($image);
+	                    } else {
+	                        throw new \Exception("No se pudo crear la imagen desde WEBP.");
+	                    }
+	                } catch (\Exception $e) {
+	                    return $img_url; // Devuelve la URL original si falla la conversión
+	                }
+	            }
+	            return $jpg_file_url;
+	        }
+
+	        // Si la imagen ya es JPG, simplemente devuelve la URL
+	        if ($this->isJpg($img_url)) {
+	        	dd('asd');
+	            return $img_url;
+	        }
 		}
-
+		return $img_url;
 	}
+
+	function isJpg($file) {
+	    // Verifica que el archivo exista
+	    if (!file_exists($file)) {
+	        return false;
+	    }
+	    
+	    // Obtiene información sobre la imagen
+	    $imageInfo = getimagesize($file);
+	    
+	    // Verifica si el tipo MIME es 'image/jpeg'
+	    if ($imageInfo && $imageInfo['mime'] == 'image/jpeg') {
+	        return true;
+	    }
+	    
+	    return false;
+	}
+
+	// function getJpgImage($article) {
+	// 	$img_url = $article->images[0]->{env('IMAGE_URL_PROP_NAME', 'image_url')};
+
+	// 	// dd($img_url);
+
+	// 	if (!is_null($img_url)) {
+
+	//         $array = explode('/', $img_url); 
+	//         $array_name = $array[count($array)-1];
+	//         $name = explode('.', $array_name)[0];
+	//         $extencion = explode('.', $array_name)[1];
+
+	//         if (env('APP_ENV') == 'local') {
+	//         	$jpg_file_url = storage_path().'/app/'.$name.'.jpg';
+	//         } else {
+	//         	$jpg_file_url = storage_path().'/app/public/'.$name.'.jpg';
+	//         }
+
+	//         if (!this->isJpg($))
+
+	// 		try {
+	// 			$image = imagecreatefromwebp($jpg_file_url);
+	// 			if ($image !== false) {
+	// 				// Procesar la imagen...
+	// 				imagejpeg($image, 'ruta/a/imagen.jpg', 100);
+	// 				// imagedestroy($image);
+	// 			} else {
+	// 			}
+	// 		} catch (Exception $e) {
+	// 		}
+
+    //  	   return $jpg_file_url;
+	// 	}
+
+	// }
+
+	// function isJpg($file) {
+	//     // Verifica que el archivo exista
+	//     if (!file_exists($file)) {
+	//         return false;
+	//     }
+	    
+	//     // Obtiene información sobre la imagen
+	//     $imageInfo = getimagesize($file);
+	    
+	//     // Verifica si el tipo MIME es 'image/jpeg'
+	//     if ($imageInfo && $imageInfo['mime'] == 'image/jpeg') {
+	//         return true;
+	//     }
+	    
+	//     return false;
+	// }
 
 	function printArticle($article) {
 
