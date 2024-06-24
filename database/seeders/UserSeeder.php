@@ -30,6 +30,7 @@ class UserSeeder extends Seeder
             [
                 'id'                            => 500,
                 'name'                          => 'Ibarra',
+                'use_archivos_de_intercambio'   => 1,
                 'company_name'                  => 'Autopartes Boxes',
                 // 'image_url'                     => null,
                 'image_url'                     => env('APP_URL').'/storage/icon.png',
@@ -49,20 +50,20 @@ class UserSeeder extends Seeder
                 'plan_discount'                 => 27,
                 'article_ticket_info_id'        => 1,
                 'online_configuration'          => [
-                    'online_price_type_id'          => 1,
+                    'online_price_type_id'          => 3,
                     'register_to_buy'               => 1,
                     'scroll_infinito_en_home'       => 1,
-                    'default_article_image_url'     => 'http://empresa.local:8000/storage/168053912176623.webp',
-                    'quienes_somos'                 => 
-                    'Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!
+                    'default_article_image_url'     => 'http://empresa.local:8000/storage/169705209718205.jpg',
+                    // 'quienes_somos'                 => 
+                    // 'Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!
 
-                    Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!',
-                    'mensaje_contacto'              => 'Contactar tambien por mensaje directo en Facebook o Instagram, es el medio en el que mas activos estamos!',
-                    'online_price_surchage'         => 50,
+                    // Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!',
+                    // 'mensaje_contacto'              => 'Contactar tambien por mensaje directo en Facebook o Instagram, es el medio en el que mas activos estamos!',
+                    // 'online_price_surchage'         => 50,
                     // 'max_items_in_sale'             => 2,
                     'pausar_tienda_online'          => 0,
-                    'instagram'                     => 'https://www.instagram.com/lucasgonzz/',
-                    'facebook'                      => 'https://www.facebook.com',
+                    // 'instagram'                     => 'https://www.instagram.com/lucasgonzz/',
+                    // 'facebook'                      => 'https://www.facebook.com',
                 ],
                 'base_de_datos'                     => 'empresa_prueba_1',
                 'google_custom_search_api_key'      => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
@@ -186,6 +187,7 @@ class UserSeeder extends Seeder
             $user = User::create([
                 'id'                            => isset($model['id']) ? $model['id'] : null,  
                 'name'                          => $model['name'], 
+                'use_archivos_de_intercambio'                  => isset($model['use_archivos_de_intercambio']) ? $model['use_archivos_de_intercambio'] : null,  
                 'company_name'                  => isset($model['company_name']) ? $model['company_name'] : null,  
                 'doc_number'                    => $model['doc_number'], 
                 'email'                         => $model['email'], 

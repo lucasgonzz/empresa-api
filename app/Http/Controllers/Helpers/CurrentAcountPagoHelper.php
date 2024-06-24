@@ -16,7 +16,9 @@ class CurrentAcountPagoHelper {
     public $model_id;
     public $pago;
     public $fondos;
+    public $fondos_iniciales;
     public $sin_pagar;
+    public $sin_pagar_index;
 
     function __construct($model_name, $model_id, $pago) {
         Log::info('procesando '.$pago->detalle);
@@ -25,29 +27,38 @@ class CurrentAcountPagoHelper {
         $this->pago = $pago;
         $this->fondos = $pago->haber;
         $this->sin_pagar = null;
+        $this->sin_pagar_index = 0;
         $this->setSinPagar();
     }
 
     function setSinPagar() {
 
-        Log::info('setSinPagar');
+        Log::info('setSinPagar '.$this->pago->detalle);
+
+        $this->sin_pagar_index++;
 
         if (!is_null($this->pago->to_pay_id) && is_null($this->sin_pagar)) {
             $this->sin_pagar = CurrentAcount::find($this->pago->to_pay_id);
+            Log::info('con to_pay_id '.$this->pago->to_pay_id);
         } else {
             $this->sin_pagar = CurrentAcount::where($this->model_name.'_id', $this->model_id)
                                             ->whereIn('status', ['sin_pagar', 'pagandose'])
-                                            // ->where('created_at', '<', $this->pago->created_at)
                                             ->orderBy('created_at', 'ASC')
                                             ->first();
         }
+        if (!is_null($this->sin_pagar)) {
+            Log::info('se puso '.$this->sin_pagar->detalle.' para sin pagar');
+        }
+
     }
 
     function init() {
         while (!is_null($this->sin_pagar) && $this->fondos > 0) {
+            $this->fondos_iniciales = $this->fondos;
             $this->procesarPago();
             $this->setSinPagar();
         }
+        Log::info('Ya no entro en procesar pago');
         $this->setModelPagosCheckeados();
     }
 
@@ -68,8 +79,9 @@ class CurrentAcountPagoHelper {
         } else {
             $this->sin_pagar->pagandose += $this->fondos;
             $this->sin_pagar->status = 'pagandose';
-            $this->savePagadoPor($this->fondos);
+            $pagado = $this->fondos;
             $this->fondos = 0;
+            $this->savePagadoPor($pagado);
         }
         $this->sin_pagar->save();
     }
@@ -78,14 +90,11 @@ class CurrentAcountPagoHelper {
         $this->sin_pagar->pagado_por()->attach($this->pago->id, [
             'pagado'        => $pagado,
             'total_pago'    => $this->pago->haber,
-            'created_at'    => $this->pago->created_at,
+            'a_cubrir'      => $this->debe,
+            'fondos_iniciales' => $this->fondos_iniciales,
+            'nuevos_fondos' => $this->fondos,
+            'created_at'    => $this->pago->created_at->addSeconds($this->sin_pagar_index),
         ]);
-        Log::info('GUARDANDO EL PAGADO de '.$this->sin_pagar->detalle);
-        // Log::info('El pagado_por de la '.$this->sin_pagar->detalle.' quedo asi:');
-        // foreach ($this->sin_pagar->pagado_por as $pagado_por) {
-            // Log::info('El pago N°'.$pagado_por->num_receipt.' pago '.$pagado_por->pivot->pagado.' a la '.CurrentAcount::find($pagado_por->pivot->debe_id)->detalle);
-        // }
-        // Log::info('-------------------------------------------------');
     }
 
     static function saveCheck($pago, $checks) {

@@ -50,6 +50,160 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function diferencia_entre_ventas() {
+        $ventas_de_antes = [];
+        $ventas_de_ahora = [];
+        $ventas_repetidas = [];
+
+        foreach ($ventas_de_antes as $venta_de_antes) {
+
+            if (isset($ventas_de_ahora[$venta_de_antes->id])) {
+                $ventas_repetidas[] = $venta_de_ahora;
+            } else {
+
+            }
+        }
+    }
+
+    function num_receipt_repetidos() {
+        $repeatedReceipts = CurrentAcount::select('num_receipt')
+                                ->groupBy('num_receipt')
+                                ->havingRaw('COUNT(*) > 1')
+                                ->pluck('num_receipt');
+
+        $repeated = CurrentAcount::whereIn('num_receipt', $repeatedReceipts)->get();
+
+        foreach ($repeated as $current_acount) {
+            echo $current_acount->detalle.' <br>';
+            echo 'Num recepit: '.$current_acount->num_receipt.' <br>';
+            if (!is_null($current_acount->client)) {
+                echo 'Cliente: '.$current_acount->client->name.' <br>';
+            }
+            if (!is_null($current_acount->user)) {
+                echo 'Cliente: '.$current_acount->user->name.' <br>';
+            }
+            echo '------------------------ <br>';
+        }
+
+    }
+
+    function current_acount_duplicadas() {
+        
+        // Subconsulta para obtener los valores duplicados de saldo y client_id
+        $duplicatedEntries = CurrentAcount::select('saldo', 'client_id', 'created_at')
+                ->groupBy('saldo', 'client_id', 'created_at')
+                ->havingRaw('COUNT(*) > 1')
+                ->get(['saldo', 'client_id', 'created_at']);
+
+        // Convertir los resultados de la subconsulta en arrays de saldo, client_id y created_at
+        $saldos = $duplicatedEntries->pluck('saldo')->toArray();
+        $clientIds = $duplicatedEntries->pluck('client_id')->toArray();
+        $createdAts = $duplicatedEntries->pluck('created_at')->toArray();
+
+        // Consulta principal para obtener los modelos CurrentAcount con las combinaciones duplicadas
+        $currentAccounts = CurrentAcount::where(function ($query) use ($saldos, $clientIds, $createdAts) {
+            foreach ($saldos as $index => $saldo) {
+                $query->orWhere(function ($query) use ($saldo, $clientIds, $createdAts, $index) {
+                    $query->where('saldo', $saldo)
+                        ->where('client_id', $clientIds[$index])
+                        ->where('created_at', $createdAts[$index]);
+                });
+            }
+        })->get();
+
+        // Agrupar los resultados por balance, client_id y created_at
+        $groupedAccounts = [];
+        foreach ($currentAccounts as $account) {
+            $key = $account->balance . '|' . $account->client_id . '|' . $account->created_at;
+            if (!isset($groupedAccounts[$key])) {
+                $groupedAccounts[$key] = [];
+            }
+            $groupedAccounts[$key][] = $account;
+        }
+
+        // Convertir los resultados agrupados en arrays separados
+        $grupos = array_values($groupedAccounts);
+
+
+        foreach ($grupos as $grupo) {
+
+            echo 'Grupo: </br>';
+            if (isset($grupo[0]->client) && $grupo[0]->client->user_id == 121) {
+                echo 'cliente: '.$grupo[0]->client->name.' </br>';
+
+                if (isset($grupo[1])) {
+                    $grupo[1]->delete();
+                    echo 'se elimino </br>';
+
+                    // CurrentAcountHelper::checkSaldos('client', $grupo[0]->client->id);
+                    // echo 'se chequearon saldos </br>';
+                    // CurrentAcountHelper::checkPagos('client', $grupo[0]->client->id, true);
+                    // echo 'se chequearon pagos </br>';
+                }
+            }
+
+
+            // foreach ($grupo as $current_acount) {
+            //     echo $current_acount->detalle.'. Id '.$current_acount->id.' </br>';
+
+            //     echo 'Fecha: '.$current_acount->created_at->format('d/m/Y H:i:s').' <br>';
+
+            //     if (!is_null($current_acount->client)) {
+            //         echo 'EL cliente es: '.$current_acount->client->name.' </br>';
+            //     }
+
+            //     if (!is_null($current_acount->user)) {
+            //         echo 'y el usuario: '.$current_acount->user->name.' </br>';
+            //     } else {
+            //         echo 'No tenia user <br>';
+            //     }
+
+            // }
+            echo '------------------ </br>';
+        }
+
+        echo 'Termino';
+    }
+
+    function current_acounts_repetidas() {
+        $sales = Sale::where('user_id', 121)
+                        ->whereHas('current_acounts', function ($query) {
+                            $query->where('status', '!=', 'nota_credito');
+                        }, '>', 1)
+                        ->get();
+
+        foreach ($sales as $sale) {
+            echo 'La venta N° '.$sale->num.' id '.$sale->id.' tiene '.count($sale->current_acounts).' </br>';
+            if (!is_null($sale->client)) {
+                echo 'EL cliente es: '.$sale->client->name.' </br>';
+            }
+            echo 'y el usuario: '.$sale->user->name.' </br>';
+
+            echo '-> Info: <br>';
+            foreach ($sale->current_acounts as $current_acount) {
+                echo $current_acount->detalle.'. Debe: '.Numbers::price($current_acount->debe).'. Fecha: '.$current_acount->created_at->format('d/m/Y H:i:s').' <br>';
+            }
+
+            echo '------------------ </br>';
+        }
+        echo 'termino';
+    }
+
+    function check_pagos($client_id) {
+        
+        $client = Client::find($client_id);
+
+        if (!is_null($client)) {
+            echo 'Chequeando pagos </br>';
+            CurrentAcountHelper::checkPagos('client', $client->id, true);
+        } else {
+            echo 'NO habia cliente';
+        }
+        echo 'termino';
+
+
+    }
+
     function check_unidades_en_0() {
         $sales = Sale::where('confirmed', 1)
                         ->whereDate('created_at', '>=', Carbon::today()->subDays(5))

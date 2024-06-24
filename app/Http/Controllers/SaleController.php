@@ -288,12 +288,14 @@ class SaleController extends Controller
             $sales = $sales->where('employee_id', $user->id);
         }
 
-        Log::info('ventas_sin_cobrar de hace '.$dias.' dias');
-        Log::info('ver_solo_las_ventas_suyas: '.$ver_solo_las_ventas_suyas);
+        // Log::info('ventas_sin_cobrar de hace '.$dias.' dias');
+        // Log::info('ver_solo_las_ventas_suyas: '.$ver_solo_las_ventas_suyas);
 
         $sales = $sales->with('client', 'employee', 'current_acount')
                         ->orderBy('created_at', 'DESC')
                         ->get();
+
+        
 
         return response()->json(['models' => $sales], 200);
     }

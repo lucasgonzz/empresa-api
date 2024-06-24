@@ -19,6 +19,9 @@ class CreatePagadoPorTable extends Migration
             $table->integer('haber_id');
             $table->decimal('pagado', 12,2);
             $table->decimal('total_pago', 12,2);
+            $table->decimal('a_cubrir', 12,2)->nullable();
+            $table->decimal('fondos_iniciales', 12,2)->nullable();
+            $table->decimal('nuevos_fondos', 12,2)->nullable();
             $table->timestamps();
         });
     }

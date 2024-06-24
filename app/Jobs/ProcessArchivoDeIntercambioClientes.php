@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Models\Buyer;
 use App\Models\Client;
 use App\Models\Location;
 use Illuminate\Bus\Queueable;
@@ -45,8 +46,8 @@ class ProcessArchivoDeIntercambioClientes implements ShouldQueue
 
             if ($data[0] != 'Codigo' && $data[0] != '') {
 
-                Log::info('Entro con $data:');
-                Log::info($data);
+                // Log::info('Entro con $data:');
+                // Log::info($data);
 
                 $address = !is_null($data[2]) ? $this->convert_to_utf8($data[2]) : null;
 
@@ -60,6 +61,7 @@ class ProcessArchivoDeIntercambioClientes implements ShouldQueue
                 $client = [
                     'num'                   => (float)$data[0],
                     'name'                  => $this->convert_to_utf8($data[1]),
+                    'email'                 => $this->convert_to_utf8($data[1]).'@gmail.com',
                     'address'               => $address,
                     'location_id'           => $location_id,
                     'phone'                 => $this->convert_to_utf8($data[4]),
@@ -85,10 +87,22 @@ class ProcessArchivoDeIntercambioClientes implements ShouldQueue
                     $client = Client::create($client);
                     Log::info('Se CREO cliente con num '.$client->num);
 
+                    $this->create_buyer($client);
+
                 }
             }
 
         }
+    }
+
+    function create_buyer($client) {
+        $buyer = Buyer::create([
+            'name'      => $client->name,
+            'email'     => $client->email,
+            'comercio_city_client_id'     => $client->id,
+            'password'  => bcrypt('123'),
+            'user_id'   => $client->user_id,
+        ]);
     }
 
     function init_locations() {

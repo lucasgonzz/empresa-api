@@ -193,8 +193,8 @@ class SaleHelper extends Controller {
 
             foreach ($request->returned_items as $item) {
 
-                Log::info('item:');
-                Log::info($item);
+                // Log::info('item:');
+                // Log::info($item);
 
                 $total_item = (float)$item['price_vender'] * (float)$item['returned_amount'];
 
@@ -220,9 +220,9 @@ class SaleHelper extends Controller {
 
                     foreach ($sale->discounts as $discount) {
 
-                        Log::info('Aplicando descuento del '.$discount->pivot->percentage.'% a '.$item['name']);
-                        Log::info('isset is_article: '.isset($item['is_article']));
-                        Log::info('surchages_in_services: '.$sale->surchages_in_services);
+                        // Log::info('Aplicando descuento del '.$discount->pivot->percentage.'% a '.$item['name']);
+                        // Log::info('isset is_article: '.isset($item['is_article']));
+                        // Log::info('surchages_in_services: '.$sale->surchages_in_services);
 
                         $total_item -= (float)$discount->pivot->percentage * $total_item / 100;
                     }
@@ -247,9 +247,9 @@ class SaleHelper extends Controller {
 
                     foreach ($sale->surchages as $surchage) {
 
-                        Log::info('Aplicando recargo del '.$surchage->pivot->percentage.'% a '.$item['name']);
-                        Log::info('isset is_article: '.isset($item['is_article']));
-                        Log::info('surchages_in_services: '.$sale->surchages_in_services);
+                        // Log::info('Aplicando recargo del '.$surchage->pivot->percentage.'% a '.$item['name']);
+                        // Log::info('isset is_article: '.isset($item['is_article']));
+                        // Log::info('surchages_in_services: '.$sale->surchages_in_services);
 
                         $total_item += (float)$surchage->pivot->percentage * $total_item / 100;
                     }

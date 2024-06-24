@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\DB;
 class PagadoPorController extends Controller
 {
     function index($model_name, $model_id, $debe_id, $haber_id) {
-        CurrentAcountHelper::checkPagos($model_name, $model_id);
+        // CurrentAcountHelper::checkPagos($model_name, $model_id);
         $models = DB::table('pagado_por')
                     ->orderBy('created_at', 'ASC');
         if ($debe_id != 0) {
