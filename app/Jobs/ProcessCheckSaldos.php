@@ -37,9 +37,10 @@ class ProcessCheckSaldos implements ShouldQueue
         $saldos_diferentes = 0;
 
         foreach ($clients as $client) {
-            Log::info('chequeando saldo de '.$client->name);
+            Log::info('chequeando saldo y pagos de '.$client->name);
             $saldo_anterior = $client->saldo;
             $client = CurrentAcountHelper::checkSaldos('client', $client->id);
+            CurrentAcountHelper::checkPagos('client', $client->id, true);
             $nuevo_saldo = $client->saldo;
 
             if ($saldo_anterior != $nuevo_saldo) {

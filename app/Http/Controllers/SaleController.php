@@ -13,6 +13,7 @@ use App\Http\Controllers\Helpers\SaleChartHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\SaleProviderOrderHelper;
+use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
 use App\Http\Controllers\Pdf\SaleDeliveredArticlesPdf;
 use App\Http\Controllers\Pdf\SalePdf;
@@ -295,9 +296,9 @@ class SaleController extends Controller
                         ->orderBy('created_at', 'DESC')
                         ->get();
 
-        
+        $clients = VentasSinCobrarHelper::ordenar_por_clientes($sales);
 
-        return response()->json(['models' => $sales], 200);
+        return response()->json(['models' => $clients], 200);
     }
 
     function set_terminada($sale_id) {

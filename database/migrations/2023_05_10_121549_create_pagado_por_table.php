@@ -22,6 +22,7 @@ class CreatePagadoPorTable extends Migration
             $table->decimal('a_cubrir', 12,2)->nullable();
             $table->decimal('fondos_iniciales', 12,2)->nullable();
             $table->decimal('nuevos_fondos', 12,2)->nullable();
+            $table->decimal('remantente', 12,2)->nullable();
             $table->timestamps();
         });
     }

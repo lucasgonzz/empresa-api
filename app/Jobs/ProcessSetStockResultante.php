@@ -17,6 +17,8 @@ class ProcessSetStockResultante implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public $user;
+    
+    public $timeout = 99999999;
 
     public function __construct($user)
     {

@@ -88,12 +88,13 @@ class CurrentAcountPagoHelper {
 
     function savePagadoPor($pagado) {
         $this->sin_pagar->pagado_por()->attach($this->pago->id, [
-            'pagado'        => $pagado,
-            'total_pago'    => $this->pago->haber,
-            'a_cubrir'      => $this->debe,
-            'fondos_iniciales' => $this->fondos_iniciales,
-            'nuevos_fondos' => $this->fondos,
-            'created_at'    => $this->pago->created_at->addSeconds($this->sin_pagar_index),
+            'pagado'            => $pagado,
+            'total_pago'        => $this->pago->haber,
+            'a_cubrir'          => $this->debe,
+            'fondos_iniciales'  => $this->fondos_iniciales,
+            'nuevos_fondos'     => $this->fondos,
+            'remantente'        => $this->debe - $this->sin_pagar->pagandose,
+            'created_at'        => $this->pago->created_at->addSeconds($this->sin_pagar_index),
         ]);
     }
 

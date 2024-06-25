@@ -61,7 +61,7 @@ class ProcessArchivoDeIntercambioClientes implements ShouldQueue
                 $client = [
                     'num'                   => (float)$data[0],
                     'name'                  => $this->convert_to_utf8($data[1]),
-                    'email'                 => $this->convert_to_utf8($data[1]).'@gmail.com',
+                    'email'                 => $this->convert_to_utf8($data[14]),
                     'address'               => $address,
                     'location_id'           => $location_id,
                     'phone'                 => $this->convert_to_utf8($data[4]),
@@ -76,6 +76,8 @@ class ProcessArchivoDeIntercambioClientes implements ShouldQueue
                     $client_ya_creado->update($client);
 
                     Log::info('Se actualizo cliente con num '.$client_ya_creado->num);
+
+                    $this->check_buyer($client_ya_creado);
 
                 } else {
 
@@ -92,6 +94,15 @@ class ProcessArchivoDeIntercambioClientes implements ShouldQueue
                 }
             }
 
+        }
+    }
+
+    function check_buyer($client) {
+        $buyer = Buyer::where('email', $client->email)
+                        ->where('user_id', $client->user_id)
+                        ->first();
+        if (is_null($buyer)) {
+            $this->create_buyer($client);
         }
     }
 
