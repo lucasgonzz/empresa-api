@@ -47,6 +47,9 @@ class SaleController extends Controller
 
         } else {
 
+            // Si entra aca es porque se esta llamando desde DEPOSITO
+            // Porque solo de esa seccion se puede llamar sin que sea from_date
+
             $models = $models->where(function($query) {
                         $query->where('to_check', 1)
                               ->orWhere('checked', 1)

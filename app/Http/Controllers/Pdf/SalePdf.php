@@ -107,7 +107,7 @@ class SalePdf extends fpdf {
 		if ($this->precios_netos) {
 			return 'Venta Pre netos';
 		}
-		return 'Venta';
+		return 'Remito';
 	}
 
 	function Header() {

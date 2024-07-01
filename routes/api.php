@@ -172,7 +172,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('/current-acount/nota-debito', 'CurrentAcountController@notaDebito');
     Route::post('/current-acount/saldo-inicial', 'CurrentAcountController@saldoInicial');
     Route::delete('/current-acount/{model_name}/{id}', 'CurrentAcountController@delete');
-    Route::get('check-saldos/{model_name}/{id}', 'Helpers\CurrentAcountHelper@checkSaldos');
+    Route::get('check-saldos/{model_name}/{id}', 'CurrentAcountController@check_saldos_y_pagos');
 
 
     // CurrentAcounts Cheques

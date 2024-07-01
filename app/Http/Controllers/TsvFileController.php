@@ -3,8 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Jobs\ProcessArchivoDeIntercambioClientes;
-use App\Jobs\ProcessArchivoDeIntercambioProductos;
+use App\Jobs\ProcessArchivoDeIntercambioPedidos;
 use App\Jobs\ProcessArchivoDeIntercambioPrecios;
+use App\Jobs\ProcessArchivoDeIntercambioProductos;
 use App\Models\Article;
 use Illuminate\Http\Request;
 
@@ -38,6 +39,14 @@ class TsvFileController extends Controller
         ProcessArchivoDeIntercambioClientes::dispatch($this->user_id);
 
         echo 'Se despacharon los clientes!';
+
+    }
+
+    function escribir_archivos_pedidos() {
+
+        ProcessArchivoDeIntercambioPedidos::dispatch($this->user_id);
+
+        echo 'Se despacharon los pedidos!';
 
     }
 

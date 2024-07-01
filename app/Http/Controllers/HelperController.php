@@ -50,6 +50,36 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function cuentas_corrientes_con_toda_la_info($model_id = 8094) {
+        $models = CurrentAcount::where('client_id', $model_id)
+                                ->with('pagado_por')
+                                ->orderBy('created_at', 'ASC')
+                                ->get();
+
+        
+        foreach ($models as $model) {
+            echo '-> Cuenta corriente: '.$model->detalle.' | debe: '.$model->debe.' | haber: '.$model->haber.' | saldo: '.$model->saldo.' <br>';
+            if (!is_null($model->debe)) {
+                echo 'Relacion Pagado por: <br>';
+                foreach ($model->pagado_por as $pago) {
+
+                    echo 'Pago: '.$pago->detalle.   'Total del Pago: '.$pago->total_pago.'Fondos iniciales'.$pago->fondos_iniciales. 'Remanente a cubrir: '.$pago->a_cubrir.   'Aporte del Pago: '.$pago->pagado.'Fondos resultantes: '.$pago->nuevos_fondos.'Nuevo remanente: '.$pago->remantente  .'Fecha: '.$pago->created_at.'<br>';
+
+                }
+            }
+
+            if (!is_null($model->haber)) {
+                echo 'Relacion Pagando a: <br>';
+                foreach ($model->pagando_a as $deuda) {
+
+                    echo 'Deuda: '.$deuda->detalle.   'Total del Pago: '.$deuda->total_pago.'Fondos iniciales'.$deuda->fondos_iniciales. 'Remanente a cubrir: '.$deuda->a_cubrir.   'Aporte del Pago: '.$deuda->pagado.'Fondos resultantes: '.$deuda->nuevos_fondos.'Nuevo remanente: '.$deuda->remantente  .'Fecha: '.$deuda->created_at.'<br>';
+
+                }
+            }
+        }
+
+    }
+
     function diferencia_entre_ventas() {
         $ventas_de_antes = [];
         $ventas_de_ahora = [];

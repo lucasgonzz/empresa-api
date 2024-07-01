@@ -32,6 +32,15 @@ use Illuminate\Support\Facades\Log;
 
 class OrderHelper {
 
+    static function get_total($order) {
+        $total = 0;
+        foreach ($order->articles as $article) {
+            $total_article = (float)$article->pivot->price * (float)$article->pivot->amount;
+            $total += $total_article;
+        }
+        return $total;
+    }
+
     static function setArticlesVariant($orders) {
         foreach ($orders as $order) {
             foreach ($order->articles as $article) {

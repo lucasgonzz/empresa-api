@@ -365,6 +365,7 @@ class CurrentAcountHelper {
             $pagos = $pagos->get();
 
             foreach ($pagos as $pago) {
+                $pago->pagando_a()->detach();
                 $pago_helper = new CurrentAcountPagoHelper($model_name, $model_id, $pago);
                 $pago_helper->init();
                 echo 'Se llampo a pago_helper para '.$model_id;

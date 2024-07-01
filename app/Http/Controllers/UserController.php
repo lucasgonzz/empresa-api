@@ -68,8 +68,8 @@ class UserController extends Controller
         $model->dias_alertar_administradores_ventas_no_cobradas          = $request->dias_alertar_administradores_ventas_no_cobradas;
 
         $model->str_limint_en_vender          = $request->str_limint_en_vender;
+        // $model->image_pdf_header_url          = $request->image_pdf_header_url;
         
-
         $model->save();
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_dolar, $request->dollar);
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_iva_included, $request->iva_included);

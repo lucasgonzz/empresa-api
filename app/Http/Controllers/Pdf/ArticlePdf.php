@@ -45,6 +45,18 @@ class ArticlePdf extends fpdf {
 	}
 
 	function Header() {
+
+		if (!is_null($this->user->image_pdf_header_url)) {
+			$this->image_header();
+		} else {
+			$this->header_normal();
+		}
+
+		$this->tableHeader();	
+	}
+
+	function header_normal() {
+
 		if (env('APP_ENV') == 'local') {
     		$this->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 2, 2, 45, 45);
     	} else {
@@ -62,10 +74,18 @@ class ArticlePdf extends fpdf {
 		$this->SetFont('Arial', '', 14);
 		$this->Cell(80, 8, date('d/m/Y'), $this->b, 0, 'R');
 
-		$this->tableHeader();	
+	}
+
+	function image_header() {
+		if (env('APP_ENV') == 'local') {
+    		$this->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 2, 2, 206, 47);
+    	} else {
+    		$this->Image($this->user->image_pdf_header_url, 2, 2, 206, 47);
+    	}
 	}
 
 	function tableHeader() {
+		$this->SetFont('Arial', '', 14);
 		$this->y = 50;
 		$this->x = 2;
 

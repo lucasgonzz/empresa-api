@@ -152,6 +152,7 @@ class ReporteController extends Controller
                 $sales = Sale::where('user_id', $this->userId())
                                 ->whereDate('created_at', '>=', $mes_inicio)
                                 ->whereDate('created_at', '<=', $mes_inicio->addMonth())
+                                ->where('terminada', 1)
                                 ->get();
 
                 $mes_inicio->subMonth();

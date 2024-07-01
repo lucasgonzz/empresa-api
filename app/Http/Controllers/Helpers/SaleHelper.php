@@ -17,6 +17,7 @@ use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\sale\UpdateHelper;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SellerCommissionController;
 use App\Http\Controllers\StockMovementController;
@@ -154,6 +155,8 @@ class SaleHelper extends Controller {
     static function attachProperies($model, $request, $from_store = true, $previus_articles = null, $sale_modification = null, $se_esta_confirmando_por_primera_vez = false) {
 
         Self::attachArticles($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
+        
+
         Self::attachCombos($model, $request->items);
         Self::attachServices($model, $request->items);
         
@@ -164,6 +167,8 @@ class SaleHelper extends Controller {
         
         if (!$from_store) {
             SaleModificationsHelper::attach_articulos_despues_de_actualizar($model, $sale_modification);
+            
+            UpdateHelper::check_articulos_eliminados($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
         }
 
         if ($from_store && !$model->to_check && !$model->checked) {

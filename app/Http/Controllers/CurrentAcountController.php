@@ -49,6 +49,11 @@ class CurrentAcountController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
+    function check_saldos_y_pagos($model_name, $model_id) {
+        CurrentAcountHelper::checkSaldos($model_name, $model_id);
+        CurrentAcountHelper::checkPagos($model_name, $model_id, true);
+    }
+
     public function pago(Request $request) {
         Log::info('Entro guardar pago');
         $pago = CurrentAcount::create([

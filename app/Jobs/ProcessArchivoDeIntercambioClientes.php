@@ -61,7 +61,7 @@ class ProcessArchivoDeIntercambioClientes implements ShouldQueue
                 $client = [
                     'num'                   => (float)$data[0],
                     'name'                  => $this->convert_to_utf8($data[1]),
-                    'email'                 => $this->convert_to_utf8($data[14]),
+                    'email'                 => $this->convert_to_utf8($data[15]),
                     'address'               => $address,
                     'location_id'           => $location_id,
                     'phone'                 => $this->convert_to_utf8($data[4]),
@@ -108,11 +108,11 @@ class ProcessArchivoDeIntercambioClientes implements ShouldQueue
 
     function create_buyer($client) {
         $buyer = Buyer::create([
-            'name'      => $client->name,
-            'email'     => $client->email,
-            'comercio_city_client_id'     => $client->id,
-            'password'  => bcrypt('123'),
-            'user_id'   => $client->user_id,
+            'name'                      => $client->name,
+            'email'                     => $client->email,
+            'comercio_city_client_id'   => $client->id,
+            'password'                  => bcrypt($client->num),
+            'user_id'                   => $client->user_id,
         ]);
     }
 

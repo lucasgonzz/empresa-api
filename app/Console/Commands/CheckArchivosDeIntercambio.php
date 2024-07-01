@@ -47,6 +47,8 @@ class CheckArchivosDeIntercambio extends Command
         
         $tsv_controller->leer_archivo_clientes();
 
+        $tsv_controller->escribir_archivos_pedidos();
+
         $this->info('Comando ejecutado con éxito');
 
         return 0;
