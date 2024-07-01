@@ -84,6 +84,16 @@ class StockMovementController extends Controller
     }
 
     function setStockResultante() {
+
+
+        // Si el movimiento es porque se esta repartiendo el stock en depositos
+        // Se pone de stock actual el mismo que el stock del articulo
+        if (isset($this->request->from_create_article_addresses)) {
+
+            $this->set_stock_resultante_por_movimiento_de_depositos();
+            return;
+        }
+
         if (!is_null($this->article)) {
 
             $stock_movement_anterior = StockMovement::where('article_id', $this->article->id)
@@ -108,6 +118,22 @@ class StockMovementController extends Controller
         }
 
         $this->set_stock_actual_in_observations();
+
+    }
+
+    function set_stock_resultante_por_movimiento_de_depositos() {
+
+        $last_stock_movement = StockMovement::where('article_id', $this->article_id)
+                                            ->where('concepto', '!=', 'Creacion de deposito')
+                                            ->orderBy('created_at', 'DESC')
+                                            ->first();
+
+        if (!is_null($last_stock_movement)) {
+
+            $this->stock_movement->stock_resultante = $last_stock_movement->stock_resultante;
+            $this->stock_movement->save();
+
+        }
 
     }
 

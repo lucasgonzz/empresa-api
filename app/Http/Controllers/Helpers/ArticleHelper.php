@@ -423,6 +423,7 @@ class ArticleHelper {
     }
 
     static function setArticleStockFromAddresses($article, $check_linkage = true) {
+        Log::info('-> setArticleStockFromAddresses');
         if (!is_object($article)) {
             $article = Article::find($article['id']);
         }
@@ -431,8 +432,10 @@ class ArticleHelper {
         if (!is_null($article) && count($article->addresses) >= 1) {
             $stock = 0;
             foreach ($article->addresses as $article_address) {
+                Log::info('sumando '.$article_address->pivot->amount.' de '.$article_address->street);
                 $stock += $article_address->pivot->amount;
             }
+            Log::info('quedo en '.$stock);
             $article->stock = $stock;
             $article->timestamps = false;
             $article->save();

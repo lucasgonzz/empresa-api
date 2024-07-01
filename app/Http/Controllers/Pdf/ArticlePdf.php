@@ -115,9 +115,13 @@ class ArticlePdf extends fpdf {
 
 
 	function getJpgImage($article) {
-		$img_url = $article->images[0]->{env('IMAGE_URL_PROP_NAME', 'image_url')};
 
-		$img_url = 'https://api-colman-prueba.comerciocity.com/public/storage/171699179550596.webp';
+		if (env('APP_ENV') == 'local') {
+			$img_url = 'https://api-colman-prueba.comerciocity.com/public/storage/171699179550596.webp';
+		} else {
+			$img_url = $article->images[0]->{env('IMAGE_URL_PROP_NAME', 'image_url')};
+		}
+
 
 		if (!is_null($img_url)) {
 	        $array = explode('/', $img_url); 
