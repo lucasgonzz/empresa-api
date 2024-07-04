@@ -110,6 +110,9 @@ class DatabaseSeeder extends Seeder
             // $this->call(StockMovementSeeder::class);
             // $this->call(PriceChangeSeeder::class);
 
+            $this->call(ExpenseConceptSeeder::class);
+            $this->call(ExpenseSeeder::class);
+
         }
     }
 }

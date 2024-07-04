@@ -31,7 +31,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $article->stock,
             $article->stock_min,
             !is_null($article->iva) ? $article->iva->percentage : '',
-            count($article->providers) >= 1 ? $article->providers[count($article->providers)-1]->name : '',
+            !is_null($article->provider) ? $article->provider->name : '',
             $article->cost,
             $article->percentage_gain,
             $article->discounts_formated,

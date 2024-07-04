@@ -144,10 +144,13 @@ class CurrentAcountHelper {
         $nota_credito->save();
         Self::attachNotaCreditoArticles($nota_credito, $items);
         Self::attachNotaCreditoServices($nota_credito, $items);
-        Self::updateModelSaldo($nota_credito, $model_name, $model_id);
 
-        $pago_helper = new CurrentAcountPagoHelper($model_name, $model_id, $nota_credito);
-        $pago_helper->init();
+        if (!is_null($model_id)) {
+            Self::updateModelSaldo($nota_credito, $model_name, $model_id);
+            $pago_helper = new CurrentAcountPagoHelper($model_name, $model_id, $nota_credito);
+            $pago_helper->init();
+        }
+
         return $nota_credito;
     }
 

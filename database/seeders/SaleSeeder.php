@@ -28,7 +28,44 @@ class SaleSeeder extends Seeder
 
         $this->ventas_sin_pagar();
 
+        // Este es para las company_performances
+        $this->ventas_meses_atras();
+
         // $this->pagos();
+    }
+
+    function ventas_meses_atras() {
+        $user = User::where('company_name', 'Autopartes Boxes')->first();
+
+        $models = [
+            [
+                'num'           => 1,
+                'client_id'     => 1,
+                'employee_id'   => 3,
+                'save_current_acount'   => 0,
+                'omitir_en_cuenta_corriente'   => 1,
+                'user_id'       => $user->id,
+            ],
+            [
+                'num'           => 2,
+                'client_id'     => 1,
+                'employee_id'   => 504,
+                'save_current_acount'   => 1,
+                'user_id'       => $user->id,
+            ],
+        ];
+
+        for ($meses=4; $meses > 0 ; $meses--) { 
+            foreach ($models as $model) {
+
+                $model['created_at'] = Carbon::now()->subMonths($meses);
+
+                $sale = Sale::create($model);
+
+                SaleHelper::attachProperies($sale, $this->setRequest($sale));
+            }
+        }
+
     }
 
     function ventas_sin_pagar() {

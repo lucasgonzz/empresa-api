@@ -23,6 +23,7 @@ class CreateArticlePerformancesTable extends Migration
             $table->integer('provider_id')->nullable();
             $table->integer('category_id')->nullable();
             $table->integer('user_id')->nullable();
+            $table->integer('company_performance_id')->nullable();
             $table->timestamps();
         });
     }

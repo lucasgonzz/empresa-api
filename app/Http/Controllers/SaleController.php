@@ -170,6 +170,7 @@ class SaleController extends Controller
         if (!is_null($model->client)) {
             Log::info('Y pertenece al cliente '.$model->client->name);
         }
+        
         if (!is_null($model->afip_ticket)) {
             SaleHelper::createNotaCreditoFromDestroy($model);
         } else {
@@ -181,17 +182,17 @@ class SaleController extends Controller
                 CurrentAcountHelper::checkSaldos('client', $model->client_id);
                 $this->sendAddModelNotification('client', $model->client_id, false);
             }
-            if (!$model->to_check && !$model->checked) {
-                foreach ($model->articles as $article) {
-                    if (!is_null($article->stock)) {
-                        ArticleHelper::resetStock($article, $article->pivot->amount, $model);
-                    }
-                    // ArticleHelper::setArticleStockFromAddresses($article);
-                }
-            }
-            $model->delete();
-            $this->sendDeleteModelNotification('sale', $model->id);
         }
+        if (!$model->to_check && !$model->checked) {
+            foreach ($model->articles as $article) {
+                if (!is_null($article->stock)) {
+                    ArticleHelper::resetStock($article, $article->pivot->amount, $model);
+                }
+                // ArticleHelper::setArticleStockFromAddresses($article);
+            }
+        }
+        $model->delete();
+        $this->sendDeleteModelNotification('sale', $model->id);
         return response(null);
     }
 

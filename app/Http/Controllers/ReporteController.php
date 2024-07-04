@@ -299,7 +299,14 @@ class ReporteController extends Controller
 
             if (is_null($sale->client_id)) {
                 $pagado_en_mostrador += $total_sale;
-                $metodos_de_pago[$sale->current_acount_payment_method_id]['total'] += $total_sale;
+
+                $current_acount_payment_method_id = $sale->current_acount_payment_method_id;
+
+                if (is_null($current_acount_payment_method_id)) {
+                    $current_acount_payment_method_id = 3;
+                }
+
+                $metodos_de_pago[$current_acount_payment_method_id]['total'] += $total_sale;
             } else {
                 $a_cuentas_corrientes += $total_sale;
 

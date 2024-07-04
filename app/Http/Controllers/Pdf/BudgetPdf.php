@@ -31,17 +31,17 @@ class BudgetPdf extends fpdf {
 	function getFields() {
 		if ($this->with_prices) {
 			return [
-				'Codigo' 	=> 20,
-				'Producto' 	=> 80,
+				'Codigo' 	=> 30,
+				'Producto' 	=> 75,
 				'Precio' 	=> 30,
 				'Cant' 		=> 20,
-				'Bonif' 	=> 20,
+				'Bonif' 	=> 15,
 				'Importe' 	=> 30,
 			];
 		} else {
 			return [
-				'Codigo' 	=> 20,
-				'Producto' 	=> 150,
+				'Codigo' 	=> 30,
+				'Producto' 	=> 140,
 				'Cant' 		=> 30,
 			];
 		}
@@ -145,7 +145,7 @@ class BudgetPdf extends fpdf {
 			} else {
 				$this->AddPage();
 				$this->x = 5;
-				$this->y = 90;
+				$this->y = 55;
 				$this->printArticle($article);
 			}
 		}

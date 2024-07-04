@@ -13,6 +13,7 @@ use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\RecalculateCurrentAcountsHelper;
 use App\Http\Controllers\Helpers\RecipeHelper;
+use App\Http\Controllers\StockMovementController;
 use App\Jobs\ProcessCheckInventoryLinkages;
 use App\Jobs\ProcessCheckSaldos;
 use App\Jobs\ProcessRecalculateCurrentAcounts;
@@ -31,6 +32,7 @@ use App\Models\OrderProduction;
 use App\Models\Provider;
 use App\Models\Recipe;
 use App\Models\Sale;
+use App\Models\SaleModification;
 use App\Models\StockMovement;
 use App\Models\SubCategory;
 use App\Models\User;
@@ -48,6 +50,64 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null) {
         $this->{$method}($param);
+    }
+
+    function chequear_articulos_eliminados_en_ventas($dias_atras) {
+        $sales = Sale::where('user_id', 121)
+                        ->where('confirmed', 1)
+                        ->where('num', '>=', 59560)
+                        ->whereDate('created_at', '>=', Carbon::today()->subdays($dias_atras))
+                        ->orderBy('created_at', 'ASC')
+                        ->get();
+
+        foreach ($sales as $sale) {
+            $sale_modifications = SaleModification::where('sale_id', $sale->id)
+                                                ->orderBy('created_at', 'ASC')
+                                                ->get();
+            foreach ($sale_modifications as $sale_modification) {
+                if ($sale_modification->estado_antes_de_actualizar == 'ninguno'
+                    || $sale_modification->estado_antes_de_actualizar == 'Confirmada') {
+                    if (count($sale_modification->articulos_antes_de_actualizar) != count($sale_modification->articulos_despues_de_actualizar)) {
+                        echo 'La venta N° '.$sale->num.' del '.$sale->created_at->format('d/m/Y').' tenia '.count($sale_modification->articulos_antes_de_actualizar).' y despues '.count($sale_modification->articulos_despues_de_actualizar).' <br>';
+
+                        foreach ($sale_modification->articulos_antes_de_actualizar as $articulo_antes_de_actualizar) {
+                            
+                            $eliminado = true;
+
+                            foreach ($sale_modification->articulos_despues_de_actualizar as $articulo_despues_de_actualizar) {
+                                
+                                if ($articulo_despues_de_actualizar->id == $articulo_antes_de_actualizar->id) {
+                                    $eliminado = false;
+                                }
+
+                            }
+
+                            if ($eliminado) {
+                                echo '-> El articulo '.$articulo_antes_de_actualizar->name.' ya no esta mas <br>';
+
+
+                                $ct = new StockMovementController();
+                                $request = new \Illuminate\Http\Request();
+                                
+                                $request->model_id = $articulo_antes_de_actualizar->id;
+                                $request->from_address_id = null;
+                                $request->to_address_id = null;
+                                $request->amount = (float)$articulo_antes_de_actualizar->pivot->amount;
+                                $request->sale_id = $sale->id;
+                                $request->concepto = 'Se elimino de la venta '.$sale->num;
+                                $request->observations = '.';
+
+                                $ct->store($request, false, $sale->user, $sale->user_id);
+
+                                echo 'Se guardo movimiento de stock <br>';
+                            }
+
+                        }
+                    }
+                }
+            }
+        }
+        echo 'Termino';
     }
 
     function cuentas_corrientes_con_toda_la_info($model_id = 8094) {

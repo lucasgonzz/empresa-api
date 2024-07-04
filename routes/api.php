@@ -85,6 +85,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('sale-modifications/{sale_id}', 'SaleModificationController@index');
     
+    // Expenses | Gastos
+    Route::resource('expense', 'ExpenseController');
+    Route::get('expense/from-date/{from_date?}/{until_date?}', 'ExpenseController@index');
+
+    Route::resource('expense-concept', 'ExpenseConceptController');
+    
     // Afip tickets
     Route::post('afip-ticket', 'SaleController@makeAfipTicket');
 
@@ -181,7 +187,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     // Reportes
-    Route::get('reportes/{mes_inicio?}/{mes_fin?}', 'ReporteController@index');
+    Route::get('company-performance/{mes_inicio?}/{mes_fin?}', 'CompanyPerformanceController@index');
 
     // Checks
     Route::get('check/from-date/{from_date?}/{until_date?}', 'CheckController@index');
