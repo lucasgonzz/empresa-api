@@ -132,8 +132,8 @@ class AfipWsController extends Controller
         $afip_helper = new AfipHelper($this->sale);
         $importes = $afip_helper->getImportes();
 
-        // Log::info('importes:');
-        // Log::info($importes);
+        Log::info('importes:');
+        Log::info($importes);
 
         $moneda_id = 'PES';
         $invoice = [

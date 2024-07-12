@@ -123,7 +123,12 @@ class SaleHelper extends Controller {
         return null;
     }
 
+    /* 
+        Retorno siempre null porque se va a empezar a usar siempre el array
+        de current_acount_payment_methods
+    */
     static function getCurrentAcountPaymentMethodId($request) {
+        return null;
         if (is_null($request->client_id)) {
             return $request->current_acount_payment_method_id;
         }
@@ -179,17 +184,36 @@ class SaleHelper extends Controller {
     }
 
     static function attachSelectedPaymentMethods($sale, $request){
-        $sale->current_acount_payment_methods()->detach();
 
-        if (!$sale->current_acount_payment_method_id) {
-            foreach ($request->metodos_de_pago_seleccionados as $metodoDePago) {
-              
-                $sale->current_acount_payment_methods()->attach($metodoDePago['id'],[
-                    'amount' => $metodoDePago['monto'],
+        if (is_null($sale->client_id)) {
+            $sale->current_acount_payment_methods()->detach();
+
+            if (!$request->current_acount_payment_method_id) {
+                foreach ($request->metodos_de_pago_seleccionados as $metodoDePago) {
+                  
+                    $sale->current_acount_payment_methods()->attach($metodoDePago['id'],[
+                        'amount' => $metodoDePago['monto'],
+                        'discount_percentage' => $metodoDePago['discount_percentage'],
+                        'discount_amount' => $metodoDePago['discount_amount'],
+                    ]);
+                    
+                }
+            } else {
+
+                $total = (float)$request->total;
+
+                if (!is_null($request->discount_amount)) {
+                    $total += (float)$request->discount_amount;
+                }
+
+                $sale->current_acount_payment_methods()->attach($request->current_acount_payment_method_id, [
+                    'amount'                => $total,
+                    'discount_percentage'   => $request->discount_percentage,
+                    'discount_amount'       => $request->discount_amount,
                 ]);
-                
             }
         }
+
     }
     static function checkNotaCredito($sale, $request) {
         if ($request->save_nota_credito) {
@@ -309,8 +333,14 @@ class SaleHelper extends Controller {
         $articles = [];
         foreach ($sale->articles as $article) {
             $haber += $article->pivot->price * $article->pivot->amount;
-            $article->returned_amount = $article->pivot->amount;
-            $articles[] = $article;
+            $article_to_add = [
+                'is_article'        => true,
+                'id'                => $article->id,
+                'returned_amount'   => $article->pivot->amount,
+                'price_vender'      => $article->pivot->price,
+                'discount'          => $article->pivot->discount,
+            ];
+            $articles[] = $article_to_add;
         }
         if (count($sale->discounts) >= 1) {
             foreach ($sale->discounts as $discount) {

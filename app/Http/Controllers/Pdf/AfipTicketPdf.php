@@ -231,7 +231,7 @@ class AfipTicketPdf extends fpdf {
         $this->Cell($this->widths['producto'], 6, StringHelper::short($article->name, 30), 0, 0, 'L');
         $this->Cell($this->widths['cantidad'], 6, $article->pivot->amount, 0, 0, 'R');
         // $this->Cell($this->widths['unidad_medida'], 6, 'unidad', 0, 0, 'C');
-        $this->Cell($this->widths['precio_unitario'], 6, Numbers::price($this->afip_helper->getArticlePrice($article)), 0, 0, 'R');
+        $this->Cell($this->widths['precio_unitario'], 6, Numbers::price($this->afip_helper->getArticlePrice($this->sale, $article)), 0, 0, 'R');
 
         $this->Cell($this->widths['bonif'], 6, $article->pivot->discount, 0, 0, 'R');
         $this->Cell($this->widths['subtotal'], 6, Numbers::price($this->afip_helper->subTotal($article)), 0, 0, 'R');

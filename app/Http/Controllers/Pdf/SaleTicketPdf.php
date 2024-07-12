@@ -50,14 +50,27 @@ class SaleTicketPdf extends fpdf {
 			$this->x = 2;
 			$this->Cell($this->cell_ancho, 5, 'Punto de venta: '.$this->sale->afip_information->punto_venta, $this->b, 1, 'L');
 			$this->x = 2;
-			$this->Cell($this->cell_ancho, 5, 'Tipo comprobante: '.$this->sale->afip_ticket->cbte_letra, $this->b, 1, 'L');
-			$this->x = 2;
 			$this->Cell($this->cell_ancho, 5, 'N° comprobante: '.$this->sale->afip_ticket->cbte_numero, $this->b, 1, 'L');
 			$this->x = 2;
 			$this->Cell($this->cell_ancho, 5, 'CAE: '.$this->sale->afip_ticket->cae, $this->b, 1, 'L');
 			$this->x = 2;
 			$this->Cell($this->cell_ancho, 5, 'Vto cae: '.$this->getCaeExpiredAt(), $this->b, 1, 'L');
+
+			$this->tipo_de_comprobante();
+
 		}
+	}
+
+	function tipo_de_comprobante() {
+
+		$this->SetFillColor(0,0,0);
+		$this->SetTextColor(255,255,255);
+		$this->SetFont('Arial', '', 10);
+
+		$this->x = 2;
+		$this->Cell($this->cell_ancho, 6, 'Tipo comprobante: '.$this->sale->afip_ticket->cbte_letra, $this->b, 1, 'C', 1);
+
+		$this->SetTextColor(0,0,0);
 	}
 
 	function clientInfo() {
@@ -86,11 +99,14 @@ class SaleTicketPdf extends fpdf {
 
 		$this->surchages();
 
+		$this->payment_method_discounts();
+
 		$this->total();
 
+		$this->ticket_description();
+		
 		$this->qr();
 
-		$this->thanks();
 		// $this->comerciocityInfo();
 	}
 
@@ -183,12 +199,24 @@ class SaleTicketPdf extends fpdf {
 	}
 
 	function discounts() {
-	    $this->x = 2;
 	    $this->SetFont('Arial', 'B', 10);
 	    foreach ($this->sale->discounts as $discount) {
+	    	$this->x = 2;
 	    	$this->total_sale -= $this->total_sale * (float)$discount->pivot->percentage / 100;
 			$this->Cell($this->cell_ancho / 2, 7, 'Desc '. $discount->pivot->percentage.'%', 'B', 0, 'L');
 			$this->Cell($this->cell_ancho / 2, 7, '$'.Numbers::price($this->total_sale), 'B', 1, 'R');
+	    }
+	}
+
+	function payment_method_discounts() {
+	    $this->SetFont('Arial', 'B', 10);
+	    foreach ($this->sale->current_acount_payment_methods as $payment_method) {
+	    	if (!is_null($payment_method->pivot->discount_amount)) {
+		    	$this->x = 2;
+		    	$this->total_sale -= (float)$payment_method->pivot->discount_amount;
+				$this->Cell($this->cell_ancho / 2, 7, 'Desc $'. $payment_method->pivot->discount_amount.' '.substr($payment_method->name, 0, 3), 'B', 0, 'L');
+				$this->Cell($this->cell_ancho / 2, 7, '$'.Numbers::price($this->total_sale), 'B', 1, 'R');
+	    	}
 	    }
 	}
 
@@ -211,15 +239,20 @@ class SaleTicketPdf extends fpdf {
 
 	function qr() {
 		if (!is_null($this->sale->afip_ticket)) {
-			AfipQrPdf::printQr($this, $this->sale, true);
+			$pdf = new AfipQrPdf($this, $this->sale, true);
+			$pdf->printQr();
 		}
 	}
 
-	function thanks() {
-	    $this->x = 2;
-	    $this->SetFont('Arial', '', 10);
-		$this->Cell($this->cell_ancho, 10, 'GRACIAS POR SU VISITA', 0, 0, 'C');
-		// $this->y += 10;
+	function ticket_description() {
+
+		if (!is_null($this->user->sale_ticket_description)) {
+		    $this->x = 2;
+		    $this->y += 2;
+		    $this->SetFont('Arial', '', 10);
+
+			$this->MultiCell($this->cell_ancho, 5, $this->user->sale_ticket_description, 0, 'L');
+		}
 	}
 
 	function num() {

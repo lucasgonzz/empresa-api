@@ -182,6 +182,8 @@ class SaleController extends Controller
                 CurrentAcountHelper::checkSaldos('client', $model->client_id);
                 $this->sendAddModelNotification('client', $model->client_id, false);
             }
+            $model->delete();
+            $this->sendDeleteModelNotification('sale', $model->id);
         }
         if (!$model->to_check && !$model->checked) {
             foreach ($model->articles as $article) {
@@ -191,8 +193,6 @@ class SaleController extends Controller
                 // ArticleHelper::setArticleStockFromAddresses($article);
             }
         }
-        $model->delete();
-        $this->sendDeleteModelNotification('sale', $model->id);
         return response(null);
     }
 

@@ -84,6 +84,16 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     Route::get('sale-modifications/{sale_id}', 'SaleModificationController@index');
+
+
+    // Metodos de pago para facturar
+    Route::resource('afip-selected-payment-method', 'AfipSelectedPaymentMethodController');
+
+
+    // Descuentos en metodos de pago
+    Route::resource('cc-payment-method-discount', 'CurrentAcountPaymentMethodDiscountController');
+
+
     
     // Expenses | Gastos
     Route::resource('expense', 'ExpenseController');

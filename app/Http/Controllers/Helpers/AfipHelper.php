@@ -4,12 +4,16 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\Afip\AfipSelectedPaymentMethodsHelper;
+use App\Models\AfipSelectedPaymentMethod;
 use Illuminate\Support\Facades\Log;
 
 class AfipHelper extends Controller {
 
     public $sale;
     public $article;
+    public $factura_solo_algunos_metodos_de_pago;
+    public $afip_selected_payment_methods;
 
     function __construct($sale, $articles = null) {
         $this->user = $this->user();
@@ -18,6 +22,21 @@ class AfipHelper extends Controller {
             $articles = $this->sale->articles;
         }
         $this->articles = $articles;
+
+        $this->set_afip_selected_payment_methods();
+    }
+
+    function set_afip_selected_payment_methods() {
+        $models = AfipSelectedPaymentMethod::where('user_id', $this->userId())
+                                            ->get();
+        if (count($models) >= 1) {
+            
+            $this->factura_solo_algunos_metodos_de_pago = true;
+            $this->afip_selected_payment_methods = $models;
+
+        } else {
+            $this->factura_solo_algunos_metodos_de_pago = false;
+        }
     }
 
     function getImportes() {
@@ -36,37 +55,52 @@ class AfipHelper extends Controller {
         ];
         $subtotal           = 0;
         $total              = 0;
+        
         if ($this->sale->afip_information->iva_condition->name == 'Responsable inscripto') {
-            foreach ($this->articles as $article) {
-                $this->article = $article;
-                $gravado                += $this->getImporteGravado();
-                $exento                 += $this->getImporteIva('Exento')['BaseImp'];
-                $neto_no_gravado        += $this->getImporteIva('No Gravado')['BaseImp'];
-                $iva                    += $this->getImporteIva();
-                $res                    = $this->getImporteIva('27');
-                $ivas['27']['Importe']  += $res['Importe'];
-                $ivas['27']['BaseImp']  += $res['BaseImp'];
 
-                $res                    = $this->getImporteIva('21');
-                $ivas['21']['Importe']  += $res['Importe'];
-                $ivas['21']['BaseImp']  += $res['BaseImp'];
+            if ($this->factura_solo_algunos_metodos_de_pago) {
 
-                $res                    = $this->getImporteIva('10.5');
-                $ivas['10']['Importe']  += $res['Importe'];
-                $ivas['10']['BaseImp']  += $res['BaseImp'];
+                $helper = new AfipSelectedPaymentMethodsHelper($this->sale, $this->afip_selected_payment_methods);
 
-                $res                    = $this->getImporteIva('5');
-                $ivas['5']['Importe']  += $res['Importe'];
-                $ivas['5']['BaseImp']  += $res['BaseImp'];
+                $gravado                += $helper->get_gravado();
+                $iva                    += $helper->get_importe_iva();
+                $ivas['21']['Importe']  += $helper->get_importe_iva();
+                $ivas['21']['BaseImp']  += $gravado;
 
-                $res                    = $this->getImporteIva('2.5');
-                $ivas['2']['Importe']  += $res['Importe'];
-                $ivas['2']['BaseImp']  += $res['BaseImp'];
+            } else {
 
-                $res                    = $this->getImporteIva('0');
-                $ivas['0']['Importe']  += $res['Importe'];
-                $ivas['0']['BaseImp']  += $res['BaseImp'];
-            } 
+                foreach ($this->articles as $article) {
+                    $this->article = $article;
+                    $gravado                += $this->getImporteGravado();
+                    $exento                 += $this->getImporteIva('Exento')['BaseImp'];
+                    $neto_no_gravado        += $this->getImporteIva('No Gravado')['BaseImp'];
+                    $iva                    += $this->getImporteIva();
+                    $res                    = $this->getImporteIva('27');
+                    $ivas['27']['Importe']  += $res['Importe'];
+                    $ivas['27']['BaseImp']  += $res['BaseImp'];
+
+                    $res                    = $this->getImporteIva('21');
+                    $ivas['21']['Importe']  += $res['Importe'];
+                    $ivas['21']['BaseImp']  += $res['BaseImp'];
+
+                    $res                    = $this->getImporteIva('10.5');
+                    $ivas['10']['Importe']  += $res['Importe'];
+                    $ivas['10']['BaseImp']  += $res['BaseImp'];
+
+                    $res                    = $this->getImporteIva('5');
+                    $ivas['5']['Importe']  += $res['Importe'];
+                    $ivas['5']['BaseImp']  += $res['BaseImp'];
+
+                    $res                    = $this->getImporteIva('2.5');
+                    $ivas['2']['Importe']  += $res['Importe'];
+                    $ivas['2']['BaseImp']  += $res['BaseImp'];
+
+                    $res                    = $this->getImporteIva('0');
+                    $ivas['0']['Importe']  += $res['Importe'];
+                    $ivas['0']['BaseImp']  += $res['BaseImp'];
+                } 
+            }
+
         }
         $gravado = Numbers::redondear($gravado);
         $neto_no_gravado = Numbers::redondear($neto_no_gravado);

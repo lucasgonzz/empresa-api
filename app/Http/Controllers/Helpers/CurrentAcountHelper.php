@@ -138,7 +138,7 @@ class CurrentAcountHelper {
             'num_receipt'   => CurrentAcountHelper::getNumReceipt(true),
             'user_id'       => UserHelper::userId(),
             'employee_id'   => UserHelper::userId(false),
-        ]);
+        ]); 
         $nota_credito->saldo = Self::getSaldo($model_name, $model_id, $nota_credito) - $haber;
         $nota_credito->detalle = 'Nota Credito N°'.$nota_credito->num_receipt;
         $nota_credito->save();

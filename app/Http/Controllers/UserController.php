@@ -68,6 +68,7 @@ class UserController extends Controller
         $model->dias_alertar_administradores_ventas_no_cobradas          = $request->dias_alertar_administradores_ventas_no_cobradas;
 
         $model->str_limint_en_vender          = $request->str_limint_en_vender;
+        $model->sale_ticket_description          = $request->sale_ticket_description;
         // $model->image_pdf_header_url          = $request->image_pdf_header_url;
         
         $model->save();

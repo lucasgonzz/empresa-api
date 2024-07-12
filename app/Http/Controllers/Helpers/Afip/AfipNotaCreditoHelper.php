@@ -51,13 +51,10 @@ class AfipNotaCreditoHelper
         $wsfe = new WSFE(['testing'=> $this->testing, 'cuit_representada' => $cuit_negocio]);
         $wsfe->setXmlTa(file_get_contents(TA_file));
         $cbte_nro = AfipHelper::getNumeroComprobante($wsfe, $punto_venta, $cbte_tipo);
-        // Log::info('Numero comprobante: '.$cbte_nro);
-
+        Log::info('articulos para obtener importes:');
+        Log::info($this->nota_credito->articles);
         $afip_helper = new AfipHelper($this->sale, $this->nota_credito->articles);
         $importes = $afip_helper->getImportes();
-        // Log::info('sigue con importes');
-        // Log::info('importes:');
-        // Log::info($importes);
         $today = date('Ymd');
         $moneda_id = 'PES';
         $invoice = array(
@@ -119,7 +116,7 @@ class AfipNotaCreditoHelper
         // Se visualiza el resultado con el CAE correspondiente al comprobante.
         $result = $wsfe->FECAESolicitar($invoice);
         Log::info((array)$result);
-        $this->saveAfipTicket($result, $cbte_nro, $importes['total'], $moneda_id);
+        $this->saveAfipTicket($result['result'], $cbte_nro, $importes['total'], $moneda_id);
         return true;
     }
 

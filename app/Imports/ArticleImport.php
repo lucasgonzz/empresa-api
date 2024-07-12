@@ -140,7 +140,8 @@ class ArticleImport implements ToCollection
                     $this->saveArticle($row);
 
                 } else {
-                    Log::info('Se omitio una fila N° '.$this->num_row);
+                    Log::info('Se omitio una fila N° '.$this->num_row.' con nombre '.ImportHelper::getColumnValue($row, 'nombre', $this->columns));
+                    Log::info($row);
                 } 
             } else if ($this->num_row > $this->finish_row) {
                 Log::info('Se acabaron las filas');
@@ -153,7 +154,10 @@ class ArticleImport implements ToCollection
 
             ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path);
 
-            ArticleImportHelper::enviar_notificacion($this->user);
+            if ($this->user->download_articles) {
+                ArticleImportHelper::enviar_notificacion($this->user);
+            }
+
             
             $this->trabajo_terminado = true;
         }
@@ -198,7 +202,7 @@ class ArticleImport implements ToCollection
 
         $article = null;
         
-        if (!is_null($this->articulo_existente) && $this->isDataUpdated($row, $data)) {
+        if (!is_null($this->articulo_existente) && $this->isDataUpdated($row, $data) && !$this->sobre_escribir()) {
             Log::info('Hubo cambios');
             $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $this->articulo_existente->id, $this->user->id);
 
@@ -221,7 +225,7 @@ class ArticleImport implements ToCollection
                 $this->updated_models++;
             }
 
-        } else if (is_null($this->articulo_existente) && $this->create_and_edit) {
+        } else if ((is_null($this->articulo_existente) || $this->sobre_escribir()) && $this->create_and_edit) {
 
            
             if (!is_null(ImportHelper::getColumnValue($row, 'nombre', $this->columns))) {
@@ -259,6 +263,10 @@ class ArticleImport implements ToCollection
 
             ArticleHelper::setFinalPrice($this->articulo_existente, null, $this->user, $this->auth_user_id);
         }
+    }
+
+    function sobre_escribir() {
+        return env('SOBRE_ESCRIBIR_ARTICULOS_AL_IMPORTAR', false);
     }
 
     function isDataUpdated($row, $data) {

@@ -43,6 +43,9 @@ class SetCompanyPerformances extends Command
 
         $user_id = 500;
 
+        $ct->create(2, 2024, $user_id);
+        $ct->create(3, 2024, $user_id);
+        $ct->create(4, 2024, $user_id);
         $ct->create(5, 2024, $user_id);
         $ct->create(6, 2024, $user_id);
         $ct->create(7, 2024, $user_id);

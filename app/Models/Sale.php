@@ -12,7 +12,7 @@ class Sale extends Model
     protected $guarded = [];
     
     public function current_acount_payment_methods(){
-        return $this->belongsToMany(CurrentAcountPaymentMethod::class)->withPivot("amount");
+        return $this->belongsToMany(CurrentAcountPaymentMethod::class)->withPivot('amount', 'discount_percentage', 'discount_amount');
     }
 
     public function impressions() {

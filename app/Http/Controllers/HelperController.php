@@ -55,7 +55,7 @@ class HelperController extends Controller
     function chequear_articulos_eliminados_en_ventas($dias_atras) {
         $sales = Sale::where('user_id', 121)
                         ->where('confirmed', 1)
-                        ->where('num', '>=', 59560)
+                        ->where('num', '>', 59560)
                         ->whereDate('created_at', '>=', Carbon::today()->subdays($dias_atras))
                         ->orderBy('created_at', 'ASC')
                         ->get();

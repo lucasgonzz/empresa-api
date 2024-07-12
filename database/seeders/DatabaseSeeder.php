@@ -87,7 +87,7 @@ class DatabaseSeeder extends Seeder
             // $this->call(LocationSeeder::class);
             $this->call(PaymentMethodTypeSeeder::class);
             // $this->call(CuponSeeder::class);
-            $this->call(PriceTypeSeeder::class);
+            // $this->call(PriceTypeSeeder::class);
             $this->call(BudgetStatusSeeder::class);
             $this->call(BudgetSeeder::class);
             $this->call(RecipeSeeder::class);
@@ -100,9 +100,11 @@ class DatabaseSeeder extends Seeder
             $this->call(InventoryLinkageScopeSeeder::class);
             // $this->call(InventoryLinkageSeeder::class);
             // $this->call(AfipTicketSeeder::class);
-            // $this->call(ArticlePropertyTypeSeeder::class);
-            // $this->call(ArticlePropertyValueSeeder::class);
-            // $this->call(ArticlePropertySeeder::class);
+
+            $this->call(ArticlePropertyTypeSeeder::class);
+            $this->call(ArticlePropertyValueSeeder::class);
+            $this->call(ArticlePropertySeeder::class);
+            
             $this->call(CartSeeder::class);
             $this->call(MessageSeeder::class);
             $this->call(ArticleTicketInfoSeeder::class);
@@ -112,6 +114,9 @@ class DatabaseSeeder extends Seeder
 
             $this->call(ExpenseConceptSeeder::class);
             $this->call(ExpenseSeeder::class);
+            
+            $this->call(CurrentAcountPaymentMethodDiscountSeeder::class);
+            $this->call(AfipSelectedPaymentMethodSeeder::class);
 
         }
     }
