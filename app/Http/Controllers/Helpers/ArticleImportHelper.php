@@ -15,13 +15,17 @@ use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 class ArticleImportHelper {
 
 	static function enviar_notificacion($user) {
-        $functions_to_execute = [
-        	[
-        		'btn_text'		=> 'Actualizar lista de articulos',
-        		'function_name'	=> 'update_articles_after_import',
-        		'btn_variant'	=> 'primary',
-        	],
-        ];
+	    $functions_to_execute = [];
+	    
+        if ($user->download_articles) {
+	        $functions_to_execute = [
+	        	[
+	        		'btn_text'		=> 'Actualizar lista de articulos',
+	        		'function_name'	=> 'update_articles_after_import',
+	        		'btn_variant'	=> 'primary',
+	        	],
+	        ];
+        }
 
         $user->notify(new GlobalNotification(
 		    'Importacion de Excel finalizada correctamente',
@@ -80,7 +84,7 @@ class ArticleImportHelper {
 
             $article = $article->where('num', $num);
 
-        } else if (!is_null($provider_code)) {
+        } else if (!is_null($provider_code) && env('FILTRAR_CON_PROVIDER_CODE_EN_IMPORTACION', true)) {
                 
             $article = $article->where('provider_code', $provider_code);
 

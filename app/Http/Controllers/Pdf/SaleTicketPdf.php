@@ -301,7 +301,7 @@ class SaleTicketPdf extends fpdf {
 	function getPdfHeight() {
 		$height = 120;
 		if (!is_null($this->sale->afip_ticket)) {
-			$height += 70;
+			$height += 90;
 		}
 		foreach ($this->sale->combos as $combo) {
 			$height += $this->getHeight($combo, 20);

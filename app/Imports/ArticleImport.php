@@ -124,16 +124,13 @@ class ArticleImport implements ToCollection
         } 
 
         foreach ($rows as $row) {
-            // Log::info('Fila N° '.$this->num_row);
             if ($this->num_row >= $this->start_row && $this->num_row <= $this->finish_row) {
                 if ($this->checkRow($row)) {
-                    Log::info('Entro con la fila N° '.$this->num_row);
 
-
-                    $num = ImportHelper::getColumnValue($row, 'numero', $this->columns);
-                    $bar_code = ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns);
-                    $provider_code = ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns);
-                    $name = ImportHelper::getColumnValue($row, 'nombre', $this->columns);
+                    // $num = ImportHelper::getColumnValue($row, 'numero', $this->columns);
+                    // $bar_code = ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns);
+                    // $provider_code = ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns);
+                    // $name = ImportHelper::getColumnValue($row, 'nombre', $this->columns);
 
                     $this->articulo_existente = ArticleImportHelper::get_articulo_encontrado($this->user, $row, $this->columns);
 
@@ -141,7 +138,6 @@ class ArticleImport implements ToCollection
 
                 } else {
                     Log::info('Se omitio una fila N° '.$this->num_row.' con nombre '.ImportHelper::getColumnValue($row, 'nombre', $this->columns));
-                    Log::info($row);
                 } 
             } else if ($this->num_row > $this->finish_row) {
                 Log::info('Se acabaron las filas');
@@ -154,10 +150,7 @@ class ArticleImport implements ToCollection
 
             ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path);
 
-            if ($this->user->download_articles) {
-                ArticleImportHelper::enviar_notificacion($this->user);
-            }
-
+            ArticleImportHelper::enviar_notificacion($this->user);
             
             $this->trabajo_terminado = true;
         }
@@ -174,7 +167,6 @@ class ArticleImport implements ToCollection
         foreach ($this->props_to_set as $key => $value) {
             if (!ImportHelper::isIgnoredColumn($value, $this->columns)) {
                 $data[$key] = ImportHelper::getColumnValue($row, $value, $this->columns);
-                // Log::info('Agregando '.$value.' con '.ImportHelper::getColumnValue($row, $value, $this->columns));
             }
         }
 
@@ -202,7 +194,7 @@ class ArticleImport implements ToCollection
 
         $article = null;
         
-        if (!is_null($this->articulo_existente) && $this->isDataUpdated($row, $data) && !$this->sobre_escribir()) {
+        if (!is_null($this->articulo_existente) && $this->isDataUpdated($row, $data)) {
             Log::info('Hubo cambios');
             $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $this->articulo_existente->id, $this->user->id);
 
@@ -225,7 +217,7 @@ class ArticleImport implements ToCollection
                 $this->updated_models++;
             }
 
-        } else if ((is_null($this->articulo_existente) || $this->sobre_escribir()) && $this->create_and_edit) {
+        } else if (is_null($this->articulo_existente) && $this->create_and_edit) {
 
            
             if (!is_null(ImportHelper::getColumnValue($row, 'nombre', $this->columns))) {
@@ -253,7 +245,6 @@ class ArticleImport implements ToCollection
         if (!is_null($this->articulo_existente)) {
             
             Log::info('$article no es null:');
-            // Log::info((array)$article);
 
             $this->setDiscounts($row);
             $this->setProvider($row);
@@ -270,6 +261,7 @@ class ArticleImport implements ToCollection
     }
 
     function isDataUpdated($row, $data) {
+        Log::info('comparando '.$data['price'].' con '.$this->articulo_existente->price);
         return  (isset($data['name']) && $data['name']                          != $this->articulo_existente->name) ||
                 (isset($data['bar_code']) && $data['bar_code']                  != $this->articulo_existente->bar_code) ||
                 (isset($data['provider_code']) && $data['provider_code']        != $this->articulo_existente->provider_code) ||

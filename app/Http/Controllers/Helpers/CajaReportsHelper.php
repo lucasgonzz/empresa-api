@@ -50,7 +50,12 @@ class CajaReportsHelper {
 				if (is_null($sale->current_acount_payment_method)) {
 					if (count($sale->current_acount_payment_methods) >= 1) {
 						foreach ($sale->current_acount_payment_methods as $current_acount_payment_method) {
-							$sale_payment_methods[$current_acount_payment_method->name] += $current_acount_payment_method->pivot->amount;
+							$amount = (float)$current_acount_payment_method->pivot->amount;
+
+							if (!is_null($current_acount_payment_method->pivot->discount_amount)) {
+								$amount -= (float)$current_acount_payment_method->pivot->discount_amount;
+							}
+							$sale_payment_methods[$current_acount_payment_method->name] += $amount;
 						}
 					} else {
 						$sale_payment_methods['Efectivo'] += SaleHelper::getTotalSale($sale);

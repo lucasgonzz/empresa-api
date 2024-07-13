@@ -59,7 +59,6 @@ class ArticleController extends Controller
     }
 
     function store(Request $request) {
-        Log::info('Se esta usando en store la bbdd = '.config('database.connections.mysql.database'));
         $model = new Article();
         $model->num                               = $this->num('articles');
         $model->bar_code                          = $request->bar_code;

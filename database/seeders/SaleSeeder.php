@@ -328,6 +328,7 @@ class SaleSeeder extends Seeder
         $request->discounts = [];
         $request->surchages = [];
         $request->metodos_de_pago_seleccionados = [];
+        $request->current_acount_payment_method_id = 3;
         $request->client_id = $sale->id;
         $articles = Article::take(7)
                             ->get();

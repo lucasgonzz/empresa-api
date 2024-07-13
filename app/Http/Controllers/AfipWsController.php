@@ -202,9 +202,23 @@ class AfipWsController extends Controller
             $this->checkErrors($result);
 
             $this->update_afip_ticket($result, $importes['total'], $moneda_id);
+        } else {
+            Log::info('HUBO UN ERROR:');
+            Log::info((array)$result);
+            $this->save_error($result);
         }
 
 
+    }
+
+    function save_error($result) {
+        if (isset($result['error'])) {
+            AfipError::create([
+                'message'   => $result['error'],
+                'code'      => 'Error del lado de AFIP',
+                'sale_id'   => $this->sale->id,
+            ]);
+        }
     }
 
     function checkErrors($result) {

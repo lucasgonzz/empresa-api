@@ -58,6 +58,7 @@ class EmployeeController extends Controller
             $model = User::create([
                 'name'              => ucfirst($request->name),
                 'doc_number'        => $request->doc_number,
+                'admin_access'        => $request->admin_access,
                 'visible_password'  => $request->visible_password,
                 'password'          => Hash::make($request->visible_password),
                 'owner_id'          => $this->userId(),

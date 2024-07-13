@@ -74,6 +74,7 @@ class CreateUsersTable extends Migration
 
             $table->text('sale_ticket_description')->nullable();
 
+            $table->boolean('siempre_omitir_en_cuenta_corriente')->nullable();
             // $table->foreign('owner_id')->references('id')->on('users');
             // $table->foreign('admin_id')->references('id')->on('users');
             $table->timestamps();

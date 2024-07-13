@@ -185,7 +185,7 @@ class SaleHelper extends Controller {
 
     static function attachSelectedPaymentMethods($sale, $request){
 
-        if (is_null($sale->client_id)) {
+        if (is_null($sale->client_id) || $sale->omitir_en_cuenta_corriente) {
             $sale->current_acount_payment_methods()->detach();
 
             if (!$request->current_acount_payment_method_id) {

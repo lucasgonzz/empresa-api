@@ -274,6 +274,8 @@ class StockMovementController extends Controller
 
         if (!is_null($this->stock_movement->to_address_id) && $this->articleHasAddresses()) {
             
+            Log::info('se agrego la direccion '.$this->stock_movement->to_address_id);
+
             $this->article->load('addresses');
             
             $to_address = null;
