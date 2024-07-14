@@ -42,7 +42,7 @@ class UserSeeder extends Seeder
                 'visible_password'              => null,
                 'dollar'                        => 300,
                 'home_position'                 => 1,
-                'download_articles'             => 1,
+                'download_articles'             => 0,
                 'online'                        => 'http://tienda.local:8081',
                 'payment_expired_at'            => Carbon::now()->addDays(12),
                 'last_user_activity'            => Carbon::now(),

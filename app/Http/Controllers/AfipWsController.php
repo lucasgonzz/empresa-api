@@ -135,6 +135,11 @@ class AfipWsController extends Controller
         Log::info('importes:');
         Log::info($importes);
 
+        if ($importes['total'] <= 0) {
+            $this->save_importe_0();
+            return; 
+        }
+
         $moneda_id = 'PES';
         $invoice = [
             'FeCAEReq' => [
@@ -209,6 +214,14 @@ class AfipWsController extends Controller
         }
 
 
+    }
+
+    function save_importe_0() {
+        AfipError::create([
+            'message'   => 'El importe a Facturar debe ser mayor a 0',
+            'code'      => 'Omision',
+            'sale_id'   => $this->sale->id,
+        ]);
     }
 
     function save_error($result) {

@@ -116,12 +116,14 @@ class SearchController extends Controller
             foreach ($request->props_to_filter as $prop_to_filter) {
 
                 $query->orWhere(function ($subQuery) use ($prop_to_filter, $request) {
-                    if ($prop_to_filter == 'bar_code' || $prop_to_filter == 'provider_code') {
+                    if ($prop_to_filter == 'num' || $prop_to_filter == 'bar_code' || $prop_to_filter == 'provider_code') {
                         $subQuery->where($prop_to_filter, $request->query_value);
+                        Log::info($prop_to_filter.' igual a'.$request->query_value);
                     } else {
                         $keywords = explode(' ', $request->query_value);
                         foreach ($keywords as $keyword) {
                             $subQuery->whereRaw($prop_to_filter . ' LIKE ?', ["%$keyword%"]);
+                            Log::info($prop_to_filter.' contenga '.$keyword);
                         }
                     }
                 });
@@ -137,7 +139,7 @@ class SearchController extends Controller
             }
         });
 
-        $models = $models->paginate(8);
+        $models = $models->paginate(15);
 
 
         // foreach ($request->props_to_filter as $prop_to_filter) {
