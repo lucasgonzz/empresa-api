@@ -139,13 +139,17 @@ class CurrentAcountHelper {
             'user_id'       => UserHelper::userId(),
             'employee_id'   => UserHelper::userId(false),
         ]); 
-        $nota_credito->saldo = Self::getSaldo($model_name, $model_id, $nota_credito) - $haber;
+
+        if (!is_null($model_name) && !is_null($model_id)) {
+            $nota_credito->saldo = Self::getSaldo($model_name, $model_id, $nota_credito) - $haber;
+        }
+
         $nota_credito->detalle = 'Nota Credito N°'.$nota_credito->num_receipt;
         $nota_credito->save();
         Self::attachNotaCreditoArticles($nota_credito, $items);
         Self::attachNotaCreditoServices($nota_credito, $items);
 
-        if (!is_null($model_id)) {
+        if (!is_null($model_name) && !is_null($model_id)) {
             Self::updateModelSaldo($nota_credito, $model_name, $model_id);
             $pago_helper = new CurrentAcountPagoHelper($model_name, $model_id, $nota_credito);
             $pago_helper->init();

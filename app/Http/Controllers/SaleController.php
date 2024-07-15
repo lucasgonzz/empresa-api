@@ -82,6 +82,7 @@ class SaleController extends Controller
             'employee_id'                       => SaleHelper::getEmployeeId($request),
             'to_check'                          => $request->to_check,
             'numero_orden_de_compra'            => $request->numero_orden_de_compra,
+            'total'                             => $request->total,
             'terminada'                         => SaleHelper::get_terminada($request->to_check),
             'user_id'                           => $this->userId(),
         ]);
@@ -90,21 +91,13 @@ class SaleController extends Controller
 
         SaleHelper::attachProperies($model, $request);
 
+        SaleHelper::set_total_a_facturar($model, $request);
+
         SaleProviderOrderHelper::createProviderOrder($model, $this);
 
         $this->sendAddModelNotification('Sale', $model->id);
 
         SaleHelper::sendUpdateClient($this, $model);
-
-        if (!is_null($model->client_id) && is_null($model->current_acount)) {
-            Log::info('No se creo cuenta corriente para la venta id '.$model->id);
-        }
-
-        Log::info('Se creo la venta num: '.$model->num.' id: '.$model->id.'. $sale->employee_id: '.$model->employee_id.', la sesion la tiene: '.$this->userId(false));
-
-        // SaleHelper::log_client($model);
-
-        // SaleHelper::log_articles($model, $model->articles);     
 
         return response()->json(['model' => $this->fullModel('Sale', $model->id)], 201);
     }  

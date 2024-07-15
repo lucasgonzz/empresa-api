@@ -14,10 +14,12 @@ class CajaReportsHelper {
 	static function reports($instance, $from_date, $until_date, $employee_id) {
 		$ingresos = Self::ingresos($instance, $from_date, $until_date, $employee_id);
 		$egresos = Self::egresos($instance, $from_date, $until_date);
+		$devoluciones = Self::devoluciones($instance, $from_date, $until_date);
 
 		return [
 			'ingresos' 			=> $ingresos,
 			'egresos' 			=> $egresos,
+			'devoluciones' 		=> $devoluciones,
 		];
 
 	}
@@ -46,7 +48,14 @@ class CajaReportsHelper {
         }
 		$sales = $sales->get();
 		foreach ($sales as $sale) {
-			if (is_null($sale->current_acount)) {
+
+			/* 
+				si omitir_en_cuenta_corriente es true, es porque puede
+				que la venta se alla omitido en cuenta corriente, pero este facturada y 
+				se alla querido eliminar, entonces se el adjunta una nota de creito.
+				Por eso es que podria tener una cuenta corriente
+			*/
+			if (is_null($sale->current_acount) || $sale->omitir_en_cuenta_corriente) {
 				if (is_null($sale->current_acount_payment_method)) {
 					if (count($sale->current_acount_payment_methods) >= 1) {
 						foreach ($sale->current_acount_payment_methods as $current_acount_payment_method) {
@@ -117,7 +126,7 @@ class CajaReportsHelper {
 		$current_acounts = CurrentAcount::where('user_id', $instance->userId())
 										->whereNotNull('haber')
 										->whereNotNull('provider_id');
-		if (!is_null($until_date)) {
+		if (!is_null($until_date) && $until_date != 0) {
             $current_acounts = $current_acounts->whereDate('created_at', '>=', $from_date)
                             					->whereDate('created_at', '<=', $until_date);
         } else {
@@ -148,6 +157,27 @@ class CajaReportsHelper {
 			'payment_methods' 	=> $result,
 			'total'				=> $total,
 		];
+	}
+
+	static function devoluciones($instance, $from_date, $until_date) {
+		
+		$total = 0;
+
+		$notas_de_credito = CurrentAcount::where('user_id', $instance->userId())
+											->where('status', 'nota_credito');
+		if (!is_null($until_date) && $until_date != 0) {
+            $notas_de_credito = $notas_de_credito->whereDate('created_at', '>=', $from_date)
+                            					->whereDate('created_at', '<=', $until_date);
+        } else {
+            $notas_de_credito = $notas_de_credito->whereDate('created_at', $from_date);
+        }							
+		$notas_de_credito = $notas_de_credito->get();
+
+		foreach ($notas_de_credito as $nota_credito) {
+			$total += $nota_credito->haber;
+		}
+
+		return $total;
 	}
 
 }

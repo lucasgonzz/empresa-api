@@ -7,6 +7,7 @@ use App\Http\Controllers\ClientController;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\CurrentAcountController;
+use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipNotaCreditoHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CurrentAcountAndCommissionHelper;
@@ -183,6 +184,16 @@ class SaleHelper extends Controller {
         }
     }
 
+    static function set_total_a_facturar($sale, $request) {
+        if (!is_null($sale->afip_information_id) && $sale->afip_information_id != 0) {
+            $afip_helper = new AfipHelper($sale);
+            $importes = $afip_helper->getImportes();
+
+            $sale->total_a_facturar = $importes['total'];
+            $sale->save();
+        }
+    }
+
     static function attachSelectedPaymentMethods($sale, $request){
 
         if (is_null($sale->client_id) || $sale->omitir_en_cuenta_corriente) {
@@ -200,7 +211,7 @@ class SaleHelper extends Controller {
                 }
             } else {
 
-                $total = (float)$request->total;
+                $total = (float)$sale->total;
 
                 if (!is_null($request->discount_amount)) {
                     $total += (float)$request->discount_amount;
@@ -329,10 +340,11 @@ class SaleHelper extends Controller {
     }
 
     static function createNotaCreditoFromDestroy($sale) {
-        $haber = 0;
+        $haber = $sale->total;
+
         $articles = [];
         foreach ($sale->articles as $article) {
-            $haber += $article->pivot->price * $article->pivot->amount;
+            // $haber += $article->pivot->price * $article->pivot->amount;
             $article_to_add = [
                 'is_article'        => true,
                 'id'                => $article->id,
@@ -342,21 +354,33 @@ class SaleHelper extends Controller {
             ];
             $articles[] = $article_to_add;
         }
-        if (count($sale->discounts) >= 1) {
-            foreach ($sale->discounts as $discount) {
-                $haber -= (float)$discount->pivot->percentage * $haber / 100;
-            }
-        }
-        if (count($sale->surchages) >= 1) {
-            foreach ($sale->surchages as $surchage) {
-                $haber += (float)$surchage->pivot->percentage * $haber / 100;
-            }
-        }
+        // if (count($sale->discounts) >= 1) {
+        //     foreach ($sale->discounts as $discount) {
+        //         $haber -= (float)$discount->pivot->percentage * $haber / 100;
+        //     }
+        // }
+        // if (count($sale->surchages) >= 1) {
+        //     foreach ($sale->surchages as $surchage) {
+        //         $haber += (float)$surchage->pivot->percentage * $haber / 100;
+        //     }
+        // }
+        
+
         $description = 'Venta N°'.$sale->num.' eliminada';
-        $nota_credito = CurrentAcountHelper::notaCredito($haber, $description, 'client', $sale->client_id, $sale->id, $articles);
-        if (!is_null($sale->client)) {
+
+        $model_name = 'client';
+
+        if ($sale->omitir_en_cuenta_corriente) {
+            // Si entra aca se pone null, para que la nota de credito no se la asigne a ningun cliente
+            $model_name = null;
+        }
+
+        $nota_credito = CurrentAcountHelper::notaCredito($haber, $description, $model_name, $sale->client_id, $sale->id, $articles);
+
+        if (!is_null($sale->client) && !$sale->omitir_en_cuenta_corriente) {
             CurrentAcountHelper::checkSaldos('client', $sale->client_id);
         }
+
         $afip_helper = new AfipNotaCreditoHelper($sale, $nota_credito);
         $afip_helper->init();
     }

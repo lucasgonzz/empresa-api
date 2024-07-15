@@ -30,6 +30,7 @@ class CreateAfipTicketsTable extends Migration
             $table->string('cae')->nullable();
             $table->timestamp('cae_expired_at')->nullable();
             $table->integer('sale_id')->unsigned()->nullable();
+            $table->integer('sale_nota_credito_id')->unsigned()->nullable();
             $table->integer('nota_credito_id')->unsigned()->nullable();
             $table->timestamps();
         });

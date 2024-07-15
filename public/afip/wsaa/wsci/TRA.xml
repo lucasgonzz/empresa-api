@@ -1,2 +1,2 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<loginTicketRequest version="1.0"><header><uniqueId>1720825685</uniqueId><generationTime>2024-07-12T20:07:05-03:00</generationTime><expirationTime>2024-07-12T20:09:05-03:00</expirationTime></header><service>ws_sr_constancia_inscripcion</service></loginTicketRequest>
+<loginTicketRequest version="1.0"><header><uniqueId>1721068282</uniqueId><generationTime>2024-07-15T15:30:22-03:00</generationTime><expirationTime>2024-07-15T15:32:22-03:00</expirationTime></header><service>ws_sr_constancia_inscripcion</service></loginTicketRequest>

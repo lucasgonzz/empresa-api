@@ -139,7 +139,7 @@ class SearchController extends Controller
             }
         });
 
-        $models = $models->paginate(15);
+        $models = $models->paginate(25);
 
 
         // foreach ($request->props_to_filter as $prop_to_filter) {

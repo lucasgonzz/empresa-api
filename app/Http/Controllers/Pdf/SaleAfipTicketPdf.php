@@ -18,6 +18,7 @@ use App\Models\Sale;
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
+// Este se usa para las ventas
 class SaleAfipTicketPdf extends fpdf {
 
 	function __construct($sale) {
@@ -115,11 +116,26 @@ class SaleAfipTicketPdf extends fpdf {
 	function printPieDePagina() {
         // $this->printOtrosTibutos();
         $this->printDiscounts();
+        $this->printPaymentMethodDiscounts();
         $this->printImportes();
         // $this->printLine();
         // $this->printPhone();
         $this->printQR();
         $this->printAfipData();
+	}
+
+	function printPaymentMethodDiscounts() {
+		foreach ($this->sale->current_acount_payment_methods as $payment_method) {
+			if (!is_null($payment_method->pivot->discount_amount)) {
+
+				$this->SetFont('Arial', 'I', 9);
+
+				$this->x = 5;
+				$text = 'Descuento '.$payment_method->name.' de $'.Numbers::price($payment_method->pivot->discount_amount);
+				$this->Cell(100, 5, $text, 0, 1, 'L');
+
+			}
+		}
 	}
 
 	function printOtrosTibutos() {

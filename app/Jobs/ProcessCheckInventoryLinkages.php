@@ -66,25 +66,32 @@ class ProcessCheckInventoryLinkages implements ShouldQueue
                     Log::info($inventory_linkage->client->name.' no tiene '.$article->name);
                 } else {
 
-                    if ($client_article->name != $article->name || $client_article->cost != $article->final_price) {
+                    if ($client_article->name != $article->name || $client_article->cost != $article->final_price || $client_article->stock != $article->stock) {
+                        
+                        $actualizados++;
+
+                        if ($client_article->stock != $article->stock) {
+                            $client_article->stock = $article->stock;
+                        }
+
+                        if ($client_article->name != $article->name) {
+                            $client_article->name = $article->name;
+                        }
 
                         if ($client_article->cost != $article->final_price) {
                             $articulos_con_precio_distintos[] = $article;
 
                             $previus_cost = $client_article->cost;
-                            
-                            $client_article->stock = $article->stock;
 
                             $client_article->cost = $article->final_price;
 
-                            $client_article->save();
 
                             ArticleHelper::setFinalPrice($client_article, $inventory_linkage->client->comercio_city_user_id, $client_comerciocity_user);
 
                             Log::info('Se actualizo el precio de '.$client_article->name.' paso de $'.Numbers::price($previus_cost).' a '.Numbers::price($client_article->cost));
 
-                            $actualizados++;
                         }
+                        $client_article->save();
                     }
 
                 }

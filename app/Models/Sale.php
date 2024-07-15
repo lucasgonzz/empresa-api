@@ -20,7 +20,7 @@ class Sale extends Model
     }
 
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'current_acount', 'current_acount_payment_methods');
+        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'nota_credito_afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'current_acount', 'current_acount_payment_methods');
     }
 
     function sale_modifications() {
@@ -53,6 +53,10 @@ class Sale extends Model
 
     public function afip_ticket() {
         return $this->hasOne('App\Models\AfipTicket');
+    }
+
+    public function nota_credito_afip_ticket() {
+        return $this->hasOne('App\Models\AfipTicket', 'sale_nota_credito_id');
     }
 
     public function user() {

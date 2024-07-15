@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\Afip;
 
 use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Helpers\Afip\AfipSolicitarCaeHelper;
 use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -40,19 +41,22 @@ class AfipNotaCreditoHelper
         $user = UserHelper::getFullModel();
         $punto_venta = $this->sale->afip_information->punto_venta;
         $cuit_negocio = $this->sale->afip_information->cuit;
-        if ($this->sale->client) {
-            $cuit_cliente = $this->sale->client->cuit;
-            $doc_type = 80;
-        } else {
-            $cuit_cliente = "NR";
-            $doc_type = '99';
-        }
+
+
+        $res = AfipSolicitarCaeHelper::get_doc_client($this->sale);
+        $doc_client   = $res['doc_client'];
+        $doc_type     = $res['doc_type'];
+
         $cbte_tipo = $this->getTipoCbte();
+
         $wsfe = new WSFE(['testing'=> $this->testing, 'cuit_representada' => $cuit_negocio]);
         $wsfe->setXmlTa(file_get_contents(TA_file));
+
         $cbte_nro = AfipHelper::getNumeroComprobante($wsfe, $punto_venta, $cbte_tipo);
+        
         Log::info('articulos para obtener importes:');
         Log::info($this->nota_credito->articles);
+
         $afip_helper = new AfipHelper($this->sale, $this->nota_credito->articles);
         $importes = $afip_helper->getImportes();
         $today = date('Ymd');
@@ -68,7 +72,7 @@ class AfipNotaCreditoHelper
                     'FECAEDetRequest' => array(
                         'Concepto'     => 1,                
                         'DocTipo'      => $doc_type,           
-                        'DocNro'       => $cuit_cliente,
+                        'DocNro'       => $doc_client,
                         'CbteDesde'    => $cbte_nro,
                         'CbteHasta'    => $cbte_nro,
                         'CbteFch'      => $today,
@@ -137,6 +141,7 @@ class AfipNotaCreditoHelper
             'cae'               => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAE,
             'cae_expired_at'    => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAEFchVto,
             'nota_credito_id'   => $this->nota_credito->id,
+            'sale_nota_credito_id' => $this->sale->id,
         ]);
     }
 
