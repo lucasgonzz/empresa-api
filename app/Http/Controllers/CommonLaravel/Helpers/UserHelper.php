@@ -11,10 +11,12 @@ class UserHelper {
 	static function userId($get_owner = true) {
         Log::info('-----------------> entro a userId');
         $user = Auth()->user();
-        if (is_null($user) && env('APP_ENV') == 'local') {
-            $user = User::where('company_name', str_replace('_', ' ', env('DEFAULT_COMPANY_NAME')))->first();
+
+        if (is_null($user) && env('APP_ENV') != 'production') {
+            $user = User::where('company_name', 'Autopartes Boxes')->first();
+            Log::info('asd');
             return $user->id;
-        }
+        } 
         if ($get_owner) {
             if (is_null($user->owner_id)) {
                 return $user->id;

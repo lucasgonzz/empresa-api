@@ -101,9 +101,9 @@ class DatabaseSeeder extends Seeder
             // $this->call(InventoryLinkageSeeder::class);
             // $this->call(AfipTicketSeeder::class);
 
-            $this->call(ArticlePropertyTypeSeeder::class);
-            $this->call(ArticlePropertyValueSeeder::class);
-            $this->call(ArticlePropertySeeder::class);
+
+            $this->article_variants();
+
             
             $this->call(CartSeeder::class);
             $this->call(MessageSeeder::class);
@@ -119,5 +119,13 @@ class DatabaseSeeder extends Seeder
             $this->call(AfipSelectedPaymentMethodSeeder::class);
 
         }
+    }
+
+    function article_variants() {
+        $this->call(ArticlePropertyTypeSeeder::class);
+        $this->call(ArticlePropertyValueSeeder::class);
+        $this->call(ArticlePropertySeeder::class);
+
+        $this->call(ArticleVariantSeeder::class);
     }
 }

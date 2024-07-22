@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\ArticleVariantHelper;
 use App\Models\ArticleVariant;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -10,16 +11,32 @@ class ArticleVariantController extends Controller
 {
     function store(Request $request) {
         $article_id = $request->article_id;
-        $this->deleteVariants($article_id);
+
+        $helper = new ArticleVariantHelper($article_id);
+
+        $helper->check_cambio_en_cantidad_propiedades($request->models);
 
         foreach ($request->models as $model) {
-            $article_variant = ArticleVariant::create([
-                'article_id'                => $model['article_id'],
-                'price'                     => $model['price'],
-                'variant_description'       => $model['variant_description'],
-                'image_url'                 => $model['image_url'],
-            ]);
-            $this->attachArticlePropertyValues($article_variant, $model['article_property_values']);
+
+            // Chequear si hay mas propiedades que antes, si es asi eliminar todo lo que esta hasta el momento
+
+
+
+
+
+            if (!$helper->variant_ya_esta_creada($model)) {
+
+                $article_variant = ArticleVariant::create([
+                    'article_id'                => $model['article_id'],
+                    'price'                     => null,
+                    'variant_description'       => $model['variant_description'],
+                    // 'image_url'                 => $model['image_url'],
+                ]);
+
+                $this->attachArticlePropertyValues($article_variant, $model['article_property_values']);
+
+                Log::info('se creo variante '.$article_variant['variant_description']);
+            } 
         }
         $models = ArticleVariant::where('article_id', $article_id)
                                     ->withAll()
@@ -43,7 +60,6 @@ class ArticleVariantController extends Controller
 
     function attachArticlePropertyValues($article_variant, $article_properties) {
         foreach ($article_properties as $article_property) {
-            // Log::info('relacionando variant '.$article_variant->id.' del article '.$article_variant->article_id.' con article_property '.$article_property['id']);
             $article_variant->article_property_values()->attach($article_property['id']);
         }
     }

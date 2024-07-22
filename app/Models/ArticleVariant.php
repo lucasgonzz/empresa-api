@@ -10,10 +10,14 @@ class ArticleVariant extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        $q->with('article_property_values');
+        $q->with('article_property_values', 'addresses');
     }
 
     function article_property_values() {
         return $this->belongsToMany(ArticlePropertyValue::class);
+    }
+
+    function addresses() {
+        return $this->belongsToMany(Address::class)->withPivot('amount');
     }
 }

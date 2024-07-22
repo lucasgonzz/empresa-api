@@ -354,7 +354,7 @@ class ArticleHelper {
         }
     }
 
-    static function discountStock($id, $amount, $sale, $previus_articles, $se_esta_confirmando_por_primera_vez = false) {
+    static function discountStock($id, $amount, $sale, $previus_articles, $se_esta_confirmando_por_primera_vez = false, $article_variant_id = null) {
         $article = new \stdClass();
         $article->id = $id;
 
@@ -364,7 +364,7 @@ class ArticleHelper {
         $amount = $res['amount'];
 
         if ($amount != 0) {
-            Self::storeStockMovement($article, $sale->id, $amount, $sale->address_id, null, $concepto);
+            Self::storeStockMovement($article, $sale->id, $amount, $sale->address_id, null, $concepto, $article_variant_id);
         }
  
     }
@@ -407,7 +407,7 @@ class ArticleHelper {
         ];
     }
 
-    static function storeStockMovement($article, $sale_id, $amount, $from_address_id = null, $to_address_id = null, $concepto = null) {
+    static function storeStockMovement($article, $sale_id, $amount, $from_address_id = null, $to_address_id = null, $concepto = null, $article_variant_id = null) {
 
         $ct = new StockMovementController();
         $request = new \Illuminate\Http\Request();
@@ -418,24 +418,66 @@ class ArticleHelper {
         $request->amount = $amount;
         $request->sale_id = $sale_id;
         $request->concepto = $concepto;
+        $request->article_variant_id = $article_variant_id;
 
         $ct->store($request, false);
     }
 
     static function setArticleStockFromAddresses($article, $check_linkage = true) {
-        Log::info('-> setArticleStockFromAddresses');
         if (!is_object($article)) {
             $article = Article::find($article['id']);
         }
 
         $article->load('addresses');
-        if (!is_null($article) && count($article->addresses) >= 1) {
+        if (!is_null($article)
+            && (
+                    count($article->addresses) >= 1
+                    || count($article->article_variants) >= 1
+                )
+            ) {
+
             $stock = 0;
-            foreach ($article->addresses as $article_address) {
-                Log::info('sumando '.$article_address->pivot->amount.' de '.$article_address->street);
-                $stock += $article_address->pivot->amount;
+
+            if (count($article->addresses) >= 1) {
+                
+                Log::info('Se seteo stock con direcciones');
+                foreach ($article->addresses as $article_address) {
+                    $stock += $article_address->pivot->amount;
+                }
+
+            } else if (count($article->article_variants) >= 1) {
+                
+                Log::info('Se seteo stock con variants');
+
+                foreach ($article->article_variants as $article_variant) {
+
+                    if (count($article_variant->addresses) >= 1) {
+
+                        $article_variant_stock = 0;
+
+                        foreach ($article_variant->addresses as $variant_address) {
+
+                            Log::info('Sumando '.$variant_address->pivot->amount.' de la variante '.$article_variant->variant_description.' en la direccion '.$variant_address->street);
+
+                            $article_variant_stock += (float)$variant_address->pivot->amount;
+
+                            $stock += (float)$variant_address->pivot->amount;
+                        }
+
+                        $article_variant->stock = $article_variant_stock;
+                        $article_variant->save();
+
+                    } else {
+
+                        Log::info('Sumando '.$article_variant->stock.' de la variante '.$article_variant->variant_description);
+
+                        $stock += (float)$article_variant->stock;
+
+                    }
+
+                }
             }
-            Log::info('quedo en '.$stock);
+
             $article->stock = $stock;
             $article->timestamps = false;
             $article->save();
@@ -448,7 +490,7 @@ class ArticleHelper {
     }
 
     static function resetStock($article, $amount, $sale) {
-        Self::storeStockMovement($article, null, $amount, null, $sale->address_id, 'Eliminacion de venta N°'.$sale->num);
+        Self::storeStockMovement($article, null, $amount, null, $sale->address_id, 'Eliminacion de venta N°'.$sale->num, $article->pivot->article_variant_id);
     }
 
     static function getShortName($name, $length) {

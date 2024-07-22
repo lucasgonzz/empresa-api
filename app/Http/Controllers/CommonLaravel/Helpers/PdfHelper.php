@@ -35,7 +35,7 @@ class PdfHelper {
 		if (env('APP_ENV') == 'local') {
     		$instance->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 2, 2, 45, 45);
     	} else {
-    		if (GeneralHelper::file_exists_2($user->image_url)) {
+    		if (!is_null($user->image_url) && GeneralHelper::file_exists_2($user->image_url)) {
     			$instance->Image($user->image_url, 2, 2, 45, 45);
     		}
     	}

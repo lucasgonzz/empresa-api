@@ -23,6 +23,7 @@ use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SellerCommissionController;
 use App\Http\Controllers\StockMovementController;
 use App\Models\Article;
+use App\Models\ArticleVariant;
 use App\Models\Cart;
 use App\Models\Client;
 use App\Models\Commissioner;
@@ -486,7 +487,7 @@ class SaleHelper extends Controller {
                     $amount = Self::getAmount($sale, $article);
                     
                     if ($amount > 0) {
-                        ArticleHelper::discountStock($article['id'], $amount, $sale, $previus_articles, $se_esta_confirmando_por_primera_vez);
+                        ArticleHelper::discountStock($article['id'], $amount, $sale, $previus_articles, $se_esta_confirmando_por_primera_vez, $article['article_variant_id']);
                     }
                 }
 
@@ -511,6 +512,8 @@ class SaleHelper extends Controller {
             'delivered_amount'      => Self::getDeliveredAmount($article),
             'discount'              => Self::getDiscount($article),
             'checked_amount'        => Self::getCheckedAmount($sale, $article),
+            'article_variant_id'    => Self::getArticleVariantId($article),
+            'variant_description'    => Self::getVariantDescription($article),
             'created_at'            => Carbon::now(),
         ]);
     }
@@ -612,6 +615,24 @@ class SaleHelper extends Controller {
                 return null;
             }
             return $article['checked_amount'];
+        }
+        return null;
+    }
+
+    static function getArticleVariantId($article) {
+        if (isset($article['article_variant_id']) && $article['article_variant_id'] != 0) {
+            return $article['article_variant_id'];
+        }
+        return null;
+    }
+
+    static function getVariantDescription($article) {
+        if (isset($article['article_variant_id']) && $article['article_variant_id'] != 0) {
+            $article_variant = ArticleVariant::find($article['article_variant_id']);
+            
+            if (!is_null($article_variant)) {
+                return $article_variant->variant_description;
+            }
         }
         return null;
     }

@@ -127,11 +127,6 @@ class ArticleImport implements ToCollection
             if ($this->num_row >= $this->start_row && $this->num_row <= $this->finish_row) {
                 if ($this->checkRow($row)) {
 
-                    // $num = ImportHelper::getColumnValue($row, 'numero', $this->columns);
-                    // $bar_code = ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns);
-                    // $provider_code = ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns);
-                    // $name = ImportHelper::getColumnValue($row, 'nombre', $this->columns);
-
                     $this->articulo_existente = ArticleImportHelper::get_articulo_encontrado($this->user, $row, $this->columns);
 
                     $this->saveArticle($row);
@@ -140,7 +135,7 @@ class ArticleImport implements ToCollection
                     Log::info('Se omitio una fila N° '.$this->num_row.' con nombre '.ImportHelper::getColumnValue($row, 'nombre', $this->columns));
                 } 
             } else if ($this->num_row > $this->finish_row) {
-                Log::info('Se acabaron las filas');
+
                 break;
             }
             $this->num_row++;
@@ -312,10 +307,16 @@ class ArticleImport implements ToCollection
 
     function setStockAddresses($row) {
         $set_stock_from_addresses = false;
+
+        $segundos_para_agregar = 5;
+
         foreach ($this->addresses as $address) {
+            
             $address_excel = (float)ImportHelper::getColumnValue($row, $address->street, $this->columns);
+            
             if (!is_null($address_excel) && $address_excel != 0) {
-                Log::info('Columna '.$address->street.' para articulo '.$this->articulo_existente->name.' vino con '.$address_excel);
+
+                // Log::info('Columna '.$address->street.' para articulo '.$this->articulo_existente->name.' vino con '.$address_excel);
                 $request = new \Illuminate\Http\Request();
                 $request->model_id = $this->articulo_existente->id;
                 $request->to_address_id = $address->id;
@@ -334,7 +335,7 @@ class ArticleImport implements ToCollection
 
                     $request->amount = $address_excel;
                     $set_stock_from_addresses = true;
-                    $this->stock_movement_ct->store($request, true, $this->user, $this->auth_user_id);
+                    $this->stock_movement_ct->store($request, true, $this->user, $this->auth_user_id, $segundos_para_agregar);
 
                 } else {
                     $cantidad_anterior = $finded_address->pivot->amount;
@@ -342,11 +343,13 @@ class ArticleImport implements ToCollection
                         $set_stock_from_addresses = true;
                         $new_amount = $address_excel - $cantidad_anterior;
                         $request->amount = $new_amount;
-                        $this->stock_movement_ct->store($request, true, $this->user, $this->auth_user_id);
+                        $this->stock_movement_ct->store($request, true, $this->user, $this->auth_user_id, $segundos_para_agregar);
                     } else {
                         // Log::info('No se actualizo porque no hubo ningun cambio');
                     }
                 }
+
+                $segundos_para_agregar += 5;
                 // Log::info('---------------------------------');
             }
         }

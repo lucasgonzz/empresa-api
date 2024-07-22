@@ -1322,4 +1322,19 @@ $articles = [
             ],
         ],
     ],
+    [
+        'featured'          => null,
+        'bar_code'          => '111',
+        'provider_code'     => 'p-111',
+        'name'              => 'Remera',
+        'stock'             => null,
+        'cost'             => 1000,
+        'price'             => 2000,
+        'provider_id'       => 1,
+        'images'            => [
+            [
+                'url'       => env('APP_URL').'/storage/auto-partes/044.1654.jpg',
+            ],
+        ],
+    ],
 ];

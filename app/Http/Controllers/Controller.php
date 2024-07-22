@@ -3,20 +3,21 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
-// use App\Http\Controllers\Helpers\GeneralHelper;
+use App\Models\User;
 use App\Notifications\AddedModel;
+use App\Notifications\AddedModelNow;
 use App\Notifications\DeletedModel;
 use App\Notifications\UpdateModels;
-use App\Models\User;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Foundation\Bus\DispatchesJobs;
 use Illuminate\Foundation\Validation\ValidatesRequests;
 use Illuminate\Routing\Controller as BaseController;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\App;
-use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
 
 class Controller extends BaseController
 {
@@ -130,12 +131,23 @@ class Controller extends BaseController
         return null;
     }
 
-    function sendAddModelNotification($model_name, $model_id, $check_added_by = true, $for_user_id = null) {
+    function sendAddModelNotification($model_name, $model_id, $check_added_by = true, $for_user_id = null, $ignore_queue = false) {
         if (is_null($for_user_id)) {
             $for_user_id = $this->userId();
         }
-        Auth()->user()->notify(new AddedModel($model_name, $model_id, $check_added_by, $for_user_id));
-        Log::info('se mando notificacion a '.$model_name);
+
+        if ($ignore_queue) {
+    
+            Auth()->user()->notify(new AddedModelNow($model_name, $model_id, $check_added_by, $for_user_id));
+
+            Log::info('se mando notificacion DIRECTO a '.$model_name);
+        } else {
+            Auth()->user()->notify(new AddedModel($model_name, $model_id, $check_added_by, $for_user_id));
+            Log::info('se mando notificacion por queue a '.$model_name);
+        }
+
+
+
     }
 
     function sendDeleteModelNotification($model_name, $model_id, $check_added_by = true, $for_user_id = null) {

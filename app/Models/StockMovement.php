@@ -9,11 +9,15 @@ class StockMovement extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        $q->with('provider', 'from_address', 'to_address');
+        $q->with('provider', 'from_address', 'to_address', 'article_variant');
     }
 
     function article() {
         return $this->belongsTo(Article::class);
+    }
+
+    function article_variant() {
+        return $this->belongsTo(ArticleVariant::class);
     }
 
     function sale() {

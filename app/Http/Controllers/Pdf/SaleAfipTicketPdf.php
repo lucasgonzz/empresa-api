@@ -684,7 +684,7 @@ class SaleAfipTicketPdf extends fpdf {
 			$this->SetFont('Arial', 'B', 8);
 			$this->Cell(47, 5, 'Apellido y Nombre / Razón Social:', 0, 0, 'L');
 			$this->SetFont('Arial', '', 8);
-			$this->Cell(60, 5, $this->sale->client->razon_social, 0, 1, 'L');
+			$this->Cell(60, 5, $this->sale->client->name, 0, 1, 'L');
 			$this->SetX(97);
 			$this->SetFont('Arial', 'B', 8);
 			$this->Cell(30, 5, 'Domicilio Comercial:', 0, 0, 'L');

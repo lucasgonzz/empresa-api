@@ -13,7 +13,7 @@ class UserHelper {
         $user = Auth()->user();
         // Log::info('Auth user:');
         // Log::info($user);
-        if (is_null($user) && env('APP_ENV') == 'local') {
+        if (is_null($user) && env('APP_ENV') != 'production') {
             $user = User::where('company_name', 'Autopartes Boxes')->first();
             return $user->id;
         }

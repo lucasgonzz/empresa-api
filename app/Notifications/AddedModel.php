@@ -3,14 +3,11 @@
 namespace App\Notifications;
 
 use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
-use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\BroadcastMessage;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
 class AddedModel extends Notification {
-    use Queueable;
 
     public $model_name;
     public $model_id;

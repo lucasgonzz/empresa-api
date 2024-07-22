@@ -18,6 +18,10 @@ class CreateArticleSaleTable extends Migration
 
             $table->integer('article_id');
             $table->integer('sale_id');
+
+            $table->integer('article_variant_id')->nullable();
+            $table->string('variant_description')->nullable();
+
             $table->decimal('amount', 8,2);
             $table->decimal('returned_amount', 25,2)->nullable();
             $table->decimal('delivered_amount', 25,2)->nullable();
