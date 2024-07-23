@@ -81,7 +81,7 @@ class UserSeeder extends Seeder
                     'comerciocity_interno',
                     'articles_default_in_vender',
                     'article_num_in_online',
-                    'check_sales',
+                    // 'check_sales',
                     // 'sale.observations',
                     'production.order_production',
                     'production.production_movement',

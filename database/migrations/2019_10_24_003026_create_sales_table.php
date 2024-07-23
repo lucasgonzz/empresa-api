@@ -50,6 +50,7 @@ class CreateSalesTable extends Migration
             $table->boolean('omitir_en_cuenta_corriente')->default(0)->nullable();
 
             $table->decimal('total_a_facturar', 22,2)->nullable();
+            $table->decimal('sub_total', 22,2)->nullable();
             $table->decimal('total', 22,2)->nullable();
 
             $table->foreign('user_id')

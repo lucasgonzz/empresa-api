@@ -82,6 +82,7 @@ class SaleController extends Controller
             'employee_id'                       => SaleHelper::getEmployeeId($request),
             'to_check'                          => $request->to_check,
             'numero_orden_de_compra'            => $request->numero_orden_de_compra,
+            'sub_total'                         => $request->sub_total,
             'total'                             => $request->total,
             'terminada'                         => SaleHelper::get_terminada($request->to_check),
             'user_id'                           => $this->userId(),
@@ -132,6 +133,8 @@ class SaleController extends Controller
         $model->client_id                           = $request->client_id;
         $model->omitir_en_cuenta_corriente          = $request->omitir_en_cuenta_corriente;
         $model->numero_orden_de_compra              = $request->numero_orden_de_compra;
+        $model->sub_total                           = $request->sub_total;
+        $model->total                               = $request->total;
         $model->employee_id                         = SaleHelper::getEmployeeId($request);
         $model->updated_at                          = Carbon::now();
         $model->save();

@@ -78,6 +78,11 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'recetas',
                 'en'            => 'recipe',
             ],
+            [
+                'singular'      => 'gasto',
+                'plural'        => 'gastos',
+                'en'            => 'expense',
+            ],
         ];
         $scopes = [
             [
@@ -127,7 +132,7 @@ class PermissionSeeder extends Seeder
         }
         $permissions = [
             [
-                'singular'      => 'Reportes',
+                'singular'      => 'Ver la CAJA',
                 'plural'        => 'Estadisticas',
                 'en'            => 'caja.reports',
             ],
@@ -152,6 +157,12 @@ class PermissionSeeder extends Seeder
                 'en'            => 'vender.create_article',
             ],
             [
+                'singular'      => 'Aplicar descuentos a los articulos en Vender',
+                'plural'        => 'Vender',
+                'en'            => 'vender.article_discount',
+            ],
+
+            [
                 'singular'      => 'Utilizar modulo ABM',
                 'plural'        => 'Modulo ABM',
                 'en'            => 'abm',
@@ -170,6 +181,24 @@ class PermissionSeeder extends Seeder
                 'singular'      => 'Ver REPORTES',
                 'plural'        => 'Estadisticas',
                 'en'            => 'reportes',
+            ],
+
+
+            // Permisos de alertas
+            [
+                'singular'      => 'Ver alertas de Pedidos a proveedor',
+                'plural'        => 'Alertas',
+                'en'            => 'alerts.provider_orders',
+            ],
+            [
+                'singular'      => 'Ver alertas de Pedidos de la tienda',
+                'plural'        => 'Alertas',
+                'en'            => 'alerts.orders',
+            ],
+            [
+                'singular'      => 'Ver alertas de Mensajes de la tienda',
+                'plural'        => 'Alertas',
+                'en'            => 'alerts.messages',
             ],
         ];
         foreach ($permissions as $permission) {
