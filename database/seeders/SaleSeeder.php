@@ -329,6 +329,8 @@ class SaleSeeder extends Seeder
         $request->surchages = [];
         $request->metodos_de_pago_seleccionados = [];
         $request->current_acount_payment_method_id = 3;
+        $request->discount_amount = null;
+        $request->discount_percentage = null;
         $request->client_id = $sale->id;
         $articles = Article::take(7)
                             ->get();
@@ -337,7 +339,7 @@ class SaleSeeder extends Seeder
                 'id'            => $article->id,
                 'is_article'    => true,
                 'amount'        => 1,
-                // 'amount'        => rand(1,7),
+                'article_variant_id'        => null,
                 'cost'          => $article->cost,
                 'name'          => $article->name,
                 'price_vender'  => 1000 * $this->multiplo_price,

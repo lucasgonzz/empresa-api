@@ -50,7 +50,7 @@ class UserSeeder extends Seeder
                 'plan_id'                       => 3,
                 'plan_discount'                 => 27,
                 'article_ticket_info_id'        => 1,
-                'siempre_omitir_en_cuenta_corriente'    => 1,
+                'siempre_omitir_en_cuenta_corriente'    => 0,
                 'online_configuration'          => [
                     'online_price_type_id'          => 3,
                     'register_to_buy'               => 1,
@@ -81,7 +81,7 @@ class UserSeeder extends Seeder
                     'comerciocity_interno',
                     'articles_default_in_vender',
                     'article_num_in_online',
-                    // 'check_sales',
+                    'check_sales',
                     // 'sale.observations',
                     'production.order_production',
                     'production.production_movement',

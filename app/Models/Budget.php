@@ -11,7 +11,7 @@ class Budget extends Model
     protected $dates = ['start_at', 'finish_at'];
 
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'articles', 'budget_status', 'discounts', 'surchages');
+        $query->with('client.iva_condition', 'client.price_type', 'articles.article_variants', 'budget_status', 'discounts', 'surchages');
         // $query->with('client.iva_condition', 'client.price_type', 'articles', 'budget_status', 'optional_order_production_statuses');
     }
 

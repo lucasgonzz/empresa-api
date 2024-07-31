@@ -149,7 +149,7 @@ class SaleController extends Controller
             SaleHelper::updateCurrentAcountsAndCommissions($model);
         }
 
-        
+
         $this->sendAddModelNotification('Sale', $model->id);
         SaleHelper::sendUpdateClient($this, $model);
 

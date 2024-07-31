@@ -21,7 +21,7 @@ class CurrentAcountPaymentMethodDiscountSeeder extends Seeder
         $models = [
             [
                 'current_acount_payment_method_id'  => 2,
-                'discount_percentage'               => 10,
+                'discount_percentage'               => 15,
             ],  
             [
                 'current_acount_payment_method_id'  => 3,

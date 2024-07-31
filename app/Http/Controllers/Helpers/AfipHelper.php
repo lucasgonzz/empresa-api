@@ -60,6 +60,8 @@ class AfipHelper extends Controller {
 
             if ($this->factura_solo_algunos_metodos_de_pago) {
 
+                Log::info('factura_solo_algunos_metodos_de_pago');
+
                 $helper = new AfipSelectedPaymentMethodsHelper($this->sale, $this->afip_selected_payment_methods);
 
                 $gravado                += $helper->get_gravado();

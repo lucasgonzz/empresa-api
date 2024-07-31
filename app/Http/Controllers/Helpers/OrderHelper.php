@@ -209,6 +209,7 @@ class OrderHelper {
             'buyer_id'              => $order->buyer_id,
             'client_id'             => $client_id,
             'to_check'              => $to_check,
+            'terminada'             => !$to_check,
             'num'                   => $instance->num('sales'),
             'save_current_acount'   => 1,
             'order_id'              => $order->id,

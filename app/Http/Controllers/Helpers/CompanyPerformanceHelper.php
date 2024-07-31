@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\PerformanceHelper;
 use App\Models\CompanyPerformance;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\ExpenseConcept;
@@ -11,7 +12,7 @@ use Illuminate\Support\Facades\Log;
 
 class CompanyPerformanceHelper {
 
-
+    protected $duracion_diaria = 1;
 
 	function set_fechas($fecha_inicio, $fecha_fin) {
 
@@ -35,17 +36,35 @@ class CompanyPerformanceHelper {
 
         Carbon::setLocale('es');
 
-        while ($this->fecha_inicio->lt($this->fecha_fin)) {
-            Log::info('buscando rendimiento de '.$this->fecha_inicio->format('d/m/Y'));
+        $mes_actual = Carbon::today()->startOfMonth();
+
+        while ($this->fecha_inicio->lte($this->fecha_fin)) {
+
+            if ($this->fecha_inicio->eq($mes_actual)) {
+
+                Log::info('Entro al mes corriente');
+
+                $this->crear_company_performance_del_mes_corriente();
+
+            }
+
+
+            Log::info('Buscando company_performance del mes: '.$this->fecha_inicio->month.' año: '.$this->fecha_inicio->year);
+
             $company_performance = CompanyPerformance::where('user_id', $this->user_id)
                                 ->where('year', $this->fecha_inicio->year)
                                 ->where('month', $this->fecha_inicio->month)
+                                ->withAll()
                                 ->first();
 
             if (!is_null($company_performance)) {
+
                 $company_performance->fecha = Carbon::create($company_performance->year, $company_performance->month, 1)->isoFormat('MMMM').' '.$company_performance->year;
+
                 $this->meses_anteriores[] = $company_performance;
-                Log::info('Entro con rendimientos de '.$company_performance->fecha);
+                // Log::info('Entro con rendimientos de '.$company_performance->fecha);
+            } else {
+                Log::info('No habia para la fecha');
             }
             $this->fecha_inicio->addMonth();
         }
@@ -78,44 +97,44 @@ class CompanyPerformanceHelper {
 
         $this->init_relation('payment_methods', 'ingresos_mostrador');
         $this->init_relation('payment_methods', 'ingresos_cuenta_corriente');
-        $this->init_relation('expense_concepts', 'gastos');
+        $this->init_relation('payment_methods', 'gastos');
+        $this->init_relation('expense_concepts', 'expense_concepts');
 
         foreach ($this->meses_anteriores as $company_performance) {
 
             $this->suma_company_performances['total_vendido']     += $company_performance->total_vendido;
+            
             $this->suma_company_performances['total_pagado_mostrador']    += $company_performance->total_pagado_mostrador;
+            
             $this->suma_company_performances['total_vendido_a_cuenta_corriente']  += $company_performance->total_vendido_a_cuenta_corriente;
+            
             $this->suma_company_performances['total_pagado_a_cuenta_corriente']   += $company_performance->total_pagado_a_cuenta_corriente;
+            
             $this->suma_company_performances['total_devolucion']  += $company_performance->total_devolucion;
+            
             $this->suma_company_performances['total_ingresos']    += $company_performance->total_ingresos;
+            
             $this->suma_company_performances['cantidad_ventas']   += $company_performance->cantidad_ventas;
+            
             $this->suma_company_performances['total_gastos']  += $company_performance->total_gastos;
+            
             $this->suma_company_performances['total_comprado']    += $company_performance->total_comprado;
 
 
-            $this->sumar_ingresos($company_performance, 'ingresos_mostrador');
+            $this->sumar_relation($company_performance, 'ingresos_mostrador');
 
-            $this->sumar_ingresos($company_performance, 'ingresos_cuenta_corriente');
+            $this->sumar_relation($company_performance, 'ingresos_cuenta_corriente');
 
-            $this->sumar_ingresos($company_performance, 'gastos');
+            $this->sumar_relation($company_performance, 'gastos');
 
-            
+            $this->sumar_relation($company_performance, 'expense_concepts');
 
-            // $this->suma_company_performances['ingresos_cuenta_corriente'] = [];
-            // foreach ($company_performance->ingresos_cuenta_corriente as $ingresos_cuenta_corriente) {
-            //     $this->suma_company_performances['ingresos_cuenta_corriente'][] = $ingresos_cuenta_corriente;
-            // }
-
-            // $this->suma_company_performances['expense_concepts'] = [];
-            // foreach ($company_performance->expense_concepts as $expense_concepts) {
-            //     $this->suma_company_performances['expense_concepts'][] = $expense_concepts;
-            // }
-
-            // Aca tengo que sumar tambien el array de pagos
         }
 
         $this->format_ingresos('ingresos_mostrador');
         $this->format_ingresos('ingresos_cuenta_corriente');
+        $this->format_ingresos('gastos');
+        $this->format_ingresos('expense_concepts');
 
     }
 
@@ -151,11 +170,34 @@ class CompanyPerformanceHelper {
     	$this->suma_company_performances[$ingresos_name] = $relations_result;
     }
 
-    function sumar_relation($company_performance, $relation_name, $ingresos_name) {
-        foreach ($company_performance->{$ingresos_name} as $payment_method) {
+    function sumar_relation($company_performance, $relation_name) {
+        foreach ($company_performance->{$relation_name} as $payment_method) {
 
-            $this->suma_company_performances[$ingresos_name][$payment_method->id]['pivot']['amount'] += $payment_method->pivot->amount;
+            $this->suma_company_performances[$relation_name][$payment_method->id]['pivot']['amount'] += $payment_method->pivot->amount;
         }
+    }
+
+    function crear_company_performance_del_mes_corriente() {
+
+        $company_performance_mes_corriente = CompanyPerformance::where('user_id', $this->user_id)
+                                                            ->where('year', $this->fecha_inicio->year)
+                                                            ->where('month', $this->fecha_inicio->month)
+                                                            ->first();
+
+        if (is_null($company_performance_mes_corriente) 
+            || $company_performance_mes_corriente->created_at->lt(Carbon::now()->subMinutes($this->duracion_diaria))) {
+
+            Log::info('Creando company_performance para el mes corriente: mes: '.$this->fecha_inicio->month.' año: '.$this->fecha_inicio->year);
+
+            $performance_helper = new PerformanceHelper(
+                $this->fecha_inicio->month, 
+                $this->fecha_inicio->year, 
+                $this->user_id
+            );
+
+            $performance_helper->create_company_performance();
+        }
+
     }
 
 }

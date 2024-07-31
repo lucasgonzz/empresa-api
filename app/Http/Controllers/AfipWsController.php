@@ -34,7 +34,7 @@ class AfipWsController extends Controller
 
         $this->ya_se_obtuvo_cae_desde_consultar_comprobante = false;
 
-        Log::info('AfipWsController sale id: '.$sale->id);
+        Log::info('AfipWsController sale id: '.$sale->id.' testing: '.$this->testing);
     }
 
     function init() {
@@ -138,6 +138,11 @@ class AfipWsController extends Controller
         if ($importes['total'] <= 0) {
             $this->save_importe_0();
             return; 
+        }
+
+        if (is_null($this->sale->total_a_facturar)) {
+            $this->sale->total_a_facturar = $importes['total'];
+            $this->sale->save();
         }
 
         $moneda_id = 'PES';

@@ -22,6 +22,9 @@ class AfipSelectedPaymentMethodSeeder extends Seeder
                 'current_acount_payment_method_id'  => 2,
             ],
             [
+                'current_acount_payment_method_id'  => 4,
+            ],
+            [
                 'current_acount_payment_method_id'  => 5,
             ],
         ];

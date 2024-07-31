@@ -77,6 +77,8 @@ class PerformanceHelper
 
         $this->attach_gastos_por_conceptos();
 
+        $this->attach_gastos_metodos_de_pago();
+
         return $this->company_performance;
 
         // Ventas
@@ -147,6 +149,15 @@ class PerformanceHelper
         }
     }
 
+    function attach_gastos_metodos_de_pago() {
+
+        foreach ($this->payment_methods_gastos as $payment_method) {
+            $this->company_performance->gastos()->attach($payment_method['id'], [
+                'amount'    => $payment_method['total'],
+            ]);
+        }
+    }
+
     function attach_ingresos_mostrador() {
 
         foreach ($this->ingresos_mostrador as $metodos_de_pago) {
@@ -191,7 +202,13 @@ class PerformanceHelper
 
             $this->cantidad_ventas++;
 
-            $total_sale = SaleHelper::getTotalSale($sale);
+            $total_sale = $sale->total;
+
+            if (is_null($total_sale)) {
+
+                $total_sale = SaleHelper::getTotalSale($sale);
+            }
+
             
             $this->total_vendido += $total_sale;
 
@@ -200,13 +217,31 @@ class PerformanceHelper
 
                 $this->total_pagado_mostrador += $total_sale;
 
-                $current_acount_payment_method_id = $sale->current_acount_payment_method_id;
+                if (count($sale->current_acount_payment_methods) >= 1) {
 
-                if (is_null($current_acount_payment_method_id)) {
-                    $current_acount_payment_method_id = 3;
+                    foreach ($sale->current_acount_payment_methods as $payment_method) {
+
+                        $total = $payment_method->pivot->amount;
+
+                        if (!is_null($payment_method->pivot->discount_amount)) {
+
+                            $total -= $payment_method->pivot->discount_amount;
+                        }
+
+                        $this->ingresos_mostrador[$payment_method->id]['total'] += $total;
+                    }
+
+                } else {
+
+                    $current_acount_payment_method_id = $sale->current_acount_payment_method_id;
+
+                    if (is_null($current_acount_payment_method_id)) {
+                        $current_acount_payment_method_id = 3;
+                    }
+
+                    $this->ingresos_mostrador[$current_acount_payment_method_id]['total'] += $total_sale;
                 }
 
-                $this->ingresos_mostrador[$current_acount_payment_method_id]['total'] += $total_sale;
 
 
                 
@@ -376,11 +411,15 @@ class PerformanceHelper
         
         $this->expense_concepts = $this->get_expense_concepts();
 
+        $this->payment_methods_gastos = $this->get_payment_methods();
+
         foreach ($expenses as $expense) {
             
             $this->total_gastos += $expense->amount;
 
             $this->expense_concepts[$expense->expense_concept_id]['total'] += $expense->amount;
+
+            $this->payment_methods_gastos[$expense->current_acount_payment_method_id]['total'] += $expense->amount;
         }
     }
 

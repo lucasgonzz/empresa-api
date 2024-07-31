@@ -41,6 +41,11 @@ use Illuminate\Support\Facades\Log;
 
 class SaleHelper extends Controller {
 
+    static function update_total_sale($sale) {
+        $sale->total = Self::getTotalSale($sale);
+        $sale->save();
+    }
+
     static function get_se_esta_confirmando($request, $sale) {
         if ($request->confirmed && $sale->checked) {
             return true;
@@ -178,6 +183,17 @@ class SaleHelper extends Controller {
             UpdateHelper::check_articulos_eliminados($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
         }
 
+        /*
+            * Si se esta confirmando, el total que llega de vender esta mal
+                porque no tiene en cuenta las unidades chequedas, las cuales ahora
+                pasan a ser las unidades reales del articulo en la venta
+            * Entonces se setea el total desde aca para tener eso en cuenta
+        */
+        if ($se_esta_confirmando_por_primera_vez) {
+            Self::update_total_sale($model);
+        }
+
+
         if ($from_store && !$model->to_check && !$model->checked) {
             Self::attachCurrentAcountsAndCommissions($model);
         } else {
@@ -187,8 +203,11 @@ class SaleHelper extends Controller {
 
     static function set_total_a_facturar($sale, $request) {
         if (!is_null($sale->afip_information_id) && $sale->afip_information_id != 0) {
+
+
             $afip_helper = new AfipHelper($sale);
             $importes = $afip_helper->getImportes();
+            Log::info('pidiendo total_a_facturar: '.$importes['total']);
 
             $sale->total_a_facturar = $importes['total'];
             $sale->save();
@@ -201,12 +220,12 @@ class SaleHelper extends Controller {
             $sale->current_acount_payment_methods()->detach();
 
             if (!$request->current_acount_payment_method_id) {
-                foreach ($request->metodos_de_pago_seleccionados as $metodoDePago) {
+                foreach ($request->selected_payment_methods as $payment_method) {
                   
-                    $sale->current_acount_payment_methods()->attach($metodoDePago['id'],[
-                        'amount' => $metodoDePago['monto'],
-                        'discount_percentage' => $metodoDePago['discount_percentage'],
-                        'discount_amount' => $metodoDePago['discount_amount'],
+                    $sale->current_acount_payment_methods()->attach($payment_method['id'],[
+                        'amount' => $payment_method['amount'],
+                        // 'discount_percentage' => $payment_method['discount_percentage'],
+                        // 'discount_amount' => $payment_method['discount_amount'],
                     ]);
                     
                 }
@@ -261,10 +280,6 @@ class SaleHelper extends Controller {
 
                     foreach ($sale->discounts as $discount) {
 
-                        // Log::info('Aplicando descuento del '.$discount->pivot->percentage.'% a '.$item['name']);
-                        // Log::info('isset is_article: '.isset($item['is_article']));
-                        // Log::info('surchages_in_services: '.$sale->surchages_in_services);
-
                         $total_item -= (float)$discount->pivot->percentage * $total_item / 100;
                     }
 
@@ -288,10 +303,6 @@ class SaleHelper extends Controller {
 
                     foreach ($sale->surchages as $surchage) {
 
-                        // Log::info('Aplicando recargo del '.$surchage->pivot->percentage.'% a '.$item['name']);
-                        // Log::info('isset is_article: '.isset($item['is_article']));
-                        // Log::info('surchages_in_services: '.$sale->surchages_in_services);
-
                         $total_item += (float)$surchage->pivot->percentage * $total_item / 100;
                     }
 
@@ -302,7 +313,15 @@ class SaleHelper extends Controller {
 
             }
 
-            $nota_credito = CurrentAcountHelper::notaCredito($haber, $request->nota_credito_description, 'client', $request->client_id, $sale->id, $request->returned_items);
+            $nota_credito = CurrentAcountHelper::notaCredito(
+                $haber, 
+                $request->nota_credito_description, 
+                'client', 
+                $request->client_id, 
+                $sale->id, 
+                $request->returned_items
+            );
+
             CurrentAcountHelper::checkSaldos('client', $request->client_id);
 
             $ct = new Controller();
@@ -322,16 +341,16 @@ class SaleHelper extends Controller {
         // Log::info((array)$nota_credito);
         foreach ($items as $item) {
             if (
-                isset($item['return_to_stock']) 
-                && !is_null($item['return_to_stock']) 
-                && (float)$item['return_to_stock'] > 0
+                isset($item['returned_amount']) 
+                && !is_null($item['returned_amount']) 
+                && (float)$item['returned_amount'] > 0
             ) {
                 $ct = new StockMovementController();
                 $request = new \Illuminate\Http\Request();
                 
                 $request->model_id = $item['id'];
                 $request->to_address_id = $sale->address_id;
-                $request->amount = $item['return_to_stock'];
+                $request->amount = $item['returned_amount'];
                 $request->nota_credito_id = $nota_credito->id;
                 $request->concepto = 'Nota credito Venta N° '.$sale->num;
                 $ct->store($request);

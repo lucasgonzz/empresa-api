@@ -58,6 +58,7 @@ class BudgetHelper {
             	'employee_id'           => SaleHelper::getEmployeeId(),
 	            'save_current_acount' 	=> Self::get_guardar_cuenta_corriente($budget),
 	            'to_check'				=> UserHelper::hasExtencion('check_sales') ? 1 : 0,
+	            'terminada'				=> UserHelper::hasExtencion('check_sales') ? 0 : 1,
 	        ]);
 	        Self::attachSaleArticles($sale, $budget);
 	        Self::attachSaleDiscountsAndSurchages($sale, $budget);
@@ -65,7 +66,6 @@ class BudgetHelper {
 	        if (!$sale->to_check) {
 	        	SaleHelper::attachCurrentAcountsAndCommissions($sale);
 	        }
-
 
         	$ct->sendAddModelNotification('Sale', $sale->id, false);
 		}

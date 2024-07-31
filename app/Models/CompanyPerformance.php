@@ -10,11 +10,11 @@ class CompanyPerformance extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        return $q->with('ingresos_mostrador', 'ingresos_cuenta_corriente', 'expense_concepts');
+        return $q->with('ingresos_mostrador', 'ingresos_cuenta_corriente', 'expense_concepts', 'gastos');
     }
 
     function gastos() {
-        return $this->belongsToMany(CurrentAcountPaymentMethod::class);
+        return $this->belongsToMany(CurrentAcountPaymentMethod::class, 'company_performance_gasto')->withPivot('amount');
     }
 
     function ingresos_mostrador() {
@@ -31,7 +31,7 @@ class CompanyPerformance extends Model
 
     // Aca tiene en cuenta lo que ingreso por mostrador y por cuenta corriente
     function ingresos_totales() {
-        return $this->belongsToMany(CurrentAcountPaymentMethod::class);
+        return $this->belongsToMany(CurrentAcountPaymentMethod::class, 'company_performance_ingresos_total')->withPivot('amount');
     }
 
     function article_performances() {
