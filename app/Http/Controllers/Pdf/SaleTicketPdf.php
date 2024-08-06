@@ -214,7 +214,7 @@ class SaleTicketPdf extends fpdf {
 	    	if (!is_null($payment_method->pivot->discount_amount)) {
 		    	$this->x = 2;
 		    	$this->total_sale -= (float)$payment_method->pivot->discount_amount;
-				$this->Cell($this->cell_ancho / 2, 7, 'Desc $'. $payment_method->pivot->discount_amount.' '.substr($payment_method->name, 0, 3), 'B', 0, 'L');
+				$this->Cell($this->cell_ancho / 2, 7, 'Desc $'. Numbers::price($payment_method->pivot->discount_amount).' '.substr($payment_method->name, 0, 3), 'B', 0, 'L');
 				$this->Cell($this->cell_ancho / 2, 7, '$'.Numbers::price($this->total_sale), 'B', 1, 'R');
 	    	}
 	    }
@@ -231,9 +231,26 @@ class SaleTicketPdf extends fpdf {
 	}
 
 	function total() {
+		$total_sale = $this->total_sale;
+
+		if (!is_null($this->sale->total)) {
+
+			$total_sale = $this->sale->total;
+		}
+		   
+
+		if (!is_null($this->sale->total) && $this->sale->total != $this->total_sale) {
+
+			$this->SetFont('Arial', 'B', 10);
+		    $this->x = 2;
+			$this->Cell($this->cell_ancho, 10, 'Total sin descuentos: $'. Numbers::price($this->total_sale), 0, 0, 'L');
+			$this->y += 10;
+		}
+
+
+		$this->SetFont('Arial', 'B', 12);
 	    $this->x = 2;
-	    $this->SetFont('Arial', 'B', 12);
-		$this->Cell($this->cell_ancho, 10, 'Total: $'. Numbers::price($this->total_sale), 1, 0, 'C');
+		$this->Cell($this->cell_ancho, 10, 'Total: $'. Numbers::price($total_sale), 1, 0, 'C');
 		$this->y += 10;
 	}
 

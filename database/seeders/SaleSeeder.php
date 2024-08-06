@@ -26,14 +26,44 @@ class SaleSeeder extends Seeder
     public function run()
     {
 
-        $this->multiplo_price = 1;
+        $this->reportes();
 
-        $this->ventas_sin_pagar();
+        // $this->multiplo_price = 1;
 
-        // Este es para las company_performances
-        $this->ventas_meses_atras();
+        // $this->ventas_sin_pagar();
+
+        // // Este es para las company_performances
+        // $this->ventas_meses_atras();
 
         // $this->pagos();
+    }
+
+    function reportes() {
+
+        require(database_path().'\seeders\sales\reportes.php');
+
+        $this->create_sales($ventas_desde_principio_de_mes);
+        
+        $this->create_sales($ventas_meses_anterioires);
+
+    }
+
+    function create_sales($sales) {
+        $user = User::where('company_name', 'Autopartes Boxes')->first();
+
+        foreach ($sales as $sale) {
+
+            $data = [
+                'num'               => $sale['num'],
+                'address_id'        => $sale['address_id'],
+                'employee_id'       => $sale['employee_id'],
+                'created_at'        => $sale['created_at'],
+                'user_id'           => $user->id,
+            ];
+            
+            $created_sale = Sale::create($data);
+            SaleHelper::attachProperies($created_sale, $this->setRequest($sale));
+        }
     }
 
     function ventas_meses_atras() {
@@ -48,7 +78,7 @@ class SaleSeeder extends Seeder
             [
                 'num'                   => 1,
                 'client_id'             => 1,
-                'employee_id'           => 3,
+                'employee_id'           => 503,
                 'save_current_acount'   => 1,
                 'user_id'               => $user->id,
             ],
@@ -96,7 +126,7 @@ class SaleSeeder extends Seeder
             [
                 'num'           => 1,
                 'client_id'     => 1,
-                'employee_id'   => 3,
+                'employee_id'   => 503,
                 'save_current_acount'   => 0,
                 'omitir_en_cuenta_corriente'   => 1,
                 'current_acount_payment_method_id'  => 2,
@@ -126,7 +156,7 @@ class SaleSeeder extends Seeder
             [
                 'num'           => 1,
                 'client_id'     => 1,
-                'employee_id'   => 3,
+                'employee_id'   => 503,
                 'save_current_acount'   => 1,
                 'user_id'       => $user->id,
             ],
@@ -179,6 +209,8 @@ class SaleSeeder extends Seeder
             $model = $models[$dias];
 
             $model['created_at'] = Carbon::now()->subDays($dias);
+            $model['address_id'] = rand(1,2);
+            $model['omitir_en_cuenta_corriente'] = 1;
 
             $sale = Sale::create($model);
 
@@ -279,14 +311,25 @@ class SaleSeeder extends Seeder
 
     function checks() {
         $request = new \stdClass();
-        $request->current_acount_payment_methods = [
-            'current_acount_payment_method_id'  => 1,
-            'amount'                        => 100,
-            'bank'                          => 'BERSA',
-            'payment_date'                  => null,
-            'num'                           => '123123',
-            'credit_card_id'                => null,
-            'credit_card_payment_plan_id'   => null,
+        return [
+            [
+                'current_acount_payment_method_id'  => 1,
+                'amount'                        => 100,
+                'bank'                          => 'BERSA',
+                'payment_date'                  => null,
+                'num'                           => '123123',
+                'credit_card_id'                => null,
+                'credit_card_payment_plan_id'   => null,
+            ],
+            [
+                'current_acount_payment_method_id'  => 1,
+                'amount'                        => 100,
+                'bank'                          => 'Banco re mil largo',
+                'payment_date'                  => null,
+                'num'                           => '123123',
+                'credit_card_id'                => null,
+                'credit_card_payment_plan_id'   => null,
+            ],
         ];
         return $request;
     }
@@ -327,46 +370,23 @@ class SaleSeeder extends Seeder
         $request->items = [];
         $request->discounts = [];
         $request->surchages = [];
-        $request->metodos_de_pago_seleccionados = [];
-        $request->current_acount_payment_method_id = 3;
+        $request->selected_payment_methods = $sale['payment_methods'];
+        $request->current_acount_payment_method_id = null;
         $request->discount_amount = null;
         $request->discount_percentage = null;
-        $request->client_id = $sale->id;
-        $articles = Article::take(7)
-                            ->get();
-        foreach ($articles as $article) {
+        $request->client_id = $sale['client_id'];
+
+        foreach ($sale['articles'] as $article) {
             $_article = [
-                'id'            => $article->id,
+                'id'            => $article['id'],
                 'is_article'    => true,
-                'amount'        => 1,
+                'amount'        => $article['amount'],
                 'article_variant_id'        => null,
-                'cost'          => $article->cost,
-                'name'          => $article->name,
-                'price_vender'  => 1000 * $this->multiplo_price,
-                // 'price_vender'  => $article->final_price,
+                'cost'          => null,
+                'price_vender'  => $article['price_vender'],
             ];
             $request->items[] = $_article; 
         }
-
-        $alAzar = rand(2,4);
-
-        for ($i= 0; $i < $alAzar ; $i++) { 
-            
-            $precioTotal = 0;
-           
-            foreach ($request->items as $item) {
-
-                $precioTotal += $item['amount'] * $item['price_vender'];
-            };
-
-            $_metodosDePagoAlAzar =[
-                    'id'        => rand(1,5),
-                    'monto'    => $precioTotal / $alAzar,
-            ];
-           
-           $request->metodos_de_pago_seleccionados[] = $_metodosDePagoAlAzar;
-        };
-
 
         return $request;
     }

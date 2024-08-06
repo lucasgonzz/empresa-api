@@ -35,7 +35,8 @@ class CajaReportsHelper {
 		}
 
 		$sales = Sale::where('user_id', $instance->userId())
-                        ->orderBy('created_at', 'ASC');
+                        ->orderBy('created_at', 'ASC')
+                        ->where('terminada', 1);
         if ($until_date != 0) {
             $sales = $sales->whereDate('created_at', '>=', $from_date)
                             ->whereDate('created_at', '<=', $until_date);
@@ -77,6 +78,7 @@ class CajaReportsHelper {
 
 		$current_acounts = CurrentAcount::where('user_id', $instance->userId())
 										->whereNotNull('haber')
+                                		->where('status', 'pago_from_client')
 										->whereNotNull('client_id');
 		if ($until_date != 0) {
             $current_acounts = $current_acounts->whereDate('created_at', '>=', $from_date)

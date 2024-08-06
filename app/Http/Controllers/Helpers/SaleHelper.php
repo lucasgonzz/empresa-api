@@ -41,6 +41,25 @@ use Illuminate\Support\Facades\Log;
 
 class SaleHelper extends Controller {
 
+    static function set_total_sales($user_id) {
+
+        $sales = Sale::where('user_id', $user_id)
+                        ->orderBy('created_at', 'ASC')
+                        ->get();
+
+        echo count($sales).' ventas <br> ';
+
+        foreach ($sales as $sale) {
+            
+            $sale->total = Self::getTotalSale($sale);
+            $sale->timestamps = false;
+
+            $sale->save();
+        }
+
+        echo 'Termino <br> ';
+    }
+
     static function update_total_sale($sale) {
         $sale->total = Self::getTotalSale($sale);
         $sale->save();
@@ -215,6 +234,9 @@ class SaleHelper extends Controller {
     }
 
     static function attachSelectedPaymentMethods($sale, $request){
+
+        Log::info('attachSelectedPaymentMethods:');
+        Log::info((array)$request->selected_payment_methods);
 
         if (is_null($sale->client_id) || $sale->omitir_en_cuenta_corriente) {
             $sale->current_acount_payment_methods()->detach();

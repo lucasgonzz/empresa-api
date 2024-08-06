@@ -15,7 +15,7 @@ class EmployeeController extends Controller
     function index() {
         $models = User::where('owner_id', $this->userId())
                     ->with('permissions')
-                    ->orderBy('created_at', 'DESC')
+                    ->orderBy('name', 'ASC')
                     ->get();
         return response()->json(['models' => $models], 200);
     }      
@@ -28,7 +28,9 @@ class EmployeeController extends Controller
         foreach ($request->permissions as $permission) {
             $model->permissions()->attach($permission['id']);
         }
+        
         $model->name                                            = $request->name;
+        $model->address_id                                      = $request->address_id;
         $model->visible_password                                = $request->visible_password;
         $model->admin_access                                    = $request->admin_access;
         $model->dias_alertar_empleados_ventas_no_cobradas       = $request->dias_alertar_empleados_ventas_no_cobradas;
@@ -58,8 +60,9 @@ class EmployeeController extends Controller
             $model = User::create([
                 'name'              => ucfirst($request->name),
                 'doc_number'        => $request->doc_number,
-                'admin_access'        => $request->admin_access,
+                'admin_access'      => $request->admin_access,
                 'visible_password'  => $request->visible_password,
+                'address_id'        => $request->address_id,
                 'password'          => Hash::make($request->visible_password),
                 'owner_id'          => $this->userId(),
                 'created_at'        => Carbon::now(),

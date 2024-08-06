@@ -3,10 +3,12 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Exports\ArticleSalesExport;
+use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\Helpers\ProviderOrderHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Pdf\Reportes\ClientesPdf;
 use App\Http\Controllers\Pdf\Reportes\InventarioPdf;
+use App\Models\Address;
 use App\Models\ArticlePerformance;
 use App\Models\CompanyPerformance;
 use App\Models\CurrentAcount;
@@ -15,6 +17,7 @@ use App\Models\Expense;
 use App\Models\ExpenseConcept;
 use App\Models\ProviderOrder;
 use App\Models\Sale;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -27,25 +30,45 @@ class PerformanceHelper
     public $articulos_vendidos;
     public $total_vendido;
 
-    function __construct($month, $year, $user_id) {
+    function __construct($month, $year, $user_id, $from_day = null) {
 
         $this->user_id = $user_id;
         
         $this->month = $month;
         $this->year = $year;
+        $this->from_day = $from_day;
 
 
         if (!is_null($month) && !is_null($year)) {
+
             $this->mes_inicio = Carbon::createFromFormat('Y-m', "$year-$month")->startOfMonth();
             $this->from_today = 0;
         } else {
+
             $this->mes_inicio = Carbon::now()->startOfDay();
             $this->from_today = 1;
         }
 
-        $mes_inicio = $this->mes_inicio->copy();
+        if (!is_null($from_day)) {
 
-        $this->mes_fin = $mes_inicio->endOfMonth();
+            $this->mes_inicio = Carbon::parse($from_day)->startOfDay();
+            $this->mes_fin = Carbon::parse($from_day)->endOfDay();
+
+        } else {
+
+            $mes_inicio = $this->mes_inicio->copy();
+            $this->mes_fin = $mes_inicio->endOfMonth();
+        }
+
+    }
+
+    function set_day() {
+
+        if (!is_null($this->from_day)) {
+
+            $this->company_performance->day = $this->mes_inicio->day;
+            $this->company_performance->save();
+        }
     }
 
 
@@ -59,9 +82,19 @@ class PerformanceHelper
             'user_id'    => $this->user_id,
         ]);
 
+        $this->set_day();
+
         $this->set_sales();
 
         $this->set_article_performances();
+
+
+
+        $this->set_users_payment_methods();
+
+        $this->set_addresses_payment_methods();
+
+
 
         $this->procesar_sales();
 
@@ -74,6 +107,14 @@ class PerformanceHelper
         $this->set_company_performance_props();
 
         $this->attach_ingresos_por_metodos_de_pago();
+
+
+
+        $this->attach_users_payment_methods();
+
+        $this->attach_addresses_payment_methods();
+
+
 
         $this->attach_gastos_por_conceptos();
 
@@ -140,6 +181,34 @@ class PerformanceHelper
         $this->attach_ingresos_cuenta_corriente();
     }
 
+    function attach_users_payment_methods() {
+
+        foreach ($this->users_payment_methods as $user_payment_methods) {
+            
+            foreach ($user_payment_methods['payment_methods'] as $payment_method) {
+                
+                $this->company_performance->users_payment_methods()->attach($payment_method['id'], [
+                    'amount'     => $payment_method['total'],
+                    'user_id'    => $user_payment_methods['user_id'],
+                ]);
+            }
+        }
+    }
+
+    function attach_addresses_payment_methods() {
+
+        foreach ($this->addresses_payment_methods as $address_payment_methods) {
+            
+            foreach ($address_payment_methods['payment_methods'] as $payment_method) {
+                
+                $this->company_performance->addresses_payment_methods()->attach($payment_method['id'], [
+                    'amount'        => $payment_method['total'],
+                    'address_id'    => $address_payment_methods['address_id'],
+                ]);
+            }
+        }
+    }
+
     function attach_gastos_por_conceptos() {
 
         foreach ($this->expense_concepts as $expense_concept) {
@@ -202,20 +271,22 @@ class PerformanceHelper
 
             $this->cantidad_ventas++;
 
-            $total_sale = $sale->total;
+            $this->sale = $sale;
 
-            if (is_null($total_sale)) {
+            $this->total_sale = $sale->total;
 
-                $total_sale = SaleHelper::getTotalSale($sale);
+            if (is_null($this->total_sale)) {
+
+                $this->total_sale = SaleHelper::getTotalSale($sale);
             }
 
             
-            $this->total_vendido += $total_sale;
+            $this->total_vendido += $this->total_sale;
 
 
             if (is_null($sale->client_id) || $sale->omitir_en_cuenta_corriente) {
 
-                $this->total_pagado_mostrador += $total_sale;
+                $this->total_pagado_mostrador += $this->total_sale;
 
                 if (count($sale->current_acount_payment_methods) >= 1) {
 
@@ -247,7 +318,7 @@ class PerformanceHelper
                 
             } else if (!is_null($sale->current_acount)) {
 
-                $this->total_vendido_a_cuenta_corriente += $total_sale;
+                $this->total_vendido_a_cuenta_corriente += $this->total_sale;
 
             } else {
                 /* 
@@ -257,6 +328,115 @@ class PerformanceHelper
                 */
             }
 
+
+            $this->set_employee_payment_methods();
+
+            $this->set_address_payment_methods();
+
+        }
+
+    }
+
+    function set_users_payment_methods() {
+
+        $this->users_payment_methods = [];
+
+        $employees = User::where('owner_id', $this->user_id)
+                            ->get();
+
+        foreach ($employees as $employee) {
+            
+            $this->users_payment_methods[$employee->id] = [
+                'user_id'           => $employee->id,
+                'payment_methods'   => $this->get_payment_methods(),
+            ];
+        }
+
+        $this->users_payment_methods[$this->user_id] = [
+            'user_id'         => $this->user_id,
+            'payment_methods' => $this->get_payment_methods(),
+        ];
+    }
+
+    function set_addresses_payment_methods() {
+
+        $this->addresses_payment_methods = [];
+
+        $addresses = Address::where('user_id', $this->user_id)
+                                ->get();
+
+        foreach ($addresses as $address) {
+            
+            $this->addresses_payment_methods[$address->id] = [
+                'payment_methods'   => $this->get_payment_methods(),
+                'address_id'        => $address->id,
+            ];
+        }
+    }
+
+    function set_employee_payment_methods() {
+
+        if (!is_null($this->sale->employee_id)) {
+
+            $employee_id = $this->sale->employee_id;
+        } else {
+
+            $employee_id = $this->user_id;
+        }
+
+        if (is_null($this->sale->client_id) || $this->sale->omitir_en_cuenta_corriente) {
+
+            $payment_method_id = $this->sale->current_acount_payment_method_id;
+
+            if (!is_null($payment_method_id)) {
+
+                $this->users_payment_methods[$employee_id]['payment_methods'][$payment_method_id]['total'] += (float)$this->total_sale;
+            
+            } else if (count($this->sale->current_acount_payment_methods) >= 1) {
+
+                foreach ($this->sale->current_acount_payment_methods as $payment_method) {
+                
+                    $total = (float)$payment_method->pivot->amount;
+                    
+                    if (!is_null($payment_method->pivot->discount_amount)) {
+
+                        $total -= (float)$payment_method->pivot->discount_amount;
+                    }
+
+                    $this->users_payment_methods[$employee_id]['payment_methods'][$payment_method->id]['total'] += $total;
+                }
+            }
+        }
+
+
+    }
+
+    function set_address_payment_methods() {
+
+        $address_id = $this->sale->address_id;
+
+        if (!is_null($address_id)) {
+
+            $payment_method_id = $this->sale->current_acount_payment_method_id;
+
+            if (!is_null($payment_method_id)) {
+
+                $this->addresses_payment_methods[$address_id]['payment_methods'][$payment_method_id]['total'] += (float)$this->total_sale;
+            
+            } else if (count($this->sale->current_acount_payment_methods) >= 1) {
+
+                foreach ($this->sale->current_acount_payment_methods as $payment_method) {
+                
+                    $total = (float)$payment_method->pivot->amount;
+                    
+                    if (!is_null($payment_method->pivot->discount_amount)) {
+
+                        $total -= (float)$payment_method->pivot->discount_amount;
+                    }
+
+                    $this->addresses_payment_methods[$address_id]['payment_methods'][$payment_method->id]['total'] += $total;
+                }
+            }
         }
 
     }
@@ -352,9 +532,10 @@ class PerformanceHelper
     }
 
     function procesar_pagos() {
-        Log::info('procesar_pagos mes_inicio: '.$this->mes_inicio);
+
         $pagos = CurrentAcount::where('user_id', $this->user_id)
                                 ->whereNotNull('haber')
+                                ->whereNotNull('client_id')
                                 ->where('status', 'pago_from_client')
                                 ->whereDate('created_at', '>=', $this->mes_inicio)
                                 ->whereDate('created_at', '<=', $this->mes_fin)
@@ -364,21 +545,60 @@ class PerformanceHelper
 
         $this->ingresos_cuenta_corriente = $this->get_payment_methods();
 
+        $delta = 0.00001; // Margen de error para la comparación
+
         foreach ($pagos as $pago) {
 
-            Log::info('sumando a total_pagado_a_cuenta_corriente: '.$pago->haber);
-
             $this->total_pagado_a_cuenta_corriente += $pago->haber;
+
+            $suma_payment_methods = 0;
 
             if (count($pago->current_acount_payment_methods) >= 1) {
 
                 foreach ($pago->current_acount_payment_methods as $payment_method) {
 
-                    $this->ingresos_cuenta_corriente[$payment_method->id]['total'] += $payment_method->pivot->amount;
+                    $total = (float)$payment_method->pivot->amount;
+
+                    if ($total == 0 && count($pago->current_acount_payment_methods) == 1) {
+                      
+                        $total = (float)$pago->haber;
+                    } else {
+
+                        Log::info('El total estaba en 0 y tiene mas de un metodo de pago');
+                    }
+
+                    $suma_payment_methods += $total;
+
+                    $this->ingresos_cuenta_corriente[$payment_method->id]['total'] += $total;
+
+                    $this->users_payment_methods[$pago->employee_id]['payment_methods'][$payment_method->id]['total'] += $total;
                 } 
             } else {
+
+                $suma_payment_methods = null;
+
                 $this->ingresos_cuenta_corriente[3]['total'] += $pago->haber;
+
+                $this->users_payment_methods[$pago->employee_id]['payment_methods'][3]['total'] += $total;
             }
+
+            // if (!is_null($suma_payment_methods) && abs($pago->haber - $suma_payment_methods) > $delta) {
+            //     Log::info('');
+            //     Log::info('********************************************');
+            //     Log::info('DIFERENCIA EN EL PAGO');
+            //     Log::info($pago->detalle);
+            //     Log::info('Fecha '.$pago->created_at->format('d/m/Y'));
+                
+            //     if (!is_null($pago->client)) {
+
+            //         Log::info('Cliente '.$pago->client->name);
+            //     }
+
+            //     Log::info('Pago haber: '.Numbers::price($pago->haber));
+            //     Log::info('suma_payment_methods: '.Numbers::price($suma_payment_methods));
+            //     Log::info('********************************************');
+            //     Log::info('');
+            // }
 
         }
 
@@ -414,6 +634,9 @@ class PerformanceHelper
         $this->payment_methods_gastos = $this->get_payment_methods();
 
         foreach ($expenses as $expense) {
+
+            // Log::info('procesando gasto de '.$expense->amount);
+            Log::info('procesando gasto de '.$expense->expense_concept->name.' de '.$expense->amount);
             
             $this->total_gastos += $expense->amount;
 

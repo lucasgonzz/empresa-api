@@ -11,6 +11,7 @@ class ChequeController extends Controller
         $models = CurrentAcountCurrentAcountPaymentMethod::where('current_acount_payment_method_id', 1)
                                                             ->where('user_id', $this->userId())
                                                             ->orderBy('created_at', 'ASC')
+                                                            ->with('current_acount.client')
                                                             ->get();
         return response()->json(['models' => $models], 200);
     }

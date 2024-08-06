@@ -5,7 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
-class Expense extends Model
+class Pending extends Model
 {
     protected $guarded = [];
 
@@ -13,7 +13,7 @@ class Expense extends Model
         
     }
 
-    function expense_concept() {
-        return $this->belongsTo(ExpenseConcept::class);
+    function unidad_frecuencia() {
+        return $this->belongsTo(UnidadFrecuencia::class);
     }
 }

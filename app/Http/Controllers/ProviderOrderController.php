@@ -34,6 +34,7 @@ class ProviderOrderController extends Controller
                                 ->orderBy('created_at', 'DESC')
                                 ->withAll()
                                 ->whereNotNull('days_to_advise')
+                                ->where('days_to_advise', '>', 0)
                                 ->where('provider_order_status_id', 1)
                                 ->get();
         $results = [];

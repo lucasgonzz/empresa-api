@@ -33,6 +33,7 @@ class ExpenseController extends Controller
             'amount'                                => $request->amount,
             'current_acount_payment_method_id'      => $request->current_acount_payment_method_id,
             'observations'                          => $request->observations,
+            'created_at'                            => $request->created_at,
             'user_id'                               => $this->userId(),
         ]);
         // $this->sendAddModelNotification('Expense', $model->id);
@@ -49,6 +50,7 @@ class ExpenseController extends Controller
         $model->amount                                = $request->amount;
         $model->current_acount_payment_method_id      = $request->current_acount_payment_method_id;
         $model->observations                          = $request->observations;
+        $model->created_at                            = $request->created_at;
         $model->save();
         // $this->sendAddModelNotification('Expense', $model->id);
         return response()->json(['model' => $this->fullModel('Expense', $model->id)], 200);

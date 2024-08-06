@@ -76,12 +76,7 @@ class ArticleHelper {
     }
 
     static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null) {
-        // Log::info('setFinalPrice para '.$article->name);
-        // if (!is_null($article->provider)) {
-            // Log::info('provider: '.$article->provider->name);
-        // }
-        // Log::info('user_id: '.$user_id);
-        // Log::info('Se esta usando la base_de_datos: '.config('database.connections.mysql.database'));
+        Log::info('setFinalPrice para '.$article->name.' con precio de '.$article->price);
         
         if (is_null($user)) {
             if (is_null($user_id)) {
@@ -139,7 +134,7 @@ class ArticleHelper {
             }
         } else {
             $final_price = $article->price;
-            // Log::info('entro con price: '.$article->price);
+            Log::info('entro con price: '.$article->price);
         }
 
         // Log::info('final_price:');
@@ -161,7 +156,7 @@ class ArticleHelper {
         if ($current_final_price != $article->final_price) {
             $article->previus_final_price = $current_final_price; 
             $article->final_price_updated_at = Carbon::now();
-            // PriceChangeController::store($article, $auth_user_id);
+            PriceChangeController::store($article, $auth_user_id);
         }
 
         // echo($article->name.' final_price: '.$article->final_price.' </br>');

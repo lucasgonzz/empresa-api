@@ -28,6 +28,7 @@ class CreateArticleProviderOrderTable extends Migration
             $table->boolean('update_provider')->default(1)->nullable();
             $table->boolean('address_id')->nullable();
             $table->text('notes')->nullable();
+            $table->decimal('price', 22,2)->nullable();
             $table->timestamps();
         });
     }

@@ -7,4 +7,8 @@ use Illuminate\Database\Eloquent\Relations\Pivot;
 
 class CurrentAcountCurrentAcountPaymentMethod extends Pivot
 {
+
+	public function current_acount() {
+        return $this->belongsTo(CurrentAcount::class, 'current_acount_id');
+    }
 }

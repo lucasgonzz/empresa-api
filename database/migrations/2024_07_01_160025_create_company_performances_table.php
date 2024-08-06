@@ -17,6 +17,7 @@ class CreateCompanyPerformancesTable extends Migration
             $table->id();
             $table->integer('month')->nullable();
             $table->integer('year')->nullable();
+            $table->integer('day')->nullable();
             
             $table->decimal('total_vendido', 20,2)->nullable();
 

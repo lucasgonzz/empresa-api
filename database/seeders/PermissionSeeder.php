@@ -200,6 +200,78 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'Alertas',
                 'en'            => 'alerts.messages',
             ],
+
+
+            // Reportes
+
+            [
+                'singular'      => 'Acceder a reportes',
+                'plural'        => 'Reportes',
+                'en'            => 'reportes.index',
+            ],
+            [
+                'singular'      => 'Ver la informacion general (tarjetas)',
+                'plural'        => 'Reportes',
+                'en'            => 'reportes.cards',
+            ],
+            [
+                'singular'      => 'Ver Ingresos de la empresa',
+                'plural'        => 'Reportes',
+                'en'            => 'reportes.ingresos',
+            ],
+
+            [
+                'singular'      => 'Ver ventas por sucursales',
+                'plural'        => 'Reportes',
+                'en'            => 'reportes.sucursales.index',
+            ],
+            [
+                'singular'      => 'Ver ventas de todas las sucursales',
+                'plural'        => 'Reportes',
+                'en'            => 'reportes.sucursales.index.all',
+            ],
+            [
+                'singular'      => 'Ver ventas solo de su sucursal',
+                'plural'        => 'Reportes',
+                'en'            => 'reportes.sucursales.index.only_your',
+            ],
+
+            [
+                'singular'      => 'Ver ventas por empleados',
+                'plural'        => 'Reportes',
+                'en'            => 'reportes.empleados.index',
+            ],
+            [
+                'singular'      => 'Ver ventas de todos los empleados',
+                'plural'        => 'Reportes',
+                'en'            => 'reportes.empleados.index.all',
+            ],
+            [
+                'singular'      => 'Ver solo sus ventas',
+                'plural'        => 'Reportes',
+                'en'            => 'reportes.empleados.index.only_your',
+            ],
+
+            // Gastos
+            [
+                'singular'      => 'Ver Gastos',
+                'plural'        => 'Reportes',
+                'en'            => 'reportes.gastos',
+            ],
+
+            // Clientes
+            [
+                'singular'      => 'Ver Clientes',
+                'plural'        => 'Reportes',
+                'en'            => 'reportes.clientes',
+            ],
+
+            // Cheques
+            [
+                'singular'      => 'Ver Cheques',
+                'plural'        => 'Reportes',
+                'en'            => 'reportes.cheques',
+            ],
         ];
         foreach ($permissions as $permission) {
             PermissionEmpresa::create([

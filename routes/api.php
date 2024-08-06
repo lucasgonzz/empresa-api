@@ -94,6 +94,20 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('cc-payment-method-discount', 'CurrentAcountPaymentMethodDiscountController');
 
 
+    // Agenda
+    
+    // Pending
+    Route::resource('pending', 'PendingController');
+    Route::get('pending/from-date/{from_date}/{until_date}', 'PendingController@index');
+
+    // Pending Completed
+    Route::resource('pending-completed', 'PendingCompletedController');
+    Route::get('pending-completed/from-date/{from_date}/{until_date}', 'PendingCompletedController@index');
+    
+    // Unidad Frecuencia
+    Route::resource('unidad-frecuencia', 'UnidadFrecuenciaController');
+
+
     
     // Expenses | Gastos
     Route::resource('expense', 'ExpenseController');

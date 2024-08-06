@@ -256,7 +256,18 @@ class ArticleImport implements ToCollection
     }
 
     function isDataUpdated($row, $data) {
-        Log::info('comparando '.$data['price'].' con '.$this->articulo_existente->price);
+        $epsilon = 0.00001;
+
+        $new_price = null;
+        if (isset($data['price'])) {
+            $new_price = (float)$data['price'];
+        }
+
+        $actual_price = (float)$this->articulo_existente->price;
+
+        Log::info('comparando '.$new_price.' con '.$actual_price);
+        Log::info(!is_null($new_price) && abs($actual_price - $new_price) > $epsilon);
+
         return  (isset($data['name']) && $data['name']                          != $this->articulo_existente->name) ||
                 (isset($data['bar_code']) && $data['bar_code']                  != $this->articulo_existente->bar_code) ||
                 (isset($data['provider_code']) && $data['provider_code']        != $this->articulo_existente->provider_code) ||
@@ -265,7 +276,7 @@ class ArticleImport implements ToCollection
                 (isset($data['cost']) && $data['cost']                          != $this->articulo_existente->cost) ||
                 (isset($data['cost_in_dollars']) && $data['cost_in_dollars']    != $this->articulo_existente->cost_in_dollars) ||
                 (isset($data['percentage_gain']) && $data['percentage_gain']    != $this->articulo_existente->percentage_gain) ||
-                (isset($data['price']) && $data['price']                        != $this->articulo_existente->price) ||
+                (!is_null($new_price) && abs($actual_price - $new_price) > $epsilon) ||
                 (isset($data['category_id']) && $data['category_id']            != $this->articulo_existente->category_id) ||
                 (isset($data['sub_category_id']) && $data['sub_category_id']    != $this->articulo_existente->sub_category_id);
     }

@@ -10,7 +10,15 @@ class CompanyPerformance extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        return $q->with('ingresos_mostrador', 'ingresos_cuenta_corriente', 'expense_concepts', 'gastos');
+        return $q->with('ingresos_mostrador', 'ingresos_cuenta_corriente', 'expense_concepts', 'gastos', 'users_payment_methods');
+    }
+
+    function users_payment_methods() {
+        return $this->belongsToMany(CurrentAcountPaymentMethod::class, 'company_performance_user_payment_method')->withPivot('amount', 'user_id');
+    }
+
+    function addresses_payment_methods() {
+        return $this->belongsToMany(CurrentAcountPaymentMethod::class, 'company_performance_address_payment_method')->withPivot('amount', 'address_id');
     }
 
     function gastos() {

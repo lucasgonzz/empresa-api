@@ -41,7 +41,9 @@ class ProviderOrderHelper {
 		if ($_article['pivot']['received'] > 0) {
 			$data_changed = false;
 			$article = Article::find($_article['id']);
+
 			if (!is_null($article)) {
+
 				if (is_null($article->stock)) {
 					$article->stock = 0;
 					$article->save();
@@ -67,6 +69,13 @@ class ProviderOrderHelper {
 					$article->provider_cost_in_dollars = 0;
 					$data_changed = true;
 				}
+
+				if (isset($_article['pivot']['price']) && !is_null($_article['pivot']['price'])) {
+					$article->price = (float)$_article['pivot']['price'];
+					Log::info('actualizando price a '.$_article['pivot']['price']);
+					$data_changed = true;
+				}
+
 				if (!is_null($_article['pivot']['iva_id']) && $_article['pivot']['iva_id'] != 0 && $article->iva_id != $_article['pivot']['iva_id']) {
 					$article->iva_id = $_article['pivot']['iva_id'];
 					// Log::info('Nuevo iva');
@@ -143,18 +152,27 @@ class ProviderOrderHelper {
 					$art->save();
 				}
 			} 
+
 			$cost = null;
 			if (isset($article['pivot']['cost'])) {
 				$cost = $article['pivot']['cost'];
 			}
+
+			$price = null;
+			if (isset($article['pivot']['price'])) {
+				$price = $article['pivot']['price'];
+			}
+
 			if ($article['status'] == 'active' && is_null($cost) && !is_null($article['cost'])) {
 				$cost = $article['cost'];
 			}
+
 			$provider_order->articles()->attach($article['id'], [
 											'amount' 			=> GeneralHelper::getPivotValue($article, 'amount'),
 											'notes' 			=> GeneralHelper::getPivotValue($article, 'notes'),
 											'received' 			=> GeneralHelper::getPivotValue($article, 'received'),
 											'cost' 				=> $cost,
+											'price' 			=> $price,
 											'received_cost' 	=> GeneralHelper::getPivotValue($article, 'received_cost'),
 											'update_cost' 		=> GeneralHelper::getPivotValue($article, 'update_cost'),
 											'update_provider' 		=> GeneralHelper::getPivotValue($article, 'update_provider'),
@@ -258,28 +276,40 @@ class ProviderOrderHelper {
 				}
 			} else {
 				foreach ($provider_order->articles as $article) {
-					if (($article->pivot->cost != '' || $article->pivot->received_cost != '') && $article->pivot->received > 0) {
-						$cost = $article->pivot->cost;
-						if (!is_null($article->pivot->received_cost)) {
-							$cost = $article->pivot->received_cost;
-						}
-						if ($article->pivot->cost_in_dollars) {
-							if (!is_null($provider_order->provider->dolar)) {
-								$cost *= $provider_order->provider->dolar;
-							} else if (!is_null($user->dollar)) {
-								// Log::info('cost esta en '.$cost);
-								// Log::info('sumando dolar de usuario de '.$user->dollar);
-								$cost *= $user->dollar;
-								// Log::info('cost quedo en '.$cost);
+					if ($article->pivot->received > 0) {
+
+						$total_article = 0;
+
+						if ($article->pivot->cost != '' || $article->pivot->received_cost != '') {
+
+							$cost = $article->pivot->cost;
+							if (!is_null($article->pivot->received_cost)) {
+								$cost = $article->pivot->received_cost;
 							}
+							if ($article->pivot->cost_in_dollars) {
+								if (!is_null($provider_order->provider->dolar)) {
+									$cost *= $provider_order->provider->dolar;
+								} else if (!is_null($user->dollar)) {
+									// Log::info('cost esta en '.$cost);
+									// Log::info('sumando dolar de usuario de '.$user->dollar);
+									$cost *= $user->dollar;
+									// Log::info('cost quedo en '.$cost);
+								}
+							}
+							$total_article = $cost * $article->pivot->received;
+							
+							if ($provider_order->total_with_iva && !is_null($article->pivot->iva_id) && $article->pivot->iva_id != 0) {
+								$ct = new Controller();
+								$iva = $ct->getModelBy('ivas', 'id', $article->pivot->iva_id);
+								if ($iva->percentage != 'No Gravado' && $iva->percentage != 'Exento' && $iva->percentage != 0)
+								$total_article += $total_article * $iva->percentage / 100;
+							}
+						} else if (!is_null($article->pivot->price) && (float)$article->pivot->price > 0) {
+
+							$total_article = (float)$article->pivot->price * (float)$article->pivot->received;
 						}
-						$total_article = $cost * $article->pivot->received;
-						if ($provider_order->total_with_iva && !is_null($article->pivot->iva_id) && $article->pivot->iva_id != 0) {
-							$ct = new Controller();
-							$iva = $ct->getModelBy('ivas', 'id', $article->pivot->iva_id);
-							if ($iva->percentage != 'No Gravado' && $iva->percentage != 'Exento' && $iva->percentage != 0)
-							$total_article += $total_article * $iva->percentage / 100;
-						}
+
+
 						$total += $total_article;
 					}
 				}
