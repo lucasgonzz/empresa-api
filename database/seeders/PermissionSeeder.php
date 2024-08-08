@@ -272,6 +272,14 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'Reportes',
                 'en'            => 'reportes.cheques',
             ],
+
+
+            // Pendings | Agenda
+            [
+                'singular'      => 'Usar modulo de Agenda',
+                'plural'        => 'Agenda',
+                'en'            => 'pending.index',
+            ],
         ];
         foreach ($permissions as $permission) {
             PermissionEmpresa::create([

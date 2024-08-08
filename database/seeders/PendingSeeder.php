@@ -19,12 +19,12 @@ class PendingSeeder extends Seeder
 
         $user = User::where('company_name', 'Autopartes Boxes')->first();
 
-        $hace_un_mes = Carbon::now()->subMonth();
+        $hace_un_mes = Carbon::now()->subMonth()->startOfMonth();
 
         $models = [
             [
                 'detalle'                => 'Pagar impuestos',
-                'fecha_realizacion'      => $hace_un_mes->subWeeks(2)->startOfWeek(),
+                'fecha_realizacion'      => $hace_un_mes->addDays(3),
                 'es_recurrente'          => 1,
                 'unidad_frecuencia_id'   => 2,
                 'cantidad_frecuencia'    => 2,

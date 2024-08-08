@@ -18,6 +18,7 @@ class DatabaseSeeder extends Seeder
 
         // return;
 
+        $for_user = env('FOR_USER');
 
         if (env('FOR_SERVER') == 'la_barraca') {
             $this->call(UserSeeder::class);
@@ -87,7 +88,6 @@ class DatabaseSeeder extends Seeder
             // $this->call(LocationSeeder::class);
             $this->call(PaymentMethodTypeSeeder::class);
             // $this->call(CuponSeeder::class);
-            // $this->call(PriceTypeSeeder::class);
             $this->call(BudgetStatusSeeder::class);
             $this->call(BudgetSeeder::class);
             $this->call(RecipeSeeder::class);
@@ -114,12 +114,22 @@ class DatabaseSeeder extends Seeder
 
             $this->call(ExpenseConceptSeeder::class);
             $this->call(ExpenseSeeder::class);
-            
-            $this->call(CurrentAcountPaymentMethodDiscountSeeder::class);
-            $this->call(AfipSelectedPaymentMethodSeeder::class);
 
             $this->call(UnidadFrecuenciaSeeder::class);
             $this->call(PendingSeeder::class);
+
+
+            if ($for_user == 'colman') {
+
+                $this->call(PriceTypeSeeder::class);
+
+            } else if ($for_user == 'feito') {
+
+                $this->call(CurrentAcountPaymentMethodDiscountSeeder::class);
+                $this->call(AfipSelectedPaymentMethodSeeder::class);
+            }
+
+
 
         }
     }

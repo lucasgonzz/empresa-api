@@ -306,11 +306,11 @@ class PerformanceHelper
 
                     $current_acount_payment_method_id = $sale->current_acount_payment_method_id;
 
-                    if (is_null($current_acount_payment_method_id)) {
+                    if (is_null($current_acount_payment_method_id) || $current_acount_payment_method_id == 0) {
                         $current_acount_payment_method_id = 3;
                     }
 
-                    $this->ingresos_mostrador[$current_acount_payment_method_id]['total'] += $total_sale;
+                    $this->ingresos_mostrador[$current_acount_payment_method_id]['total'] += $this->total_sale;
                 }
 
 
@@ -388,7 +388,7 @@ class PerformanceHelper
 
             $payment_method_id = $this->sale->current_acount_payment_method_id;
 
-            if (!is_null($payment_method_id)) {
+            if (!is_null($payment_method_id) && $payment_method_id != 0) {
 
                 $this->users_payment_methods[$employee_id]['payment_methods'][$payment_method_id]['total'] += (float)$this->total_sale;
             
@@ -415,11 +415,11 @@ class PerformanceHelper
 
         $address_id = $this->sale->address_id;
 
-        if (!is_null($address_id)) {
+        if (!is_null($address_id) && $address_id != 0) {
 
             $payment_method_id = $this->sale->current_acount_payment_method_id;
 
-            if (!is_null($payment_method_id)) {
+            if (!is_null($payment_method_id) && $payment_method_id != 0) {
 
                 $this->addresses_payment_methods[$address_id]['payment_methods'][$payment_method_id]['total'] += (float)$this->total_sale;
             
@@ -637,12 +637,18 @@ class PerformanceHelper
 
             // Log::info('procesando gasto de '.$expense->amount);
             Log::info('procesando gasto de '.$expense->expense_concept->name.' de '.$expense->amount);
+
+            $payment_method_id = $expense->current_acount_payment_method_id;
+            
+            if (is_null($payment_method_id) || $payment_method_id == 0) {
+                $payment_method_id = 3;
+            }
             
             $this->total_gastos += $expense->amount;
 
             $this->expense_concepts[$expense->expense_concept_id]['total'] += $expense->amount;
 
-            $this->payment_methods_gastos[$expense->current_acount_payment_method_id]['total'] += $expense->amount;
+            $this->payment_methods_gastos[$payment_method_id]['total'] += $expense->amount;
         }
     }
 

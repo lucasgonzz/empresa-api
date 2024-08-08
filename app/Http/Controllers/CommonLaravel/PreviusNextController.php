@@ -28,7 +28,7 @@ class PreviusNextController extends Controller
         $model_name = GeneralHelper::getModelName($model_name);
         $model = $model_name::find($id);
         $models = $model_name::where('user_id', UserHelper::userId())
-                                ->where('created_at', '>=', $model->created_at)
+                                ->where('id', '>=', $model->id)
                                 ->pluck('id');
         return response()->json(['index' => count($models)], 200);
     }

@@ -99,6 +99,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Pending
     Route::resource('pending', 'PendingController');
     Route::get('pending/from-date/{from_date}/{until_date}', 'PendingController@index');
+    Route::get('pending-recurrentes', 'PendingController@recurrentes');
 
     // Pending Completed
     Route::resource('pending-completed', 'PendingCompletedController');

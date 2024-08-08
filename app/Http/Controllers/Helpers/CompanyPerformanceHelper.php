@@ -44,6 +44,8 @@ class CompanyPerformanceHelper {
 
         $this->set_fechas($fecha_inicio, null);
 
+        $this->delete_current_company_performance_from_date($fecha_inicio);
+
         $performance_helper = new PerformanceHelper(
             $this->fecha_inicio->month, 
             $this->fecha_inicio->year, 
@@ -53,6 +55,26 @@ class CompanyPerformanceHelper {
 
         $performance_helper->create_company_performance();
 
+    }
+
+    function delete_current_company_performance_from_date($fecha_inicio) {
+
+        $fecha_inicio = Carbon::parse($fecha_inicio)->startOfDay();
+        
+        Log::info('buscando para borrar el:');
+        Log::info('year: '.$fecha_inicio->year);
+        Log::info('month: '.$fecha_inicio->month);
+        Log::info('day: '.$fecha_inicio->day);
+
+
+        $company_performance = CompanyPerformance::where('user_id', $this->user_id)
+                                                    ->where('year', $fecha_inicio->year)
+                                                    ->where('month', $fecha_inicio->month)
+                                                    ->where('day', $fecha_inicio->day)
+                                                    ->first();
+        if (!is_null($company_performance)) {
+            $company_performance->delete();
+        }
     }
 	
     function get_company_performances_from_dates($fecha_inicio, $fecha_fin) {

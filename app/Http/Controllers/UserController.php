@@ -70,7 +70,7 @@ class UserController extends Controller
         $model->str_limint_en_vender          = $request->str_limint_en_vender;
         $model->sale_ticket_description          = $request->sale_ticket_description;
         $model->siempre_omitir_en_cuenta_corriente          = $request->siempre_omitir_en_cuenta_corriente;
-        // $model->image_pdf_header_url          = $request->image_pdf_header_url;
+        $model->redondear_centenas_en_vender          = $request->redondear_centenas_en_vender;
         
         $model->save();
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_dolar, $request->dollar);

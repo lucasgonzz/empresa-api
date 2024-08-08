@@ -12,6 +12,20 @@ use Illuminate\Support\Facades\Log;
 class PendingController extends Controller
 {
 
+    function recurrentes() {
+        $models = Pending::where('user_id', $this->userId())
+                            ->where('es_recurrente', 1)
+                            ->orderBy('created_at', 'ASC')
+                            ->withAll()
+                            ->get();
+
+        foreach ($models as $model) {
+            $model->fecha_realizacion = null;
+        }
+
+        return response()->json(['models' => $models], 200);
+    }
+
     public function index($from_date = null, $until_date = null) {
         $pendings = Pending::where('user_id', $this->userId())
                                     ->where('es_recurrente', 0)
@@ -35,25 +49,11 @@ class PendingController extends Controller
             
             while ($fecha_de_realizacion->lt($from_date)) {
                 $fecha_de_realizacion->addUnit($recurrente->unidad_frecuencia->slug, $recurrente->cantidad_frecuencia);
-
-                // if ($fecha_de_realizacion)
-
-                // $this->chequear_si_fue_completada();
-
-                // Probar el ejemplo del pizaroron, hacer seeder para eso
-
-                // Log::info('aumentando fecha_de_realizacion: '.$fecha_de_realizacion);
             }
 
-            $ultima_realizada = PendingCompleted::where('pending_id', $recurrente->id)
-                                                    ->orderBy('created_at', 'DESC')
-                                                    ->first();
-
-            if (is_null($ultima_realizada)) {
-
-            } else {
-                
-            }
+            // $ultima_realizada = PendingCompleted::where('pending_id', $recurrente->id)
+            //                                         ->orderBy('created_at', 'DESC')
+            //                                         ->first();
 
             while ($fecha_de_realizacion->between($from_date, $until_date)) {
 

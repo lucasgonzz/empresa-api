@@ -25,6 +25,10 @@ class UserSeeder extends Seeder
             $this->la_barraca();
             return;
         } 
+
+        $this->for_user = env('FOR_USER');
+
+
         $ct = new Controller();
         $models = [
             [
@@ -56,45 +60,10 @@ class UserSeeder extends Seeder
                     'register_to_buy'               => 1,
                     'scroll_infinito_en_home'       => 1,
                     'default_article_image_url'     => 'http://empresa.local:8000/storage/169705209718205.jpg',
-                    // 'quienes_somos'                 => 
-                    // 'Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!
-
-                    // Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!',
-                    // 'mensaje_contacto'              => 'Contactar tambien por mensaje directo en Facebook o Instagram, es el medio en el que mas activos estamos!',
-                    // 'online_price_surchage'         => 50,
-                    // 'max_items_in_sale'             => 2,
                     'pausar_tienda_online'          => 0,
-                    // 'instagram'                     => 'https://www.instagram.com/lucasgonzz/',
-                    // 'facebook'                      => 'https://www.facebook.com',
                 ],
                 'base_de_datos'                     => 'empresa_prueba_1',
                 'google_custom_search_api_key'      => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
-                'extencions'                        => [
-                    'budgets',
-                    'production',
-                    // 'combos',
-                    // 'sales.hide',
-                    'acopios',
-                    'online',
-                    'article.costo_real',
-                    'bar_code_scanner',
-                    'comerciocity_interno',
-                    'articles_default_in_vender',
-                    'article_num_in_online',
-                    // 'check_sales',
-                    // 'sale.observations',
-                    'production.order_production',
-                    'production.production_movement',
-                    // 'mercado_libre',
-                    // 'articles_pre_import',
-                    // 'guardad_cuenta_corriente_despues_de_facturar',
-                    // 'codigo_proveedor_en_vender',
-                    // 'check_article_stock_en_vend',
-                    'ask_save_current_acount',
-                    // 'unidades_individuales_en_articulos',
-                    // 'numero_orden_de_compra_para_las_ventas',
-                    // 'maximo_descuento_posible_por_articulo_en_vender',
-                ],  
             ],
             [
                 'id'                            => 501,
@@ -187,6 +156,50 @@ class UserSeeder extends Seeder
         ];
 
 
+        if ($this->for_user == 'colman') {
+
+            $models[0]['extencions'] = [
+
+                'budgets',
+                'production',
+                'acopios',
+                'online',
+                'article.costo_real',
+                'bar_code_scanner',
+                'comerciocity_interno',
+                'article_num_in_online',
+                'check_sales',
+                'sale.observations',
+                'production.production_movement',
+                'check_article_stock_en_vender',
+            ];
+
+        } else if ($this->for_user == 'feito') {
+
+            $models[0]['siempre_omitir_en_cuenta_corriente'] = 1;
+            $models[0]['redondear_centenas_en_vender'] = 1;
+
+            $models[0]['extencions'] = [
+
+                'bar_code_scanner',
+                'comerciocity_interno',
+                'ask_save_current_acount',
+            ];
+
+        } else if ($this->for_user == 'hipermax') {
+
+            $models[0]['siempre_omitir_en_cuenta_corriente'] = 1;
+
+            $models[0]['extencions'] = [
+
+                'bar_code_scanner',
+                'comerciocity_interno',
+                'ask_save_current_acount',
+            ];
+
+        }
+
+
         foreach ($models as $model) {
             $user = User::create([
                 'id'                            => isset($model['id']) ? $model['id'] : null,  
@@ -200,7 +213,8 @@ class UserSeeder extends Seeder
                 'visible_password'              => $model['visible_password'],  
                 'address_id'                    => isset($model['address_id']) ? $model['address_id'] : null,  
                 'owner_id'                      => isset($model['owner_id']) ? $model['owner_id'] : null,  
-                'admin_access'                      => isset($model['admin_access']) ? $model['admin_access'] : null,  
+                'admin_access'                  => isset($model['admin_access']) ? $model['admin_access'] : null, 
+                'redondear_centenas_en_vender'  => isset($model['redondear_centenas_en_vender']) ? $model['admin_access'] : null, 
                 'payment_expired_at'            => isset($model['payment_expired_at']) ? $model['payment_expired_at'] : null,  
                 'online'                        => isset($model['online']) ? $model['online'] : null,
                 'home_position'                 => isset($model['home_position']) ? $model['home_position'] : null,
