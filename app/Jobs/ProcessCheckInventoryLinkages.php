@@ -13,6 +13,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
 
 class ProcessCheckInventoryLinkages implements ShouldQueue
 {
@@ -48,6 +49,8 @@ class ProcessCheckInventoryLinkages implements ShouldQueue
         $vuelta = 1;
         $actualizados = 0;
         foreach ($inventory_linkages as $inventory_linkage) {
+
+            $this->check_deleted_articles($inventory_linkage);
 
             $articulos_con_nombre_distintos = [];
             $articulos_con_precio_distintos = [];
@@ -102,6 +105,32 @@ class ProcessCheckInventoryLinkages implements ShouldQueue
             Log::info('------------------------------------------------------- ');
             Log::info('Se actualizaron '.$actualizados.' articulos');
 
+        }
+    }
+
+    function check_deleted_articles($inventory_linkage) {
+
+        Log::info('check_deleted_articles');
+
+        $deleted_articles = Article::where('user_id', $inventory_linkage->user_id)
+                                    ->whereNotNull('deleted_at')
+                                    ->whereDate('deleted_at', '>=', Carbon::today()->subDays(2))
+                                    ->withTrashed()
+                                    ->get();
+
+        $client_comerciocity_user = $inventory_linkage->client->comercio_city_user;
+
+        foreach ($deleted_articles as $deleted_article) {
+            
+            $client_article = Article::where('provider_article_id', $deleted_article->id)
+                                        ->where('user_id', $client_comerciocity_user->id)
+                                        ->first();
+
+            if (!is_null($client_article)) {
+
+                Log::info('Eliminando el articulo '.$client_article->name);
+                $client_article->delete();
+            }
         }
     }
 }

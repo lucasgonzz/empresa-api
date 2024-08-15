@@ -20,12 +20,24 @@ class AddressSeeder extends Seeder
         $models = [
             [
                 'num'       => 1,
-                'street'    => 'San antonio 1',
+                'street'    => 'Tucuman',
                 'user_id'   => $user->id,
             ],
             [
                 'num'       => 2,
-                'street'    => 'San martin 2',
+                'street'    => 'Santa Fe',
+                'default_address'    => 1,
+                'user_id'   => $user->id,
+            ],
+            [
+                'num'       => 3,
+                'street'    => 'Buenos Aires',
+                'default_address'    => 1,
+                'user_id'   => $user->id,
+            ],
+            [
+                'num'       => 4,
+                'street'    => 'Mar del Plata',
                 'default_address'    => 1,
                 'user_id'   => $user->id,
             ],

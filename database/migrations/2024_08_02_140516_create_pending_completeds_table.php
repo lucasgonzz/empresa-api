@@ -24,6 +24,7 @@ class CreatePendingCompletedsTable extends Migration
             // Es cuando se realizo
             $table->timestamp('fecha_realizada')->nullable();
             $table->text('notas')->nullable();
+            $table->integer('expense_concept_id')->nullable();
             $table->integer('pending_id')->nullable();
             $table->integer('user_id')->nullable();
             $table->timestamps();

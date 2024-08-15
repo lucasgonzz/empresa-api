@@ -98,7 +98,7 @@ class DatabaseSeeder extends Seeder
             $this->call(UpdateFeatureSeeder::class);
             $this->call(OrderSeeder::class);
             $this->call(InventoryLinkageScopeSeeder::class);
-            // $this->call(InventoryLinkageSeeder::class);
+            $this->call(InventoryLinkageSeeder::class);
             // $this->call(AfipTicketSeeder::class);
 
 

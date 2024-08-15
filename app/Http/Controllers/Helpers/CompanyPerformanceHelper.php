@@ -346,7 +346,11 @@ class CompanyPerformanceHelper {
         $performance_helper = new PerformanceHelper(
             $this->fecha_inicio->month, 
             $this->fecha_inicio->year, 
-            $this->user_id
+            $this->user_id,
+            null,
+
+            // Este true hace referencia a que es el mes actual, para que no se creen los article_performances 
+            true
         );
 
         $performance_helper->create_company_performance();

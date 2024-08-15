@@ -6,16 +6,24 @@ $ventas_desde_principio_de_mes = [];
 
 for ($dia_del_mes = 0; $dia_del_mes < Carbon::now()->day ; $dia_del_mes++) { 
 
-	for ($employee_id=503; $employee_id <= 504; $employee_id++) { 
+	for ($employee_id=503; $employee_id <= 506; $employee_id++) { 
 
 		if ($employee_id == 503) {
 
 			$price_vender = 1000;
 			$address_id = 1;
-		} else {
+		} else if ($employee_id == 504) {
+
+			$price_vender = 1500;
+			$address_id = 2;
+		} else if ($employee_id == 505) {
 
 			$price_vender = 2000;
-			$address_id = 2;
+			$address_id = 3;
+		} else if ($employee_id == 506) {
+
+			$price_vender = 2500;
+			$address_id = 4;
 		}
 
 		$amount = $dia_del_mes + 1;
@@ -35,12 +43,16 @@ for ($dia_del_mes = 0; $dia_del_mes < Carbon::now()->day ; $dia_del_mes++) {
 			],
 			'payment_methods'	=> [
 				[
-					'id'		=> 1,
-					'amount'	=> $total / 2,
+					'id'		=> rand(1,2),
+					'amount'	=> $total / 4,
 				],
 				[
-					'id'		=> 2,
-					'amount'	=> $total / 2,
+					'id'		=> rand(3,5),
+					'amount'	=> ($total / 4) * 2,
+				],
+				[
+					'id'		=> 5,
+					'amount'	=> $total / 4,
 				],
 			],
 			'created_at'	=> Carbon::now()->startOfMonth()->addDays($dia_del_mes),
@@ -77,12 +89,12 @@ for ($mes=4; $mes > 1; $mes--) {
 			],
 			'payment_methods'	=> [
 				[
-					'id'		=> 1,
-					'amount'	=> $total / 2,
+					'id'		=> rand(1,2),
+					'amount'	=> $total / 3,
 				],
 				[
-					'id'		=> 2,
-					'amount'	=> $total / 2,
+					'id'		=> rand(2,5),
+					'amount'	=> ($total / 3) * 2,
 				],
 			],
 			'created_at'	=> Carbon::now()->startOfMonth()->subMonths($mes)->addDays($dia_del_mes),

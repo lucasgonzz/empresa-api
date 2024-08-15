@@ -153,6 +153,42 @@ class UserSeeder extends Seeder
                     'sale.update',
                 ],
             ],
+            [
+                'name'              => 'Franco',
+                'address_id'        => 3,
+                'doc_number'        => '3',
+                'email'             => 'lucasgonzalez550023@gmail.com',
+                'password'          => bcrypt('3'),
+                'visible_password'  => '3',
+                'image_url'         => null,
+                'owner_id'          => 500,
+                'permissions_slug'    => [
+                    'article.index',
+                    'article.delete',
+
+                    'sale.index',
+                    'sale.store',
+                    'sale.update',
+                ],
+            ],
+            [
+                'name'              => 'Santiago',
+                'address_id'        => 4,
+                'doc_number'        => '4',
+                'email'             => 'lucasgonzalez550023@gmail.com',
+                'password'          => bcrypt('4'),
+                'visible_password'  => '4',
+                'image_url'         => null,
+                'owner_id'          => 500,
+                'permissions_slug'    => [
+                    'article.index',
+                    'article.delete',
+
+                    'sale.index',
+                    'sale.store',
+                    'sale.update',
+                ],
+            ],
         ];
 
 
@@ -214,7 +250,7 @@ class UserSeeder extends Seeder
                 'address_id'                    => isset($model['address_id']) ? $model['address_id'] : null,  
                 'owner_id'                      => isset($model['owner_id']) ? $model['owner_id'] : null,  
                 'admin_access'                  => isset($model['admin_access']) ? $model['admin_access'] : null, 
-                'redondear_centenas_en_vender'  => isset($model['redondear_centenas_en_vender']) ? $model['admin_access'] : null, 
+                'redondear_centenas_en_vender'  => isset($model['redondear_centenas_en_vender']) ? $model['redondear_centenas_en_vender'] : null, 
                 'payment_expired_at'            => isset($model['payment_expired_at']) ? $model['payment_expired_at'] : null,  
                 'online'                        => isset($model['online']) ? $model['online'] : null,
                 'home_position'                 => isset($model['home_position']) ? $model['home_position'] : null,

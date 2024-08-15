@@ -270,8 +270,17 @@ class AfipHelper extends Controller {
         Log::info('getNumeroComprobante');
         Log::info((array)$result);
         if (!$result['hubo_un_error']) {
-            return $result['result']->FECompUltimoAutorizadoResult->CbteNro + 1;
-        } 
+            return [
+                'hubo_un_error'         => false,
+                'numero_comprobante'    => $result['result']->FECompUltimoAutorizadoResult->CbteNro + 1,
+            ];
+            // return $result['result']->FECompUltimoAutorizadoResult->CbteNro + 1;
+        } else {
+            return [
+                'hubo_un_error'         => true,
+                'error'                 => $result['error'],
+            ];
+        }
     }
 
 }

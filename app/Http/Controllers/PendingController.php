@@ -98,6 +98,8 @@ class PendingController extends Controller
             'unidad_frecuencia_id'   => $request->unidad_frecuencia_id,
             'cantidad_frecuencia'    => $request->cantidad_frecuencia,
             'expense_concept_id'     => $request->expense_concept_id,
+            'expense_amount'         => $request->expense_amount,
+            'completado'             => 0,
             'notas'                  => $request->notas,
             'user_id'                => $this->userId(),
         ]);
@@ -111,7 +113,13 @@ class PendingController extends Controller
 
     public function update(Request $request, $id) {
         $model = Pending::find($id);
-        $model->name                = $request->name;
+        $model->detalle                = $request->detalle;
+        $model->fecha_realizacion      = $request->fecha_realizacion;
+        $model->es_recurrente          = $request->es_recurrente;
+        $model->unidad_frecuencia_id   = $request->unidad_frecuencia_id;
+        $model->cantidad_frecuencia    = $request->cantidad_frecuencia;
+        $model->expense_concept_id     = $request->expense_concept_id;
+        $model->notas                  = $request->notas;
         $model->save();
         $this->sendAddModelNotification('Pending', $model->id);
         return response()->json(['model' => $this->fullModel('Pending', $model->id)], 200);

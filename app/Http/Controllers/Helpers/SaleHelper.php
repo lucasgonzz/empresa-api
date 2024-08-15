@@ -243,12 +243,16 @@ class SaleHelper extends Controller {
 
             if (!$request->current_acount_payment_method_id) {
                 foreach ($request->selected_payment_methods as $payment_method) {
+
+                    if (!is_null($payment_method['amount'])) {
+                        
+                        $sale->current_acount_payment_methods()->attach($payment_method['id'],[
+                            'amount' => $payment_method['amount'],
+                            // 'discount_percentage' => $payment_method['discount_percentage'],
+                            // 'discount_amount' => $payment_method['discount_amount'],
+                        ]);
+                    }
                   
-                    $sale->current_acount_payment_methods()->attach($payment_method['id'],[
-                        'amount' => $payment_method['amount'],
-                        // 'discount_percentage' => $payment_method['discount_percentage'],
-                        // 'discount_amount' => $payment_method['discount_amount'],
-                    ]);
                     
                 }
             } else {
@@ -526,9 +530,15 @@ class SaleHelper extends Controller {
                 if (!$sale->to_check && !$sale->checked && Self::usa_stock($article)) {
 
                     $amount = Self::getAmount($sale, $article);
+
+                    if (isset($article['article_variant_id'])) {
+                        $article_variant_id = $article['article_variant_id'];
+                    } else {
+                        $article_variant_id = null;
+                    }
                     
                     if ($amount > 0) {
-                        ArticleHelper::discountStock($article['id'], $amount, $sale, $previus_articles, $se_esta_confirmando_por_primera_vez, $article['article_variant_id']);
+                        ArticleHelper::discountStock($article['id'], $amount, $sale, $previus_articles, $se_esta_confirmando_por_primera_vez, $article_variant_id);
                     }
                 }
 

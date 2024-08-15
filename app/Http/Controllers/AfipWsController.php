@@ -127,7 +127,11 @@ class AfipWsController extends Controller
         $this->doc_client   = $res['doc_client'];
         $this->doc_type     = $res['doc_type'];
 
-        $this->set_numero_comprobante();
+        $ok = $this->set_numero_comprobante();
+
+        if (!$ok) {
+            return;
+        }
 
         $afip_helper = new AfipHelper($this->sale);
         $importes = $afip_helper->getImportes();
@@ -422,11 +426,20 @@ class AfipWsController extends Controller
         Log::info('POr aca set_numero_comprobante');
 
         $this->comprobante_tipo = $this->getTipoCbte();
-        $this->comprobante_numero = AfipHelper::getNumeroComprobante(
+        $result = AfipHelper::getNumeroComprobante(
                                         $this->wsfe, 
                                         $this->sale->afip_information->punto_venta, 
                                         $this->comprobante_tipo
                                     );
+
+        if ($result['hubo_un_error']) {
+
+            $this->save_error($result);
+
+            return false;
+        } 
+
+        $this->comprobante_numero = $result['numero_comprobante'];
 
         $afip_ticket = $this->sale->afip_ticket;
 
@@ -435,6 +448,8 @@ class AfipWsController extends Controller
         $afip_ticket->save();
 
         Log::info('Numero comprobante: '.$this->comprobante_numero);
+
+        return true;
     }
 
     function ws_sr_constancia_inscripcion() {

@@ -24,12 +24,15 @@ class PendingCompletedHelper {
 
             $request = new \Illuminate\Http\Request();
             $request->expense_concept_id                    = $pending_completed->pending->expense_concept_id;
-            $request->amount                                = null;
+            $request->amount                                = $pending_completed->pending->expense_amount;
             $request->current_acount_payment_method_id      = 0;
             $request->observations                          = 'Creado desde la AGENDA';
             $request->created_at                            = Carbon::now();
 
 			$ct->store($request);
+
+			$pending_completed->expense_concept_id = $pending_completed->pending->expense_concept_id;
+			$pending_completed->save();
 		}
 	} 
 

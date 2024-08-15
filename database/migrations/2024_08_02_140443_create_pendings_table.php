@@ -22,6 +22,7 @@ class CreatePendingsTable extends Migration
             $table->integer('cantidad_frecuencia')->nullable();
             $table->text('notas')->nullable();
             $table->integer('expense_concept_id')->nullable();
+            $table->decimal('expense_amount')->nullable();
             $table->boolean('completado')->nullable();
             $table->integer('user_id')->nullable();
             $table->timestamps();

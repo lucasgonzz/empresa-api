@@ -30,13 +30,14 @@ class PerformanceHelper
     public $articulos_vendidos;
     public $total_vendido;
 
-    function __construct($month, $year, $user_id, $from_day = null) {
+    function __construct($month, $year, $user_id, $from_day = null, $from_current_month = false) {
 
         $this->user_id = $user_id;
         
         $this->month = $month;
         $this->year = $year;
         $this->from_day = $from_day;
+        $this->from_current_month = $from_current_month;
 
 
         if (!is_null($month) && !is_null($year)) {
@@ -86,7 +87,12 @@ class PerformanceHelper
 
         $this->set_sales();
 
-        $this->set_article_performances();
+
+        if (!$this->from_current_month && is_null($this->from_day)) {
+
+            $this->set_article_performances();
+        }
+
 
 
 
@@ -579,7 +585,7 @@ class PerformanceHelper
 
                 $this->ingresos_cuenta_corriente[3]['total'] += $pago->haber;
 
-                $this->users_payment_methods[$pago->employee_id]['payment_methods'][3]['total'] += $total;
+                $this->users_payment_methods[$pago->employee_id]['payment_methods'][3]['total'] += $pago->haber;
             }
 
             // if (!is_null($suma_payment_methods) && abs($pago->haber - $suma_payment_methods) > $delta) {
@@ -636,19 +642,23 @@ class PerformanceHelper
         foreach ($expenses as $expense) {
 
             // Log::info('procesando gasto de '.$expense->amount);
-            Log::info('procesando gasto de '.$expense->expense_concept->name.' de '.$expense->amount);
+            // Log::info('procesando gasto de '.$expense->expense_concept->name.' de '.$expense->amount);
 
-            $payment_method_id = $expense->current_acount_payment_method_id;
-            
-            if (is_null($payment_method_id) || $payment_method_id == 0) {
-                $payment_method_id = 3;
+            if (!is_null($expense->expense_concept_id) && $expense->expense_concept_id != 0) {
+                
+                $payment_method_id = $expense->current_acount_payment_method_id;
+                
+                if (is_null($payment_method_id) || $payment_method_id == 0) {
+                    $payment_method_id = 3;
+                }
+                
+                $this->total_gastos += $expense->amount;
+
+                $this->expense_concepts[$expense->expense_concept_id]['total'] += $expense->amount;
+
+                $this->payment_methods_gastos[$payment_method_id]['total'] += $expense->amount;
             }
-            
-            $this->total_gastos += $expense->amount;
 
-            $this->expense_concepts[$expense->expense_concept_id]['total'] += $expense->amount;
-
-            $this->payment_methods_gastos[$payment_method_id]['total'] += $expense->amount;
         }
     }
 

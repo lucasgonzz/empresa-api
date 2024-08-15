@@ -116,7 +116,7 @@ class SearchController extends Controller
             foreach ($request->props_to_filter as $prop_to_filter) {
 
                 $query->orWhere(function ($subQuery) use ($prop_to_filter, $request) {
-                    if ($prop_to_filter == 'num' || $prop_to_filter == 'bar_code' || $prop_to_filter == 'provider_code') {
+                    if ($prop_to_filter == 'num' || $prop_to_filter == 'bar_code') {
                         $subQuery->where($prop_to_filter, $request->query_value);
                         Log::info($prop_to_filter.' igual a'.$request->query_value);
                     } else {

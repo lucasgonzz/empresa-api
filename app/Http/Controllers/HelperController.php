@@ -52,6 +52,87 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function inventory_linkage_articulos_eliminados($user_id) {
+
+        $articles = Article::where('user_id', $user_id)
+                            ->whereNotNull('provider_article_id')
+                            ->orderBy('created_at', 'ASC')
+                            ->get();
+
+        $repetidos = [];
+
+        foreach ($articles as $article) {
+
+
+            // $provider_article = Article::find($article->provider_article_id);
+
+            // if (is_null($provider_article)) {
+
+            //     echo '<br>';
+            //     echo 'NO ESTA '.$article->name.' codigo: '.$article->bar_code.', con costo '.Numbers::price($article->cost).' creado el '.$article->created_at->format('d/m/Y'). ' <br>';
+
+            //     $article->delete();
+
+            //     echo 'Eliminado <br>';
+            //     echo '<br>';
+
+            //     // echo $article->name.' con costo '.$article->cost.' no esta <br>';
+            // }
+            
+            if (!is_null($article->bar_code)) {
+
+                if (!$this->esta_en_array($repetidos, $article->bar_code)) {
+
+                    $repetido = Article::where('bar_code', $article->bar_code)
+                                        ->where('user_id', $user_id)
+                                        ->where('id', '!=', $article->id)
+                                        ->first();
+
+                    if (!is_null($repetido)) {
+
+                        $repetidos[] = $repetido;
+
+                        echo ' <br>';
+                        echo 'Repetido: <br>';
+                        echo $article->name.' codigo: '.$article->bar_code.', con costo '.Numbers::price($article->cost).' creado el '.$article->created_at->format('d/m/Y'). ' <br>';
+                        echo $repetido->name.' codigo: '.$repetido->bar_code.', con costo '.Numbers::price($repetido->cost).' creado el '.$repetido->created_at->format('d/m/Y'). ' <br>';
+
+
+
+                        // $provider_article = Article::find($article->provider_article_id);
+
+                        // if (is_null($provider_article)) {
+
+                        //     echo $article->name.' con costo '.$article->cost.' no esta <br>';
+                        // }
+
+
+                        // $provider_article = Article::find($repetido->provider_article_id);
+
+                        // if (is_null($provider_article)) {
+
+                        //     echo $repetido->name.' con costo '.$repetido->cost.' no esta <br>';
+                        // }
+
+                        // echo ' <br> ******************** <br>';
+                        // echo ' <br>';
+                    }
+
+                    // if ($repetido->created_at->lt())
+                }
+
+            }
+        }
+    }
+
+    function esta_en_array($array, $propertyValue) {
+        $exists = !empty(array_filter($array, function ($item) use ($propertyValue) {
+            return $item->bar_code == $propertyValue;
+        }));
+
+        return $exists;
+    }
+
     function chequear_articulos_eliminados_en_ventas($dias_atras) {
         $sales = Sale::where('user_id', 121)
                         ->where('confirmed', 1)

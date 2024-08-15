@@ -56,6 +56,10 @@ class CompanyPerformanceUsersAddressesPaymentMethodsHelper {
 			$relation[] = $relation_to_add;
 		}
 
+		usort($relation, function ($a, $b) {
+		    return $b['total_vendido'] <=> $a['total_vendido'];
+		});
+
 		$this->company_performance->users_payment_methods_formated = $relation; 
 	}
 
