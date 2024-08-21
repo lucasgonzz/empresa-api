@@ -113,6 +113,7 @@ class SearchController extends Controller
                                 ->withAll();
 
         $models = $models->where(function ($query) use ($request, $model_name_param) {
+
             foreach ($request->props_to_filter as $prop_to_filter) {
 
                 $query->orWhere(function ($subQuery) use ($prop_to_filter, $request) {
@@ -130,14 +131,16 @@ class SearchController extends Controller
 
             }
 
-            if (isset($request->depends_on_key)) {
-                $query->where($request->depends_on_key, $request->depends_on_value);
-            }
-
-            if ($model_name_param == 'article' || $model_name_param == 'client' || $model_name_param == 'provider') {
-                $query->where('status', 'active');
-            }
         });
+
+        if (isset($request->depends_on_key)) {
+            $models->where($request->depends_on_key, $request->depends_on_value);
+        }
+
+        if ($model_name_param == 'article' || $model_name_param == 'client' || $model_name_param == 'provider') {
+            Log::info('status active');
+            $models->where('status', 'active');
+        }
 
         $models = $models->paginate(25);
 

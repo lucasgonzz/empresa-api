@@ -27,7 +27,15 @@ class Controller extends BaseController
         if (!is_null($user_id)) {
             return $user_id;
         }
-        $user = Auth()->user();
+
+        if (session()->has('auth_user')) {
+
+            $user = session('auth_user');
+        } else {
+
+            $user = Auth()->user();
+        }
+        
         if (is_null($user) && env('APP_ENV') == 'local') {
             $user = User::where('company_name', 'Autopartes Boxes')->first();
             return $user->id;
@@ -44,6 +52,13 @@ class Controller extends BaseController
     }
 
     function user($from_owner = true) {
+        if (session()->has('auth_user')) {
+            
+            if ($from_owner) {
+                return session('owner');
+            }
+            return session('auth_user');
+        }
         return User::find($this->userId($from_owner));
     }
 

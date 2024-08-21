@@ -52,6 +52,22 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function set_final_prices($user_id) {
+        $articles = Article::where('user_id', $user_id)
+                            ->orderBy('id', 'ASC')
+                            ->get();
+
+        $user = User::find($user_id);
+
+        foreach ($articles as $article) {
+            echo 'Se seteo el precio de '.$article->name.'. Paso de '.$article->final_price.' </br>';
+            ArticleHelper::setFinalPrice($article, $user_id, $user);
+            echo 'A '.$article->final_price.' </br>';
+            echo '---------- </br>';
+        }
+        echo 'Listo';
+    }
+
     function inventory_linkage_articulos_eliminados($user_id) {
 
         $articles = Article::where('user_id', $user_id)

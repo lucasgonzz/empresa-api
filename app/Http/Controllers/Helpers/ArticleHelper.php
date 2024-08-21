@@ -152,6 +152,9 @@ class ArticleHelper {
                 $final_price -= $final_price * $discount->percentage / 100;
             }
         }
+
+        $final_price = Self::redondear($final_price, $user);
+
         $article->final_price = $final_price;
         if ($current_final_price != $article->final_price) {
             $article->previus_final_price = $current_final_price; 
@@ -163,6 +166,15 @@ class ArticleHelper {
         // echo('-------------------------------------------------------------- </br>');
         $article->timestamps = false;
         $article->save();
+    }
+
+    static function redondear($price, $user) {
+
+        if ($user->redondear_centenas_en_vender) {
+
+            return ceil($price / 100) * 100;
+        }
+        return $price;
     }
 
     static function setStockFromStockMovement($article) {

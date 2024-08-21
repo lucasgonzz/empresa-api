@@ -75,7 +75,7 @@ class ArticleSeeder extends Seeder
                     'featured'              => isset($article['featured']) ? $article['featured'] : null,
                     // 'apply_provider_percentage_gain'     => 0,
                     'apply_provider_percentage_gain'    => 0,
-                    'price'                 => 1000,
+                    'price'                 => ($num * 1000) - ($num * 2),
                     // 'price'                 => isset($article['price']) ? $article['price'] : null,
                     'default_in_vender'     => isset($article['default_in_vender']) ? $article['default_in_vender'] : null,
                     'category_id'           => $this->getCategoryId($user, $article),

@@ -26,6 +26,7 @@ class AuthController extends Controller
             if ($this->checkUserLastActivity()) {
                 $user = UserHelper::getFullModel(false);
                 $login = true;
+                $this->set_sessions($user);
             } else {
                 Log::info('no paso user_last_activity');
                 $user_last_activity = true;
@@ -36,6 +37,10 @@ class AuthController extends Controller
             'user'                  => $user,
             'user_last_activity'    => $user_last_activity,
         ], 200);
+    }
+
+    function set_sessions($auth_user) {
+        session(['auth_user' => $auth_user, 'owner' => UserHelper::getFullModel()]);
     }
 
     public function logout(Request $request) {
