@@ -55,24 +55,21 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $articles = $this->models;
         } else {
             $articles = Article::where('user_id', UserHelper::userId())
-                            // ->select('bar_code', 'provider_code', 'name', 'iva_id', 'cost', 'percentage_gain', 'price', 'stock', 'stock_min', 'created_at', 'updated_at')
                             ->where('status', 'active')
                             ->with('iva')
                             ->with('article_discounts')
                             ->with('providers')
                             ->with('sub_category')
                             ->with('addresses')
+                            ->with('price_types')
                             ->orderBy('created_at', 'DESC')
                             ->get();
         }
-        // $articles = ArticleHelper::setPrices($articles);
+
         $articles = $this->setDiscounts($articles);
-        // $articles = ArticleHelper::setDiscount($articles);
         $articles = ExportHelper::setAddresses($articles);
         $articles = ExportHelper::setPriceTypes($articles);
-        // $articles = ExportHelper::setCharts($articles);
-        // Log::info('Articles:');
-        // Log::info($articles);
+        
         return $articles;
     }
 

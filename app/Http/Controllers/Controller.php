@@ -36,7 +36,7 @@ class Controller extends BaseController
             $user = Auth()->user();
         }
         
-        if (is_null($user) && env('APP_ENV') == 'local') {
+        if (is_null($user)) {
             $user = User::where('company_name', 'Autopartes Boxes')->first();
             return $user->id;
         }

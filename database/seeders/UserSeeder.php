@@ -194,6 +194,8 @@ class UserSeeder extends Seeder
 
         if ($this->for_user == 'colman') {
 
+            $models[0]['name'] = 'Colman';
+
             $models[0]['extencions'] = [
 
                 'budgets',
@@ -212,6 +214,8 @@ class UserSeeder extends Seeder
 
         } else if ($this->for_user == 'feito') {
 
+            $models[0]['name'] = 'Feito';
+
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 1;
             $models[0]['redondear_centenas_en_vender'] = 1;
 
@@ -224,6 +228,8 @@ class UserSeeder extends Seeder
 
         } else if ($this->for_user == 'hipermax') {
 
+            $models[0]['name'] = 'Hipermax';
+
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 1;
 
             $models[0]['extencions'] = [
@@ -231,6 +237,39 @@ class UserSeeder extends Seeder
                 'bar_code_scanner',
                 'comerciocity_interno',
                 'ask_save_current_acount',
+                'articles_default_in_vender',
+            ];
+
+        } else if ($this->for_user == 'fenix') {
+
+            $models[0]['name'] = 'Fenix';
+
+            $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
+
+            $models[0]['extencions'] = [
+
+                'budgets',
+                'online',
+                'bar_code_scanner',
+                'comerciocity_interno',
+                'article_num_in_online',
+            ];
+
+        } else if ($this->for_user == 'pack_descartables') {
+
+            $models[0]['name'] = 'Pack Descartables';
+
+            $models[0]['iva_included'] = 0;
+
+            $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
+
+            $models[0]['extencions'] = [
+
+                'budgets',
+                'bar_code_scanner',
+                'comerciocity_interno',
+                'articulo_margen_de_ganancia_segun_lista_de_precios',
+                'cambiar_price_type_en_vender',
             ];
 
         }
@@ -242,6 +281,7 @@ class UserSeeder extends Seeder
                 'name'                          => $model['name'], 
                 'use_archivos_de_intercambio'                  => isset($model['use_archivos_de_intercambio']) ? $model['use_archivos_de_intercambio'] : null,  
                 'company_name'                  => isset($model['company_name']) ? $model['company_name'] : null,  
+                'iva_included'                  => isset($model['iva_included']) ? $model['iva_included'] : 1,  
                 'doc_number'                    => $model['doc_number'], 
                 'email'                         => $model['email'], 
                 'password'                      => $model['password'],  
@@ -260,7 +300,6 @@ class UserSeeder extends Seeder
                 'siempre_omitir_en_cuenta_corriente'                 => isset($model['siempre_omitir_en_cuenta_corriente']) ? $model['siempre_omitir_en_cuenta_corriente'] : null,
                 'total_a_pagar'                 => isset($model['total_a_pagar']) ? $model['total_a_pagar'] : null,
                 'app_url'                       => isset($model['app_url']) ? $model['app_url'] : null,
-                'iva_included'                  => 1,
                 'base_de_datos'                 => isset($model['base_de_datos']) ? $model['base_de_datos'] : null,
                 'google_custom_search_api_key'                 => isset($model['google_custom_search_api_key']) ? $model['google_custom_search_api_key'] : null,
                 'dias_alertar_empleados_ventas_no_cobradas'        => 1,

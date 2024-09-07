@@ -120,7 +120,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('afip-ticket', 'SaleController@makeAfipTicket');
 
     // Article Performance
-    Route::get('article-performance/{meses_atras}', 'ArticlePerformanceController@index');
+    Route::get('article-performance/{article_id}', 'ArticlePerformanceController@index');
 
     Route::resource('brand', 'BrandController');
     Route::resource('category', 'CategoryController');

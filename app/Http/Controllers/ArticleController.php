@@ -11,6 +11,8 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
+use App\Http\Controllers\Pdf\ArticleBarCodePdf;
 use App\Http\Controllers\Pdf\ArticleListPdf;
 use App\Http\Controllers\Pdf\ArticlePdf;
 use App\Http\Controllers\Pdf\ArticleTicketPdf;
@@ -151,6 +153,8 @@ class ArticleController extends Controller
         // GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
         // ArticleHelper::setArticleStockFromAddresses($model);
 
+        ArticlePriceTypeHelper::attach_price_types($model, $request->price_types);
+
         ArticleHelper::setFinalPrice($model);
         ArticleHelper::setDeposits($model, $request);
         // ArticleHelper::checkAdvises($model);
@@ -183,7 +187,11 @@ class ArticleController extends Controller
 
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
-        $columns = ArticleImportHelper::addAddressesColumns($columns);
+        $columns = ArticleImportHelper::add_addresses_price_types_columns($columns);
+
+        Log::info('columns:');
+        Log::info($columns);
+
         if ($request->has('models')) {
             
             $archivo_excel_path = $request->file('models')->store('imported_files');
@@ -288,6 +296,10 @@ class ArticleController extends Controller
     function sales($id, $from_date, $until_date) {
         $result = ArticleHelper::getSalesFromArticle($id, $from_date, $until_date);
         return response()->json(['result' => $result], 200);
+    }
+
+    function barCodePdf($ids) {
+        new ArticleBarCodePdf($ids);
     }
 
     function ticketsPdf($ids) {

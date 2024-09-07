@@ -51,10 +51,10 @@ class SaleController extends Controller
             // Porque solo de esa seccion se puede llamar sin que sea from_date
 
             $models = $models->where(function($query) {
-                        $query->where('to_check', 1)
-                              ->orWhere('checked', 1)
-                              ->orWhere('confirmed', 1);
-                    })->where('terminada', 0);
+                                    $query->where('to_check', 1)
+                                          ->orWhere('checked', 1)
+                                          ->orWhere('confirmed', 1);
+                                })->where('terminada', 0);
             
         }
         $models = $models->get();
@@ -305,6 +305,7 @@ class SaleController extends Controller
         $sale = Sale::find($sale_id);
         if (!is_null($sale)) {
             $sale->terminada = 1;
+            $sale->terminada_at = Carbon::now();
             $sale->save();
         }
         return response()->json(['sale' => $this->fullModel('Sale', $sale_id)], 201);

@@ -55,7 +55,6 @@ class CurrentAcountController extends Controller
     }
 
     public function pago(Request $request) {
-        Log::info('Entro guardar pago');
         $pago = CurrentAcount::create([
             'haber'                             => $request->haber,
             'description'                       => $request->description,

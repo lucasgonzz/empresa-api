@@ -123,4 +123,18 @@ class CompanyPerformanceController extends Controller
 
     }
 
+    function borrar_los_realizados_durante_el_mes($month, $year, $user_id) {
+
+        $company_performances = CompanyPerformance::where('user_id', $user_id)
+                            ->where('month', $month)
+                            ->where('year', $year)
+                            ->get();
+
+        foreach ($company_performances as $company_performance) {
+            
+            $company_performance->delete();
+        }
+
+    }
+
 }

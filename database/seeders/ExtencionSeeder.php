@@ -135,6 +135,16 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Mostrar maximo descuento posible para un articulo en VENDER',
                 'slug' => 'maximo_descuento_posible_por_articulo_en_vender',
             ],
+            [
+                // 25
+                'name' => 'Articulos con Margenes de ganancia segun lista de precios',
+                'slug' => 'articulo_margen_de_ganancia_segun_lista_de_precios',
+            ],
+            [
+                // 26
+                'name' => 'Cambiar dinamicamente la Lista de Precios en VENDER',
+                'slug' => 'cambiar_price_type_en_vender',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

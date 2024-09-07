@@ -25,6 +25,9 @@ class ExpenseConceptSeeder extends Seeder
             [
                 'name'  => 'Sueldos',
             ],
+            [
+                'name'  => 'Gastos Bancarios',
+            ],
         ];
 
         $user = User::where('company_name', 'Autopartes Boxes')->first();

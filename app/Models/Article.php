@@ -15,7 +15,7 @@ class Article extends Model
     // protected $appends = ['costo_real'];
 
     function scopeWithAll($query) {
-        $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'article_variants.addresses', 'addresses');
+        $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'article_variants.addresses', 'addresses', 'price_types');
     }
 
     function price_changes() {
@@ -56,6 +56,10 @@ class Article extends Model
 
     function stock_movements() {
         return $this->hasMany(StockMovement::class);
+    }
+
+    function price_types() {
+        return $this->belongsToMany(PriceType::class)->withPivot('percentage', 'price', 'final_price');
     }
 
     function cart() {

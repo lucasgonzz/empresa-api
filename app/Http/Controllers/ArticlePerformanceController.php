@@ -12,14 +12,24 @@ use Illuminate\Support\Facades\Log;
 class ArticlePerformanceController extends Controller
 {
 
-    function index($meses_atras) {
-        $start_date = Carbon::today()->subMonth($meses_atras)->startOfMonth();
-        $end_date = Carbon::today()->subMonth($meses_atras-1)->startOfMonth();
-        $models = ArticlePerformance::where('user_id', $this->userId())
-                                        ->whereDate('created_at', '>=', $start_date)
-                                        ->whereDate('created_at', '<', $end_date)
-                                        ->paginate(100);
+    function index($article_id) {
+        $models = ArticlePerformance::where('article_id', $article_id)
+                                    ->orderBy('performance_date', 'ASC')
+                                    ->get();
+
+        $models = $this->set_fechas($models);
+
         return response()->json(['models' => $models], 200);
+    }
+
+    function set_fechas($models) {
+
+        foreach ($models as $model) {
+            
+            $model->fecha = Carbon::create($model->performance_date)->isoFormat('MMMM').' '.$model->performance_date->year;
+        }
+
+        return $models;
     }
 
     function setArticlesPerformance($company_name, $meses_atras) {

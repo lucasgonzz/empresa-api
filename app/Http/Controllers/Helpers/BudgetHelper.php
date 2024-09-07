@@ -27,26 +27,17 @@ class BudgetHelper {
 		}
 	}
 
-	static function checkStatus($budget) {
+	static function checkStatus($budget, $previus_articles) {
 		Self::deleteCurrentAcount($budget);
 	    Self::deleteSale($budget);
 		if ($budget->budget_status->name == 'Confirmado') {
 
-			// if (!UserHelper::hasExtencion('check_sales')) {
-
-			// 	if (!UserHelper::hasExtencion('guardad_cuenta_corriente_despues_de_facturar')
-			// 		|| (!is_null($budget->client) && $budget->client->pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar ) ) {
-
-			// 		Self::saveCurrentAcount($budget);
-			// 	}
-			// }
-
-	        Self::saveSale($budget);
+	        Self::saveSale($budget, $previus_articles);
 		} 
 	    CurrentAcountHelper::checkSaldos('client', $budget->client_id);
 	}
 
-	static function saveSale($budget) {
+	static function saveSale($budget, $previus_articles) {
 		if (is_null($budget->sale)) {
 	        $ct = new Controller();
 	        $sale = Sale::create([
@@ -60,7 +51,7 @@ class BudgetHelper {
 	            'to_check'				=> UserHelper::hasExtencion('check_sales') ? 1 : 0,
 	            'terminada'				=> UserHelper::hasExtencion('check_sales') ? 0 : 1,
 	        ]);
-	        Self::attachSaleArticles($sale, $budget);
+	        Self::attachSaleArticles($sale, $budget, $previus_articles);
 	        Self::attachSaleDiscountsAndSurchages($sale, $budget);
 
 	        if (!$sale->to_check) {
@@ -80,7 +71,7 @@ class BudgetHelper {
 		return true;		
 	}
 
-	static function attachSaleArticles($sale, $budget) {
+	static function attachSaleArticles($sale, $budget, $previus_articles) {
 		$has_extencion_check_sales = UserHelper::hasExtencion('check_sales');
 		foreach($budget->articles as $article) {
 			$sale->articles()->attach($article->id, [
@@ -89,6 +80,13 @@ class BudgetHelper {
 				'price'	    		=> $article->pivot->price,
 				'discount'			=> $article->pivot->bonus,
 			]);
+
+			if (!$has_extencion_check_sales) {
+
+            	ArticleHelper::discountStock($article->id, $article->pivot->amount, $sale, [], false, null);
+			}
+
+
 		}
 	}
 

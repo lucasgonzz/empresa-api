@@ -10,12 +10,14 @@ use App\Http\Controllers\Helpers\ArticlesPreImportHelper;
 use App\Http\Controllers\Helpers\IvaHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\getIva;
 use App\Http\Controllers\StockMovementController;
 use App\Http\Controllers\update;
 use App\Models\Address;
 use App\Models\Article;
 use App\Models\ImportHistory;
+use App\Models\PriceType;
 use App\Models\Provider;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -28,19 +30,11 @@ use Maatwebsite\Excel\Concerns\WithHeadingRow;
 class ArticleImport implements ToCollection
 {
 
-
-    // public function chunkSize(): int
-    // {
-    //     return 100;
-    // }
     
     public function __construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id, $archivo_excel_path) {
         set_time_limit(9999999999);
 
         Log::info('Se creo ArticleImport');
-
-        // Log::info('user param:');
-        // Log::info((array)$user);
 
         $this->user = $user;
         $this->auth_user_id = $auth_user_id;
@@ -59,29 +53,7 @@ class ArticleImport implements ToCollection
         $this->updated_models = 0;
         $this->setAddresses();
         $this->setProps();
-
-        $this->props_para_actualizar = [
-            'id',
-            'num',
-            'name',
-            'bar_code',
-            'provider_code',
-            'stock_min',
-            'iva_id',
-            'cost',
-            'cost_in_dollars',
-            'percentage_gain',
-            'price',
-            'category_id',
-            'sub_category_id',
-            'stock',
-        ];
-
-        $this->articulos_para_crear = [];
-        $this->articulos_para_actualizar = [];
-
-        // $this->existing_articles = ArticleImportHelper::set_existing_articles($this->user, $this->props_para_actualizar, $this->provider_id);
-
+        $this->set_price_types();
 
         $this->import_history_chequeado = false;
 
@@ -94,11 +66,17 @@ class ArticleImport implements ToCollection
 
 
     function setProps() {
+
+        /* 
+            Estas propiedades son las que se setean automaticamente
+            con los valores que llegan del excel
+            
+            Siempre y cuando no esten ignoradas
+        */
         $this->props_to_set = [
             'name'              => 'nombre',
             'bar_code'          => 'codigo_de_barras',
             'provider_code'     => 'codigo_de_proveedor',
-            // 'stock'             => 'stock_actual',
             'stock_min'         => 'stock_minimo',
             'cost'              => 'costo',
             'percentage_gain'   => 'margen_de_ganancia',
@@ -113,18 +91,21 @@ class ArticleImport implements ToCollection
     }
 
     function checkRow($row) {
-        return !is_null(ImportHelper::getColumnValue($row, 'nombre', $this->columns)) || !is_null(ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns)) || !is_null(ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns)) || !is_null(ImportHelper::getColumnValue($row, 'numero', $this->columns));
+        return !is_null(ImportHelper::getColumnValue($row, 'nombre', $this->columns)) 
+            || !is_null(ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns)) 
+            || !is_null(ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns)) 
+            || !is_null(ImportHelper::getColumnValue($row, 'numero', $this->columns));
     }
 
     public function collection(Collection $rows) {
         $this->num_row = 1;
 
-        if (is_null($this->finish_row) || $this->finish_row == '') {
-            $this->finish_row = count($rows);
-        } 
+        $this->set_finish_row($rows);
 
         foreach ($rows as $row) {
-            if ($this->num_row >= $this->start_row && $this->num_row <= $this->finish_row) {
+
+            if ($this->esta_en_el_rango_de_filas()) {
+
                 if ($this->checkRow($row)) {
 
                     $this->articulo_existente = ArticleImportHelper::get_articulo_encontrado($this->user, $row, $this->columns);
@@ -134,6 +115,7 @@ class ArticleImport implements ToCollection
                 } else {
                     Log::info('Se omitio una fila N° '.$this->num_row.' con nombre '.ImportHelper::getColumnValue($row, 'nombre', $this->columns));
                 } 
+
             } else if ($this->num_row > $this->finish_row) {
 
                 break;
@@ -150,11 +132,30 @@ class ArticleImport implements ToCollection
             $this->trabajo_terminado = true;
         }
 
+    }
 
+    function set_finish_row($rows) {
+        if (is_null($this->finish_row) || $this->finish_row == '') {
+            $this->finish_row = count($rows);
+        } 
+    }
+
+    function esta_en_el_rango_de_filas() {
+        return $this->check_fila_inicio() && $this->check_fila_fin();
+    }
+
+    function check_fila_inicio() {
+        return $this->num_row >= $this->start_row;
+    }
+
+    function check_fila_fin() {
+        return $this->num_row <= $this->finish_row;
     }
 
     function saveArticle($row) {
+
         Log::info('saveArticle para row N° '.$this->num_row);
+        
         $data = [];
 
         $this->save_stock_movement = false;
@@ -165,19 +166,12 @@ class ArticleImport implements ToCollection
             }
         }
 
-        if (!ImportHelper::isIgnoredColumn('unidad_medida', $this->columns)) {
-            $data['unidad_medida_id'] = ArticleImportHelper::get_unidad_medida_id(ImportHelper::getColumnValue($row, 'unidad_medida', $this->columns));
-        }
+        $data = ArticleImportHelper::get_unidad_medida($data, $this->columns, $row);
 
-        if (!ImportHelper::isIgnoredColumn('proveedor', $this->columns)) {
-            LocalImportHelper::saveProvider(ImportHelper::getColumnValue($row, 'proveedor', $this->columns), $this->ct, $this->user);
-        }
+        ArticleImportHelper::guardar_proveedor($this->columns, $row, $this->ct, $this->user);
 
-        if (!ImportHelper::isIgnoredColumn('iva', $this->columns)) {
-            $data['iva_id'] = LocalImportHelper::getIvaId(ImportHelper::getColumnValue($row, 'iva', $this->columns));
-        } else if (is_null($this->articulo_existente)) {
-            $data['iva_id'] = 2;
-        }
+        $data = ArticleImportHelper::get_iva_id($data, $this->columns, $row, $this->articulo_existente);
+
 
         if (!ImportHelper::isIgnoredColumn('categoria', $this->columns)) {
             $data['category_id'] = LocalImportHelper::getCategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), $this->ct, $this->user);
@@ -190,7 +184,9 @@ class ArticleImport implements ToCollection
         $article = null;
         
         if (!is_null($this->articulo_existente) && $this->isDataUpdated($row, $data)) {
-            Log::info('Hubo cambios');
+            
+            Log::info('Hubo cambios en fila '.$this->num_row);
+            
             $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $this->articulo_existente->id, $this->user->id);
 
             if (UserHelper::hasExtencion('articles_pre_import', $this->user)) {
@@ -241,6 +237,8 @@ class ArticleImport implements ToCollection
             
             Log::info('$article no es null:');
 
+            $this->aplicar_price_types($row);
+
             $this->setDiscounts($row);
             $this->setProvider($row);
 
@@ -249,6 +247,39 @@ class ArticleImport implements ToCollection
 
             ArticleHelper::setFinalPrice($this->articulo_existente, null, $this->user, $this->auth_user_id);
         }
+    }
+
+    function aplicar_price_types($row) {
+
+        if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $this->user)) {
+
+            $price_types = [];
+
+            foreach ($this->price_types as $price_type) {
+
+                $row_name = '% '.$price_type->name;
+
+                $percentage = ImportHelper::getColumnValue($row, $row_name, $this->columns);
+
+                Log::info('ArticleImport percentage row :');
+                Log::info($percentage);
+
+                $price_types[] = [
+                    'id'            => $price_type->id,
+                    'pivot'         => [
+                        'percentage'    => $percentage,
+                    ]
+                ];
+
+            }
+            ArticlePriceTypeHelper::attach_price_types($this->articulo_existente, $price_types);
+        }
+    }
+
+    function set_price_types() {
+        $this->price_types = PriceType::where('user_id', $this->user->id)
+                                        ->orderBy('position', 'ASC')
+                                        ->get();
     }
 
     function sobre_escribir() {
@@ -371,7 +402,11 @@ class ArticleImport implements ToCollection
 
     function setStockMovement($row) {
         $stock_actual = ImportHelper::getColumnValue($row, 'stock_actual', $this->columns);
-        if (!count($this->articulo_existente->addresses) >= 1
+
+        // Aca tengo que chequear que stck_actual no sea null
+        // Probar cuando importo excel de bellini y ni siquiera marco la columna
+        if (!is_null($stock_actual)
+            && !count($this->articulo_existente->addresses) >= 1
             && $this->articulo_existente->stock != $stock_actual) {
             $request = new \Illuminate\Http\Request();
             $request->model_id = $this->articulo_existente->id;

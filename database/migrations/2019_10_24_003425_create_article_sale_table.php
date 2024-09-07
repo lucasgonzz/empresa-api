@@ -34,6 +34,7 @@ class CreateArticleSaleTable extends Migration
             $table->decimal('with_dolar')->nullable();
             $table->decimal('checked_amount', 12,2)->nullable();
             $table->decimal('unidades_individuales', 12,2)->nullable();
+            $table->integer('price_type_personalizado_id')->nullable();
 
             $table->timestamps();
         });

@@ -54,7 +54,7 @@ class SetCompanyPerformances extends Command
             */
 
             $currentDate = Carbon::today()->startOfMonth();
-            for ($_mes = 40; $_mes > 0; $_mes--) { 
+            for ($_mes = 12; $_mes > 0; $_mes--) { 
 
                 $this->comment('$_mes = '.$_mes);
 
@@ -76,14 +76,32 @@ class SetCompanyPerformances extends Command
                 * Este es el que se llama desde el Cron a principos de mes
             */
 
-            $mes = Carbon::now()->subMonths(1)->month;
-            $ano = Carbon::now()->subMonths(1)->year;
+            $users_id = [
+                121, // Colman
+                228, // HiperMax
+                2, // Fenix
+            ];
 
-            $ct->create($mes, $ano, $user_id);
-            $this->info('se mando NO historico');
+            foreach ($users_id as $_user_id) {
+
+                $this->create_company_performance($ct, $_user_id);
+            }
+
         }
 
 
         return 0;
+    }
+
+    function create_company_performance($ct, $user_id) {
+
+        $mes = Carbon::now()->subMonths(1)->month;
+        $ano = Carbon::now()->subMonths(1)->year;
+
+        // Aca borro los que se estuvieron haciendo durante el mes, asi solo queda el que hago en el siguiente paso
+        $ct->borrar_los_realizados_durante_el_mes($mes, $ano, $user_id);
+
+        $ct->create($mes, $ano, $user_id);
+        $this->info('se mando NO historico');
     }
 }

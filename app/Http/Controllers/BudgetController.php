@@ -44,8 +44,10 @@ class BudgetController extends Controller
         GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
         GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
 
+        $previus_articles = $model->articles;
+
         BudgetHelper::attachArticles($model, $request->articles);
-        BudgetHelper::checkStatus($this->fullModel('Budget', $model->id));
+        BudgetHelper::checkStatus($this->fullModel('Budget', $model->id), $previus_articles);
 
         $this->sendAddModelNotification('Budget', $model->id);
         return response()->json(['model' => $this->fullModel('Budget', $model->id)], 201);
@@ -66,8 +68,10 @@ class BudgetController extends Controller
         GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
         GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
         
+        $previus_articles = $model->articles;
+
         BudgetHelper::attachArticles($model, $request->articles);
-        BudgetHelper::checkStatus($this->fullModel('Budget', $model->id));
+        BudgetHelper::checkStatus($this->fullModel('Budget', $model->id), $previus_articles);
         
         $this->sendAddModelNotification('Budget', $model->id);
         return response()->json(['model' => $this->fullModel('Budget', $model->id)], 200);

@@ -280,6 +280,14 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'Agenda',
                 'en'            => 'pending.index',
             ],
+
+
+            // Listado
+            [
+                'singular'      => 'Exportar Excel con listas de precios para Clientes',
+                'plural'        => 'articulos',
+                'en'            => 'article.export_excel_clients',
+            ],
         ];
         foreach ($permissions as $permission) {
             PermissionEmpresa::create([

@@ -9,6 +9,8 @@ class ArticlePerformance extends Model
 {
     protected $guarded = [];
 
+    protected $dates = ['performance_date'];
+
     function scopeWithAll($q) {
         
     }

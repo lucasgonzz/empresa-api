@@ -48,7 +48,7 @@ class ArticleVariantSeeder extends Seeder
             ],
         ];
 
-        $article = Article::where('name', 'Remera')
+        $article = Article::where('name', 'Remera 1')
                             ->first();
 
         foreach ($models as $model) {

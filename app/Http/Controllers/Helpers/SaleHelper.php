@@ -235,9 +235,6 @@ class SaleHelper extends Controller {
 
     static function attachSelectedPaymentMethods($sale, $request){
 
-        Log::info('attachSelectedPaymentMethods:');
-        Log::info((array)$request->selected_payment_methods);
-
         if (is_null($sale->client_id) || $sale->omitir_en_cuenta_corriente) {
             $sale->current_acount_payment_methods()->detach();
 
@@ -248,12 +245,8 @@ class SaleHelper extends Controller {
                         
                         $sale->current_acount_payment_methods()->attach($payment_method['id'],[
                             'amount' => $payment_method['amount'],
-                            // 'discount_percentage' => $payment_method['discount_percentage'],
-                            // 'discount_amount' => $payment_method['discount_amount'],
                         ]);
                     }
-                  
-                    
                 }
             } else {
 
@@ -565,6 +558,7 @@ class SaleHelper extends Controller {
             'checked_amount'        => Self::getCheckedAmount($sale, $article),
             'article_variant_id'    => Self::getArticleVariantId($article),
             'variant_description'    => Self::getVariantDescription($article),
+            'price_type_personalizado_id'    => Self::get_price_type_personalizado($article),
             'created_at'            => Carbon::now(),
         ]);
     }
@@ -673,6 +667,13 @@ class SaleHelper extends Controller {
     static function getArticleVariantId($article) {
         if (isset($article['article_variant_id']) && $article['article_variant_id'] != 0) {
             return $article['article_variant_id'];
+        }
+        return null;
+    }
+
+    static function get_price_type_personalizado($article) {
+        if (isset($article['price_type_personalizado_id']) && $article['price_type_personalizado_id'] != 0) {
+            return $article['price_type_personalizado_id'];
         }
         return null;
     }

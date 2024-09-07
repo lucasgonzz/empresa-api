@@ -18,6 +18,7 @@ use App\Jobs\ProcessCheckInventoryLinkages;
 use App\Jobs\ProcessCheckSaldos;
 use App\Jobs\ProcessRecalculateCurrentAcounts;
 use App\Jobs\ProcessSetStockResultante;
+use App\Jobs\SetSalesTerminadaAtJob;
 use App\Models\Article;
 use App\Models\Budget;
 use App\Models\Buyer;
@@ -52,6 +53,142 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function set_terminada_at() {
+        Log::info(Carbon::parse('2024/09/01'). ' Arranco');
+        SetSalesTerminadaAtJob::dispatch();
+        echo 'Se despacho SetSalesTerminadaAtJob';
+    }
+
+    function corregir_stock_excel() {
+        $articles = Article::where('provider_id', 427) //Bellini
+                            ->orWhere('provider_id', 390) //Bellini caños
+                            ->orWhere('provider_id', 1096) //BELLINI CAÑOS
+                            
+                            ->get();
+
+        foreach ($articles as $article) {
+            
+            $last_stock_movement = StockMovement::where('article_id', $article->id)
+                                            ->orderBy('created_at', 'DESC')
+                                            ->first();
+
+            if (!is_null($last_stock_movement)) {
+
+                if ($last_stock_movement->concepto == 'Importacion Excel') {
+
+                    $amount = (float)$last_stock_movement->amount;
+                    
+
+                    $article_stock = (float)$article->stock;
+                    
+                    if ($article_stock == 0) {
+
+                        echo $article->name.' - '.$article->provider_code.' </br>';
+
+                        if ($amount < 0) {
+
+                            $stock_para_sumar = abs($amount); 
+
+                            $nuevo_stock = (float)$article->stock + $stock_para_sumar;
+
+                            echo 'Sumando '.$stock_para_sumar.' </br>';
+                            echo 'Queda en '.$nuevo_stock.' <br>';
+
+                        } else if ($amount > 0) {
+
+                            echo 'Mayor a 0 = '.$amount.' </br>';
+
+                            $nuevo_stock = (float)$article->stock - $amount;
+
+                            echo 'Sumando '.$amount.' </br>';
+                            echo 'Queda en '.$nuevo_stock.' <br>';
+                        } 
+
+                        if ($amount != 0) {
+                            
+                            $article->stock = $nuevo_stock;
+                            $article->timestamps = false;
+                            $article->save();
+
+                            $last_stock_movement->delete();
+                        }
+
+                        echo '----------- </br>';
+                    }
+                }
+            }
+        }
+    }
+
+    function corregir_stock_excel_en_0() {
+        $articles = Article::where('provider_id', 427) //Bellini
+                            ->orWhere('provider_id', 390) //Bellini caños
+                            ->orWhere('provider_id', 1096) //BELLINI CAÑOS
+
+                            ->get();
+
+        foreach ($articles as $article) {
+            
+            $last_stock_movements = StockMovement::where('article_id', $article->id)
+                                            ->where('created_at', '>=', Carbon::today()->subDays(1))
+                                            ->orderBy('created_at', 'DESC')
+                                            ->get();
+
+            foreach ($last_stock_movements as $last_stock_movement) {
+
+
+                if ($last_stock_movement->concepto == 'Importacion Excel') {
+
+                    $amount = (float)$last_stock_movement->amount;
+
+                    if ((float)$amount != 0) {
+                        
+                        $article_stock = (float)$article->stock;
+                        
+                        // if ($article_stock == 0) {
+
+                            echo $article->name.' - '.$article->provider_code.' </br>';
+
+                            echo 'Stock: '.$article->stock.' </br>';
+
+                            if ($amount < 0) {
+
+                                $stock_para_sumar = abs($amount); 
+
+                                $nuevo_stock = (float)$article->stock + $stock_para_sumar;
+
+                                echo 'Sumando '.$stock_para_sumar.' </br>';
+                                echo 'Queda en '.$nuevo_stock.' <br>';
+
+                            } else if ($amount > 0) {
+
+                                echo 'Mayor a 0 = '.$amount.' </br>';
+
+                                $nuevo_stock = (float)$article->stock - $amount;
+
+                                echo 'Sumando '.$amount.' </br>';
+                                echo 'Queda en '.$nuevo_stock.' <br>';
+                            } 
+
+                            if ($amount != 0) {
+                                
+                                $article->stock = $nuevo_stock;
+                                $article->timestamps = false;
+                                $article->save();
+
+                                $last_stock_movement->delete();
+                            }
+
+                            echo '----------- </br>';
+                        // }
+                    }
+
+                }
+            }
+
+        }
+    }
+
     function set_final_prices($user_id) {
         $articles = Article::where('user_id', $user_id)
                             ->orderBy('id', 'ASC')
@@ -80,64 +217,64 @@ class HelperController extends Controller
         foreach ($articles as $article) {
 
 
-            // $provider_article = Article::find($article->provider_article_id);
+            $provider_article = Article::find($article->provider_article_id);
 
-            // if (is_null($provider_article)) {
+            if (is_null($provider_article)) {
 
-            //     echo '<br>';
-            //     echo 'NO ESTA '.$article->name.' codigo: '.$article->bar_code.', con costo '.Numbers::price($article->cost).' creado el '.$article->created_at->format('d/m/Y'). ' <br>';
+                echo '<br>';
+                echo 'NO ESTA '.$article->name.' codigo: '.$article->bar_code.', con costo '.Numbers::price($article->cost).' creado el '.$article->created_at->format('d/m/Y'). ' <br>';
 
-            //     $article->delete();
+                $article->delete();
 
-            //     echo 'Eliminado <br>';
-            //     echo '<br>';
+                echo 'Eliminado <br>';
+                echo '<br>';
 
-            //     // echo $article->name.' con costo '.$article->cost.' no esta <br>';
-            // }
-            
-            if (!is_null($article->bar_code)) {
-
-                if (!$this->esta_en_array($repetidos, $article->bar_code)) {
-
-                    $repetido = Article::where('bar_code', $article->bar_code)
-                                        ->where('user_id', $user_id)
-                                        ->where('id', '!=', $article->id)
-                                        ->first();
-
-                    if (!is_null($repetido)) {
-
-                        $repetidos[] = $repetido;
-
-                        echo ' <br>';
-                        echo 'Repetido: <br>';
-                        echo $article->name.' codigo: '.$article->bar_code.', con costo '.Numbers::price($article->cost).' creado el '.$article->created_at->format('d/m/Y'). ' <br>';
-                        echo $repetido->name.' codigo: '.$repetido->bar_code.', con costo '.Numbers::price($repetido->cost).' creado el '.$repetido->created_at->format('d/m/Y'). ' <br>';
-
-
-
-                        // $provider_article = Article::find($article->provider_article_id);
-
-                        // if (is_null($provider_article)) {
-
-                        //     echo $article->name.' con costo '.$article->cost.' no esta <br>';
-                        // }
-
-
-                        // $provider_article = Article::find($repetido->provider_article_id);
-
-                        // if (is_null($provider_article)) {
-
-                        //     echo $repetido->name.' con costo '.$repetido->cost.' no esta <br>';
-                        // }
-
-                        // echo ' <br> ******************** <br>';
-                        // echo ' <br>';
-                    }
-
-                    // if ($repetido->created_at->lt())
-                }
-
+                // echo $article->name.' con costo '.$article->cost.' no esta <br>';
             }
+            
+            // if (!is_null($article->bar_code)) {
+
+            //     if (!$this->esta_en_array($repetidos, $article->bar_code)) {
+
+            //         $repetido = Article::where('bar_code', $article->bar_code)
+            //                             ->where('user_id', $user_id)
+            //                             ->where('id', '!=', $article->id)
+            //                             ->first();
+
+            //         if (!is_null($repetido)) {
+
+            //             $repetidos[] = $repetido;
+
+            //             echo ' <br>';
+            //             echo 'Repetido: <br>';
+            //             echo $article->name.' codigo: '.$article->bar_code.', con costo '.Numbers::price($article->cost).' creado el '.$article->created_at->format('d/m/Y'). ' <br>';
+            //             echo $repetido->name.' codigo: '.$repetido->bar_code.', con costo '.Numbers::price($repetido->cost).' creado el '.$repetido->created_at->format('d/m/Y'). ' <br>';
+
+
+
+            //             // $provider_article = Article::find($article->provider_article_id);
+
+            //             // if (is_null($provider_article)) {
+
+            //             //     echo $article->name.' con costo '.$article->cost.' no esta <br>';
+            //             // }
+
+
+            //             // $provider_article = Article::find($repetido->provider_article_id);
+
+            //             // if (is_null($provider_article)) {
+
+            //             //     echo $repetido->name.' con costo '.$repetido->cost.' no esta <br>';
+            //             // }
+
+            //             // echo ' <br> ******************** <br>';
+            //             // echo ' <br>';
+            //         }
+
+            //         // if ($repetido->created_at->lt())
+            //     }
+
+            // }
         }
     }
 
@@ -560,9 +697,10 @@ class HelperController extends Controller
         }
     }
 
-    function register_user($name, $doc_number, $company_name, $iva_included, $extencions_id, $database = null) {
+    function register_user($id, $name, $doc_number, $company_name, $iva_included, $extencions_id, $database = null) {
 
         $data = [
+            'id'                    => $id,
             'name'                  => $name,
             'doc_number'            => $doc_number,
             'company_name'          => $company_name,

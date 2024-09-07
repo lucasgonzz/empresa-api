@@ -130,7 +130,7 @@ class AfipHelper extends Controller {
             $importe = $this->montoIvaDelPrecio() * $this->article->pivot->amount;
             $base_imp = $this->getPriceWithoutIva() * $this->article->pivot->amount;
         }
-        return ['Importe' => $importe, 'BaseImp' => Numbers::redondear($base_imp)];
+        return ['Importe' => round($importe, 2), 'BaseImp' => round($base_imp, 2)];
     }
 
 
@@ -211,12 +211,13 @@ class AfipHelper extends Controller {
     */
     function montoIvaDelPrecio() {
         if (is_null($this->article->iva) || (!is_null($this->article->iva) && ($this->article->iva->percentage != 'No Gravado' || $this->article->iva->percentage != 'Exento' || $this->article->iva->percentage != 0))) {
-        // if (($this->user->iva_included && is_null($this->article->iva)) || (!is_null($this->article->iva) && ($this->article->iva->percentage != 'No Gravado' || $this->article->iva->percentage != 'Exento' || $this->article->iva->percentage != 0))) {
+
             $iva = 21;
             if (!is_null($this->article->iva)) {
                 $iva = (float)$this->article->iva->percentage;
             }
-            return Numbers::redondear($this->getPriceWithoutIva() * $iva / 100);
+            return $this->getPriceWithoutIva() * $iva / 100;
+            // return Numbers::redondear($this->getPriceWithoutIva() * $iva / 100);
         } 
         return 0;
     }

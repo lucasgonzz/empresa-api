@@ -3,8 +3,8 @@
 use Carbon\Carbon;
 
 $ventas_desde_principio_de_mes = [];
-
-for ($dia_del_mes = 0; $dia_del_mes < Carbon::now()->day ; $dia_del_mes++) { 
+$num = 1000;
+for ($dia_atras = 4; $dia_atras >= 0 ; $dia_atras--) { 
 
 	for ($employee_id=503; $employee_id <= 506; $employee_id++) { 
 
@@ -26,18 +26,19 @@ for ($dia_del_mes = 0; $dia_del_mes < Carbon::now()->day ; $dia_del_mes++) {
 			$address_id = 4;
 		}
 
-		$amount = $dia_del_mes + 1;
+		$amount = 1;
 		$total = $price_vender * $amount;
 
 		$ventas_desde_principio_de_mes[] = [
-			'num'				=> 1,
+			'num'				=> $num,
 			'employee_id'		=> $employee_id,
 			'address_id'		=> $address_id,
-			'client_id'			=> null,
+			'client_id'			=> $address_id < 3 ? 1 : null,
 			'articles'			=> [
 				[
 					'id'			=> 1,
 					'price_vender'	=> $price_vender,
+					'cost'			=> $price_vender / 2,
 					'amount'		=> $amount,
 				],
 			],
@@ -55,8 +56,9 @@ for ($dia_del_mes = 0; $dia_del_mes < Carbon::now()->day ; $dia_del_mes++) {
 					'amount'	=> $total / 4,
 				],
 			],
-			'created_at'	=> Carbon::now()->startOfMonth()->addDays($dia_del_mes),
+			'created_at'	=> Carbon::now()->now()->subDays($dia_atras),
 		];
+		$num++;
 	}
 
 }
@@ -67,16 +69,51 @@ for ($dia_del_mes = 0; $dia_del_mes < Carbon::now()->day ; $dia_del_mes++) {
 
 $ventas_meses_anterioires = [];
 
-for ($mes=4; $mes > 1; $mes--) { 
+/*
+	Hace 4 meses
+		1 dia = 1000 * 4 = 4.000
+		2 dia = 1000 * 4 = 4.000
+		3 dia = 1000 * 4 = 4.000
+		4 dia = 1000 * 4 = 4.000
 
-	for ($dia_del_mes = 0; $dia_del_mes < 6 ; $dia_del_mes++) { 
+		Total vendido del mes = 16.000
+
+	Hace 3 meses
+		1 dia = 1000 * 3 = 3.000
+		2 dia = 1000 * 3 = 3.000
+		3 dia = 1000 * 3 = 3.000
+		4 dia = 1000 * 3 = 3.000
+
+		Total vendido del mes = 12.000
+
+	Hace 2 meses
+		1 dia = 1000 * 2 = 2.000
+		2 dia = 1000 * 2 = 2.000
+		3 dia = 1000 * 2 = 2.000
+		4 dia = 1000 * 2 = 2.000
+
+		Total vendido del mes = 8.000
+
+	Hace 1 meses
+		1 dia = 1000 * 1 = 1.000
+		2 dia = 1000 * 1 = 1.000
+		3 dia = 1000 * 1 = 1.000
+		4 dia = 1000 * 1 = 1.000
+
+		Total vendido del mes = 4.000
+*/
+
+$num = 1;
+for ($mes=13; $mes >= 1; $mes--) { 
+
+	for ($dia_del_mes = 1; $dia_del_mes <= 4 ; $dia_del_mes++) { 
 
 		$price_vender = 1000;
-		$amount = $dia_del_mes + 1;
+		$amount = $mes;
 		$total = $price_vender * $amount;
 
 		$ventas_meses_anterioires[] = [
-			'num'				=> 1,
+			'num'				=> $num,
 			'employee_id'		=> 504,
 			'address_id'		=> 2,
 			'client_id'			=> null,
@@ -84,6 +121,7 @@ for ($mes=4; $mes > 1; $mes--) {
 				[
 					'id'			=> 1,
 					'price_vender'	=> $price_vender,
+					'cost'			=> $price_vender / 2,
 					'amount'		=> $amount,
 				],
 			],
@@ -99,6 +137,7 @@ for ($mes=4; $mes > 1; $mes--) {
 			],
 			'created_at'	=> Carbon::now()->startOfMonth()->subMonths($mes)->addDays($dia_del_mes),
 		];
+		$num++;
 	}
 }
 

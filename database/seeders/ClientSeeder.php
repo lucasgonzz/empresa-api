@@ -33,6 +33,7 @@ class ClientSeeder extends Seeder
                 'seller_id'             => 2,
                 'user_id'               => $user->id,
                 'price_type_id'         => 2,
+                'saldo'                 => 10000,
                 'pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar'         => 1,
             ],
             [

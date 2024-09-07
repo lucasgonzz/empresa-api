@@ -28,6 +28,10 @@ class SaleSeeder extends Seeder
 
         $this->reportes();
 
+        $this->pagos(500);
+
+        $this->venta_sin_confirmar_a_fin_de_mes();
+
         // $this->multiplo_price = 1;
 
         // $this->ventas_sin_pagar();
@@ -35,17 +39,61 @@ class SaleSeeder extends Seeder
         // // Este es para las company_performances
         // $this->ventas_meses_atras();
 
-        // $this->pagos();
     }
 
     function reportes() {
 
-        require(database_path().'\seeders\sales\reportes.php');
+        require('sales/reportes.php');
 
-        $this->create_sales($ventas_desde_principio_de_mes);
+        // $this->create_sales($ventas_desde_principio_de_mes);
         
         $this->create_sales($ventas_meses_anterioires);
 
+    }
+
+    function venta_sin_confirmar_a_fin_de_mes() {
+        $data = [
+            'num'               => 999999,
+            'address_id'        => 1,
+            'employee_id'       => null,
+            'client_id'         => 1,
+            'created_at'        => Carbon::now()->subMonths(1)->endOfMonth(),
+            'user_id'           => 500,
+            'terminada'         => 0,
+            'confirmed'         => 1,
+            'save_current_acount'=> 1,
+        ];
+        
+        $created_sale = Sale::create($data);
+
+        $price_vender = 10;
+        $sale = [
+            'client_id'         => 1,
+            'articles'          => [
+                [
+                    'id'            => 1,
+                    'price_vender'  => $price_vender,
+                    'cost'          => $price_vender / 2,
+                    'amount'        => 1,
+                ],
+            ],
+            'payment_methods'   => [
+                [
+                    'id'        => rand(1,2),
+                    'amount'    => $price_vender / 4,
+                ],
+                [
+                    'id'        => rand(3,5),
+                    'amount'    => ($price_vender / 4) * 2,
+                ],
+                [
+                    'id'        => 5,
+                    'amount'    => $price_vender / 4,
+                ],
+            ],
+        ];
+
+        SaleHelper::attachProperies($created_sale, $this->setRequest($sale));
     }
 
     function create_sales($sales) {
@@ -57,8 +105,10 @@ class SaleSeeder extends Seeder
                 'num'               => $sale['num'],
                 'address_id'        => $sale['address_id'],
                 'employee_id'       => $sale['employee_id'],
+                'client_id'         => $sale['client_id'],
                 'created_at'        => $sale['created_at'],
                 'user_id'           => $user->id,
+                'save_current_acount'=> 1,
             ];
             
             $created_sale = Sale::create($data);
@@ -218,17 +268,18 @@ class SaleSeeder extends Seeder
         }
     }
 
-    function pagos() {
+    function pagos($user_id) {
         
         $pago = CurrentAcount::create([
-            'haber'                             => 10,
+            'haber'                             => 200,
             'description'                       => null,
             'status'                            => 'pago_from_client',
-            'user_id'                           => $user->id,
+            'user_id'                           => $user_id,
             'num_receipt'                       => 1,
             'detalle'                           => 'Pago N°1',
             'client_id'                         => 1,
-            'created_at'                        => Carbon::now()->subDays(2)->addHours(1),
+            'created_at'                        => Carbon::now(),
+            'employee_id'                       => $user_id,
         ]);
         CurrentAcountPagoHelper::attachPaymentMethods($pago, $this->checks());
         $pago->saldo = CurrentAcountHelper::getSaldo('client', 1, $pago) - $pago->haber;
@@ -238,15 +289,38 @@ class SaleSeeder extends Seeder
         CurrentAcountHelper::updateModelSaldo($pago, 'client', 1);
 
         $pago = CurrentAcount::create([
-            'haber'                             => 40,
+            'haber'                             => 5000,
             'detalle'                           => 'Pago N°2',
             'description'                       => null,
             'status'                            => 'pago_from_client',
-            'user_id'                           => $user->id,
+            'user_id'                           => $user_id,
             'num_receipt'                       => 2,
             'client_id'                         => 1,
-            'created_at'                        => Carbon::now()->subDays(2)->addHours(2),
+            'created_at'                        => Carbon::now(),
+            'employee_id'                       => $user_id,
         ]);
+
+        CurrentAcountPagoHelper::attachPaymentMethods($pago, [
+            [
+                'amount'    => 3000,
+                'current_acount_payment_method_id'  => 2,
+                'bank'                          => null,
+                'payment_date'                  => null,
+                'num'                           => null,
+                'credit_card_id'                => null,
+                'credit_card_payment_plan_id'   => null,
+            ],
+            [
+                'amount'    => 2000,
+                'current_acount_payment_method_id'  => 3,
+                'bank'                          => null,
+                'payment_date'                  => null,
+                'num'                           => null,
+                'credit_card_id'                => null,
+                'credit_card_payment_plan_id'   => null,
+            ],
+        ]);
+
         $pago->saldo = CurrentAcountHelper::getSaldo('client', 1, $pago) - $pago->haber;
         $pago->save();
         $pago_helper = new CurrentAcountPagoHelper('client', 1, $pago);
@@ -255,58 +329,40 @@ class SaleSeeder extends Seeder
 
         $pago = CurrentAcount::create([
             'detalle'                           => 'Pago N°3',
-            'haber'                             => 140,
+            'haber'                             => 7000,
             'description'                       => null,
             'status'                            => 'pago_from_client',
-            'user_id'                           => $user->id,
+            'user_id'                           => $user_id,
             'num_receipt'                       => 3,
             'client_id'                         => 1,
-            'created_at'                        => Carbon::now()->subDays(2)->addHours(3),
+            'created_at'                        => Carbon::now(),
+            'employee_id'                       => $user_id,
+        ]);
+        CurrentAcountPagoHelper::attachPaymentMethods($pago, [
+            [
+                'amount'    => 4000,
+                'current_acount_payment_method_id'  => 4,
+                'bank'                          => null,
+                'payment_date'                  => null,
+                'num'                           => null,
+                'credit_card_id'                => null,
+                'credit_card_payment_plan_id'   => null,
+            ],          
+            [
+                'amount'    => 3000,
+                'current_acount_payment_method_id'  => 3,
+                'bank'                          => null,
+                'payment_date'                  => null,
+                'num'                           => null,
+                'credit_card_id'                => null,
+                'credit_card_payment_plan_id'   => null,
+            ],
         ]);
         $pago->saldo = CurrentAcountHelper::getSaldo('client', 1, $pago) - $pago->haber;
         $pago->save();
         $pago_helper = new CurrentAcountPagoHelper('client', 1, $pago);
         $pago_helper->init();
         CurrentAcountHelper::updateModelSaldo($pago, 'client', 1);
-
-        $sale = Sale::create([
-            'user_id'               => $user->id,
-            'num'                   => $ct->num('sales', $user->id),
-            'created_at'            => Carbon::now()->subDays(1),
-            'address_id'            => 1,
-            'sale_type_id'          => 1,
-            'client_id'             => 1,
-            'save_current_acount'   => 1,
-        ]);
-        SaleHelper::attachProperies($sale, $this->setRequest($sale));
-
-        $pago = CurrentAcount::create([
-            'detalle'                           => 'Pago N°4',
-            'haber'                             => 110,
-            'description'                       => null,
-            'status'                            => 'pago_from_client',
-            'user_id'                           => $user->id,
-            'num_receipt'                       => 4,
-            'client_id'                         => 1,
-            'created_at'                        => Carbon::now()->subDays(1)->addHours(1),
-        ]);
-        $pago->saldo = CurrentAcountHelper::getSaldo('client', 1, $pago) - $pago->haber;
-        $pago->save();
-        $pago_helper = new CurrentAcountPagoHelper('client', 1, $pago);
-        $pago_helper->init();
-        CurrentAcountHelper::updateModelSaldo($pago, 'client', 1);
-
-        for ($i=0; $i < 10; $i++) { 
-            $sale = Sale::create([
-                'user_id'               => $user->id,
-                'num'                   => $ct->num('sales', $user->id),
-                'address_id'            => 1,
-                'sale_type_id'          => 1,
-                'client_id'             => 1,
-                'save_current_acount'   => 1,
-            ]);
-            SaleHelper::attachProperies($sale, $this->setRequest($sale));
-        }
     }
 
     function checks() {
@@ -324,7 +380,7 @@ class SaleSeeder extends Seeder
             [
                 'current_acount_payment_method_id'  => 1,
                 'amount'                        => 100,
-                'bank'                          => 'Banco re mil largo',
+                'bank'                          => 'BNA',
                 'payment_date'                  => null,
                 'num'                           => '123123',
                 'credit_card_id'                => null,
@@ -382,7 +438,7 @@ class SaleSeeder extends Seeder
                 'is_article'    => true,
                 'amount'        => $article['amount'],
                 'article_variant_id'        => null,
-                'cost'          => null,
+                'cost'          => $article['cost'],
                 'price_vender'  => $article['price_vender'],
             ];
             $request->items[] = $_article; 

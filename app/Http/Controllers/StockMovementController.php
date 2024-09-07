@@ -248,7 +248,9 @@ class StockMovementController extends Controller
 
             ArticleHelper::setArticleStockFromAddresses($this->article, false);
 
-            if ($this->stock_movement->concepto != 'Movimiento de depositos' && (
+            if ($this->stock_movement->concepto != 'Movimiento de depositos'
+                && !isset($this->request->from_excel_import) 
+                && (
                     is_null($this->stock_movement->observations)
                     || substr($this->stock_movement->observations, 0, 1) != '.'
                 )

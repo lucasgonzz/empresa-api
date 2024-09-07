@@ -12,11 +12,11 @@ class UserHelper {
         Log::info('-----------------> entro a userId');
         $user = Auth()->user();
 
-        if (is_null($user) && env('APP_ENV') != 'production') {
+        if (is_null($user)) {
             $user = User::where('company_name', 'Autopartes Boxes')->first();
-            Log::info('asd');
             return $user->id;
         } 
+        
         if ($get_owner) {
             if (is_null($user->owner_id)) {
                 return $user->id;

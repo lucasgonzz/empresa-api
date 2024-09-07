@@ -39,6 +39,7 @@ class DatabaseSeeder extends Seeder
 
             $this->call(ArticlePreImportRangeSeeder::class);
 
+
             // $this->call(PermissionsTableSeeder::class);
             $this->call(UnidadMedidaSeeder::class);
             $this->call(PermissionSeeder::class);
@@ -49,6 +50,31 @@ class DatabaseSeeder extends Seeder
             $this->call(ProviderOrderStatusSeeder::class);
             $this->call(OnlinePriceTypeSeeder::class);
             $this->call(UserSeeder::class);
+
+
+
+            if ($for_user == 'colman') {
+
+                $this->call(PriceTypeSeeder::class);
+                $this->call(RecipeSeeder::class);
+
+            } else if ($for_user == 'feito') {
+
+                $this->call(CurrentAcountPaymentMethodDiscountSeeder::class);
+                $this->call(AfipSelectedPaymentMethodSeeder::class);
+                $this->article_variants();
+
+            } else if ($for_user == 'fenix') {
+
+                $this->call(SaleTypeSeeder::class);
+                $this->call(CommissionSeeder::class);
+                
+            } else if ($for_user == 'pack_descartables') {
+
+                $this->call(PriceTypeSeeder::class);
+            }
+
+
             $this->call(CategorySeeder::class);
             $this->call(SubCategorySeeder::class);
             $this->call(SellerSeeder::class);
@@ -57,14 +83,12 @@ class DatabaseSeeder extends Seeder
             $this->call(ColorSeeder::class);
             $this->call(IvaSeeder::class);
             $this->call(DepositSeeder::class);
-            $this->call(ArticleSeeder::class);
+            // $this->call(ArticleSeeder::class);
             $this->call(IvaConditionSeeder::class);
             $this->call(ClientSeeder::class);
             $this->call(BuyerSeeder::class);
             $this->call(DiscountSeeder::class);
             $this->call(SurchageSeeder::class);
-            // $this->call(SaleTypeSeeder::class);
-            $this->call(CommissionSeeder::class);
             // $this->call(CurrentAcountSeeder::class);
             // $this->call(ScheduleSeeder::class);
             $this->call(AddressSeeder::class);
@@ -72,6 +96,9 @@ class DatabaseSeeder extends Seeder
             // $this->call(MeLiOrderSeeder::class);
             
             $this->call(ProviderOrderSeeder::class);
+
+            $this->call(ProviderPagosSeeder::class);
+
             // $this->call(EmployeeSeeder::class);
             $this->call(SaleSeeder::class);
             // $this->call(WorkdaySeeder::class);
@@ -90,9 +117,8 @@ class DatabaseSeeder extends Seeder
             // $this->call(CuponSeeder::class);
             $this->call(BudgetStatusSeeder::class);
             $this->call(BudgetSeeder::class);
-            $this->call(RecipeSeeder::class);
             // $this->call(OrderProductionSeeder::class);
-            $this->call(SuperBudgetSeeder::class);
+            // $this->call(SuperBudgetSeeder::class);
             // $this->call(CreditCardSeeder::class);
             // $this->call(CreditCardPaymentPlanSeeder::class);
             $this->call(UpdateFeatureSeeder::class);
@@ -102,7 +128,6 @@ class DatabaseSeeder extends Seeder
             // $this->call(AfipTicketSeeder::class);
 
 
-            $this->article_variants();
 
             
             $this->call(CartSeeder::class);
@@ -117,18 +142,6 @@ class DatabaseSeeder extends Seeder
 
             $this->call(UnidadFrecuenciaSeeder::class);
             $this->call(PendingSeeder::class);
-
-
-            if ($for_user == 'colman') {
-
-                $this->call(PriceTypeSeeder::class);
-
-            } else if ($for_user == 'feito') {
-
-                $this->call(CurrentAcountPaymentMethodDiscountSeeder::class);
-                $this->call(AfipSelectedPaymentMethodSeeder::class);
-            }
-
 
 
         }

@@ -66,17 +66,40 @@ class RecipeController extends Controller
                             })
                             ->get();
         $models = [];
+        
         foreach ($recipes as $recipe) {
+
             foreach ($recipe->articles as $article) {
+
                 if ($article->id == $article_id) {
-                    $models[] = [
-                        'article'                   => $recipe->article->name,
-                        'amount'                    => $article->pivot->amount,
-                        'order_production_status'   => $this->getModelBy('order_production_statuses', 'id', $article->pivot->order_production_status_id, false, 'name'),
-                    ];
+
+                    $exists = false;
+
+                    // Verifica si el modelo ya existe en el array
+                    foreach ($models as $model) {
+
+                        if ($model['recipe_id'] == $recipe->id && $model['article_id'] == $recipe->article->id) {
+                            $exists = true;
+                            break;
+                        }
+                    }
+
+                    // Solo agrega si no existe en el array
+                    if (!$exists) {
+
+                        $models[] = [
+                            'recipe_id'                 => $recipe->id,
+                            'article_id'                => $recipe->article->id,
+                            'article'                   => $recipe->article->name,
+                            'amount'                    => $article->pivot->amount,
+                            'order_production_status'   => $this->getModelBy('order_production_statuses', 'id', $article->pivot->order_production_status_id, false, 'name'),
+                        ];
+                    }
+
                 }
             }
         }
         return response()->json(['models' => $models], 200);
+        // return response()->json(['models' => $models, 'recipes' => $recipes], 200);
     }
 }

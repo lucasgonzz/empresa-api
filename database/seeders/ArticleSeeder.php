@@ -32,6 +32,8 @@ class ArticleSeeder extends Seeder
 
     public function run()
     {
+        $this->for_user = env('FOR_USER');
+
         $this->lucas();
     }
 
@@ -46,38 +48,34 @@ class ArticleSeeder extends Seeder
                             ->first();
 
         // require(database_path().'\seeders\articles\ferreteria.php');
-        require(database_path().'\seeders\articles\auto_partes.php');
+        require('articles/auto_partes.php');
+        // require(database_path().'\seeders\articles\auto_partes.php');
         // require(database_path().'\seeders\articles\marcos_prueba_deposito.php');
 
         $num = 1;
         $days = count($articles);
         // $id = 500000;
-        // for ($i=0; $i < 4; $i++) { 
+        // for ($i=1; $i <= 2; $i++) { 
             foreach ($articles as $article) {
+
                 $art = Article::create([
                     'num'                   => $num,
+                    // 'bar_code'              => $article['name'].rand(99999, 9999999),
                     'bar_code'              => '00'.$num,
-                    // 'bar_code'              => $article['bar_code'],
                     'provider_code'         => 'p/'.$num,
-                    // 'provider_code'         => $article['provider_code'],
                     'name'                  => $article['name'],
                     'slug'                  => ArticleHelper::slug($article['name'], $user->id),
-                    // 'cost'               => 50,
-                    // 'cost'               => rand(1000, 100000),
-                    // 'cost'                  => rand(10, 1000),
+                    'cost'               => 500,
                     'costo_mano_de_obra'    => isset($article['costo_mano_de_obra']) ? $article['costo_mano_de_obra'] : null,
                     'status'                => isset($article['status']) ? $article['status'] : 'active',
                     'featured'              => isset($article['featured']) ? $article['featured'] : null,
-                    // 'stock'              => $article['stock'] ,
                     'provider_id'           => isset($article['provider_id']) ? $article['provider_id'] : null,
-                    'percentage_gain'       => isset($article['percentage_gain']) ? $article['percentage_gain'] : null,
+                    'percentage_gain'       => 100,
                     'iva_id'                => isset($article['iva_id']) ? $article['iva_id'] : null,
                     'featured'              => isset($article['featured']) ? $article['featured'] : null,
                     // 'apply_provider_percentage_gain'     => 0,
                     'apply_provider_percentage_gain'    => 0,
-                    'price'                 => ($num * 1000) - ($num * 2),
-                    // 'price'                 => isset($article['price']) ? $article['price'] : null,
-                    'default_in_vender'     => isset($article['default_in_vender']) ? $article['default_in_vender'] : null,
+                    'default_in_vender'     => isset($article['default_in_vender']) && $this->for_user == 'hipermax' ? $article['default_in_vender'] : null,
                     'category_id'           => $this->getCategoryId($user, $article),
                     'sub_category_id'       => $this->getSubcategoryId($user, $article),
                     'created_at'            => Carbon::now()->subDays($days),

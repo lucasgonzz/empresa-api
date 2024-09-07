@@ -2,19 +2,21 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
+use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Address;
 use App\Models\Article;
 use App\Models\ImportHistory;
+use App\Models\PriceType;
 use App\Models\UnidadMedida;
 use App\Notifications\GlobalNotification;
 use Illuminate\Support\Facades\Log;
-use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 
 class ArticleImportHelper {
 
 	static function enviar_notificacion($user) {
+
 	    $functions_to_execute = [];
 	    
         if ($user->download_articles) {
@@ -34,6 +36,7 @@ class ArticleImportHelper {
 		    $user->id,
 		    false,
         ));
+
 	}
 
     static function create_import_history($user, $auth_user_id, $provider_id, $created_models, $updated_models, $columns, $archivo_excel_path) {
@@ -48,6 +51,34 @@ class ArticleImportHelper {
             'excel_url'			=> $archivo_excel_path,
         ]);
         Log::info('Se creo ImportHistory con '.$created_models.' creados y '.$updated_models.' actualizados con provider_id: '.$provider_id);
+    }
+
+    static function guardar_proveedor($columns, $row, $ct, $user) {
+
+        if (!ImportHelper::isIgnoredColumn('proveedor', $columns)) {
+            LocalImportHelper::saveProvider(ImportHelper::getColumnValue($row, 'proveedor', $columns), $ct, $user);
+        }
+    }
+
+    static function get_unidad_medida($data, $columns, $row) {
+
+        if (!ImportHelper::isIgnoredColumn('unidad_medida', $columns)) {
+            $data['unidad_medida_id'] = Self::get_unidad_medida_id(ImportHelper::getColumnValue($row, 'unidad_medida', $columns));
+        }
+
+        return $data;
+    }
+
+    static function get_iva_id($data, $columns, $row, $articulo_existente) {
+
+        if (!ImportHelper::isIgnoredColumn('iva', $columns)) {
+            $data['iva_id'] = LocalImportHelper::getIvaId(ImportHelper::getColumnValue($row, 'iva', $columns));
+
+        } else if (is_null($articulo_existente)) {
+            $data['iva_id'] = 2;
+        }
+
+        return $data;
     }
 
     static function get_observations($columns) {
@@ -126,7 +157,7 @@ class ArticleImportHelper {
         // return $existing_articles;
     }
 	
-	static function addAddressesColumns($columns) {
+	static function add_addresses_price_types_columns($columns) {
 		$addresses = Address::where('user_id', UserHelper::userId())
 							->orderBy('created_at', 'ASC')
 							->get();
@@ -138,6 +169,21 @@ class ArticleImportHelper {
 			$columns[$address->street] = $column_position;
 			$column_position++;
 		}
+
+		if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
+
+			$price_types = PriceType::where('user_id', UserHelper::userId())
+									->orderBy('position', 'ASC')
+									->get();
+
+
+			foreach ($price_types as $price_type) {
+				$columns['% '.$price_type->name] = $column_position;
+				$column_position += 3;
+				// Sumo de a 3, porque una columna tiene el % y otra el precio calculado y despues el precio final con iva
+			}
+		}
+
 		return $columns;
 	}
 

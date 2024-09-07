@@ -381,7 +381,13 @@ class SalePdf extends fpdf {
 		$this->Cell(
 			100,
 			7,
-			'Total: $'. Numbers::price($this->total_sale),
+			'Total: $'. Numbers::price(SaleHelper::getTotalSale($this->sale, false, false, false)),
+
+			/*
+				* Se motraba el total que habia hasta esta pagina, no el total real de la venta.
+				* Lo camio porque me pidio Oscar
+			*/
+			// 'Total: $'. Numbers::price($this->total_sale),
 			$this->b,
 			1,
 			'L'

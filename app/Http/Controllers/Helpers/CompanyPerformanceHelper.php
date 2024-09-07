@@ -136,15 +136,21 @@ class CompanyPerformanceHelper {
 
     function sumar_company_performances() {
         $this->suma_company_performances = [
-            'total_vendido'     => 0,
-            'total_pagado_mostrador'    => 0,
+            'total_vendido'                     => 0,
+            'total_facturado'                   => 0,
+            'total_pagado_a_proveedores'        => 0,
+            'total_iva_comprado'                => 0,
+            'total_vendido_costos'              => 0,
+            'total_pagado_mostrador'            => 0,
             'total_vendido_a_cuenta_corriente'  => 0,
             'total_pagado_a_cuenta_corriente'   => 0,
-            'total_devolucion'  => 0,
-            'total_ingresos'    => 0,
-            'cantidad_ventas'   => 0,
-            'total_gastos'  => 0,
-            'total_comprado'    => 0,
+            'total_devolucion'                  => 0,
+            'total_ingresos'                    => 0,
+            'cantidad_ventas'                   => 0,
+            'total_gastos'                      => 0,
+            'total_comprado'                    => 0,
+            'ingresos_netos'                    => 0,
+            'rentabilidad'                      => 0,
         ];
 
         $this->set_payment_methods();
@@ -162,6 +168,14 @@ class CompanyPerformanceHelper {
 
             $this->suma_company_performances['total_vendido']     += $company_performance->total_vendido;
             
+            $this->suma_company_performances['total_facturado']     += $company_performance->total_facturado;
+
+            $this->suma_company_performances['total_pagado_a_proveedores']     += $company_performance->total_pagado_a_proveedores;
+
+            $this->suma_company_performances['total_iva_comprado']     += $company_performance->total_iva_comprado;
+            
+            $this->suma_company_performances['total_vendido_costos']     += $company_performance->total_vendido_costos;
+            
             $this->suma_company_performances['total_pagado_mostrador']    += $company_performance->total_pagado_mostrador;
             
             $this->suma_company_performances['total_vendido_a_cuenta_corriente']  += $company_performance->total_vendido_a_cuenta_corriente;
@@ -174,9 +188,13 @@ class CompanyPerformanceHelper {
             
             $this->suma_company_performances['cantidad_ventas']   += $company_performance->cantidad_ventas;
             
-            $this->suma_company_performances['total_gastos']  += $company_performance->total_gastos;
+            $this->suma_company_performances['total_gastos']      += $company_performance->total_gastos;
             
             $this->suma_company_performances['total_comprado']    += $company_performance->total_comprado;
+
+            $this->suma_company_performances['ingresos_netos']    += $company_performance->ingresos_netos;
+
+            $this->suma_company_performances['rentabilidad']      += $company_performance->rentabilidad;
 
 
             $this->sumar_relation($company_performance, 'ingresos_mostrador');

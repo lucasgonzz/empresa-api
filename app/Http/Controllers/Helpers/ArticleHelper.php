@@ -2,12 +2,13 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\RecipeHelper;
+use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\PriceChangeController;
 use App\Http\Controllers\StockMovementController;
 use App\Mail\Advise as AdviseMail;
@@ -76,6 +77,7 @@ class ArticleHelper {
     }
 
     static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null) {
+
         Log::info('setFinalPrice para '.$article->name.' con precio de '.$article->price);
         
         if (is_null($user)) {
@@ -87,13 +89,24 @@ class ArticleHelper {
         }
 
         $current_final_price = $article->final_price;
-        if (!is_null($article->percentage_gain) || ($article->apply_provider_percentage_gain && !is_null($article->provider) && !is_null($article->provider->percentage_gain))) {
+
+        if (!is_null($article->percentage_gain) 
+            || (
+                    !is_null($article->cost) 
+                    && $article->apply_provider_percentage_gain 
+                    && !is_null($article->provider) 
+                    && !is_null($article->provider->percentage_gain)
+                )
+            ) {
+
             $article->price = null;
             $article->save();
         }
+
         if (is_null($article->price) || $article->price == '') {
-            // Log::info('entor con price null');
+
             $cost = $article->cost;
+
             if ($article->cost_in_dollars) {
                 if (!is_null($article->provider) && !is_null($article->provider->dolar) && (float)$article->provider->dolar > 0) {
                     $cost = $cost * $article->provider->dolar;
@@ -101,52 +114,39 @@ class ArticleHelper {
                     $cost = $cost * $user->dollar;
                 }
             }
+
             $final_price = $cost;
-            // Log::info('$article->apply_provider_percentage_gain: '.$article->apply_provider_percentage_gain);
-            if ($article->apply_provider_percentage_gain) {
-                // Log::info('ENTROOO');
+
+            if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)) {
+
+                ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $cost, $user);
+
+            } else if ($article->apply_provider_percentage_gain) {
+
                 if (!is_null($article->provider_price_list)) {
-                    // Log::info('sumando provider_price_list de '.$article->provider_price_list->percentage);
-                    // Log::info('final_price esta en '.$final_price);
+
                     $final_price = $cost + ($cost * $article->provider_price_list->percentage / 100);
-                    // Log::info('final_price quedo en '.$final_price);
+
                 } else if ((!is_null($article->provider) && $article->provider->percentage_gain)) {
-                    // Log::info('sumando provider->percentage_gain de '.$article->provider->percentage_gain);
-                    // Log::info('final_price esta en '.$final_price);
+
                     $final_price = $cost + ($cost * $article->provider->percentage_gain / 100);
-                    // Log::info('final_price quedo en '.$final_price);
+
                 } else {
-                    // Log::info('no se sumo ningun marguen de ganancia de proveedor');
+
                     $final_price = $cost;
-                    // Log::info('final_price quedo en '.$final_price);
                 }
             }
+            
             if (!is_null($article->percentage_gain)) {
-                // Log::info('sumando article->percentage_gain de '.$article->percentage_gain);
-                // Log::info('final_price esta en '.$final_price);
+                
                 $final_price += $final_price * $article->percentage_gain / 100; 
-                // if ($final_price > 0) {
-                //     $final_price += $final_price * $article->percentage_gain / 100; 
-                // } else {
-                //     $final_price += $cost * $article->percentage_gain / 100; 
-                // }
-                // Log::info('final_price quedo en '.$final_price);
             }
         } else {
             $final_price = $article->price;
-            Log::info('entro con price: '.$article->price);
         }
 
-        // Log::info('final_price:');
-        // Log::info($final_price);
-        // Log::info('iva_included: '.$user->iva_included);
-        // Log::info('hasIva: '.Self::hasIva($article));
-        if (!$user->iva_included && Self::hasIva($article)) {
-            // Log::info('sumando iva de '.$article->iva->percentage);
-            // Log::info('final_price esta en '.$final_price);
-            $final_price += $final_price * $article->iva->percentage / 100;
-            // Log::info('final_price quedo en '.$final_price);
-        }
+        $final_price = ArticlePricesHelper::aplicar_iva($article, $final_price, $user);
+
         if (count($article->article_discounts) >= 1) {
             foreach ($article->article_discounts as $discount) {
                 $final_price -= $final_price * $discount->percentage / 100;
@@ -162,8 +162,6 @@ class ArticleHelper {
             PriceChangeController::store($article, $auth_user_id);
         }
 
-        // echo($article->name.' final_price: '.$article->final_price.' </br>');
-        // echo('-------------------------------------------------------------- </br>');
         $article->timestamps = false;
         $article->save();
     }

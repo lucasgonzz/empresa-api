@@ -36,6 +36,20 @@ class CreateCompanyPerformancesTable extends Migration
 
             $table->decimal('total_comprado', 20,2)->nullable();
 
+            $table->decimal('deuda_clientes', 30,2)->nullable();
+
+            $table->decimal('total_vendido_costos', 30,2)->nullable();
+
+            $table->decimal('ingresos_netos', 30,2)->nullable();
+            
+            $table->decimal('rentabilidad', 30,2)->nullable();
+
+            $table->decimal('total_facturado', 30,2)->nullable();
+
+            $table->decimal('total_pagado_a_proveedores', 30,2)->nullable();
+            
+            $table->decimal('total_iva_comprado', 30,2)->nullable();
+
             $table->boolean('from_today')->default(0);
             
             $table->integer('user_id')->nullable();

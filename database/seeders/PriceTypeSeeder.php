@@ -15,19 +15,20 @@ class PriceTypeSeeder extends Seeder
      */
     public function run()
     {
+        $for_user = env('FOR_USER');
         $user = User::where('company_name', 'Autopartes Boxes')->first();
         $models = [
             [
                 'num'           => 1,
                 'name'          => 'Mayorista',
-                'percentage'    => 100,
+                'percentage'    => 10,
                 'position'      => 1,
                 'user_id'       => $user->id,
             ],
             [
                 'num'           => 2,
                 'name'          => 'Comercio',
-                'percentage'    => 100,
+                'percentage'    => 50,
                 'position'      => 2,
                 'user_id'       => $user->id,
             ],
@@ -40,6 +41,11 @@ class PriceTypeSeeder extends Seeder
             ],
         ];
         foreach ($models as $model) {
+
+            if ($for_user == 'Colman') {
+                $model['percentage'] = 100;
+            }
+
             PriceType::create($model);
         }
     }

@@ -13,6 +13,22 @@ class ChequeController extends Controller
                                                             ->orderBy('created_at', 'ASC')
                                                             ->with('current_acount.client')
                                                             ->get();
-        return response()->json(['models' => $models], 200);
+        $_models = [];
+
+        foreach ($models as $model) {
+            
+            if (is_null($model->current_acount)) {
+
+                $model->current_acount = [
+                    'client'    => [
+                        'name'  => null,
+                    ],
+                ];
+            } else {
+                $_models[] = $model;
+            }
+        }
+
+        return response()->json(['models' => $_models], 200);
     }
 }

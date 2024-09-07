@@ -20,11 +20,15 @@ class Sale extends Model
     }
 
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles.article_variants', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'nota_credito_afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'current_acount', 'current_acount_payment_methods');
+        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles.article_variants', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'nota_credito_afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'current_acount', 'current_acount_payment_methods', 'price_type');
     }
 
     function sale_modifications() {
         return $this->hasMany(SaleModification::class);
+    }
+
+    public function price_type() {
+        return $this->belongsTo(PriceType::class);
     }
 
     public function address() {
@@ -88,7 +92,7 @@ class Sale extends Model
     }
 
     public function articles() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'cost', 'price', 'returned_amount', 'delivered_amount', 'discount', 'with_dolar', 'checked_amount', 'variant_description', 'article_variant_id')->withTrashed();
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'cost', 'price', 'returned_amount', 'delivered_amount', 'discount', 'with_dolar', 'checked_amount', 'variant_description', 'article_variant_id', 'price_type_personalizado_id')->withTrashed();
     }
 
     public function combos() {

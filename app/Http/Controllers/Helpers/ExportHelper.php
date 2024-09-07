@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Address;
 use App\Models\Article;
 use App\Models\PriceType;
@@ -38,10 +38,28 @@ class ExportHelper {
 	
 	static function mapPriceTypes($map, $article) {
 		$price_types = Self::getPriceTypes();
+
 		if (count($price_types) >= 1) {
-			foreach ($price_types as $price_type) {
-				$map[] = $article->{$price_type->name};
+
+			if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
+
+
+				foreach ($price_types as $price_type) {
+
+					$article_price_type = $article->price_types()->find($price_type->id);
+
+					$map[] = $article_price_type->pivot->percentage;
+					$map[] = $article_price_type->pivot->price;
+					$map[] = $article_price_type->pivot->final_price;
+				}
+
+			} else {
+
+				foreach ($price_types as $price_type) {
+					$map[] = $article->{$price_type->name};
+				}
 			}
+
 		}
 		return $map;
 	}
@@ -59,9 +77,20 @@ class ExportHelper {
 	static function setPriceTypesHeadings($headings) {
 		$price_types = Self::getPriceTypes();
 		if (count($price_types) >= 1) {
+
 			foreach ($price_types as $price_type) {
-				$headings[] = $price_type->name;
+
+				if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
+
+					$headings[] = '% '.$price_type->name;
+					$headings[] = '$ '.$price_type->name;
+					$headings[] = '$ Final '.$price_type->name;
+				} else {
+
+					$headings[] = $price_type->name;
+				}
 			}
+
 		}
 		return $headings;
 	}
@@ -86,16 +115,20 @@ class ExportHelper {
 	
 	
 	static function setPriceTypes($articles) {
-		$price_types = Self::getPriceTypes();
-		if (count($price_types) >= 1) {
-			foreach ($articles as $article) {
-				$price = $article->final_price;
-				foreach ($price_types as $price_type) {
-					$price = $price + ($price * $price_type->percentage / 100);
-					$article->{$price_type->name} = $price; 
+		if (!UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
+
+			$price_types = Self::getPriceTypes();
+			if (count($price_types) >= 1) {
+				foreach ($articles as $article) {
+					$price = $article->final_price;
+					foreach ($price_types as $price_type) {
+						$price = $price + ($price * $price_type->percentage / 100);
+						$article->{$price_type->name} = $price; 
+					}
 				}
 			}
-		}
+		} 
+
 		return $articles;
 	}
 	

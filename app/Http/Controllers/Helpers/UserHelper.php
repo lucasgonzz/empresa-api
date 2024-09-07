@@ -9,14 +9,16 @@ use Illuminate\Support\Facades\Log;
 class UserHelper {
 
 	static function userId($from_owner = true) {
-        Log::info('-----------------> entro a userId');
+
+
+
         $user = Auth()->user();
-        // Log::info('Auth user:');
-        // Log::info($user);
-        if (is_null($user) && env('APP_ENV') != 'production') {
+
+        if (is_null($user)) {
             $user = User::where('company_name', 'Autopartes Boxes')->first();
             return $user->id;
         }
+        
         if ($from_owner) {
             if (is_null($user->owner_id)) {
                 return $user->id;
@@ -25,6 +27,21 @@ class UserHelper {
             }
         } else {
             return $user->id;
+        }
+    }
+
+    static function get_user($from_owner) {
+
+        if ($from_owner) {
+
+        }
+
+        if (session()->has('auth_user')) {
+
+            $user = session('auth_user');
+        } else {
+
+            $user = Auth()->user();
         }
     }
 
