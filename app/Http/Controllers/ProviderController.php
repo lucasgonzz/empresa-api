@@ -36,6 +36,8 @@ class ProviderController extends Controller
             'location_id'           => $request->location_id,   
             'iva_condition_id'      => $request->iva_condition_id,  
             'percentage_gain'       => $request->percentage_gain,   
+            'porcentaje_comision_negro'       => $request->porcentaje_comision_negro,   
+            'porcentaje_comision_blanco'      => $request->porcentaje_comision_blanco,   
             'dolar'                 => $request->dolar, 
             'user_id'               => $this->userId(),
         ]);
@@ -64,6 +66,8 @@ class ProviderController extends Controller
         $model->iva_condition_id    = $request->iva_condition_id;  
         $model->percentage_gain     = $request->percentage_gain;   
         $model->dolar               = $request->dolar; 
+        $model->porcentaje_comision_negro               = $request->porcentaje_comision_negro; 
+        $model->porcentaje_comision_blanco              = $request->porcentaje_comision_blanco; 
         $model->save();
         GeneralHelper::checkNewValuesForArticlesPrices($this, $last_percentage_gain, $model->percentage_gain, 'provider_id', $model->id);
         GeneralHelper::checkNewValuesForArticlesPrices($this, $last_dolar, $model->dolar, 'provider_id', $model->id);

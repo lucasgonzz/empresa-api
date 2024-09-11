@@ -166,7 +166,15 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('deposit', 'DepositController');
     Route::resource('size', 'SizeController');
     Route::resource('color', 'ColorController');
+
     Route::resource('article-discount', 'ArticleDiscountController');
+    Route::resource('article-discount-blanco', 'ArticleDiscountBlancoController');
+    Route::resource('article-surchage', 'ArticleSurchageController');
+    Route::resource('article-surchage-blanco', 'ArticleSurchageBlancoController');
+
+
+    Route::resource('tipo-envase', 'TipoEnvaseController');
+
     Route::resource('description', 'DescriptionController');
     Route::resource('discount', 'DiscountController');
     Route::resource('surchage', 'SurchageController');

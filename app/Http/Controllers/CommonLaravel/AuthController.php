@@ -52,6 +52,7 @@ class AuthController extends Controller
     public function get_user() {
         if ($this->checkUserLastActivity()) {
             $user = UserHelper::getFullModel(false);
+            $this->set_sessions($user);
             return response()->json(['user' => $user], 200);
         }
         return response()->json(['user' => null], 403);
@@ -80,6 +81,7 @@ class AuthController extends Controller
     }
 
     function checkUserLastActivity() {
+        return true;
         if (class_exists('App\Http\Controllers\Helpers\AuthHelper')) {
             $auth_helper = new \App\Http\Controllers\Helpers\AuthHelper();
             if (method_exists($auth_helper, 'checkUserLastActivity')) {

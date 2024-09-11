@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipNotaCreditoHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CurrentAcountAndCommissionHelper;
+use App\Http\Controllers\Helpers\CurrentAcountFromSaleHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\DiscountHelper;
 use App\Http\Controllers\Helpers\GeneralHelper;
@@ -18,6 +19,7 @@ use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
 use App\Http\Controllers\Helpers\sale\UpdateHelper;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SellerCommissionController;
@@ -214,8 +216,13 @@ class SaleHelper extends Controller {
 
 
         if ($from_store && !$model->to_check && !$model->checked) {
-            Self::attachCurrentAcountsAndCommissions($model);
+            
+            Self::create_current_acount($model);
+            
+            Self::crear_comision($model);
+
         } else {
+
             Self::checkNotaCredito($model, $request);
         }
     }
@@ -479,14 +486,42 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function attachCurrentAcountsAndCommissions($sale) {
+    static function get_seller_id($request) {
+        if (isset($request->seller_id)
+            && !is_null($request->seller_id)
+            && $request->seller_id != 0) {
+
+            return $request->seller_id;
+        }
+
+        if (!is_null($request->client_id)) {
+
+            $client = Client::find($request->client_id);
+
+            if (!is_null($client->seller_id)) {
+
+                return $client->seller_id;
+            }
+        }
+
+        return null;
+    }
+
+    static function create_current_acount($sale) {
         if (!is_null($sale->client_id) 
             && $sale->save_current_acount
             && !$sale->omitir_en_cuenta_corriente) {
-            $helper = new CurrentAcountAndCommissionHelper($sale);
-            $helper->attachCommissionsAndCurrentAcounts();
+            
+            $helper = new CurrentAcountFromSaleHelper($sale);
+            $helper->crear_current_acount();
+        }
+    }
 
-            // CurrentAcountHelper::checkSaldos('client', $sale->client_id);
+    static function crear_comision($sale) {
+        if (!is_null($sale->seller_id)) {
+            
+            $helper = new ComisionesHelper($sale);
+            $helper->crear_comision();
         }
     }
 
@@ -610,17 +645,18 @@ class SaleHelper extends Controller {
         Self::deleteCurrentAcountFromSale($sale);
         Self::deleteSellerCommissionsFromSale($sale);
 
+        Self::create_current_acount($sale);
+        
+        Self::crear_comision($sale);
+
         if (!$sale->omitir_en_cuenta_corriente) {
-            
-            $helper = new CurrentAcountAndCommissionHelper($sale);
-            $helper->attachCommissionsAndCurrentAcounts();
 
             $sale->client->pagos_checkeados = 0;
             $sale->client->save();
 
             CurrentAcountHelper::checkSaldos('client', $sale->client_id);
-
         }
+
     }
 
     static function deleteCurrentAcountFromSale($sale) {

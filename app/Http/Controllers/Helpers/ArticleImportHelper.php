@@ -39,6 +39,51 @@ class ArticleImportHelper {
 
 	}
 
+    static function set_unidades_por_bulto($article, $columns, $row) {
+
+    	$unidades_x_bulto = ImportHelper::getColumnValue($row, 'u_x_bulto', $columns);
+
+    	if (!is_null($unidades_x_bulto)) {
+    		
+    		$article->unidades_por_bulto = $unidades_x_bulto;
+    		$article->save();
+    	}
+
+    }
+
+    static function set_contenido($article, $columns, $row) {
+
+    	$contenido = ImportHelper::getColumnValue($row, 'contenido', $columns);
+
+    	if (!is_null($contenido)) {
+    		
+    		$article->contenido = $contenido;
+    		$article->save();
+    	}
+
+    }
+
+    static function set_tipo_de_envase($article, $columns, $row, $ct, $user) {
+
+    	$tipo_de_envase = ImportHelper::getColumnValue($row, 'tipo_de_envase', $columns);
+
+        if (!is_null($tipo_de_envase)) {
+
+        	$data = [
+                'name'      => $tipo_de_envase,
+                'user_id'   => $user->id,
+            ];
+
+	        $ct->createIfNotExist('tipo_envases', 'name', $tipo_de_envase, $data, true, $user->id);
+
+            $tipo_envase_id = $ct->getModelBy('tipo_envases', 'name', $tipo_de_envase, true, 'id', false, $user->id);
+
+            $article->tipo_envase_id = $tipo_envase_id;
+        	
+        	$article->save();
+        }
+    }
+
     static function create_import_history($user, $auth_user_id, $provider_id, $created_models, $updated_models, $columns, $archivo_excel_path) {
         ImportHistory::create([
             'user_id'           => $user->id,
@@ -157,14 +202,30 @@ class ArticleImportHelper {
         // return $existing_articles;
     }
 	
-	static function add_addresses_price_types_columns($columns) {
-		$addresses = Address::where('user_id', UserHelper::userId())
-							->orderBy('created_at', 'ASC')
-							->get();
+	static function add_columns($columns) {
 		$column_position = count($columns);
 
 		// Le sumo 3 por las 2 columnas de creado y actualizado y 1 de precio final
 		$column_position += 3;
+
+
+		if (UserHelper::hasExtencion('articulos_con_propiedades_de_distribuidora')) {
+
+			$columns['tipo_de_envase'] = $column_position;
+			$column_position++;
+
+			$columns['contenido'] = $column_position;
+			$column_position++;
+
+			$columns['u_x_bulto'] = $column_position;
+			$column_position++;
+		}
+
+
+		$addresses = Address::where('user_id', UserHelper::userId())
+							->orderBy('created_at', 'ASC')
+							->get();
+
 		foreach ($addresses as $address) {
 			$columns[$address->street] = $column_position;
 			$column_position++;
@@ -184,9 +245,25 @@ class ArticleImportHelper {
 			}
 		}
 
+
+		if (UserHelper::hasExtencion('articulos_precios_en_blanco')) {
+
+			$columns['descuentos_en_blanco'] = $column_position;
+			$column_position++;
+
+			$columns['recargos_en_blanco'] = $column_position;
+			$column_position++;
+			
+			$columns['margen_de_ganancia_en_blanco'] = $column_position;
+			$column_position++;
+			
+			$columns['precio_final_en_blanco'] = $column_position;
+			$column_position++;
+		}
+
 		return $columns;
 	}
-
+	
 	static function get_unidad_medida_id($unidad_medida_excel) {
 		$unidad_medida = null;
 

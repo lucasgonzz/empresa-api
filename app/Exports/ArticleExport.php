@@ -35,6 +35,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $article->cost,
             $article->percentage_gain,
             $article->discounts_formated,
+            $article->surchages_formated,
             $article->price,
             $this->getCostInDollars($article),
             $this->getUnidadMedida($article),
@@ -42,8 +43,10 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $article->created_at,
             $article->updated_at,
         ];
+        $map = ExportHelper::map_propiedades_de_distribuidora($map, $article);
         $map = ExportHelper::mapAddresses($map, $article);
         $map = ExportHelper::mapPriceTypes($map, $article);
+        $map = ExportHelper::mapPreciosBlanco($map, $article);
         return $map;
     }
 
@@ -58,15 +61,20 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
                             ->where('status', 'active')
                             ->with('iva')
                             ->with('article_discounts')
+                            ->with('article_surchages')
+                            ->with('article_discounts_blanco')
+                            ->with('article_surchages_blanco')
                             ->with('providers')
                             ->with('sub_category')
                             ->with('addresses')
                             ->with('price_types')
+                            ->with('tipo_envase')
                             ->orderBy('created_at', 'DESC')
                             ->get();
         }
 
-        $articles = $this->setDiscounts($articles);
+        // Aplico descuentos y recargos, en negro y en blanco
+        $articles = ExportHelper::set_descuentos_y_recargos($articles);
         $articles = ExportHelper::setAddresses($articles);
         $articles = ExportHelper::setPriceTypes($articles);
         
@@ -89,6 +97,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             'Costo',
             'Margen de ganancia',
             'Descuentos',
+            'Recargos',
             'Precio',
             'Moneda',
             'Unidad medida',
@@ -96,8 +105,10 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             'Ingresado',
             'Actualizado',
         ];
+        $headings = ExportHelper::set_propiedades_de_distribuidora($headings);
         $headings = ExportHelper::setAddressesHeadings($headings);
         $headings = ExportHelper::setPriceTypesHeadings($headings);
+        $headings = ExportHelper::setPreciosBlancoHeadings($headings);
         // $headings = ExportHelper::setChartsheadings($headings);
         return $headings;
     }

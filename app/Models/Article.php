@@ -15,11 +15,15 @@ class Article extends Model
     // protected $appends = ['costo_real'];
 
     function scopeWithAll($query) {
-        $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'article_variants.addresses', 'addresses', 'price_types');
+        $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'article_variants.addresses', 'addresses', 'price_types', 'article_discounts_blanco', 'article_surchages', 'article_surchages_blanco');
     }
 
     function price_changes() {
         return $this->hasMany(PriceChange::class);
+    }
+
+    function tipo_envase() {
+        return $this->belongsTo(TipoEnvase::class);
     }
 
     // public function getCostoRealAttribute() {
@@ -100,6 +104,18 @@ class Article extends Model
 
     function article_discounts() {
         return $this->hasMany('App\Models\ArticleDiscount');
+    }
+
+    function article_discounts_blanco() {
+        return $this->hasMany('App\Models\ArticleDiscountBlanco');
+    }
+
+    function article_surchages() {
+        return $this->hasMany('App\Models\ArticleSurchage');
+    }
+
+    function article_surchages_blanco() {
+        return $this->hasMany('App\Models\ArticleSurchageBlanco');
     }
 
     function combos() {

@@ -117,6 +117,14 @@ class ArticleHelper {
 
             $final_price = $cost;
 
+            if ($user->aplicar_descuentos_en_articulos_antes_del_margen_de_ganancia) {
+
+                $final_price = ArticlePricesHelper::aplicar_descuentos($article, $final_price);
+
+                $final_price = ArticlePricesHelper::aplicar_recargos($article, $final_price);
+            }  
+
+
             if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)) {
 
                 ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $cost, $user);
@@ -137,29 +145,46 @@ class ArticleHelper {
                 }
             }
             
+
             if (!is_null($article->percentage_gain)) {
                 
                 $final_price += $final_price * $article->percentage_gain / 100; 
             }
+
+
         } else {
+
             $final_price = $article->price;
         }
 
+
         $final_price = ArticlePricesHelper::aplicar_iva($article, $final_price, $user);
 
-        if (count($article->article_discounts) >= 1) {
-            foreach ($article->article_discounts as $discount) {
-                $final_price -= $final_price * $discount->percentage / 100;
-            }
+
+
+        if (!$user->aplicar_descuentos_en_articulos_antes_del_margen_de_ganancia) {
+
+            $final_price = ArticlePricesHelper::aplicar_descuentos($article, $final_price);
+            
+            $final_price = ArticlePricesHelper::aplicar_recargos($article, $final_price);
+
+            Log::info('6 final_price: '.$final_price);
         }
 
         $final_price = Self::redondear($final_price, $user);
 
         $article->final_price = $final_price;
+
         if ($current_final_price != $article->final_price) {
             $article->previus_final_price = $current_final_price; 
             $article->final_price_updated_at = Carbon::now();
             PriceChangeController::store($article, $auth_user_id);
+        }
+
+
+        if (UserHelper::hasExtencion('articulos_precios_en_blanco')) {
+
+            $article = ArticlePricesHelper::set_precios_en_blanco($article);
         }
 
         $article->timestamps = false;
@@ -539,23 +564,6 @@ class ArticleHelper {
         if (isset($tags)) {
             foreach ($tags as $tag) {
                 $article->tags()->attach($tag['id']);
-            }
-        }
-    }
-
-    static function setDiscounts($article, $article_discounts) {
-        ArticleDiscount::where('article_id', $article->id)
-                        ->delete();
-        if ($article_discounts) {
-            foreach ($article_discounts as $discount) {
-                $discount = (object) $discount;
-                if ($discount->percentage != '') {
-                    ArticleDiscount::create([
-                        'percentage' => $discount->percentage,
-                        'article_id' => $article->id,
-                    ]);
-                    Log::info('se creo descuento de '.$discount->percentage);
-                }
             }
         }
     }

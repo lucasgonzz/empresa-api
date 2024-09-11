@@ -78,6 +78,7 @@ class ArticleController extends Controller
         $model->apply_provider_percentage_gain    = $request->apply_provider_percentage_gain;
         $model->price                             = $request->price;
         $model->percentage_gain                   = $request->percentage_gain;
+        $model->percentage_gain_blanco                   = $request->percentage_gain_blanco;
         $model->provider_price_list_id            = $request->provider_price_list_id;
         $model->iva_id                            = $request->iva_id;
         // $model->stock                             = $request->stock;
@@ -135,6 +136,7 @@ class ArticleController extends Controller
         $model->brand_id                          = $request->brand_id;
         $model->iva_id                            = $request->iva_id;
         $model->percentage_gain                   = $request->percentage_gain;
+        $model->percentage_gain_blanco                   = $request->percentage_gain_blanco;
         $model->provider_price_list_id            = $request->provider_price_list_id;
         $model->price                             = $request->price;
         $model->apply_provider_percentage_gain    = $request->apply_provider_percentage_gain;
@@ -187,7 +189,14 @@ class ArticleController extends Controller
 
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
-        $columns = ArticleImportHelper::add_addresses_price_types_columns($columns);
+        
+        /*
+            Agrego columnas de:
+                1. Direcciones
+                2. Listas de precios
+                3. Precios en BLANCO
+        */
+        $columns = ArticleImportHelper::add_columns($columns);
 
         Log::info('columns:');
         Log::info($columns);
@@ -316,19 +325,93 @@ class ArticleController extends Controller
 
     function resetStock(Request $request) {
         foreach ($request->articles_id as $article_id) {
+
             $article = Article::find($article_id);
-            if (!is_null($article->stock)) {
-                $new_stock = 0 - $article->stock;
+
+            if (count($article->article_variants) >= 1) {
+
+                foreach ($article->article_variants as $variant) {
+                    
+                    if (count($variant->addresses) >= 1) {
+
+                        foreach ($variant->addresses as $address) {
+                            
+                            if (!is_null($address->pivot->amount)) {
+
+                                $new_stock = 0 - $address->pivot->amount;
+                            } else {
+
+                                $new_stock = 0;
+                            }
+
+
+                            $stock_movement_ct = new StockMovementController();
+                            $request = new \Illuminate\Http\Request();
+                            $request->model_id = $article_id;
+                            $request->article_variant_id = $variant->id;
+                            $request->amount = $new_stock;
+                            $request->from_address_id = $address->id;
+                            $request->concepto = 'Reseteo de stock';
+                            $stock_movement_ct->store($request);
+                        }
+
+                    } else {
+
+                        if (!is_null($variant->stock)) {
+                            $new_stock = 0 - $variant->stock;
+                        } else {
+                            $new_stock = 0;
+                        }
+
+                        $stock_movement_ct = new StockMovementController();
+                        $request = new \Illuminate\Http\Request();
+                        $request->model_id = $article_id;
+                        $request->article_variant_id = $variant->id;
+                        $request->amount = $new_stock;
+                        $request->concepto = 'Reseteo de stock';
+                        $stock_movement_ct->store($request);
+
+                    }
+                }
+
+            } else if (count($article->addresses) >= 1) {
+
+                foreach ($article->addresses as $address) {
+                    
+                    if (!is_null($address->pivot->amount)) {
+
+                        $new_stock = 0 - $address->pivot->amount;
+                    } else {
+
+                        $new_stock = 0;
+                    }
+
+
+                    $stock_movement_ct = new StockMovementController();
+                    $request = new \Illuminate\Http\Request();
+                    $request->model_id = $article_id;
+                    $request->amount = $new_stock;
+                    $request->from_address_id = $address->id;
+                    $request->concepto = 'Reseteo de stock';
+                    $stock_movement_ct->store($request);
+                }
+
             } else {
-                $new_stock = 0;
+
+                if (!is_null($article->stock)) {
+                    $new_stock = 0 - $article->stock;
+                } else {
+                    $new_stock = 0;
+                }
+
+                $stock_movement_ct = new StockMovementController();
+                $request = new \Illuminate\Http\Request();
+                $request->model_id = $article_id;
+                $request->amount = $new_stock;
+                $request->concepto = 'Reseteo de stock';
+                $stock_movement_ct->store($request);
             }
 
-            $stock_movement_ct = new StockMovementController();
-            $request = new \Illuminate\Http\Request();
-            $request->model_id = $article_id;
-            $request->amount = $new_stock;
-            $request->concepto = 'Reseteo de stock';
-            $stock_movement_ct->store($request);
         }
 
         return response(null, 200);

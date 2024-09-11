@@ -53,6 +53,15 @@ class CreateArticlesTable extends Migration
             $table->integer('unidades_individuales')->nullable();
             $table->softDeletes();
 
+            $table->decimal('percentage_gain_blanco', 16, 2)->nullable();
+            $table->decimal('final_price_blanco', 30, 2)->nullable();
+
+
+            $table->integer('unidades_por_bulto')->nullable();
+            $table->string('contenido')->nullable();
+            $table->string('tipo_envase_id')->nullable();
+
+
             $table->foreign('user_id')
                     ->references('id')->on('users');
             // $table->foreign('sub_category_id')

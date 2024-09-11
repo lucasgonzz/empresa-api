@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\SellerCommissionHelper;
+use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
 use App\Models\SellerCommission;
 use Illuminate\Http\Request;
 
@@ -46,8 +47,9 @@ class SellerCommissionController extends Controller
             'status'        => 'active',
             'user_id'       => $this->userId(),
         ]);
-        $seller_commission->saldo = SellerCommissionHelper::getSaldo($seller_commission) - $seller_commission->haber;
-        $seller_commission->save();
+
+        ComisionesHelper::set_saldo($seller_commission, true);
+
         return response()->json(['model' => $seller_commission], 201);
     }
 

@@ -195,15 +195,18 @@ class Controller extends BaseController
     }
 
     function createIfNotExist($table, $prop_name, $prop_value, $data_to_insert, $from_user = true, $user_id = false) {
+
         $model = DB::table($table)
                     ->where($prop_name, $prop_value);
         if ($from_user) {
-            if (is_null($user_id)) {
+            if (!$user_id) {
                 $user_id = $this->userId();
             }
             $model = $model->where('user_id', $user_id);
         }
         $model = $model->first();
+        
+
         if (is_null($model)) {
             DB::table($table)->insert($data_to_insert);
         }

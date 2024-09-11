@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\IvaHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\getIva;
 use App\Http\Controllers\StockMovementController;
 use App\Http\Controllers\update;
@@ -82,6 +83,10 @@ class ArticleImport implements ToCollection
             'percentage_gain'   => 'margen_de_ganancia',
             'price'             => 'precio',
         ];
+
+        if (UserHelper::hasExtencion('articulos_precios_en_blanco')) {
+            $this->props_to_set['percentage_gain_blanco'] = 'margen_de_ganancia_en_blanco';
+        }
     }
 
     function setAddresses() {
@@ -159,6 +164,8 @@ class ArticleImport implements ToCollection
         $data = [];
 
         $this->save_stock_movement = false;
+
+        $this->row = $row;
         
         foreach ($this->props_to_set as $key => $value) {
             if (!ImportHelper::isIgnoredColumn($value, $this->columns)) {
@@ -239,13 +246,49 @@ class ArticleImport implements ToCollection
 
             $this->aplicar_price_types($row);
 
-            $this->setDiscounts($row);
+            $this->aplicar_descuentos($row);
+            $this->aplicar_recargos($row);
+
+            $this->set_propiedades_de_distribuidora();
+
             $this->setProvider($row);
 
             $this->setStockAddresses($row);
             $this->setStockMovement($row);
 
             ArticleHelper::setFinalPrice($this->articulo_existente, null, $this->user, $this->auth_user_id);
+        }
+    }
+
+    function set_propiedades_de_distribuidora() {
+
+        Log::info('set_propiedades_de_distribuidora');
+
+        if (UserHelper::hasExtencion('articulos_con_propiedades_de_distribuidora', $this->user)) {
+
+            Log::info('SI ENTRO en set_propiedades_de_distribuidora');
+
+            ArticleImportHelper::set_tipo_de_envase(
+                        $this->articulo_existente, 
+                        $this->columns,
+                        $this->row,
+                        $this->ct,
+                        $this->user,
+                    );
+
+            ArticleImportHelper::set_contenido(
+                        $this->articulo_existente, 
+                        $this->columns,
+                        $this->row,
+                    );
+
+            ArticleImportHelper::set_unidades_por_bulto(
+                        $this->articulo_existente, 
+                        $this->columns,
+                        $this->row,
+                    );
+        } else {
+            Log::info('NO ENTRO en set_propiedades_de_distribuidora');
         }
     }
 
@@ -296,8 +339,10 @@ class ArticleImport implements ToCollection
 
         $actual_price = (float)$this->articulo_existente->price;
 
-        Log::info('comparando '.$new_price.' con '.$actual_price);
-        Log::info(!is_null($new_price) && abs($actual_price - $new_price) > $epsilon);
+        Log::info('isDataUpdated data:');
+        Log::info($data);
+        Log::info('comparando '.$data['percentage_gain_blanco'].' con '.$this->articulo_existente->percentage_gain_blanco);
+        
 
         return  (isset($data['name']) && $data['name']                          != $this->articulo_existente->name) ||
                 (isset($data['bar_code']) && $data['bar_code']                  != $this->articulo_existente->bar_code) ||
@@ -309,7 +354,8 @@ class ArticleImport implements ToCollection
                 (isset($data['percentage_gain']) && $data['percentage_gain']    != $this->articulo_existente->percentage_gain) ||
                 (!is_null($new_price) && abs($actual_price - $new_price) > $epsilon) ||
                 (isset($data['category_id']) && $data['category_id']            != $this->articulo_existente->category_id) ||
-                (isset($data['sub_category_id']) && $data['sub_category_id']    != $this->articulo_existente->sub_category_id);
+                (isset($data['sub_category_id']) && $data['sub_category_id']    != $this->articulo_existente->sub_category_id) ||
+                (isset($data['percentage_gain_blanco']) && $data['percentage_gain_blanco']    != $this->articulo_existente->percentage_gain_blanco);
     }
 
     // function cambio_el_stock_por_direccion($row, $data) {
@@ -417,17 +463,95 @@ class ArticleImport implements ToCollection
         } 
     }
 
-    function setDiscounts($row) {
+    function aplicar_descuentos($row) {
+
         if (!is_null(ImportHelper::getColumnValue($row, 'descuentos', $this->columns))) {
+
             $_discounts = explode('_', ImportHelper::getColumnValue($row, 'descuentos', $this->columns));
+            
             $discounts = [];
+            
             foreach ($_discounts as $_discount) {
                 $discount = new \stdClass;
                 $discount->percentage = $_discount;
                 $discounts[] = $discount;
             } 
-            ArticleHelper::setDiscounts($this->articulo_existente, $discounts);
+            
+            ArticlePricesHelper::adjuntar_descuentos($this->articulo_existente, $discounts);
+
+            if (UserHelper::hasExtencion('articulos_precios_en_blanco', $this->user)) {
+
+                Log::info('Tiene extencion para descuentos en blanco');
+
+                $this->aplicar_descuentos_en_blanco($row);
+            }
         }
+    }
+
+    function aplicar_descuentos_en_blanco($row) {
+
+        if (!is_null(ImportHelper::getColumnValue($row, 'descuentos_en_blanco', $this->columns))) {
+            
+            Log::info('Aplicando descuentos en blanco');
+
+            $_discounts = explode('_', ImportHelper::getColumnValue($row, 'descuentos_en_blanco', $this->columns));
+            
+            Log::info('_discounts:');
+            Log::info($_discounts);
+
+            $discounts = [];
+            
+            foreach ($_discounts as $_discount) {
+                $discount = new \stdClass;
+                $discount->percentage = $_discount;
+                $discounts[] = $discount;
+            } 
+            
+            ArticlePricesHelper::adjuntar_descuentos_en_blanco($this->articulo_existente, $discounts);
+        }
+
+    }
+
+    function aplicar_recargos($row) {
+
+        if (!is_null(ImportHelper::getColumnValue($row, 'recargos', $this->columns))) {
+
+            $_surchages = explode('_', ImportHelper::getColumnValue($row, 'recargos', $this->columns));
+            
+            $surchages = [];
+            
+            foreach ($_surchages as $_surchage) {
+                $surchage = new \stdClass;
+                $surchage->percentage = $_surchage;
+                $surchages[] = $surchage;
+            } 
+            
+            ArticlePricesHelper::adjuntar_recargos($this->articulo_existente, $surchages);
+
+            if (UserHelper::hasExtencion('articulos_precios_en_blanco', $this->user)) {
+
+                $this->aplicar_recargos_en_blanco($row);
+            }
+        }
+    }
+
+    function aplicar_recargos_en_blanco($row) {
+
+        if (!is_null(ImportHelper::getColumnValue($row, 'recargos_en_blanco', $this->columns))) {
+
+            $_surchages = explode('_', ImportHelper::getColumnValue($row, 'recargos_en_blanco', $this->columns));
+            
+            $surchages = [];
+            
+            foreach ($_surchages as $_surchage) {
+                $surchage = new \stdClass;
+                $surchage->percentage = $_surchage;
+                $surchages[] = $surchage;
+            } 
+            
+            ArticlePricesHelper::adjuntar_recargos_en_blanco($this->articulo_existente, $surchages);
+        }
+
     }
 
     function setProvider($row) {

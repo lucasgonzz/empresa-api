@@ -78,6 +78,10 @@ class CreateUsersTable extends Migration
             
             $table->integer('address_id')->nullable();
             $table->boolean('redondear_centenas_en_vender')->nullable();
+
+            $table->boolean('aplicar_descuentos_en_articulos_antes_del_margen_de_ganancia')->default(0)->nullable();
+
+            $table->string('comision_funcion')->nullable();
             // $table->foreign('owner_id')->references('id')->on('users');
             // $table->foreign('admin_id')->references('id')->on('users');
             $table->timestamps();

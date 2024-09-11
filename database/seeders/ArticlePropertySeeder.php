@@ -16,10 +16,10 @@ class ArticlePropertySeeder extends Seeder
      */
     public function run()
     {
-        $article = Article::where('name', 'Remera 1')->first();
+        $article_id = 1;
         $models = [
             [
-                'article_id'                => $article->id,
+                'article_id'                => $article_id,
                 'article_property_type_id'  => 1,
                 'article_property_values'   => [
                     'Amarillo',
@@ -27,7 +27,7 @@ class ArticlePropertySeeder extends Seeder
                 ],
             ],
             [
-                'article_id'                => $article->id,
+                'article_id'                => $article_id,
                 'article_property_type_id'  => 2,
                 'article_property_values'   => [
                     'XL',

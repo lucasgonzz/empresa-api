@@ -65,7 +65,7 @@ class ArticleSeeder extends Seeder
                     'provider_code'         => 'p/'.$num,
                     'name'                  => $article['name'],
                     'slug'                  => ArticleHelper::slug($article['name'], $user->id),
-                    'cost'               => 500,
+                    'cost'               => 1000,
                     'costo_mano_de_obra'    => isset($article['costo_mano_de_obra']) ? $article['costo_mano_de_obra'] : null,
                     'status'                => isset($article['status']) ? $article['status'] : 'active',
                     'featured'              => isset($article['featured']) ? $article['featured'] : null,
@@ -104,6 +104,9 @@ class ArticleSeeder extends Seeder
                                                 'amount' => $article['stock'],
                                             ]);
                 }
+
+                $this->check_precios_en_blanco($art);
+
                 $this->createDescriptions($art, $article); 
                 $this->setColors($art, $article); 
                 // $this->setAddresses($art, $article); 
@@ -112,6 +115,15 @@ class ArticleSeeder extends Seeder
                 // ArticleHelper::setArticleStockFromAddresses($art);
             }
         // }
+    }
+
+    function check_precios_en_blanco($article) {
+
+        if ($this->for_user == 'ros_mar') {
+
+            $article->percentage_gain_blanco = 200;
+            $article->save();
+        }
     }
 
     function setStockMovement($created_article, $article) {

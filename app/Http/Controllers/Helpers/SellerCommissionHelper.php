@@ -6,6 +6,8 @@ use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\DiscountHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\comisiones\RosMarComision;
 use App\Models\Commission;
 use App\Models\SellerCommission;
 use Illuminate\Support\Facades\Log;
@@ -13,7 +15,9 @@ use Illuminate\Support\Facades\Log;
 class SellerCommissionHelper {
 
     static function checkCommissionStatus($current_acount, $pago) {
-        // Log::info('Checkeando la comision de la venta n°'.$current_acount->sale->num);
+        if (!is_null($current_acount->sale)) {
+            Log::info('Checkeando la comision de la venta n°'.$current_acount->sale->num);
+        }
         $seller_commissions = SellerCommission::where('sale_id', $current_acount->sale_id)
                                                 ->get();
         Log::info($seller_commissions);
@@ -30,33 +34,51 @@ class SellerCommissionHelper {
     }
 	
 	static function commissionForSeller($current_acount) {
+
         if (!is_null($current_acount->seller_id)) {
-    		$commissions = Self::getCommissions($current_acount);
-            foreach ($commissions as $commission) {
-                if (!Self::isExcept($commission, $current_acount->seller_id) && !Self::isForOnlySeller($commission, $current_acount->seller_id)) {
-                    if (count($commission->for_all_sellers) >= 1) {
-                        foreach ($commission->for_all_sellers as $seller) {
+
+            $comision_function = UserHelper::user()->comision_funcion;
+
+            if ($comision_function == 'ros_mar') {
+
+                $comision = new RosMarComision($current_acount);
+
+                $comision->crear_comision();
+            
+            } else if ($comision_function == 'fenix') {
+
+        		$commissions = Self::getCommissions($current_acount);
+
+                foreach ($commissions as $commission) {
+
+                    if (!Self::isExcept($commission, $current_acount->seller_id) 
+                        && !Self::isForOnlySeller($commission, $current_acount->seller_id)) {
+                        
+                        if (count($commission->for_all_sellers) >= 1) {
+                            foreach ($commission->for_all_sellers as $seller) {
+                                Self::createCommission([
+                                    'seller_id'     => $seller->id,
+                                    'sale_id'       => $current_acount->sale_id,
+                                    'description'   => Self::getDescription($current_acount),
+                                    'percentage'    => $seller->pivot->percentage,
+                                    'debe'          => $current_acount->debe * $seller->pivot->percentage / 100,
+                                    'status'        => Self::getStatus($seller),
+                                ]);
+                            }
+                        } else {
                             Self::createCommission([
-                                'seller_id'     => $seller->id,
+                                'seller_id'     => $current_acount->seller_id,
                                 'sale_id'       => $current_acount->sale_id,
                                 'description'   => Self::getDescription($current_acount),
-                                'percentage'    => $seller->pivot->percentage,
-                                'debe'          => $current_acount->debe * $seller->pivot->percentage / 100,
-                                'status'        => Self::getStatus($seller),
+                                'percentage'    => $commission->percentage,
+                                'debe'          => $current_acount->debe * $commission->percentage / 100,
+                                'status'        => Self::getStatus($current_acount->seller),
                             ]);
                         }
-                    } else {
-                        Self::createCommission([
-                            'seller_id'     => $current_acount->seller_id,
-                            'sale_id'       => $current_acount->sale_id,
-                            'description'   => Self::getDescription($current_acount),
-                            'percentage'    => $commission->percentage,
-                            'debe'          => $current_acount->debe * $commission->percentage / 100,
-                            'status'        => Self::getStatus($current_acount->seller),
-                        ]);
                     }
                 }
-            }
+            } 
+
         }
 	}
 
@@ -102,9 +124,13 @@ class SellerCommissionHelper {
     }
 
     static function getCommissions($current_acount) {
+
         $total_discounts_percetage = DiscountHelper::getTotalDiscountsPercentage($current_acount->sale->discounts);
+
         $commissions = Commission::where('user_id', UserHelper::userId())->get();
+
         $commission_to_create = [];
+
         foreach ($commissions as $commission) {
             if (
                 is_null($commission->sale_type_id) || $commission->sale_type_id == 0 
@@ -114,17 +140,8 @@ class SellerCommissionHelper {
                 } 
             }
         }
-        // Log::info('commission_to_create:');
-        // Log::info($commission_to_create);
+
         return $commission_to_create;
-        if (is_null($commission_for_seller)) {
-            return null;
-        } else {
-            return [
-            	'percentage'	=> $commission_for_seller->amount,
-            	'debe'		    => $current_acount->debe * $commission_for_seller->amount / 100,
-            ];
-        }
     }
 
     static function getDescription($current_acount = null) {

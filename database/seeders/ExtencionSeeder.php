@@ -145,6 +145,26 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Cambiar dinamicamente la Lista de Precios en VENDER',
                 'slug' => 'cambiar_price_type_en_vender',
             ],
+            [
+                // 27
+                'name' => 'Articulos con precios en BLANCO',
+                'slug' => 'articulos_precios_en_blanco',
+            ],
+            [
+                // 28
+                'name' => 'Articulos con propiedades de distribuidoras',
+                'slug' => 'articulos_con_propiedades_de_distribuidora',
+            ],
+            [
+                // 29
+                'name' => 'Indicar vendedor en VENDER',
+                'slug' => 'indicar_vendedor_en_vender',
+            ],
+            [
+                // 30
+                'name' => 'Porcentajes de comision por proveedores, en base a ventas en NEGRO o en BLANCO',
+                'slug' => 'comision_por_proveedores',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

@@ -26,6 +26,27 @@ class ExportHelper {
 						->get();
 	}
 
+	static function map_propiedades_de_distribuidora($map, $article) {
+		
+		if (UserHelper::hasExtencion('articulos_con_propiedades_de_distribuidora')) {
+
+			// Log::info('map_propiedades_de_distribuidora tipo_de_envase_id:');
+			// Log::info($article->tipo_de_envase_id);
+			if (!is_null($article->tipo_envase)) {
+
+				$map[] = $article->tipo_envase->name;
+			} else {
+				$map[] = '';
+			}
+
+			$map[] = $article->contenido;
+
+			$map[] = $article->unidades_por_bulto;
+		}
+
+		return $map;
+	}
+
 	static function mapAddresses($map, $article) {
 		$addresses = Self::getAddresses();
 		if (count($addresses) >= 1) {
@@ -63,6 +84,32 @@ class ExportHelper {
 		}
 		return $map;
 	}
+	
+	static function mapPreciosBlanco($map, $article) {
+
+		if (UserHelper::hasExtencion('articulos_precios_en_blanco')) {
+
+			$map[] = $article->discounts_blanco_formated;
+			$map[] = $article->surchages_blanco_formated;
+			$map[] = $article->percentage_gain_blanco;
+			$map[] = $article->final_price_blanco;
+		}
+			
+		return $map;
+	}
+
+	static function set_propiedades_de_distribuidora($headings) {
+		Log::info('set_propiedades_de_distribuidora');
+		Log::info('has: '.UserHelper::hasExtencion('articulos_con_propiedades_de_distribuidora'));
+		if (UserHelper::hasExtencion('articulos_con_propiedades_de_distribuidora')) {
+
+				$headings[] = 'Tipo de envase';
+				$headings[] = 'Contenido';
+				$headings[] = 'U x Bulto';
+		}
+
+		return $headings;
+	}
 
 	static function setAddressesHeadings($headings) {
 		$addresses = Self::getAddresses();
@@ -91,6 +138,17 @@ class ExportHelper {
 				}
 			}
 
+		}
+		return $headings;
+	}
+
+	static function setPreciosBlancoHeadings($headings) {
+
+		if (UserHelper::hasExtencion('articulos_precios_en_blanco')) {
+			$headings[] = 'Descuentos EN BLANCO';
+			$headings[] = 'Recargos EN BLANCO';
+			$headings[] = 'Margen de ganancia EN BLANCO';
+			$headings[] = 'Precio Final EN BLANCO';
 		}
 		return $headings;
 	}
@@ -132,4 +190,93 @@ class ExportHelper {
 		return $articles;
 	}
 	
+	static function set_descuentos_y_recargos($articles) {
+
+
+        foreach ($articles as $article) {
+
+        	$article = Self::set_article_discounts($article);
+
+        	$article = Self::set_article_surchages($article);
+
+
+			if (UserHelper::hasExtencion('articulos_precios_en_blanco')) {
+
+        		$article = Self::set_article_discounts_blanco($article);
+        		
+        		$article = Self::set_article_surchages_blanco($article);
+			} 
+          
+        }
+
+
+        return $articles;
+
+
+
+	}
+
+	static function set_article_discounts($article) {
+
+	  	$article->discounts_formated = '';
+
+        if (count($article->article_discounts) >= 1) {
+            foreach ($article->article_discounts as $discount) {
+                $article->discounts_formated .= $discount->percentage.'_';
+            }
+            $article->discounts_formated = substr($article->discounts_formated, 0, strlen($article->discounts_formated)-1);
+        }
+
+        return $article;
+	}
+
+	static function set_article_discounts_blanco($article) {
+
+	  	$article->discounts_blanco_formated = '';
+
+        if (count($article->article_discounts_blanco) >= 1) {
+
+            foreach ($article->article_discounts_blanco as $discount) {
+
+                $article->discounts_blanco_formated .= $discount->percentage.'_';
+            }
+
+            $article->discounts_blanco_formated = substr($article->discounts_blanco_formated, 0, strlen($article->discounts_blanco_formated)-1);
+        }
+
+        return $article;
+	}
+
+	static function set_article_surchages($article) {
+
+	  	$article->surchages_formated = '';
+
+        if (count($article->article_surchages) >= 1) {
+            foreach ($article->article_surchages as $surchage) {
+
+                $article->surchages_formated .= $surchage->percentage.'_';
+            }
+
+            $article->surchages_formated = substr($article->surchages_formated, 0, strlen($article->surchages_formated)-1);
+        }
+
+        return $article;
+	}
+
+	static function set_article_surchages_blanco($article) {
+
+	  	$article->surchages_blanco_formated = '';
+
+        if (count($article->article_surchages_blanco) >= 1) {
+            foreach ($article->article_surchages_blanco as $surchage) {
+
+                $article->surchages_blanco_formated .= $surchage->percentage.'_';
+            }
+
+            $article->surchages_blanco_formated = substr($article->surchages_blanco_formated, 0, strlen($article->surchages_blanco_formated)-1);
+        }
+
+        return $article;
+	}
+
 }

@@ -10,8 +10,6 @@ class UserHelper {
 
 	static function userId($from_owner = true) {
 
-
-
         $user = Auth()->user();
 
         if (is_null($user)) {
@@ -45,8 +43,16 @@ class UserHelper {
         }
     }
 
-    static function user() {
-        Log::info('-----------------> entro a user');
+    static function user($from_owner = true) {
+        if (session()->has('auth_user')) {
+            
+            Log::info('Retornando desde la sesion:');
+            if ($from_owner) {
+                return session('owner');
+            }
+            return session('auth_user');
+        }
+
         return User::find(Self::userId());
     }
 

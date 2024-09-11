@@ -53,6 +53,8 @@ class CreateSalesTable extends Migration
             $table->decimal('sub_total', 22,2)->nullable();
             $table->decimal('total', 22,2)->nullable();
 
+            $table->integer('seller_id')->nullable();
+
             $table->timestamp('terminada_at')->nullable();
 
             $table->foreign('user_id')

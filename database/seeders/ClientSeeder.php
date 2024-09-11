@@ -26,7 +26,7 @@ class ClientSeeder extends Seeder
                 'name'                  => 'Lucas Gonzalez',
                 'email'                 => 'lucasgonzalez5500@gmail.com',
                 'address'               => 'San antonio 23 - Gualeguay, Entre Rios',
-                // 'cuit'                  => '20242112025',
+                'cuit'                  => '20242112025',
                 'dni'                   => 'd42354898d',
                 'razon_social'          => 'MARCOS SRL', 
                 'iva_condition_id'      => 3,

@@ -35,6 +35,8 @@ class ProviderSeeder extends Seeder
                 'address'           => 'Calle 123',
                 'user_id'           => $user->id,
                 'saldo'             => 100,
+                'porcentaje_comision_negro' => 10,
+                'porcentaje_comision_blanco' => 5,
             ],
             [
                 'num'               => 2,
@@ -44,6 +46,8 @@ class ProviderSeeder extends Seeder
                 'address'           => 'Calle 123',
                 'user_id'           => $user->id,
                 'saldo'             => 1200,
+                'porcentaje_comision_negro' => 7,
+                'porcentaje_comision_blanco' => 5,
             ],
             [
                 'num'               => 3,
@@ -52,6 +56,8 @@ class ProviderSeeder extends Seeder
                 'email'             => 'lucasgonzalez5500@gmail.com',
                 'address'           => 'Calle 123',
                 'user_id'           => $user->id,
+                'porcentaje_comision_negro' => 6,
+                'porcentaje_comision_blanco' => 5,
             ],
             [
                 'num'               => 1,
@@ -63,84 +69,6 @@ class ProviderSeeder extends Seeder
                 'comercio_city_user_id' => 1,
             ],
         ];
-        // $models = [
-        //     [
-        //         'num'               => 1,
-        //         'name'              => 'Bermon',
-        //         'percentage_gain'   => 30,
-        //         'email'             => null,
-        //         'address'           => '',
-        //         'user_id'           => 500,
-        //         'comercio_city_user_id' => null,
-        //     ],
-        //     [
-        //         'num'               => 2,
-        //         'name'              => 'CORTIFER',
-        //         'percentage_gain'   => 30,
-        //         'email'             => null,
-        //         'address'           => '',
-        //         'user_id'           => 500,
-        //         'comercio_city_user_id' => null,
-        //     ],
-        //     [
-        //         'num'               => 3,
-        //         'name'              => 'ELECTROMARTINS',
-        //         'percentage_gain'   => 30,
-        //         'email'             => null,
-        //         'address'           => '',
-        //         'user_id'           => 500,
-        //         'comercio_city_user_id' => null,
-        //     ],
-        //     [
-        //         'num'               => 2,
-        //         'name'              => 'EZETA',
-        //         'percentage_gain'   => 30,
-        //         'email'             => null,
-        //         'address'           => '',
-        //         'user_id'           => 500,
-        //         'comercio_city_user_id' => null,
-        //     ],
-        //     [
-        //         'num'               => 2,
-        //         'name'              => 'LESSA',
-        //         'percentage_gain'   => 30,
-        //         'email'             => null,
-        //         'address'           => '',
-        //         'user_id'           => 500,
-        //         'comercio_city_user_id' => null,
-        //     ],
-
-        //     [
-        //         'num'               => 2,
-        //         'name'              => 'PEREZ',
-        //         'percentage_gain'   => 30,
-        //         'email'             => null,
-        //         'address'           => '',
-        //         'user_id'           => 500,
-        //         'comercio_city_user_id' => null,
-        //     ],
-
-        //     [
-        //         'num'               => 2,
-        //         'name'              => 'RERAR',
-        //         'percentage_gain'   => 30,
-        //         'email'             => null,
-        //         'address'           => '',
-        //         'user_id'           => 500,
-        //         'comercio_city_user_id' => null,
-        //     ],
-
-        //     [
-        //         'num'               => 2,
-        //         'name'              => 'SABATINO',
-        //         'percentage_gain'   => 30,
-        //         'email'             => null,
-        //         'address'           => '',
-        //         'user_id'           => 500,
-        //         'comercio_city_user_id' => null,
-        //     ],
-
-        // ];
         foreach ($models as $model) {
             Provider::create($model);
         }

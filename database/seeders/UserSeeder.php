@@ -272,6 +272,29 @@ class UserSeeder extends Seeder
                 'cambiar_price_type_en_vender',
             ];
 
+        } else if ($this->for_user == 'ros_mar') {
+
+            $models[0]['name'] = 'Ros Mar';
+
+            $models[0]['comision_funcion'] = 'ros_mar';
+
+            $models[0]['iva_included'] = 1;
+
+            $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
+
+            $models[0]['extencions'] = [
+
+                'budgets',
+                'bar_code_scanner',
+                'comerciocity_interno',
+                'cambiar_price_type_en_vender',
+                'articulos_precios_en_blanco',
+                'articulos_con_propiedades_de_distribuidora',
+                'indicar_vendedor_en_vender',
+                'comision_por_proveedores',
+                'ask_save_current_acount'
+            ];
+
         }
 
 
@@ -281,7 +304,8 @@ class UserSeeder extends Seeder
                 'name'                          => $model['name'], 
                 'use_archivos_de_intercambio'                  => isset($model['use_archivos_de_intercambio']) ? $model['use_archivos_de_intercambio'] : null,  
                 'company_name'                  => isset($model['company_name']) ? $model['company_name'] : null,  
-                'iva_included'                  => isset($model['iva_included']) ? $model['iva_included'] : 1,  
+                'iva_included'                  => isset($model['iva_included']) ? $model['iva_included'] : 1, 
+                'comision_funcion'                  => isset($model['comision_funcion']) ? $model['comision_funcion'] : null, 
                 'doc_number'                    => $model['doc_number'], 
                 'email'                         => $model['email'], 
                 'password'                      => $model['password'],  

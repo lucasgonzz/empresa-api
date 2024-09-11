@@ -30,6 +30,10 @@ class CreateProvidersTable extends Migration
             $table->decimal('dolar', 14,2)->nullable();
             $table->decimal('saldo', 12,2)->nullable();
             $table->integer('comercio_city_user_id')->nullable();
+
+            $table->decimal('porcentaje_comision_negro', 12,2)->nullable();
+            $table->decimal('porcentaje_comision_blanco', 12,2)->nullable();
+            
             $table->integer('user_id');
             $table->enum('status', ['active', 'inactive'])->default('active');
             $table->boolean('pagos_checkeados')->default(0);

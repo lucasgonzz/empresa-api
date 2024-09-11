@@ -85,6 +85,7 @@ class SaleController extends Controller
             'sub_total'                         => $request->sub_total,
             'total'                             => $request->total,
             'terminada'                         => SaleHelper::get_terminada($request->to_check),
+            'seller_id'                         => SaleHelper::get_seller_id($request),
             'user_id'                           => $this->userId(),
         ]);
 
@@ -120,23 +121,43 @@ class SaleController extends Controller
         
         $previus_client_id                          = $model->client_id;
         
+        
         $model->discounts_in_services               = $request->discounts_in_services;
+        
         $model->surchages_in_services               = $request->surchages_in_services;
+        
         $model->current_acount_payment_method_id    = $request->current_acount_payment_method_id;
+        
         $model->afip_information_id                 = $request->afip_information_id;
+        
         $model->address_id                          = $request->address_id;
+        
         $model->sale_type_id                        = $request->sale_type_id;
+        
         $model->observations                        = $request->observations;
+        
         $model->to_check                            = $request->to_check;
+        
         $model->checked                             = $request->checked;
+        
         $model->confirmed                           = $request->confirmed;
+        
         $model->client_id                           = $request->client_id;
+        
         $model->omitir_en_cuenta_corriente          = $request->omitir_en_cuenta_corriente;
+        
         $model->numero_orden_de_compra              = $request->numero_orden_de_compra;
+        
+        $model->seller_id              = $request->seller_id;
+
         $model->sub_total                           = $request->sub_total;
+        
         $model->total                               = $request->total;
+        
         $model->employee_id                         = SaleHelper::getEmployeeId($request);
+        
         $model->updated_at                          = Carbon::now();
+        
         $model->save();
 
         SaleHelper::attachProperies($model, $request, false, $previus_articles, $sale_modification, $se_esta_confirmando);
@@ -145,6 +166,7 @@ class SaleController extends Controller
         $model->save();
 
         $model = Sale::find($model->id);
+        
         if ($model->client_id && !$model->to_check && !$model->checked) {
             SaleHelper::updateCurrentAcountsAndCommissions($model);
         }

@@ -48,18 +48,17 @@ class ArticleVariantSeeder extends Seeder
             ],
         ];
 
-        $article = Article::where('name', 'Remera 1')
-                            ->first();
+        $article_id = 1;
 
         foreach ($models as $model) {
 
             $article_variant = ArticleVariant::create([
-                'article_id'                => $article->id,
+                'article_id'                => $article_id,
                 'variant_description'       => $model['variant_description'],
             ]);
 
             // ArticleProperty::create([
-            //     'article_id'    => $article->id,
+            //     'article_id'    => $article_id,
             //     'article_property_type_id'  => 
             // ]);
 

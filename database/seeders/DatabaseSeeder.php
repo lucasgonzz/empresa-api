@@ -100,7 +100,7 @@ class DatabaseSeeder extends Seeder
             $this->call(ProviderPagosSeeder::class);
 
             // $this->call(EmployeeSeeder::class);
-            $this->call(SaleSeeder::class);
+            // $this->call(SaleSeeder::class);
             // $this->call(WorkdaySeeder::class);
             // $this->call(ConditionSeeder::class);
             $this->call(TitleSeeder::class);
