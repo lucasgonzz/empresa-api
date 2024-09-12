@@ -84,7 +84,7 @@ class ArticleImport implements ToCollection
             'price'             => 'precio',
         ];
 
-        if (UserHelper::hasExtencion('articulos_precios_en_blanco')) {
+        if (UserHelper::hasExtencion('articulos_precios_en_blanco', $this->user)) {
             $this->props_to_set['percentage_gain_blanco'] = 'margen_de_ganancia_en_blanco';
         }
     }

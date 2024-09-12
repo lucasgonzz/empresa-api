@@ -182,7 +182,7 @@ class ArticleHelper {
         }
 
 
-        if (UserHelper::hasExtencion('articulos_precios_en_blanco')) {
+        if (UserHelper::hasExtencion('articulos_precios_en_blanco', $user)) {
 
             $article = ArticlePricesHelper::set_precios_en_blanco($article);
         }

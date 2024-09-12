@@ -30,10 +30,6 @@ class UserHelper {
 
     static function get_user($from_owner) {
 
-        if ($from_owner) {
-
-        }
-
         if (session()->has('auth_user')) {
 
             $user = session('auth_user');
