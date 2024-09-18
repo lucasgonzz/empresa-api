@@ -339,11 +339,6 @@ class ArticleImport implements ToCollection
 
         $actual_price = (float)$this->articulo_existente->price;
 
-        Log::info('isDataUpdated data:');
-        Log::info($data);
-        Log::info('comparando '.$data['percentage_gain_blanco'].' con '.$this->articulo_existente->percentage_gain_blanco);
-        
-
         return  (isset($data['name']) && $data['name']                          != $this->articulo_existente->name) ||
                 (isset($data['bar_code']) && $data['bar_code']                  != $this->articulo_existente->bar_code) ||
                 (isset($data['provider_code']) && $data['provider_code']        != $this->articulo_existente->provider_code) ||

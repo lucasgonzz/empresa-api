@@ -57,6 +57,10 @@ class CreateSalesTable extends Migration
 
             $table->timestamp('terminada_at')->nullable();
 
+            $table->integer('cantidad_cuotas')->nullable();
+            $table->decimal('cuota_descuento', 5,2)->nullable();
+            $table->decimal('cuota_recargo', 5,2)->nullable();
+
             $table->foreign('user_id')
                     ->references('id')->on('users');
             $table->foreign('client_id')

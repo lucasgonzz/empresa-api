@@ -288,6 +288,29 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'articulos',
                 'en'            => 'article.export_excel_clients',
             ],
+
+
+            // Permisos para ver ventas
+            [
+                'singular'      => 'Ver las ventas de TODAS las SUCURSALES',
+                'plural'        => 'ventas',
+                'en'            => 'sale.index.addresses.all',
+            ],
+            [
+                'singular'      => 'Ver las ventas SOLO de su sucursal',
+                'plural'        => 'ventas',
+                'en'            => 'sale.index.addresses.only_your',
+            ],
+            [
+                'singular'      => 'Ver las ventas TODOS los empleados',
+                'plural'        => 'ventas',
+                'en'            => 'sale.index.employees.all',
+            ],
+            [
+                'singular'      => 'Ver solo sus ventas',
+                'plural'        => 'ventas',
+                'en'            => 'sale.index.employees.only_your',
+            ],
         ];
         foreach ($permissions as $permission) {
             PermissionEmpresa::create([

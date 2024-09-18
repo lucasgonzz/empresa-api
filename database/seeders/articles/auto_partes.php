@@ -1215,6 +1215,16 @@ $articles = [
                 'url'       => env('APP_URL').'/storage/auto-partes/539915-MLA25345042673_022017-O.jpg',
             ],
         ],
+        'addresses'     => [
+            [
+                'id'            => 1,
+                'amount'        => 10,
+            ],
+            [
+                'id'            => 2,
+                'amount'        => 10,
+            ],
+        ],
     ],
     [
         'featured'          => null,
@@ -1230,6 +1240,16 @@ $articles = [
         'images'            => [
             [
                 'url'       => env('APP_URL').'/storage/auto-partes/534025-MLA25345093312_022017-O.jpg',
+            ],
+        ],
+        'addresses'     => [
+            [
+                'id'            => 1,
+                'amount'        => 10,
+            ],
+            [
+                'id'            => 2,
+                'amount'        => 10,
             ],
         ],
     ],
@@ -1254,6 +1274,16 @@ $articles = [
                 'url'       => env('APP_URL').'/storage/auto-partes/044.1142.jpg',
             ],
         ],
+        'addresses'     => [
+            [
+                'id'            => 1,
+                'amount'        => 10,
+            ],
+            [
+                'id'            => 2,
+                'amount'        => 10,
+            ],
+        ],
     ],
     [
         'featured'          => null,
@@ -1270,6 +1300,16 @@ $articles = [
         'images'            => [
             [
                 'url'       => env('APP_URL').'/storage/auto-partes/044.1654.jpg',
+            ],
+        ],
+        'addresses'     => [
+            [
+                'id'            => 1,
+                'amount'        => 10,
+            ],
+            [
+                'id'            => 2,
+                'amount'        => 10,
             ],
         ],
     ],
@@ -1335,6 +1375,16 @@ $articles = [
         'images'            => [
             [
                 'url'       => env('APP_URL').'/storage/auto-partes/044.1654.jpg',
+            ],
+        ],
+        'addresses'     => [
+            [
+                'id'            => 1,
+                'amount'        => 10,
+            ],
+            [
+                'id'            => 2,
+                'amount'        => 10,
             ],
         ],
     ],

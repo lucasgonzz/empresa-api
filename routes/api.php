@@ -54,6 +54,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
     Route::get('update-feature', 'UpdateFeatureController@index');
 
+    // Cuotas
+    Route::resource('cuota', 'CuotaController');
+
+
+
+
     Route::resource('article', 'ArticleController')->except(['index']);
     Route::get('article/index/from-status/{status?}', 'ArticleController@index');
     // Route::get('article/index/from-status/{last_updated}/{status?}', 'ArticleController@index');
@@ -70,6 +76,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('/article-ticket-info', 'ArticleTicketInfoController@index');
 
+    Route::put('/article-update-addresses', 'ArticleController@update_addresses_stock');
+
+    Route::put('/article-update-varians-stock', 'ArticleController@update_variants_stock');
+
+    
+
     Route::resource('stock-movement', 'StockMovementController')->except(['index', 'show']);
     Route::get('stock-movement/{article_id}', 'StockMovementController@index');
 
@@ -84,6 +96,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     Route::get('sale-modifications/{sale_id}', 'SaleModificationController@index');
+
+
+    // Movimientos de depositos
+    Route::resource('deposit-movement', 'DepositMovementController');
+    Route::get('deposit-movement/from-date/{from_date?}/{until_date?}', 'DepositMovementController@index');
+
+    Route::get('deposit-movement-status', 'DepositMovementStatusController@index');
 
 
     // Metodos de pago para facturar

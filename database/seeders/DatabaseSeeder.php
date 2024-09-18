@@ -28,6 +28,8 @@ class DatabaseSeeder extends Seeder
             // $this->call(PlansSeeder::class);
             $this->call(OrderStatusSeeder::class);
             $this->call(ProviderOrderStatusSeeder::class);
+
+
             $this->call(ColorSeeder::class);
             $this->call(IvaSeeder::class);
             $this->call(IvaConditionSeeder::class);
@@ -39,6 +41,7 @@ class DatabaseSeeder extends Seeder
 
             $this->call(ArticlePreImportRangeSeeder::class);
 
+            $this->call(DepositMovementStatusSeeder::class);
 
             // $this->call(PermissionsTableSeeder::class);
             $this->call(UnidadMedidaSeeder::class);
@@ -62,6 +65,9 @@ class DatabaseSeeder extends Seeder
 
                 $this->call(CurrentAcountPaymentMethodDiscountSeeder::class);
                 $this->call(AfipSelectedPaymentMethodSeeder::class);
+
+                $this->call(CuotaSeeder::class);
+
                 $this->article_variants();
 
             } else if ($for_user == 'fenix') {
@@ -83,7 +89,12 @@ class DatabaseSeeder extends Seeder
             $this->call(ColorSeeder::class);
             $this->call(IvaSeeder::class);
             $this->call(DepositSeeder::class);
-            // $this->call(ArticleSeeder::class);
+
+            if ($for_user != 'pack_descartables') {
+
+                $this->call(ArticleSeeder::class);
+            }
+            
             $this->call(IvaConditionSeeder::class);
             $this->call(ClientSeeder::class);
             $this->call(BuyerSeeder::class);

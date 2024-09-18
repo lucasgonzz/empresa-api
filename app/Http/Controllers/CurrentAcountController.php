@@ -56,7 +56,7 @@ class CurrentAcountController extends Controller
 
     public function pago(Request $request) {
         $pago = CurrentAcount::create([
-            'haber'                             => $request->haber,
+            'haber'                             => $this->get_haber($request),
             'description'                       => $request->description,
             'numero_orden_de_compra'            => $request->numero_orden_de_compra,
             'status'                            => 'pago_from_client',
@@ -88,6 +88,15 @@ class CurrentAcountController extends Controller
         $this->sendAddModelNotification($request->model_name, $request->model_id);
         Log::info('Terminando de guardar pago');
         return response()->json(['current_acount' => $pago], 201);
+    }
+
+    function get_haber($request) {
+        $total = 0;
+        foreach ($request->current_acount_payment_methods as $payment_method) {
+            
+            $total += (float)$payment_method['amount'];
+        }
+        return $total;
     }
 
     public function notaCredito(Request $request) {

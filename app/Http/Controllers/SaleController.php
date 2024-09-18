@@ -86,6 +86,9 @@ class SaleController extends Controller
             'total'                             => $request->total,
             'terminada'                         => SaleHelper::get_terminada($request->to_check),
             'seller_id'                         => SaleHelper::get_seller_id($request),
+            'cantidad_cuotas'                   => $request->cantidad_cuotas,
+            'cuota_descuento'                   => $request->cuota_descuento,
+            'cuota_recargo'                     => $request->cuota_recargo,
             'user_id'                           => $this->userId(),
         ]);
 

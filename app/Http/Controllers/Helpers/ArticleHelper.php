@@ -197,6 +197,10 @@ class ArticleHelper {
 
             return ceil($price / 100) * 100;
         }
+
+        if (env('REDONDEAR_PRECIOS_EN_CENTAVOS', false)) {
+            return round($price);
+        }
         return $price;
     }
 
@@ -470,10 +474,11 @@ class ArticleHelper {
 
             if (count($article->addresses) >= 1) {
                 
-                Log::info('Se seteo stock con direcciones');
                 foreach ($article->addresses as $article_address) {
+                    Log::info('Sumando '.$article_address->pivot->amount.' de '.$article_address->street);
                     $stock += $article_address->pivot->amount;
                 }
+                Log::info('Se seteo stock con direcciones = '.$stock);
 
             } else if (count($article->article_variants) >= 1) {
                 

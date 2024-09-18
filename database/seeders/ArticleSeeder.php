@@ -127,23 +127,33 @@ class ArticleSeeder extends Seeder
     }
 
     function setStockMovement($created_article, $article) {
-        $ct = new StockMovementController();
-        $request = new \Illuminate\Http\Request();
-        
-        $request->model_id = $created_article->id;
-        $request->provider_id = $created_article->provider_id;
 
-        if (isset($article['addresses'])) {
-            foreach ($article['addresses'] as $address) {
-                $request->to_address_id = $address['id'];
-                $request->amount = $address['amount'];
-                $request->from_create_article_addresses = true;
-                $ct->store($request);
-                sleep(1);
-            }
+        $created_article->load('article_variants');
+
+        if (count($created_article->article_variants) >= 1) {
+
+            Log::info('Se van a crear las variants para '.$created_article->name);
+            ArticleHelper::setArticleStockFromAddresses($created_article, false);
         } else {
-            $request->amount = $article['stock'];
-            $ct->store($request);
+
+            $ct = new StockMovementController();
+            $request = new \Illuminate\Http\Request();
+            
+            $request->model_id = $created_article->id;
+            $request->provider_id = $created_article->provider_id;
+
+            if (isset($article['addresses'])) {
+                foreach ($article['addresses'] as $address) {
+                    $request->to_address_id = $address['id'];
+                    $request->amount = $address['amount'];
+                    $request->from_create_article_addresses = true;
+                    $ct->store($request);
+                    sleep(1);
+                }
+            } else {
+                $request->amount = $article['stock'];
+                $ct->store($request);
+            }
         }
     }
 

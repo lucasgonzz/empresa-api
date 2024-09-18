@@ -39,6 +39,7 @@ class ArticlePricesHelper {
 
             Log::info($article->name.' se va a aplicar: ');
             Log::info('% '.$percentage);
+            Log::info('al costo '.$cost);
             Log::info('price '.$price);
 
             $final_price = Self::aplicar_iva($article, $price, $user);
@@ -115,6 +116,11 @@ class ArticlePricesHelper {
 
             $cost += $cost * $article->percentage_gain_blanco / 100;
             Log::info('Poniendo marguen del '.$article->percentage_gain_blanco.', quedo en '.$cost);
+        }
+
+
+        if (env('REDONDEAR_PRECIOS_EN_CENTAVOS', false)) {
+            $cost = round($cost);
         }
 
         $article->final_price_blanco = $cost;

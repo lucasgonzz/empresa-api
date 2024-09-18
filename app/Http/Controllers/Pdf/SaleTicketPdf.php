@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Pdf;
 
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Pdf\AfipQrPdf;
 use fpdf;
@@ -247,11 +248,39 @@ class SaleTicketPdf extends fpdf {
 			$this->y += 10;
 		}
 
+		$this->iva_discriminado();
+
 
 		$this->SetFont('Arial', 'B', 12);
 	    $this->x = 2;
 		$this->Cell($this->cell_ancho, 10, 'Total: $'. Numbers::price($total_sale), 1, 0, 'C');
 		$this->y += 10;
+	}
+
+	function iva_discriminado() {
+
+		if (!is_null($this->sale->afip_ticket) 
+			&& $this->sale->afip_ticket->cbte_tipo == 1) {
+
+			$this->SetFont('Arial', '', 10);
+
+			$this->y += 5;
+        	
+        	$afip_helper = new AfipHelper($this->sale);
+
+			$importes = $afip_helper->getImportes();
+
+		    $this->x = 2;
+			$this->Cell(60, 5, 'Imp Neto Gravado: $'.Numbers::price($importes['gravado']), 0, 1, 'L');
+
+			foreach ($importes['ivas'] as $iva => $importe) {
+				if ($importe['Importe'] > 0) {
+		    		$this->x = 2;
+					$this->Cell(40, 5, 'IVA '.$iva.'%: $'.Numbers::price($importe['Importe']), 0, 1, 'L');
+				}
+			}
+			$this->y += 5;
+		}
 	}
 
 	function qr() {

@@ -3,7 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\RequestHelper;
-use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartArticleAmountInsificienteHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
@@ -61,6 +61,8 @@ class StockMovementController extends Controller
             'user_id'           => $this->user_id,
             'created_at'        => $this->get_created_at($segundos_para_agregar),
         ]);
+
+        Log::info('stock_movement para el article_id: '.$this->article_id);
 
 
         $this->setConcepto();
@@ -435,8 +437,6 @@ class StockMovementController extends Controller
                 )
             ) {
             
-            Log::info('se agrego la direccion '.$this->stock_movement->to_address_id);
-
             $this->article->load('addresses');
             
             $to_address = null;
@@ -461,6 +461,7 @@ class StockMovementController extends Controller
             } else {
 
                 $new_amount = $to_address->pivot->amount + $this->stock_movement->amount;
+                Log::info('se puso new_amount de '.$new_amount);
                 $this->article->addresses()->updateExistingPivot($this->stock_movement->to_address_id, [
                     'amount'    => $new_amount,
                 ]);

@@ -53,6 +53,72 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function recetas_con_insumos_repetidos() {
+        $articulos_repetidos = DB::table('article_recipe')
+                                ->select('recipe_id', 'article_id', DB::raw('COUNT(*) as article_count'))
+                                ->groupBy('recipe_id', 'article_id')
+                                ->having('article_count', '>', 1)
+                                ->get();
+
+        foreach ($articulos_repetidos as $repetido) {
+            $article = Article::find($repetido->article_id);
+            $recipe = Recipe::find($repetido->recipe_id);
+
+            echo "Recipe ID: " . $repetido->recipe_id . " tiene el articulo id: " . $repetido->article_id . " repetido " . $repetido->article_count . " vences.";
+            echo "<br>";
+            if (!is_null($article)) {
+                echo 'Nombre: '.$article->name;
+                echo "<br>";
+            } else {
+                echo 'Articulo eliminado';
+                echo "<br>";
+            }
+
+            if (!is_null($recipe)) {
+                echo 'Articulo receta: '.$recipe->article->name;
+                echo "<br>";
+            } else {
+                echo 'Receta eliminada';
+                echo "<br>";
+            }
+            echo "<br>";
+        }
+        echo 'termino';
+    }
+
+    function check_totales_de_pagos($company_name) {
+
+        $user = User::where('company_name', $company_name)
+                        ->first();
+
+        $pagos = CurrentAcount::where('user_id', $user->id)
+                                ->where('status', 'pago_from_client')
+                                ->whereNotNull('haber')
+                                ->whereDate('created_at', '>=', Carbon::today()->subMonth()->startOfMonth())
+                                ->orderBy('created_at', 'ASC')
+                                ->get();
+
+        foreach ($pagos as $pago) {
+            
+            $suma_payment_methods = 0;
+
+            foreach ($pago->current_acount_payment_methods as $payment_method) {
+                
+                $suma_payment_methods += (float)$payment_method->pivot->amount;
+            }
+
+            if (count($pago->current_acount_payment_methods) >= 1 
+                && $suma_payment_methods != $pago->haber) {
+
+                echo 'Cliente: '.$pago->client->name.'<br>';
+                echo 'Fecha: '.$pago->created_at->format('d/m/y').'<br>';
+                echo $pago->detalle.' tiene haber de '.Numbers::price($pago->haber).' y suma_payment_methods: '.Numbers::price($suma_payment_methods).' <br>';
+            }
+        }
+        echo 'Termino'; 
+
+    }
+
     function set_terminada_at() {
         Log::info(Carbon::parse('2024/09/01'). ' Arranco');
         SetSalesTerminadaAtJob::dispatch();

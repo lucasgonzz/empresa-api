@@ -48,7 +48,26 @@ class ArticleVariantSeeder extends Seeder
             ],
         ];
 
-        $article_id = 1;
+        $addresses = [
+            [
+                'id'    => 1,
+                'amount' => 5,
+            ],
+            [
+                'id'    => 2,
+                'amount' => 10,
+            ],
+            [
+                'id'    => 3,
+                'amount' => 15,
+            ],
+            [
+                'id'    => 4,
+                'amount' => 20,
+            ],
+        ];
+
+        $article_id = 66;
 
         foreach ($models as $model) {
 
@@ -57,11 +76,6 @@ class ArticleVariantSeeder extends Seeder
                 'variant_description'       => $model['variant_description'],
             ]);
 
-            // ArticleProperty::create([
-            //     'article_id'    => $article_id,
-            //     'article_property_type_id'  => 
-            // ]);
-
             foreach ($model['article_property_values'] as $_article_property_value) {
                     
                 $article_property_value = ArticlePropertyValue::where('name', $_article_property_value)
@@ -69,6 +83,14 @@ class ArticleVariantSeeder extends Seeder
 
                 $article_variant->article_property_values()->attach($article_property_value->id);
             }
+
+            foreach ($addresses as $address) {
+
+                $article_variant->addresses()->attach($address['id'], [
+                    'amount'    => $address['amount'],
+                ]);
+            }
         }
+
     }
 }

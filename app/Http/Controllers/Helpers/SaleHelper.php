@@ -249,9 +249,18 @@ class SaleHelper extends Controller {
                 foreach ($request->selected_payment_methods as $payment_method) {
 
                     if (!is_null($payment_method['amount'])) {
+
+                        $amount = $payment_method['amount'];
+
+                        if ($payment_method['id'] == 5 
+                            && isset($request->monto_credito_real)
+                            && !is_null($request->monto_credito_real)) {
+
+                            $amount = $request->monto_credito_real;
+                        }
                         
                         $sale->current_acount_payment_methods()->attach($payment_method['id'],[
-                            'amount' => $payment_method['amount'],
+                            'amount' => $amount,
                         ]);
                     }
                 }

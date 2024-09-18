@@ -12,6 +12,8 @@ use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
+use App\Http\Controllers\Helpers\article\UpdateAddressesStockHelper;
+use App\Http\Controllers\Helpers\article\UpdateVariantsStockHelper;
 use App\Http\Controllers\Pdf\ArticleBarCodePdf;
 use App\Http\Controllers\Pdf\ArticleListPdf;
 use App\Http\Controllers\Pdf\ArticlePdf;
@@ -415,5 +417,23 @@ class ArticleController extends Controller
         }
 
         return response(null, 200);
+    }
+
+    function update_addresses_stock(Request $request) {
+
+        $helper = new UpdateAddressesStockHelper($request->article_id, $request->addresses);
+        $helper->update_addresses();
+
+        return response()->json(['model' => $this->fullModel('Article', $request->article_id)], 200);
+
+    }
+
+    function update_variants_stock(Request $request) {
+
+        $helper = new UpdateVariantsStockHelper($request->article_id, $request->variants_to_update);
+        $helper->update_variants();
+
+        return response()->json(['model' => $this->fullModel('Article', $request->article_id)], 200);
+
     }
 }

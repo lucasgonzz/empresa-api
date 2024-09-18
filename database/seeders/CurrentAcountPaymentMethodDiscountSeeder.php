@@ -27,6 +27,10 @@ class CurrentAcountPaymentMethodDiscountSeeder extends Seeder
                 'current_acount_payment_method_id'  => 3,
                 'discount_percentage'               => 20,
             ],  
+            [
+                'current_acount_payment_method_id'  => 4,
+                'discount_percentage'               => 15,
+            ],  
         ];
 
         foreach ($models as $model) {

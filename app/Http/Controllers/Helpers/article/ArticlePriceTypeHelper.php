@@ -20,13 +20,7 @@ class ArticlePriceTypeHelper {
 
             $article->price_types()->syncWithoutDetaching($price_type['id']);
 
-            Log::info('price_type: ');
-            Log::info($price_type);
-
             $percentage = $price_type['pivot']['percentage'];
-
-            Log::info('percentage: ');
-            Log::info($percentage);
 
             $article->price_types()->updateExistingPivot($price_type['id'], [
                 'percentage'    => $percentage,

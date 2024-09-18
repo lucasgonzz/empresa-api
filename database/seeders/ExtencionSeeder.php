@@ -165,6 +165,11 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Porcentajes de comision por proveedores, en base a ventas en NEGRO o en BLANCO',
                 'slug' => 'comision_por_proveedores',
             ],
+            [
+                // 30
+                'name' => 'Movimientos de Depositos masivos',
+                'slug' => 'deposit_movements',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([
