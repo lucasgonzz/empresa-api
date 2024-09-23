@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SellerCommissionHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Models\Check;
 use App\Models\CurrentAcount;
 use Carbon\Carbon;
@@ -123,7 +124,7 @@ class CurrentAcountPagoHelper {
         }
     }
 
-    static function attachPaymentMethods($pago, $payment_methods) {
+    static function attachPaymentMethods($pago, $payment_methods, $model_name = null) {
         foreach ($payment_methods as $payment_method) {
             $amount = $payment_method['amount'];
             if ($amount == '' || is_null($amount)) {
@@ -139,6 +140,13 @@ class CurrentAcountPagoHelper {
                                                         credit_card_payment_plan_id'] : null,
                                                         'user_id'   => UserHelper::userId(),
                                                     ]);
+
+            if (isset($payment_method['caja_id']) && !is_null($model_name)) {
+
+                CurrentAcountCajaHelper::guardar_pago($amount, $payment_method['caja_id'], $model_name, $pago);
+            }
+
+
         }
     }
 

@@ -38,6 +38,8 @@ class DeleteController extends Controller
             $controller_name = 'App\\Http\\Controllers\\'.ucfirst($model_name).'Controller';
             $controller = new $controller_name();
 
+            Log::info(Auth()->user()->name.' va a eliminar '.$model_name.' id: '.$model->id);
+            
             if ($model_name == 'article') {
                 $controller->destroy($model->id, $send_notification);
             } else {

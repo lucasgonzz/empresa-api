@@ -57,6 +57,9 @@ class ProcessCheckInventoryLinkages implements ShouldQueue
 
             $client_comerciocity_user = $inventory_linkage->client->comercio_city_user;
 
+            Log::info('client_comerciocity_user id: ');
+            Log::info($client_comerciocity_user->id);
+
             foreach ($articles as $article) {
 
                 $vuelta++;
@@ -89,7 +92,7 @@ class ProcessCheckInventoryLinkages implements ShouldQueue
                             $client_article->cost = $article->final_price;
 
 
-                            ArticleHelper::setFinalPrice($client_article, $inventory_linkage->client->comercio_city_user_id, $client_comerciocity_user);
+                            ArticleHelper::setFinalPrice($client_article, $inventory_linkage->client->comercio_city_user_id, $client_comerciocity_user, $client_comerciocity_user->id);
 
                             Log::info('Se actualizo el precio de '.$client_article->name.' paso de $'.Numbers::price($previus_cost).' a '.Numbers::price($client_article->cost));
 

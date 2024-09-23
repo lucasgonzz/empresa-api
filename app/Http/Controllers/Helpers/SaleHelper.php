@@ -20,6 +20,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
+use App\Http\Controllers\Helpers\sale\SaleCajaHelper;
 use App\Http\Controllers\Helpers\sale\UpdateHelper;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SellerCommissionController;
@@ -221,6 +222,8 @@ class SaleHelper extends Controller {
             
             Self::crear_comision($model);
 
+            SaleCajaHelper::check_caja($model);
+
         } else {
 
             Self::checkNotaCredito($model, $request);
@@ -258,9 +261,15 @@ class SaleHelper extends Controller {
 
                             $amount = $request->monto_credito_real;
                         }
+
+                        $caja_id = null;
+                        if (isset($payment_method['caja_id'])) {
+                            $caja_id = $payment_method['caja_id'];
+                        }
                         
                         $sale->current_acount_payment_methods()->attach($payment_method['id'],[
-                            'amount' => $amount,
+                            'amount'    => $amount,
+                            'caja_id'   => $caja_id,
                         ]);
                     }
                 }
@@ -276,6 +285,7 @@ class SaleHelper extends Controller {
                     'amount'                => $total,
                     'discount_percentage'   => $request->discount_percentage,
                     'discount_amount'       => $request->discount_amount,
+                    'caja_id'               => $request->caja_id,
                 ]);
             }
         }

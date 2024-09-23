@@ -90,10 +90,10 @@ class DatabaseSeeder extends Seeder
             $this->call(IvaSeeder::class);
             $this->call(DepositSeeder::class);
 
-            if ($for_user != 'pack_descartables') {
+            // if ($for_user != 'pack_descartables') {
 
                 $this->call(ArticleSeeder::class);
-            }
+            // }
             
             $this->call(IvaConditionSeeder::class);
             $this->call(ClientSeeder::class);
@@ -153,6 +153,10 @@ class DatabaseSeeder extends Seeder
 
             $this->call(UnidadFrecuenciaSeeder::class);
             $this->call(PendingSeeder::class);
+
+
+            // $this->call(CajaSeeder::class);
+            $this->call(ConceptoMovimientoCajaSeeder::class);
 
 
         }

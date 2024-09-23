@@ -20,6 +20,8 @@ class CreateExpensesTable extends Migration
             $table->decimal('amount')->nullable();
             $table->integer('current_acount_payment_method_id')->nullable();
             $table->text('observations')->nullable();
+            $table->integer('caja_id')->nullable();
+            
             $table->integer('user_id');
             $table->timestamps();
         });

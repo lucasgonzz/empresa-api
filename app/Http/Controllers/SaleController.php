@@ -89,6 +89,7 @@ class SaleController extends Controller
             'cantidad_cuotas'                   => $request->cantidad_cuotas,
             'cuota_descuento'                   => $request->cuota_descuento,
             'cuota_recargo'                     => $request->cuota_recargo,
+            'caja_id'                           => $request->caja_id,
             'user_id'                           => $this->userId(),
         ]);
 

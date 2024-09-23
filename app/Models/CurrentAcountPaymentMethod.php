@@ -13,6 +13,10 @@ class CurrentAcountPaymentMethod extends Model
     }
 
     function scopeWithAll($q) {
-        
+        // $q->with('caja_por_defecto');
     }
+
+    // function cajas_por_defecto() {
+    //     return $this->hasMany(DefaultPaymentMethodCaja::class);
+    // }
 }

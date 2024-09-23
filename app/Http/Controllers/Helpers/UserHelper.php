@@ -10,33 +10,9 @@ class UserHelper {
 
 	static function userId($from_owner = true) {
 
-        $user = Auth()->user();
+        $user = Self::user($from_owner);
 
-        if (is_null($user)) {
-            $user = User::where('company_name', 'Autopartes Boxes')->first();
-            return $user->id;
-        }
-        
-        if ($from_owner) {
-            if (is_null($user->owner_id)) {
-                return $user->id;
-            } else {
-    	        return $user->owner_id;
-            }
-        } else {
-            return $user->id;
-        }
-    }
-
-    static function get_user($from_owner) {
-
-        if (session()->has('auth_user')) {
-
-            $user = session('auth_user');
-        } else {
-
-            $user = Auth()->user();
-        }
+        return $user->id;
     }
 
     static function user($from_owner = true) {
@@ -49,7 +25,12 @@ class UserHelper {
             return session('auth_user');
         }
 
-        return User::find(Self::userId());
+        return Self::default_user();
+    }
+
+    static function default_user() {
+
+        return User::where('company_name', 'Autopartes Boxes')->first();
     }
 
     static function getFullModel($id = null) {

@@ -265,6 +265,7 @@ class UserSeeder extends Seeder
 
             $models[0]['extencions'] = [
 
+                'ask_save_current_acount',
                 'budgets',
                 'bar_code_scanner',
                 'comerciocity_interno',

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\expense\ExpenseCajaHelper;
 use App\Models\Expense;
 use Illuminate\Http\Request;
 
@@ -33,10 +34,13 @@ class ExpenseController extends Controller
             'amount'                                => $request->amount,
             'current_acount_payment_method_id'      => $request->current_acount_payment_method_id,
             'observations'                          => $request->observations,
+            'caja_id'                               => $request->caja_id,
             'created_at'                            => $request->created_at,
             'user_id'                               => $this->userId(),
         ]);
-        // $this->sendAddModelNotification('Expense', $model->id);
+
+        ExpenseCajaHelper::guardar_movimiento_caja($model);
+
         return response()->json(['model' => $this->fullModel('Expense', $model->id)], 201);
     }  
 
@@ -50,9 +54,12 @@ class ExpenseController extends Controller
         $model->amount                                = $request->amount;
         $model->current_acount_payment_method_id      = $request->current_acount_payment_method_id;
         $model->observations                          = $request->observations;
+        $model->caja_id                               = $request->caja_id;
         $model->created_at                            = $request->created_at;
         $model->save();
-        // $this->sendAddModelNotification('Expense', $model->id);
+
+        ExpenseCajaHelper::editar_movimiento_caja($model);
+
         return response()->json(['model' => $this->fullModel('Expense', $model->id)], 200);
     }
 

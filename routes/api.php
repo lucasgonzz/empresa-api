@@ -54,6 +54,32 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
     Route::get('update-feature', 'UpdateFeatureController@index');
 
+    // Cajas
+    Route::resource('caja', 'CajaController');
+    Route::put('abrir-caja/{caja_id}', 'CajaController@abrir_caja');
+    Route::put('cerrar-caja/{caja_id}', 'CajaController@cerrar_caja');
+
+    // Apertura de cajas
+    Route::get('apertura-caja/{caja_id}', 'AperturaCajaController@index');
+    Route::get('apertura-caja/show/{id}', 'AperturaCajaController@show');
+    Route::post('apertura-caja/reabrir/{id}', 'AperturaCajaController@reabrir');
+
+    // Movimientos de Caja
+    Route::resource('movimiento-caja', 'MovimientoCajaController')->except('index', 'show');
+    Route::get('movimiento-caja/{apertura_caja_id}', 'MovimientoCajaController@index');
+
+    // Concepto de movimientos de Caja
+    Route::resource('concepto-movimiento-caja', 'ConceptoMovimientoCajaController');
+
+    // Cajas por defecto
+    Route::resource('default-payment-method-caja', 'DefaultPaymentMethodCajaController');
+
+    // Movimientos entre Cajas
+    Route::resource('movimiento-entre-caja', 'MovimientoEntreCajaController')->except('index');
+    Route::get('movimiento-entre-caja/from-date/{from_date?}/{until_date?}', 'MovimientoEntreCajaController@index');
+
+
+
     // Cuotas
     Route::resource('cuota', 'CuotaController');
 
@@ -252,8 +278,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('/mercado-pago/payment/{payment_id}', 'MercadoPagoController@payment');
 
-    Route::get('report/from-date/{from_date}/{until_date?}/{employee_id?}', 'CajaController@reports');
-    Route::get('chart/from-date/{from_date}/{until_date?}', 'CajaController@charts');
+    Route::get('report/from-date/{from_date}/{until_date?}/{employee_id?}', 'CajaViejaController@reports');
+    Route::get('chart/from-date/{from_date}/{until_date?}', 'CajaViejaController@charts');
 
     Route::resource('commission', 'CommissionController');
     Route::get('seller-commission/{model_id}/{from_date}/{until_date}', 'SellerCommissionController@index');

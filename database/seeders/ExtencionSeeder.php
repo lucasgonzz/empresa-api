@@ -166,7 +166,7 @@ class ExtencionSeeder extends Seeder
                 'slug' => 'comision_por_proveedores',
             ],
             [
-                // 30
+                // 31
                 'name' => 'Movimientos de Depositos masivos',
                 'slug' => 'deposit_movements',
             ],

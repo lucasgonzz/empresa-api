@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class CreateCurrentAcountPaymentMethodSaleTable extends Migration
+class CreateCajaCurrentAcountPaymentMethodTable extends Migration
 {
     /**
      * Run the migrations.
@@ -13,15 +13,11 @@ class CreateCurrentAcountPaymentMethodSaleTable extends Migration
      */
     public function up()
     {
-        Schema::create('current_acount_payment_method_sale', function (Blueprint $table) {
+        Schema::create('caja_current_acount_payment_method', function (Blueprint $table) {
             $table->id();
 
+            $table->integer('caja_id');
             $table->integer('current_acount_payment_method_id');
-            $table->integer('sale_id');
-            $table->decimal('amount', 20,2);
-            $table->decimal('discount_percentage', 20,2)->nullable();
-            $table->decimal('discount_amount', 20,2)->nullable();
-            $table->integer('caja_id')->nullable();
 
             $table->timestamps();
         });
@@ -34,6 +30,6 @@ class CreateCurrentAcountPaymentMethodSaleTable extends Migration
      */
     public function down()
     {
-        Schema::dropIfExists('current_acount_payment_method_sale');
+        Schema::dropIfExists('caja_current_acount_payment_method');
     }
 }

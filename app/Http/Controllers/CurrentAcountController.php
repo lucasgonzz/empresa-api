@@ -68,7 +68,8 @@ class CurrentAcountController extends Controller
             'created_at'                        => CurrentAcountHelper::getCreatedAt($request),
             'employee_id'                       => UserHelper::userId(false),
         ]);
-        CurrentAcountPagoHelper::attachPaymentMethods($pago, $request->current_acount_payment_methods);
+
+        CurrentAcountPagoHelper::attachPaymentMethods($pago, $request->current_acount_payment_methods, $request->model_name);
         $pago->saldo = CurrentAcountHelper::getSaldo($request->model_name, $request->model_id, $pago) - $request->haber;
         $pago->detalle = 'Pago N°'.$pago->num_receipt;
         $pago->save();

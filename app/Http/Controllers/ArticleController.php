@@ -126,6 +126,7 @@ class ArticleController extends Controller
         
         $model->status                            = 'active';
         $model->provider_id                       = $request->provider_id;
+        $model->featured                          = $request->featured;
         $model->bar_code                          = $request->bar_code;
         $model->provider_code                     = $request->provider_code;
         $model->provider_id                       = $request->provider_id;
@@ -283,6 +284,8 @@ class ArticleController extends Controller
 
     function destroy($id, $send_notification = true) {
         $model = Article::find($id);
+        
+        Log::info(Auth()->user()->name.' va a eliminar ARTICLE '.$model->name.' desde controller, id: '.$model->id);
 
         $recipes_donde_esta_este_articulo = ArticleHelper::get_recipes_que_tienen_este_articulo_como_insumo($model);
 
