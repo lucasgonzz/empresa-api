@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\ArticlesPreImport;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -12,10 +11,12 @@ class ArticlesPreImportHelper {
 	
 	private $provider_id;
 	private $current_pre_import;
+	private $user;
 
-	function __construct($provider_id, $pre_import_id) {
+	function __construct($provider_id, $pre_import_id, $user) {
 		$this->provider_id = $provider_id;
 		$this->pre_import_id = $pre_import_id;
+		$this->user = $user;
 		$this->set_current_pre_import();
 	}
 
@@ -24,8 +25,8 @@ class ArticlesPreImportHelper {
 
         if (is_null($this->current_pre_import)) {
             $this->current_pre_import = ArticlesPreImport::create([
-                'user_id'           => UserHelper::userId(),
-                'employee_id'       => UserHelper::userId(false),
+                'user_id'           => $this->user->id,
+                'employee_id'       => $this->user->id,
                 'provider_id'    	=> $this->provider_id,
             ]);
             Log::info('No hay ArticlesPreImport, se creo');

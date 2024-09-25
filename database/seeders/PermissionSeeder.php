@@ -311,6 +311,14 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'ventas',
                 'en'            => 'sale.index.employees.only_your',
             ],
+
+
+
+            [
+                'singular'      => 'Ver Cajas',
+                'plural'        => 'cajas',
+                'en'            => 'caja.index',
+            ],
         ];
         foreach ($permissions as $permission) {
             PermissionEmpresa::create([

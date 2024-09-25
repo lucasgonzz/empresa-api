@@ -144,35 +144,6 @@ class SearchController extends Controller
 
         $models = $models->paginate(25);
 
-
-        // foreach ($request->props_to_filter as $prop_to_filter) {
-
-        //     if ($prop_to_filter['key'] == 'bar_code' || $prop_to_filter['key'] == 'provider_code') {
-
-        //         $models = $models->where($prop_to_filter['key'], $request->query_value);
-
-        //     } else {
-
-        //         $keywords = explode(' ', $request->query_value);
-
-        //         foreach ($keywords as $keyword) {
-        //             $query = $prop_to_filter['key'].' LIKE ?';
-        //             $models->whereRaw($query, ["%$keyword%"]);
-        //         }
-
-        //         // $models = $models->where($prop_to_filter['key'], 'like', '%'.$request->query_value.'%');
-        //     }
-        //     if (isset($request->depends_on_key)) {
-        //         $models = $models->where($request->depends_on_key, $request->depends_on_value);
-        //     }
-        //     if ($model_name_param == 'article' || $model_name_param == 'client' || $model_name_param == 'provider') {
-        //         $models = $models->where('status', 'active');
-        //     }
-
-        // }
-
-        // $models = $models->get();
-        
         return response()->json(['models' => $models], 200);
     } 
 }

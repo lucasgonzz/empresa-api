@@ -34,7 +34,7 @@ class ClientSeeder extends Seeder
                 'user_id'               => $user->id,
                 'price_type_id'         => 2,
                 'saldo'                 => 10000,
-                'pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar'         => 1,
+                'pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar'         => 0,
             ],
             [
                 'num'                   => 2,
@@ -48,6 +48,7 @@ class ClientSeeder extends Seeder
                 'seller_id'             => 1,
                 'user_id'               => $user->id,
                 'comercio_city_user_id' => User::where('company_name', 'Ferretodo')->first()->id,
+                'pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar'         => 1,
             ],
             [
 

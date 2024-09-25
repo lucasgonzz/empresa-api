@@ -143,7 +143,7 @@ class SalePdf extends fpdf {
 			}
 			$this->totalFinal();
 		}
-		PdfHelper::comerciocityInfo($this, $this->y);
+		// PdfHelper::comerciocityInfo($this, $this->y);
 	}
 
 	function print_numero_orden_de_compra() {

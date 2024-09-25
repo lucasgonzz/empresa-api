@@ -135,6 +135,8 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Mostrar maximo descuento posible para un articulo en VENDER',
                 'slug' => 'maximo_descuento_posible_por_articulo_en_vender',
             ],
+
+            // Esta se usa para pack descartables
             [
                 // 25
                 'name' => 'Articulos con Margenes de ganancia segun lista de precios',
@@ -169,6 +171,11 @@ class ExtencionSeeder extends Seeder
                 // 31
                 'name' => 'Movimientos de Depositos masivos',
                 'slug' => 'deposit_movements',
+            ],
+            [
+                // 32
+                'name' => 'No usar codigos de barra',
+                'slug' => 'no_usar_codigos_de_barra',
             ],
         ];
         foreach ($extencions as $extencion) {

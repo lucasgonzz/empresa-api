@@ -59,7 +59,7 @@ class ArticleImport implements ToCollection
         $this->import_history_chequeado = false;
 
         if (UserHelper::hasExtencion('articles_pre_import', $this->user)) {
-            $this->articles_pre_import_helper = new ArticlesPreImportHelper($this->provider_id, $this->pre_import_id);
+            $this->articles_pre_import_helper = new ArticlesPreImportHelper($this->provider_id, $this->pre_import_id, $this->user);
         }
 
         $this->trabajo_terminado = false;

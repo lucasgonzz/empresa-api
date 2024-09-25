@@ -495,7 +495,7 @@ class AfipWsController extends Controller
                 $this->sale->save_current_acount = 1;
                 $this->sale->save();
 
-                SaleHelper::attachCurrentAcountsAndCommissions($this->sale);
+                SaleHelper::create_current_acount($this->sale);
             }
 
         }

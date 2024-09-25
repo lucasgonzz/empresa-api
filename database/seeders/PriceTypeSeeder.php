@@ -20,7 +20,7 @@ class PriceTypeSeeder extends Seeder
 
         if ($for_user == 'pack_descartables') {
             $this->pack_descartables();
-        } else if ($for_user == 'colman') {
+        } else if ($for_user == 'colman' || $for_user == 'ferretodo') {
             $this->colman();
         }
 

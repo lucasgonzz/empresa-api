@@ -23,6 +23,9 @@ class UserHelper {
                 return session('owner');
             }
             return session('auth_user');
+        } else {
+
+            Log::info('No habia user en la sesion');
         }
 
         return Self::default_user();

@@ -46,6 +46,7 @@ class BudgetHelper {
 	            'client_id' 			=> $budget->client_id,
 	            'budget_id' 			=> $budget->id,
 	            'observations' 			=> $budget->observations,
+            	'price_type_id'         => Self::get_price_type_id($budget),
             	'employee_id'           => SaleHelper::getEmployeeId(),
 	            'save_current_acount' 	=> Self::get_guardar_cuenta_corriente($budget),
 	            'to_check'				=> UserHelper::hasExtencion('check_sales') ? 1 : 0,
@@ -60,6 +61,17 @@ class BudgetHelper {
 
         	$ct->sendAddModelNotification('Sale', $sale->id, false);
 		}
+	}
+
+	static function get_price_type_id($budget) {
+		$client = $budget->client;
+		
+		if (!is_null($client) 
+			&& !is_null($client->price_type_id)) {
+
+			return $client->price_type_id;
+		}
+		return null;
 	}
 
 	static function get_guardar_cuenta_corriente($budget) {

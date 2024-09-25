@@ -271,6 +271,7 @@ class UserSeeder extends Seeder
                 'comerciocity_interno',
                 'articulo_margen_de_ganancia_segun_lista_de_precios',
                 'cambiar_price_type_en_vender',
+                'no_usar_codigos_de_barra',
             ];
 
         } else if ($this->for_user == 'ros_mar') {
@@ -294,6 +295,29 @@ class UserSeeder extends Seeder
                 'indicar_vendedor_en_vender',
                 'comision_por_proveedores',
                 'ask_save_current_acount'
+            ];
+
+        } else if ($this->for_user == 'ferretodo') {
+
+            $models[0]['name'] = 'Ferretodo';
+
+            $models[0]['comision_funcion'] = null;
+
+            $models[0]['iva_included'] = 0;
+
+            $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
+
+            $models[0]['extencions'] = [
+
+                'budgets',
+                'bar_code_scanner',
+                'comerciocity_interno',
+                'ask_save_current_acount',
+                'article.costo_real',
+                'guardad_cuenta_corriente_despues_de_facturar',
+                'codigo_proveedor_en_vender',
+                'numero_orden_de_compra_para_las_ventas',
+                'maximo_descuento_posible_por_articulo_en_vender',
             ];
 
         }

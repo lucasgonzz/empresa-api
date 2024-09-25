@@ -20,12 +20,14 @@ class RecipeSeeder extends Seeder
         $article = Article::where('user_id', $user->id)
                             ->where('name', 'Prensa Espirales Universal')
                             ->first();
+
         $recipe = Recipe::create([
             'num'           => 1,
             'article_id'    => $article->id,
             'address_id'    => 1,
             'user_id'       => $user->id,
         ]);
+        
         $articles = [
             [
                 'name'                          => 'Kit 1',

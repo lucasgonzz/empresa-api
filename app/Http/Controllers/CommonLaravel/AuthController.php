@@ -18,6 +18,7 @@ class AuthController extends Controller
         $user_last_activity = false;
         if ($this->loginLucas($request)) {
             $user = UserHelper::getFullModel(false);
+            $this->set_sessions($user);
             Log::info('2 user name: '.$user->name);
             $login = true;
         } else if (Auth::attempt(['doc_number' => $request->doc_number, 

@@ -54,7 +54,14 @@ class DatabaseSeeder extends Seeder
             $this->call(OnlinePriceTypeSeeder::class);
             $this->call(UserSeeder::class);
 
+            $this->call(CategorySeeder::class);
+            $this->call(SubCategorySeeder::class);
 
+
+            // if ($for_user != 'pack_descartables') {
+
+                $this->call(ArticleSeeder::class);
+            // }
 
             if ($for_user == 'colman') {
 
@@ -78,22 +85,18 @@ class DatabaseSeeder extends Seeder
             } else if ($for_user == 'pack_descartables') {
 
                 $this->call(PriceTypeSeeder::class);
+
+            } else if ($for_user == 'ferretodo') {
+
+                $this->call(PriceTypeSeeder::class);
             }
 
-
-            $this->call(CategorySeeder::class);
-            $this->call(SubCategorySeeder::class);
             $this->call(SellerSeeder::class);
             $this->call(ProviderSeeder::class);
             $this->call(ProviderPriceListSeeder::class);
             $this->call(ColorSeeder::class);
             $this->call(IvaSeeder::class);
             $this->call(DepositSeeder::class);
-
-            // if ($for_user != 'pack_descartables') {
-
-                $this->call(ArticleSeeder::class);
-            // }
             
             $this->call(IvaConditionSeeder::class);
             $this->call(ClientSeeder::class);
@@ -155,7 +158,7 @@ class DatabaseSeeder extends Seeder
             $this->call(PendingSeeder::class);
 
 
-            // $this->call(CajaSeeder::class);
+            $this->call(CajaSeeder::class);
             $this->call(ConceptoMovimientoCajaSeeder::class);
 
 
