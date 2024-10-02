@@ -215,7 +215,7 @@ class AfipWsController extends Controller
 
             $this->checkErrors($result);
 
-            $this->update_afip_ticket($result, $importes['total'], $moneda_id);
+            $this->update_afip_ticket($result, $importes, $moneda_id);
         } else {
             Log::info('HUBO UN ERROR:');
             Log::info((array)$result);
@@ -302,17 +302,18 @@ class AfipWsController extends Controller
     }
 
 
-    function update_afip_ticket($result, $importe_total, $moneda_id) {
+    function update_afip_ticket($result, $importes, $moneda_id) {
         if (isset($result->FECAESolicitarResult->FeCabResp) && $result->FECAESolicitarResult->FeCabResp->Resultado == 'A') {
             $this->sale->afip_ticket->update([
                 'cbte_letra'        => $this->getTipoLetra($result->FECAESolicitarResult->FeCabResp->CbteTipo),
-                'importe_total'     => $importe_total,
+                'importe_total'     => $importes['total'],
                 'moneda_id'         => $moneda_id,
                 'resultado'         => $result->FECAESolicitarResult->FeCabResp->Resultado,
                 'concepto'          => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Concepto,
                 'cuit_cliente'      => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->DocNro,
                 'cae'               => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAE,
                 'cae_expired_at'    => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAEFchVto,
+                'importe_iva'       => $importes['iva'],
             ]);
         } 
     }
@@ -376,8 +377,17 @@ class AfipWsController extends Controller
     }
 
     function getTipoCbte() {
+
+        if (!is_null($this->sale->afip_tipo_comprobante_id)) {
+            Log::info('hay afip_tipo_comprobante_id: ');
+            Log::info($this->sale->afip_tipo_comprobante->name.', codigo: '.$this->sale->afip_tipo_comprobante->codigo);
+            return $this->sale->afip_tipo_comprobante->codigo;
+        }
+
         if (SaleHelper::getTotalSale($this->sale) >= $this->monto_minimo_para_factura_de_credito) {
+
             Log::info('Entro con mas al monto_minimo_para_factura_de_credito: '.SaleHelper::getTotalSale($this->sale));
+
             if ($this->sale->afip_information->iva_condition->name == 'Responsable inscripto') {
                 if (!is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) && $this->sale->client->iva_condition->name == 'Responsable inscripto') {
                     return 201; #A
@@ -390,7 +400,14 @@ class AfipWsController extends Controller
         } else {
             if ($this->sale->afip_information->iva_condition->name == 'Responsable inscripto') {
                 if (!is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) && $this->sale->client->iva_condition->name == 'Responsable inscripto') {
-                    return 1; #A
+
+                    if (env('FACTURA_M', false)) {
+
+                        return 51; #A
+                    } else {
+
+                        return 1; #A
+                    }
                 } else {
                     return 6; #B
                 }
@@ -410,6 +427,9 @@ class AfipWsController extends Controller
         }
         if ($cbte_tipo == 11 || $cbte_tipo == 211) {
             return 'C';
+        }
+        if ($cbte_tipo == 51) {
+            return 'M';
         }
     }
 

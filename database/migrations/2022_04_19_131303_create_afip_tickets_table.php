@@ -32,6 +32,7 @@ class CreateAfipTicketsTable extends Migration
             $table->integer('sale_id')->unsigned()->nullable();
             $table->integer('sale_nota_credito_id')->unsigned()->nullable();
             $table->integer('nota_credito_id')->unsigned()->nullable();
+            $table->decimal('importe_iva', 30,2)->nullable();
             $table->timestamps();
         });
     }

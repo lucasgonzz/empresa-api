@@ -210,6 +210,7 @@ class UserSeeder extends Seeder
                 'sale.observations',
                 'production.production_movement',
                 'check_article_stock_en_vender',
+                'costo_en_dolares',
             ];
 
         } else if ($this->for_user == 'feito') {
@@ -224,6 +225,9 @@ class UserSeeder extends Seeder
                 'bar_code_scanner',
                 'comerciocity_interno',
                 'ask_save_current_acount',
+                'article_variants',
+                'deposit_movements',
+                'consultora_de_precios',
             ];
 
         } else if ($this->for_user == 'hipermax') {
@@ -272,6 +276,7 @@ class UserSeeder extends Seeder
                 'articulo_margen_de_ganancia_segun_lista_de_precios',
                 'cambiar_price_type_en_vender',
                 'no_usar_codigos_de_barra',
+                'deposit_movements',
             ];
 
         } else if ($this->for_user == 'ros_mar') {
@@ -339,7 +344,7 @@ class UserSeeder extends Seeder
                 'address_id'                    => isset($model['address_id']) ? $model['address_id'] : null,  
                 'owner_id'                      => isset($model['owner_id']) ? $model['owner_id'] : null,  
                 'admin_access'                  => isset($model['admin_access']) ? $model['admin_access'] : null, 
-                'redondear_centenas_en_vender'  => isset($model['redondear_centenas_en_vender']) ? $model['redondear_centenas_en_vender'] : null, 
+                'redondear_centenas_en_vender'  => isset($model['redondear_centenas_en_vender']) ? $model['redondear_centenas_en_vender'] : 0, 
                 'payment_expired_at'            => isset($model['payment_expired_at']) ? $model['payment_expired_at'] : null,  
                 'online'                        => isset($model['online']) ? $model['online'] : null,
                 'home_position'                 => isset($model['home_position']) ? $model['home_position'] : null,

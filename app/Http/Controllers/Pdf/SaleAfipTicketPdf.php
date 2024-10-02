@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\PdfArticleHelper;
 use App\Http\Controllers\Helpers\PdfPrintArticles;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Pdf\AfipQrPdf;
 use App\Models\Article;
 use App\Models\Client;
 use App\Models\Impression;
@@ -214,7 +215,10 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->setX(5);
 		$this->y += 5;
 		$this->SetFont('Arial', 'B', 9);
-		if ($this->sale->afip_ticket->cbte_tipo == 1) {
+		if ($this->sale->afip_ticket->cbte_tipo == 1
+			|| $this->sale->afip_ticket->cbte_tipo == 51
+			|| $this->sale->afip_ticket->cbte_tipo == 201) {
+
 			$this->Cell(60, 5, 'Importe Neto Gravado: $'.Numbers::price($importes['gravado']), 1, 0, 'L');
 
 			foreach ($importes['ivas'] as $iva => $importe) {
@@ -283,42 +287,11 @@ class SaleAfipTicketPdf extends fpdf {
 	}
 
 	function printQR() {
-		$start_y = $this->y;
-		$this->y += 7;
-		$data = [
-			'ver' 			=> 1,
-			'fecha' 		=> date_format($this->sale->afip_ticket->created_at, 'Y-m-d'),
-			'cuit' 			=> $this->sale->afip_ticket->cuit_negocio,
-			'ptoVta' 		=> $this->sale->afip_ticket->punto_venta,
-			'tipoCmp' 		=> $this->sale->afip_ticket->cbte_tipo,
-			'nroCmp' 		=> $this->sale->afip_ticket->cbte_numero,
-			'importe' 		=> $this->sale->afip_ticket->importe_total,
-			'moneda' 		=> $this->sale->afip_ticket->moneda_id,
-			'ctz' 			=> 1,
-			'tipoDocRec' 	=> AfipHelper::getDocType('Cuit'),
-			'nroDocRec' 	=> $this->sale->afip_ticket->cuit_cliente,
-			'codAut' 		=> $this->sale->afip_ticket->cae,
-		];
-		$afip_link = 'https://www.afip.gob.ar/fe/qr/?'.base64_encode(json_encode($data));
-		$url = "http://chart.googleapis.com/chart?chs=200x200&cht=qr&chl=$afip_link&.png";
-		if (GeneralHelper::file_exists_2($url)) {
-        	$this->Image($url, 0, $this->y, 50);
-		}
 
-        // $start_y =+ 10;
-        // dd($start_y);
-        // $this->y = $start_y;
-        $this->Image(public_path().'/afip/logo.png', 45, $start_y+15, 40);
-        $this->x = 45;
+		$pdf = new AfipQrPdf($this, $this->sale, false);
+		$pdf->printQr();
 
-        $this->y += 20;
-        $this->SetFont('Arial', 'BI', 10);
-		$this->Cell(50, 5, 'Comprobante Autorizado', 0, 0, 'L');
-        $this->SetFont('Arial', '', 7);
-        $this->x = 45;
-		$this->y += 5;
-		$this->Cell(150, 5, 'Esta Administración Federal no se responsabiliza por los datos ingresados en el detalle de la operación', 0, 0, 'L');
-		$this->y = $start_y;
+		$this->y -= 40;
 	}
 
 	function reset() {

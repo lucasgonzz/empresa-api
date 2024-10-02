@@ -98,6 +98,8 @@ class PerformanceHelper
         
         if (!$this->from_current_month && is_null($this->from_day)) {
 
+            Log::info('Se llamo set_article_performances');
+
             $this->set_article_performances();
         }
 
@@ -172,10 +174,12 @@ class PerformanceHelper
 
         foreach ($provider_orders as $provider_order) {
 
-            foreach ($provider_order->provider_order_afip_tickets as $afip_ticket) {
+            $this->total_iva_comprado += (float)$provider_order->total_iva;
 
-                $this->total_iva_comprado += $afip_ticket->total;
-            }
+            // foreach ($provider_order->provider_order_afip_tickets as $afip_ticket) {
+
+            //     $this->total_iva_comprado += $afip_ticket->total;
+            // }
         }
     }
 
@@ -227,10 +231,16 @@ class PerformanceHelper
 
         $deuda_clientes = 0;
 
+        Log::info('set_deuda_clientes');
+
         foreach ($clients as $client) {
+
+            Log::info('sumando '.$client->saldo.' de '.$client->name);
             
             $deuda_clientes += $client->saldo;    
         }
+
+        Log::info('deuda_clientes quedo en: '.$deuda_clientes);
 
         $this->company_performance->deuda_clientes = $deuda_clientes;
         $this->company_performance->save();
@@ -365,7 +375,8 @@ class PerformanceHelper
                 && !is_null($sale->afip_ticket)
                 && $sale->afip_ticket->resultado == 'A') {
 
-                $this->total_facturado += $sale->afip_ticket->importe_total;
+                $this->total_facturado += $sale->afip_ticket->importe_iva;
+                // $this->total_facturado += $sale->afip_ticket->importe_total;
             }
 
 

@@ -90,6 +90,7 @@ class SaleController extends Controller
             'cuota_descuento'                   => $request->cuota_descuento,
             'cuota_recargo'                     => $request->cuota_recargo,
             'caja_id'                           => $request->caja_id,
+            'afip_tipo_comprobante_id'          => $request->afip_tipo_comprobante_id,
             'user_id'                           => $this->userId(),
         ]);
 

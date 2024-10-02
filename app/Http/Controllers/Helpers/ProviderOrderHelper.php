@@ -347,14 +347,14 @@ class ProviderOrderHelper {
 
 			$ct_stock_movement = new StockMovementController();
 
-			$amount = -$article->pivot->received;
+			$amount = -$article->pivot->amount;
 
 	        $request = new \Illuminate\Http\Request();
 
 	        $request->model_id = $article->id;
 
-			if (count($article->addresses) >= 1 && $article->pivot->address_id) {
-	            $request->to_address_id = $article->pivot->address_id;
+			if (count($article->addresses) >= 1 && $provider_order->address_id) {
+	            $request->to_address_id = $provider_order->address_id;
 			} 
 
 			$request->amount = $amount;

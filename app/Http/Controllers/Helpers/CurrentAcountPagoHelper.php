@@ -141,7 +141,9 @@ class CurrentAcountPagoHelper {
                                                         'user_id'   => UserHelper::userId(),
                                                     ]);
 
-            if (isset($payment_method['caja_id']) && !is_null($model_name)) {
+            if (isset($payment_method['caja_id'])
+                && $payment_method['caja_id'] != 0
+                && !is_null($model_name)) {
 
                 CurrentAcountCajaHelper::guardar_pago($amount, $payment_method['caja_id'], $model_name, $pago);
             }

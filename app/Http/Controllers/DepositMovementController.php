@@ -27,6 +27,16 @@ class DepositMovementController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
+    function en_curso() {
+        $models = DepositMovement::where('deposit_movement_status_id', 1)
+                                    ->where('employee_id', $this->userId(false))
+                                    ->orderBy('created_at', 'ASC')
+                                    ->withAll()
+                                    ->get();
+                                    
+        return response()->json(['models' => $models], 200);
+    }
+
     public function store(Request $request) {
         $model = DepositMovement::create([
             'num'                   		=> $this->num('deposit_movements'),

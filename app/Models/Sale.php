@@ -15,6 +15,10 @@ class Sale extends Model
         return $this->belongsToMany(CurrentAcountPaymentMethod::class)->withPivot('amount', 'discount_percentage', 'discount_amount', 'caja_id');
     }
 
+    public function afip_tipo_comprobante() {
+        return $this->belongsTo(AfipTipoComprobante::class);
+    }
+
     public function impressions() {
         return $this->hasMany('App\Models\Impression');
     }
@@ -117,6 +121,10 @@ class Sale extends Model
 
     public function seller_commissions() {
         return $this->hasMany('App\Models\SellerCommission');
+    }
+
+    public function seller() {
+        return $this->belongsTo(Seller::class);
     }
 
 }

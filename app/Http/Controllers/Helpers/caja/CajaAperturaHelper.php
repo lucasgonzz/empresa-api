@@ -20,11 +20,12 @@ class CajaAperturaHelper {
 
 	function abrir_caja() {
 
+		Log::info('se abrio caja');
+
 		$this->crear_apertura();
 
 		$this->marcar_abierta();
 
-		Log::info('se abrio caja');
 	}
 
 	function marcar_abierta() {
@@ -37,6 +38,8 @@ class CajaAperturaHelper {
 		$this->caja->current_apertura_caja_id = $this->apertura_caja->id;
 
 		$this->caja->save();
+
+		Log::info('se puso current_apertura_caja_id: '.$this->apertura_caja->id);
 	}
 
 	function crear_apertura() {

@@ -177,6 +177,21 @@ class ExtencionSeeder extends Seeder
                 'name' => 'No usar codigos de barra',
                 'slug' => 'no_usar_codigos_de_barra',
             ],
+            [
+                // 33
+                'name' => 'Costo en Dolares',
+                'slug' => 'costo_en_dolares',
+            ],
+            [
+                // 34
+                'name' => 'Variantes',
+                'slug' => 'article_variants',
+            ],
+            [
+                // 35
+                'name' => 'consultora_de_precios',
+                'slug' => 'consultora_de_precios',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

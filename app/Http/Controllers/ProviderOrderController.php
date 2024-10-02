@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ProviderOrderHelper;
+use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Models\ProviderOrder;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -55,12 +56,18 @@ class ProviderOrderController extends Controller
             'provider_id'                               => $request->provider_id,
             'provider_order_status_id'                  => $request->provider_order_status_id,
             'days_to_advise'                            => $request->days_to_advise,
+            'update_stock'                              => $request->update_stock,
+            'update_prices'                             => $request->update_prices,
+            'generate_current_acount'                   => $request->generate_current_acount,
+            'address_id'                                => $request->address_id,
             'user_id'                                   => $this->userId(),
         ]);
-        ProviderOrderHelper::attachArticles($request->articles, $model);
+
         $this->updateRelationsCreated('provider_order', $model->id, $request->childrens);
-        $this->sendAddModelNotification('provider_order', $model->id);
-        $this->sendAddModelNotification('provider', $model->provider_id, false);
+        
+        $helper = new NewProviderOrderHelper($model, $request->articles);
+        $helper->procesar_pedido();
+
         return response()->json(['model' => $this->fullModel('ProviderOrder', $model->id)], 201);
     }  
 
@@ -70,15 +77,22 @@ class ProviderOrderController extends Controller
 
     public function update(Request $request, $id) {
         $model = ProviderOrder::find($id);
+
+        $ya_se_actualizo_stock = $model->update_stock;
+
         $model->total_with_iva                              = $request->total_with_iva;
         $model->total_from_provider_order_afip_tickets      = $request->total_from_provider_order_afip_tickets;
         $model->provider_id                                 = $request->provider_id;
         $model->provider_order_status_id                    = $request->provider_order_status_id;
         $model->days_to_advise                              = $request->days_to_advise;
+        $model->update_stock                                = $request->update_stock;
+        $model->update_prices                               = $request->update_prices;
+        $model->generate_current_acount                     = $request->generate_current_acount;
         $model->save();
-        ProviderOrderHelper::attachArticles($request->articles, $model);
-        $this->sendAddModelNotification('provider_order', $model->id);
-        $this->sendAddModelNotification('provider', $model->provider_id, false);
+
+        $helper = new NewProviderOrderHelper($model, $request->articles, $ya_se_actualizo_stock);
+        $helper->procesar_pedido();
+        
         return response()->json(['model' => $this->fullModel('ProviderOrder', $model->id)], 200);
     }
 

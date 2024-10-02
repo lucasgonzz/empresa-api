@@ -54,6 +54,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
     Route::get('update-feature', 'UpdateFeatureController@index');
 
+    // Afip Tipo Comprobantes
+    Route::get('afip-tipo-comprobante', 'AfipTipoComprobanteController@index');
+
+    // Consultora de precios
+    Route::get('consultora-de-precio/buscador/{codigo}', 'ConsultoraDePrecioController@buscador');
+
+
     // Cajas
     Route::resource('caja', 'CajaController');
     Route::put('abrir-caja/{caja_id}', 'CajaController@abrir_caja');
@@ -127,6 +134,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Movimientos de depositos
     Route::resource('deposit-movement', 'DepositMovementController');
     Route::get('deposit-movement/from-date/{from_date?}/{until_date?}', 'DepositMovementController@index');
+
+    Route::get('deposit-movement-en-curso', 'DepositMovementController@en_curso');
 
     Route::get('deposit-movement-status', 'DepositMovementStatusController@index');
 

@@ -30,6 +30,8 @@ class CajaController extends Controller
         ]);
 
         GeneralHelper::attachModels($model, 'current_acount_payment_methods', $request->current_acount_payment_methods);
+
+        GeneralHelper::attachModels($model, 'users', $request->users);
         
         $this->sendAddModelNotification('Caja', $model->id);
         return response()->json(['model' => $this->fullModel('Caja', $model->id)], 201);
@@ -44,7 +46,11 @@ class CajaController extends Controller
         $model->name                = $request->name;
         $model->notas               = $request->notas;
         $model->save();
+
         GeneralHelper::attachModels($model, 'current_acount_payment_methods', $request->current_acount_payment_methods);
+
+        GeneralHelper::attachModels($model, 'users', $request->users);
+        
         $this->sendAddModelNotification('Caja', $model->id);
         return response()->json(['model' => $this->fullModel('Caja', $model->id)], 200);
     }

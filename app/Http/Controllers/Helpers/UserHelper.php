@@ -18,7 +18,6 @@ class UserHelper {
     static function user($from_owner = true) {
         if (session()->has('auth_user')) {
             
-            Log::info('Retornando desde la sesion:');
             if ($from_owner) {
                 return session('owner');
             }

@@ -34,8 +34,20 @@ class RosMarComision {
 		foreach ($this->sale->articles as $article) {
 
 			$total_article = $article->pivot->price * $article->pivot->amount;
+
+			if (!is_null($this->sale->seller)
+				&& !is_null($this->sale->seller->percentage_commission)) {
+
+				Log::info('total_article de '.$total_article);
+
+				Log::info('usando el percentage_commission de '.$this->sale->seller->percentage_commission);
+
 			
-			if ($this->en_blanco) {
+				$comision = $total_article * (float)$this->sale->seller->percentage_commission / 100;
+
+				Log::info('La comision es de '.$comision);
+
+			} else if ($this->en_blanco) {
 
 				$porcentaje = $article->provider->porcentaje_comision_blanco;
 

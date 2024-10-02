@@ -10,11 +10,11 @@ class DepositMovement extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        $q->with('articles');
+        $q->with('articles.article_variants');
     }
 
     function articles() {
-        return $this->belongsToMany(Article::class)->withPivot('amount');
+        return $this->belongsToMany(Article::class)->withPivot('amount', 'article_variant_id');
     }
 
     function deposit_movement_status() {

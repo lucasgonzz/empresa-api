@@ -63,6 +63,8 @@ class CreateSalesTable extends Migration
 
             $table->integer('caja_id')->nullable();
 
+            $table->integer('afip_tipo_comprobante_id')->nullable();
+
             $table->foreign('user_id')
                     ->references('id')->on('users');
             $table->foreign('client_id')

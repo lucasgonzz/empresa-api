@@ -17,7 +17,7 @@ class PdfHelper {
 		Self::logo($instance);
 		Self::title($instance, $data['title']);
 		Self::numeroFecha($instance, $data);
-		Self::commerceInfo($instance);
+		Self::commerceInfo($instance, $data);
 		
 		Self::commerceInfoLine($instance);
 
@@ -163,12 +163,23 @@ class PdfHelper {
 		$instance->Line($start_x, $finish_y, $start_x, $start_y);
 	}
 
-	static function commerceInfo($instance) {
+	static function commerceInfo($instance, $data) {
 		$user = UserHelper::getFullModel();
 		$instance->y += 5;
 		$start_y = $instance->y;
+
 		// Direccion
-		if (count($user->addresses) >= 1) {
+		if (isset($data['address'])) {
+
+			$instance->x = 105;
+			$instance->SetFont('Arial', 'B', 10);
+			$instance->Cell(12, 5, 'Direc: ', $instance->b, 0, 'L');
+
+			$address_text = $data['address'];
+			$instance->SetFont('Arial', '', 10);
+			$instance->Cell(88, 5, $address_text, $instance->b, 0, 'L');
+
+		} else if (count($user->addresses) >= 1) {
 			$address = $user->addresses[0];
 			$instance->x = 105;
 			$instance->SetFont('Arial', 'B', 10);

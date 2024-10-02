@@ -79,6 +79,12 @@ class DepositMovementHelper {
 		$request->model_id = $article->id;
 		$request->amount = $article->pivot->amount;
 
+		if (!is_null($article->pivot->article_variant_id)
+			&& $article->pivot->article_variant_id != 0) {
+		
+			$request->article_variant_id = $article->pivot->article_variant_id;
+		}
+
 		$request->is_movimiento_de_depositos = true;
 		
 		$request->from_address_id = $this->deposit_movement->from_address_id;

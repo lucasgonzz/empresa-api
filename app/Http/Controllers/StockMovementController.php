@@ -62,8 +62,7 @@ class StockMovementController extends Controller
             'created_at'        => $this->get_created_at($segundos_para_agregar),
         ]);
 
-        Log::info('stock_movement para el article_id: '.$this->article_id);
-
+        Log::info('StockMovementController para el article_id: '.$this->article->name);
 
         $this->setConcepto();
 
@@ -425,6 +424,10 @@ class StockMovementController extends Controller
     */
     function checkToAddress() {
 
+        Log::info('checkToAddress para '.$this->article->name);
+        Log::info('stock actual: '.$this->article->stock);
+        Log::info('tiene 0: '.$this->article->stock == 0);
+
         if (
                 !is_null($this->stock_movement->to_address_id)
                 && is_null($this->stock_movement->article_variant_id)
@@ -436,6 +439,8 @@ class StockMovementController extends Controller
                     )
                 )
             ) {
+
+            Log::info('entro en las direcciones');
             
             $this->article->load('addresses');
             

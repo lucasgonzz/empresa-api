@@ -172,6 +172,16 @@ class MovimientoCajaHelper {
 			
     	} else {
 
+    		$nuevo_saldo = $movimiento_caja->apertura_caja->saldo_apertura;
+
+    		if (!is_null($movimiento_caja->ingreso)) {
+    			$nuevo_saldo += $movimiento_caja->ingreso;
+    		} else if (!is_null($movimiento_caja->egreso)) {
+    			$nuevo_saldo -= $movimiento_caja->egreso;
+    		}
+
+			$movimiento_caja->saldo = $nuevo_saldo;
+			$movimiento_caja->save();
 			Log::info('No habia movimientos anteriores');
     	}
 

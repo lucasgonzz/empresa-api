@@ -8,6 +8,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
 
 class AuthController extends Controller
 {
@@ -25,7 +26,11 @@ class AuthController extends Controller
                            'password' => $request->password], $request->remember)) {
             
             if ($this->checkUserLastActivity()) {
+
                 $user = UserHelper::getFullModel(false);
+                
+                $this->set_login_at($user->id);
+
                 $login = true;
                 $this->set_sessions($user);
             } else {
@@ -40,12 +45,30 @@ class AuthController extends Controller
         ], 200);
     }
 
+    function set_login_at($user_id) {
+        $user = User::find($user_id);
+        $user->login_at = Carbon::now();
+        $user->save();
+        Log::info('se puso login a '.$user->name.' a las '.$user->login_at->format('d/m/y H'));
+    }
+
+    function set_logout_at($user_id) {
+        $user = User::find($user_id);
+        $user->logout_at = Carbon::now();
+        $user->save();
+    }
+
     function set_sessions($auth_user) {
         session(['auth_user' => $auth_user, 'owner' => UserHelper::getFullModel()]);
     }
 
     public function logout(Request $request) {
         $this->removeUserLastActivity();
+
+        $user = UserHelper::getFullModel(false);
+        
+        $this->set_logout_at($user->id);
+
         Auth::logout();
         return response(null, 200);
     }

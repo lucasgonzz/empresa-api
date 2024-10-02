@@ -228,7 +228,8 @@ class AfipHelper extends Controller {
 
     function getImporteGravado() {
         // if (is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0) {
-        if (is_null($this->article->iva) || (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0)) {
+        // if (is_null($this->article->iva) || (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0)) {
+        if (is_null($this->article->iva) || (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento')) {
             return $this->getPriceWithoutIva() * $this->article->pivot->amount;
         }
         return 0;

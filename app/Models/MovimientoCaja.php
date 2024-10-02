@@ -16,4 +16,9 @@ class MovimientoCaja extends Model
     function caja() {
         return $this->belongsTo(Caja::class);
     }
+
+    function apertura_caja() {
+        return $this->belongsTo(AperturaCaja::class);
+    }
+
 }

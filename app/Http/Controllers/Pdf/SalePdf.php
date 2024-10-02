@@ -118,6 +118,7 @@ class SalePdf extends fpdf {
 			'model_info'		=> $this->sale->client,
 			'model_props' 		=> $this->getModelProps(),
 			'fields' 			=> $this->getFields(),
+			'address'			=> $this->get_address(),
 		];
 		if (!is_null($this->sale->client) && $this->sale->save_current_acount && !is_null($this->sale->current_acount) && $this->with_prices) {
 			$data = array_merge($data, [
@@ -130,6 +131,20 @@ class SalePdf extends fpdf {
 		return;
 	}
 
+	function get_address() {
+		
+		$address = $this->sale->address;
+		$address_text = null;
+
+		if (!is_null($address)) {
+
+			$address_text = "{$address->street} {$address->street_number}, {$address->city}, {$address->province}";
+
+		}
+
+		return $address_text;
+	}
+ 
 	function Footer() {
 		$this->print_numero_orden_de_compra();
 		if ($this->with_prices) {

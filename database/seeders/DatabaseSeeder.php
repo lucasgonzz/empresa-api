@@ -58,10 +58,12 @@ class DatabaseSeeder extends Seeder
             $this->call(SubCategorySeeder::class);
 
 
+            
             // if ($for_user != 'pack_descartables') {
 
                 $this->call(ArticleSeeder::class);
             // }
+
 
             if ($for_user == 'colman') {
 
@@ -109,7 +111,7 @@ class DatabaseSeeder extends Seeder
 
             // $this->call(MeLiOrderSeeder::class);
             
-            $this->call(ProviderOrderSeeder::class);
+            // $this->call(ProviderOrderSeeder::class);
 
             $this->call(ProviderPagosSeeder::class);
 
@@ -160,6 +162,9 @@ class DatabaseSeeder extends Seeder
 
             $this->call(CajaSeeder::class);
             $this->call(ConceptoMovimientoCajaSeeder::class);
+
+
+            $this->call(AfipTipoComprobanteSeeder::class);
 
 
         }

@@ -7,6 +7,7 @@ use App\Http\Controllers\AfipWsController;
 use App\Http\Controllers\ArticlePerformanceController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
+use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartArticleAmountInsificienteHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
@@ -51,6 +52,40 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null) {
         $this->{$method}($param);
+    }
+
+    function set_iva_debito($company_name) {
+
+        $user = User::where('company_name', $company_name)
+                        ->first();
+
+        $sales = Sale::where('user_id', $user->id)
+                    ->whereHas('afip_ticket')
+                    ->orderBy('created_at', 'ASC')
+                    ->get();
+
+        foreach ($sales as $sale) {
+            
+            $afip_ticket = $sale->afip_ticket;
+            
+            if (!is_null($afip_ticket)) {
+
+                if (is_null($afip_ticket->importe_iva)) {
+
+                    $afip_helper = new AfipHelper($sale);
+                    $importes = $afip_helper->getImportes();
+
+                    $afip_ticket->importe_iva = $importes['iva'];
+                    $afip_ticket->save();
+
+                    echo 'Se actualizo venta N° '.$sale->num.'. Afip ticket con total de '.$afip_ticket->importe_total.'. Se le puso total iva de '.$importes['iva'].' <br>';
+                    echo ' <br>';
+                }
+            }
+        }
+        
+        echo 'Termino';
+
     }
 
     function recetas_con_insumos_repetidos() {

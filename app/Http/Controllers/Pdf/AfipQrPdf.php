@@ -11,6 +11,23 @@ class AfipQrPdf {
 		$this->instance = $instance;
 		$this->sale = $sale;
 		$this->from_ticket = $from_ticket;
+		$this->img_width = 50;
+
+    	if ($this->from_ticket) {
+
+        	$this->afip_logo_width = 20;
+        	$this->afip_logo_height = 5;
+			$this->img_start_x = $this->img_centrada($this->instance, $this->img_width);
+			$this->afip_img_start_x = $this->img_centrada($this->instance, $this->img_width);
+
+    	} else {
+
+        	$this->afip_logo_width = 40;
+        	$this->afip_logo_height = 10;
+			$this->img_start_x = 5;
+			$this->afip_img_start_x = 60;
+    	}
+
 	}
 
 
@@ -21,15 +38,12 @@ class AfipQrPdf {
 		$this->logo_afip();
 
 		$this->instance->y += 5;
-        if (!$this->from_ticket) {
-			$this->instance->Cell($width, 5, 'Esta Administración Federal no se responsabiliza por los datos ingresados en el detalle de la operación', 0, 0, 'L');
-			$this->instance->y = $start_y;
-        } 
 	}
 
 	function qr() {
 
 		$start_y = $this->instance->y;
+
 		$this->instance->y += 7;
 
 		$data = [
@@ -53,9 +67,7 @@ class AfipQrPdf {
 
 		if (GeneralHelper::file_exists_2($url)) {
 
-			$img_width = 50;
-			$start_x = $this->img_centrada($this->instance, $img_width);
-        	$this->instance->Image($url, $start_x, $this->instance->y, $img_width);
+        	$this->instance->Image($url, $this->img_start_x, $this->instance->y, $this->img_width);
 
 		}
         
@@ -66,14 +78,12 @@ class AfipQrPdf {
 
         	$x_afip_logo = 10;
         	$y_afip_logo = $start_y + 50;
-        	$this->afip_logo_width = 20;
         } else {
         	$width = 150;
 	        $x_position = 45;
 	        $this->instance->y += 20;
         	$x_afip_logo = 45;
         	$y_afip_logo = $start_y + 15;
-        	$this->afip_logo_width = 40;
         }
 
         $this->instance->x = $x_position;
@@ -81,22 +91,22 @@ class AfipQrPdf {
 
 	function logo_afip() {
 
-		$start_x = $this->img_centrada($this->instance, $this->afip_logo_width);
+    	$img_url = public_path().'/afip/logo.png';
         
-        $this->instance->Image(public_path().'/afip/logo.png', $start_x, $this->instance->y, $this->afip_logo_width);
+        $this->instance->Image($img_url, $this->afip_img_start_x, $this->instance->y, $this->afip_logo_width);
 
-        $this->instance->y += 5;
+        $this->instance->y += $this->afip_logo_height;
 
-        $this->instance->x = 2;
+        $this->instance->x = $this->afip_img_start_x;
 
         $this->instance->SetFont('Arial', 'BI', 10);
-		$this->instance->Cell($this->instance->ancho, 5, 'Comprobante Autorizado', 0, 0, 'C');
+		$this->instance->Cell(100, 5, 'Comprobante Autorizado', 0, 0, 'L');
         $this->instance->SetFont('Arial', '', 7);
 
 	}
 
-	function img_centrada($instance, $img_width) {
-		return ($this->instance->ancho - $img_width) / 2;
+	function img_centrada($instance) {
+		return ($this->instance->ancho - $this->img_width) / 2;
 	}
 
 }

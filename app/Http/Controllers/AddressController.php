@@ -21,6 +21,9 @@ class AddressController extends Controller
         $model = Address::create([
             'num'                   => $this->num('addresses'),
             'street'                => $request->street,
+            'street_number'         => $request->street_number,
+            'city'                  => $request->city,
+            'province'              => $request->province,
             'default_address'       => $request->default_address,
             'user_id'               => $this->userId(),
         ]);
@@ -35,6 +38,9 @@ class AddressController extends Controller
     public function update(Request $request, $id) {
         $model = Address::find($id);
         $model->street                = $request->street;
+        $model->street_number         = $request->street_number;
+        $model->city                  = $request->city;
+        $model->province              = $request->province;
         $model->default_address       = $request->default_address;
         $model->save();
         $this->sendAddModelNotification('Address', $model->id);

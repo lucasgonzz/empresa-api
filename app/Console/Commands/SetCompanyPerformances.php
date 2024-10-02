@@ -99,9 +99,9 @@ class SetCompanyPerformances extends Command
         $ano = Carbon::now()->subMonths(1)->year;
 
         // Aca borro los que se estuvieron haciendo durante el mes, asi solo queda el que hago en el siguiente paso
-        $ct->borrar_los_realizados_durante_el_mes($mes, $ano, $user_id);
+        // $ct->borrar_los_realizados_durante_el_mes($mes, $ano, $user_id);
 
         $ct->create($mes, $ano, $user_id);
-        $this->info('se mando NO historico');
+        $this->info('se mando NO historico para user_id '.$user_id);
     }
 }

@@ -22,6 +22,7 @@ class CreateArticleProviderOrderTable extends Migration
             $table->integer('iva_id')->nullable();
             $table->decimal('cost', 12,2)->nullable();
             $table->decimal('received_cost', 12,2)->nullable();
+            $table->decimal('discount', 12,2)->nullable();
             $table->boolean('update_cost')->default(1)->nullable();
             $table->boolean('cost_in_dollars')->default(0)->nullable();
             $table->boolean('add_to_articles')->default(1)->nullable();
