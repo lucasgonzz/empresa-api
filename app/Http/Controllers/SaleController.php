@@ -94,6 +94,13 @@ class SaleController extends Controller
             'user_id'                           => $this->userId(),
         ]);
 
+        if (is_null($model->price_type_id)) {
+            if (!is_null($model->client) && !is_null($model->client->price_type_id)) {
+                $model->price_type_id = $model->client->price_type_id;
+                $model->save();
+            }
+        }
+
         SaleHelper::check_guardad_cuenta_corriente_despues_de_facturar($model, $this);
 
         SaleHelper::attachProperies($model, $request);
@@ -223,6 +230,7 @@ class SaleController extends Controller
         $sale = Sale::find($request->sale_id);
         if (!is_null($sale)) {
             $sale->afip_information_id = $request->afip_information_id;
+            $sale->afip_tipo_comprobante_id = $request->afip_tipo_comprobante_id;
             $sale->save();
             $ct = new AfipWsController($sale);
             $result = $ct->init();

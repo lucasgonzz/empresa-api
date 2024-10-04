@@ -13,7 +13,8 @@ class SaleCajaHelper {
 		Log::info('check_caja para la venta N° '.$sale->num.'. caja_id: '.$sale->caja_id);
 
 		if (!is_null($sale->caja_id)
-			&& 
+			&& $sale->caja_id != 0
+			&&
 			(
 				is_null($sale->client_id)
 				|| $sale->omitir_en_cuenta_corriente

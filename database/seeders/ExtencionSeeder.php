@@ -184,12 +184,12 @@ class ExtencionSeeder extends Seeder
             ],
             [
                 // 34
-                'name' => 'Variantes',
+                'name' => 'Variantes de articulos',
                 'slug' => 'article_variants',
             ],
             [
                 // 35
-                'name' => 'consultora_de_precios',
+                'name' => 'Consultora de precios',
                 'slug' => 'consultora_de_precios',
             ],
         ];

@@ -276,6 +276,7 @@ class AfipWsController extends Controller
                 foreach ($observations as $observation) {
                     // Log::info('observation:');
                     // Log::info($observation);
+                    $observation = (array)$observation;
                     AfipError::create([
                         'message'   => $observation['Msg'],
                         'code'      => $observation['Code'],

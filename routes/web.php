@@ -129,6 +129,11 @@ Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
 Route::get('sale/afip-ticket-pdf/{id}', 'SaleController@afipTicketPdf');
 Route::get('sale/delivered-articles-pdf/{id}', 'SaleController@deliveredArticlesPdf');
 
+
+// Deposit Movement
+Route::get('deposit-movement/pdf/{id}', 'DepositMovementController@pdf');
+
+
 // Article
 Route::get('article/pdf/{ids}', 'ArticleController@pdf');
 Route::get('article/tickets-pdf/{ids}', 'ArticleController@ticketsPdf');

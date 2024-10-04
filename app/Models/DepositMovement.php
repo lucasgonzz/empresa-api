@@ -20,4 +20,16 @@ class DepositMovement extends Model
     function deposit_movement_status() {
         return $this->belongsTo(DepositMovementStatus::class);
     }
+
+    function from_address() {
+        return $this->belongsTo(Address::class, 'from_address_id');
+    }
+
+    function to_address() {
+        return $this->belongsTo(Address::class, 'to_address_id');
+    }
+
+    function employee() {
+        return $this->belongsTo(User::class, 'employee_id');
+    }
 }

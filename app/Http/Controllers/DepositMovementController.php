@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\DepositMovementHelper;
+use App\Http\Controllers\Pdf\DepositMovementPdf;
 use App\Models\DepositMovement;
 use Illuminate\Http\Request;
 
@@ -85,5 +86,10 @@ class DepositMovementController extends Controller
         $model->delete();
         $this->sendDeleteModelNotification('DepositMovement', $model->id);
         return response(null);
+    }
+
+    function pdf($id) {
+        $model = DepositMovement::find($id);
+        $pdf = new DepositMovementPdf($model);
     }
 }

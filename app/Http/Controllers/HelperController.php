@@ -54,6 +54,32 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function set_sales_price_type_id() {
+        $sales = Sale::where('user_id', 121)
+                        ->whereDate('created_at', '>=', Carbon::now()->subMonths(2))
+                        ->orderBy('created_at', 'ASC')
+                        ->get();
+
+        foreach ($sales as $sale) {
+            
+            if (is_null($sale->price_type_id)) {
+
+                if (!is_null($sale->client) && !is_null($sale->client->price_type_id)) {
+
+                    $sale->price_type_id = $sale->client->price_type_id;
+                    $sale->timestamps = false;
+                    $sale->save();
+
+                    echo 'Venta N° '.$sale->num.' <br>';
+                    echo 'Se puso price_type_id en '.$sale->price_type_id;
+                    echo '<br>';
+                }
+            }
+        }
+
+        echo 'Termino';
+    }
+
     function set_iva_debito($company_name) {
 
         $user = User::where('company_name', $company_name)
