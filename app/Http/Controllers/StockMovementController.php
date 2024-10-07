@@ -513,6 +513,12 @@ class StockMovementController extends Controller
                 $this->article->addresses()->updateExistingPivot($from_address->id, [
                     'amount'    => $new_amount,
                 ]);
+
+            } else {
+
+                $this->article->addresses()->attach($this->stock_movement->from_address_id, [
+                    'amount'    => $this->get_amount_for_from_address(),
+                ]);
             }
         }
     }

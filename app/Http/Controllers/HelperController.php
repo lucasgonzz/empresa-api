@@ -54,6 +54,26 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function check_movimientos_pack() {
+        $stock_movements = StockMovement::where('user_id', 600)
+                                        ->whereDate('created_at', '>=', Carbon::today()->subDay())
+                                        ->orderBy('created_at', 'ASC')
+                                        ->get();
+
+        foreach ($stock_movements as $stock_movement) {
+            
+            if ($stock_movement->stock_resultante != $stock_movement->observations) {
+
+                echo '<br>';
+                echo $stock_movement->article->name.'<br>';
+                echo $stock_movement->article->id.'<br>';
+                echo $stock_movement->concepto.'<br>';
+                echo '<br>';
+            }
+        }
+        echo 'Termino';
+    }
+
     function set_sales_price_type_id() {
         $sales = Sale::where('user_id', 121)
                         ->whereDate('created_at', '>=', Carbon::now()->subMonths(2))

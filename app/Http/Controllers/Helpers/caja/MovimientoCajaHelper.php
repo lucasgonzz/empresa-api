@@ -111,11 +111,23 @@ class MovimientoCajaHelper {
 
     		$caja = Caja::find($caja_id);
 
-	    	$movimientos_caja_para_actualizar = MovimientoCaja::where('apertura_caja_id', $caja->current_aperutra_caja_id)
+	    	Log::info('Entro con caja_id: '.$caja_id);
+	    	Log::info('current_aperutra_caja_id: '.$caja->current_apertura_caja_id);
+
+	    	$movimientos_caja_para_actualizar = MovimientoCaja::where('apertura_caja_id', $caja->current_apertura_caja_id)
 	    											->orderBy('created_at', 'ASC')
 	    											->get();
 
-	    	$saldo_anterior = AperturaCaja::find($caja->current_aperutra_caja_id)->saldo_apertura;
+	    	$apertura_caja = AperturaCaja::find($caja->current_apertura_caja_id);
+
+	    	if (!is_null($apertura_caja)) {
+
+	    		$saldo_anterior = $apertura_caja->saldo_apertura;
+	    	} else {
+
+	    		Log::info('apertura_caja es NULL');
+	    		Log::info('current_apertura_caja_id: '.$caja->current_apertura_caja_id);
+	    	}
     	}
 
 

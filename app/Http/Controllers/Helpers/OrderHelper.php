@@ -215,6 +215,14 @@ class OrderHelper {
             'order_id'              => $order->id,
             'employee_id'           => SaleHelper::getEmployeeId(),
         ]);
+
+        if (!is_null($sale->client)
+            && !is_null($sale->client->price_type_id)) {
+
+            $sale->price_type_id = $sale->client->price_type_id;
+            $sale->save();
+        }
+
         SaleHelper::attachArticlesFromOrder($sale, $order->articles);
         $instance->sendAddModelNotification('sale', $sale->id, false);
         return $sale;

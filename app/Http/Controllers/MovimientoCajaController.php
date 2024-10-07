@@ -58,13 +58,13 @@ class MovimientoCajaController extends Controller
     public function destroy($id) {
         $model = MovimientoCaja::find($id);
 
-        $apertura_caja_id = $model->apertura_caja_id;
+        // $apertura_caja_id = $model->apertura_caja_id;
         $caja_id = $model->caja_id;
 
         ImageController::deleteModelImages($model);
         $model->delete();
 
-        MovimientoCajaHelper::recalcular_saldos(null, $apertura_caja_id);
+        MovimientoCajaHelper::recalcular_saldos(null, $caja_id);
 
         Log::info('Se elimnio momiento de caja');
         

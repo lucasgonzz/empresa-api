@@ -58,20 +58,17 @@ class DatabaseSeeder extends Seeder
             $this->call(SubCategorySeeder::class);
 
 
-            
-            // if ($for_user != 'pack_descartables') {
-
-                $this->call(ArticleSeeder::class);
-            // }
-
 
             if ($for_user == 'colman') {
 
+                $this->call(ArticleSeeder::class);
                 $this->call(PriceTypeSeeder::class);
                 $this->call(RecipeSeeder::class);
 
             } else if ($for_user == 'feito') {
 
+                $this->call(ArticleSeeder::class);
+                
                 $this->call(CurrentAcountPaymentMethodDiscountSeeder::class);
                 $this->call(AfipSelectedPaymentMethodSeeder::class);
 
@@ -81,15 +78,18 @@ class DatabaseSeeder extends Seeder
 
             } else if ($for_user == 'fenix') {
 
+                $this->call(ArticleSeeder::class);
                 $this->call(SaleTypeSeeder::class);
                 $this->call(CommissionSeeder::class);
                 
             } else if ($for_user == 'pack_descartables') {
 
                 $this->call(PriceTypeSeeder::class);
+                $this->call(ArticleSeeder::class);
 
             } else if ($for_user == 'ferretodo') {
 
+                $this->call(ArticleSeeder::class);
                 $this->call(PriceTypeSeeder::class);
             }
 

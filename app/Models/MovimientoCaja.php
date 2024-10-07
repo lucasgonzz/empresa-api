@@ -10,7 +10,7 @@ class MovimientoCaja extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        
+        $q->with('sale');
     }
 
     function caja() {
@@ -19,6 +19,10 @@ class MovimientoCaja extends Model
 
     function apertura_caja() {
         return $this->belongsTo(AperturaCaja::class);
+    }
+
+    function sale() {
+        return $this->belongsTo(Sale::class);
     }
 
 }
