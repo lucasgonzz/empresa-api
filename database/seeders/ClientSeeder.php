@@ -53,7 +53,7 @@ class ClientSeeder extends Seeder
             [
 
                 'num'                   => 3,
-                'name'                  => 'Luquis Gonzalez',
+                'name'                  => 'Marcos Gonzalez',
                 'address'               => 'San antonio 23 - Gualeguay, Entre Rios',
                 'cuit'                  => '20242112025',
                 'razon_social'          => 'MARCOS SRL', 

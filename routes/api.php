@@ -54,6 +54,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
     Route::get('update-feature', 'UpdateFeatureController@index');
 
+    // Inventory performance
+
+    Route::get('inventory-performance', 'InventoryPerformanceController@index');
+
     // Afip Tipo Comprobantes
     Route::get('afip-tipo-comprobante', 'AfipTipoComprobanteController@index');
 
@@ -275,6 +279,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Reportes
     Route::get('company-performance/{mes_inicio?}/{mes_fin?}', 'CompanyPerformanceController@index');
+
+    // Article Purchase
+    Route::post('article-purchase', 'ArticlePurchaseController@index');
 
     // Checks
     Route::get('check/from-date/{from_date?}/{until_date?}', 'CheckController@index');

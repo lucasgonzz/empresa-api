@@ -42,27 +42,48 @@ class CompanyPerformanceUsersAddressesPaymentMethodsHelper {
 				'payment_methods'	=> $user_payment_methods['payment_methods'],
 			];
 
-			$total_vendido = 0;
+			$total_ingresado = 0;
 
 			foreach ($user_payment_methods['payment_methods'] as $payment_method) {
 				
-				// Log::info('sumando '.$payment_method->pivot->amount.' de '.$payment_method->name.' de la direccion '.$relation_to_add['address']->street);
-
-				$total_vendido += $payment_method->pivot->amount;
+				$total_ingresado += $payment_method->pivot->amount;
 			}
 
-			$relation_to_add['total_vendido'] = $total_vendido;
+			$relation_to_add['total_ingresado'] = $total_ingresado;
+
+			$relation_to_add['total_vendido'] = $this->get_user_total_vendido($relation_to_add);
 
 			$relation[] = $relation_to_add;
 		}
 
 		usort($relation, function ($a, $b) {
-		    return $b['total_vendido'] <=> $a['total_vendido'];
+		    return $b['total_ingresado'] <=> $a['total_ingresado'];
 		});
 
 		$this->company_performance->users_payment_methods_formated = $relation; 
 	}
 
+	function get_user_total_vendido($relation_to_add) {
+
+		$total_vendido = 0;
+
+		foreach ($this->company_performance->users_total_vendido as $user) {
+
+			if ($user->id == $relation_to_add['user']['id']) {
+
+				$total_vendido = $user->pivot->total_vendido;
+			}
+		}
+
+		return $total_vendido;
+	}
+
+
+	/*
+		Creo el array agregando cada empleado y el dueño
+		Para despues agregarle los metodos de pago con sus totales
+		Y el total_vendido de cada usuario
+	*/
 	function set_users_array() {
 
 		$this->users_payment_methods = [];

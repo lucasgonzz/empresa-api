@@ -27,23 +27,27 @@ class SaleSeeder extends Seeder
     {
 
         $this->reportes();
+        // $this->reportes_articulos();
 
-        $this->pagos(500);
+        // $this->pagos(500);
 
         $this->venta_sin_confirmar_a_fin_de_mes();
-
-        // $this->multiplo_price = 1;
-
-        // $this->ventas_sin_pagar();
-
-        // // Este es para las company_performances
-        // $this->ventas_meses_atras();
 
     }
 
     function reportes() {
 
         require('sales/reportes.php');
+
+        $this->create_sales($ventas_desde_principio_de_mes);
+        
+        $this->create_sales($ventas_meses_anterioires);
+
+    }
+
+    function reportes_articulos() {
+
+        require('sales/reportes2.php');
 
         // $this->create_sales($ventas_desde_principio_de_mes);
         

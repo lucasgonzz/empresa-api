@@ -54,6 +54,40 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function corregir_cuit($user_id) {
+        $clients = Client::where('user_id', $user_id)
+                            ->get();
+
+        foreach ($clients as $client) {
+            
+            if (!is_null($client->cuit) 
+                && (
+                    str_contains($client->cuit, '-')
+                    || str_contains($client->cuit, '_')
+                    || str_contains($client->cuit, ' ')
+                    || str_contains($client->cuit, '.')
+                )
+            ) {
+
+                echo 'Cliente '.$client->name.'<br>';
+                echo 'CUIT '.$client->cuit.'<br>';
+
+                $nuevo_cuit = str_replace('-', '', $client->cuit);
+                $nuevo_cuit = str_replace('_', '', $nuevo_cuit);
+                $nuevo_cuit = str_replace(' ', '', $nuevo_cuit);
+                $nuevo_cuit = str_replace('.', '', $nuevo_cuit);
+
+                echo 'CUIT NUEVO '.$nuevo_cuit.'<br>';
+                $client->cuit = $nuevo_cuit;
+                $client->timestamps = false;
+                $client->save();
+                echo 'ACTUALIZADO '.$nuevo_cuit.'<br>';
+                echo '<br>';
+                echo '<br>';
+            }
+        }
+    }
+
     function check_movimientos_pack() {
         $stock_movements = StockMovement::where('user_id', 600)
                                         ->whereDate('created_at', '>=', Carbon::today()->subDay())

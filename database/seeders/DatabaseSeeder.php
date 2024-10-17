@@ -91,7 +91,13 @@ class DatabaseSeeder extends Seeder
 
                 $this->call(ArticleSeeder::class);
                 $this->call(PriceTypeSeeder::class);
+
+            } else if ($for_user == 'ros_mar') {
+
+                $this->call(ArticleSeeder::class);
             }
+
+
 
             $this->call(SellerSeeder::class);
             $this->call(ProviderSeeder::class);
@@ -116,7 +122,7 @@ class DatabaseSeeder extends Seeder
             $this->call(ProviderPagosSeeder::class);
 
             // $this->call(EmployeeSeeder::class);
-            // $this->call(SaleSeeder::class);
+            $this->call(SaleSeeder::class);
             // $this->call(WorkdaySeeder::class);
             // $this->call(ConditionSeeder::class);
             $this->call(TitleSeeder::class);

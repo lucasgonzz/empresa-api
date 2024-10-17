@@ -40,7 +40,10 @@ class ProviderOrderController extends Controller
                                 ->get();
         $results = [];
         foreach ($models as $model) {
-            if ($model->created_at->addDays($model->days_to_advise)->lte(Carbon::today())) {
+            if (
+                $model->created_at->addDays($model->days_to_advise)->lte(Carbon::today())
+                && !is_null($model->provider)
+            ) {
                 $results[] = $model;
             }
         }

@@ -120,7 +120,6 @@ class PerformanceHelper
 
         $this->set_company_performance_props();
 
-
         $this->attach_ingresos_por_metodos_de_pago();
         
         if (is_null($this->from_day)) {
@@ -131,6 +130,8 @@ class PerformanceHelper
 
 
         $this->attach_users_payment_methods();
+
+        $this->attach_users_total_vendido();
 
         $this->attach_addresses_payment_methods();
 
@@ -264,6 +265,16 @@ class PerformanceHelper
                     'user_id'    => $user_payment_methods['user_id'],
                 ]);
             }
+        }
+    }
+
+    function attach_users_total_vendido() {
+
+        foreach ($this->users_payment_methods as $user_payment_methods) {
+                
+            $this->company_performance->users_total_vendido()->attach($user_payment_methods['user_id'], [
+                'total_vendido'     => $user_payment_methods['total_vendido'],
+            ]);
         }
     }
 
@@ -445,12 +456,14 @@ class PerformanceHelper
             
             $this->users_payment_methods[$employee->id] = [
                 'user_id'           => $employee->id,
+                'total_vendido'     => 0,
                 'payment_methods'   => $this->get_payment_methods(),
             ];
         }
 
         $this->users_payment_methods[$this->user_id] = [
             'user_id'         => $this->user_id,
+            'total_vendido'   => 0,
             'payment_methods' => $this->get_payment_methods(),
         ];
     }
@@ -481,6 +494,8 @@ class PerformanceHelper
             $employee_id = $this->user_id;
         }
 
+        $this->users_payment_methods[$employee_id]['total_vendido'] += (float)$this->total_sale;
+        
         if (is_null($this->sale->client_id) || $this->sale->omitir_en_cuenta_corriente) {
 
             $payment_method_id = $this->sale->current_acount_payment_method_id;

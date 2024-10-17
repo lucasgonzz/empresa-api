@@ -28,7 +28,7 @@ class CreateProvidersTable extends Migration
             $table->integer('iva_condition_id')->default(0)->nullable();
             $table->decimal('percentage_gain', 8,2)->nullable();
             $table->decimal('dolar', 14,2)->nullable();
-            $table->decimal('saldo', 12,2)->nullable();
+            $table->decimal('saldo', 30,2)->nullable();
             $table->integer('comercio_city_user_id')->nullable();
 
             $table->decimal('porcentaje_comision_negro', 12,2)->nullable();

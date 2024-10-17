@@ -215,6 +215,16 @@ class PermissionSeeder extends Seeder
                 'en'            => 'reportes.cards',
             ],
             [
+                'singular'      => 'Ver Graficos',
+                'plural'        => 'Reportes',
+                'en'            => 'reportes.graficos',
+            ],
+            [
+                'singular'      => 'Ver Articulos',
+                'plural'        => 'Reportes',
+                'en'            => 'reportes.articulos',
+            ],
+            [
                 'singular'      => 'Ver Ingresos de la empresa',
                 'plural'        => 'Reportes',
                 'en'            => 'reportes.ingresos',

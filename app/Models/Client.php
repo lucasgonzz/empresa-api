@@ -17,6 +17,10 @@ class Client extends Model
         $query->with('iva_condition', 'price_type', 'location', 'comercio_city_user', 'buyer');
         // $query->with('iva_condition', 'price_type', 'location', 'comercio_city_user', 'buyer')->withCount('current_acounts');
     }
+
+    public function purchases() {
+        return $this->hasMany(ArticlePurchase::class);
+    }
     
     public function sales() {
         return $this->hasMany('App\Models\Sale');

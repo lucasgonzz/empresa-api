@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Jobs\ProcessCheckSaldosChunk;
 use App\Models\Client;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
@@ -18,7 +19,7 @@ class ProcessCheckSaldos implements ShouldQueue
 
     public $user;
 
-    public $timeout = 99999999;
+    public $timeout = 3600;
 
     public function __construct($user)
     {
@@ -30,25 +31,28 @@ class ProcessCheckSaldos implements ShouldQueue
     {
         $clients = Client::where('user_id', $this->user->id)
                             ->where('id', '!=', 7334)
-                            ->get();
+                            ->where('status', 'active')
+                            ->chunk(100, function ($clientsChunk) {
+                                dispatch(new ProcessCheckSaldosChunk($clientsChunk));
+                            });
 
-        Log::info('checkSaldos para '.count($clients).' clientes');
+        // Log::info('checkSaldos para '.count($clients).' clientes');
 
-        $saldos_diferentes = 0;
+        // $saldos_diferentes = 0;
 
-        foreach ($clients as $client) {
-            Log::info('chequeando saldo y pagos de '.$client->name);
-            $saldo_anterior = $client->saldo;
-            $client = CurrentAcountHelper::checkSaldos('client', $client->id);
-            CurrentAcountHelper::checkPagos('client', $client->id, true);
-            $nuevo_saldo = $client->saldo;
+        // foreach ($clients as $client) {
+        //     Log::info('chequeando saldo y pagos de '.$client->name);
+        //     $saldo_anterior = $client->saldo;
+        //     $client = CurrentAcountHelper::checkSaldos('client', $client->id);
+        //     CurrentAcountHelper::checkPagos('client', $client->id, true);
+        //     $nuevo_saldo = $client->saldo;
 
-            if ($saldo_anterior != $nuevo_saldo) {
-                Log::info('Tenia el saldo diferente');
-                $saldos_diferentes++;
-            }
-        }
+        //     if ($saldo_anterior != $nuevo_saldo) {
+        //         Log::info('Tenia el saldo diferente');
+        //         $saldos_diferentes++;
+        //     }
+        // }
 
-        Log::info('habia '.$saldos_diferentes.' saldos diferentes');
+        // Log::info('habia '.$saldos_diferentes.' saldos diferentes');
     }
 }

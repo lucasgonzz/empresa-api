@@ -20,6 +20,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
+use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\SaleCajaHelper;
 use App\Http\Controllers\Helpers\sale\UpdateHelper;
 use App\Http\Controllers\SaleController;
@@ -228,6 +229,8 @@ class SaleHelper extends Controller {
 
             Self::checkNotaCredito($model, $request);
         }
+
+        ArticlePurchaseHelper::set_article_purcase($model);
     }
 
     static function set_total_a_facturar($sale, $request) {
