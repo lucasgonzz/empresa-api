@@ -26,7 +26,9 @@ class PreviusDayController extends Controller
     */
 
     static function previusDays($model_name, $index) {
+        
         $model_name = GeneralHelper::getModelName($model_name);
+
         if ($index == 0) {
             $start = Carbon::now()->startOfWeek();
             $end = Carbon::now()->endOfWeek();
@@ -34,8 +36,10 @@ class PreviusDayController extends Controller
             $start = Carbon::now()->subWeeks($index)->startOfWeek();
             $end = Carbon::now()->subWeeks($index)->endOfWeek();
         }
+        
         $result = [];
         $index = 0;
+
         while ($start < $end) {
             $start_date = $start->format('Y-m-d H:i:s');
             $end_date = $start->addDay()->format('Y-m-d H:i:s');

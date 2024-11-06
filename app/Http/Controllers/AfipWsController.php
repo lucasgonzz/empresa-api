@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\AfipError;
+use App\Models\AfipObservation;
 use App\Models\AfipTicket;
 use App\Models\Afip\WSAA;
 use App\Models\Afip\WSFE;
@@ -28,8 +29,9 @@ class AfipWsController extends Controller
     // public $monto_minimo_para_factura_de_credito = 546737;
 
     function __construct($sale) {
-        Log::info('AfipWsController __construct');
+        Log::info('AfipWsController __construct sale:');
         $this->sale = $sale;
+        Log::info($this->sale);
         $this->testing = !$this->sale->afip_information->afip_ticket_production;
 
         $this->ya_se_obtuvo_cae_desde_consultar_comprobante = false;
@@ -91,29 +93,39 @@ class AfipWsController extends Controller
             $result = $this->wsfe->FECompConsultar($invoice);
             
             Log::info('consultar_comprobante:');
-            Log::info((array)$result);
 
-            if (isset($result->FECompConsultarResult)) {
-                if (isset($result->FECompConsultarResult->ResultGet)) {
-                    $data = $result->FECompConsultarResult->ResultGet;
-                    $this->sale->afip_ticket->update([
-                        'cbte_letra'        => $this->getTipoLetra($data->CbteTipo),
-                        'importe_total'     => $data->ImpTotal,
-                        'moneda_id'         => $data->MonId,
-                        'resultado'         => $data->Resultado,
-                        'concepto'          => $data->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Concepto,
-                        'cuit_cliente'      => $data->FECAESolicitarResult->FeDetResp->FECAEDetResponse->DocNro,
-                        'cae'               => $data->CodAutorizacion,
-                        'cae_expired_at'    => $data->FchVto,
-                    ]);
+            if (!$result['hubo_un_error']) {
 
-                    $this->ya_se_obtuvo_cae_desde_consultar_comprobante = true;
+                $result = (array)$result['result'];
+                Log::info($result);
 
-                    Log::info('se actualizo la info del comprobante');
-                } else if (isset($result->FECompConsultarResult->Errors)) {
-                    Log::info('Entro en errors:');
-                    Log::info((array)$result->FECompConsultarResult->Errors);
-                }
+                Log::info('va por acaaaa');
+                Log::info(isset($result['FECompConsultarResult']));
+
+                if (isset($result['FECompConsultarResult'])) {
+                    if (isset($result['FECompConsultarResult']->ResultGet)) {
+                        $data = $result['FECompConsultarResult']->ResultGet;
+                        $this->sale->afip_ticket->update([
+                            'cbte_letra'        => $this->getTipoLetra($data->CbteTipo),
+                            'importe_total'     => $data->ImpTotal,
+                            'moneda_id'         => $data->MonId,
+                            'resultado'         => $data->Resultado,
+                            // 'concepto'          => $data->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Concepto,
+                            // 'cuit_cliente'      => $data->FECAESolicitarResult->FeDetResp->FECAEDetResponse->DocNro,
+                            'cae'               => $data->CodAutorizacion,
+                            'cae_expired_at'    => $data->FchVto,
+                        ]);
+
+                        $this->ya_se_obtuvo_cae_desde_consultar_comprobante = true;
+
+                        Log::info('se actualizo la info del comprobante');
+                    } else if (isset($result['FECompConsultarResult']->Errors)) {
+                        Log::info('Entro en errors:');
+                        Log::info((array)$result['FECompConsultarResult']->Errors);
+                    }
+                } 
+            } else {
+                Log::info('Hubo un error');
             }
         } 
     }
@@ -184,7 +196,8 @@ class AfipWsController extends Controller
         }
 
         // Si es Responsable inscripto se agregan los importes del IVA
-        if ($this->sale->afip_information->iva_condition->name == 'Responsable inscripto' && $importes['iva'] > 0) {
+        if ($this->sale->afip_information->iva_condition->name == 'Responsable inscripto') {
+        // if ($this->sale->afip_information->iva_condition->name == 'Responsable inscripto' && $importes['iva'] > 0) {
             $ivas = [];
             foreach ($importes['ivas'] as $iva) {
                 if ($iva['BaseImp'] > 0) {
@@ -267,7 +280,7 @@ class AfipWsController extends Controller
             Log::info('observations:');
             Log::info($observations);
             if (isset($observations['Msg'])) {
-                AfipError::create([
+                AfipObservation::create([
                     'message'   => $observations['Msg'],
                     'code'      => $observations['Code'],
                     'sale_id'   => $this->sale->id,
@@ -277,7 +290,7 @@ class AfipWsController extends Controller
                     // Log::info('observation:');
                     // Log::info($observation);
                     $observation = (array)$observation;
-                    AfipError::create([
+                    AfipObservation::create([
                         'message'   => $observation['Msg'],
                         'code'      => $observation['Code'],
                         'sale_id'   => $this->sale->id,
@@ -383,6 +396,8 @@ class AfipWsController extends Controller
             Log::info('hay afip_tipo_comprobante_id: ');
             Log::info($this->sale->afip_tipo_comprobante->name.', codigo: '.$this->sale->afip_tipo_comprobante->codigo);
             return $this->sale->afip_tipo_comprobante->codigo;
+        } else {
+            Log::info('No entro en afip_tipo_comprobante_id: '.$this->sale->afip_tipo_comprobante_id);
         }
 
         if (SaleHelper::getTotalSale($this->sale) >= $this->monto_minimo_para_factura_de_credito) {

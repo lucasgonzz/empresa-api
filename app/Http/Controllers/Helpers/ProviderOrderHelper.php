@@ -24,8 +24,7 @@ class ProviderOrderHelper {
 			Log::info('Eliminando current_acount');
             $current_acount->pagado_por()->detach();
             $current_acount->delete();
-			$current_acount->delete(); 
-			CurrentAcountHelper::checkSaldos('provider', $provider_order->provider_id, $current_acount);
+			CurrentAcountHelper::checkSaldos('provider', $provider_order->provider_id);
 		} else {
 			Log::info('No se elimino current_acount');
 		}
@@ -343,24 +342,27 @@ class ProviderOrderHelper {
 	}
 
 	static function resetArticlesStock($provider_order) {
-		foreach ($provider_order->articles as $article) {
+		if ($provider_order->update_stock) {
 
-			$ct_stock_movement = new StockMovementController();
+			foreach ($provider_order->articles as $article) {
 
-			$amount = -$article->pivot->amount;
+				$ct_stock_movement = new StockMovementController();
 
-	        $request = new \Illuminate\Http\Request();
+				$amount = -$article->pivot->amount;
 
-	        $request->model_id = $article->id;
+		        $request = new \Illuminate\Http\Request();
 
-			if (count($article->addresses) >= 1 && $provider_order->address_id) {
-	            $request->to_address_id = $provider_order->address_id;
-			} 
+		        $request->model_id = $article->id;
 
-			$request->amount = $amount;
-			$request->provider_id = $provider_order->provider_id;
-			$request->concepto = 'Eliminacion Pedido Prov N° '.$provider_order->num;
-	        $ct_stock_movement->store($request);
+				if (count($article->addresses) >= 1 && $provider_order->address_id) {
+		            $request->to_address_id = $provider_order->address_id;
+				} 
+
+				$request->amount = $amount;
+				$request->provider_id = $provider_order->provider_id;
+				$request->concepto = 'Eliminacion Pedido Prov N° '.$provider_order->num;
+		        $ct_stock_movement->store($request);
+			}
 		}
 	}
 

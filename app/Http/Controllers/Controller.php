@@ -147,6 +147,12 @@ class Controller extends BaseController
     }
 
     function sendAddModelNotification($model_name, $model_id, $check_added_by = true, $for_user_id = null, $ignore_queue = false) {
+
+        if ($model_name == 'article'
+        && !$this->user()->download_articles) {
+            return;
+        }
+
         if (is_null($for_user_id)) {
             $for_user_id = $this->userId();
         }
@@ -215,8 +221,11 @@ class Controller extends BaseController
     function fullModel($model_name, $id) {
         $model_name = GeneralHelper::getModelName($model_name);
         $model = $model_name::where('id', $id)
-                        ->withAll()
-                        ->first();
+                        ->withAll();
+        if ($model_name == 'App\Models\Sale') {
+            $model = $model->withTrashed();
+        }
+        $model = $model->first();
         return $model;
     }
 }

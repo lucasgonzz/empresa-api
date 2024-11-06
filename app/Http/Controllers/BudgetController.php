@@ -33,13 +33,14 @@ class BudgetController extends Controller
 
     public function store(Request $request) {
         $model = Budget::create([
-            'num'                   => $this->num('budgets'),
+            'num'                       => $this->num('budgets'),
             'client_id'                 => $request->client_id,
             'start_at'                  => $request->start_at,
             'finish_at'                 => $request->finish_at,
             'observations'              => $request->observations,
+            'total'                     => $request->total,
             'budget_status_id'          => $request->budget_status_id,
-            'user_id'               => $this->userId(),
+            'user_id'                   => $this->userId(),
         ]);
         GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
         GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
@@ -63,6 +64,7 @@ class BudgetController extends Controller
         $model->start_at                  = $request->start_at;
         $model->finish_at                 = $request->finish_at;
         $model->observations              = $request->observations;
+        $model->total                     = $request->total;
         $model->budget_status_id          = $request->budget_status_id;
         $model->save();
         GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);

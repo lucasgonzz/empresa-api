@@ -266,7 +266,8 @@ class SaleHelper extends Controller {
                         }
 
                         $caja_id = null;
-                        if (isset($payment_method['caja_id'])) {
+                        if (isset($payment_method['caja_id'])
+                            && $payment_method['caja_id'] != 0) {
                             $caja_id = $payment_method['caja_id'];
                         }
                         
@@ -405,52 +406,6 @@ class SaleHelper extends Controller {
             }
         }
 
-    }
-
-    static function createNotaCreditoFromDestroy($sale) {
-        $haber = $sale->total;
-
-        $articles = [];
-        foreach ($sale->articles as $article) {
-            // $haber += $article->pivot->price * $article->pivot->amount;
-            $article_to_add = [
-                'is_article'        => true,
-                'id'                => $article->id,
-                'returned_amount'   => $article->pivot->amount,
-                'price_vender'      => $article->pivot->price,
-                'discount'          => $article->pivot->discount,
-            ];
-            $articles[] = $article_to_add;
-        }
-        // if (count($sale->discounts) >= 1) {
-        //     foreach ($sale->discounts as $discount) {
-        //         $haber -= (float)$discount->pivot->percentage * $haber / 100;
-        //     }
-        // }
-        // if (count($sale->surchages) >= 1) {
-        //     foreach ($sale->surchages as $surchage) {
-        //         $haber += (float)$surchage->pivot->percentage * $haber / 100;
-        //     }
-        // }
-        
-
-        $description = 'Venta N°'.$sale->num.' eliminada';
-
-        $model_name = 'client';
-
-        if ($sale->omitir_en_cuenta_corriente) {
-            // Si entra aca se pone null, para que la nota de credito no se la asigne a ningun cliente
-            $model_name = null;
-        }
-
-        $nota_credito = CurrentAcountHelper::notaCredito($haber, $description, $model_name, $sale->client_id, $sale->id, $articles);
-
-        if (!is_null($sale->client) && !$sale->omitir_en_cuenta_corriente) {
-            CurrentAcountHelper::checkSaldos('client', $sale->client_id);
-        }
-
-        $afip_helper = new AfipNotaCreditoHelper($sale, $nota_credito);
-        $afip_helper->init();
     }
 
     static function attachDiscounts($sale, $discounts) {

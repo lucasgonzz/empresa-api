@@ -117,7 +117,6 @@ class ProcessCheckInventoryLinkages implements ShouldQueue
 
         $deleted_articles = Article::where('user_id', $inventory_linkage->user_id)
                                     ->whereNotNull('deleted_at')
-                                    ->whereDate('deleted_at', '>=', Carbon::today()->subDays(2))
                                     ->withTrashed()
                                     ->get();
 

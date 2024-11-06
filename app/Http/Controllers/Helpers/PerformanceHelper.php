@@ -56,6 +56,10 @@ class PerformanceHelper
             $this->mes_inicio = Carbon::parse($from_day)->startOfDay();
             $this->mes_fin = Carbon::parse($from_day)->endOfDay();
 
+        } else if ($this->from_today) {
+
+            $this->mes_fin = Carbon::now()->endOfDay();
+
         } else {
 
             $mes_inicio = $this->mes_inicio->copy();
@@ -84,6 +88,9 @@ class PerformanceHelper
             'user_id'    => $this->user_id,
         ]);
 
+        Log::info('mes_inicio: '.$this->mes_inicio->format('d/m/Y'));
+        Log::info('mes_fin: '.$this->mes_fin->format('d/m/Y'));
+
         $this->set_day();
 
         $this->set_sales();
@@ -96,9 +103,17 @@ class PerformanceHelper
 
         $this->total_vendido_costos = 0;
         
-        if (!$this->from_current_month && is_null($this->from_day)) {
+        if (!$this->from_current_month 
+            && is_null($this->from_day)
+            && !$this->from_today) {
 
-            Log::info('Se llamo set_article_performances');
+            Log::info('Se llamo set_article_performances para el mes '.$this->mes_inicio->format('d/m/Y'));
+
+            Log::info('from_day: ');
+            Log::info($this->from_day);
+            Log::info(gettype($this->from_day));
+            Log::info(is_null($this->from_day));
+            Log::info(!$this->from_day);
 
             $this->set_article_performances();
         }
@@ -388,6 +403,9 @@ class PerformanceHelper
 
                 $this->total_facturado += $sale->afip_ticket->importe_iva;
                 // $this->total_facturado += $sale->afip_ticket->importe_total;
+                Log::info('Se sumo '.$sale->afip_ticket->importe_iva.' de factuado de la venta N° '.$sale->num);
+            } else {
+                Log::info('No se sumo lo factuado de la venta N° '.$sale->num);
             }
 
 
@@ -560,6 +578,7 @@ class PerformanceHelper
         Log::info('total_pagado_mostrador: '.$this->total_pagado_mostrador);
         Log::info('total_vendido_a_cuenta_corriente: '.$this->total_vendido_a_cuenta_corriente);
         Log::info('total_pagado_a_cuenta_corriente: '.$this->total_pagado_a_cuenta_corriente);
+        Log::info('total_facturado: '.$this->total_facturado);
 
 
         $this->company_performance->total_vendido = $this->total_vendido;
@@ -630,6 +649,7 @@ class PerformanceHelper
                 'created_at'                => $article['sale_created_at'],
                 'company_performance_id'    => $this->company_performance->id,
             ]);
+            Log::info('se creo ArticlePerformance para '.$article['name'].' con performance_date = '.$this->mes_inicio->format('d/m/Y'));
         }
     }
 

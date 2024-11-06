@@ -54,7 +54,7 @@ class SetCompanyPerformances extends Command
             */
 
             $currentDate = Carbon::today()->startOfMonth();
-            for ($_mes = 12; $_mes > 0; $_mes--) { 
+            for ($_mes = 24; $_mes > 0; $_mes--) { 
 
                 $this->comment('$_mes = '.$_mes);
 

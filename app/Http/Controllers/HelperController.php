@@ -14,6 +14,8 @@ use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\RecalculateCurrentAcountsHelper;
 use App\Http\Controllers\Helpers\RecipeHelper;
+use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Http\Controllers\StockMovementController;
 use App\Jobs\ProcessCheckInventoryLinkages;
 use App\Jobs\ProcessCheckSaldos;
@@ -32,6 +34,7 @@ use App\Models\InventoryLinkage;
 use App\Models\OnlineConfiguration;
 use App\Models\OrderProduction;
 use App\Models\Provider;
+use App\Models\ProviderOrder;
 use App\Models\Recipe;
 use App\Models\Sale;
 use App\Models\SaleModification;
@@ -52,6 +55,128 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null) {
         $this->{$method}($param);
+    }
+
+    function set_provider_orders_totales($company_name) {
+
+        $user = User::where('company_name', $company_name)
+                        ->first();
+
+        $provider_orders = ProviderOrder::where('user_id', $user->id)
+                                        ->orderBy('created_at', 'ASC')
+                                        ->get();
+
+        foreach ($provider_orders as $provider_order) {
+
+            $helper = new NewProviderOrderHelper($provider_order, $provider_order->articles->toArray(), true);
+            $helper->procesar_pedido();
+
+            echo 'Se proceso pedido N° '.$provider_order->num.' de la fecha '.$provider_order->created_at->format('d/m/Y');
+            echo '<br>';
+            
+        }
+        echo '<br>';
+        echo 'Termino';
+    }
+
+    function check_movimientos_de_deposito() {
+        $movements = StockMovement::where('user_id', 121)
+                                ->whereRaw('CAST(stock_resultante AS DECIMAL(10, 2)) != CAST(observations AS DECIMAL(10, 2))')
+                                ->whereNotNull('observations')
+                                ->where('observations', '!=', 'Se seteo stock resultante con el stock actual')
+                                ->orderBy('created_at', 'ASC')
+                                ->get();
+
+        $results = [];
+        
+        foreach ($movements as $movement) {
+
+            if (!isset($results[$movement->article_id])) {
+                $results[$movement->article_id]['stock_movement'] = $movement;
+                $results[$movement->article_id]['cantidad'] = 1;
+            }  else {
+                $results[$movement->article_id]['cantidad']++;
+            }
+        }
+
+        foreach ($results as $key => $stock_movement) {
+
+            $movement = $stock_movement['stock_movement'];
+            if ($movement->article){
+                echo $movement->article->name.' en la fecha '.$movement->created_at->format('d/m/Y');
+                echo '<br>';
+                echo 'cantidad: '.$stock_movement['cantidad'];
+                echo '<br>';
+                // $this->recalcular_stock($movement);
+                echo '<br>';
+                echo '<br>';
+            } 
+        }
+        echo 'Termino';
+    }
+
+    function recalcular_stock($stock_movement) {
+
+        $stock_movements_posteriores = StockMovement::where('article_id', $stock_movement->article_id)
+                                                ->where('created_at', '>=', $stock_movement->created_at)
+                                                ->orderBy('created_at', 'ASC')
+                                                ->get();
+
+        foreach ($stock_movements_posteriores as $stock_movement_posterior) {
+            $stock_movement_posterior->observations = $stock_movement_posterior->stock_resultante;
+            $stock_movement_posterior->save();
+        }
+
+        $stock_actual = $stock_movements_posteriores[count($stock_movements_posteriores)-1]->stock_resultante;
+
+        $article = Article::find($stock_movement->article_id);
+        $article->stock = $stock_actual;
+        $article->save();
+
+        echo 'Se va a poner el stock de '.$stock_actual;
+        echo '<br>';
+    }
+
+    function restart_stock_nota_credito($id) {
+        $nota_credito = CurrentAcount::find($id);
+
+        foreach ($nota_credito->articles as $article) {
+            
+            $nuevo_stock = $article->pivot->amount * 2;
+
+            echo $article->name.' Se le van a sumar '.$nuevo_stock.' al stock <br>';
+            echo '<br>';
+
+            $ct = new StockMovementController();
+            $request = new \Illuminate\Http\Request();
+            
+            $request->model_id = $article->id;
+            $request->from_address_id = null;
+            $request->to_address_id = null;
+            $request->amount = (float)$nuevo_stock;
+            $request->sale_id = null;
+            $request->concepto = 'Correcion Nota credito';
+            $request->observations = '.';
+
+            $ct->store($request, false, $nota_credito->user, $nota_credito->user_id);
+
+
+        }
+        echo 'Termino';
+    }
+
+    function nota_de_credito_afip($sale_id) {
+
+        $sale = Sale::find($sale_id);
+
+        if (is_null($sale)) {
+            echo 'No hay venta <br>';
+        } else {
+
+            SaleHelper::createNotaCreditoFromDestroy($sale);
+        }
+
+        echo 'Listo';
     }
 
     function corregir_cuit($user_id) {
@@ -1465,6 +1590,27 @@ class HelperController extends Controller
         $user = User::where('company_name', $company_name)->first();
         ProcessCheckSaldos::dispatch($user);
         echo 'se despacho';
+    }
+
+    function checkProvidersSaldos($company_name) {
+        $user = User::where('company_name', $company_name)->first();
+
+        $providers = Provider::where('user_id', $user->id)
+                            ->get();
+
+        foreach ($providers as $provider) {
+            $saldo_anterior = $provider->saldo;
+            $provider = CurrentAcountHelper::checkSaldos('provider', $provider->id);
+            
+            echo 'Se actualizo saldo de '.$provider->name;
+            echo '<br>';
+            if ($provider->saldo != $saldo_anterior) {
+                echo 'Y CAMBIO';
+                echo '<br>';
+            }
+            echo '<br>';
+        }
+        echo 'Listo';
     }
 
     function setClientesOscar() {

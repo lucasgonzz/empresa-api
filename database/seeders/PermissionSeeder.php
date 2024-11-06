@@ -83,6 +83,18 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'gastos',
                 'en'            => 'expense',
             ],
+            [
+                'singular'      => 'Movimiento de Deposito',
+                'plural'        => 'movimientos de deposito',
+                'en'            => 'deposit_movement',
+                'previus_days'  => true,
+            ],
+            [
+                'singular'      => 'Movimiento entre Cajas',
+                'plural'        => 'movimientos entre cajas',
+                'en'            => 'movimiento_entre_caja',
+                'previus_days'  => true,
+            ],
         ];
         $scopes = [
             [
@@ -200,6 +212,11 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'Alertas',
                 'en'            => 'alerts.messages',
             ],
+            [
+                'singular'      => 'Ver alertas de Problemas al facturar',
+                'plural'        => 'Alertas',
+                'en'            => 'alerts.problemas_al_facturar',
+            ],
 
 
             // Reportes
@@ -220,7 +237,7 @@ class PermissionSeeder extends Seeder
                 'en'            => 'reportes.graficos',
             ],
             [
-                'singular'      => 'Ver Articulos',
+                'singular'      => 'Ver Rendimiento de Articulos',
                 'plural'        => 'Reportes',
                 'en'            => 'reportes.articulos',
             ],

@@ -118,6 +118,19 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('/article-update-varians-stock', 'ArticleController@update_variants_stock');
 
     
+    // Ultimos articulos actualizados
+    Route::get('/articles-ultimos-actualizados', 'ArticleController@ultimos_actualizados');
+
+    // Articulos por defecto en VENDER
+    Route::get('/articles-por-defecto', 'ArticleController@articles_por_defecto');
+
+
+
+    // Vender
+    // Esta ruta se usa en VENDER - LISTADO - CONSULTORA DE PRECIOS
+    Route::get('/vender/buscar-articulo-por-codido/{code}', 'VenderController@search_bar_code');
+
+
 
     Route::resource('stock-movement', 'StockMovementController')->except(['index', 'show']);
     Route::get('stock-movement/{article_id}', 'StockMovementController@index');
@@ -130,6 +143,14 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('sale/charts/{from}/{to}', 'SaleController@charts');
     Route::get('sales-ventas-sin-cobrar', 'SaleController@ventas_sin_cobrar');
     Route::put('sale-set-terminada/{sale_id}', 'SaleController@set_terminada');
+
+    // Hacer Nota de credito AFIP
+    Route::post('sale/nota-credito-afip/{sale_id}', 'SaleController@nota_credito_afip');
+
+
+
+    // AFIP / Problemas al facturar
+    Route::get('afip-ticket/problemas-al-facturar', 'AfipTicketController@problemas_al_facturar');
 
 
     Route::get('sale-modifications/{sale_id}', 'SaleModificationController@index');
@@ -270,6 +291,17 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('/current-acount/saldo-inicial', 'CurrentAcountController@saldoInicial');
     Route::delete('/current-acount/{model_name}/{id}', 'CurrentAcountController@delete');
     Route::get('check-saldos/{model_name}/{id}', 'CurrentAcountController@check_saldos_y_pagos');
+
+
+
+    // Comprobantes
+
+    // Notas de credito
+    Route::get('nota-credito/from-date/{from_date?}/{until_date?}', 'NotaCreditoController@index');
+    Route::get('nota-credito', 'NotaCreditoController@index');
+
+    // Pagos de Clientes
+    Route::get('pago-de-cliente/from-date/{from_date?}/{until_date?}', 'PagoDeClienteController@index');
 
 
     // CurrentAcounts Cheques

@@ -13,6 +13,8 @@ use App\Http\Controllers\Helpers\SaleChartHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\SaleProviderOrderHelper;
+use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
+use App\Http\Controllers\Helpers\sale\SaleNotaCreditoAfipHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
 use App\Http\Controllers\Pdf\SaleDeliveredArticlesPdf;
@@ -91,6 +93,7 @@ class SaleController extends Controller
             'cuota_recargo'                     => $request->cuota_recargo,
             'caja_id'                           => $request->caja_id,
             'afip_tipo_comprobante_id'          => $request->afip_tipo_comprobante_id,
+            'descuento'                         => round($request->descuento, 2, PHP_ROUND_HALF_UP),
             'user_id'                           => $this->userId(),
         ]);
 
@@ -200,21 +203,21 @@ class SaleController extends Controller
         if (!is_null($model->client)) {
             Log::info('Y pertenece al cliente '.$model->client->name);
         }
+
+        ArticlePurchaseHelper::borrar_article_purchase_actuales($model);
         
-        if (!is_null($model->afip_ticket)) {
-            SaleHelper::createNotaCreditoFromDestroy($model);
-        } else {
-            if ($model->client_id) {
-                SaleHelper::deleteCurrentAcountFromSale($model);
-                SaleHelper::deleteSellerCommissionsFromSale($model);
-                $model->client->pagos_checkeados = 0;
-                $model->client->save();
-                CurrentAcountHelper::checkSaldos('client', $model->client_id);
-                $this->sendAddModelNotification('client', $model->client_id, false);
-            }
-            $model->delete();
-            $this->sendDeleteModelNotification('sale', $model->id);
+    
+        if ($model->client_id) {
+            SaleHelper::deleteCurrentAcountFromSale($model);
+            SaleHelper::deleteSellerCommissionsFromSale($model);
+            $model->client->pagos_checkeados = 0;
+            $model->client->save();
+            CurrentAcountHelper::checkSaldos('client', $model->client_id);
+            $this->sendAddModelNotification('client', $model->client_id, false);
         }
+        $model->delete();
+
+        $this->sendDeleteModelNotification('sale', $model->id);
         if (!$model->to_check && !$model->checked) {
             foreach ($model->articles as $article) {
                 if (!is_null($article->stock)) {
@@ -229,8 +232,12 @@ class SaleController extends Controller
     function makeAfipTicket(Request $request) {
         $sale = Sale::find($request->sale_id);
         if (!is_null($sale)) {
+
+            if (isset(($request->afip_tipo_comprobante_id))) {
+                $sale->afip_tipo_comprobante_id = $request->afip_tipo_comprobante_id;
+            }
+
             $sale->afip_information_id = $request->afip_information_id;
-            $sale->afip_tipo_comprobante_id = $request->afip_tipo_comprobante_id;
             $sale->save();
             $ct = new AfipWsController($sale);
             $result = $ct->init();
@@ -344,6 +351,13 @@ class SaleController extends Controller
             $sale->save();
         }
         return response()->json(['sale' => $this->fullModel('Sale', $sale_id)], 201);
+    }
+
+    function nota_credito_afip($sale_id) {
+        $sale = Sale::find($sale_id);
+
+        SaleNotaCreditoAfipHelper::crear_nota_de_credito_afip($sale);
+        return response(null, 201);
     }
 
 }

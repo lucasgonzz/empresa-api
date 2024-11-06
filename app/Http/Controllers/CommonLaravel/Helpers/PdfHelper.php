@@ -32,24 +32,31 @@ class PdfHelper {
 
 	function simpleHeader($instance, $data) {
         $user = UserHelper::getFullModel();
-		if (env('APP_ENV') == 'local') {
-    		$instance->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 2, 2, 45, 45);
-    	} else {
-    		if (!is_null($user->image_url) && GeneralHelper::file_exists_2($user->image_url)) {
-    			$instance->Image($user->image_url, 2, 2, 45, 45);
-    		}
-    	}
 
-		$instance->SetFont('Arial', 'B', 18);
+		if ($user->header_articulos_pdf) {
 
-		$instance->x = 50;
-		$instance->y = 20;
-		$instance->Cell(70, 8, $user->company_name, $instance->b, 0, 'L');	
-		
-		$instance->SetFont('Arial', '', 14);
-		$instance->Cell(80, 8, date('d/m/Y'), $instance->b, 0, 'R');
+			if (env('APP_ENV') == 'local') {
+	    		$instance->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 2, 2, 45, 45);
+	    	} else {
+	    		if (!is_null($user->image_url) && GeneralHelper::file_exists_2($user->image_url)) {
+	    			$instance->Image($user->image_url, 2, 2, 45, 45);
+	    		}
+	    	}
 
-		$instance->y = 50;
+			$instance->SetFont('Arial', 'B', 18);
+
+			$instance->x = 50;
+			$instance->y = 20;
+			$instance->Cell(70, 8, $user->company_name, $instance->b, 0, 'L');	
+			
+			$instance->SetFont('Arial', '', 14);
+			$instance->Cell(80, 8, date('d/m/Y'), $instance->b, 0, 'R');
+
+			$instance->y = 50;
+		} else {
+			$instance->y = 2;
+		}
+
 		Self::tableHeader($instance, $data['fields']);
 	}
 
@@ -69,28 +76,14 @@ class PdfHelper {
 		$user = UserHelper::getFullModel();
 		// Razon social
 		$instance->y = 5;
-		if (!is_null($user->afip_information)) {
-			if (!is_null($user->afip_information->razon_social)) {
-				$instance->x = 35;
-				$instance->Cell(40, 5, $user->afip_information->razon_social, $instance->b, 1, 'L');
-			}
-		}
+		
+		$instance->x = 35;
+		$instance->Cell(40, 5, $user->company_name, $instance->b, 1, 'L');	
 
 		// Condicion IVA
 		if (!is_null($user->afip_information) && !is_null($user->afip_information->iva_condition)) {
 			$instance->x = 35;
 			$instance->Cell(40, 5, $user->afip_information->iva_condition->name, $instance->b, 1, 'L');
-		}
-
-		// Telefono
-		$instance->y += 5;
-		if (!is_null($user->phone)) {
-			$instance->x = 35;
-			$instance->SetFont('Arial', 'B', 10);
-			$instance->Cell(10, 5, 'Tel: ', $instance->b, 0, 'L');
-
-			$instance->SetFont('Arial', '', 10);
-			$instance->Cell(50, 5, $user->phone, $instance->b, 1, 'L');
 		}
 
 		// Sitio Web
@@ -101,6 +94,27 @@ class PdfHelper {
 
 			$instance->SetFont('Arial', '', 10);
 			$instance->Cell(50, 5, Self::getWebUrl($user->online), $instance->b, 1, 'L');
+		} else {
+			$instance->y += 5;
+		}
+
+		// Telefono
+		if (!is_null($user->phone)) {
+			$instance->x = 35;
+			$instance->SetFont('Arial', 'B', 10);
+			$instance->Cell(8, 5, 'Tel: ', $instance->b, 0, 'L');
+
+			$instance->SetFont('Arial', '', 10);
+			// $instance->Cell(50, 5, $user->phone, $instance->b, 1, 'L');
+
+		    $instance->MultiCell(
+				60, 
+				5, 
+				$user->phone, 
+		    	$instance->b, 
+		    	'L', 
+		    	false
+		    );
 		}
 		// $instance->Line(5, 5, 101, 5);
 		// $instance->Line(101, 5, 101, 45);

@@ -36,7 +36,7 @@ class RecipeSeeder extends Seeder
                 'amount'                        => 1,
             ],
             [
-                'name'                          => 'Amortiguadores de Baul 1945NR@1945NR',
+                'name'                          => 'Amortiguadores de Baul',
                 'order_production_status_id'    => 1,
                 'address_id'                    => 1,
                 'amount'                        => 1,

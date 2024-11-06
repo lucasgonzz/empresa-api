@@ -24,7 +24,7 @@ class Sale extends Model
     }
 
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles.article_variants', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'nota_credito_afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'current_acount', 'current_acount_payment_methods', 'price_type');
+        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles.article_variants', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'nota_credito_afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'afip_observations', 'current_acount', 'current_acount_payment_methods', 'price_type');
     }
 
     function sale_modifications() {
@@ -41,6 +41,10 @@ class Sale extends Model
 
     function afip_errors() {
         return $this->hasMany(AfipError::class);
+    }
+
+    function afip_observations() {
+        return $this->hasMany(AfipObservation::class);
     }
 
     public function budget() {

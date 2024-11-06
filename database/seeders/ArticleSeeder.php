@@ -65,7 +65,7 @@ class ArticleSeeder extends Seeder
                     'provider_code'         => 'p/'.$num,
                     'name'                  => $article['name'],
                     'slug'                  => ArticleHelper::slug($article['name'], $user->id),
-                    'cost'               => 1000,
+                    'cost'               => 100 * $num,
                     'costo_mano_de_obra'    => isset($article['costo_mano_de_obra']) ? $article['costo_mano_de_obra'] : null,
                     'status'                => isset($article['status']) ? $article['status'] : 'active',
                     'featured'              => isset($article['featured']) ? $article['featured'] : null,

@@ -3,7 +3,10 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Models\Article;
+use App\Models\User;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -19,11 +22,15 @@ class ProcessArchivoDeIntercambioProductos implements ShouldQueue
 
 
     public $user_id;
+    public $ct;
+    public $user;
     public $timeout = 9999999;
   
     public function __construct($user_id)
     {
         $this->user_id = $user_id;
+        $this->ct = new Controller();
+        $this->user = User::find($user_id);
     }
 
    
@@ -44,9 +51,21 @@ class ProcessArchivoDeIntercambioProductos implements ShouldQueue
                 Log::info('Entro con $data:');
                 Log::info($data);
 
+                $category_name = $data[4];
+                $category_id = null;
+
+                if (!is_null($category_name)
+                    && $category_name != ''
+                    && $category_name != '<Ninguno>') {
+
+                    $category_id = LocalImportHelper::getCategoryId($category_name, $this->ct, $this->user);
+                } 
+
+
                 $article_info = [
                     'provider_code'         => $data[0],
                     'name'                  => utf8_encode($data[1]),
+                    'category_id'           => $category_id,
                     'stock'                 => GeneralHelper::get_decimal_value($data[9]),
                     'bar_code'              => $data[11],
                     'stock_min'             => GeneralHelper::get_decimal_value($data[13]),

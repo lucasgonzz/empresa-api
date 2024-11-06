@@ -36,24 +36,28 @@ class CompanyPerformanceUsersAddressesPaymentMethodsHelper {
 		$relation = [];
 
 		foreach ($this->users_payment_methods as $user_payment_methods) {
-			
-			$relation_to_add = [
-				'user'				=> User::find($user_payment_methods['user_id']),
-				'payment_methods'	=> $user_payment_methods['payment_methods'],
-			];
 
-			$total_ingresado = 0;
-
-			foreach ($user_payment_methods['payment_methods'] as $payment_method) {
+			if (isset($user_payment_methods['user_id'])) {
 				
-				$total_ingresado += $payment_method->pivot->amount;
+				$relation_to_add = [
+					'user'				=> User::find($user_payment_methods['user_id']),
+					'payment_methods'	=> $user_payment_methods['payment_methods'],
+				];
+
+				$total_ingresado = 0;
+
+				foreach ($user_payment_methods['payment_methods'] as $payment_method) {
+					
+					$total_ingresado += $payment_method->pivot->amount;
+				}
+
+				$relation_to_add['total_ingresado'] = $total_ingresado;
+
+				$relation_to_add['total_vendido'] = $this->get_user_total_vendido($relation_to_add);
+
+				$relation[] = $relation_to_add;
 			}
-
-			$relation_to_add['total_ingresado'] = $total_ingresado;
-
-			$relation_to_add['total_vendido'] = $this->get_user_total_vendido($relation_to_add);
-
-			$relation[] = $relation_to_add;
+			
 		}
 
 		usort($relation, function ($a, $b) {

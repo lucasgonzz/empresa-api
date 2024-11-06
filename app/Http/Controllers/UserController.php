@@ -72,6 +72,10 @@ class UserController extends Controller
         $model->siempre_omitir_en_cuenta_corriente          = $request->siempre_omitir_en_cuenta_corriente;
         $model->redondear_centenas_en_vender          = $request->redondear_centenas_en_vender;
         
+        $model->header_articulos_pdf          = $request->header_articulos_pdf;
+
+
+        
         $model->save();
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_dolar, $request->dollar);
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_iva_included, $request->iva_included);

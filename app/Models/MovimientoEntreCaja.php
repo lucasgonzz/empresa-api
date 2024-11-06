@@ -12,4 +12,12 @@ class MovimientoEntreCaja extends Model
     function scopeWithAll($q) {
         
     }
+
+    function from_caja() {
+        return $this->belongsTo(Caja::class, 'from_caja_id');
+    }
+
+    function to_caja() {
+        return $this->belongsTo(Caja::class, 'to_caja_id');
+    }
 }

@@ -34,7 +34,7 @@ class UserSeeder extends Seeder
             [
                 'id'                            => 500,
                 'name'                          => 'Lucas',
-                'use_archivos_de_intercambio'   => 1,
+                'use_archivos_de_intercambio'   => 0,
                 'company_name'                  => 'Autopartes Boxes',
                 // 'image_url'                     => null,
                 'image_url'                     => env('APP_URL').'/storage/icon.png',
@@ -46,7 +46,7 @@ class UserSeeder extends Seeder
                 'visible_password'              => null,
                 'dollar'                        => 300,
                 'home_position'                 => 1,
-                'download_articles'             => 1,
+                'download_articles'             => 0,
                 'online'                        => 'http://tienda.local:8081',
                 'payment_expired_at'            => Carbon::now()->addDays(12),
                 'last_user_activity'            => Carbon::now(),
@@ -211,6 +211,7 @@ class UserSeeder extends Seeder
                 'production.production_movement',
                 'check_article_stock_en_vender',
                 'costo_en_dolares',
+                'check_guardar_ventas_con_cliente',
             ];
 
         } else if ($this->for_user == 'feito') {
@@ -229,6 +230,9 @@ class UserSeeder extends Seeder
                 'article_variants',
                 'deposit_movements',
                 'consultora_de_precios',
+                'cajas',
+                'budgets',
+                'codigos_de_barra_basados_en_numero_interno',
             ];
 
         } else if ($this->for_user == 'hipermax') {
@@ -236,10 +240,12 @@ class UserSeeder extends Seeder
             $models[0]['name'] = 'Hipermax';
 
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 1;
+            $models[0]['ask_amount_in_vender'] = 0;
 
             $models[0]['extencions'] = [
 
                 'bar_code_scanner',
+                'forzar_total',
                 'comerciocity_interno',
                 'ask_save_current_acount',
                 'articles_default_in_vender',
@@ -278,6 +284,9 @@ class UserSeeder extends Seeder
                 'cambiar_price_type_en_vender',
                 'no_usar_codigos_de_barra',
                 'deposit_movements',
+                'online',
+                'forzar_total',
+                'cajas',
             ];
 
         } else if ($this->for_user == 'ros_mar') {
@@ -300,7 +309,9 @@ class UserSeeder extends Seeder
                 'articulos_con_propiedades_de_distribuidora',
                 'indicar_vendedor_en_vender',
                 'comision_por_proveedores',
-                'ask_save_current_acount'
+                'ask_save_current_acount',
+                'cajas',
+                'no_usar_codigos_de_barra',
             ];
 
         } else if ($this->for_user == 'ferretodo') {
@@ -342,6 +353,7 @@ class UserSeeder extends Seeder
                 'password'                      => $model['password'],  
                 'image_url'                     => $model['image_url'],  
                 'visible_password'              => $model['visible_password'],  
+                'download_articles'             => isset($model['download_articles']) ? $model['download_articles'] : null,  
                 'address_id'                    => isset($model['address_id']) ? $model['address_id'] : null,  
                 'owner_id'                      => isset($model['owner_id']) ? $model['owner_id'] : null,  
                 'admin_access'                  => isset($model['admin_access']) ? $model['admin_access'] : null, 

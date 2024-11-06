@@ -27,7 +27,7 @@ class SaleSeeder extends Seeder
     {
 
         $this->reportes();
-        // $this->reportes_articulos();
+        $this->reportes_articulos();
 
         // $this->pagos(500);
 

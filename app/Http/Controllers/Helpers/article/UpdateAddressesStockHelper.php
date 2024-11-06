@@ -27,7 +27,13 @@ class UpdateAddressesStockHelper {
             
             $article_address = $this->get_article_address();
 
-            $diferencia = (float)$address['pivot']['amount'] - $article_address->pivot->amount;
+            if (!is_null($article_address)) {
+
+                $diferencia = (float)$address['pivot']['amount'] - $article_address->pivot->amount;
+            } else {
+                $diferencia = (float)$address['pivot']['amount'];
+            }
+
 
             $this->guardar_stock_movement($diferencia);
 

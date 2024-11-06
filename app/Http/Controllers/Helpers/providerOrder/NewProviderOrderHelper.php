@@ -79,6 +79,7 @@ class NewProviderOrderHelper {
                     $total_article -= $descuento;
                 }
 
+                $article_iva = 0;
 
                 if (!is_null($article->pivot->iva_id)) {
 
@@ -148,11 +149,14 @@ class NewProviderOrderHelper {
 
             if (is_null($current_acount)) {
 
-                $this->crear_current_acount();
+                $current_acount = $this->crear_current_acount();
             } else {
 
-                $this->actualizar_current_acount($current_acount);
+                $current_acount = $this->actualizar_current_acount($current_acount);
             }
+
+            CurrentAcountHelper::checkSaldos('provider', $this->provider_order->provider_id, $current_acount, true);
+
         }
 
     }
@@ -167,7 +171,7 @@ class NewProviderOrderHelper {
 
         $current_acount->save();
 
-        CurrentAcountHelper::checkSaldos('provider', $this->provider_order->provider_id);
+        return $current_acount;
     }
 
     function crear_current_acount() {
@@ -186,6 +190,8 @@ class NewProviderOrderHelper {
         $current_acount->saldo = $saldo;
 
         $current_acount->save();
+
+        return $current_acount;
     }
 
     function set_ivas() {
@@ -318,7 +324,8 @@ class NewProviderOrderHelper {
 
     function update_iva($article, $new_article) {
 
-        if (!is_null($new_article['pivot']['iva_id']) 
+        if (isset($new_article['pivot']['iva_id'])
+            && !is_null($new_article['pivot']['iva_id']) 
             && $new_article['pivot']['iva_id'] != 0 
             && $article->iva_id != $new_article['pivot']['iva_id']) {
 

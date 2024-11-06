@@ -20,50 +20,128 @@ class SearchController extends Controller
         }
         foreach ($filters as $filter) {
             if (isset($filter['type'])) {
+
+                if (isset($filter['ordenar_de'])
+                && $filter['ordenar_de'] != '') {
+                    $models = $models->orderBy($filter['key'], $filter['ordenar_de']);
+
+                    Log::info('ordenando por '.$filter['key']. ' de '.$filter['ordenar_de']);
+                }
+
                 if (isset($filter['en_blanco']) && (boolean)$filter['en_blanco']) {
 
                     $models = $models->whereNull($filter['key']);
+                    Log::info('en_blanco para '.$filter['key']);
 
                 } else {
 
                     if ($filter['type'] == 'number') {
-                        if ($filter['number_type'] == 'min' && $filter['value'] != '') {
-                            $models = $models->where($filter['key'], '<', $filter['value']);
-                            Log::info('Filtrando por number '.$filter['text'].' min');
+                        if (isset($filter['menor_que'])
+                            && $filter['menor_que'] != '') {
+                            
+                            $models = $models->where($filter['key'], '<', $filter['menor_que']);
+                            Log::info('Filtrando por number '.$filter['key'].' menor_que');
                         }
-                        if ($filter['number_type'] == 'equal' && $filter['value'] != '') {
-                            $models = $models->where($filter['key'], '=', $filter['value']);
-                            Log::info('Filtrando por number '.$filter['text'].' igual');
+                        if (isset($filter['igual_que'])
+                            && $filter['igual_que'] != '') {
+                            
+                            $models = $models->where($filter['key'], '=', $filter['igual_que']);
+                            Log::info('Filtrando por number '.$filter['key'].' igual');
                         }
-                        if ($filter['number_type'] == 'max' && $filter['value'] != '') {
-                            $models = $models->where($filter['key'], '>', $filter['value']);
-                            Log::info('Filtrando por number '.$filter['text'].' max');
+                        if (isset($filter['mayor_que'])
+                            && $filter['mayor_que'] != '') {
+                            
+                            $models = $models->where($filter['key'], '>', $filter['mayor_que']);
+                            Log::info('Filtrando por number '.$filter['key'].' mayor_que');
                         }
-                    } else if (($filter['type'] == 'text' || $filter['type'] == 'textarea') && $filter['value'] != '') {
-                        if ($filter['key'] == 'bar_code') {
-                            $models = $models->where($filter['key'], $filter['value']);
-                        } else {
+                    } else if (($filter['type'] == 'text' || $filter['type'] == 'textarea')) {
 
-                            $keywords = explode(' ', $filter['value']);
+                        if (isset($filter['igual_que'])
+                            && $filter['igual_que'] != '') {
+
+                            $models = $models->where($filter['key'], $filter['igual_que']);
+                        
+                        } else if (isset($filter['que_contenga'])
+                            && $filter['que_contenga'] != '') {
+
+                            $keywords = explode(' ', $filter['que_contenga']);
 
                             foreach ($keywords as $keyword) {
                                 $query = $filter['key'].' LIKE ?';
                                 $models->whereRaw($query, ["%$keyword%"]);
                             }
 
+                            Log::info('Que '.$filter['key'].' contenga '.$filter['que_contenga']);
+                            Log::info('keywords:');
+                            Log::info($keywords);
+
                             // $models = $models->where($filter['key'], 'like', '%'.$filter['value'].'%');
                         }
-                        Log::info('Filtrando por text '.$filter['text']);
-                    } else if ($filter['type'] == 'search' && $filter['value'] != 0) {
-                        $models = $models->where($filter['key'], $filter['value']);
-                        Log::info('Filtrando por text '.$filter['text'].' value = '.$filter['value']);
-                    } else if ($filter['type'] == 'boolean' && $filter['value'] != -1) {
-                        $models = $models->where($filter['key'], $filter['value']);
-                        Log::info('Filtrando por boolean '.$filter['text']);
-                    } else if ($filter['type'] != 'boolean' && $filter['value'] != 0) {
-                        $models = $models->where($filter['key'], $filter['value']);
-                        Log::info('Filtrando por value '.$filter['text']);
+                        // Log::info('Filtrando por text '.$filter['text']);
+                    } else if ($filter['type'] == 'search' 
+                        && isset($filter['igual_que'])
+                        && $filter['igual_que'] != 0
+                        && $filter['igual_que'] != '') {
+                        
+                        Log::info('Filtrando por search '.$filter['key'].' igual_que '.$filter['igual_que']);
+
+                        $models = $models->where($filter['key'], $filter['igual_que']);
+                    
+                    } else if ($filter['type'] == 'date' 
+                        && ( 
+                            (isset($filter['menor_que']) && $filter['menor_que'] != '')
+                            || (isset($filter['igual_que']) && $filter['igual_que'] != '')
+                            || (isset($filter['mayor_que']) && $filter['mayor_que'] != '')
+                        )
+                    ) {
+
+                        if (isset($filter['menor_que'])) {
+
+                            $models = $models->whereDate($filter['key'], '<', $filter['menor_que']);
+                            Log::info('Filtrando por date '.$filter['key'].' menor_que '.$filter['menor_que']);
+                        }
+
+                        if (isset($filter['igual_que'])) {
+
+                            $models = $models->whereDate($filter['key'], $filter['igual_que']);
+                            Log::info('Filtrando por date '.$filter['key'].' igual_que '.$filter['igual_que']);
+                        }
+
+                        if (isset($filter['mayor_que'])) {
+
+                            $models = $models->whereDate($filter['key'], '>', $filter['mayor_que']);
+                            
+                            Log::info('Filtrando por date '.$filter['key'].' mayor_que '.$filter['mayor_que']);
+                        }
+
+                    } else if ($filter['type'] == 'select' 
+                        && isset($filter['igual_que'])
+                        && $filter['igual_que'] != 0
+                    ) {
+                        
+                        $models = $models->where($filter['key'], $filter['igual_que']);
+                        Log::info('Filtrando por select '.$filter['key'].' igual_que '.$filter['igual_que']);
+
+                    } else if ($filter['type'] == 'checkbox' 
+                        && isset($filter['checkbox'])
+                        && $filter['checkbox'] != -1
+                    ) {
+                        
+                        $models = $models->where($filter['key'], $filter['checkbox']);
+                        Log::info('Filtrando por checkbox '.$filter['key'].' igual_que '.$filter['checkbox']);
                     }
+
+
+                    // else if ($filter['type'] == 'search' && $filter['value'] != 0) {
+                    //     $models = $models->where($filter['key'], $filter['value']);
+                    //     Log::info('Filtrando por text '.$filter['text'].' value = '.$filter['value']);
+                    // } else if ($filter['type'] == 'boolean' && $filter['value'] != -1) {
+                    //     $models = $models->where($filter['key'], $filter['value']);
+                    //     Log::info('Filtrando por boolean '.$filter['text']);
+                    // } else if ($filter['type'] != 'boolean' && $filter['value'] != 0) {
+                    //     $models = $models->where($filter['key'], $filter['value']);
+                    //     Log::info('Filtrando por value '.$filter['text']);
+                    // }
                 }
             }
         }
@@ -73,7 +151,7 @@ class SearchController extends Controller
         $models = $models->withAll()
                         ->orderBy('created_at', 'DESC');
         if ($paginate) {
-            $models = $models->paginate(100);
+            $models = $models->paginate(25);
         } else {
             $models = $models->get();
         }
@@ -138,7 +216,6 @@ class SearchController extends Controller
         }
 
         if ($model_name_param == 'article' || $model_name_param == 'client' || $model_name_param == 'provider') {
-            Log::info('status active');
             $models->where('status', 'active');
         }
 

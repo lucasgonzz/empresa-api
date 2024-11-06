@@ -15,8 +15,13 @@ class AfipHelper extends Controller {
     public $factura_solo_algunos_metodos_de_pago;
     public $afip_selected_payment_methods;
 
-    function __construct($sale, $articles = null) {
-        $this->user = $this->user();
+    function __construct($sale, $articles = null, $user = null) {
+
+        if (is_null($user)) {
+           $this->user = $this->user();
+        } else {
+           $this->user = $user;
+        }
         $this->sale = $sale;
         if (is_null($articles)) {
             $articles = $this->sale->articles;
@@ -27,7 +32,7 @@ class AfipHelper extends Controller {
     }
 
     function set_afip_selected_payment_methods() {
-        $models = AfipSelectedPaymentMethod::where('user_id', $this->userId())
+        $models = AfipSelectedPaymentMethod::where('user_id', $this->user->id)
                                             ->get();
         if (count($models) >= 1) {
             

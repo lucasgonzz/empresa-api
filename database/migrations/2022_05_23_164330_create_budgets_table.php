@@ -30,6 +30,7 @@ class CreateBudgetsTable extends Migration
             // $table->integer('price_type_id')->unsigned()->default(1);
 
             $table->text('observations')->nullable();
+            $table->decimal('total', 30,2)->nullable();
 
             $table->integer('user_id')->unsigned();
             $table->timestamps();

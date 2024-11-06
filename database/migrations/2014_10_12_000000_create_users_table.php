@@ -83,6 +83,10 @@ class CreateUsersTable extends Migration
 
             $table->string('comision_funcion')->nullable();
 
+            $table->boolean('puede_guardar_ventas_sin_cliente')->default(0);
+
+            $table->boolean('header_articulos_pdf')->default(1);
+
             $table->timestamp('login_at')->nullable();
             $table->timestamp('logout_at')->nullable();
             // $table->foreign('owner_id')->references('id')->on('users');

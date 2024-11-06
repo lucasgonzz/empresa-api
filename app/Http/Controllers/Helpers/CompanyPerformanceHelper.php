@@ -340,7 +340,11 @@ class CompanyPerformanceHelper {
     function sumar_relation($company_performance, $relation_name) {
         foreach ($company_performance->{$relation_name} as $payment_method) {
 
-            $this->suma_company_performances[$relation_name][$payment_method->id]['pivot']['amount'] += $payment_method->pivot->amount;
+            if (isset($this->suma_company_performances[$relation_name][$payment_method->id])) {
+
+                $this->suma_company_performances[$relation_name][$payment_method->id]['pivot']['amount'] += $payment_method->pivot->amount;
+            }
+
         }
     }
 

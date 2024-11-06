@@ -303,10 +303,17 @@ class CurrentAcountHelper {
         return $pagandose;
     }
 
-    static function checkSaldos($model_name, $model_id, $from_current_acount = null) {
+    static function checkSaldos($model_name, $model_id, $from_current_acount = null, $mayor_o_igual = false) {
         $current_acounts = CurrentAcount::orderBy('created_at', 'ASC');
         if (!is_null($from_current_acount)) {
-            $current_acounts = $current_acounts->where('created_at', '>', $from_current_acount->created_at);
+            
+            if ($mayor_o_igual) {
+                $operador = '>=';
+            } else {
+                $operador = '>';
+            }
+            
+            $current_acounts = $current_acounts->where('created_at', $operador, $from_current_acount->created_at);
         }
         if ($model_name == 'client') {
             $current_acounts = $current_acounts->where('client_id', $model_id);

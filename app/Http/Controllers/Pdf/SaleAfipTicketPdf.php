@@ -256,7 +256,7 @@ class SaleAfipTicketPdf extends fpdf {
 	function printPhone() {
 		$this->y = 237;
 		$this->x = 5;
-		$this->Cell(200, 10, 'Telefono: '.Auth()->user()->phone, 1, 0, 'C');
+		$this->Cell(200, 8, 'Telefono: '.Auth()->user()->phone, 1, 0, 'C');
 	}
 
 	function printAfipData() {
@@ -708,13 +708,17 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->SetFont('Arial', 'B', 9);
 		// $this->Cell(50,5,'IVA '.Auth()->user()->iva->name,0,0,'L');
 		$this->Cell(50,5,'IVA '.$this->sale->afip_ticket->iva_negocio,0,1,'L');
+
+		$this->SetX(6);
+		$this->Cell(20,4,'Telefono:',0,0,'L');
+		$this->Cell(50,4,$this->user->phone,0,1,'L');
 		
 		// Inicio actividades
 		if ($this->sale->afip_information->inicio_actividades != '') {
 			$this->SetX(6);
 			$this->SetFont('Arial', 'B', 9);
-			$this->Cell(52,5,'Fecha de Inicio de Actividades:', 0, 0,'L');
-			$this->Cell(25,5,date_format($this->sale->afip_information->inicio_actividades, 'd/m/Y'), 0, 1,'L');
+			$this->Cell(52,4,'Fecha de Inicio de Actividades:', 0, 0,'L');
+			$this->Cell(25,4,date_format($this->sale->afip_information->inicio_actividades, 'd/m/Y'), 0, 1,'L');
 		}
 	}
 

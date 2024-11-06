@@ -13,6 +13,10 @@ class ArticleVariant extends Model
         $q->with('article_property_values', 'addresses');
     }
 
+    function article() {
+        return $this->belongsTo(Article::class);
+    }
+
     function article_property_values() {
         return $this->belongsToMany(ArticlePropertyValue::class);
     }

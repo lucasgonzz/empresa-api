@@ -35,6 +35,9 @@ class EmployeeController extends Controller
         $model->admin_access                                    = $request->admin_access;
         $model->dias_alertar_empleados_ventas_no_cobradas       = $request->dias_alertar_empleados_ventas_no_cobradas;
         $model->ver_alertas_de_todos_los_empleados              = $request->ver_alertas_de_todos_los_empleados;
+        
+        $model->puede_guardar_ventas_sin_cliente              = $request->puede_guardar_ventas_sin_cliente;
+
         $model->password                                        = bcrypt($request->visible_password);
         if ($model->doc_number == $request->doc_number || !$this->docNumerRegister($request->doc_number)) {
             $model->doc_number          = $request->doc_number;

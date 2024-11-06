@@ -46,6 +46,7 @@ class BudgetHelper {
 	            'client_id' 			=> $budget->client_id,
 	            'budget_id' 			=> $budget->id,
 	            'observations' 			=> $budget->observations,
+	            'total' 				=> $budget->total,
             	'price_type_id'         => Self::get_price_type_id($budget),
             	'employee_id'           => SaleHelper::getEmployeeId(),
 	            'save_current_acount' 	=> Self::get_guardar_cuenta_corriente($budget),
@@ -56,7 +57,7 @@ class BudgetHelper {
 	        Self::attachSaleDiscountsAndSurchages($sale, $budget);
 
 	        if (!$sale->to_check) {
-	        	SaleHelper::attachCurrentAcountsAndCommissions($sale);
+	        	SaleHelper::create_current_acount($sale);
 	        }
 
         	$ct->sendAddModelNotification('Sale', $sale->id, false);

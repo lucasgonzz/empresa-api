@@ -20,11 +20,13 @@ class MovimientoEntreCajaHelper {
 
 	function egreso_caja_origen() {
 
+        $notas = 'Transferencia HACIA '.$this->movimiento_entre_caja->to_caja->name;
+
         $data = [
             'concepto_movimiento_caja_id'   => 5,
             'ingreso'                       => null,
             'egreso'                        => $this->movimiento_entre_caja->amount,
-            'notas'                         => null,
+            'notas'                         => $notas,
             'caja_id'                       => $this->movimiento_entre_caja->from_caja_id,
             'employee_id'                   => $this->movimiento_entre_caja->employee_id,
             'movimiento_entre_caja_id'		=> $this->movimiento_entre_caja->id,
@@ -34,12 +36,14 @@ class MovimientoEntreCajaHelper {
 	}
 
 	function ingreso_caja_destino() {
+        
+        $notas = 'Transferencia DESDE '.$this->movimiento_entre_caja->from_caja->name;
 
         $data = [
             'concepto_movimiento_caja_id'   => 5,
             'ingreso'                       => $this->movimiento_entre_caja->amount,
             'egreso'                       	=> null,
-            'notas'                         => null,
+            'notas'                         => $notas,
             'caja_id'                       => $this->movimiento_entre_caja->to_caja_id,
             'employee_id'                   => $this->movimiento_entre_caja->employee_id,
             'movimiento_entre_caja_id'		=> $this->movimiento_entre_caja->id,

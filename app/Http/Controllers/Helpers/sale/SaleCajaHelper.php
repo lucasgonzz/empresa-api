@@ -12,15 +12,22 @@ class SaleCajaHelper {
 
 		Log::info('check_caja para la venta N° '.$sale->num.'. caja_id: '.$sale->caja_id);
 
-		if (!is_null($sale->caja_id)
-			&& $sale->caja_id != 0
-			&&
+		if (count($sale->current_acount_payment_methods) >= 1
+			||
 			(
-				is_null($sale->client_id)
-				|| $sale->omitir_en_cuenta_corriente
-			)) {
+				!is_null($sale->caja_id)
+				&& $sale->caja_id != 0
+				&&
+				(
+					is_null($sale->client_id)
+					|| $sale->omitir_en_cuenta_corriente
+				)
+			)
+		) {
 
 			Self::crear_movimiento_caja($sale);
+		} else {
+			Log::info('No se creo movimiento en caja');
 		}
 	}
 
@@ -30,16 +37,20 @@ class SaleCajaHelper {
 
 		foreach ($sale->current_acount_payment_methods as $payment_method) {
 
-	        $data = [
-	            'concepto_movimiento_caja_id'   => 1,
-	            'ingreso'                       => $payment_method->pivot->amount,
-	            'egreso'                        => null,
-	            'notas'                         => '',
-	            'sale_id'                       => $sale->id,
-	            'caja_id'                       => $payment_method->pivot->caja_id,
-	        ];
+			if (!is_null($payment_method->pivot->caja_id)
+			&& $payment_method->pivot->caja_id != 0) {
+				
+	 	        $data = [
+		            'concepto_movimiento_caja_id'   => 1,
+		            'ingreso'                       => $payment_method->pivot->amount,
+		            'egreso'                        => null,
+		            'notas'                         => '',
+		            'sale_id'                       => $sale->id,
+		            'caja_id'                       => $payment_method->pivot->caja_id,
+		        ];
 
-	    	$helper->crear_movimiento($data);
+		    	$helper->crear_movimiento($data);
+			}
 
         }
 	}

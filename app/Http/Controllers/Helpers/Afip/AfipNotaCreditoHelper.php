@@ -54,7 +54,12 @@ class AfipNotaCreditoHelper
         $wsfe->setXmlTa(file_get_contents(TA_file));
 
         $cbte_nro = AfipHelper::getNumeroComprobante($wsfe, $punto_venta, $cbte_tipo);
-        
+
+        if (!$cbte_nro['hubo_un_error']) {
+
+            $cbte_nro = $cbte_nro['numero_comprobante'];
+        }
+
         Log::info('articulos para obtener importes:');
         Log::info($this->nota_credito->articles);
 
@@ -259,25 +264,34 @@ class AfipNotaCreditoHelper
     }
 
     function getTipoCbte() {
+
+        $cbte_tipo = $this->sale->afip_ticket->cbte_tipo;
+
         if (SaleHelper::getTotalSale($this->sale) >= $this->monto_minimo_para_factura_de_credito) {
-            if ($this->sale->afip_information->iva_condition->name == 'Responsable inscripto') {
-                if (!is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) && $this->sale->client->iva_condition->name == 'Responsable inscripto') {
-                    return 203; #A
-                } else {
-                    return 208; #B
-                }
-            } else if ($this->sale->afip_information->iva_condition->name == 'Monotributista') {
-                return 213; #C
+
+
+            if ($cbte_tipo == '201') {
+                #A
+                return  203;
+            } else if ($cbte_tipo == '206') {
+                #B
+                return  208;
+            } else if ($cbte_tipo == '211') {
+                #C
+                return  213;
             }
+
         } else {
-            if ($this->sale->afip_information->iva_condition->name == 'Responsable inscripto') {
-                if (!is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) && $this->sale->client->iva_condition->name == 'Responsable inscripto') {
-                    return 3; #A
-                } else {
-                    return 8; #B
-                }
-            } else if ($this->sale->afip_information->iva_condition->name == 'Monotributista') {
-                return 13; #C
+
+            if ($cbte_tipo == '1') {
+                #A
+                return  3;
+            } else if ($cbte_tipo == '6') {
+                #B
+                return  8;
+            } else if ($cbte_tipo == '11') {
+                #C
+                return  13;
             }
         } 
     }

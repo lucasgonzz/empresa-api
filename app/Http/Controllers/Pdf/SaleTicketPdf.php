@@ -134,8 +134,18 @@ class SaleTicketPdf extends fpdf {
 	function items() {
 		$this->x = 2;
 		$this->y += 2;
+
 		$ancho_description = 60 * $this->cell_ancho / 100; 
+
 		$ancho_price = $this->cell_ancho - $ancho_description; 
+		
+		if ($this->ancho > 60) {
+
+			$ancho_price = $ancho_price / 2; 
+		}
+
+
+
 		foreach ($this->sale->combos as $combo) {
 			$this->SetFont('Arial', '', 9);
 
@@ -164,6 +174,12 @@ class SaleTicketPdf extends fpdf {
 			$this->y = $y_1;
 
 			$this->SetFont('Arial', 'B', 9);
+
+			if ($this->ancho > 60) {
+
+				$this->Cell($ancho_price, $y_2 - $y_1, '$'.Numbers::Price($article->pivot->price), 'BT', 0, 'R');
+			}
+
 			$this->Cell($ancho_price, $y_2 - $y_1, $this->totalItem($article), 'BT', 0, 'R');
 			
 			$this->x = 2;

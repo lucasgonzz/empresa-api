@@ -192,6 +192,26 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Consultora de precios',
                 'slug' => 'consultora_de_precios',
             ],
+            [
+                // 36
+                'name' => 'Forzar Total en VENDER',
+                'slug' => 'forzar_total',
+            ],
+            [
+                // 37
+                'name' => 'Tener que asignar clientes a las ventas',
+                'slug' => 'check_guardar_ventas_con_cliente',
+            ],
+            [
+                // 38
+                'name' => 'Cajas',
+                'slug' => 'cajas',
+            ],
+            [
+                // 39
+                'name' => 'Codigos de barra basado en numero interno',
+                'slug' => 'codigos_de_barra_basados_en_numero_interno',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

@@ -95,6 +95,10 @@ class DatabaseSeeder extends Seeder
             } else if ($for_user == 'ros_mar') {
 
                 $this->call(ArticleSeeder::class);
+
+            } else if ($for_user == 'hipermax') {
+
+                $this->call(ArticleSeeder::class);
             }
 
 
@@ -117,7 +121,7 @@ class DatabaseSeeder extends Seeder
 
             // $this->call(MeLiOrderSeeder::class);
             
-            // $this->call(ProviderOrderSeeder::class);
+            $this->call(ProviderOrderSeeder::class);
 
             $this->call(ProviderPagosSeeder::class);
 
@@ -152,7 +156,7 @@ class DatabaseSeeder extends Seeder
 
 
             
-            $this->call(CartSeeder::class);
+            // $this->call(CartSeeder::class);
             $this->call(MessageSeeder::class);
             $this->call(ArticleTicketInfoSeeder::class);
             // $this->call(ArticlePerformanceSeeder::class);

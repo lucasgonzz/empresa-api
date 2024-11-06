@@ -26,7 +26,7 @@ class CurrentAcount extends Model
     }
 
     public function sale() {
-        return $this->belongsTo('App\Models\Sale');
+        return $this->belongsTo('App\Models\Sale')->withTrashed();
     }
 
     public function afip_ticket() {

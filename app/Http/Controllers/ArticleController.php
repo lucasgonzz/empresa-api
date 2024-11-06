@@ -439,4 +439,25 @@ class ArticleController extends Controller
         return response()->json(['model' => $this->fullModel('Article', $request->article_id)], 200);
 
     }
+
+    function articles_por_defecto() {
+        $models = Article::where('user_id', $this->userId())
+                            ->where('status', 'active')
+                            ->where('default_in_vender', 1)
+                            ->orderBy('created_at', 'ASC')
+                            ->withAll()
+                            ->get();
+
+        return response()->json(['models' => $models], 200);
+    }
+
+    function ultimos_actualizados() {
+        $models = Article::where('user_id', $this->userId())
+                            ->orderBy('updated_at', 'DESC')
+                            ->take(10)
+                            ->withAll()
+                            ->get();
+                            
+        return response()->json(['models' => $models], 200);
+    }
 }
