@@ -13,7 +13,7 @@ class SaleCajaHelper {
 		Log::info('check_caja para la venta N° '.$sale->num.'. caja_id: '.$sale->caja_id);
 
 		if (count($sale->current_acount_payment_methods) >= 1
-			||
+			&&
 			(
 				!is_null($sale->caja_id)
 				&& $sale->caja_id != 0

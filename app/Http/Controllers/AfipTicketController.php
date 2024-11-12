@@ -15,8 +15,13 @@ class AfipTicketController extends Controller
                             ->with('afip_observations')
                             ->with('employee')
                             ->whereHas('afip_errors')
-                            ->orderBy('created_at', 'ASC')
-                            ->get();
+                            ->orderBy('created_at', 'ASC');
+
+        if (!$this->is_admin()) {
+            $sales_with_afip_errors = $sales_with_afip_errors->where('employee_id', $this->userId(false));
+        }
+
+        $sales_with_afip_errors = $sales_with_afip_errors->get();
 
         $sales_with_afip_observations = Sale::where('user_id', $this->userId())
                             ->with('address')
@@ -24,8 +29,15 @@ class AfipTicketController extends Controller
                             ->with('afip_observations')
                             ->whereHas('afip_observations')
                             ->with('employee')
-                            ->orderBy('created_at', 'ASC')
-                            ->get();
+                            ->orderBy('created_at', 'ASC');
+
+        if (!$this->is_admin()) {
+            $sales_with_afip_observations = $sales_with_afip_observations->where('employee_id', $this->userId(false));
+        }
+
+        $sales_with_afip_observations = $sales_with_afip_observations->get();
+
+        
 
         $errores_de_facturacion = [];
 

@@ -212,6 +212,11 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Codigos de barra basado en numero interno',
                 'slug' => 'codigos_de_barra_basados_en_numero_interno',
             ],
+            [
+                // 40
+                'name' => 'Filtrar clientes por sucursal en vender',
+                'slug' => 'filtrar_clientes_por_sucursal_en_vender',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

@@ -19,7 +19,7 @@ class StockMovementController extends Controller
 
     function index($article_id) {
         $models = StockMovement::where('article_id', $article_id)
-                                ->orderBy('created_at', 'DESC')
+                                ->orderBy('id', 'DESC')
                                 ->with('article_variant')
                                 // ->select('temporal_id', 'article_id', 'from_address_id', 'to_address_id', 'provider_id', 'sale_id', 'nota_credito_id', 'concepto', 'observations', 'amount', 'employee_id', 'user_id')
                                 ->get();
@@ -117,7 +117,7 @@ class StockMovementController extends Controller
 
             $stock_movement_anterior = StockMovement::where('article_id', $this->article->id)
                                                     ->orderBy('created_at', 'DESC')
-                                                    ->where('id', '!=', $this->stock_movement->id)
+                                                    ->where('id', '<', $this->stock_movement->id)
                                                     ->first();
 
             if (!is_null($stock_movement_anterior)) {

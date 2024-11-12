@@ -287,6 +287,7 @@ class UserSeeder extends Seeder
                 'online',
                 'forzar_total',
                 'cajas',
+                'filtrar_clientes_por_sucursal_en_vender',
             ];
 
         } else if ($this->for_user == 'ros_mar') {

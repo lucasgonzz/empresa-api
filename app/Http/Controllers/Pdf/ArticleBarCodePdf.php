@@ -20,13 +20,13 @@ class ArticleBarCodePdf extends fpdf {
 		$this->setArticles($ids);
 		$this->barcodeGenerator = new DNS1D();
 
-		$this->margen_superior = 2;
+		$this->margen_superior = 5;
 
 		$this->code_width = 42;
 		$this->max_columns = 5;  // Máximo de artículos por fila
 		$this->alto_maximo = 15;  
 		$this->image_height = 7; // Alto del la imagen del codigo
-		$this->alto_codigo_text = 3; // Alto con el que se imprime el text del codigo debajo de la imagen
+		$this->alto_codigo_text = 4; // Alto con el que se imprime el text del codigo debajo de la imagen
 		$this->espacio_entre_imagen_y_texto_del_codigo = 2;
 
 		$this->AddPage();
@@ -116,22 +116,17 @@ class ArticleBarCodePdf extends fpdf {
 			$y_despues_de_multicell = $this->y;
 
 			$alto_multicell = $y_despues_de_multicell - $y_antes_de_multicell;
-			
-			// dd('alto_multicell: '.$alto_multicell);
-			// dd('y quedo en '.$this->y.', alto alto_maximo: '.$this->alto_maximo);
 
-			if ($this->y > $this->alto_maximo) {
-				// dd($description.' tenia y en '.$this->y);
-				$this->alto_maximo = $this->y;
-			}
-
-			// dd('se van a restar '.$this->alto_maximo);
 
 			$alto_articulo_impreso = $alto_multicell + $this->alto_codigo_text + $this->image_height + $this->espacio_entre_imagen_y_texto_del_codigo;
-			// dd('alto_articulo_impreso: '.$alto_articulo_impreso);
 
 			$this->y -= $alto_articulo_impreso;
 			$this->x = $x_antes_de_multicell + $this->code_width;
+			
+			// if ($this->y > $this->alto_maximo) {
+			if ($alto_articulo_impreso > $this->alto_maximo) {
+				$this->alto_maximo = $alto_articulo_impreso;
+			}
 		}
 	}
 

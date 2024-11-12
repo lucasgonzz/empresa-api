@@ -83,6 +83,13 @@ class SaleHelper extends Controller {
         return 1;
     }
 
+    static function get_terminada_at($to_check) {
+        if (Self::get_terminada($to_check)) {
+            return Carbon::now();
+        }
+        return null;
+    }
+
     static function check_guardad_cuenta_corriente_despues_de_facturar($sale, $instance) {
         if (UserHelper::hasExtencion('guardad_cuenta_corriente_despues_de_facturar')
             && !Self::al_cliente_se_le_factura_en_el_acto($sale) ) {

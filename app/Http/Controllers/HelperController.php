@@ -57,6 +57,151 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function recalcular_movimientos_stock() {
+
+        $articles_name = [
+            'CINTA PVC SIN ADHESIVO BLANCA  (IMP.)',
+            'TERMOSTATO COOLTECH (B23626-2S)  P/ 2 FRIOS',
+            'AISLACION NEGRA  1/4 (6X6) COOLTECH (PRECIO X METRO)',
+            
+            // 'PRESOST. BIF. MACHO, R-134A, USA (SW/9066F)',
+            // 'PLAQUETA (MC-P03) FASE 2 PLUS',
+            // 'PLAQUETA (MC-P04) FASE 3 DREAN',
+            // 'AISLACION NEGRA 3/8 (10X6) COOLTECH (CO-D10) (PRECIO X METRO)',
+            // 'PLAQUETA (MC-L24) GAFA 6500/7500 FASE 1 / ELECTROLUX ELAV 9700',
+            // 'PLAQUETA (MC-L25) GAFA 6500/7500 FASE 2/ ELECTROLUX ELS 7800 B',
+            // 'PLAQUETA (MC-L13) DREAN CONCEPT 5.05 V1 PROGRAMABLE (COMUN O EEE)',
+            // 'PLAQUETA (MC-L19) EWT 07A/09A/22A/24A (8 BOT.)',
+            // 'PLAQUETA (MC-L23) GAFA FULL 6000/6100/7000 /ELECTROLUX ELAV 8450',
+            // 'PLAQUETA (MC-L22) CONSUL CWR600 / EWD07A / EWD22A / CWD22 / CWD07',
+            // 'CRISTAL DE PUERTA DREAN BLUE VIDRIO (OFERTA)',
+            // 'AISLACION NEGRA  1/2 (13X9) COOLTECH (CO-F13) (PRECIO X METRO)',
+            // 'AISLACION NEGRA 5/8 (16X6) COOLTECH (CO-D16) (PRECIO X METRO)',
+            // 'CAÑO DE COBRE X ROLLO 5/16',
+            // 'CAÑO DE COBRE X ROLLO 1/4',
+            // 'CAÑO DE COBRE X ROLLO 3/8',
+            // 'CAÑO DE COBRE X ROLLO 1/2',
+            // 'FILTROS C/CHICOTE 15GR. (IMP.)',
+            // 'CAPACITOR 35 MF 440 (CA-440-35)',
+            // 'CAPACITOR 30 MF 440 (CA-440-30)',
+            // 'CAPACITOR 50 MF 440 (CA-440-50)',
+            // 'CAPACITOR 60 MF 440 (CA-440-60)',
+            // 'CAPACITOR (CUADRADO) 1,5 MF 400V (CBB61)',
+            // 'CAPACITOR (CUADRADO) 2.5 MF 400V (CBB61)',
+            // 'CAPACITOR (CUADRADO) 3,0 MF 400V (CBB61)',
+            // 'JUEGO DE MANGUERA 36" (R12) (GGT-336)',
+            // 'MOTOCOMPRESOR HUAYI 1/4',
+            // 'MOTOCOMPRESOR HUAYI 1/5',
+            // 'MOTOCOMPRESOR HUAYI 1/3',
+            // 'GAS REFRIGERANTE 134 (13.6 KG) BEON',
+            // 'VARILLA DE PLATA CHATA PARA SOLDAR (S0%-h)',
+            // 'TURBINA AIRE VENTANA 180x85MM',
+            // 'PLAQUETA (MC-L23-1) GAFA 6000/6100/7000 1 CONECTOR 12 PINES',
+            // 'PLAQUETA (MC-L18) AWR 680/682/683 (7 BOT.)',
+            // 'GARANTIA (BL) CAPACIMETRO (BL-001)',
+            // 'SERIGRAFIA LAVARROPAS DREAN CONCEPT 5.05 V1',
+        ];
+
+        foreach ($articles_name as $article_name) {
+            $article = Article::where('user_id', 121)
+                                ->where('name', $article_name)
+                                ->first();
+
+            if (!is_null($article)) {
+
+                echo '<br>';
+                echo '<br>';
+                echo $article->name;
+                echo '<br>';
+
+                $stock_movements = StockMovement::where('article_id', $article->id)
+                                                ->whereDate('created_at', '>=', Carbon::today()->subMonth())
+                                                ->orderBy('created_at', 'ASC')
+                                                ->get();
+
+
+                foreach ($stock_movements as $stock_movement) {
+
+
+                    echo '<br>';
+                    echo '---------------';
+                    echo '<br>';
+
+                    echo 'Tiene que ser menor que '.$stock_movement->created_at.'. Id: '.$stock_movement->id;
+                    echo '<br>';
+                    
+                    $anterior = StockMovement::where('article_id', $article->id)
+                                                ->where('id', '<', $stock_movement->id)
+                                                ->orderBy('id', 'DESC')
+                                                ->first();
+                    if (!is_null($anterior)) {
+
+                        $stock_resultante = (float)$anterior->stock_resultante + (float)$stock_movement->amount;
+                        echo '<br>';
+
+                        echo 'fecha: '.$stock_movement->created_at->format('d/m/y');
+                        echo '<br>';
+
+                        echo 'amount: '.(float)$stock_movement->amount;
+                        echo '<br>';
+
+                        echo 'anterior stock_resultante: '.(float)$anterior->stock_resultante;
+                        echo '<br>';
+
+                        echo 'Sumando '.(float)$anterior->stock_resultante.' + '.(float)$stock_movement->amount.' = '.$stock_resultante;
+                        echo '<br>';
+
+                        $stock_movement->stock_resultante = $stock_resultante;
+                        $stock_movement->save();
+                    } else {
+
+                        echo 'No habia anterior para '.$article_name;
+                        echo '<br>';
+                    }
+                }
+            } else {
+                echo 'No habia article '.$article_name;
+                echo '<br>';
+            }
+
+        }
+
+        echo 'Termino';
+    }
+
+    function check_totales_diferentes($company_name) {
+
+        $user = User::where('company_name', $company_name)
+                        ->first();
+
+        $sales = Sale::where('user_id', $user->id)
+                        ->orderBy('created_at', 'ASC')
+                        ->get();
+
+        $delta = 0.00001;
+
+        foreach ($sales as $sale) {
+            
+            $total_helper = (int)SaleHelper::getTotalSale($sale);
+            $total_sale = (int)$sale->total;
+
+            // Calcula la diferencia absoluta
+            $diferencia = abs($total_helper - $total_sale);
+            
+            if ($diferencia > 3) {
+                echo 'Venta N° '.$sale->num.' <br>';
+                echo 'Total: '.$sale->total.' <br>';
+                echo 'Total helper: '.$total_helper;
+                echo '<br>';
+                echo 'Descuento: '.$sale->descuento;
+                echo '<br>';
+                echo '<br>';
+                echo '<br>';
+            }
+        }
+        echo 'Termino';
+    }
+
     function set_provider_orders_totales($company_name) {
 
         $user = User::where('company_name', $company_name)
@@ -79,8 +224,12 @@ class HelperController extends Controller
         echo 'Termino';
     }
 
-    function check_movimientos_de_deposito() {
-        $movements = StockMovement::where('user_id', 121)
+    function check_movimientos_de_deposito($company_name) {
+
+        $user = User::where('company_name', $company_name)
+                        ->first();
+
+        $movements = StockMovement::where('user_id', $user->id)
                                 ->whereRaw('CAST(stock_resultante AS DECIMAL(10, 2)) != CAST(observations AS DECIMAL(10, 2))')
                                 ->whereNotNull('observations')
                                 ->where('observations', '!=', 'Se seteo stock resultante con el stock actual')
@@ -504,7 +653,7 @@ class HelperController extends Controller
 
         foreach ($articles as $article) {
             echo 'Se seteo el precio de '.$article->name.'. Paso de '.$article->final_price.' </br>';
-            ArticleHelper::setFinalPrice($article, $user_id, $user);
+            ArticleHelper::setFinalPrice($article, $user_id, $user, $user_id);
             echo 'A '.$article->final_price.' </br>';
             echo '---------- </br>';
         }
@@ -1530,8 +1679,8 @@ class HelperController extends Controller
         // var_dump($proveedores_repetidos);
     }
 
-    function codigosRepetidos() {
-        $user = User::where('doc_number', '09876543')
+    function codigosRepetidos($company_name) {
+        $user = User::where('company_name', $company_name)
                         ->first();
         $articles = Article::where('user_id', $user->id)->get();
         $codigos = [];

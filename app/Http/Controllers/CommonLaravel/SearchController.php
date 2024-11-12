@@ -151,7 +151,7 @@ class SearchController extends Controller
         $models = $models->withAll()
                         ->orderBy('created_at', 'DESC');
         if ($paginate) {
-            $models = $models->paginate(25);
+            $models = $models->paginate(50);
         } else {
             $models = $models->get();
         }
