@@ -100,8 +100,6 @@ class PerformanceHelper
         $this->set_pagos_a_proveedores();
 
         $this->set_total_iva_comprado();
-
-        $this->total_vendido_costos = 0;
         
         if (!$this->from_current_month 
             && is_null($this->from_day)
@@ -173,9 +171,18 @@ class PerformanceHelper
 
         foreach ($provider_orders as $provider_order) {
             
-            $total = ProviderOrderHelper::getTotal($provider_order);
+            if (is_object($provider_order)) {
 
-            $this->total_comprado += $total;
+                $total = $provider_order->total;
+
+                if (is_null($total)) {
+
+                    $total = ProviderOrderHelper::getTotal($provider_order);
+                }
+
+                $this->total_comprado += $total;
+            }
+
         }
     }
 
@@ -366,6 +373,8 @@ class PerformanceHelper
 
         $this->total_vendido = 0;
 
+        $this->total_vendido_costos = 0;
+
         $this->total_facturado = 0;
 
         $this->total_pagado_mostrador = 0;
@@ -382,19 +391,22 @@ class PerformanceHelper
 
             $this->sale = $sale;
 
-            // $this->total_sale = $sale->total;
+            $this->total_sale = $sale->total;
 
-            // if (is_null($this->total_sale)) {
+            if (is_null($this->total_sale)
+                ||  $this->total_sale == 0) {
 
                 $this->total_sale = SaleHelper::getTotalSale($sale);
                 
                 $sale->total = $this->total_sale;
                 $sale->timestamps = false;
                 $sale->save();
-            // }
+            }
 
             
             $this->total_vendido += $this->total_sale;
+
+            $this->total_vendido_costos += $sale->total_cost;
 
             if (!is_null($sale->afip_information_id) 
                 && $sale->afip_information_id != 0 
@@ -623,12 +635,12 @@ class PerformanceHelper
 
             foreach ($sale->articles as $article) {
 
-                $cost = $article->pivot->cost;
+                // $cost = $article->pivot->cost;
 
-                if (!is_null($cost) || (is_null($article->pivot->price) || $article->pivot->price == 0)) {
+                // if (!is_null($cost) || (is_null($article->pivot->price) || $article->pivot->price == 0)) {
 
-                    $this->total_vendido_costos += $cost * $article->pivot->amount;
-                } 
+                //     $this->total_vendido_costos += $cost * $article->pivot->amount;
+                // } 
 
                 $this->add_to_articles($article, $sale);
             }

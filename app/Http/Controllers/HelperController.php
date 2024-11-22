@@ -202,6 +202,55 @@ class HelperController extends Controller
         echo 'Termino';
     }
 
+    function check_depositos($company_name) {
+
+        $user = User::where('company_name', $company_name)
+                        ->first();
+
+        $articles = Article::where('user_id', $user->id)
+                            ->orderBy('created_at', 'ASC')
+                            ->get();
+
+        foreach ($articles as $article) {
+            
+            if (count($article->addresses) >= 1) {
+
+                $total_depositos = 0;
+
+                foreach ($article->addresses as $address) {
+                    
+                    if (!is_null($address->pivot->amount)) {
+
+                        $total_depositos += $address->pivot->amount;
+                    }
+                }
+
+                if ($total_depositos != $article->stock) {
+
+                    echo $article->name;
+                    echo '<br>';
+                    echo 'Id: '.$article->id;
+                    echo '<br>';
+                    echo 'Suma depositos: '.$total_depositos;
+                    echo '<br>';
+                    echo 'Stock: '.$article->stock;
+                    echo '<br>';
+
+                    $article->stock = $total_depositos;
+                    $article->timestamps = false;
+                    $article->save();
+
+                    echo 'Se actualizo';
+                    echo '<br>';
+                    echo '<br>';
+                }
+            }
+        }
+
+        echo 'Termino';
+
+    }
+
     function set_provider_orders_totales($company_name) {
 
         $user = User::where('company_name', $company_name)
@@ -224,7 +273,7 @@ class HelperController extends Controller
         echo 'Termino';
     }
 
-    function check_movimientos_de_deposito($company_name) {
+    function check_movimientos_de_stock($company_name) {
 
         $user = User::where('company_name', $company_name)
                         ->first();
@@ -267,7 +316,7 @@ class HelperController extends Controller
     function recalcular_stock($stock_movement) {
 
         $stock_movements_posteriores = StockMovement::where('article_id', $stock_movement->article_id)
-                                                ->where('created_at', '>=', $stock_movement->created_at)
+                                                ->where('id', '>=', $stock_movement->id)
                                                 ->orderBy('created_at', 'ASC')
                                                 ->get();
 
@@ -280,6 +329,7 @@ class HelperController extends Controller
 
         $article = Article::find($stock_movement->article_id);
         $article->stock = $stock_actual;
+        $article->timestamps = false;
         $article->save();
 
         echo 'Se va a poner el stock de '.$stock_actual;

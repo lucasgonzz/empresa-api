@@ -22,6 +22,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\SaleCajaHelper;
+use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\Helpers\sale\UpdateHelper;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SellerCommissionController;
@@ -238,6 +239,8 @@ class SaleHelper extends Controller {
         }
 
         ArticlePurchaseHelper::set_article_purcase($model);
+
+        SaleTotalesHelper::set_total_cost($model);
     }
 
     static function set_total_a_facturar($sale, $request) {

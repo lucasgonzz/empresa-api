@@ -146,6 +146,20 @@ class Controller extends BaseController
         return null;
     }
 
+    function get_model_id($request, $prop_key) {
+        if (isset($request->model_id) 
+            && !is_null($request->model_id)) {
+            return $request->model_id;
+        }
+
+        if (isset($request->{$prop_key}) 
+            && !is_null($request->{$prop_key})) {
+            return $request->{$prop_key};
+        }
+
+        return null;
+    }
+
     function sendAddModelNotification($model_name, $model_id, $check_added_by = true, $for_user_id = null, $ignore_queue = false) {
 
         if ($model_name == 'article'

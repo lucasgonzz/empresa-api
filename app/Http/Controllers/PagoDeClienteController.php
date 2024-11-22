@@ -11,6 +11,8 @@ class PagoDeClienteController extends Controller
 
         $models = CurrentAcount::where('user_id', $this->userId())
                                 ->where('status', 'pago_from_client')
+                                ->whereNotNull('client_id')
+                                ->whereNull('provider_id')
                                 ->with('current_acount_payment_methods')
                                 ->orderBy('created_at', 'DESC');
 

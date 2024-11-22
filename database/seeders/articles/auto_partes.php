@@ -13,7 +13,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/1.png',
+                'url'       => get_image_url('/storage/auto-partes/1.png'),
             ],
         ],
     ],
@@ -30,7 +30,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/Orlan-rober-Clasic-negro-web-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/Orlan-rober-Clasic-negro-web-600x600.png'),
             ],
         ],
     ],
@@ -48,7 +48,7 @@ $articles = [
         'provider_id'       => 2,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/orlan-rober-web-1-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/orlan-rober-web-1-600x600.png'),
             ],
         ],
     ],
@@ -65,7 +65,7 @@ $articles = [
         'provider_id'       => 2,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/lazy.png',
+                'url'       => get_image_url('/storage/auto-partes/lazy.png'),
             ],
         ],
     ],
@@ -82,7 +82,7 @@ $articles = [
         'provider_id'       => 3,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/Generica-Stabilus-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/Generica-Stabilus-600x600.png'),
             ],
         ],
         'descriptions'		=> [
@@ -112,7 +112,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/Generica-Stabilus-600x600 (1).png',
+                'url'       => get_image_url('/storage/auto-partes/Generica-Stabilus-600x600 (1)).png'),
             ],
         ],
         'descriptions'		=> [
@@ -142,7 +142,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/Generica-Stabilus-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/Generica-Stabilus-600x600.png'),
             ],
         ],
         'descriptions'		=> [
@@ -174,7 +174,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/ALTERNADOR-Vulx-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/ALTERNADOR-Vulx-600x600.png'),
             ],
         ],
         'descriptions'		=> [
@@ -197,7 +197,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/Caja-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/Caja-600x600.jpg'),
             ],
         ],
     ],
@@ -215,7 +215,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/UB450M-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/UB450M-600x600.jpg'),
             ],
         ],
     ],
@@ -231,7 +231,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/UB620M-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/UB620M-600x600.jpg'),
             ],
         ],
     ],
@@ -247,7 +247,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/12_65-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/12_65-600x600.jpg'),
             ],
         ],
     ],
@@ -263,7 +263,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/12_110b-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/12_110b-600x600.jpg'),
             ],
         ],
     ],
@@ -281,7 +281,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/7928-600x401.jpg',
+                'url'       => get_image_url('/storage/auto-partes/7928-600x401.jpg'),
             ],
         ],
     ],
@@ -297,7 +297,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/8001.jpg',
+                'url'       => get_image_url('/storage/auto-partes/8001.jpg'),
             ],
         ],
     ],
@@ -313,7 +313,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/8002.jpg',
+                'url'       => get_image_url('/storage/auto-partes/8002.jpg'),
             ],
         ],
     ],
@@ -329,7 +329,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/8003.jpg',
+                'url'       => get_image_url('/storage/auto-partes/8003.jpg'),
             ],
         ],
     ],
@@ -345,7 +345,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/8007.jpg',
+                'url'       => get_image_url('/storage/auto-partes/8007.jpg'),
             ],
         ],
     ],
@@ -364,7 +364,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/image.jpg',
+                'url'       => get_image_url('/storage/auto-partes/image.jpg'),
             ],
         ],
     ],
@@ -380,7 +380,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/L92YCX2-a-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/L92YCX2-a-600x600.jpg'),
             ],
         ],
     ],
@@ -396,7 +396,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/REC9YCLX16-a-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/REC9YCLX16-a-600x600.jpg'),
             ],
         ],
     ],
@@ -412,7 +412,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/KA8ZYCCX3-a-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/KA8ZYCCX3-a-600x600.jpg'),
             ],
         ],
     ],
@@ -431,7 +431,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/tlm3llwqaqtq9de4m4lx-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/tlm3llwqaqtq9de4m4lx-600x600.png'),
             ],
         ],
     ],
@@ -447,7 +447,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/829104-MLA41734978744_052020-O.jpg',
+                'url'       => get_image_url('/storage/auto-partes/829104-MLA41734978744_052020-O.jpg'),
             ],
         ],
     ],
@@ -463,7 +463,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/zesv7v3t5m29x0kh2ya7-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/zesv7v3t5m29x0kh2ya7-600x600.jpg'),
             ],
         ],
     ],
@@ -483,7 +483,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/EDFG0550W-1-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/EDFG0550W-1-600x600.jpg'),
             ],
         ],
         'descriptions'		=> [
@@ -513,7 +513,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/faro-para-web-1-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/faro-para-web-1-600x600.png'),
             ],
         ],
         'descriptions'		=> [
@@ -543,7 +543,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/EDF60880W-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/EDF60880W-600x600.png'),
             ],
         ],
         'descriptions'		=> [
@@ -576,7 +576,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/1017.A.jpg',
+                'url'       => get_image_url('/storage/auto-partes/1017.A.jpg'),
             ],
         ],
     ],
@@ -592,7 +592,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/1017.C-1.jpg',
+                'url'       => get_image_url('/storage/auto-partes/1017.C-1.jpg'),
             ],
         ],
     ],
@@ -608,7 +608,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/1017.R.jpg',
+                'url'       => get_image_url('/storage/auto-partes/1017.R.jpg'),
             ],
         ],
     ],
@@ -624,7 +624,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/1021.V.jpg',
+                'url'       => get_image_url('/storage/auto-partes/1021.V.jpg'),
             ],
         ],
     ],
@@ -642,7 +642,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/KT01-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/KT01-600x600.jpg'),
             ],
         ],
     ],
@@ -658,7 +658,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/KT04-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/KT04-600x600.jpg'),
             ],
         ],
     ],
@@ -674,7 +674,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/kt07-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/kt07-600x600.png'),
             ],
         ],
     ],
@@ -693,7 +693,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/Screen-Shot-2020-10-16-at-10.18.38-600x504.png',
+                'url'       => get_image_url('/storage/auto-partes/Screen-Shot-2020-10-16-at-10.18.38-600x504.png'),
             ],
         ],
     ],
@@ -709,7 +709,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/ED9005-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/ED9005-600x600.png'),
             ],
         ],
     ],
@@ -725,7 +725,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/EDH3-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/EDH3-600x600.png'),
             ],
         ],
     ],
@@ -744,7 +744,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/VKMA-01000-A-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/VKMA-01000-A-600x600).png'),
             ],
         ],
     ],
@@ -760,7 +760,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/VKMA-01107-A-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/VKMA-01107-A-600x600).png'),
             ],
         ],
     ],
@@ -776,7 +776,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/VKMA3316-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/VKMA3316-600x600.png'),
             ],
         ],
     ],
@@ -796,7 +796,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/Diseno-sin-titulo-45-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/Diseno-sin-titulo-45-600x600.png'),
             ],
         ],
         'descriptions'		=> [
@@ -837,7 +837,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/Diseno-sin-titulo-49-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/Diseno-sin-titulo-49-600x600.png'),
             ],
         ],
         'descriptions'		=> [
@@ -878,7 +878,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/Diseno-sin-titulo-57-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/Diseno-sin-titulo-57-600x600.png'),
             ],
         ],
         'descriptions'		=> [
@@ -922,7 +922,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/749059SP-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/749059SP-600x600.png'),
             ],
         ],
     ],
@@ -938,7 +938,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/982358-MLA25808089128_072017-O.jpg',
+                'url'       => get_image_url('/storage/auto-partes/982358-MLA25808089128_072017-O.jpg'),
             ],
         ],
     ],
@@ -954,7 +954,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/698898-MLA25808088567_072017-O.jpg',
+                'url'       => get_image_url('/storage/auto-partes/698898-MLA25808088567_072017-O.jpg'),
             ],
         ],
     ],
@@ -974,7 +974,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/031.1199.jpg',
+                'url'       => get_image_url('/storage/auto-partes/031.1199.jpg'),
             ],
         ],
     ],
@@ -990,7 +990,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/531.2124.jpg',
+                'url'       => get_image_url('/storage/auto-partes/531.2124.jpg'),
             ],
         ],
     ],
@@ -1006,7 +1006,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/531.2120.jpg',
+                'url'       => get_image_url('/storage/auto-partes/531.2120.jpg'),
             ],
         ],
     ],
@@ -1027,7 +1027,7 @@ $articles = [
         'images'            => [
             [
                 'url'       => 'https://api.comerciocity.com/public/storage/170621104666010.webp',
-                'url'       => env('APP_URL').'/storage/auto-partes/021.0333.jpg',
+                'url'       => get_image_url('/storage/auto-partes/021.0333.jpg'),
             ],
         ],
     ],
@@ -1044,7 +1044,7 @@ $articles = [
         'images'            => [
             [
                 'url'       => 'https://api.comerciocity.com/public/storage/170621104666010.webp',
-                'url'       => env('APP_URL').'/storage/auto-partes/021.0484.jpg',
+                'url'       => get_image_url('/storage/auto-partes/021.0484.jpg'),
             ],
         ],
     ],
@@ -1061,7 +1061,7 @@ $articles = [
         'images'            => [
             [
                 'url'       => 'https://api.comerciocity.com/public/storage/170621104666010.webp',
-                'url'       => env('APP_URL').'/storage/auto-partes/021.0631.jpg',
+                'url'       => get_image_url('/storage/auto-partes/021.0631.jpg'),
             ],
         ],
     ],
@@ -1081,7 +1081,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/RM-espirales-estandar-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/RM-espirales-estandar-600x600).jp'),
             ],
         ],
         'descriptions'		=> [
@@ -1100,7 +1100,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/RM-espirales-estandar-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/RM-espirales-estandar-600x600).jp'),
             ],
         ],
         'descriptions'		=> [
@@ -1119,7 +1119,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/RM-espirales-estandar-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/RM-espirales-estandar-600x600).jp'),
             ],
         ],
         'descriptions'		=> [
@@ -1140,7 +1140,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/ag-standar-600x600.png',
+                'url'       => get_image_url('/storage/auto-partes/ag-standar-600x600.png'),
             ],
         ],
         'descriptions'		=> [
@@ -1159,7 +1159,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/1_031036R_3-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/1_031036R_3-600x600.jpg'),
             ],
         ],
         'descriptions'		=> [
@@ -1178,7 +1178,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/1_041023R_1-600x600.jpg',
+                'url'       => get_image_url('/storage/auto-partes/1_041023R_1-600x600.jpg'),
             ],
         ],
         'descriptions'		=> [
@@ -1201,7 +1201,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/928915-MLA25345029110_022017-O.jpg',
+                'url'       => get_image_url('/storage/auto-partes/928915-MLA25345029110_022017-O.jpg'),
             ],
         ],
     ],
@@ -1217,7 +1217,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/539915-MLA25345042673_022017-O.jpg',
+                'url'       => get_image_url('/storage/auto-partes/539915-MLA25345042673_022017-O.jpg'),
             ],
         ],
         'addresses'     => [
@@ -1244,7 +1244,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/534025-MLA25345093312_022017-O.jpg',
+                'url'       => get_image_url('/storage/auto-partes/534025-MLA25345093312_022017-O.jpg'),
             ],
         ],
         'addresses'     => [
@@ -1276,7 +1276,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/044.1142.jpg',
+                'url'       => get_image_url('/storage/auto-partes/044.1142.jpg'),
             ],
         ],
         'addresses'     => [
@@ -1305,7 +1305,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/044.1654.jpg',
+                'url'       => get_image_url('/storage/auto-partes/044.1654.jpg'),
             ],
         ],
         'addresses'     => [
@@ -1335,28 +1335,28 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+                'url'       => get_image_url('/storage/auto-partes/044.1488.jpg'),
             ],
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+                'url'       => get_image_url('/storage/auto-partes/044.1488.jpg'),
             ],
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+                'url'       => get_image_url('/storage/auto-partes/044.1488.jpg'),
             ],
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+                'url'       => get_image_url('/storage/auto-partes/044.1488.jpg'),
             ],
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+                'url'       => get_image_url('/storage/auto-partes/044.1488.jpg'),
             ],
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+                'url'       => get_image_url('/storage/auto-partes/044.1488.jpg'),
             ],
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+                'url'       => get_image_url('/storage/auto-partes/044.1488.jpg'),
             ],
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/044.1488.jpg',
+                'url'       => get_image_url('/storage/auto-partes/044.1488.jpg'),
             ],
         ],
         'addresses'     => [
@@ -1382,7 +1382,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/auto-partes/044.1654.jpg',
+                'url'       => get_image_url('/storage/auto-partes/044.1654.jpg'),
             ],
         ],
         'addresses'     => [
@@ -1397,3 +1397,12 @@ $articles = [
         ],
     ],
 ];
+
+
+function get_image_url($url) {
+    if (env('APP_ENV') == 'production') {
+        return env('APP_URL').'/public'.$url;
+    } else {
+        return env('APP_URL').$url;
+    }
+}

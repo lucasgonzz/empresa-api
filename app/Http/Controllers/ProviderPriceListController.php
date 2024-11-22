@@ -42,7 +42,7 @@ class ProviderPriceListController extends Controller
         $last_percentage            = $model->percentage;
         $model->name                = $request->name;
         $model->percentage          = $request->percentage;
-        $model->provider_id         = $request->model_id;
+        $model->provider_id         = $this->get_model_id($request, 'provider_id');
         $model->save();
         GeneralHelper::checkNewValuesForArticlesPrices($this, $last_percentage, $model->percentage, 'provider_id', $model->provider_id);
         $this->sendAddModelNotification('provider_price_list', $model->id);

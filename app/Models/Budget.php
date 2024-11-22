@@ -16,11 +16,11 @@ class Budget extends Model
     }
 
     function discounts() {
-        return $this->belongsToMany('App\Models\Discount')->withPivot('percentage');
+        return $this->belongsToMany('App\Models\Discount')->withTrashed()->withPivot('percentage');
     }
 
     function surchages() {
-        return $this->belongsToMany('App\Models\Surchage')->withPivot('percentage');
+        return $this->belongsToMany('App\Models\Surchage')->withTrashed()->withPivot('percentage');
     }
 
     function sale() {

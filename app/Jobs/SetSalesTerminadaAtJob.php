@@ -39,7 +39,6 @@ class SetSalesTerminadaAtJob implements ShouldQueue
         Log::info('entro en el handle');
         
         $sales = Sale::where('user_id', 121)
-                        ->whereDate('created_at', '<', Carbon::parse('2024/09/01'))
                         ->where('terminada', 1)
                         ->whereNull('terminada_at')
                         ->orderBy('created_at', 'ASC')

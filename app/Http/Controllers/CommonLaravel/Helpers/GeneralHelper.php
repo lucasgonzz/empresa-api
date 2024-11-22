@@ -96,7 +96,7 @@ class GeneralHelper {
                 ArticleHelper::setArticlesFinalPrice();
             }
             Log::info('entro a checkNewValuesForArticlesPrices');
-            $instance->sendUpdateModelsNotification('article', false);
+            // $instance->sendUpdateModelsNotification('article', false);
         }
     }
 

@@ -26,6 +26,7 @@ class NewProviderOrderHelper {
         $this->provider_order           = $provider_order;
         $this->new_articles             = $new_articles;
         $this->ya_se_actualizo_stock    = $ya_se_actualizo_stock;
+        $this->user                     = UserHelper::user();
 
         $this->set_ultimos_articulos_recividos();
 
@@ -65,8 +66,28 @@ class NewProviderOrderHelper {
             $this->provider_order->load('articles');
 
             foreach ($this->provider_order->articles as $article) {
+
+                $cost = (float)($article->pivot->cost);
                 
-                $total_article = (float)($article->pivot->cost) * (float)($article->pivot->amount);
+                if ($article->pivot->cost_in_dollars) {
+
+                    $valor_dolar = $this->user->dollar;
+
+                    if (
+                        !is_null($article->provider) 
+                        && !is_null($article->provider->dolar) 
+                        && (float)$article->provider->dolar > 0) {
+
+                        $cost = $cost * $article->provider->dolar;
+
+                    } else if ($article->cost_in_dollars) {
+                        
+                        $cost = $cost * $this->user->dollar;
+                    
+                    }
+                }
+
+                $total_article = $cost * (float)($article->pivot->amount);
 
                 $sub_total += $total_article;
 
@@ -206,12 +227,13 @@ class NewProviderOrderHelper {
             
             $this->provider_order->articles()->attach($new_article['id'], [
 
-                'cost'          => GeneralHelper::getPivotValue($new_article, 'cost'),
-                'amount'        => GeneralHelper::getPivotValue($new_article, 'amount'),
-                'price'         => GeneralHelper::getPivotValue($new_article, 'price'),
-                'discount'      => GeneralHelper::getPivotValue($new_article, 'discount'),
-                'notes'         => GeneralHelper::getPivotValue($new_article, 'notes'),
-                'iva_id'        => GeneralHelper::getPivotValue($new_article, 'iva_id'),
+                'cost'              => GeneralHelper::getPivotValue($new_article, 'cost'),
+                'amount'            => GeneralHelper::getPivotValue($new_article, 'amount'),
+                'price'             => GeneralHelper::getPivotValue($new_article, 'price'),
+                'discount'          => GeneralHelper::getPivotValue($new_article, 'discount'),
+                'notes'             => GeneralHelper::getPivotValue($new_article, 'notes'),
+                'iva_id'            => GeneralHelper::getPivotValue($new_article, 'iva_id'),
+                'cost_in_dollars'   => GeneralHelper::getPivotValue($new_article, 'cost_in_dollars'),
             ]);
 
             $this->update_article($new_article);
@@ -225,14 +247,14 @@ class NewProviderOrderHelper {
 
         if (!is_null($article)) {
 
+            $article = $this->update_iva($article, $new_article);
+            
             if ($this->provider_order->update_prices) {
 
                 $article = $this->update_cost($article, $new_article);
 
                 $article = $this->update_price($article, $new_article);
             }
-            
-            $article = $this->update_iva($article, $new_article);
 
             $article = $this->check_article_status($article, $new_article);
             

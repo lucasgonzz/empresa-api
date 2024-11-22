@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+// use App\Http\Controllers\CommonLaravel\AuthController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Models\OnlineConfiguration;
@@ -80,6 +81,10 @@ class UserController extends Controller
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_dolar, $request->dollar);
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_iva_included, $request->iva_included);
         $model = UserHelper::getFullModel();
+
+        // $auth_controller = new AuthController();
+        // $auth_controller->set_sessions($model);
+
         return response()->json(['model' => $model], 200);
     }
 
