@@ -109,6 +109,8 @@ class StockMovementController extends Controller
             $this->stock_movement->stock_resultante = $this->article->stock;
             $this->stock_movement->save();
 
+            Log::info('Se esta repartiendo stock, se puso stock_resultante con el stock actual de: '.$this->article->stock);
+
             $this->set_stock_actual_in_observations();
             return;
         }

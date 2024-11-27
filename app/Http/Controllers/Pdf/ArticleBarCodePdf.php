@@ -90,7 +90,7 @@ class ArticleBarCodePdf extends fpdf {
 			$code = ''.$article->num;
 
 			if (!is_null($variant)) {
-				$code = '@'.$variant->id;
+				$code = '0'.$variant->id;
 			}
 
 			$this->print_bar_code($code);

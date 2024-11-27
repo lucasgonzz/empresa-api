@@ -159,17 +159,22 @@ class ArticleImportHelper {
         if (!is_null($num)) {
 
             $article = $article->where('num', $num);
+        	Log::info('-> Filtrando por num');
 
         } else if (!is_null($provider_code) && env('FILTRAR_CON_PROVIDER_CODE_EN_IMPORTACION', true)) {
+
+        	Log::info('-> Filtrando por provider_code');
                 
             $article = $article->where('provider_code', $provider_code);
 
         } else if (!is_null($bar_code)) {
 
+        	Log::info('-> Filtrando por bar_code');
             $article = $article->where('bar_code', $bar_code);
 
         } else if (!is_null($name)) {
 
+        	Log::info('-> Filtrando por name');
             $article = $article->where('name', $name);
             
         }

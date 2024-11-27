@@ -152,8 +152,10 @@ Route::get('order/pdf/{id}/', 'OrderController@pdf');
 // Excel
 Route::get('article/excel/export', 'ArticleController@export');
 Route::get('article-clients/excel/export', 'ArticleController@clientsExport');
+Route::get('article-base/excel/export', 'ArticleController@baseExport');
 Route::get('client/excel/export', 'ClientController@export');
 Route::get('provider/excel/export', 'ProviderController@export');
+Route::get('apertura-caja/excel/export/{id}', 'AperturaCajaController@export');
 
 // Registrar Pago de usuario
 Route::get('user/register-payment/{company_name}', 'CommonLaravel\UserController@registerPayment');

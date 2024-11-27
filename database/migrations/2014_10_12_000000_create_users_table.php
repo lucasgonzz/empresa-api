@@ -87,6 +87,12 @@ class CreateUsersTable extends Migration
 
             $table->boolean('header_articulos_pdf')->default(1);
 
+            $table->string('default_version')->nullable();
+
+            $table->string('estable_version')->nullable();
+
+            $table->string('text_omitir_cc')->nullable();
+
             $table->timestamp('login_at')->nullable();
             $table->timestamp('logout_at')->nullable();
             // $table->foreign('owner_id')->references('id')->on('users');

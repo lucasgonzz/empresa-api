@@ -36,7 +36,10 @@ class EmployeeController extends Controller
         $model->dias_alertar_empleados_ventas_no_cobradas       = $request->dias_alertar_empleados_ventas_no_cobradas;
         $model->ver_alertas_de_todos_los_empleados              = $request->ver_alertas_de_todos_los_empleados;
         
-        $model->puede_guardar_ventas_sin_cliente              = $request->puede_guardar_ventas_sin_cliente;
+        $model->puede_guardar_ventas_sin_cliente                = $request->puede_guardar_ventas_sin_cliente;
+
+        $model->default_version                                 = $request->default_version;
+        $model->estable_version                                 = $request->estable_version;
 
         $model->password                                        = bcrypt($request->visible_password);
         if ($model->doc_number == $request->doc_number || !$this->docNumerRegister($request->doc_number)) {

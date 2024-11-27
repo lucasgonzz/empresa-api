@@ -14,9 +14,11 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
 {
 
     public $models = null;
+    public $archivo_base = false;
 
-    function __construct($models) {
+    function __construct($models, $archivo_base = false) {
         $this->models = $models;
+        $this->archivo_base = $archivo_base;
     }
 
     public function map($article): array
@@ -54,7 +56,9 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
     public function collection()
     {
         set_time_limit(999999);
-        if (!is_null($this->models)) {
+        if ($this->archivo_base) {
+            $articles = collect();
+        } else if (!is_null($this->models)) {
             $articles = $this->models;
         } else {
             $articles = Article::where('user_id', UserHelper::userId())

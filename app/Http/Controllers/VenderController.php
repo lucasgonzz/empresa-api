@@ -18,7 +18,8 @@ class VenderController extends Controller
 
         if (UserHelper::hasExtencion('codigos_de_barra_basados_en_numero_interno')) {
 
-            if (str_contains($code, '@')) {
+            if (substr($code, 0, 1) == '0') {
+                
                 // El codigo es el id de una variante
                 $variant = ArticleVariant::find(substr($code, 1));
 

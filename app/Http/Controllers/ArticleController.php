@@ -250,6 +250,10 @@ class ArticleController extends Controller
         return Excel::download(new ArticleClientsExport, 'cc-articulos-clientes_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
     }
 
+    function baseExport() {
+        return Excel::download(new ArticleExport(null, true), 'base-comerciocity-articulos.xlsx');
+    }
+
     function providersHistory($article_id) {
         $model = Article::where('id', $article_id)
                         ->with('providers')

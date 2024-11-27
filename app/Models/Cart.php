@@ -10,7 +10,7 @@ class Cart extends Model
 	protected $guarded = [];
 
     function articles() {
-    	return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('price', 'amount', 'variant_id')->using(ArticleCart::class);
+    	return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('price', 'amount', 'variant_id', 'id')->using(ArticleCart::class);
     }
 
     function buyer() {

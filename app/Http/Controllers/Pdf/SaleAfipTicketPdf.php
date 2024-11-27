@@ -193,7 +193,10 @@ class SaleAfipTicketPdf extends fpdf {
 	}
 
 	function printDiscounts() {
-		if (count($this->sale->discounts) >= 1) {
+		if (
+			count($this->sale->discounts) >= 1
+			|| $this->sale->descuento > 0
+		) {
 			$this->setX(5);
 			$this->y += 3;
 			$aclaracion = 'En la columna subtotal de cada articulo, se estan aplicando los descuentos de la venta';
@@ -205,6 +208,10 @@ class SaleAfipTicketPdf extends fpdf {
 			foreach ($this->sale->discounts as $discount) {
 				// $this->x += 20;
 				$this->Cell(30, 5, $discount->name.' '.$discount->pivot->percentage.'%', 1, 0, 'L');
+			}
+
+			if ($this->sale->descuento > 0) {
+				$this->Cell(30, 5, $this->sale->descuento.'%', 1, 0, 'L');
 			}
 			$this->y += 5;
 		}

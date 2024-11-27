@@ -150,8 +150,12 @@ class SalePdf extends fpdf {
 		if ($this->with_prices) {
 			$this->total();
 			$this->totalCosts();
+			
 			$this->discounts();
 			$this->surchages();
+			
+			$this->descuento();
+
 			$this->saleType();
 			if ($this->with_costs) {
 				$this->commissions();
@@ -424,6 +428,30 @@ class SalePdf extends fpdf {
 		}
 	}
 
+	function descuento() {
+		if ($this->sale->descuento) {
+			$text = '- Descuento del '.$this->sale->descuento.'%';
+
+		    $total_articles = $this->total_articles;
+		    $total_services = $this->total_services;
+
+	    	$total = $total_articles + $total_services;
+	    	$total -= $total * $this->sale->descuento / 100;
+
+	    	$text .= ' = $'.Numbers::price($total);
+
+	    	$this->x = 5;
+			$this->Cell(
+				50, 
+				5, 
+				$text, 
+				$this->b, 
+				1, 
+				'L'
+			);
+		}
+	}
+
 	function discounts() {
 		if (count($this->sale->discounts) >= 1) {
 		    $this->SetFont('Arial', 'B', 11);
@@ -511,7 +539,16 @@ class SalePdf extends fpdf {
 	}
 
 	function totalFinal() {
-		if ((count($this->sale->discounts) >= 1 || count($this->sale->surchages) >= 1 || count($this->sale->seller_commissions) >= 1) && !$this->precios_netos) {
+		if (
+				(
+					count($this->sale->discounts) >= 1 
+					|| count($this->sale->surchages) >= 1 
+					|| count($this->sale->seller_commissions) >= 1
+					|| $this->sale->descuento > 0
+				) 
+				&& !$this->precios_netos
+			) {
+
 	    	$this->SetFont('Arial', 'B', 12);
 	    	$this->x = 5;
 	    	$this->y += 2;

@@ -834,6 +834,14 @@ class SaleHelper extends Controller {
         if (!is_null($sale->percentage_card)) {
             $total += ($total * Numbers::percentage($sale->percentage_card));
         }
+
+        if ($with_discount) {
+
+            if ($sale->descuento > 0) {
+                $total -= ($total * $sale->descuento / 100);
+            }
+        }
+
         if ($with_seller_commissions) {
             foreach ($sale->seller_commissions as $seller_commission) {
                 $total -= $seller_commission->debe;

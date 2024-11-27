@@ -57,6 +57,25 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function set_buyers_password($user_id) {
+        $buyers = Buyer::where('user_id', $user_id)
+                        ->get();
+
+        foreach ($buyers as $buyer) {
+            
+            if (!is_null($buyer->comercio_city_client)) {
+
+                $buyer->password = bcrypt($buyer->comercio_city_client->num);
+                $buyer->timestamps = false;
+                $buyer->save();
+                echo 'Se actualizo '.$buyer->name;
+                echo '<br>';
+            }
+        }
+
+        echo 'Listo';
+    }
+
     function recalcular_movimientos_stock() {
 
         $articles_name = [

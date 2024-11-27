@@ -18,12 +18,19 @@ class BuyerController extends Controller
     }
 
     public function store(Request $request) {
+
+        $password = '1234';
+
+        if (isset($request->num)) {
+            $password = $request->num;
+        }
+
         $model = Buyer::create([
             'num'                       => $this->num('buyers'),
             'name'                      => $request->name,
             'email'                     => $request->email,
             'phone'                     => $request->phone,
-            'password'                  => bcrypt('1234'),
+            'password'                  => bcrypt($password),
             'comercio_city_client_id'   => $request->id,
             'user_id'                   => $this->userId(),
         ]);

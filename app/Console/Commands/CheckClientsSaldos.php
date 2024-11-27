@@ -73,8 +73,11 @@ class CheckClientsSaldos extends Command
             //                     ->get();
             
             $saldos_diferentes = 0;
+            $clientes_chequeados = 0;
 
             foreach ($clients as $client) {
+
+                $clientes_chequeados++;
 
                 if (!is_null($client['client'])
                     && $client['client']->id != 7334) {
@@ -95,7 +98,7 @@ class CheckClientsSaldos extends Command
             }
 
             Mantenimiento::create([
-                'notas'     => 'Se chequearon saldos de los clientes de '.$user->company_name.'. Saldos diferentes: '.$saldos_diferentes,
+                'notas'     => 'Se chequearon saldos de los clientes de '.$user->company_name.'. Clientes chequeados: '.$clientes_chequeados.'. Saldos diferentes: '.$saldos_diferentes,
                 'user_id'   => $user->id,
             ]);                                
         }

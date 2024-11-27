@@ -13,6 +13,10 @@ class MovimientoCaja extends Model
         $q->with('sale');
     }
 
+    function concepto_movimiento_caja() {
+        return $this->belongsTo(ConceptoMovimientoCaja::class);
+    }
+
     function caja() {
         return $this->belongsTo(Caja::class);
     }

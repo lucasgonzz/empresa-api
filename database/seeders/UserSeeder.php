@@ -373,6 +373,8 @@ class UserSeeder extends Seeder
                 'google_custom_search_api_key'                 => isset($model['google_custom_search_api_key']) ? $model['google_custom_search_api_key'] : null,
                 'dias_alertar_empleados_ventas_no_cobradas'        => 1,
                 'dias_alertar_administradores_ventas_no_cobradas'  => 2,
+                'default_version'               => 'http://empresa.local:8080',
+                'estable_version'               => 'http://empresa.local:8081',
             ]);
 
             

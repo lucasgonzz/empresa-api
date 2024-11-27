@@ -26,6 +26,9 @@ class CreateAperturaCajasTable extends Migration
 
             $table->integer('caja_id');
 
+            $table->decimal('total_ingresos', 30,2)->nullable();
+            $table->decimal('total_egresos', 30,2)->nullable();
+
             $table->timestamps();
         });
     }

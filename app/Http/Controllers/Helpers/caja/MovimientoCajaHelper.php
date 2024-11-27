@@ -38,6 +38,8 @@ class MovimientoCajaHelper {
 
 		$this->set_saldos();
 
+		$this->set_apertura_caja_ingresos_egresos();
+
 		return $this->movimiento_caja;
 
 	}
@@ -85,6 +87,31 @@ class MovimientoCajaHelper {
 
 		$this->movimiento_caja->caja->saldo = $saldo;
 		$this->movimiento_caja->caja->save();
+	}
+
+	function set_apertura_caja_ingresos_egresos() {
+
+		$apertura_caja = $this->movimiento_caja->apertura_caja;
+
+		$total_ingresos = 0;
+		$total_egresos = 0;
+
+		foreach ($apertura_caja->movimientos_caja as $movimiento) {
+			
+			if (!is_null($movimiento->ingreso)) {
+
+				$total_ingresos += (float)$movimiento->ingreso;
+			
+			} else if (!is_null($movimiento->egreso)) {
+
+				$total_egresos += (float)$movimiento->egreso;
+
+			}
+		}
+
+		$apertura_caja->total_ingresos = $total_ingresos;
+		$apertura_caja->total_egresos = $total_egresos;
+		$apertura_caja->save();
 	}
 
     static function recalcular_saldos($desde_movimiento_caja = null, $caja_id = null) {

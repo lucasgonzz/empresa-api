@@ -109,6 +109,7 @@ class AfipHelper extends Controller {
             }
 
         }
+
         $gravado = Numbers::redondear($gravado);
         $neto_no_gravado = Numbers::redondear($neto_no_gravado);
         $exento = Numbers::redondear($exento);
@@ -183,6 +184,11 @@ class AfipHelper extends Controller {
             $price += $price * $surchage->pivot->percentage / 100;
             Log::info('quedo en '.$price);
         }
+
+        if ($this->sale->descuento > 0) {
+            $price -= $price * $this->sale->descuento / 100;
+        }
+        
         return $price;
     }
 

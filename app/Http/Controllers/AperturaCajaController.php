@@ -6,6 +6,8 @@ use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Models\AperturaCaja;
 use App\Models\Caja;
 use Illuminate\Http\Request;
+use App\Exports\AperturaCajaExport;
+use Maatwebsite\Excel\Facades\Excel;
 
 class AperturaCajaController extends Controller
 {
@@ -63,5 +65,10 @@ class AperturaCajaController extends Controller
         $model->delete();
         $this->sendDeleteModelNotification('AperturaCaja', $model->id);
         return response(null);
+    }
+
+    public function export($id) {
+        $apertura_caja = AperturaCaja::find($id);
+        return Excel::download(new AperturaCajaExport($id), $apertura_caja->caja->name.' '.$apertura_caja->created_at->format('d-m-y') . '.xlsx');
     }
 }

@@ -68,6 +68,8 @@ class SaleController extends Controller
     }
 
     public function store(Request $request) {
+        Log::info($this->user(false)->name.' va a crear venta');
+
         $model = Sale::create([
             'num'                               => $this->num('sales'),
             'client_id'                         => $request->client_id,
@@ -209,8 +211,19 @@ class SaleController extends Controller
         
     
         if ($model->client_id) {
-            SaleHelper::deleteCurrentAcountFromSale($model);
+
+            /* 
+                Si no es NULL, es porque se genero nota de credito de afip
+                En ese caso, no se elimina la cuenta corriente de la venta
+                Porque ya tiene la nota de credito en la C/C
+            */ 
+            if (is_null($model->nota_credito_afip_ticket)) {
+
+                SaleHelper::deleteCurrentAcountFromSale($model);
+            }
+
             SaleHelper::deleteSellerCommissionsFromSale($model);
+
             $model->client->pagos_checkeados = 0;
             $model->client->save();
             CurrentAcountHelper::checkSaldos('client', $model->client_id);
