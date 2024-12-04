@@ -351,22 +351,22 @@ $articles = [
 
 
 
-    [
-        'featured'          => null,
-        'bar_code'          => '12344',
-        'provider_code'     => 'p-12342',
-        'name'              => 'bujías NGK BPR5ES Kit x4',
-        'stock'             => 10,
-        'cost'              => 2000,
-        // 'price'             => 3000,
-        'sub_category_name' => 'Bujias',
-        'provider_id'       => 1,
-        'images'            => [
-            [
-                'url'       => get_image_url('/storage/auto-partes/image.jpg'),
-            ],
-        ],
-    ],
+    // [
+    //     'featured'          => null,
+    //     'bar_code'          => '12344',
+    //     'provider_code'     => 'p-12342',
+    //     'name'              => 'bujías NGK BPR5ES Kit x4',
+    //     'stock'             => 10,
+    //     'cost'              => 2000,
+    //     // 'price'             => 3000,
+    //     'sub_category_name' => 'Bujias',
+    //     'provider_id'       => 1,
+    //     'images'            => [
+    //         [
+    //             'url'       => get_image_url('/storage/auto-partes/image.jpg'),
+    //         ],
+    //     ],
+    // ],
     [
         'featured'          => null,
         'bar_code'          => '12344',

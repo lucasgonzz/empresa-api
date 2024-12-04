@@ -57,6 +57,25 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function set_articles_num($user_id) {
+        $articles = Article::where('user_id', $user_id)
+                            ->whereNull('num')
+                            ->orderBy('created_at', 'ASC')
+                            ->get();
+
+        foreach ($articles as $article) {
+            
+            $article->num = $this->num('articles', $user_id);
+            $article->timestamps = false;
+            $article->save();
+            echo 'se actualizo '.$article->name;
+            echo '<br>';
+
+        }
+
+        echo 'Lisot';
+    }
+
     function pasar_cantidades_a_notas($user_id) {
         $orders = ProviderOrder::where('user_id', $user_id)
                                 ->where('created_at', '>', Carbon::today()->subDays(2))

@@ -41,6 +41,7 @@ class BudgetController extends Controller
             'price_type_id'             => $request->price_type_id,
             'total'                     => $request->total,
             'budget_status_id'          => $request->budget_status_id,
+            'address_id'                => $request->address_id,
             'user_id'                   => $this->userId(),
         ]);
         GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
@@ -67,6 +68,7 @@ class BudgetController extends Controller
         $model->observations              = $request->observations;
         $model->total                     = $request->total;
         $model->budget_status_id          = $request->budget_status_id;
+        $model->address_id                = $request->address_id;
         $model->save();
         GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
         GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
