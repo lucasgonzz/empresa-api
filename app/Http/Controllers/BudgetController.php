@@ -38,6 +38,7 @@ class BudgetController extends Controller
             'start_at'                  => $request->start_at,
             'finish_at'                 => $request->finish_at,
             'observations'              => $request->observations,
+            'price_type_id'             => $request->price_type_id,
             'total'                     => $request->total,
             'budget_status_id'          => $request->budget_status_id,
             'user_id'                   => $this->userId(),

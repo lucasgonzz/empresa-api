@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Imports\ArticleImport;
 use App\Notifications\GlobalNotification;
 use Illuminate\Bus\Queueable;
@@ -61,21 +62,6 @@ class ProcessArticleImport implements ShouldQueue
     public function failed(Throwable $exception)
     {
         Log::info('Hubo un error con la importacion');
-
-        $functions_to_execute = [
-            [
-                'btn_text'      => 'Entendido',
-                // 'function_name' => 'close_notification_modal',
-                'btn_variant'   => 'primary',
-            ],
-        ];
-
-        $this->user->notify(new GlobalNotification(
-            'Hubo un error durante la importacion de articulos',
-            'danger',
-            $functions_to_execute,
-            $this->user->id,
-            true,
-        ));
+        ArticleImportHelper::error_notification($this->user);
     }
 }

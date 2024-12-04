@@ -11,7 +11,7 @@ class Budget extends Model
     protected $dates = ['start_at', 'finish_at'];
 
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'articles.article_variants', 'budget_status', 'discounts', 'surchages');
+        $query->with('client.iva_condition', 'client.price_type', 'articles.article_variants', 'budget_status', 'discounts', 'surchages', 'price_type');
         // $query->with('client.iva_condition', 'client.price_type', 'articles', 'budget_status', 'optional_order_production_statuses');
     }
 
@@ -31,6 +31,10 @@ class Budget extends Model
         return $this->belongsTo('App\Models\Client');
     }
 
+    function price_type() {
+        return $this->belongsTo(PriceType::class);
+    }
+
     function budget_status() {
         return $this->belongsTo('App\Models\BudgetStatus');
     }
@@ -40,7 +44,7 @@ class Budget extends Model
     }
 
     function articles() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'bonus', 'location', 'price');
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'bonus', 'location', 'price', 'price_type_personalizado_id');
     }
 
     function optional_order_production_statuses() {

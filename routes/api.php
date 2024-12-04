@@ -138,11 +138,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('price-change/{article_id}', 'PriceChangeController@index');
 
     Route::resource('sale', 'SaleController');
-    Route::get('sale/from-date/{from_date?}/{until_date?}', 'SaleController@index');
+    Route::get('sale/from-date/{from_depositos}/{from_date?}/{until_date?}', 'SaleController@index');
     Route::put('sale/update-prices/{id}', 'SaleController@updatePrices');
     Route::get('sale/charts/{from}/{to}', 'SaleController@charts');
     Route::get('sales-ventas-sin-cobrar', 'SaleController@ventas_sin_cobrar');
     Route::put('sale-set-terminada/{sale_id}', 'SaleController@set_terminada');
+    Route::put('sale-clear-actualizandose-por/{sale_id}', 'SaleController@clear_actualizandose_por');
 
     // Hacer Nota de credito AFIP
     Route::post('sale/nota-credito-afip/{sale_id}', 'SaleController@nota_credito_afip');

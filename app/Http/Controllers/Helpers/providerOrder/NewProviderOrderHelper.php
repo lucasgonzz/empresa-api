@@ -102,13 +102,20 @@ class NewProviderOrderHelper {
 
                 $article_iva = 0;
 
-                if (!is_null($article->pivot->iva_id)) {
+                if (!is_null($article->pivot->iva_id)
+                    && $article->pivot->iva_id != 0) {
 
                     $iva = $this->get_iva($article->pivot->iva_id);
 
-                    $article_iva = $total_article * (float)$iva->percentage / 100;
+                    if (!is_null($iva)) {
+                        
+                        $article_iva = $total_article * (float)$iva->percentage / 100;
 
-                    $total_iva += $article_iva;
+                        $total_iva += $article_iva;
+                    } else {
+                        Log::info('No se encontro el iva_id: '.$article->pivot->iva_id);
+                    }
+
                 }
 
                 if ($this->provider_order->total_with_iva) {
@@ -293,7 +300,8 @@ class NewProviderOrderHelper {
         $amount = $new_article['pivot']['amount'];
 
         if ($amount != '' 
-            && !is_null($amount)) {
+            && !is_null($amount)
+            && $amount > 0) {
 
             Log::info('*****************');
             Log::info('save_stock_movement para '.$article->name);

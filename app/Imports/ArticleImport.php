@@ -107,6 +107,8 @@ class ArticleImport implements ToCollection
 
         $this->set_finish_row($rows);
 
+        $error_message = null;
+
         foreach ($rows as $row) {
 
             if ($this->esta_en_el_rango_de_filas()) {
@@ -115,7 +117,26 @@ class ArticleImport implements ToCollection
 
                     $this->articulo_existente = ArticleImportHelper::get_articulo_encontrado($this->user, $row, $this->columns);
 
-                    $this->saveArticle($row);
+                    try {
+
+                        $this->saveArticle($row);
+
+                    } catch (\Exception $e) {
+
+                        $error_message = 'Error en la linea '.$this->num_row;
+
+                        Log::info('Error al importar, entro en try catch');
+
+                        Log::info('Error: '.$error_message);
+
+
+                        // Registra el progreso y errores en Import History
+                        ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, $error_message);
+                        ArticleImportHelper::error_notification($this->user);
+                        return;
+
+                    } 
+
 
                 } else {
                     Log::info('Se omitio una fila N° '.$this->num_row.' con nombre '.ImportHelper::getColumnValue($row, 'nombre', $this->columns));

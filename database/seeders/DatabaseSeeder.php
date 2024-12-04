@@ -86,6 +86,7 @@ class DatabaseSeeder extends Seeder
 
                 $this->call(PriceTypeSeeder::class);
                 $this->call(ArticleSeeder::class);
+                $this->call(CajaSeeder::class);
 
             } else if ($for_user == 'ferretodo') {
 
@@ -170,7 +171,6 @@ class DatabaseSeeder extends Seeder
             $this->call(PendingSeeder::class);
 
 
-            $this->call(CajaSeeder::class);
             $this->call(ConceptoMovimientoCajaSeeder::class);
 
 

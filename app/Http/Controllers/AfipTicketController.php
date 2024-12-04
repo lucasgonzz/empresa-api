@@ -14,8 +14,10 @@ class AfipTicketController extends Controller
                             ->with('afip_errors')
                             ->with('afip_observations')
                             ->with('employee')
-                            ->whereHas('afip_errors')
-                            ->orderBy('created_at', 'ASC');
+                            ->whereHas('afip_ticket', function($query) {
+                                $query->whereNull('cae');
+                            })
+                            ->orderBy('created_at', 'DESC');
 
         if (!$this->is_admin()) {
             $sales_with_afip_errors = $sales_with_afip_errors->where('employee_id', $this->userId(false));

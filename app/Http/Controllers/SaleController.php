@@ -32,13 +32,31 @@ class SaleController extends Controller
 {
 
 
-    public function index($from_date = null, $until_date = null) {
+    public function index($from_depositos, $from_date = null, $until_date = null) {
         $models = Sale::where('user_id', $this->userId())
                         ->orderBy('created_at', 'DESC')
                         ->withAll();
 
-        if (!is_null($from_date)) {
+        Log::info('from_depositos: '.$from_depositos);
+        $from_depositos = (boolean)$from_depositos;
+
+        Log::info('from_depositos: '.$from_depositos);
+        if ($from_depositos) {
+
+            $models = $models->where(function($query) {
+                                    $query->where('to_check', 1)
+                                          ->orWhere('checked', 1)
+                                          ->orWhere('confirmed', 1);
+                                })->where('terminada', 0);
+
+            Log::info('NO tiene que estar terminada');
+        } else {
+            
             $models = $models->where('terminada', 1);
+            Log::info('tiene que estar terminada');
+        }
+
+        if (!is_null($from_date)) {
 
             if (!is_null($until_date)) {
                 $models = $models->whereDate('created_at', '>=', $from_date)
@@ -47,18 +65,19 @@ class SaleController extends Controller
                 $models = $models->whereDate('created_at', $from_date);
             }
 
-        } else {
+        } 
+        // else {
 
-            // Si entra aca es porque se esta llamando desde DEPOSITO
-            // Porque solo de esa seccion se puede llamar sin que sea from_date
+        //     // Si entra aca es porque se esta llamando desde DEPOSITO
+        //     // Porque solo de esa seccion se puede llamar sin que sea from_date
 
-            $models = $models->where(function($query) {
-                                    $query->where('to_check', 1)
-                                          ->orWhere('checked', 1)
-                                          ->orWhere('confirmed', 1);
-                                })->where('terminada', 0);
+        //     $models = $models->where(function($query) {
+        //                             $query->where('to_check', 1)
+        //                                   ->orWhere('checked', 1)
+        //                                   ->orWhere('confirmed', 1);
+        //                         })->where('terminada', 0);
             
-        }
+        // }
         $models = $models->get();
         return response()->json(['models' => $models], 200);
     }
@@ -140,6 +159,8 @@ class SaleController extends Controller
         $previus_client_id                          = $model->client_id;
         
         
+        $model->actualizandose_por_id               = null;
+       
         $model->discounts_in_services               = $request->discounts_in_services;
         
         $model->surchages_in_services               = $request->surchages_in_services;
@@ -372,6 +393,15 @@ class SaleController extends Controller
 
         SaleNotaCreditoAfipHelper::crear_nota_de_credito_afip($sale);
         return response(null, 201);
+    }
+
+    function clear_actualizandose_por($sale_id) {
+        $sale = Sale::find($sale_id);
+        $sale->actualizandose_por_id = null;
+        $sale->timestamps = false;
+        $sale->save();
+        return response(null, 200);
+
     }
 
 }

@@ -65,6 +65,11 @@ class BudgetHelper {
 	}
 
 	static function get_price_type_id($budget) {
+
+		if (!is_null($budget->price_type_id)) {
+			return $budget->price_type_id;
+		}
+
 		$client = $budget->client;
 		
 		if (!is_null($client) 
@@ -91,6 +96,7 @@ class BudgetHelper {
 				'amount'			=> $article->pivot->amount,
 				'checked_amount'	=> Self::get_checked_amount($has_extencion_check_sales, $article),
 				'price'	    		=> $article->pivot->price,
+				'price_type_personalizado_id'	    		=> $article->pivot->price_type_personalizado_id,
 				'discount'			=> $article->pivot->bonus,
 			]);
 
@@ -200,6 +206,8 @@ class BudgetHelper {
 			$bonus = $article['pivot']['bonus'];
 			$location = $article['pivot']['location'];
 			$price = $article['pivot']['price'];
+			$price_type_personalizado_id = isset($article['pivot']['price_type_personalizado_id']) ? $article['pivot']['price_type_personalizado_id'] : null;
+			
 			if ($article['status'] == 'inactive' && $id > 0) {
 				$art = Article::find($article['id']);
 				$art->bar_code 		= $article['bar_code'];
@@ -212,6 +220,7 @@ class BudgetHelper {
 									'price' 	=> $price,
 									'bonus' 	=> $bonus,
 									'location' 	=> $location,
+									'price_type_personalizado_id' 	=> $price_type_personalizado_id,
 								]);
 		}		
 	}

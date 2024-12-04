@@ -15,6 +15,10 @@ class Sale extends Model
         return $this->belongsToMany(CurrentAcountPaymentMethod::class)->withPivot('amount', 'discount_percentage', 'discount_amount', 'caja_id');
     }
 
+    public function actualizandose_por() {
+        return $this->belongsTo(User::class, 'actualizandose_por_id');
+    }
+
     public function afip_tipo_comprobante() {
         return $this->belongsTo(AfipTipoComprobante::class);
     }

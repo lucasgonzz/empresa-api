@@ -22,6 +22,7 @@ class SaleTotalesHelper {
 		}
 
 		$sale->total_cost = $total;
+		$sale->timestamps = false;
 		$sale->save();
 		return $sale;
 	}

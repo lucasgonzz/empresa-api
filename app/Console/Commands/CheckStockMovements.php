@@ -17,7 +17,7 @@ class CheckStockMovements extends Command
      *
      * @var string
      */
-    protected $signature = 'check_stock_movements';
+    protected $signature = 'check_stock_movements {article_id?} {article_num?} {user_id?} {--todos_los_articulos} {--corregir_stock}';
 
     /**
      * The console command description.
@@ -43,25 +43,37 @@ class CheckStockMovements extends Command
      */
     public function handle()
     {
+
+
+
+        $this->corregir_stock = $this->option('corregir_stock');
+            
+
+        if ($this->corregir_stock) {
+            $this->comment('corregir_stock SI');
+        } else {
+            $this->comment('corregir_stock NO');
+        }
+
+        sleep(4);
+
+        $this->todos_los_articulos = $this->option('todos_los_articulos');
+
+        $this->article_id = $this->argument('article_id') ?? null;
+        $this->article_num = $this->argument('article_num') ?? null;
+        $this->user_id = $this->argument('user_id') ?? null;
+
+        $this->articulos_afectados = [];
+
         $this->info("Iniciando recalculo de stock...");
 
-        Log::info('**********************************');
-        Log::info('Comando check_stock_movements');
-        Log::info('**********************************');
-
-        // Obtener movimientos generados en las últimas 24 horas
-        $movimientosRecientes = StockMovement::whereDate('created_at', '>=', Carbon::today()->subDays(1))
-                                            ->get();
-
-        // Obtener los artículos afectados
-        $articulosAfectados = $movimientosRecientes->pluck('article_id')->unique();
-
+        $this->init_movimientos();
+        
         $articulos_chequeados = 0;
 
-        Log::info(count($articulosAfectados).' articulos para chequear');
+        $this->comment(count($this->articulos_afectados).' articulos para chequear');
 
-
-        foreach ($articulosAfectados as $articuloId) {
+        foreach ($this->articulos_afectados as $articuloId) {
 
             $articulos_chequeados++;
             
@@ -71,28 +83,65 @@ class CheckStockMovements extends Command
                 continue;
             }
 
-            Log::info($article->name.'. Id: '.$article->id);
-
-            if ($article->user_id == 121) {
-            // if ($article->user_id == 228 && $article->num == 996) {
-            // if ($article->id == 132196) {
+            if ($this->check_article($article)) {
 
                 $this->recalcular_movimientos($article);
             }
 
         }
 
-        Mantenimiento::create([
-            'notas'     => 'Se repaso el stock de '.$articulos_chequeados.' articulos',
-        ]);   
+        // Mantenimiento::create([
+        //     'notas'     => 'Se repaso el stock de '.$articulos_chequeados.' articulos',
+        // ]);   
 
         $this->info("Recalculo de stock completado.");
 
         return 0;
     }
 
+    function init_movimientos() {
+
+        if ($this->todos_los_articulos) {
+
+            $this->articulos_afectados = Article::where('user_id', $this->user_id)
+                                            ->pluck('id');
+
+        } else {
+
+            // Obtener movimientos generados en las últimas 24 horas
+            $movimientosRecientes = StockMovement::whereDate('created_at', '>=', Carbon::today()->subDays(2))
+                                                ->get();
+
+            // Obtener los artículos afectados
+            $this->articulos_afectados = $movimientosRecientes->pluck('article_id')->unique();
+        }
+
+
+    }
+
+    function check_article($article) {
+
+        if ($article->default_in_vender) {
+            return false;
+        }
+
+        if (!is_null($this->article_id) && $this->article_id != '') {
+            return $article->id == $this->article_id;
+        }
+
+        if (!is_null($this->article_num) && $this->article_num != '') {
+            return $article->num == $this->article_num;
+        }
+
+        if (!is_null($this->user_id) && $this->user_id != '') {
+            return $article->user_id == $this->user_id;
+        }
+        return true;
+    }
+
     function recalcular_movimientos($article) {
-        $this->info("Recalculando movimientos del artículo: ".$article->name);
+        $this->info('');
+        $this->info("Recalculando movimientos del artículo: ".$article->name.'. Num: '.$article->num);
         $this->info('');
         
         // if (count($article->addresses) >= 1) {
@@ -101,11 +150,12 @@ class CheckStockMovements extends Command
         //     $this->info('');
         // }
 
-        // continue;
         // Obtener todos los movimientos del artículo, ordenados por fecha
-        $movimientos = StockMovement::where('article_id', $article->id)
-                                ->orderBy('id', 'asc')
-                                ->get();
+        $movimientos = $this->get_movimientos($article);
+
+        if (!count($movimientos) >= 1) {
+            return;
+        }
 
         // Inicializar el stock para recalcular
         $stockActual = 0; 
@@ -114,13 +164,20 @@ class CheckStockMovements extends Command
             $stockActual = $movimientos[0]->stock_resultante;
         }
 
-        $this->info('la cantidad empeiza en: '.$stockActual);
+        $this->check_movimientos_repetidos($movimientos);
+        
+        $movimientos = $this->get_movimientos($article);
 
         foreach ($movimientos as $movimiento) {
 
             if ($movimiento->id == $movimientos[0]->id) {
                 continue;
             }
+
+            // if ($movimiento->id != $movimientos[count($movimientos) - 1]->id) {
+            //     $movimiento->observations = null;
+            //     $movimiento->save();
+            // }
 
             // Si es un movimiento entre depósitos, el stock no cambia
             if (
@@ -138,6 +195,9 @@ class CheckStockMovements extends Command
 
                 $amount = $movimiento->amount;
                 if (str_contains($movimiento->concepto, 'Venta')
+                    && !str_contains($movimiento->concepto, 'Nota credito')
+                    && !str_contains($movimiento->concepto, 'Act. Venta')
+                    && !str_contains($movimiento->concepto, 'Eliminacion de venta')
                     && $movimiento->amount > 0) {
                     $amount = -$movimiento->amount;
                 }
@@ -155,18 +215,80 @@ class CheckStockMovements extends Command
         $this->check_stock_actual($article, $movimientos);
     }
 
+    function get_movimientos($article) {
+
+        $movimientos = StockMovement::where('article_id', $article->id)
+                                ->orderBy('id', 'asc')
+                                ->get();
+
+        return $movimientos;
+    }
+
+    function check_movimientos_repetidos($movimientos) {
+
+        $index = 0;
+
+        foreach ($movimientos as $movimiento) {
+
+            $index_siguiente = $index + 1;
+            
+            if ($index_siguiente == count($movimientos)
+                || !isset($movimientos[$index_siguiente])) {
+                break;
+            }
+
+            $siguiente_movimiento = $movimientos[$index_siguiente];
+
+            if ($movimiento->concepto == $siguiente_movimiento->concepto
+                && $movimiento->amount == $siguiente_movimiento->amount) {
+
+                $createdAt1 = $movimiento->created_at; 
+                $createdAt2 = $siguiente_movimiento->created_at;
+
+                $differenceInMinutes = $createdAt1->diffInMinutes($createdAt2);
+
+                if ($differenceInMinutes < 1) {
+
+                    $this->comment('Movimiento repetido '.$movimiento->concepto);
+                    $this->comment('Article '.$movimiento->article->name.'. Num: '.$movimiento->article->num);
+
+                    $movimientos[$index_siguiente]->delete();
+                    $this->info('Se elimino');
+
+                    // Eliminar el movimiento repetido del array
+                    unset($movimientos[$index_siguiente]);
+
+                    // Reindexar el array para evitar problemas con índices
+                    $movimientos = $movimientos->values();
+                }
+
+            }
+
+            $index++;
+        }
+    }
+
     function check_stock_actual($article, $movimientos) {
 
         $stock_resultante = $movimientos[count($movimientos) - 1]->stock_resultante;
         
-        $epsilon = 0.00001;
+        $epsilon = 0.1;
 
         if (abs($article->stock - $stock_resultante) > $epsilon) {
         // if ($article->stock != $stock_resultante) {
 
+            // $this->info($article->name);
+
+            $this->comment('Stock actual diferente al resultante');
+            
+            if (!$this->corregir_stock) {
+
+                return;
+            } 
+
             $diferencia = (float)$article->stock - (float)$stock_resultante;
 
-            $this->crear_movimiento_para_compensar($article, $movimientos, $diferencia);
+            $this->modificar_primer_movimiento_para_compensar($article, $movimientos, $diferencia);
             
             $this->recalcular_movimientos($article);
 
@@ -177,7 +299,7 @@ class CheckStockMovements extends Command
         }
     }
 
-    function crear_movimiento_para_compensar($article, $movimientos, $diferencia) {
+    function modificar_primer_movimiento_para_compensar($article, $movimientos, $diferencia) {
 
         $this->info('Se va a compensar con la diferencia de '.$diferencia);
 
@@ -209,11 +331,11 @@ class CheckStockMovements extends Command
             }
 
             if ($total != $article->stock) {
-
-                Mantenimiento::create([
-                    'notas'     => 'Stock diferente a suma de depositos. Article id: '.$article->id.'. Nombre: '.$article->name.'. Stock: '.$article->stock.'. Suma depositos: '.$total,
-                    'user_id'   => $article->user_id,
-                ]);
+                $this->comment('Stock diferente a suma de depositos');
+                // Mantenimiento::create([
+                //     'notas'     => 'Stock diferente a suma de depositos. Article id: '.$article->id.'. Nombre: '.$article->name.'. Stock: '.$article->stock.'. Suma depositos: '.$total,
+                //     'user_id'   => $article->user_id,
+                // ]);
             }
         }
     }

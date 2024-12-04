@@ -26,6 +26,8 @@ class CreateBudgetsTable extends Migration
             $table->timestamp('finish_at')->nullable();
 
             $table->integer('budget_status_id')->unsigned()->default(1);
+            $table->integer('price_type_id')->nullable();
+            $table->integer('address_id')->nullable();
 
             // $table->integer('price_type_id')->unsigned()->default(1);
 

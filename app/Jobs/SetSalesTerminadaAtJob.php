@@ -44,6 +44,7 @@ class SetSalesTerminadaAtJob implements ShouldQueue
                         ->orderBy('created_at', 'ASC')
                         ->get();
 
+        Log::info(count($sales).' ventas para actualizar');
         $count = 1;
         foreach ($sales as $sale) {
             

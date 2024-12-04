@@ -39,6 +39,27 @@ class ArticleImportHelper {
 
 	}
 
+	static function error_notification($user) {
+
+		Log::info('Enviando notificacion de error');
+
+        $functions_to_execute = [
+            [
+                'btn_text'      => 'Entendido',
+                // 'function_name' => 'close_notification_modal',
+                'btn_variant'   => 'primary',
+            ],
+        ];
+
+        $user->notify(new GlobalNotification(
+            'Hubo un error durante la importacion de articulos',
+            'danger',
+            $functions_to_execute,
+            $user->id,
+            true,
+        ));
+	}
+
     static function set_unidades_por_bulto($article, $columns, $row) {
 
     	$unidades_x_bulto = ImportHelper::getColumnValue($row, 'u_x_bulto', $columns);
@@ -84,7 +105,7 @@ class ArticleImportHelper {
         }
     }
 
-    static function create_import_history($user, $auth_user_id, $provider_id, $created_models, $updated_models, $columns, $archivo_excel_path) {
+    static function create_import_history($user, $auth_user_id, $provider_id, $created_models, $updated_models, $columns, $archivo_excel_path, $error_message = null) {
         ImportHistory::create([
             'user_id'           => $user->id,
             'employee_id'       => $auth_user_id,
@@ -94,6 +115,7 @@ class ArticleImportHelper {
             'updated_models'    => $updated_models,
             'observations'      => Self::get_observations($columns),
             'excel_url'			=> $archivo_excel_path,
+            'error_message'		=> $error_message,
         ]);
         Log::info('Se creo ImportHistory con '.$created_models.' creados y '.$updated_models.' actualizados con provider_id: '.$provider_id);
     }

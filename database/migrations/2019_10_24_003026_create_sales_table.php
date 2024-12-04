@@ -69,6 +69,8 @@ class CreateSalesTable extends Migration
 
             $table->decimal('total_cost', 30,2)->nullable();
 
+            $table->integer('actualizandose_por_id')->nullable();
+
             $table->foreign('user_id')
                     ->references('id')->on('users');
             $table->foreign('client_id')

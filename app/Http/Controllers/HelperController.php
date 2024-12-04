@@ -57,6 +57,28 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function pasar_cantidades_a_notas($user_id) {
+        $orders = ProviderOrder::where('user_id', $user_id)
+                                ->where('created_at', '>', Carbon::today()->subDays(2))
+                                ->orderBy('created_at', 'ASC')
+                                ->get();
+
+        foreach ($orders as $provider_order) {
+            
+            foreach ($provider_order->articles as $article) {
+                $pivot = $article->pivot;
+
+                $pivot->notes = $pivot->amount;
+
+                $pivot->save();
+
+            }
+            echo 'Se actualizo pedido N° '.$provider_order->num;
+            echo '<br>';
+        }
+        echo 'Listo';
+    }
+
     function set_buyers_password($user_id) {
         $buyers = Buyer::where('user_id', $user_id)
                         ->get();

@@ -69,9 +69,13 @@ class ExportHelper {
 
 					$article_price_type = $article->price_types()->find($price_type->id);
 
-					$map[] = $article_price_type->pivot->percentage;
-					$map[] = $article_price_type->pivot->price;
-					$map[] = $article_price_type->pivot->final_price;
+					if ($article_price_type) {
+						
+						$map[] = $article_price_type->pivot->percentage;
+						$map[] = $article_price_type->pivot->price;
+						$map[] = $article_price_type->pivot->final_price;
+					}
+
 				}
 
 			} else {
