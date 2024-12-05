@@ -57,11 +57,7 @@ class CheckClientsSaldos extends Command
                         ->whereHas('current_acount', function($q) {
                             return $q->where('debe', '>', 0)
                                         ->where('status', 'sin_pagar')
-                                        ->orWhere('status', 'pagandose')
-                                        ->where(function ($query) {
-                                            $query->whereNull('pagandose')
-                                            ->orWhereRaw('debe - pagandose > 300');
-                                        });
+                                        ->orWhere('status', 'pagandose');
                         })
                         ->orderBy('created_at', 'DESC')
                         ->get();

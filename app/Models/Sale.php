@@ -28,7 +28,8 @@ class Sale extends Model
     }
 
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles.article_variants', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'nota_credito_afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'afip_observations', 'current_acount', 'current_acount_payment_methods', 'price_type');
+        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles.article_variants', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'nota_credito_afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'afip_observations', 'current_acount', 'current_acount_payment_methods', 'price_type', 'sale_modifications')
+        ->withCount('sale_modifications');
     }
 
     function sale_modifications() {

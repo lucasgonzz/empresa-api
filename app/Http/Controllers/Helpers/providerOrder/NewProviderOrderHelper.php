@@ -241,6 +241,8 @@ class NewProviderOrderHelper {
                 'notes'             => GeneralHelper::getPivotValue($new_article, 'notes'),
                 'iva_id'            => GeneralHelper::getPivotValue($new_article, 'iva_id'),
                 'cost_in_dollars'   => GeneralHelper::getPivotValue($new_article, 'cost_in_dollars'),
+                'amount_pedida'   => GeneralHelper::getPivotValue($new_article, 'amount_pedida'),
+                'update_provider'   => GeneralHelper::getPivotValue($new_article, 'update_provider'),
             ]);
 
             $this->update_article($new_article);
@@ -337,6 +339,11 @@ class NewProviderOrderHelper {
 
                     $request->to_address_id = $this->provider_order->address_id;
                 } 
+
+                if (!$new_article['pivot']['update_provider']) {
+
+                    $request->not_save_provider = true;
+                }
 
                 $request->amount = $amount;
 

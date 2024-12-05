@@ -140,9 +140,9 @@ class CheckStockMovements extends Command
     }
 
     function recalcular_movimientos($article) {
-        $this->info('');
-        $this->info("Recalculando movimientos del artículo: ".$article->name.'. Num: '.$article->num);
-        $this->info('');
+        // $this->info('');
+        // $this->info("Recalculando movimientos del artículo: ".$article->name.'. Num: '.$article->num);
+        // $this->info('');
         
         // if (count($article->addresses) >= 1) {
 
@@ -240,32 +240,54 @@ class CheckStockMovements extends Command
             $siguiente_movimiento = $movimientos[$index_siguiente];
 
             if ($movimiento->concepto == $siguiente_movimiento->concepto
+                && $movimiento->concepto != 'Creacion de deposito'
+                && $movimiento->concepto != 'Movimiento de depositos'
                 && $movimiento->amount == $siguiente_movimiento->amount) {
 
-                $createdAt1 = $movimiento->created_at; 
-                $createdAt2 = $siguiente_movimiento->created_at;
+                if (!$this->es_un_movimiento_de_depositos($movimiento, $siguiente_movimiento)) {
 
-                $differenceInMinutes = $createdAt1->diffInMinutes($createdAt2);
+                    $createdAt1 = $movimiento->created_at; 
+                    $createdAt2 = $siguiente_movimiento->created_at;
 
-                if ($differenceInMinutes < 1) {
+                    $diferencia_en_segundos = $createdAt1->diffInSeconds($createdAt2);
 
-                    $this->comment('Movimiento repetido '.$movimiento->concepto);
-                    $this->comment('Article '.$movimiento->article->name.'. Num: '.$movimiento->article->num);
+                    if ($diferencia_en_segundos < 10) {
 
-                    $movimientos[$index_siguiente]->delete();
-                    $this->info('Se elimino');
+                        $this->comment('Article: '.$movimiento->article->name.'. Num: '.$movimiento->article->num);
+                        $this->comment('Movimiento repetido '.$movimiento->concepto);
 
-                    // Eliminar el movimiento repetido del array
-                    unset($movimientos[$index_siguiente]);
+                        if ($this->corregir_stock) {
 
-                    // Reindexar el array para evitar problemas con índices
-                    $movimientos = $movimientos->values();
+                            $movimientos[$index_siguiente]->delete();
+                            $this->info('Se elimino mov repetido');
+
+                            // Eliminar el movimiento repetido del array
+                            unset($movimientos[$index_siguiente]);
+
+                            // Reindexar el array para evitar problemas con índices
+                            $movimientos = $movimientos->values();
+                        }
+                        $this->comment('');
+                        $this->comment('');
+
+                    }
                 }
+
 
             }
 
             $index++;
         }
+    }
+
+    function es_un_movimiento_de_depositos($movimiento, $siguiente_movimiento) {
+        if (!is_null($movimiento->to_address_id)
+            && !is_null($siguiente_movimiento->to_address_id)
+            && $movimiento->to_address_id != $siguiente_movimiento->to_address_id) {
+
+            return true;
+        }
+        return false;
     }
 
     function check_stock_actual($article, $movimientos) {
@@ -279,7 +301,10 @@ class CheckStockMovements extends Command
 
             // $this->info($article->name);
 
+            $this->info('Article: '.$article->name.' num: '.$article->num);
             $this->comment('Stock actual diferente al resultante');
+            $this->info('');
+            $this->info('');
             
             if (!$this->corregir_stock) {
 
