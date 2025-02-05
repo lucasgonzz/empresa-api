@@ -57,6 +57,80 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function articulos_sin_address() {
+        $articles = Article::whereDoesntHave('addresses')
+                            ->get();
+        echo count($articles).' articulos sin direccion'; 
+    }
+
+    function restaurar_sales($ids) {
+
+        $ids = explode('-', $ids);
+        
+        $ct = new StockMovementController();
+        
+        foreach ($ids as $id) {
+            $sale = Sale::where('id', $id)
+                            ->withTrashed()
+                            ->first();
+
+            foreach ($sale->articles as $article) {
+
+                $request = new \Illuminate\Http\Request();
+
+                $request->model_id = $article->id;
+                $request->from_address_id = $sale->address_id;
+                $request->amount = -$article['pivot']['amount'];
+                $request->sale_id = $sale->id;
+                $request->concepto = 'Restauracion Venta N° '.$sale->num;
+
+                $ct->store($request, false);
+                echo 'Mov para '.$article->name. '. Num: '.$article->num;
+                echo '<br>';
+            }
+
+            $sale->deleted_at = null;
+            $sale->timestamps = false;
+            $sale->save();
+            echo 'Se restauro sale num '.$sale->num;
+            echo '<br>';
+            echo '<br>';
+        }
+        echo 'Termino';
+    }
+
+    function arreglar_restaurar_sales($ids) {
+
+        $ids = explode('-', $ids);
+        
+        $ct = new StockMovementController();
+        
+        foreach ($ids as $id) {
+            $sale = Sale::where('id', $id)
+                            ->first();
+
+            foreach ($sale->articles as $article) {
+
+                $request = new \Illuminate\Http\Request();
+
+                $request->model_id = $article->id;
+                $request->from_address_id = $sale->address_id;
+                $request->amount = -((int)$article['pivot']['amount'] * 2);
+                $request->sale_id = $sale->id;
+                $request->concepto = 'Restauracion Venta N° '.$sale->num;
+
+                $ct->store($request, false);
+                echo 'Mov para '.$article->name. '. Num: '.$article->num;
+                echo '<br>';
+            }
+            
+            echo 'Se restauro sale num '.$sale->num;
+            echo '<br>';
+            echo '<br>';
+        }
+        echo 'Termino';
+    }
+
     function set_articles_num($user_id) {
         $articles = Article::where('user_id', $user_id)
                             ->whereNull('num')
@@ -1794,9 +1868,12 @@ class HelperController extends Controller
                         ->first();
         $articles = Article::where('user_id', $user->id)->get();
         $codigos = [];
+        $repetidos = [];
+
         foreach ($articles as $article) {
             if (array_key_exists($article->bar_code, $codigos)) {
                 $codigos[$article->bar_code]++;
+                $repetidos[] = $article;
             } else {
                 $codigos[$article->bar_code] = 1;
             }
@@ -1807,6 +1884,10 @@ class HelperController extends Controller
             } else {
             }
         }
+        // echo '<br>';
+        // foreach ($repetidos as $repetido) {
+        //     echo $re
+        // }
     }
 
     function setOnlineConfiguration() {

@@ -346,6 +346,21 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'cajas',
                 'en'            => 'caja.index',
             ],
+
+
+
+            // Descuentos y recargos para las ventas
+
+            [
+                'singular'      => 'Aplicar descuentos y recargos a las ventas',
+                'plural'        => 'ventas',
+                'en'            => 'sale.discount_surchage.aplicar',
+            ],
+            [
+                'singular'      => 'Crear descuentos y recargos para las ventas',
+                'plural'        => 'ventas',
+                'en'            => 'sale.discount_surchage.crear',
+            ],
         ];
         foreach ($permissions as $permission) {
             PermissionEmpresa::create([

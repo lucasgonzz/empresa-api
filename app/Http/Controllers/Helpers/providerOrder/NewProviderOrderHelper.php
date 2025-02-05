@@ -7,7 +7,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\caja\MovimientoCajaHelper;
-use App\Http\Controllers\StockMovementController;
+use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
 use App\Models\CurrentAcount;
 use App\Models\Iva;
@@ -272,8 +272,20 @@ class NewProviderOrderHelper {
                 $article = $this->update_stock($article, $new_article);
             }
 
+            $this->update_article_provider($article, $new_article);
+
             $article->save();
         }
+    }
+
+    function update_article_provider($article, $new_article) {
+        if ($new_article['pivot']['update_provider']) {
+            
+            $article->provider_id = $this->provider_order->provider_id;
+            $article->timestamps = false;
+            $article->save();
+        }
+
     }
 
     function check_article_status($article, $new_article) {
@@ -317,7 +329,10 @@ class NewProviderOrderHelper {
 
             Log::info('amount '.$amount);
 
+            $se_esta_actualizando = false;
+
             if (isset($this->ultimos_articulos_recividos[$article->id])) {
+                $se_esta_actualizando = true;
                 Log::info('antes habia '.$this->ultimos_articulos_recividos[$article->id]);
                 $amount -= $this->ultimos_articulos_recividos[$article->id];
                 Log::info('amount quedo en: '.$amount);
@@ -325,8 +340,9 @@ class NewProviderOrderHelper {
 
             if ($amount != 0) {
 
-                $request = new \Illuminate\Http\Request();
-                $request->model_id = $article->id;
+                $data = [];
+
+                $data['model_id'] = $article->id;
 
                 if (!is_null($this->provider_order->address_id)
                     && $this->provider_order->address_id != 0
@@ -337,21 +353,28 @@ class NewProviderOrderHelper {
                     )
                 ) {
 
-                    $request->to_address_id = $this->provider_order->address_id;
+                    $data['to_address_id'] = $this->provider_order->address_id;
                 } 
 
                 if (!$new_article['pivot']['update_provider']) {
 
-                    $request->not_save_provider = true;
+                    $data['not_save_provider'] = true;
+                } 
+
+                $data['amount'] = $amount;
+
+                $data['provider_id'] = $this->provider_order->provider_id;
+
+                if ($se_esta_actualizando) {
+
+                    $data['concepto_stock_movement_name'] = 'Act Compra a proveedor';
+                } else {
+
+                    $data['concepto_stock_movement_name'] = 'Compra a proveedor';
                 }
-
-                $request->amount = $amount;
-
-                $request->provider_id = $this->provider_order->provider_id;
                 
-                $request->concepto = 'Pedido Proveedor N° '.$this->provider_order->num;
 
-                $ct_stock_movement->store($request);
+                $ct_stock_movement->crear($data);
             }
 
         }

@@ -67,7 +67,7 @@ class ArticleVariantSeeder extends Seeder
             ],
         ];
 
-        $article_id = 66;
+        $article_id = 65;
 
         foreach ($models as $model) {
 

@@ -31,7 +31,7 @@ class ProcessArticleImport implements ShouldQueue
     protected $auth_user_id;
     protected $archivo_excel_path;
 
-    public $timeout = 9999999;
+    public $timeout = 3600;
 
     public function __construct($archivo_excel, $columns, $create_and_edit, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id, $archivo_excel_path) {
         $this->archivo_excel = $archivo_excel;

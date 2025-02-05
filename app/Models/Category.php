@@ -12,6 +12,14 @@ class Category extends Model
 	protected $guarded = [];	
 
     function scopeWithAll($q) {
-        
+        $q->with('price_types');
+    }
+
+    function price_types() {
+        return $this->belongsToMany(PriceType::class)->withPivot('percentage');
+    }
+
+    function category_price_type_ranges() {
+        return $this->hasMany(CategoryPriceTypeRange::class)->orderBy('min', 'asc');
     }
 }

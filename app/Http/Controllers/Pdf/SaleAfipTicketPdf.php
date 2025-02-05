@@ -35,21 +35,14 @@ class SaleAfipTicketPdf extends fpdf {
 		$widths = [];
 		$widths['codigo'] = 23;
 		$widths['producto'] = 66;
-		// $widths['producto'] = 50;
 		$widths['cantidad'] = 17;
-		// $widths['unidad_medida'] = 16;
 		$widths['bonif'] = 15;
 		$widths['iva'] = 14;
 		$widths['subtotal_con_iva'] = 25;
 		$widths['subtotal_final'] = 45;
 
-		if ($this->sale->afip_ticket->cbte_tipo == 1) {
-			$widths['precio_unitario'] = 20;
-			$widths['subtotal'] = 20;
-		} else {
-			$widths['precio_unitario'] = 35;
-			$widths['subtotal'] = 40;
-		}
+		$widths['precio_unitario'] = 20;
+		$widths['subtotal'] = 20;
 
 		$this->widths = $widths;
 
@@ -76,11 +69,13 @@ class SaleAfipTicketPdf extends fpdf {
     	$this->AddPage();
         $this->__Header();
 
-		$this->cantidad_articulos_de_esta_venta = count($this->sale->articles);
+		$this->cantidad_articulos_de_esta_venta = count($this->sale->articles) + count($this->sale->combos);
 		$this->setTotalPaginas();
 
+
         foreach ($this->sale->articles as $article) {
-            if ($this->articulos_en_esta_pagina < $this->articulos_por_pagina 
+            if (
+            	$this->articulos_en_esta_pagina < $this->articulos_por_pagina 
             	&& $this->articulos_en_esta_venta < $this->cantidad_articulos_de_esta_venta) {
             	$this->addArticle($article);
             } else {
@@ -93,8 +88,27 @@ class SaleAfipTicketPdf extends fpdf {
                 	$this->__Header();
             		$this->addArticle($article);
                 }
-            }	# Termina if 
-        }	# Termina for
+            }	 
+        }	
+
+
+        foreach ($this->sale->combos as $combo) {
+            if (
+            	$this->articulos_en_esta_pagina < $this->articulos_por_pagina 
+            	&& $this->articulos_en_esta_venta < $this->cantidad_articulos_de_esta_venta) {
+            	$this->addArticle($combo);
+            } else {
+                $this->num_page++;
+				$this->printPieDePagina();
+    			// $this->Y = 220;
+                if ($this->articulos_en_esta_venta < $this->cantidad_articulos_de_esta_venta) {
+                    $this->resetPage();
+                	$this->AddPage();
+                	$this->__Header();
+            		$this->addArticle($combo);
+                }
+            }	 
+        }	
 
         $this->num_page++;
 		$this->printPieDePagina();
@@ -140,7 +154,10 @@ class SaleAfipTicketPdf extends fpdf {
 	}
 
 	function printOtrosTibutos() {
-		if ($this->sale->afip_ticket->cbte_tipo == 1) {
+		// if (
+		// 	$this->tipo_factura(1)
+		// 	|| $this->tipo_factura(6)
+		// ) {
 			$this->setY(180);
 			$this->setX(6);
 			$this->SetFont('Arial', '', 9);
@@ -189,7 +206,7 @@ class SaleAfipTicketPdf extends fpdf {
 			$this->Cell(60, 5, 'Importe Otros Tributos', 0, 0, 'L');
 			$this->setX(111);
 			$this->Cell(20, 5, '0,00', 0, 0, 'R');
-		}
+		// }
 	}
 
 	function printDiscounts() {
@@ -222,24 +239,21 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->setX(5);
 		$this->y += 5;
 		$this->SetFont('Arial', 'B', 9);
-		if ($this->sale->afip_ticket->cbte_tipo == 1
-			|| $this->sale->afip_ticket->cbte_tipo == 51
-			|| $this->sale->afip_ticket->cbte_tipo == 201) {
 
-			$this->Cell(60, 5, 'Importe Neto Gravado: $'.Numbers::price($importes['gravado']), 1, 0, 'L');
+		$this->Cell(60, 5, 'Importe Neto Gravado: $'.Numbers::price($importes['gravado']), 1, 0, 'L');
 
-			foreach ($importes['ivas'] as $iva => $importe) {
-				if ($importe['Importe'] > 0) {
-					$this->Cell(40, 5, 'IVA '.$iva.'%: $'.Numbers::price($importe['Importe']), 1, 0, 'L');
-				}
+		foreach ($importes['ivas'] as $iva => $importe) {
+			if ($importe['Importe'] > 0) {
+				$this->Cell(40, 5, 'IVA '.$iva.'%: $'.Numbers::price($importe['Importe']), 1, 0, 'L');
 			}
-		} 
+		}
+		
 		$this->Cell(50, 5, 'Importe Total: $'.Numbers::price($importes['total']), 1, 0, 'L');
 	}
 
 	function printLine() {
 		$this->SetLineWidth(.4);
-		if ($this->sale->afip_ticket->cbte_tipo == 1) {
+		// if ($this->sale->afip_ticket->cbte_tipo == 1) {
 			// Izquierda
 			$this->Line(5,180,5,235);
 			// Abajo
@@ -248,16 +262,16 @@ class SaleAfipTicketPdf extends fpdf {
 			$this->Line(205,180,205,235);
 			// Arriba
 			$this->Line(5,180,205,180);
-		} else {
-			// Izquierda
-			$this->Line(5,220,5,235);
-			// Abajo
-			$this->Line(5,235,205,235);
-			// Derecha
-			$this->Line(205,220,205,235);
-			// Arriba
-			$this->Line(5,220,205,220);
-		}
+		// } else {
+		// 	// Izquierda
+		// 	$this->Line(5,220,5,235);
+		// 	// Abajo
+		// 	$this->Line(5,235,205,235);
+		// 	// Derecha
+		// 	$this->Line(205,220,205,235);
+		// 	// Arriba
+		// 	$this->Line(5,220,205,220);
+		// }
 	}
 
 	function printPhone() {
@@ -593,11 +607,19 @@ class SaleAfipTicketPdf extends fpdf {
 
         $this->Cell($this->widths['bonif'], 6, $article->pivot->discount, 0, 0, 'R');
         $this->Cell($this->widths['subtotal'], 6, Numbers::price($this->afip_helper->subTotal($article)), 0, 0, 'R');
-		if ($this->sale->afip_ticket->cbte_tipo == 1) {
+
+		// if (
+		// 	$this->tipo_factura(1)
+		// 	|| $this->tipo_factura(6)
+		// ) {
         	$this->Cell($this->widths['iva'], 6, $this->getArticleIva($article), 0, 0, 'C');
         	$this->Cell($this->widths['subtotal_con_iva'], 6, $this->subtotalConIva($article), 0, 0, 'R');
-		}
+		// }
         $this->y += 6;
+    }
+
+    function tipo_factura() {
+    	return $this->sale->afip_ticket->cbte_tipo == $cbte_tipo;
     }
 
     function getArticleIva($article) {
@@ -799,10 +821,13 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->Cell($this->widths['precio_unitario'], 5, 'Precio Unit', 1, 0, 'C');
 		$this->Cell($this->widths['bonif'], 5, '% Bonif', 1, 0, 'L');
 		$this->Cell($this->widths['subtotal'], 5, 'Subtotal', 1, 0, 'C');
-		if ($this->sale->afip_ticket->cbte_tipo == 1) {
+		// if (
+		// 	$this->tipo_factura(1)
+		// 	|| $this->tipo_factura(6)
+		// ) {
 			$this->Cell($this->widths['iva'], 5, 'IVA', 1, 0, 'C');
 			$this->Cell($this->widths['subtotal_con_iva'], 5, 'Subtotal c/IVA', 1, 0, 'C');
-		}
+		// }
 
 		// Se dibuja la linea celeste que separa el thead del tbody
 		$this->SetLineWidth(.6);

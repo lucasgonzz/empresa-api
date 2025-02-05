@@ -33,7 +33,7 @@ class ClientSeeder extends Seeder
                 'seller_id'             => 2,
                 'user_id'               => $user->id,
                 'price_type_id'         => 2,
-                'saldo'                 => 10000,
+                'saldo'                 => null,
                 'address_id'            => 1,
                 'pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar'         => 0,
             ],
@@ -92,7 +92,7 @@ class ClientSeeder extends Seeder
             [
 
                 'num'                   => 1,
-                'name'                  => 'Lucas Gonzalez',
+                'name'                  => 'Lucas Gonzalez 2',
                 'email'                 => 'lucasgonzalez5500@gmail.com',
                 'address'               => 'San antonio 23 - Gualeguay, Entre Rios',
                 'cuit'                  => '20242112025',

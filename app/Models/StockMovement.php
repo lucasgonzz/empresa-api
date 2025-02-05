@@ -16,6 +16,10 @@ class StockMovement extends Model
         return $this->belongsTo(Article::class);
     }
 
+    function concepto() {
+        return $this->belongsTo(ConceptoStockMovement::class, 'concepto_stock_movement_id');
+    }
+
     function article_variant() {
         return $this->belongsTo(ArticleVariant::class);
     }

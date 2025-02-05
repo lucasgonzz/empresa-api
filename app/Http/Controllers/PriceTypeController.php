@@ -28,6 +28,7 @@ class PriceTypeController extends Controller
         ]);
         $this->sendAddModelNotification('price_type', $model->id);
         
+        GeneralHelper::attachModels($model, 'categories', $request->categories, ['percentage']);
         GeneralHelper::attachModels($model, 'sub_categories', $request->sub_categories, ['percentage']);
 
         return response()->json(['model' => $this->fullModel('PriceType', $model->id)], 201);
@@ -43,10 +44,11 @@ class PriceTypeController extends Controller
         $model->percentage          = $request->percentage;
         $model->position            = $request->position;
         $model->save();
-        $this->sendAddModelNotification('price_type', $model->id);
 
+        GeneralHelper::attachModels($model, 'categories', $request->categories, ['percentage']);
         GeneralHelper::attachModels($model, 'sub_categories', $request->sub_categories, ['percentage']);
         
+        $this->sendAddModelNotification('price_type', $model->id);
         return response()->json(['model' => $this->fullModel('PriceType', $model->id)], 200);
     }
 

@@ -109,7 +109,7 @@ class Sale extends Model
     }
 
     public function combos() {
-        return $this->belongsToMany('App\Models\Combo')->withPivot('amount', 'price',);
+        return $this->belongsToMany('App\Models\Combo')->withPivot('amount', 'price', 'cost')->withTrashed();
     }
 
     public function services() {

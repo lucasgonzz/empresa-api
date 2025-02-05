@@ -3,8 +3,10 @@
 namespace Database\Seeders;
 
 use App\Models\Category;
+use App\Models\PriceType;
 use App\Models\User;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Log;
 
 class CategorySeeder extends Seeder
 {
@@ -28,6 +30,11 @@ class CategorySeeder extends Seeder
             'Muebles',
         ];
 
+        $supermercado = [
+            'Almacen',
+            'Gaseosas',
+        ];
+
         $auto_partes = [
             'Accesorios',
             'Encendido',
@@ -35,14 +42,44 @@ class CategorySeeder extends Seeder
             'Motor',
             'Suspencion y frenos',
         ];
+
+        $categories = [];
+
         $num = 1;
-        foreach ($auto_partes as $category) {
-            Category::create([
+        foreach ($supermercado as $category) {
+            $categories[] = Category::create([
                 'num'     => $num,
                 'name'    => $category,
                 'user_id' => $user->id,
             ]);
             $num++;
+        }
+
+        if (env('FOR_USER') == 'golo_norte') {
+            $this->adjuntar_price_types($categories, $user);
+        }
+    }
+
+    function adjuntar_price_types($categories, $user) {
+
+        $price_types = PriceType::where('user_id', $user->id)
+                                ->orderBy('position', 'ASC')
+                                ->get();
+
+
+        $percetage = 5;
+        
+        foreach ($categories as $category) {
+            
+            
+            foreach ($price_types as $price_type) {
+                
+                $category->price_types()->attach($price_type->id, [
+                    'percentage' => $percetage,
+                ]);
+
+                $percetage += 5;
+            }
         }
     }
 }

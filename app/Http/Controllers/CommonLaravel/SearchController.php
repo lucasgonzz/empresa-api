@@ -19,6 +19,12 @@ class SearchController extends Controller
         } else {
             $filters = $_filters;
         }
+
+        if ($request->papelera) {
+            $models = $models->whereNotNull('deleted_at')
+                            ->withTrashed();
+        }
+
         foreach ($filters as $filter) {
             if (isset($filter['type'])) {
 

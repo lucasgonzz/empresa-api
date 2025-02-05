@@ -1,0 +1,118 @@
+<?php 
+
+$articles = [
+
+
+    // Categoria Almacen
+
+    [
+        'featured'          => 8,
+        'bar_code'          => '001',
+        'provider_code'     => 'p-001',
+        'name'              => 'Yerba',
+        'stock'             => 100,
+        'cost'              => 1000,
+        'sub_category_name' => 'Yerbas',
+        'provider_id'       => 1,
+        'images'            => [
+            [
+                'url'       => get_image_url('/storage/auto-partes/044.1142.jpg'),
+            ],
+        ],
+    ],
+
+    [
+        'featured'          => null,
+        'bar_code'          => '002',
+        'provider_code'     => 'p-002',
+        'iva_id'            => 3,
+        'name'              => 'Mate Torpedo',
+        'stock'             => null,
+        'cost'              => 1000,
+        'sub_category_name' => 'Mates',
+        'provider_id'       => 1,
+        'images'            => [
+            [
+                'url'       => get_image_url('/storage/auto-partes/044.1654.jpg'),
+            ],
+        ],
+        'addresses'     => [
+            [
+                'id'            => 1,
+                'amount'        => 50,
+            ],
+            [
+                'id'            => 2,
+                'amount'        => 50,
+            ],
+        ],
+    ],
+
+
+
+    // Categoria Gaseosas
+
+    [
+        'featured'          => null,
+        'bar_code'          => '003',
+        'provider_code'     => 'p-003',
+        'iva_id'            => 3,
+        'name'              => 'Fanta',
+        'stock'             => null,
+        'cost'              => 1000,
+        'sub_category_name' => 'Cocacola',
+        'provider_id'       => 1,
+        'images'            => [
+            [
+                'url'       => get_image_url('/storage/auto-partes/044.1654.jpg'),
+            ],
+        ],
+        'addresses'     => [
+            [
+                'id'            => 1,
+                'amount'        => 50,
+            ],
+            [
+                'id'            => 2,
+                'amount'        => 50,
+            ],
+        ],
+    ],
+
+    [
+        'featured'          => null,
+        'bar_code'          => '003',
+        'provider_code'     => 'p-003',
+        'iva_id'            => 3,
+        'name'              => 'Lima limon',
+        'stock'             => null,
+        'cost'              => 1000,
+        'sub_category_name' => 'Manaos',
+        'provider_id'       => 1,
+        'images'            => [
+            [
+                'url'       => get_image_url('/storage/auto-partes/044.1654.jpg'),
+            ],
+        ],
+        'addresses'     => [
+            [
+                'id'            => 1,
+                'amount'        => 50,
+            ],
+            [
+                'id'            => 2,
+                'amount'        => 50,
+            ],
+        ],
+    ],
+    
+];
+
+
+function get_image_url($url) {
+    if (env('APP_ENV') == 'production') {
+        return env('APP_IMAGES_URL').'/public'.$url;
+    } else {
+        return env('APP_IMAGES_URL').$url;
+    }
+}

@@ -2,7 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\category\PriceTypeHelper;
+use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
 use App\Models\SubCategory;
 use Illuminate\Http\Request;
 
@@ -25,6 +28,11 @@ class SubCategoryController extends Controller
             'show_in_vender'        => $request->show_in_vender,
             'user_id'               => $this->userId(),
         ]);
+        
+        SetPriceTypesHelper::set_price_types($model);
+
+        GeneralHelper::attachModels($model, 'price_types', $request->price_types, ['percentage']);
+
         $this->sendAddModelNotification('sub_category', $model->id);
         return response()->json(['model' => $this->fullModel('SubCategory', $model->id)], 201);
     }  
@@ -39,6 +47,11 @@ class SubCategoryController extends Controller
         $model->category_id         = $request->category_id;
         $model->show_in_vender      = $request->show_in_vender;
         $model->save();
+
+        GeneralHelper::attachModels($model, 'price_types', $request->price_types, ['percentage']);
+
+        PriceTypeHelper::update_article_prices(null, $model);
+
         $this->sendAddModelNotification('sub_category', $model->id);
         return response()->json(['model' => $this->fullModel('SubCategory', $model->id)], 200);
     }

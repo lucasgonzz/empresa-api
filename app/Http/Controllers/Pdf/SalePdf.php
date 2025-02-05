@@ -191,6 +191,11 @@ class SalePdf extends fpdf {
 			$this->total_sale += $this->sub_total($article);
 			$index++;
 		}
+		foreach ($this->sale->combos as $combo) {
+			$this->printItem($index, $combo);
+			$this->total_sale += $this->sub_total($combo);
+			$index++;
+		}
 		foreach ($this->sale->services as $service) {
 			// $this->total_services += $this->get_price($service);
 			$this->printItem($index, $service);
@@ -429,7 +434,10 @@ class SalePdf extends fpdf {
 	}
 
 	function descuento() {
-		if ($this->sale->descuento) {
+		if (
+			$this->sale->descuento
+			&& $this->sale->descuento > 0
+		) {
 			$text = '- Descuento del '.$this->sale->descuento.'%';
 
 		    $total_articles = $this->total_articles;

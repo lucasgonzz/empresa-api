@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Http\Controllers\StockMovementController;
+use App\Http\Controllers\Stock\StockMovementController;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
@@ -74,28 +74,28 @@ class DepositMovementHelper {
 
 		$ct_stock_movement = new StockMovementController();
 
-        $request = new \Illuminate\Http\Request();
+		$data = [];
 
-		$request->model_id = $article->id;
-		$request->amount = $article->pivot->amount;
+		$data['model_id'] = $article->id;
+		$data['amount'] = $article->pivot->amount;
 
 		if (!is_null($article->pivot->article_variant_id)
 			&& $article->pivot->article_variant_id != 0) {
 		
-			$request->article_variant_id = $article->pivot->article_variant_id;
+			$data['article_variant_id'] = $article->pivot->article_variant_id;
 		}
 
-		$request->is_movimiento_de_depositos = true;
+		$data['deposit_movement_id'] = $this->deposit_movement->id;
 		
-		$request->from_address_id = $this->deposit_movement->from_address_id;
-		$request->to_address_id = $this->deposit_movement->to_address_id;
+		$data['from_address_id'] = $this->deposit_movement->from_address_id;
+		$data['to_address_id'] = $this->deposit_movement->to_address_id;
 
-		$request->employee_id = $this->deposit_movement->employee_id;
-		$request->concepto = 'Mov. Deposito N° '.$this->deposit_movement->num;
+		$data['employee_id'] = $this->deposit_movement->employee_id;
+		$data['concepto_stock_movement_name'] = 'Mov entre depositos';
 		
 		Log::info('Se va a mandar a guardar stock_movement');
 
-        $ct_stock_movement->store($request);
+        $ct_stock_movement->crear($data);
 	}
 	
 }

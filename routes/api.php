@@ -54,15 +54,27 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
     Route::get('update-feature', 'UpdateFeatureController@index');
 
-    // Inventory performance
+    Route::get('concepto-stock-movement', 'ConceptoStockMovementController@index');
 
+    // Inventory performance
     Route::get('inventory-performance', 'InventoryPerformanceController@index');
 
     // Afip Tipo Comprobantes
     Route::get('afip-tipo-comprobante', 'AfipTipoComprobanteController@index');
 
+    // Grupos de articulos para tipos de precio en VENDER
+    Route::resource('article-price-type-group', 'ArticlePriceTypeGroupController');
+
     // Consultora de precios
     Route::get('consultora-de-precio/buscador/{codigo}', 'ConsultoraDePrecioController@buscador');
+
+
+    // Categorias y rangos para tipos de precios | Golo norte
+    Route::resource('category-price-type-range', 'CategoryPriceTypeRangeController');
+
+
+    // Combos
+    Route::resource('combo', 'ComboController');
 
 
     // Cajas
@@ -132,7 +144,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
 
-    Route::resource('stock-movement', 'StockMovementController')->except(['index', 'show']);
+    Route::resource('stock-movement', 'Stock\StockMovementController')->except(['index', 'show']);
+    // Route::resource('stock-movement', 'StockMovementController')->except(['index', 'show']);
     Route::get('stock-movement/{article_id}', 'StockMovementController@index');
 
     Route::get('price-change/{article_id}', 'PriceChangeController@index');

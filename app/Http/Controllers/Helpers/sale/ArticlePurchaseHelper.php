@@ -30,6 +30,25 @@ class ArticlePurchaseHelper {
 
 	}
 
+	static function combos() {
+		foreach ($sale->combos as $combo) {
+
+			foreach ($combo->articles as $article) {
+				// QUede aca
+				ArticlePurchase::create([
+					'client_id'		=> $sale->client_id,
+					'sale_id'		=> $sale->id,
+					'article_id'	=> $article->id,
+					'category_id'	=> $article->category_id,
+					'cost'			=> $article->pivot->cost,
+					'price'			=> $article->pivot->price,
+					'amount'		=> $article->pivot->amount,
+					'created_at'	=> $sale->created_at,
+				]);
+			}
+		}
+	}
+
 	static function borrar_article_purchase_actuales($sale) {
 
 		ArticlePurchase::where('sale_id', $sale->id)

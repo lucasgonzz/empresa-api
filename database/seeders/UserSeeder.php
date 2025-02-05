@@ -32,7 +32,7 @@ class UserSeeder extends Seeder
         $ct = new Controller();
         $models = [
             [
-                'id'                            => 500,
+                'id'                            => env('USER_ID'),
                 'name'                          => 'Lucas',
                 'use_archivos_de_intercambio'   => 0,
                 'company_name'                  => 'Autopartes Boxes',
@@ -290,6 +290,33 @@ class UserSeeder extends Seeder
                 'filtrar_clientes_por_sucursal_en_vender',
             ];
 
+        } else if ($this->for_user == 'golo_norte') {
+
+            $models[0]['name'] = 'Golo Norte';
+
+            $models[0]['iva_included'] = 0;
+
+            $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
+
+            $models[0]['extencions'] = [
+
+                'ask_save_current_acount',
+                'budgets',
+                'bar_code_scanner',
+                'comerciocity_interno',
+                'cambiar_price_type_en_vender',
+                'deposit_movements',
+                'online',
+                // 'forzar_total',
+                'cajas',
+                // 'filtrar_clientes_por_sucursal_en_vender',
+                'lista_de_precios_por_categoria',
+                'lista_de_precios_por_rango_de_cantidad_vendida',
+                'check_article_stock_en_vender',
+                'combos',
+                'atajo_buscar_por_nombre',
+            ];
+
         } else if ($this->for_user == 'ros_mar') {
 
             $models[0]['name'] = 'Ros Mar';
@@ -373,8 +400,8 @@ class UserSeeder extends Seeder
                 'google_custom_search_api_key'                 => isset($model['google_custom_search_api_key']) ? $model['google_custom_search_api_key'] : null,
                 'dias_alertar_empleados_ventas_no_cobradas'        => 1,
                 'dias_alertar_administradores_ventas_no_cobradas'  => 2,
-                'default_version'               => 'http://empresa.local:8080',
-                'estable_version'               => 'http://empresa.local:8081',
+                'default_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8080' : null,
+                'estable_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8081' : null,
             ]);
 
             

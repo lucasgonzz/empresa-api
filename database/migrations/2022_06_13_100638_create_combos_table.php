@@ -15,9 +15,12 @@ class CreateCombosTable extends Migration
     {
         Schema::create('combos', function (Blueprint $table) {
             $table->id();
+            $table->integer('num');
             $table->string('name');
-            $table->decimal('price', 10,2);
+            $table->decimal('price', 10,2)->nullable();
+            $table->decimal('cost', 10,2)->nullable();
             $table->integer('user_id')->nullable();
+            $table->softDeletes();
             $table->timestamps();
         });
     }

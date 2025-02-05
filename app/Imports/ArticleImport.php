@@ -13,7 +13,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\getIva;
-use App\Http\Controllers\StockMovementController;
+use App\Http\Controllers\Stock\StockMovementController;
 use App\Http\Controllers\update;
 use App\Models\Address;
 use App\Models\Article;
@@ -55,6 +55,8 @@ class ArticleImport implements ToCollection
         $this->setAddresses();
         $this->setProps();
         $this->set_price_types();
+
+        Log::info('Llego hasta aca');
 
         $this->import_history_chequeado = false;
 
@@ -103,6 +105,8 @@ class ArticleImport implements ToCollection
     }
 
     public function collection(Collection $rows) {
+        Log::info('entro a collection');
+
         $this->num_row = 1;
 
         $this->set_finish_row($rows);
@@ -110,6 +114,8 @@ class ArticleImport implements ToCollection
         $error_message = null;
 
         foreach ($rows as $row) {
+
+            Log::info('Va por fila '.$this->num_row);
 
             if ($this->esta_en_el_rango_de_filas()) {
 
@@ -128,6 +134,7 @@ class ArticleImport implements ToCollection
                         Log::info('Error al importar, entro en try catch');
 
                         Log::info('Error: '.$error_message);
+                        Log::info('Codigo Error: '.$e->getMessage());
 
 
                         // Registra el progreso y errores en Import History
@@ -161,8 +168,10 @@ class ArticleImport implements ToCollection
     }
 
     function set_finish_row($rows) {
+        Log::info('entro a set_finish_row');
         if (is_null($this->finish_row) || $this->finish_row == '') {
             $this->finish_row = count($rows);
+            Log::info('set_finish_row: '.$this->finish_row);
         } 
     }
 
@@ -421,10 +430,9 @@ class ArticleImport implements ToCollection
             if (!is_null($address_excel) && $address_excel != 0) {
 
                 // Log::info('Columna '.$address->street.' para articulo '.$this->articulo_existente->name.' vino con '.$address_excel);
-                $request = new \Illuminate\Http\Request();
-                $request->model_id = $this->articulo_existente->id;
-                $request->to_address_id = $address->id;
-                $request->from_excel_import = true;
+                $data['model_id'] = $this->articulo_existente->id;
+                $data['to_address_id'] = $address->id;
+                $data['concepto_stock_movement_name'] = 'Importacion de excel';
 
                 $finded_address = null;
                 foreach ($this->articulo_existente->addresses as $article_address) {
@@ -435,19 +443,20 @@ class ArticleImport implements ToCollection
 
                 if (is_null($finded_address)) {
 
-                    $this->articulo_existente->addresses()->attach($address->id);
+                    // Esta la comente el 22 de enero del 2025 
+                    // $this->articulo_existente->addresses()->attach($address->id);
 
-                    $request->amount = $address_excel;
+                    $data['amount'] = $address_excel;
                     $set_stock_from_addresses = true;
-                    $this->stock_movement_ct->store($request, true, $this->user, $this->auth_user_id, $segundos_para_agregar);
+                    $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id, $segundos_para_agregar);
 
                 } else {
                     $cantidad_anterior = $finded_address->pivot->amount;
                     if ($address_excel != $cantidad_anterior) {
                         $set_stock_from_addresses = true;
                         $new_amount = $address_excel - $cantidad_anterior;
-                        $request->amount = $new_amount;
-                        $this->stock_movement_ct->store($request, true, $this->user, $this->auth_user_id, $segundos_para_agregar);
+                        $data['amount'] = $new_amount;
+                        $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id, $segundos_para_agregar);
                     } else {
                         // Log::info('No se actualizo porque no hubo ningun cambio');
                     }
@@ -465,9 +474,13 @@ class ArticleImport implements ToCollection
     function setStockMovement($row) {
         $stock_actual = ImportHelper::getColumnValue($row, 'stock_actual', $this->columns);
 
+        Log::info('setStockMovement para '.$stock_actual);
+
+        Log::info('is_numeric: '.is_numeric($stock_actual));
         // Aca tengo que chequear que stck_actual no sea null
         // Probar cuando importo excel de bellini y ni siquiera marco la columna
         if (!is_null($stock_actual)
+            && is_numeric($stock_actual)
             && !count($this->articulo_existente->addresses) >= 1
             && $this->articulo_existente->stock != $stock_actual) {
             $request = new \Illuminate\Http\Request();

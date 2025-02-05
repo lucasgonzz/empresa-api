@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\PriceChange;
 use Illuminate\Http\Request;
 

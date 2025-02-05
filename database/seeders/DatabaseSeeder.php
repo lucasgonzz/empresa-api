@@ -39,6 +39,8 @@ class DatabaseSeeder extends Seeder
         } else {
             $this->call(ExtencionSeeder::class);
 
+            $this->call(ConceptoStockMovementSeeder::class);
+
             $this->call(ArticlePreImportRangeSeeder::class);
 
             $this->call(DepositMovementStatusSeeder::class);
@@ -54,8 +56,20 @@ class DatabaseSeeder extends Seeder
             $this->call(OnlinePriceTypeSeeder::class);
             $this->call(UserSeeder::class);
 
-            $this->call(CategorySeeder::class);
-            $this->call(SubCategorySeeder::class);
+
+            if ($for_user == 'golo_norte') {
+
+                // Llamo antes para despues poder relacionarlos con las categorias
+                $this->call(PriceTypeSeeder::class);
+                // $this->call(ComboSeeder::class);
+
+            }
+
+            if (env('APP_ENV') == 'local') {
+
+                $this->call(CategorySeeder::class);
+                $this->call(SubCategorySeeder::class);
+            }
 
 
 
@@ -88,6 +102,17 @@ class DatabaseSeeder extends Seeder
                 $this->call(ArticleSeeder::class);
                 $this->call(CajaSeeder::class);
 
+            } else if ($for_user == 'golo_norte') {
+
+                if (env('APP_ENV') == 'local') {
+
+                    $this->call(ArticleSeeder::class);
+                    // $this->call(CajaSeeder::class);
+                    $this->call(CategoryPriceTypeRangeSeeder::class);
+                    $this->call(ArticlePriceTypeGroupSeeder::class);
+                }
+
+
             } else if ($for_user == 'ferretodo') {
 
                 $this->call(ArticleSeeder::class);
@@ -103,55 +128,57 @@ class DatabaseSeeder extends Seeder
             }
 
 
+            if (env('APP_ENV') == 'local') {
 
-            $this->call(SellerSeeder::class);
-            $this->call(ProviderSeeder::class);
-            $this->call(ProviderPriceListSeeder::class);
-            $this->call(ColorSeeder::class);
+                $this->call(ProviderSeeder::class);
+                $this->call(ProviderPriceListSeeder::class);
+                $this->call(ColorSeeder::class);
+                $this->call(SellerSeeder::class);
+                $this->call(DepositSeeder::class);
+                $this->call(ClientSeeder::class);
+                $this->call(BuyerSeeder::class);
+                $this->call(DiscountSeeder::class);
+                $this->call(SurchageSeeder::class);
+                $this->call(AddressSeeder::class);
+                // $this->call(ProviderOrderSeeder::class);
+                $this->call(ProviderPagosSeeder::class);
+                // $this->call(SaleSeeder::class);
+                $this->call(TitleSeeder::class);
+                $this->call(DeliveryZoneSeeder::class);
+                $this->call(BudgetSeeder::class);
+                $this->call(UpdateFeatureSeeder::class);
+                $this->call(OrderSeeder::class);
+                $this->call(InventoryLinkageScopeSeeder::class);
+                $this->call(InventoryLinkageSeeder::class);
+            }
+
             $this->call(IvaSeeder::class);
-            $this->call(DepositSeeder::class);
             
             $this->call(IvaConditionSeeder::class);
-            $this->call(ClientSeeder::class);
-            $this->call(BuyerSeeder::class);
-            $this->call(DiscountSeeder::class);
-            $this->call(SurchageSeeder::class);
             // $this->call(CurrentAcountSeeder::class);
             // $this->call(ScheduleSeeder::class);
-            $this->call(AddressSeeder::class);
 
             // $this->call(MeLiOrderSeeder::class);
             
-            $this->call(ProviderOrderSeeder::class);
-
-            $this->call(ProviderPagosSeeder::class);
 
             // $this->call(EmployeeSeeder::class);
-            $this->call(SaleSeeder::class);
             // $this->call(WorkdaySeeder::class);
             // $this->call(ConditionSeeder::class);
-            $this->call(TitleSeeder::class);
             // $this->call(BrandSeeder::class);
             // $this->call(SizeSeeder::class);
             // $this->call(PricesListSeeder::class);
             // $this->call(PlateletSeeder::class);
             $this->call(OrderProductionStatusSeeder::class);
             $this->call(CurrentAcountPaymentMethodSeeder::class);
-            $this->call(PaymentMethodSeeder::class);
-            $this->call(DeliveryZoneSeeder::class);
+            // $this->call(PaymentMethodSeeder::class);
             // $this->call(LocationSeeder::class);
             $this->call(PaymentMethodTypeSeeder::class);
             // $this->call(CuponSeeder::class);
             $this->call(BudgetStatusSeeder::class);
-            $this->call(BudgetSeeder::class);
             // $this->call(OrderProductionSeeder::class);
             // $this->call(SuperBudgetSeeder::class);
             // $this->call(CreditCardSeeder::class);
             // $this->call(CreditCardPaymentPlanSeeder::class);
-            $this->call(UpdateFeatureSeeder::class);
-            $this->call(OrderSeeder::class);
-            $this->call(InventoryLinkageScopeSeeder::class);
-            $this->call(InventoryLinkageSeeder::class);
             // $this->call(AfipTicketSeeder::class);
 
 

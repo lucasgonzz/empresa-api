@@ -14,6 +14,63 @@ use Illuminate\Support\Facades\Log;
 
 class ArticlePricesHelper {
 
+    // Extencion de golo norte
+    static function aplicar_precios_segun_listas_de_precios_y_categorias($article, $cost, $user) {
+
+        $price_types = null;
+
+        $sub_category = $article->sub_category;
+        $category = $article->category;
+
+        // Priorizar los tipos de precios de la subcategoría si existen y tienen porcentaje válido
+        if (!is_null($sub_category)) {
+            $price_types = $sub_category->price_types()
+                // ->withPivot('percentage')
+                ->whereNotNull('price_type_sub_category.percentage') // Asegurar que el porcentaje no sea nulo
+                ->where('price_type_sub_category.percentage', '!=', '') // Asegurar que no sea un string vacío
+                ->get();
+        }
+
+        // Si no hay tipos de precios válidos en la subcategoría, buscar en la categoría
+        if (is_null($price_types) || $price_types->isEmpty()) {
+            if (!is_null($category)) {
+                $price_types = $category->price_types()
+                    // ->withPivot('percentage')
+                    ->get();
+                
+                Log::info('price_types de '.$category->name);
+                Log::info($price_types);
+            }
+        }
+
+
+
+        if (!is_null($price_types)) {
+
+            Log::info('Va a usar price types de la categoria');
+
+            // Recorrer cada tipo de precio para calcular el precio final
+            foreach ($price_types as $price_type) {
+
+                $percentage = $price_type->pivot->percentage; // Porcentaje de ganancia
+
+                // Calcular el precio final
+                $price = $cost + ($cost * $percentage / 100);
+
+                $final_price = Self::aplicar_iva($article, $price, $user);
+
+                $article->price_types()->syncWithoutDetaching($price_type->id);
+
+                $article->price_types()->updateExistingPivot($price_type->id, [
+                    'percentage'    => $percentage,
+                    'price'         => $price,
+                    'final_price'   => $price,
+                ]);
+            }
+        }
+        
+    }
+
     static function aplicar_precios_segun_listas_de_precios($article, $cost, $user) {
         
         $price_types = PriceType::where('user_id', $user->id)
@@ -37,10 +94,10 @@ class ArticlePricesHelper {
 
             $price = $cost + ($cost * (float)$percentage / 100);
 
-            Log::info($article->name.' se va a aplicar: ');
-            Log::info('% '.$percentage);
-            Log::info('al costo '.$cost);
-            Log::info('price '.$price);
+            // Log::info($article->name.' se va a aplicar: ');
+            // Log::info('% '.$percentage);
+            // Log::info('al costo '.$cost);
+            // Log::info('price '.$price);
 
             $final_price = Self::aplicar_iva($article, $price, $user);
             
@@ -65,11 +122,11 @@ class ArticlePricesHelper {
 
             $precio_con_iva += $importe_iva;
         
-            Log::info('sumando el iva a '.$article->name);
-            Log::info('price '.$price);
-            Log::info('iva '.$article->iva->percentage);
-            Log::info('importe_iva '.$importe_iva);
-            Log::info('quedo en '.$precio_con_iva);
+            // Log::info('sumando el iva a '.$article->name);
+            // Log::info('price '.$price);
+            // Log::info('iva '.$article->iva->percentage);
+            // Log::info('importe_iva '.$importe_iva);
+            // Log::info('quedo en '.$precio_con_iva);
         }
 
         return $precio_con_iva;
@@ -101,11 +158,11 @@ class ArticlePricesHelper {
 
     static function set_precios_en_blanco($article) {
 
-        Log::info('set_precios_en_blanco para '.$article->name);
+        // Log::info('set_precios_en_blanco para '.$article->name);
 
         $cost = $article->cost;
 
-        Log::info('cost: '.$cost);
+        // Log::info('cost: '.$cost);
 
         $cost = Self::aplicar_descuentos_blanco($article, $cost);
 
@@ -115,7 +172,7 @@ class ArticlePricesHelper {
         if (!is_null($article->percentage_gain_blanco)) {
 
             $cost += $cost * $article->percentage_gain_blanco / 100;
-            Log::info('Poniendo marguen del '.$article->percentage_gain_blanco.', quedo en '.$cost);
+            // Log::info('Poniendo marguen del '.$article->percentage_gain_blanco.', quedo en '.$cost);
         }
 
 
@@ -133,7 +190,7 @@ class ArticlePricesHelper {
         foreach ($article->article_discounts_blanco as $discount) {
             
             $cost -= $cost * $discount->percentage / 100;
-            Log::info('descontando el '.$discount->percentage.', quedo en '.$cost);
+            // Log::info('descontando el '.$discount->percentage.', quedo en '.$cost);
         }
 
         return $cost;
@@ -144,7 +201,7 @@ class ArticlePricesHelper {
         foreach ($article->article_surchages_blanco as $surchage) {
             
             $cost += $cost * $surchage->percentage / 100;
-            Log::info('aumentando el '.$surchage->percentage.', quedo en '.$cost);
+            // Log::info('aumentando el '.$surchage->percentage.', quedo en '.$cost);
         }
 
         return $cost;
@@ -166,7 +223,7 @@ class ArticlePricesHelper {
                         'percentage' => $discount->percentage,
                         'article_id' => $article->id,
                     ]);
-                    Log::info('Se creo descuento de '.$discount->percentage);
+                    // Log::info('Se creo descuento de '.$discount->percentage);
                 }
             }
         }
@@ -188,7 +245,7 @@ class ArticlePricesHelper {
                         'percentage' => $discount->percentage,
                         'article_id' => $article->id,
                     ]);
-                    Log::info('Se creo descuento en blanco de '.$discount->percentage.' para article_id: '.$article->id);
+                    // Log::info('Se creo descuento en blanco de '.$discount->percentage.' para article_id: '.$article->id);
                 }
             }
         }
@@ -210,7 +267,7 @@ class ArticlePricesHelper {
                         'percentage' => $surchage->percentage,
                         'article_id' => $article->id,
                     ]);
-                    Log::info('Se creo recargo de '.$surchage->percentage);
+                    // Log::info('Se creo recargo de '.$surchage->percentage);
                 }
             }
         }
@@ -232,7 +289,7 @@ class ArticlePricesHelper {
                         'percentage' => $surchage->percentage,
                         'article_id' => $article->id,
                     ]);
-                    Log::info('Se creo recargo en blanco de '.$surchage->percentage);
+                    // Log::info('Se creo recargo en blanco de '.$surchage->percentage);
                 }
             }
         }

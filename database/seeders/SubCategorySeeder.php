@@ -25,61 +25,9 @@ class SubCategorySeeder extends Seeder
         $categories = Category::where('user_id', $user->id)
                                 ->get();
 
-        $auto_partes_categories = [
-            [
-                'category_name'     => 'Accesorios',
-                'category_id'       => 1,
-                'sub_categories'    => [
-                    'Herramientas',
-                    'Instrumental',
-                    'Amortiguadores de Baul',
-                ],
-            ],
-            [
-                'category_name'     => 'Encendido',
-                'category_id'       => 2,
-                'sub_categories'    => [
-                    'Alternadores',
-                    'Baterias',
-                    'Bobinas de Encendido',
-                    'Bujias',
-                    'Kit de encendido',
-                ],
-            ],
-            [
-                'category_name'     => 'Iluminacion',
-                'category_id'       => 3,
-                'sub_categories'    => [
-                    'Faros LED',
-                    'Faros para carroceria',
-                    'Kit de trailer',
-                    'Lamparas LED',
-                ],
-            ],
-            [
-                'category_name'     => 'Motor',
-                'category_id'       => 4,
-                'sub_categories'    => [
-                    'Kit de distribucion',
-                    'Lubricantes',
-                ],
-            ],
-            [
-                'category_name'     => 'Suspencion y frenos',
-                'category_id'       => 5,
-                'sub_categories'    => [
-                    'Amortiguadores',
-                    'Bieletas',
-                    'Cazoletas',
-                    'Espirales',
-                    'Espirales GNC',
-                    'Extremos de direccion',
-                    'Kit tren delantero',
-                ],
-            ],
-        ];
+        require('subcategories/supermercado.php');
 
-        foreach ($auto_partes_categories as $category) {
+        foreach ($sub_categories as $category) {
             $num = 1;
             foreach ($category['sub_categories'] as $sub_category) {
                 $sub_category = SubCategory::create([
@@ -92,37 +40,6 @@ class SubCategorySeeder extends Seeder
             }
         }
 
-        return;
-
-
-
-
-        foreach ($categories as $category) {
-            $names = [];
-            if ($category->name == 'Herramientas') {
-                
-                $names = ['Martillos', 'Pinzas'];
-
-            } else if ($category->name == 'Utensilios') {
-                
-                $names = ['Cuchillos', 'Cucharas'];
-
-            }  else if ($category->name == 'Muebles') {
-                
-                $names = ['Comedor', 'Dormitorio'];
-
-            } 
-            $num = 1;
-            for ($i=0; $i < count($names); $i++) {
-                $sub_category = SubCategory::create([
-                    'num'           => $num,
-                    'name'          => $names[$i],
-                    'category_id'   => $category->id,
-                    'user_id'       => $user->id,
-                ]);         
-                $num++;
-            }
-        }
     }
 }
  

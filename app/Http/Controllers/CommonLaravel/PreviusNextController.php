@@ -54,7 +54,10 @@ class PreviusNextController extends Controller
 
     function check_sale_actualizado_por($model, $_model_name) {
         if ($_model_name == 'sale') {
-            if (!is_null($model->actualizandose_por_id)) {
+            if (
+                !is_null($model->actualizandose_por_id)
+                && $model->actualizandose_por_id != $this->userId(false)
+            ) {
                 return false;                
             }
         }

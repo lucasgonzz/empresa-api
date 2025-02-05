@@ -18,7 +18,7 @@ class AuthController extends Controller
         $user = null;
         $user_last_activity = false;
         if ($this->loginLucas($request)) {
-            $user = UserHelper::getFullModel(false);
+            $user = UserHelper::user(false);
             $this->set_sessions($user);
             Log::info('2 user name: '.$user->name);
             $login = true;
@@ -27,7 +27,7 @@ class AuthController extends Controller
             
             if ($this->checkUserLastActivity()) {
 
-                $user = UserHelper::getFullModel(false);
+                $user = UserHelper::user(false);
                 
                 $this->set_login_at($user->id);
 

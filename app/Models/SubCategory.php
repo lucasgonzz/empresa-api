@@ -13,11 +13,19 @@ class SubCategory extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        $q->with('category');        
+        $q->with('category', 'price_types');        
     }
 
     function category() {
-    	return $this->belongsTo('App\Models\Category');
+        return $this->belongsTo('App\Models\Category');
+    }
+
+    function category_price_type_ranges() {
+        return $this->hasMany(CategoryPriceTypeRange::class)->orderBy('min', 'asc');
+    }
+
+    function price_types() {
+        return $this->belongsToMany(PriceType::class)->withPivot('percentage');
     }
     
     public function articles() {

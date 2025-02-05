@@ -86,8 +86,23 @@ class SaleController extends Controller
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
     }
 
+    function venta_ya_cread($request) {
+        $sale_ya_creada = Sale::where('user_id', $this->userId())
+                                ->where('client_id', $request->client_id)
+                                ->where('employee_id', SaleHelper::getEmployeeId($request))
+                                ->where('total', $request->total)
+                                ->where('created_at', '>=', Carbon::now()->subSeconds(5))
+                                ->first();
+        return !is_null($sale_ya_creada);
+    }
+
     public function store(Request $request) {
         Log::info($this->user(false)->name.' va a crear venta');
+
+        if ($this->venta_ya_cread($request)) {
+            Log::info('Casi se crea mas de 1 vez la misma venta');
+            return;
+        }
 
         $model = Sale::create([
             'num'                               => $this->num('sales'),

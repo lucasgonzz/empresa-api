@@ -61,29 +61,33 @@ class InventoryPerformanceHelper {
 
 	function crear_inventory_performance() {
 
-		$porcentaje_stockeado = $this->stockeados * 100 / $this->cantidad_articulos;
+		if ($this->cantidad_articulos > 0) {
+			
+			$porcentaje_stockeado = $this->stockeados * 100 / $this->cantidad_articulos;
 
-		$porcentaje_con_costos = $this->articulos_con_costos * 100 / $this->cantidad_articulos;
+			$porcentaje_con_costos = $this->articulos_con_costos * 100 / $this->cantidad_articulos;
 
-		$this->inventory_performance = InventoryPerformance::create([
+			$this->inventory_performance = InventoryPerformance::create([
 
-			'cantidad_articulos'				=> $this->cantidad_articulos,
-			'stockeados'						=> $this->stockeados,
-			'sin_stockear'						=> $this->sin_stockear,
-			'porcentaje_stockeado'				=> round($porcentaje_stockeado),
+				'cantidad_articulos'				=> $this->cantidad_articulos,
+				'stockeados'						=> $this->stockeados,
+				'sin_stockear'						=> $this->sin_stockear,
+				'porcentaje_stockeado'				=> round($porcentaje_stockeado),
 
-			'valor_inventario_en_costos'		=> $this->valor_inventario_en_costos,
-			'valor_inventario_en_precios'		=> $this->valor_inventario_en_precios,
-	    
-			'articulos_con_costos'				=> $this->articulos_con_costos,
-			'articulos_sin_costos'				=> $this->articulos_sin_costos,
-			'porcentaje_con_costos'				=> round($porcentaje_con_costos),
-	    
-			'sin_stock'							=> $this->sin_stock,
-			'stock_minimo'						=> $this->stock_minimo,
+				'valor_inventario_en_costos'		=> $this->valor_inventario_en_costos,
+				'valor_inventario_en_precios'		=> $this->valor_inventario_en_precios,
+		    
+				'articulos_con_costos'				=> $this->articulos_con_costos,
+				'articulos_sin_costos'				=> $this->articulos_sin_costos,
+				'porcentaje_con_costos'				=> round($porcentaje_con_costos),
+		    
+				'sin_stock'							=> $this->sin_stock,
+				'stock_minimo'						=> $this->stock_minimo,
 
-			'user_id'							=> UserHelper::userId(),
-		]);
+				'user_id'							=> UserHelper::userId(),
+			]);
+		}
+
 	}
 
 

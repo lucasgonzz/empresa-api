@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\sale;
 
-use App\Http\Controllers\StockMovementController;
+use App\Http\Controllers\Stock\StockMovementController;
 
 class UpdateHelper {
 	
@@ -33,16 +33,16 @@ class UpdateHelper {
 	static function save_stock_movement($sale, $article) {
 
         $ct = new StockMovementController();
-        $request = new \Illuminate\Http\Request();
-        
-        $request->model_id = $article->id;
-        $request->from_address_id = null;
-        $request->to_address_id = $sale->address_id;
-        $request->amount = (float)$article->pivot->amount;
-        $request->sale_id = $sale->id;
-        $request->concepto = 'Se elimino de la venta '.$sale->num;
+        	
+        $data = [];
+        $data['model_id'] 			= $article->id;
+        $data['from_address_id'] 	= null;
+        $data['to_address_id'] 		= $sale->address_id;
+        $data['amount'] 			= (float)$article->pivot->amount;
+        $data['sale_id'] 			= $sale->id;
+        $data['concepto_stock_movement_name'] 			= 'Se elimino de la venta';
 
-        $ct->store($request, false);
+        $ct->crear($data, false);
 	}
 
 }

@@ -217,6 +217,21 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Filtrar clientes por sucursal en vender',
                 'slug' => 'filtrar_clientes_por_sucursal_en_vender',
             ],
+            [
+                // 41
+                'name' => 'Lista de precios por categoria',
+                'slug' => 'lista_de_precios_por_categoria',
+            ],
+            [
+                // 42
+                'name' => 'Lista de precios rango de cantidad vendida',
+                'slug' => 'lista_de_precios_por_rango_de_cantidad_vendida',
+            ],
+            [
+                // 43
+                'name' => 'Atajo buscar por nombre',
+                'slug' => 'atajo_buscar_por_nombre',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

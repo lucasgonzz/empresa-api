@@ -82,6 +82,7 @@ class AfipHelper extends Controller {
                     $exento                 += $this->getImporteIva('Exento')['BaseImp'];
                     $neto_no_gravado        += $this->getImporteIva('No Gravado')['BaseImp'];
                     $iva                    += $this->getImporteIva();
+                    
                     $res                    = $this->getImporteIva('27');
                     $ivas['27']['Importe']  += $res['Importe'];
                     $ivas['27']['BaseImp']  += $res['BaseImp'];
@@ -106,6 +107,19 @@ class AfipHelper extends Controller {
                     $ivas['0']['Importe']  += $res['Importe'];
                     $ivas['0']['BaseImp']  += $res['BaseImp'];
                 } 
+
+                foreach ($this->sale->combos as $combo) {
+
+                    Log::info('Pidiendo iva de '.$combo->name);
+                    
+                    $res                    = $this->get_combo_iva($combo);
+                    Log::info($res);
+                    $ivas['21']['Importe']  += $res['Importe'];
+                    $ivas['21']['BaseImp']  += $res['BaseImp'];
+                    
+                    $gravado                += $res['BaseImp'];
+                    $iva                    += $res['Importe'];
+                }
             }
 
         }
@@ -125,14 +139,36 @@ class AfipHelper extends Controller {
         ];
     }
 
+    function get_combo_iva($combo) {
+        
+        $total_combo = $combo->pivot->price * $combo->pivot->amount;
+        $iva = 21;
+
+        $precio_sin_iva = $total_combo / (($iva / 100) + 1);
+        $monto_iva = $total_combo - $precio_sin_iva; 
+        
+        return [
+            'Importe'   => $monto_iva,
+            'BaseImp'   => $precio_sin_iva
+        ];
+    }
+
     function getImporteIva($iva = null) {
         if (is_null($iva)) {
             return $this->montoIvaDelPrecio() * $this->article->pivot->amount;
         }
         $importe = 0;
         $base_imp = 0;
-        if ((is_null($this->article->iva) && $iva == 21) || (!is_null($this->article->iva) && $this->article->iva->percentage == $iva)) {
-        // if (($this->user->iva_included && is_null($this->article->iva) && $iva == 21) || (!is_null($this->article->iva) && $this->article->iva->percentage == $iva)) {
+        if (
+            (
+                is_null($this->article->iva) 
+                && $iva == 21
+            ) 
+            || (
+                !is_null($this->article->iva) 
+                && $this->article->iva->percentage == $iva
+            )
+        ) {
             $importe = $this->montoIvaDelPrecio() * $this->article->pivot->amount;
             $base_imp = $this->getPriceWithoutIva() * $this->article->pivot->amount;
         }
@@ -195,11 +231,11 @@ class AfipHelper extends Controller {
     function getArticlePrice($sale, $article, $precio_neto_sin_iva = false) {
         $this->article = $article;
         $price = $this->article->pivot->price;
-        if ($precio_neto_sin_iva || $this->isBoletaA()) {
+        // if ($precio_neto_sin_iva || $this->isBoletaA()) {
             if (!is_null($article->iva) && $article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento' && $article->iva->percentage != 0) {
                 return $this->getPriceWithoutIva();
             } 
-        } 
+        // } 
         foreach ($sale->discounts as $discount) {
             $price -= $price * $discount->pivot->percentage / 100;
         }
@@ -221,7 +257,17 @@ class AfipHelper extends Controller {
     |
     */
     function montoIvaDelPrecio() {
-        if (is_null($this->article->iva) || (!is_null($this->article->iva) && ($this->article->iva->percentage != 'No Gravado' || $this->article->iva->percentage != 'Exento' || $this->article->iva->percentage != 0))) {
+        if (
+            is_null($this->article->iva) 
+            || (
+                !is_null($this->article->iva) 
+                && (
+                    $this->article->iva->percentage != 'No Gravado' 
+                    || $this->article->iva->percentage != 'Exento' 
+                    || $this->article->iva->percentage != 0
+                )
+            )
+        ) {
 
             $iva = 21;
             if (!is_null($this->article->iva)) {
@@ -238,9 +284,14 @@ class AfipHelper extends Controller {
     }
 
     function getImporteGravado() {
-        // if (is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0) {
-        // if (is_null($this->article->iva) || (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0)) {
-        if (is_null($this->article->iva) || (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento')) {
+        if (
+            is_null($this->article->iva) 
+            || (
+                !is_null($this->article->iva) 
+                && $this->article->iva->percentage != 'No Gravado' 
+                && $this->article->iva->percentage != 'Exento'
+            )
+        ) {
             return $this->getPriceWithoutIva() * $this->article->pivot->amount;
         }
         return 0;
@@ -248,10 +299,10 @@ class AfipHelper extends Controller {
 
     function subTotal($article) {
         $this->article = $article;
-        if ($this->isBoletaA()) {
+        // if ($this->isBoletaA()) {
             return $this->getPriceWithoutIva() * $article->pivot->amount;
-        }
-        return $this->getArticlePriceWithDiscounts() * $article->pivot->amount;
+        // }
+        // return $this->getArticlePriceWithDiscounts() * $article->pivot->amount;
     }
 
     function isBoletaA() {

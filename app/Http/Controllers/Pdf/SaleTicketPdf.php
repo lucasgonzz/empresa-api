@@ -275,8 +275,7 @@ class SaleTicketPdf extends fpdf {
 
 	function iva_discriminado() {
 
-		if (!is_null($this->sale->afip_ticket) 
-			&& $this->sale->afip_ticket->cbte_tipo == 1) {
+		if (!is_null($this->sale->afip_ticket)) {
 
 			$this->SetFont('Arial', '', 10);
 

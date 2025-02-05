@@ -162,7 +162,7 @@ class StockMovementController extends Controller
 
         if (!is_null($this->article)) {
             if (!is_null($this->stock_movement->observations)) {
-                $this->stock_movement->observations .= ' '.$this->article->stock;
+                $this->stock_movement->observations .= ' - '.$this->article->stock;
             } else {
                 $this->stock_movement->observations = $this->article->stock;
             }

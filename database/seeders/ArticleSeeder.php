@@ -4,7 +4,7 @@ namespace Database\Seeders;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
-use App\Http\Controllers\StockMovementController;
+use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
 use App\Models\ArticleDiscount;
 use App\Models\Category;
@@ -48,7 +48,7 @@ class ArticleSeeder extends Seeder
                             ->first();
 
         // require(database_path().'\seeders\articles\ferreteria.php');
-        require('articles/auto_partes.php');
+        require('articles/supermercado.php');
         // require(database_path().'\seeders\articles\auto_partes.php');
         // require(database_path().'\seeders\articles\marcos_prueba_deposito.php');
 
@@ -139,22 +139,29 @@ class ArticleSeeder extends Seeder
         } else {
 
             $ct = new StockMovementController();
-            $request = new \Illuminate\Http\Request();
             
-            $request->model_id = $created_article->id;
-            $request->provider_id = $created_article->provider_id;
+            $data['model_id'] = $created_article->id;
+            $data['provider_id'] = $created_article->provider_id;
 
             if (isset($article['addresses'])) {
+
+                $segundos = 0;
+
                 foreach ($article['addresses'] as $address) {
-                    $request->to_address_id = $address['id'];
-                    $request->amount = $address['amount'];
-                    $request->from_create_article_addresses = true;
-                    $ct->store($request);
-                    sleep(1);
+                
+                    $data['to_address_id'] = $address['id'];
+                    $data['amount'] = $address['amount'];
+                    $data['concepto_stock_movement_name'] = 'Creacion de deposito';
+
+                    $ct->crear($data, false, null, null, $segundos);
+                    $segundos += 5;
                 }
-            } else {
-                $request->amount = $article['stock'];
-                $ct->store($request);
+            } else if (
+                isset($article['stock'])
+                && !is_null($article['stock'])
+            ) {
+                $data['amount'] = $article['stock'];
+                $ct->crear($data);
             }
         }
     }

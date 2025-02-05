@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
 use App\Models\Category;
 use App\Models\CurrentAcount;
 use App\Models\Iva;
@@ -46,6 +47,11 @@ class LocalImportHelper {
 					'name' 		=> $categoria,
 					'user_id' 	=> $owner->id,
 				]);
+
+
+				SetPriceTypesHelper::set_price_types($category, $owner);
+				SetPriceTypesHelper::set_rangos($category, $owner);
+				
 			}
 			return $category->id;
 		}
@@ -57,13 +63,7 @@ class LocalImportHelper {
 			$category = Category::where('user_id', $owner->id)
 								->where('name', $categoria)
 								->first();
-			// if (is_null($category)) {
-			// 	$category = Category::create([
-			// 		'num' 		=> $ct->num('categories'),
-			// 		'name' 		=> $categoria,
-			// 		'user_id' 	=> UserHelper::userId(),
-			// 	]);
-			// }
+			
 			$sub_category = SubCategory::where('user_id', $owner->id)
 										->where('name', $sub_categoria)
 										->where('category_id', $category->id)
@@ -75,6 +75,11 @@ class LocalImportHelper {
 					'category_id' 	=> $category->id,
 					'user_id'		=> $owner->id,
 				]);
+
+				if (UserHelper::hasExtencion('lista_de_precios_por_categoria', $owner)) {
+
+					SetPriceTypesHelper::set_price_types($sub_category);
+				}
 			}
 			return $sub_category->id;
 		}

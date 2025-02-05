@@ -47,6 +47,8 @@ class CheckStockMovements extends Command
 
 
         $this->corregir_stock = $this->option('corregir_stock');
+
+        $this->notas = '';
             
 
         if ($this->corregir_stock) {
@@ -88,11 +90,15 @@ class CheckStockMovements extends Command
                 $this->recalcular_movimientos($article);
             }
 
+            if ($articulos_chequeados % 50 == 0) {
+                $this->comment('Se chequearon '.$articulos_chequeados);
+            }
+
         }
 
-        // Mantenimiento::create([
-        //     'notas'     => 'Se repaso el stock de '.$articulos_chequeados.' articulos',
-        // ]);   
+        Mantenimiento::create([
+            'notas'     => 'Se repaso el stock de '.$articulos_chequeados.' articulos. Del user_id: '.$this->user_id.'. Notas: '.$this->notas,
+        ]);   
 
         $this->info("Recalculo de stock completado.");
 
@@ -138,6 +144,17 @@ class CheckStockMovements extends Command
         }
         return true;
     }
+
+
+    /*
+        * Repaso todos los moviemitos de stock del articulo
+        Seteo $stockActual con el stock_resultante del primero movimiento de stock
+        Despues le voy sumando el amount del proximo stock_movement 
+        y le asigno ese resultado a stock_resultante de este proximo stock_movement
+
+        * Solo actualizo el stock resutlante de los movimientos de stock
+        * A lo utlimo llamo a check_stock_actual y ahi si cambio el stock actual del articulo 
+    */
 
     function recalcular_movimientos($article) {
         // $this->info('');
@@ -188,6 +205,7 @@ class CheckStockMovements extends Command
                 ) {
 
                 $movimiento->stock_resultante = $stockActual;
+                $movimiento->observations = $stockActual;
 
             } else {
 
@@ -195,6 +213,7 @@ class CheckStockMovements extends Command
 
                 $amount = $movimiento->amount;
                 if (str_contains($movimiento->concepto, 'Venta')
+                    && !str_contains($movimiento->concepto, 'Restauracion')
                     && !str_contains($movimiento->concepto, 'Nota credito')
                     && !str_contains($movimiento->concepto, 'Act. Venta')
                     && !str_contains($movimiento->concepto, 'Eliminacion de venta')
@@ -212,7 +231,60 @@ class CheckStockMovements extends Command
 
         $this->check_depositos($article);
 
+        $article = $this->check_variants($article);
+
+        // Esto para corregir el bug de colman
+        // Cuando se pasa venta de chequeada a confirmada,
+        // y el articulo tiene 0 en unidades chequeadas,
+        // se le regresa al stock y se marca como "se elimino de venta"
+        $this->check_se_elimino_de_venta($article);
+
         $this->check_stock_actual($article, $movimientos);
+    }
+
+    function check_se_elimino_de_venta($article) {
+
+        if (!$this->corregir_stock) {
+            return;
+        }
+
+        $stock_movements = StockMovement::where('article_id', $article->id)
+                                                ->orderBy('created_at', 'ASC')
+                                                ->get();
+            
+        foreach ($stock_movements as $stock_movement) {
+            
+            if (str_contains($stock_movement->concepto, 'Se elimino de la venta')) {
+
+                $num_venta = substr($stock_movement->concepto, 23);
+                
+
+                $stock_movement_de_la_venta = StockMovement::where('article_id', $article->id)
+                                        ->where('concepto', 'Venta N° '.$num_venta)
+                                        ->first();
+
+                if (is_null($stock_movement_de_la_venta)) {
+                    $this->comment('Article: '.$article->name. '. Num: '.$article->num);
+
+                    $this->info('N° venta: '.$num_venta);
+                    
+                    $this->info('NO TIENE');
+                    $article->stock -= $stock_movement->amount;
+                    $article->save();
+
+                    $ultimo_stock_movement = $stock_movements->last();
+
+                    if ($ultimo_stock_movement) {
+
+                        $ultimo_stock_movement->observations = $article->stock;
+                        $ultimo_stock_movement->save();
+                    }
+                    $stock_movement->delete();
+
+                    $this->notas .= ' Se hizo movimiento al pedo de eliminacion de venta para '.$article->name;
+                }
+            }
+        }
     }
 
     function get_movimientos($article) {
@@ -242,6 +314,8 @@ class CheckStockMovements extends Command
             if ($movimiento->concepto == $siguiente_movimiento->concepto
                 && $movimiento->concepto != 'Creacion de deposito'
                 && $movimiento->concepto != 'Movimiento de depositos'
+                && $movimiento->concepto != 'Act de depositos'
+                && $movimiento->concepto != 'Reseteo de stock'
                 && $movimiento->amount == $siguiente_movimiento->amount) {
 
                 if (!$this->es_un_movimiento_de_depositos($movimiento, $siguiente_movimiento)) {
@@ -324,6 +398,13 @@ class CheckStockMovements extends Command
         }
     }
 
+
+
+    /*
+        * Modifico el stock_resultante del primer movimiento
+        para que cuando vuelva a recalcular el stock,
+        me de el valor del stock actual del articulo
+    */
     function modificar_primer_movimiento_para_compensar($article, $movimientos, $diferencia) {
 
         $this->info('Se va a compensar con la diferencia de '.$diferencia);
@@ -356,12 +437,54 @@ class CheckStockMovements extends Command
             }
 
             if ($total != $article->stock) {
+                $this->info($article->num.' | '.$article->name);
                 $this->comment('Stock diferente a suma de depositos');
                 // Mantenimiento::create([
                 //     'notas'     => 'Stock diferente a suma de depositos. Article id: '.$article->id.'. Nombre: '.$article->name.'. Stock: '.$article->stock.'. Suma depositos: '.$total,
                 //     'user_id'   => $article->user_id,
                 // ]);
             }
+
+            if ($this->corregir_stock) {
+                $article->stock = $total;
+                $article->save();
+            }
         }
+    }
+
+    function check_variants($article) {
+
+        if (count($article->article_variants) >= 1) {
+
+            $total = 0;
+
+            foreach ($article->article_variants as $variant) {
+
+                if (count($variant->addresses) >= 1) {
+
+                    foreach ($variant->addresses as $variant_address) {
+
+                        $total += $variant_address->pivot->amount;    
+                        
+                        if ($this->article_num == $article->num) {
+                            $this->info('sumando: '.$variant_address->pivot->amount);
+                        }
+                    }
+                }
+            }
+
+            if ($total != $article->stock) {
+                $this->info('Stock diferente a suma de variantes, tendria que tener '.$total.'. Pero tiene '.$article->stock);
+
+                if ($this->corregir_stock) {
+                    $article->stock = $total;
+                    $article->save();
+                }
+                
+            }
+        }
+
+
+        return $article;
     }
 }

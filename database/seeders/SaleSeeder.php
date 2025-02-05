@@ -62,7 +62,7 @@ class SaleSeeder extends Seeder
             'employee_id'       => null,
             'client_id'         => 1,
             'created_at'        => Carbon::now()->subMonths(1)->endOfMonth(),
-            'user_id'           => 500,
+            'user_id'           => env('USER_ID'),
             'terminada'         => 0,
             'confirmed'         => 1,
             'save_current_acount'=> 1,

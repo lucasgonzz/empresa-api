@@ -17,7 +17,8 @@ class CreateComboSaleTable extends Migration
             $table->id();
             $table->integer('combo_id')->unsigned();
             $table->integer('sale_id')->unsigned();
-            $table->decimal('price');
+            $table->decimal('price', 30,2)->nullable();
+            $table->decimal('cost', 30,2)->nullable();
             $table->integer('amount');
             $table->timestamps();
         });

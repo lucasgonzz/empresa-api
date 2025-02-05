@@ -2,7 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\category\PriceTypeHelper;
+use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
 use App\Models\Article;
 use App\Models\Category;
 use App\Models\SubCategory;
@@ -25,6 +28,14 @@ class CategoryController extends Controller
             'name'                  => $request->name,
             'user_id'               => $this->userId(),
         ]);
+
+        GeneralHelper::attachModels($model, 'price_types', $request->price_types, ['percentage']);
+        
+        SetPriceTypesHelper::set_price_types($model);
+
+        SetPriceTypesHelper::set_rangos($model);
+
+
         $this->sendAddModelNotification('Category', $model->id);
         return response()->json(['model' => $this->fullModel('Category', $model->id)], 201);
     }  
@@ -37,6 +48,10 @@ class CategoryController extends Controller
         $model = Category::find($id);
         $model->name                = $request->name;
         $model->save();
+        GeneralHelper::attachModels($model, 'price_types', $request->price_types, ['percentage']);
+
+        PriceTypeHelper::update_article_prices($model);
+        
         $this->sendAddModelNotification('Category', $model->id);
         return response()->json(['model' => $this->fullModel('Category', $model->id)], 200);
     }

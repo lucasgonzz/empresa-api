@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
+use App\Http\Controllers\Helpers\article\ResetStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateAddressesStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateVariantsStockHelper;
 use App\Http\Controllers\Pdf\ArticleBarCodePdf;
@@ -204,34 +205,31 @@ class ArticleController extends Controller
         Log::info('columns:');
         Log::info($columns);
 
-        if ($request->has('models')) {
+        if ($request->has('models') && $request->file('models')->isValid()) {
+
+            Log::info('se va a guardar archivo');
+            Log::info($request->file('models'));
             
             $archivo_excel_path = $request->file('models')->store('imported_files');
 
+            Log::info($archivo_excel_path);
+
         } else if ($request->has('archivo_excel_path')) {
 
+            Log::info('ya viene la ruta del archivo');
             $archivo_excel_path = $request->archivo_excel_path;
 
+        } else {
+            Log::info('NO se va a guardar archivo');
+            Log::info($request->file('models')->getError());
         }
 
+        Log::info('archivo_excel_path: '.$archivo_excel_path);
         $archivo_excel = storage_path('app/' . $archivo_excel_path);
         
         ProcessArticleImport::dispatch($archivo_excel, $columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id, UserHelper::user(), Auth()->user()->id, $archivo_excel_path);
 
         return response(null, 200);
-        
-        // Excel::queueImport(new ProcessArticleImport($archivo_excel, $columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id), $archivo_excel);
-
-        // ProcessArticleImport::dispatch($archivo_excel, $columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id);
-
-        // Excel::import(new ArticleImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id), $archivo_excel);
-        
-        // $this->sendUpdateModelsNotification('article');
-
-        // $import_history_id = Session::get('import_history_id');
-        // $pre_import_id = Session::get('pre_import_id');
-
-        // return response()->json(['import_history_id' => $import_history_id, 'pre_import_id' => $pre_import_id, 'archivo_excel_path' => $archivo_excel_path], 201);
     }
 
     function export(Request $request) {
@@ -335,91 +333,8 @@ class ArticleController extends Controller
     function resetStock(Request $request) {
         foreach ($request->articles_id as $article_id) {
 
-            $article = Article::find($article_id);
-
-            if (count($article->article_variants) >= 1) {
-
-                foreach ($article->article_variants as $variant) {
-                    
-                    if (count($variant->addresses) >= 1) {
-
-                        foreach ($variant->addresses as $address) {
-                            
-                            if (!is_null($address->pivot->amount)) {
-
-                                $new_stock = 0 - $address->pivot->amount;
-                            } else {
-
-                                $new_stock = 0;
-                            }
-
-
-                            $stock_movement_ct = new StockMovementController();
-                            $request = new \Illuminate\Http\Request();
-                            $request->model_id = $article_id;
-                            $request->article_variant_id = $variant->id;
-                            $request->amount = $new_stock;
-                            $request->from_address_id = $address->id;
-                            $request->concepto = 'Reseteo de stock';
-                            $stock_movement_ct->store($request);
-                        }
-
-                    } else {
-
-                        if (!is_null($variant->stock)) {
-                            $new_stock = 0 - $variant->stock;
-                        } else {
-                            $new_stock = 0;
-                        }
-
-                        $stock_movement_ct = new StockMovementController();
-                        $request = new \Illuminate\Http\Request();
-                        $request->model_id = $article_id;
-                        $request->article_variant_id = $variant->id;
-                        $request->amount = $new_stock;
-                        $request->concepto = 'Reseteo de stock';
-                        $stock_movement_ct->store($request);
-
-                    }
-                }
-
-            } else if (count($article->addresses) >= 1) {
-
-                foreach ($article->addresses as $address) {
-                    
-                    if (!is_null($address->pivot->amount)) {
-
-                        $new_stock = 0 - $address->pivot->amount;
-                    } else {
-
-                        $new_stock = 0;
-                    }
-
-
-                    $stock_movement_ct = new StockMovementController();
-                    $request = new \Illuminate\Http\Request();
-                    $request->model_id = $article_id;
-                    $request->amount = $new_stock;
-                    $request->from_address_id = $address->id;
-                    $request->concepto = 'Reseteo de stock';
-                    $stock_movement_ct->store($request);
-                }
-
-            } else {
-
-                if (!is_null($article->stock)) {
-                    $new_stock = 0 - $article->stock;
-                } else {
-                    $new_stock = 0;
-                }
-
-                $stock_movement_ct = new StockMovementController();
-                $request = new \Illuminate\Http\Request();
-                $request->model_id = $article_id;
-                $request->amount = $new_stock;
-                $request->concepto = 'Reseteo de stock';
-                $stock_movement_ct->store($request);
-            }
+            $helper = new ResetStockHelper();
+            $helper->reset_stock($article_id);
 
         }
 

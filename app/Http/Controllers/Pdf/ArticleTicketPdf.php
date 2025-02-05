@@ -55,7 +55,15 @@ class ArticleTicketPdf extends fpdf {
 			}
 
 			$this->printArticle($article);
+
+			$this->lineas();
 		}
+	}
+
+	function lineas() {
+
+		// Derecha
+		$this->Line($this->x, $this->y - 29, $this->x, $this->y);
 	}
 
 	function printArticle($article) {
@@ -68,8 +76,8 @@ class ArticleTicketPdf extends fpdf {
 
 		if (!is_null($article)) {
 			$this->x = $this->start_x;
-			$this->SetFont('Arial', 'B', 12);
-			$this->Cell(70, 8, StringHelper::short($article->name, 30), 1, 1, 'L');
+			$this->SetFont('Arial', 'B', 9);
+			$this->Cell(70, 8, StringHelper::short($article->name, 35), 1, 1, 'L');
 			
 			$info = null;
 			$this->x = $this->start_x;
@@ -87,8 +95,7 @@ class ArticleTicketPdf extends fpdf {
 				$this->x += 30;
 			}
 
-			$this->SetFont('Arial', 'B', 27);
-			$this->Cell(40, 16, '$'.Numbers::price($article->final_price), 'RTB', 1, 'R');
+			$this->price($article);
 
 			$this->x = $this->start_x;
 			$this->SetFont('Arial', '', 12);
@@ -96,9 +103,88 @@ class ArticleTicketPdf extends fpdf {
 
 			$this->x = $this->start_x;
 			$this->x += 70;
-			// dd($this->x);
 		}
 
+	}
+
+	function price($article) {
+
+		$border = 0;
+
+		if (UserHelper::hasExtencion('lista_de_precios_por_rango_de_cantidad_vendida')) {
+			
+			$start_y = $this->y;
+
+			if (
+				!is_null($article->sub_category)
+				&& count($article->sub_category->category_price_type_ranges) >= 1
+			) {
+
+				foreach ($article->sub_category->category_price_type_ranges as $range) {
+
+					$this->print_price_ranges($article, $range, $border);
+				}
+
+			} else if (
+				!is_null($article->category)
+				&& count($article->category->category_price_type_ranges) >= 1
+			) {
+
+				// if ($article->name == 'Mate Torpedo') {
+					// dd($article->category->category_price_type_ranges);
+				// }
+
+				foreach ($article->category->category_price_type_ranges as $range) {
+
+					if (is_null($range->sub_category_id)) {
+
+						$this->print_price_ranges($article, $range, $border);
+					}
+
+				}
+			}
+
+			$y_donde_deberia = $start_y + 16;
+
+			if ($y_donde_deberia > $this->y) {
+
+				$this->y = $y_donde_deberia;
+			}
+
+		} else {
+
+			$this->SetFont('Arial', 'B', 27);
+			$this->Cell(40, 16, '$'.Numbers::price($article->final_price), 'RTB', 1, 'R');
+		}
+	}
+
+	function print_price_ranges($article, $range, $border) {
+
+			
+		$article_price_type = $article->price_types->firstWhere('id', $range->price_type_id);
+
+		$this->x = $this->start_x + 30;
+
+		$ancho = 40;
+		
+		if (
+			!is_null($range->min)
+			&& $range->min > 1
+		) {
+
+			$this->SetFont('Arial', '', 8);
+			$this->Cell(20, 5, 'A partir de '.$range->min, $border, 0, 'R');
+			
+			$ancho = 20;
+
+		} else {
+
+			$this->x += 20;
+		}
+		
+		$this->SetFont('Arial', 'B', 10);
+		
+		$this->Cell(20, 5, '$'.Numbers::price($article_price_type->pivot->price), $border, 1, 'L');
 	}
 
 }

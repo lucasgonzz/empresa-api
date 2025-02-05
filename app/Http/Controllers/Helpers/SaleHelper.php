@@ -21,6 +21,7 @@ use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
+use App\Http\Controllers\Helpers\sale\ComboHelper;
 use App\Http\Controllers\Helpers\sale\SaleCajaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\Helpers\sale\UpdateHelper;
@@ -211,7 +212,10 @@ class SaleHelper extends Controller {
         if (!$from_store) {
             SaleModificationsHelper::attach_articulos_despues_de_actualizar($model, $sale_modification);
             
-            UpdateHelper::check_articulos_eliminados($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
+            // if (!$se_esta_confirmando_por_primera_vez) {
+
+                UpdateHelper::check_articulos_eliminados($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
+            // }
         }
 
         /*
@@ -610,6 +614,8 @@ class SaleHelper extends Controller {
                                                             'price' => $combo['price'],
                                                             'created_at' => Carbon::now(),
                                                         ]);
+
+                ComboHelper::discount_articles_stock($sale, $combo);
             }
         }
     }

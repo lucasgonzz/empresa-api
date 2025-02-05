@@ -13,7 +13,7 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\PaywayController;
-use App\Http\Controllers\StockMovementController;
+use App\Http\Controllers\Stock\StockMovementController;
 use App\Listerners\OrderConfirmedListene;
 use App\Models\Article;
 use App\Models\ArticleVariant;
@@ -128,25 +128,25 @@ class OrderHelper {
         if ($model->order_status->name == 'Sin confirmar') {
             if (Self::saveSaleAfterFinishOrder() && !UserHelper::hasExtencion('check_sales')) {
                 foreach ($model->articles as $article) {
-                    $_article = Article::find($article->id);
 
                     $ct_stock_movement = new StockMovementController();
 
-                    $request = new \Illuminate\Http\Request();
-                    $request->model_id = $article->id;
+                    $data = [];
+                    $data['model_id'] = $article->id;
+                    $data['order_id'] = $model->id;
 
-                    if (!is_null($article->pivot->address_id) && $article->pivot->address_id != 0) {
-                        $request->from_address_id = $article->pivot->address_id;
-                        $request->amount = $article->pivot->amount;
-                    } else {
-                        $request->amount = -$article->pivot->amount;
-                    }
-                    $request->concepto = 'Pedido Online N° '.$model->num;
-                    $ct_stock_movement->store($request);
+                    if (!is_null($model->address_id) && $model->address_id != 0) {
+                        $data['from_address_id'] = $model->address_id;
+                    } 
+
+                    $data['amount'] = -$article->pivot->amount;
+                    $data['concepto_stock_movement_name'] = 'Pedido Online';
+                    $ct_stock_movement->crear($data);
                 }
             }
             Self::deleteOrderCart($model);
 
+            // Extencion Colman
             Self::checkDepositos($model, $instance);
         }
     }

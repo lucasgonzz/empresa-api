@@ -22,8 +22,42 @@ class PriceTypeSeeder extends Seeder
             $this->pack_descartables();
         } else if ($for_user == 'colman' || $for_user == 'ferretodo') {
             $this->colman();
+        } else if ($for_user == 'golo_norte') {
+            $this->golo_norte();
         }
 
+    }
+
+    function golo_norte() {
+
+        $models = [
+            [
+                'num'           => 1,
+                'name'          => 'Distribuidor',
+                'percentage'    => 5,
+                'position'      => 1,
+                'user_id'       => $this->user->id,
+            ],
+            [
+                'num'           => 2,
+                'name'          => 'Mayorista',
+                'percentage'    => 10,
+                'position'      => 2,
+                'user_id'       => $this->user->id,
+            ],
+            [
+                'num'           => 3,
+                'name'          => 'Minorista',
+                'percentage'    => 15,
+                'position'      => 3,
+                'user_id'       => $this->user->id,
+            ],
+            
+        ];
+        foreach ($models as $model) {
+
+            PriceType::create($model);
+        }
     }
 
     function pack_descartables() {

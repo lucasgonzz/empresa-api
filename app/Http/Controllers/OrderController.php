@@ -72,6 +72,9 @@ class OrderController extends Controller
 
     public function update(Request $request, $id) {
         $model = Order::find($id);
+        $model->address_id = $request->address_id;
+        $model->save();
+        
         GeneralHelper::attachModels($model, 'articles', $request->articles, ['price', 'amount', 'address_id']);
         $this->sendAddModelNotification('Order', $model->id);
         return response()->json(['model' => $this->fullModel('Order', $model->id)], 200);

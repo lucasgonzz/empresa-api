@@ -9,7 +9,11 @@ class PriceType extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        $q->with('sub_categories');
+        $q->with('categories', 'sub_categories');
+    }
+
+    function categories() {
+        return $this->belongsToMany(Category::class)->withPivot('percentage');
     }
 
     function sub_categories() {
