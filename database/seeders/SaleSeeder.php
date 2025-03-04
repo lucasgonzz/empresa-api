@@ -31,7 +31,7 @@ class SaleSeeder extends Seeder
 
         // $this->pagos(500);
 
-        $this->venta_sin_confirmar_a_fin_de_mes();
+        // $this->venta_sin_confirmar_a_fin_de_mes();
 
     }
 
@@ -101,7 +101,7 @@ class SaleSeeder extends Seeder
     }
 
     function create_sales($sales) {
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
+        $user = User::find(env('USER_ID'));
 
         foreach ($sales as $sale) {
 
@@ -126,7 +126,7 @@ class SaleSeeder extends Seeder
     }
 
     function ventas_a_cuenta_corriente() {
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
+        $user = User::find(env('USER_ID'));
 
         $models = [
             [
@@ -174,7 +174,7 @@ class SaleSeeder extends Seeder
     }
 
     function ventas_en_mostrador() {
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
+        $user = User::find(env('USER_ID'));
 
         $models = [
             [
@@ -204,7 +204,7 @@ class SaleSeeder extends Seeder
     }
 
     function ventas_sin_pagar() {
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
+        $user = User::find(env('USER_ID'));
 
         $models = [
             [
@@ -395,7 +395,7 @@ class SaleSeeder extends Seeder
     }
 
     function videos() {
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
+        $user = User::find(env('USER_ID'));
         $addresses = Address::where('user_id', $user->id)
                         ->get();
         $employees = User::where('owner_id', $user->id)
@@ -440,6 +440,8 @@ class SaleSeeder extends Seeder
             $_article = [
                 'id'            => $article['id'],
                 'is_article'    => true,
+                'name'          => null,
+                'num'           => null,
                 'amount'        => $article['amount'],
                 'article_variant_id'        => null,
                 'cost'          => $article['cost'],

@@ -425,7 +425,7 @@ class ArticleImport implements ToCollection
 
         foreach ($this->addresses as $address) {
             
-            $address_excel = (float)ImportHelper::getColumnValue($row, $address->street, $this->columns);
+            $address_excel = (float)ImportHelper::getColumnValue($row, str_replace($address->street, ' ', '_'), $this->columns);
             
             if (!is_null($address_excel) && $address_excel != 0) {
 

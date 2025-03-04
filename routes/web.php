@@ -28,6 +28,19 @@ Route::get('/storage/{filename}', function ($filename) {
 });
 
 
+
+Route::get('/afip-get-data', function () {
+    
+    $ct = new App\Http\Controllers\Helpers\Afip\CondicionIvaReceptorHelper();
+
+    $ct->get_data();
+
+    return response();
+});
+
+
+
+
 // ------------------------------------------------------------------------------
 
 

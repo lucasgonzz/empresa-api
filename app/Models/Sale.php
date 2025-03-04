@@ -15,6 +15,10 @@ class Sale extends Model
         return $this->belongsToMany(CurrentAcountPaymentMethod::class)->withPivot('amount', 'discount_percentage', 'discount_amount', 'caja_id');
     }
 
+    function stock_movements() {
+        return $this->hasMany(StockMovement::class);
+    }
+
     public function actualizandose_por() {
         return $this->belongsTo(User::class, 'actualizandose_por_id');
     }
@@ -28,7 +32,7 @@ class Sale extends Model
     }
 
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles.article_variants', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'nota_credito_afip_ticket', 'combos', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'afip_observations', 'current_acount', 'current_acount_payment_methods', 'price_type', 'sale_modifications')
+        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles.article_variants', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'nota_credito_afip_tickets', 'combos.articles', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'afip_observations', 'current_acount', 'current_acount_payment_methods', 'price_type', 'sale_modifications')
         ->withCount('sale_modifications');
     }
 
@@ -72,8 +76,8 @@ class Sale extends Model
         return $this->hasOne('App\Models\AfipTicket');
     }
 
-    public function nota_credito_afip_ticket() {
-        return $this->hasOne('App\Models\AfipTicket', 'sale_nota_credito_id');
+    public function nota_credito_afip_tickets() {
+        return $this->hasMany('App\Models\AfipTicket', 'sale_nota_credito_id');
     }
 
     public function user() {
@@ -117,7 +121,7 @@ class Sale extends Model
     }
 
     public function client() {
-        return $this->belongsTo('App\Models\Client');
+        return $this->belongsTo('App\Models\Client')->withTrashed();
     }
 
     public function buyer() {

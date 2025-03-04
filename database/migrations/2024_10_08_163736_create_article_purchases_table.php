@@ -21,7 +21,7 @@ class CreateArticlePurchasesTable extends Migration
             $table->integer('sale_id');
             $table->integer('article_id');
             $table->decimal('amount', 12,2);
-            $table->decimal('price', 30,2);
+            $table->decimal('price', 30,2)->nullable();
             $table->decimal('cost', 30,2)->nullable();
 
             $table->timestamps();

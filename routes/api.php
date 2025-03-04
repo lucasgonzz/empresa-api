@@ -22,6 +22,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('previus-next-index/{model_name}/{id}', 'CommonLaravel\PreviusNextController@getIndexPreviusNext');
     Route::put('update/{model_name}', 'CommonLaravel\UpdateController@update');
     Route::put('delete/{model_name}', 'CommonLaravel\DeleteController@delete');
+
+    // Papelera
+    Route::get('papelera/{model_name}', 'PapeleraController@index');
+    Route::put('papelera/restaurar/{model_name}/{model_id}', 'PapeleraController@restaurar');
     
     // User
     Route::get('user', 'CommonLaravel\AuthController@get_user');
@@ -67,6 +71,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Consultora de precios
     Route::get('consultora-de-precio/buscador/{codigo}', 'ConsultoraDePrecioController@buscador');
+
+
+    // Devolciones
+    Route::get('devoluciones/search-sale/{num}', 'DevolucionesController@search_sale');
+    Route::post('devoluciones/', 'DevolucionesController@store');
 
 
     // Categorias y rangos para tipos de precios | Golo norte
@@ -146,7 +155,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('stock-movement', 'Stock\StockMovementController')->except(['index', 'show']);
     // Route::resource('stock-movement', 'StockMovementController')->except(['index', 'show']);
-    Route::get('stock-movement/{article_id}', 'StockMovementController@index');
+    Route::get('stock-movement/{article_id}/{ultimos_movimientos}/{concepto_id}', 'StockMovementController@index');
 
     Route::get('price-change/{article_id}', 'PriceChangeController@index');
 

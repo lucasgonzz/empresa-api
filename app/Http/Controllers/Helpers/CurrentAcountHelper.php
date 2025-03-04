@@ -163,11 +163,13 @@ class CurrentAcountHelper {
             $nota_credito->articles()->detach();
             foreach ($items as $item) {
                 if (isset($item['is_article'])) {
-                    $nota_credito->articles()->attach($item['id'], [
-                                                        'amount'    => $item['returned_amount'],
-                                                        'price'     => $item['price_vender'],
-                                                        'discount'  => $item['discount'],
-                                                    ]);
+                    if (isset($item['unidades_devueltas'])) {
+                        $nota_credito->articles()->attach($item['id'], [
+                                                            'amount'    => $item['unidades_devueltas'],
+                                                            'price'     => $item['price_vender'],
+                                                            'discount'  => $item['discount'],
+                                                        ]);
+                    }
                 }
             }
         }
@@ -382,7 +384,7 @@ class CurrentAcountHelper {
                 $pago->pagando_a()->detach();
                 $pago_helper = new CurrentAcountPagoHelper($model_name, $model_id, $pago);
                 $pago_helper->init();
-                echo 'Se llampo a pago_helper para '.$model_id;
+                // echo 'Se llampo a pago_helper para '.$model_id;
             }
             $model->pagos_checkeados = 1;
             $model->save();

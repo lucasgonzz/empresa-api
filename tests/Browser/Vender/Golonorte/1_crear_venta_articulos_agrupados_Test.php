@@ -6,7 +6,7 @@ use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Laravel\Dusk\Browser;
 use Tests\Browser\Helpers\AuthHelper;
 use Tests\Browser\Helpers\SaleHelper;
-use Tests\Browser\Helpers\Sale\SelectClientHelper;
+use Tests\Browser\Helpers\Sale\ClientHelper;
 use Tests\Browser\Helpers\StockHelper;
 use Tests\DuskTestCase;
 
@@ -99,7 +99,7 @@ class a_crear_venta_articulos_agrupados_Test extends DuskTestCase
             $browser = SaleHelper::set_address($browser, 'Santa Fe');
 
 
-            $browser = SelectClientHelper::select_client($browser, $this->client_name);
+            $browser = ClientHelper::select_client($browser, $this->client_name);
 
 
             $browser = SaleHelper::btn_guardar($browser);

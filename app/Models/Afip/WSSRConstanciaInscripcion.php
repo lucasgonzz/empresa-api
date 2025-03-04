@@ -47,7 +47,11 @@ class WSSRConstanciaInscripcion extends WSN
             $config['wsdl_cache_file']  = $this->testing ? public_path().'/afip/wsdl/wbsr_constancia_inscripcion_homo_wsdl.xml' : public_path().'/afip/wsdl/wbsr_constancia_inscripcion_wsdl.xml';
         }
 
-        $config['for_constancia_de_inscripcion'] = true;
+        if (!isset($config['for_constancia_de_inscripcion'])) {
+
+            $config['for_constancia_de_inscripcion'] = true;
+        }
+
 
         parent::__construct($config);
     }

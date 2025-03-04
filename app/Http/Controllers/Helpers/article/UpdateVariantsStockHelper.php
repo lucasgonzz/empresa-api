@@ -4,7 +4,7 @@ namespace App\Http\Controllers\Helpers\article;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\UserHelper;
-use App\Http\Controllers\StockMovementController;
+use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -19,6 +19,8 @@ class UpdateVariantsStockHelper {
     }
 
     function update_variants() {
+
+        $segundos = 0;
 
         foreach ($this->variants_to_update as $variant) {
 
@@ -44,38 +46,40 @@ class UpdateVariantsStockHelper {
                 $diferencia = (float)$address['amount'] - $variant_address->pivot->amount;
                 Log::info('diferencia: '.$diferencia);
 
-                $this->guardar_stock_movement($diferencia);
+                $this->guardar_stock_movement($diferencia, $segundos);
+                
+                $segundos += 5;
 
-                sleep(1);
+                // sleep(1);
             }
             
         }
     }
 
-    function guardar_stock_movement($amount) {
+    function guardar_stock_movement($amount, $segundos) {
 
         if ($amount != 0) {
 
             $ct_stock_movement = new StockMovementController();
 
-            $request = new \Illuminate\Http\Request();
+            $data = [];
 
-            $request->model_id = $this->article->id;
+            $data['model_id'] = $this->article->id;
 
-            $request->article_variant_id = $this->variant['id'];
+            $data['article_variant_id'] = $this->variant['id'];
 
-            $request->amount = $amount;
+            $data['amount'] = $amount;
 
-            $request->to_address_id = $this->address['id'];
+            $data['to_address_id'] = $this->address['id'];
 
-            // $request->employee_id = UserHelper::user(false)->id;
+            // $data['employee_id'] = UserHelper::user(false)->id;
 
-            $request->concepto = 'Act de depositos';
+            $data['concepto_stock_movement_name'] = 'Actualizacion de deposito';
             
             Log::info('*************');
             Log::info('Act de depositos para address '.$this->address['id'].' con '.$amount);
 
-            $ct_stock_movement->store($request);
+            $ct_stock_movement->crear($data, false, null, null, $segundos);
             Log::info('*************');
         }
 

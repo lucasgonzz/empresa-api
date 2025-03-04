@@ -17,12 +17,16 @@ use Carbon\Carbon;
 class StockMovementController extends Controller
 {
 
-    function index($article_id) {
+    function index($article_id, $ultimos_movimientos, $concepto_id) {
         $models = StockMovement::where('article_id', $article_id)
                                 ->orderBy('id', 'DESC')
                                 ->with('article_variant')
-                                // ->select('temporal_id', 'article_id', 'from_address_id', 'to_address_id', 'provider_id', 'sale_id', 'nota_credito_id', 'concepto', 'observations', 'amount', 'employee_id', 'user_id')
-                                ->get();
+                                ->with('sale')
+                                ->take($ultimos_movimientos);
+        if ($concepto_id != 0) {
+            $models = $models->where('concepto_stock_movement_id', $concepto_id);
+        }
+        $models = $models->get();
                                 
         return response()->json(['models' => $models], 200);
     }

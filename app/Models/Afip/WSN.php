@@ -276,7 +276,8 @@ abstract class WSN extends WS
     function __call($name, array $arguments)
     {
         if ($this->ta_expiration_time < time()) {
-            throw new WsnException('El TA está vencido');
+            Log::info('EL wsaa Esta vencido');
+            // throw new WsnException('El TA está vencido');
         }
         if ($this->for_constancia_de_inscripcion) {
 

@@ -124,32 +124,32 @@ class OrderHelper {
         }
     }
 
-    static function discountArticleStock($model, $instance) {
-        if ($model->order_status->name == 'Sin confirmar') {
-            if (Self::saveSaleAfterFinishOrder() && !UserHelper::hasExtencion('check_sales')) {
-                foreach ($model->articles as $article) {
+    // static function discountArticleStock($model, $instance) {
+    //     if ($model->order_status->name == 'Sin confirmar') {
+    //         if (Self::saveSaleAfterFinishOrder() && !UserHelper::hasExtencion('check_sales')) {
+    //             foreach ($model->articles as $article) {
 
-                    $ct_stock_movement = new StockMovementController();
+    //                 $ct_stock_movement = new StockMovementController();
 
-                    $data = [];
-                    $data['model_id'] = $article->id;
-                    $data['order_id'] = $model->id;
+    //                 $data = [];
+    //                 $data['model_id'] = $article->id;
+    //                 $data['order_id'] = $model->id;
 
-                    if (!is_null($model->address_id) && $model->address_id != 0) {
-                        $data['from_address_id'] = $model->address_id;
-                    } 
+    //                 if (!is_null($model->address_id) && $model->address_id != 0) {
+    //                     $data['from_address_id'] = $model->address_id;
+    //                 } 
 
-                    $data['amount'] = -$article->pivot->amount;
-                    $data['concepto_stock_movement_name'] = 'Pedido Online';
-                    $ct_stock_movement->crear($data);
-                }
-            }
-            Self::deleteOrderCart($model);
+    //                 $data['amount'] = -$article->pivot->amount;
+    //                 $data['concepto_stock_movement_name'] = 'Pedido Online';
+    //                 $ct_stock_movement->crear($data);
+    //             }
+    //         }
+    //         Self::deleteOrderCart($model);
 
-            // Extencion Colman
-            Self::checkDepositos($model, $instance);
-        }
-    }
+    //         // Extencion Colman
+    //         Self::checkDepositos($model, $instance);
+    //     }
+    // }
 
     static function checkDepositos($order, $instance) {
         if (UserHelper::hasExtencion('check_sales')) {
@@ -187,45 +187,6 @@ class OrderHelper {
     static function saveSaleAfterFinishOrder() {
         $user = UserHelper::getFullModel();
         return $user->online_configuration->save_sale_after_finish_order;
-    }
-
-    static function saveSale($order, $instance) {
-        if ($order->order_status->name == 'Entregado' && Self::saveSaleAfterFinishOrder() && !UserHelper::hasExtencion('check_sales')) {
-            $sale = Self::createSale($order, $instance);
-            if (!is_null($order->buyer->comercio_city_client)) {
-                SaleHelper::attachCurrentAcountsAndCommissions($sale, $order->buyer->comercio_city_client_id, [], []);
-            }
-            Log::info('se guardo venta para el pedido online, sale_id: '.$sale->id);
-        }
-    }
-
-    static function createSale($order, $instance, $to_check = false) {
-        $client_id = null;
-        if (!is_null($order->buyer->comercio_city_client)) {
-            $client_id = $order->buyer->comercio_city_client_id;
-        }
-        $sale = Sale::create([
-            'user_id'               => $instance->userId(),
-            'buyer_id'              => $order->buyer_id,
-            'client_id'             => $client_id,
-            'to_check'              => $to_check,
-            'terminada'             => !$to_check,
-            'num'                   => $instance->num('sales'),
-            'save_current_acount'   => 1,
-            'order_id'              => $order->id,
-            'employee_id'           => SaleHelper::getEmployeeId(),
-        ]);
-
-        if (!is_null($sale->client)
-            && !is_null($sale->client->price_type_id)) {
-
-            $sale->price_type_id = $sale->client->price_type_id;
-            $sale->save();
-        }
-
-        SaleHelper::attachArticlesFromOrder($sale, $order->articles);
-        $instance->sendAddModelNotification('sale', $sale->id, false);
-        return $sale;
     }
 
     static function sendOrderConfirmedNotification($order) {

@@ -29,7 +29,7 @@ class ClientSeeder extends Seeder
                 'cuit'                  => '20242112025',
                 'dni'                   => 'd42354898d',
                 'razon_social'          => 'MARCOS SRL', 
-                'iva_condition_id'      => 3,
+                'iva_condition_id'      => 1,
                 'seller_id'             => 2,
                 'user_id'               => $user->id,
                 'price_type_id'         => 2,

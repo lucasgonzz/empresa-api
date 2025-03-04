@@ -57,6 +57,18 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function articles_sin_stock_y_con_direcciones() {
+
+        $articles = Article::whereNull('stock')
+                            ->whereHas('addresses')
+                            ->get();
+        foreach ($articles as $article) {
+            
+            $article->addresses()->sync([]);
+        }
+        echo count($articles).' articulos con direcciones y sin stock'; 
+    }
+
     function articulos_sin_address() {
         $articles = Article::whereDoesntHave('addresses')
                             ->get();

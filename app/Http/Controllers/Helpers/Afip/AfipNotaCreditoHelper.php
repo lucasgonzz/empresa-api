@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\Afip;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipSolicitarCaeHelper;
 use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
+use App\Http\Controllers\Helpers\Afip\CondicionIvaReceptorHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\AfipError;
@@ -67,6 +68,7 @@ class AfipNotaCreditoHelper
         $importes = $afip_helper->getImportes();
         $today = date('Ymd');
         $moneda_id = 'PES';
+        $iva_receptor = CondicionIvaReceptorHelper::get_iva_receptor($this->sale);
         $invoice = array(
             'FeCAEReq' => array(
                 'FeCabReq' => array(
@@ -91,6 +93,7 @@ class AfipNotaCreditoHelper
                         'MonId'        => $moneda_id,
                         'MonCotiz'     => 1,
                         'Opcionales'   => $this->getOpcionales(),
+                        'CondicionIVAReceptorId'    => $iva_receptor,
                         'CbtesAsoc'    => [
                             [
                                 'Tipo'      => $this->sale->afip_ticket->cbte_tipo,

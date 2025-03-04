@@ -252,7 +252,11 @@ class AfipTicketPdf extends fpdf {
         $this->Cell($this->widths['bonif'], 6, $article->pivot->discount, 0, 0, 'R');
         $this->Cell($this->widths['subtotal'], 6, Numbers::price($this->afip_helper->subTotal($article)), 0, 0, 'R');
 		if ($this->model->afip_ticket->cbte_letra == 'A') {
-        	$this->Cell($this->widths['iva'], 6, $article->iva->percentage, 0, 0, 'C');
+			$iva = 21;
+			if (!is_null($article->iva)) {
+				$iva = $article->iva->percentage;
+			} 
+        	$this->Cell($this->widths['iva'], 6, $iva, 0, 0, 'C');
         	$this->Cell($this->widths['subtotal_con_iva'], 6, $this->subtotalConIva($article), 0, 0, 'R');
 		}
         $this->y += 6;

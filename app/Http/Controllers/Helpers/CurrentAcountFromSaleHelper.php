@@ -37,9 +37,9 @@ class CurrentAcountFromSaleHelper extends Controller {
             'employee_id' => UserHelper::userId(false),
         ]);
 
-        $saldo_actual = CurrentAcountHelper::getSaldo('client', $this->sale->client_id, $this->current_acount);
+        $this->saldo_actual = CurrentAcountHelper::getSaldo('client', $this->sale->client_id, $this->current_acount);
 
-        $saldo = $saldo_actual + $debe;
+        $saldo = $this->saldo_actual + $debe;
 
         $this->current_acount->saldo = Numbers::redondear($saldo);
         $this->current_acount->save();
@@ -61,13 +61,29 @@ class CurrentAcountFromSaleHelper extends Controller {
         if ($this->es_el_ultimo_movimiento()) {
 
             $client = Client::find($client_id);
+
+            $saldo_anterior = $client->saldo;
+
             $client->saldo = $this->current_acount->saldo;
             $client->save();
+
+            /* 
+                Si tiene saldo negativo (a favor del cliente)
+                Se ejecuta checkPagos para que se marque esta venta como pagandose
+            */
+            $this->check_saldo_a_favor($client);
 
         } else {
 
             CurrentAcountHelper::checkSaldos('client', $client_id);
             CurrentAcountHelper::checkPagos('client', $client_id, true);
+        }
+    }
+
+    function check_saldo_a_favor($client) {
+        if ($this->saldo_actual < 0) {
+
+            CurrentAcountHelper::checkPagos('client', $client->id, true);
         }
     }
 

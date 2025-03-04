@@ -17,7 +17,7 @@ class CheckStockMovements extends Command
      *
      * @var string
      */
-    protected $signature = 'check_stock_movements {article_id?} {article_num?} {user_id?} {--todos_los_articulos} {--corregir_stock}';
+    protected $signature = 'check_stock_movements {article_id?} {article_num?} {user_id?} {--todos_los_articulos} {--corregir_stock} {--check_movimientos_repetidos}';
 
     /**
      * The console command description.
@@ -60,6 +60,7 @@ class CheckStockMovements extends Command
         sleep(4);
 
         $this->todos_los_articulos = $this->option('todos_los_articulos');
+        $this->check_movimientos_repetidos = $this->option('check_movimientos_repetidos');
 
         $this->article_id = $this->argument('article_id') ?? null;
         $this->article_num = $this->argument('article_num') ?? null;
@@ -98,6 +99,7 @@ class CheckStockMovements extends Command
 
         Mantenimiento::create([
             'notas'     => 'Se repaso el stock de '.$articulos_chequeados.' articulos. Del user_id: '.$this->user_id.'. Notas: '.$this->notas,
+            'user_id'   => $this->user_id,
         ]);   
 
         $this->info("Recalculo de stock completado.");
@@ -181,9 +183,11 @@ class CheckStockMovements extends Command
             $stockActual = $movimientos[0]->stock_resultante;
         }
 
-        $this->check_movimientos_repetidos($movimientos);
+        if ($this->check_movimientos_repetidos) {
+            $this->_check_movimientos_repetidos($movimientos);
+            $movimientos = $this->get_movimientos($article);
+        }
         
-        $movimientos = $this->get_movimientos($article);
 
         foreach ($movimientos as $movimiento) {
 
@@ -270,6 +274,7 @@ class CheckStockMovements extends Command
                     
                     $this->info('NO TIENE');
                     $article->stock -= $stock_movement->amount;
+                    $article->timestamps = false;
                     $article->save();
 
                     $ultimo_stock_movement = $stock_movements->last();
@@ -296,7 +301,7 @@ class CheckStockMovements extends Command
         return $movimientos;
     }
 
-    function check_movimientos_repetidos($movimientos) {
+    function _check_movimientos_repetidos($movimientos) {
 
         $index = 0;
 
@@ -363,6 +368,13 @@ class CheckStockMovements extends Command
         }
         return false;
     }
+
+
+    /*
+        Si el stock actual es distinto al stock resultante del ultimo movimiento,
+        seteo el stock actual del articulo con el stock actual del ultimo movimiento
+        y cambio todos los movimientos anteriores para que den como resultado el stock resultante del ultimo movimiento
+    */
 
     function check_stock_actual($article, $movimientos) {
 
@@ -447,6 +459,7 @@ class CheckStockMovements extends Command
 
             if ($this->corregir_stock) {
                 $article->stock = $total;
+                $article->timestamps = false;
                 $article->save();
             }
         }
@@ -478,6 +491,7 @@ class CheckStockMovements extends Command
 
                 if ($this->corregir_stock) {
                     $article->stock = $total;
+                    $article->timestamps = false;
                     $article->save();
                 }
                 

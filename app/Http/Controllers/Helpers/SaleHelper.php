@@ -196,12 +196,12 @@ class SaleHelper extends Controller {
         return null;
     }
 
-    static function attachProperies($model, $request, $from_store = true, $previus_articles = null, $sale_modification = null, $se_esta_confirmando_por_primera_vez = false) {
+    static function attachProperies($model, $request, $from_store = true, $previus_articles = null, $previus_combos = null, $sale_modification = null, $se_esta_confirmando_por_primera_vez = false) {
 
         Self::attachArticles($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
         
 
-        Self::attachCombos($model, $request->items);
+        Self::attachCombos($model, $request->items, $previus_combos);
         Self::attachServices($model, $request->items);
         
         Self::attachDiscounts($model, $request->discounts);
@@ -212,10 +212,16 @@ class SaleHelper extends Controller {
         if (!$from_store) {
             SaleModificationsHelper::attach_articulos_despues_de_actualizar($model, $sale_modification);
             
-            // if (!$se_esta_confirmando_por_primera_vez) {
+            /*
+                * Si la venta ya esta confirmada
+                y no es que se esta confirmando por primera vez
+                (osea ya estaba confirmada antes de actualizarce)
+                Recien ahi veo si se elimino algun articulo para regresar al stock
+            */
+            if ($model->confirmed && !$se_esta_confirmando_por_primera_vez) {
 
                 UpdateHelper::check_articulos_eliminados($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
-            // }
+            }
         }
 
         /*
@@ -246,6 +252,40 @@ class SaleHelper extends Controller {
 
         SaleTotalesHelper::set_total_cost($model);
     }
+
+    // Chequeo que no falten articulos como le suele pasar a Pack
+    static function check_que_este_el_articulos($sale, $article) {
+
+        $sale->load('articles');
+        $article_sale = $sale->articles()->find($article['id']);
+            
+        if (!$article_sale) {
+            Self::attachArticle($sale, $article);
+          
+            Log::info('No se estaba agregando el articulo '.$article['name'].'. N° '.$article['num'].' a la venta N° '.$sale->num);
+        } else {
+            Log::info('La venta N° '.$sale->num.' SI tiene el articulo '.$article['name']);
+        }
+    }
+    // static function check_que_esten_todos_los_articulos($sale) {
+
+    //     foreach($sale->stock_movements as $stock_movement) {
+    //         $article = $sale->articles()->find($stock_movement->article_id);
+            
+    //         if (!$article) {
+                
+    //             $article_faltante = $stock_movement->article;
+
+    //             $sale->articles()->attach($stock_movement->article_id, [
+    //                 'amount'    => abs($stock_movement->amount),
+    //                 'price'     => $article_faltante->final_price,
+    //             ]);
+    //             Log::info('No se estaba agregando el articulo '.$article_faltante->name.'. N° '.$article_faltante->num.' a la venta N° '.$sale->num);
+    //         } else {
+    //             Log::info('La venta N° '.$sale->num.' SI tiene el articulo '.$article->name);
+    //         }
+    //     }
+    // }
 
     static function set_total_a_facturar($sale, $request) {
         if (!is_null($sale->afip_information_id) && $sale->afip_information_id != 0) {
@@ -540,7 +580,10 @@ class SaleHelper extends Controller {
                     
                     if (($sale->to_check || $sale->checked) 
                         || (!is_null($amount) && $amount > 0) ) {
+
                         Self::attachArticle($sale, $article);
+                    } else {
+                        Log::info('No se agrego articulo '.$article['name'].' a la venta N° '.$sale->num.'. Amount: '.$amount);
                     }
 
                 }
@@ -560,6 +603,8 @@ class SaleHelper extends Controller {
                         ArticleHelper::discountStock($article['id'], $amount, $sale, $previus_articles, $se_esta_confirmando_por_primera_vez, $article_variant_id);
                     }
                 }
+
+                Self::check_que_este_el_articulos($sale, $article);
 
             }
         }
@@ -606,16 +651,16 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function attachCombos($sale, $combos) {
+    static function attachCombos($sale, $combos, $previus_combos) {
         foreach ($combos as $combo) {
             if (isset($combo['is_combo'])) {
                 $sale->combos()->attach($combo['id'], [
                                                             'amount' => (float)$combo['amount'],
-                                                            'price' => $combo['price'],
+                                                            'price' => $combo['price_vender'],
                                                             'created_at' => Carbon::now(),
                                                         ]);
 
-                ComboHelper::discount_articles_stock($sale, $combo);
+                ComboHelper::discount_articles_stock($sale, $combo, $previus_combos);
             }
         }
     }
@@ -747,19 +792,6 @@ class SaleHelper extends Controller {
             return $dolar_blue;
         }
         return null;
-    }
-
-    static function attachArticlesFromOrder($sale, $articles) {
-        foreach ($articles as $article) {
-            $sale->articles()->attach($article->id, [
-                                            'amount' => $article->pivot->amount,
-                                            'cost' => isset($article->pivot->cost)
-                                                        ? $article->pivot->cost
-                                                        : null,
-                                            'price' => $article->pivot->price,
-                                        ]);
-            
-        }
     }
 
     static function detachItems($sale, $sale_modification) {

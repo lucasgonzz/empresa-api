@@ -148,8 +148,8 @@ class AfipHelper extends Controller {
         $monto_iva = $total_combo - $precio_sin_iva; 
         
         return [
-            'Importe'   => $monto_iva,
-            'BaseImp'   => $precio_sin_iva
+            'Importe'   => round($monto_iva, 2),
+            'BaseImp'   => round($precio_sin_iva, 2)
         ];
     }
 

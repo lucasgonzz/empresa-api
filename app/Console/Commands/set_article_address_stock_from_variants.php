@@ -54,16 +54,10 @@ class set_article_address_stock_from_variants extends Command
                 $addresses = $this->get_addresses();
                 
                 foreach ($article->article_variants as $variant) {
-                    
 
                     foreach ($variant->addresses as $variant_address) {
-                        // $this->comment($variant->variant_description);
-                        // $this->comment('Sumando '.$variant_address->pivot->amount.' de '.$variant_address->street);
                         
                         $addresses[$variant_address->pivot->address_id] += (float)$variant_address->pivot->amount;
-
-                        // $this->comment('Va en '.$addresses[$variant_address->pivot->address_id]);
-                        // $this->info('');
 
                     }
                 }

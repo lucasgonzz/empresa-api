@@ -22,8 +22,8 @@ class TitleSeeder extends Seeder
             [
                 'num'       => 1,
                 'color'     => '#333',
-                'image_url' => env('APP_URL').'/storage/banner.jpg',
-                'crop_image_url' => env('APP_URL').'/storage/banner_mobile.jpg',
+                'image_url' => 'http://empresa.local:8000/storage/banner.jpg',
+                'crop_image_url' => 'http://empresa.local:8000/storage/banner_mobile.webp',
             ],
             // [
             //     'num'       => 2,

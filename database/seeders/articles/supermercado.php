@@ -16,7 +16,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => get_image_url('/storage/auto-partes/044.1142.jpg'),
+                'url'       => get_image_url('/storage/supermercado/yerba.webp'),
             ],
         ],
     ],
@@ -33,7 +33,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => get_image_url('/storage/auto-partes/044.1654.jpg'),
+                'url'       => get_image_url('/storage/supermercado/matetorpedo.webp'),
             ],
         ],
         'addresses'     => [
@@ -46,6 +46,11 @@ $articles = [
                 'amount'        => 50,
             ],
         ],
+        // 'variants'          => [
+        //     [
+        //         'article'
+        //     ],
+        // ],
     ],
 
 
@@ -64,7 +69,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => get_image_url('/storage/auto-partes/044.1654.jpg'),
+                'url'       => get_image_url('/storage/supermercado/fanta.webp'),
             ],
         ],
         'addresses'     => [
@@ -91,7 +96,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => get_image_url('/storage/auto-partes/044.1654.jpg'),
+                'url'       => get_image_url('/storage/supermercado/limalimon.webp'),
             ],
         ],
         'addresses'     => [

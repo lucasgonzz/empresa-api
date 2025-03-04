@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Stock\SetArticleStock;
 
 use App\Models\ArticleVariant;
+use Illuminate\Support\Facades\Log;
 
 class CheckVariants {
     

@@ -788,10 +788,13 @@ class PerformanceHelper
 
         $this->payment_methods_gastos = $this->get_payment_methods();
 
+        Log::info('Hay '.count($expenses).' Gastos');
+        Log::info('Hay '.count($this->expense_concepts).' conceptos de Gastos');
+
         foreach ($expenses as $expense) {
 
-            // Log::info('procesando gasto de '.$expense->amount);
-            // Log::info('procesando gasto de '.$expense->expense_concept->name.' de '.$expense->amount);
+            Log::info('procesando gasto de '.$expense->amount);
+            Log::info('procesando gasto de '.$expense->expense_concept->name.' de '.$expense->amount);
 
             if (!is_null($expense->expense_concept_id) && $expense->expense_concept_id != 0) {
                 

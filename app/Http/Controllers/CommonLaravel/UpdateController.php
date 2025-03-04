@@ -54,6 +54,7 @@ class UpdateController extends Controller
             if ($model_name == 'article') {
                 ArticleHelper::setFinalPrice($model);
             }
+            Log::info('se actualizaron '.count($models).' '.$model_name.' desde updateController');
             $models_response[] = $this->fullModel($model_name, $model->id);
         }
         return response()->json(['models' => $models_response], 200);

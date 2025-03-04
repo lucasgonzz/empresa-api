@@ -23,6 +23,7 @@ class CreateCartsTable extends Migration
             $table->integer('payment_id')->nullable();
             $table->string('payment_status')->nullable();
             $table->text('description')->nullable();
+            $table->decimal('total', 20,2)->nullable();
             $table->integer('cupon_id')->unsigned()->nullable();
             $table->integer('order_id')->unsigned()->nullable();
             $table->integer('buyer_id')->unsigned()->nullable();

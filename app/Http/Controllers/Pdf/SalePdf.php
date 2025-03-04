@@ -37,6 +37,7 @@ class SalePdf extends fpdf {
 		// $this->total_sale = SaleHelper::getTotalSale($this->sale, false, false);
 		$this->total_articles = 0;
 		$this->total_services = 0;
+		$this->total_combos = 0;
 		$this->AddPage();
 		$this->setTotales();
 		$this->items();
@@ -243,6 +244,9 @@ class SalePdf extends fpdf {
 			$this->total_services += $this->sub_total($service);
 			// $this->total_services += SaleHelper::getTotalItem($service);
 		}
+		foreach ($this->sale->combos as $combo) {
+			$this->total_combos += $this->sub_total($combo);
+		}
 	}
 
 	function printItem($index, $item) {
@@ -442,8 +446,9 @@ class SalePdf extends fpdf {
 
 		    $total_articles = $this->total_articles;
 		    $total_services = $this->total_services;
+		    $total_combos = $this->total_combos;
 
-	    	$total = $total_articles + $total_services;
+	    	$total = $total_articles + $total_services + $total_combos;
 	    	$total -= $total * $this->sale->descuento / 100;
 
 	    	$text .= ' = $'.Numbers::price($total);
@@ -463,17 +468,22 @@ class SalePdf extends fpdf {
 	function discounts() {
 		if (count($this->sale->discounts) >= 1) {
 		    $this->SetFont('Arial', 'B', 11);
-		    $total_articles = $this->total_articles;
-		    $total_services = $this->total_services;
-
+		    // $total_articles = $this->total_articles;
+		    // $total_services = $this->total_services;
+		    // $total_combos = $this->total_combos;
 		    foreach ($this->sale->discounts as $discount) {
 		    	$this->x = $this->start_x;
 		    	$text = '-'.$discount->pivot->percentage.'% '.$discount->name;
-		    	$total_articles -= $total_articles * floatval($discount->pivot->percentage) / 100;
+		    	
+		    	$this->total_articles -= $this->total_articles * floatval($discount->pivot->percentage) / 100;
+
+		    	$this->total_combos -= $this->total_combos * floatval($discount->pivot->percentage) / 100;
+
 		    	if ($this->sale->discounts_in_services) {
-		    		$total_services -= $total_services * floatval($discount->pivot->percentage) / 100;
+		    		$this->total_services -= $this->total_services * floatval($discount->pivot->percentage) / 100;
+		    	
 		    	}
-		    	$total_with_discounts = $total_articles + $total_services;
+		    	$total_with_discounts = $this->total_articles + $this->total_services + $this->total_combos;
 		    	$text .= ' = $'.Numbers::price($total_with_discounts);
 				$this->Cell(
 					50, 
@@ -506,17 +516,21 @@ class SalePdf extends fpdf {
 	function surchages() {
 		if (count($this->sale->surchages) >= 1) {
 		    $this->SetFont('Arial', '', 9);
-		    $total_articles = $this->total_articles;
-		    $total_services = $this->total_services;
+		    // $total_articles = $this->total_articles;
+		    // $total_services = $this->total_services;
+		    // $total_combos = $this->total_combos;
+		    // dd($total_combos);
+
 		    foreach ($this->sale->surchages as $surchage) {
 		    	$this->x = $this->start_x;
 		    	$text = '+'.$surchage->pivot->percentage.'% '.$surchage->name;
-		    	$total_articles += $total_articles * floatval($surchage->pivot->percentage) / 100;
+		    	$this->total_articles += $this->total_articles * floatval($surchage->pivot->percentage) / 100;
+		    	$this->total_combos += $this->total_combos * floatval($surchage->pivot->percentage) / 100;
+		    	
 		    	if ($this->sale->surchages_in_services) {
-		    		$total_services += $total_services * floatval($surchage->pivot->percentage) / 100;
+		    		$this->total_services += $this->total_services * floatval($surchage->pivot->percentage) / 100;
 		    	}
-		   		// dd($total_articles);
-		    	$total_with_surchages = $total_articles + $total_services;
+		    	$total_with_surchages = $this->total_articles + $this->total_services + $this->total_combos;
 		    	$text .= ' = $'.Numbers::price($total_with_surchages);
 				$this->Cell(
 					50, 

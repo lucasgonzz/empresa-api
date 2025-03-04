@@ -232,6 +232,16 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Atajo buscar por nombre',
                 'slug' => 'atajo_buscar_por_nombre',
             ],
+            [
+                // 44
+                'name' => 'Imagenes',
+                'slug' => 'imagenes',
+            ],
+            [
+                // 45
+                'name' => 'Codigos de barra en la tabla de vender',
+                'slug' => 'bar_codes_in_vender_table',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

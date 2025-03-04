@@ -32,7 +32,7 @@ class ImageController extends Controller
         $model_name = GeneralHelper::getModelName($request->model_name);
         
         if (env('APP_ENV') == 'local') {
-            $name = env('APP_URL').'/storage/'.$name;
+            $name = 'http://empresa.local:8000/storage/'.$name;
         } else {
             $name = env('APP_URL').'/public/storage/'.$name;
         }

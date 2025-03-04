@@ -25,7 +25,7 @@ class StockMovement extends Model
     }
 
     function sale() {
-        return $this->belongsTo(Sale::class);
+        return $this->belongsTo(Sale::class)->withTrashed();
     }
 
     function provider() {

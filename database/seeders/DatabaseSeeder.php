@@ -61,7 +61,6 @@ class DatabaseSeeder extends Seeder
 
                 // Llamo antes para despues poder relacionarlos con las categorias
                 $this->call(PriceTypeSeeder::class);
-                // $this->call(ComboSeeder::class);
 
             }
 
@@ -77,7 +76,7 @@ class DatabaseSeeder extends Seeder
 
                 $this->call(ArticleSeeder::class);
                 $this->call(PriceTypeSeeder::class);
-                $this->call(RecipeSeeder::class);
+                // $this->call(RecipeSeeder::class);
 
             } else if ($for_user == 'feito') {
 
@@ -107,7 +106,7 @@ class DatabaseSeeder extends Seeder
                 if (env('APP_ENV') == 'local') {
 
                     $this->call(ArticleSeeder::class);
-                    // $this->call(CajaSeeder::class);
+                    $this->call(ComboSeeder::class);
                     $this->call(CategoryPriceTypeRangeSeeder::class);
                     $this->call(ArticlePriceTypeGroupSeeder::class);
                 }
@@ -142,7 +141,7 @@ class DatabaseSeeder extends Seeder
                 $this->call(AddressSeeder::class);
                 // $this->call(ProviderOrderSeeder::class);
                 $this->call(ProviderPagosSeeder::class);
-                // $this->call(SaleSeeder::class);
+                $this->call(SaleSeeder::class);
                 $this->call(TitleSeeder::class);
                 $this->call(DeliveryZoneSeeder::class);
                 $this->call(BudgetSeeder::class);
@@ -150,56 +149,34 @@ class DatabaseSeeder extends Seeder
                 $this->call(OrderSeeder::class);
                 $this->call(InventoryLinkageScopeSeeder::class);
                 $this->call(InventoryLinkageSeeder::class);
+                
+                $this->call(MessageSeeder::class);
+
+                $this->call(ExpenseConceptSeeder::class);
+                $this->call(ExpenseSeeder::class);
+                $this->call(PendingSeeder::class);
             }
 
+
+
+            /* 
+                Estos de abajo se ejectuan siempre.
+                Son los unicos que se ejectuan en produccion,
+                junto con los propios de caja "for_user"
+            */
             $this->call(IvaSeeder::class);
             
             $this->call(IvaConditionSeeder::class);
-            // $this->call(CurrentAcountSeeder::class);
-            // $this->call(ScheduleSeeder::class);
 
-            // $this->call(MeLiOrderSeeder::class);
-            
-
-            // $this->call(EmployeeSeeder::class);
-            // $this->call(WorkdaySeeder::class);
-            // $this->call(ConditionSeeder::class);
-            // $this->call(BrandSeeder::class);
-            // $this->call(SizeSeeder::class);
-            // $this->call(PricesListSeeder::class);
-            // $this->call(PlateletSeeder::class);
             $this->call(OrderProductionStatusSeeder::class);
             $this->call(CurrentAcountPaymentMethodSeeder::class);
-            // $this->call(PaymentMethodSeeder::class);
-            // $this->call(LocationSeeder::class);
-            $this->call(PaymentMethodTypeSeeder::class);
-            // $this->call(CuponSeeder::class);
             $this->call(BudgetStatusSeeder::class);
-            // $this->call(OrderProductionSeeder::class);
-            // $this->call(SuperBudgetSeeder::class);
-            // $this->call(CreditCardSeeder::class);
-            // $this->call(CreditCardPaymentPlanSeeder::class);
-            // $this->call(AfipTicketSeeder::class);
 
-
-
-            
-            // $this->call(CartSeeder::class);
-            $this->call(MessageSeeder::class);
             $this->call(ArticleTicketInfoSeeder::class);
-            // $this->call(ArticlePerformanceSeeder::class);
-            // $this->call(StockMovementSeeder::class);
-            // $this->call(PriceChangeSeeder::class);
-
-            $this->call(ExpenseConceptSeeder::class);
-            $this->call(ExpenseSeeder::class);
 
             $this->call(UnidadFrecuenciaSeeder::class);
-            $this->call(PendingSeeder::class);
-
 
             $this->call(ConceptoMovimientoCajaSeeder::class);
-
 
             $this->call(AfipTipoComprobanteSeeder::class);
 

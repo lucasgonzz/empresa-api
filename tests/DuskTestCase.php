@@ -40,7 +40,7 @@ abstract class DuskTestCase extends BaseTestCase
     protected function driver()
     {
         $options = (new ChromeOptions)->addArguments(collect([
-            '--window-size=1000,1080',
+            '--window-size=1150,850',
             // $this->shouldStartMaximized() ? '--start-maximized' : '--window-size=1800,900',
         ])->unless($this->hasHeadlessDisabled(), function ($items) {
             return $items->merge([

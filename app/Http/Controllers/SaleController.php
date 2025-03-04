@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\SaleProviderOrderHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
+use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Helpers\sale\SaleNotaCreditoAfipHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
@@ -92,15 +93,20 @@ class SaleController extends Controller
                                 ->where('employee_id', SaleHelper::getEmployeeId($request))
                                 ->where('total', $request->total)
                                 ->where('created_at', '>=', Carbon::now()->subSeconds(5))
+                                ->orderBy('created_at', 'DESC')
                                 ->first();
-        return !is_null($sale_ya_creada);
+        if (!is_null($sale_ya_creada)) {
+            Log::info('Casi se vuelve a crear venta N° '.$sale_ya_creada->num.'. Total: '.$sale_ya_creada->total.'. Hora: '.$sale_ya_creada->created_at->format('H:i:s'));
+            return true;
+        }
+        return false;
     }
 
     public function store(Request $request) {
         Log::info($this->user(false)->name.' va a crear venta');
 
         if ($this->venta_ya_cread($request)) {
-            Log::info('Casi se crea mas de 1 vez la misma venta');
+            Log::info('No se volvio a crear la venta');
             return;
         }
 
@@ -149,9 +155,14 @@ class SaleController extends Controller
 
         SaleProviderOrderHelper::createProviderOrder($model, $this);
 
+        // Por el error de Pack
+        // SaleHelper::check_que_esten_todos_los_articulos($model);
+
         $this->sendAddModelNotification('Sale', $model->id);
 
         SaleHelper::sendUpdateClient($this, $model);
+
+        Log::info('Se creo sale n°: '.$model->num.'. Total: '.$model->total);
 
         return response()->json(['model' => $this->fullModel('Sale', $model->id)], 201);
     }  
@@ -162,6 +173,7 @@ class SaleController extends Controller
                         ->first();
 
         $previus_articles = $model->articles;
+        $previus_combos = $model->combos;
 
         $request->items = array_reverse($request->items);
 
@@ -214,7 +226,7 @@ class SaleController extends Controller
         
         $model->save();
 
-        SaleHelper::attachProperies($model, $request, false, $previus_articles, $sale_modification, $se_esta_confirmando);
+        SaleHelper::attachProperies($model, $request, false, $previus_articles, $previus_combos, $sale_modification, $se_esta_confirmando);
 
         $model->updated_at = Carbon::now();
         $model->save();
@@ -249,33 +261,31 @@ class SaleController extends Controller
         if ($model->client_id) {
 
             /* 
-                Si no es NULL, es porque se genero nota de credito de afip
+                Si no es NULL, es porque se genero nota de credito de afip.
                 En ese caso, no se elimina la cuenta corriente de la venta
                 Porque ya tiene la nota de credito en la C/C
             */ 
-            if (is_null($model->nota_credito_afip_ticket)) {
+            if (count($model->nota_credito_afip_tickets) == 0) {
 
                 SaleHelper::deleteCurrentAcountFromSale($model);
             }
 
             SaleHelper::deleteSellerCommissionsFromSale($model);
 
-            $model->client->pagos_checkeados = 0;
-            $model->client->save();
-            CurrentAcountHelper::checkSaldos('client', $model->client_id);
-            $this->sendAddModelNotification('client', $model->client_id, false);
+            if (is_null($model->client->deleted_at)) {
+                
+                $model->client->pagos_checkeados = 0;
+                $model->client->save();
+                CurrentAcountHelper::checkSaldos('client', $model->client_id);
+                $this->sendAddModelNotification('client', $model->client_id, false);
+            }
         }
         $model->delete();
 
         $this->sendDeleteModelNotification('sale', $model->id);
-        if (!$model->to_check && !$model->checked) {
-            foreach ($model->articles as $article) {
-                if (!is_null($article->stock)) {
-                    ArticleHelper::resetStock($article, $article->pivot->amount, $model);
-                }
-                // ArticleHelper::setArticleStockFromAddresses($article);
-            }
-        }
+
+        DeleteSaleHelper::regresar_stock($model);
+
         return response(null);
     }
 

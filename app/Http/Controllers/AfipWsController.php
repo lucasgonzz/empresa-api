@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipSolicitarCaeHelper;
 use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
+use App\Http\Controllers\Helpers\Afip\CondicionIvaReceptorHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\AfipError;
@@ -162,6 +163,7 @@ class AfipWsController extends Controller
         }
 
         $moneda_id = 'PES';
+        $iva_receptor = CondicionIvaReceptorHelper::get_iva_receptor($this->sale);
         $invoice = [
             'FeCAEReq' => [
                 'FeCabReq' => [
@@ -186,6 +188,7 @@ class AfipWsController extends Controller
                         'MonId'        => $moneda_id,
                         'MonCotiz'     => 1,
                         'Opcionales'   => $this->getOpcionales(),
+                        'CondicionIVAReceptorId'    => $iva_receptor,
                     ]
                 ]
             ]

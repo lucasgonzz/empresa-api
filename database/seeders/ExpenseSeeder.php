@@ -24,8 +24,14 @@ class ExpenseSeeder extends Seeder
 
             foreach ($this->expenses() as $model) {
 
+                if ($mes > 0) {
+                    $amount = $mes * $model['amount'] * 2;
+                } else {
+                    $amount = $model['amount'] / 2 * 2;
+                }
+
                 $model['num'] = $num;
-                $model['amount'] = $mes * $model['amount'] * 2;
+                $model['amount'] = $amount;
                 $model['user_id'] = $user->id;
                 $model['created_at'] = Carbon::now()->subMonths($mes);
 

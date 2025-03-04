@@ -31,6 +31,7 @@ class CreateOrdersTable extends Migration
             $table->integer('order_status_id')->unsigned();
             $table->decimal('payment_method_discount')->nullable();
             $table->decimal('payment_method_surchage')->nullable();
+            $table->decimal('total', 20,2)->nullable();
             $table->integer('user_id')->unsigned();
 
             $table->timestamps();

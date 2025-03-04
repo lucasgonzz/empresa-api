@@ -41,13 +41,16 @@ class SaleTicketPdf extends fpdf {
 
 	function afipInformation() {
 		if (!is_null($this->sale->afip_information) && !is_null($this->sale->afip_ticket)) {
-			$this->SetFont('Arial', '', 8);
+			$this->SetFont('Arial', '', 10);
 			$this->x = 2;
 			$this->Cell($this->cell_ancho, 5, 'IVA: '.$this->user->afip_information->iva_condition->name, $this->b, 1, 'L');
 			$this->x = 2;
 			$this->Cell($this->cell_ancho, 5, 'Cuit: '.$this->user->afip_information->cuit, $this->b, 1, 'L');
+
+			$this->x = 2;
+			$this->Cell($this->cell_ancho, 5, 'Razon social: '.$this->user->afip_information->razon_social, $this->b, 1, 'L');
 			
-			$this->SetFont('Arial', 'B', 8);
+			$this->SetFont('Arial', 'B', 10);
 			$this->x = 2;
 			$this->Cell($this->cell_ancho, 5, 'Punto de venta: '.$this->sale->afip_information->punto_venta, $this->b, 1, 'L');
 			$this->x = 2;
@@ -79,6 +82,12 @@ class SaleTicketPdf extends fpdf {
 		$this->SetFont('Arial', '', 8);
 		if ($this->sale->client) {
 			$this->Cell($this->cell_ancho, 5, 'Cliente: '.$this->sale->client->name, $this->b, 1, 'L');
+
+			if ($this->sale->afip_ticket->iva_cliente != '') {
+				$this->x = 2;
+				$this->Cell($this->cell_ancho, 5, 'IVA '.$this->sale->afip_ticket->iva_cliente, $this->b, 1, 'L');
+			} 
+
 		} else if (is_null($this->sale->client) && $this->sale->afip_ticket) {
 			$this->Cell($this->cell_ancho, 5, 'Cliente: Consumidor final', $this->b, 1, 'L');
 		}

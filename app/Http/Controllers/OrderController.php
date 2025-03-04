@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\OrderHelper;
+use App\Http\Controllers\Helpers\Order\CreateSaleOrderHelper;
 use App\Http\Controllers\Pdf\OrderPdf;
 use App\Models\Order;
 use Illuminate\Http\Request;
@@ -44,13 +45,15 @@ class OrderController extends Controller
 
     function updateStatus(Request $request, $id) {
         $model = Order::find($id);
-        OrderHelper::discountArticleStock($model, $this);
-        OrderHelper::checkPaymentCardInfo($model);
+
+        // OrderHelper::checkPaymentCardInfo($model);
         $model->order_status_id = $request->order_status_id;
         $model->save();
         $model = Order::find($id);
+
         // OrderHelper::sendMail($model);
-        OrderHelper::saveSale($model, $this);
+        CreateSaleOrderHelper::save_sale($model, $this);
+        
         $this->sendAddModelNotification('Order', $model->id);
         return response()->json(['model' => $this->fullModel('Order', $model->id)], 200);
     }

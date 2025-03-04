@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use App\Models\Article;
 use App\Models\Combo;
 use Illuminate\Database\Seeder;
 
@@ -21,12 +22,12 @@ class ComboSeeder extends Seeder
                 'price'         => 1000,
                 'articles'      => [
                     [
-                        'id'        => 64,
-                        'amount'    => 1
+                        'name'      => 'Yerba',
+                        'amount'    => 2
                     ],
                     [
-                        'id'        => 63,
-                        'amount'    => 2
+                        'name'      => 'Mate torpedo',
+                        'amount'    => 4
                     ],
                 ],
             ]
@@ -45,8 +46,10 @@ class ComboSeeder extends Seeder
             $num++;
 
             foreach ($model['articles'] as $article) {
+
+                $article_model = Article::where('name', $article['name'])->first();
                 
-                $combo->articles()->attach($article['id'], [
+                $combo->articles()->attach($article_model->id, [
                     'amount'    => $article['amount'],
                 ]);
             }

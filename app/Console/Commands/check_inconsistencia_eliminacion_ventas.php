@@ -56,11 +56,11 @@ class check_inconsistencia_eliminacion_ventas extends Command
                         article_id,
                         -- Extraemos el número de venta, asegurando consistencia entre creación y eliminación
                         TRIM(SUBSTRING_INDEX(
-                            REPLACE(LOWER(concepto), 'eliminacion de venta ', ''),
+                            REPLACE(LOWER(concepto), 'eliminacion de venta', ''),
                             'n°', -1
                         )) as sale_number,
                         -- Contamos los movimientos de eliminación
-                        SUM(CASE WHEN LOWER(concepto) LIKE 'eliminacion de venta n°%' THEN 1 ELSE 0 END) as deletion_count,
+                        SUM(CASE WHEN LOWER(concepto) LIKE 'eliminacion de venta' THEN 1 ELSE 0 END) as deletion_count,
                         -- Contamos los movimientos de creación
                         SUM(CASE WHEN LOWER(concepto) LIKE 'venta n°%' AND LOWER(concepto) NOT LIKE 'eliminacion de%' THEN 1 ELSE 0 END) as creation_count                    
                         "

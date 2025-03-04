@@ -96,6 +96,8 @@ class ArticleController extends Controller
         }
         $model->save();
 
+        $model->addresses()->sync([]);
+
         // GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
         // ArticleHelper::setArticleStockFromAddresses($model);
 
@@ -106,7 +108,7 @@ class ArticleController extends Controller
         ArticleHelper::setFinalPrice($model);
         // ArticleHelper::attachProvider($request, $model);
 
-        ArticleHelper::setStockFromStockMovement($model);
+        // ArticleHelper::setStockFromStockMovement($model);
 
         $this->sendAddModelNotification('article', $model->id);
 
@@ -193,17 +195,17 @@ class ArticleController extends Controller
 
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
-        
+
+        Log::info('columns:');
+        Log::info($columns);
+        return;
         /*
             Agrego columnas de:
                 1. Direcciones
                 2. Listas de precios
                 3. Precios en BLANCO
         */
-        $columns = ArticleImportHelper::add_columns($columns);
-
-        Log::info('columns:');
-        Log::info($columns);
+        // $columns = ArticleImportHelper::add_columns($columns);
 
         if ($request->has('models') && $request->file('models')->isValid()) {
 
@@ -372,7 +374,8 @@ class ArticleController extends Controller
 
     function ultimos_actualizados() {
         $models = Article::where('user_id', $this->userId())
-                            ->orderBy('updated_at', 'DESC')
+                            ->orderBy('created_at', 'DESC')
+                            // ->orderBy('updated_at', 'DESC')
                             ->take(10)
                             ->withAll()
                             ->get();

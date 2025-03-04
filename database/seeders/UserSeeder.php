@@ -233,6 +233,7 @@ class UserSeeder extends Seeder
                 'cajas',
                 'budgets',
                 'codigos_de_barra_basados_en_numero_interno',
+                'imagenes',
             ];
 
         } else if ($this->for_user == 'hipermax') {
@@ -307,7 +308,7 @@ class UserSeeder extends Seeder
                 'cambiar_price_type_en_vender',
                 'deposit_movements',
                 'online',
-                // 'forzar_total',
+                'forzar_total',
                 'cajas',
                 // 'filtrar_clientes_por_sucursal_en_vender',
                 'lista_de_precios_por_categoria',
@@ -315,6 +316,7 @@ class UserSeeder extends Seeder
                 'check_article_stock_en_vender',
                 'combos',
                 'atajo_buscar_por_nombre',
+                'bar_codes_in_vender_table',
             ];
 
         } else if ($this->for_user == 'ros_mar') {

@@ -79,7 +79,7 @@ class ArticleHelper {
 
     static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null) {
 
-        Log::info('setFinalPrice para '.$article->name.' con precio de '.$article->price);
+        Log::info('setFinalPrice para '.$article->name.' con costo de '.$article->cost.' y precio de '.$article->price);
         
         if (is_null($user)) {
             if (is_null($user_id)) {
@@ -134,7 +134,9 @@ class ArticleHelper {
 
                 ArticlePricesHelper::aplicar_precios_segun_listas_de_precios_y_categorias($article, $cost, $user);
 
-            } else if ($article->apply_provider_percentage_gain) {
+            } 
+
+            if ($article->apply_provider_percentage_gain) {
 
                 if (!is_null($article->provider_price_list)) {
 
@@ -282,8 +284,8 @@ class ArticleHelper {
                             ->whereHas('articles', function(Builder $query) use ($id) {
                                 $query->where('article_id', $id);
                             })
-                            ->whereDate('created_at', '>=', $from_date)
-                            ->whereDate('created_at', '<=', $until_date)
+                            ->whereDate('terminada_at', '>=', $from_date)
+                            ->whereDate('terminada_at', '<=', $until_date)
                             ->withAll()
                             ->get();
         return $sales;
@@ -461,16 +463,6 @@ class ArticleHelper {
             'article_variant_id'            => $article_variant_id,
         ];
 
-        // $request = new \Illuminate\Http\Request();
-        
-        // $request->model_id = $article->id;
-        // $request->from_address_id = $from_address_id;
-        // $request->to_address_id = $to_address_id;
-        // $request->amount = $amount;
-        // $request->sale_id = $sale_id;
-        // $request->concepto = $concepto;
-        // $request->article_variant_id = $article_variant_id;
-
         $ct->crear($data, false);
     }
 
@@ -501,19 +493,19 @@ class ArticleHelper {
 
                 $variants_con_addresses = false;
 
+                $addresses = Self::get_addresses($user_id);
+                
                 foreach ($article->article_variants as $article_variant) {
-
+                    
                     if (count($article_variant->addresses) >= 1) {
 
                         $variants_con_addresses = true;
 
-                        $addresses = Self::get_addresses($user_id);
+                        // $addresses = Self::get_addresses($user_id);
 
                         $article_variant_stock = 0;
 
                         foreach ($article_variant->addresses as $variant_address) {
-
-                            // Log::info('Sumando '.$variant_address->pivot->amount.' de la variante '.$article_variant->variant_description.' en la direccion '.$variant_address->street);
 
                             $addresses[$variant_address->pivot->address_id] += (float)$variant_address->pivot->amount;
 
@@ -566,6 +558,9 @@ class ArticleHelper {
     static function actualizar_article_addresses($article, $addresses) {
             
         $article->addresses()->sync([]);
+
+        Log::info('actualizar_article_addresses:');
+        Log::info($addresses);
         
         foreach ($addresses as $address_id => $amount) {
 
@@ -595,7 +590,7 @@ class ArticleHelper {
     }
 
     static function resetStock($article, $amount, $sale) {
-        Self::storeStockMovement($article, null, $amount, null, $sale->address_id, 'Se elimino la venta', $article->pivot->article_variant_id);
+        Self::storeStockMovement($article, $sale->id, $amount, null, $sale->address_id, 'Se elimino la venta', $article->pivot->article_variant_id);
     }
 
     static function getShortName($name, $length) {
