@@ -33,6 +33,8 @@ class AuthController extends Controller
 
                 $login = true;
                 $this->set_sessions($user);
+
+                Log::info("Usuario {$user->name}, doc: {$user->doc_number} entro desde: ".$request->header('referer'));
             } else {
                 Log::info('no paso user_last_activity');
                 $user_last_activity = true;

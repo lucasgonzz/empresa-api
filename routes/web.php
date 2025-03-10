@@ -154,6 +154,10 @@ Route::get('sale/afip-ticket-pdf/{id}', 'SaleController@afipTicketPdf');
 Route::get('sale/delivered-articles-pdf/{id}', 'SaleController@deliveredArticlesPdf');
 
 
+Route::get('client/pdf', 'ClientController@pdf');
+
+
+
 // Deposit Movement
 Route::get('deposit-movement/pdf/{id}', 'DepositMovementController@pdf');
 

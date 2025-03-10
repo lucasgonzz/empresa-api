@@ -361,6 +361,14 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'ventas',
                 'en'            => 'sale.discount_surchage.crear',
             ],
+
+
+            // Devoluciones
+            [
+                'singular'      => 'Crear Devoluciones',
+                'plural'        => 'devoluciones',
+                'en'            => 'devolucion.store',
+            ],
         ];
         foreach ($permissions as $permission) {
             PermissionEmpresa::create([

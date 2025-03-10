@@ -10,6 +10,37 @@ class importar_excel {
 
     public $new_cost = 2000;
 
+    /*
+        * Probar importar excel solo con las columnas:
+            Codigo
+            Nombre
+            Costo
+            Stock
+                Cambiar stock global a articulo con stock por direccion, chequear que no se cambie
+                Actualizar stock por direccion
+
+                Actualizar stock global
+
+
+        * Importar archivo excel exportado (con todas las columnas)
+        pero indicar solo las columnas de las direcciones
+
+            Codigo
+            Direcciones
+                * Asignar stock en direcciones a articulo con stock global, chequear que se creen los depositos
+                * Dejo en blanco stock de articulo N° 4, chequear que queden igual (50 en Santa fe  y Tucuman)
+                * Pongo 0 en todos los depositos de N° 3, chequear que el stock quede en 0
+                * Pongo 1 en Santa fe y tucuman en N° 2, Buenos aires y Mar del plata quedan igual (con 100 c/u)
+                * En Yerba (con stock global) que depositos con 100 para Tucuman y Santa Fe, 0 en Mar del plata y nada en Buenos Aires.
+
+
+
+
+        * Cargar excel con articulos nuevos e indicar el proveedor desde el modal
+            * Creo articulo con depositos
+            * Creo articulo con stock global
+    */
+
     function __construct($browser) {
 
         $this->browser = $browser;

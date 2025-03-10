@@ -7,6 +7,9 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
 use App\Models\ArticleDiscount;
+use App\Models\ArticleProperty;
+use App\Models\ArticlePropertyType;
+use App\Models\ArticlePropertyValue;
 use App\Models\Category;
 use App\Models\Description;
 use App\Models\Image;
@@ -107,6 +110,8 @@ class ArticleSeeder extends Seeder
                                             ]);
                 }
 
+                $this->check_variants($art, $article);
+
                 $this->check_precios_en_blanco($art);
 
                 $this->createDescriptions($art, $article); 
@@ -117,6 +122,28 @@ class ArticleSeeder extends Seeder
                 // ArticleHelper::setArticleStockFromAddresses($art);
             }
         // }
+    }
+
+    function check_variants($created_article, $article) {
+        if (env('FOR_USER') == 'feito') {
+            if (isset($article['variants'])) {
+                foreach ($article['variants']['article_properties'] as $article_property) {
+                    $article_property_type = ArticlePropertyType::where('name', $article_property['article_property_type'])->first();
+
+                    $article_property_model = ArticleProperty::create([
+                        'article_id'    => $created_article->id,
+                        'article_property_type_id'  => $article_property_type->id,
+                    ]);
+
+                    foreach ($article_property['article_property_values'] as $article_property_value) {
+                        
+                        $article_property_value_model = ArticlePropertyValue::where('name', $article_property_value)->first();
+
+                        $article_property_model->article_property_values()->attach($article_property_value_model->id);
+                    }
+                }
+            }
+        }
     }
 
     function check_precios_en_blanco($article) {
@@ -130,39 +157,37 @@ class ArticleSeeder extends Seeder
 
     function setStockMovement($created_article, $article) {
 
-        $created_article->load('article_variants');
+        if (
+            env('FOR_USER') == 'feito'
+            && isset($article['variants'])
+        ) {
+            return;
+        }
 
-        if (count($created_article->article_variants) >= 1) {
+        $ct = new StockMovementController();
+        
+        $data['model_id'] = $created_article->id;
+        $data['provider_id'] = $created_article->provider_id;
 
-            Log::info('Se van a crear las variants para '.$created_article->name);
-            ArticleHelper::setArticleStockFromAddresses($created_article, false);
-        } else {
+        if (isset($article['addresses'])) {
 
-            $ct = new StockMovementController();
+            $segundos = 0;
+
+            foreach ($article['addresses'] as $address) {
             
-            $data['model_id'] = $created_article->id;
-            $data['provider_id'] = $created_article->provider_id;
+                $data['to_address_id'] = $address['id'];
+                $data['amount'] = $address['amount'];
+                $data['concepto_stock_movement_name'] = 'Creacion de deposito';
 
-            if (isset($article['addresses'])) {
-
-                $segundos = 0;
-
-                foreach ($article['addresses'] as $address) {
-                
-                    $data['to_address_id'] = $address['id'];
-                    $data['amount'] = $address['amount'];
-                    $data['concepto_stock_movement_name'] = 'Creacion de deposito';
-
-                    $ct->crear($data, false, null, null, $segundos);
-                    $segundos += 5;
-                }
-            } else if (
-                isset($article['stock'])
-                && !is_null($article['stock'])
-            ) {
-                $data['amount'] = $article['stock'];
-                $ct->crear($data);
+                $ct->crear($data, false, null, null, $segundos);
+                $segundos += 5;
             }
+        } else if (
+            isset($article['stock'])
+            && !is_null($article['stock'])
+        ) {
+            $data['amount'] = $article['stock'];
+            $ct->crear($data);
         }
     }
 

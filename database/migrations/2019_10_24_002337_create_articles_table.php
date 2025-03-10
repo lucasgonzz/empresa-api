@@ -61,6 +61,8 @@ class CreateArticlesTable extends Migration
             $table->string('contenido')->nullable();
             $table->string('tipo_envase_id')->nullable();
 
+            $table->timestamp('stock_updated_at')->nullable();
+
 
             $table->foreign('user_id')
                     ->references('id')->on('users');

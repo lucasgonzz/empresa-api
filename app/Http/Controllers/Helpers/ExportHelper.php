@@ -22,7 +22,7 @@ class ExportHelper {
 
 	static function getAddresses() {
 		return Address::where('user_id', UserHelper::userId())
-						->orderBy('created_at', 'ASC')
+						->orderBy('created_at', 'DESC')
 						->get();
 	}
 
@@ -64,6 +64,7 @@ class ExportHelper {
 
 			if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
 
+				// Caso Pack descartables
 
 				foreach ($price_types as $price_type) {
 
@@ -78,7 +79,21 @@ class ExportHelper {
 
 				}
 
+			} else if (UserHelper::hasExtencion('lista_de_precios_por_categoria')) {
+				
+				// Caso Golo_norte
+
+				$price_types_ordenados = $article->price_types()->orderBy('position', 'ASC')->get();
+				foreach ($price_types_ordenados as $price_type) {
+					
+					// dd($price_type->pivot->final_price);
+
+					$map[] = $price_type->pivot->final_price;
+				}
+
 			} else {
+				
+				// Caso Colman
 
 				foreach ($price_types as $price_type) {
 					$map[] = $article->{$price_type->name};
@@ -86,6 +101,14 @@ class ExportHelper {
 			}
 
 		}
+		return $map;
+	}
+	
+	static function mapDates($map, $article) {
+
+		$map[] = $article->created_at;
+		$map[] = $article->updated_at;
+			
 		return $map;
 	}
 	
@@ -143,6 +166,14 @@ class ExportHelper {
 			}
 
 		}
+		return $headings;
+	}
+
+	static function setDatesHeadings($headings) {
+
+		$headings[] = 'Creado';
+		$headings[] = 'Actualizado';
+
 		return $headings;
 	}
 

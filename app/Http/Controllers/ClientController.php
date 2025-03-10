@@ -6,6 +6,8 @@ use App\Exports\ClientExport;
 use App\Http\Controllers\AfipConstanciaInscripcionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\CommonLaravel\SearchController;
+use App\Http\Controllers\Pdf\ClientsPdf;
 use App\Imports\ClientImport;
 use App\Models\Client;
 use Carbon\Carbon;
@@ -117,5 +119,16 @@ class ClientController extends Controller
                 'afip_data'     => $data['afip_data'],
             ]);
         }
+    }
+
+    function pdf(Request $request) {
+
+        $jsonData = $request->query('filters');
+        $filters = json_decode($jsonData, true);
+
+        $search_ct = new SearchController();
+        $models = $search_ct->search($request, 'client', $filters);
+
+        new ClientsPdf($models);
     }
 }

@@ -155,7 +155,16 @@ class PdfHelper {
 	}
 
 	static function title($instance, $title) {
-		$instance->SetFont('Arial', 'B', 12);
+		
+		if (is_null($title)) {
+			$title = 'X';
+			$instance->SetFont('Arial', 'B', 30);
+			$height = 15;
+		} else {
+			$instance->SetFont('Arial', 'B', 12);
+			$height = 5;
+		}
+
 		$start_y = 5;
 		$start_x = 90;
 		$width = 30;
@@ -163,7 +172,7 @@ class PdfHelper {
 		$instance->x = $start_x;
 	    $instance->MultiCell(
 			$width, 
-			5, 
+			$height, 
 			$title, 
 	    	$instance->b, 
 	    	'C', 
@@ -234,14 +243,29 @@ class PdfHelper {
 		    	} else {
 		    		$instance->SetFont('Arial', '', 10);
 		    	}
+
+		    	if ($index > 4) {
+
+		    		$instance->x = 55;
+		    		$instance->y = $start_y + 5;
+		    	} else {
+
+		    		$instance->x = 5;
+		    	}
+
 		    	$index++;
-		    	$instance->x = 5;
+				
 				$instance->Cell(100, 5, $prop['text'].': '.Self::getPropValue($data['model_info'], $prop), $instance->b, 1, 'L');
+
+				if ($index < 6) {
+
+					$y_final = $instance->y; 
+				}
 		    }
 		    $instance->Line(5, $start_y, 105, $start_y);
-		    $instance->Line(105, $start_y, 105, $instance->y);
-		    $instance->Line(105, $instance->y, 5, $instance->y);
-		    $instance->Line(5, $instance->y, 5, $start_y);
+		    $instance->Line(105, $start_y, 105, $y_final);
+		    $instance->Line(105, $y_final, 5, $y_final);
+		    $instance->Line(5, $y_final, 5, $start_y);
 		}
 	}
 

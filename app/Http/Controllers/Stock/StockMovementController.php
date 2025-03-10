@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Stock\SetArticleStock\SetArticleStock;
 use App\Http\Controllers\Stock\SetConcepto;
 use App\Http\Controllers\Stock\SetProvider;
+use App\Http\Controllers\Stock\SetStockUpdatedAt;
 use App\Models\Article;
 use App\Models\ArticleVariant;
 use App\Models\StockMovement;
@@ -97,6 +98,8 @@ class StockMovementController extends Controller
         SetStockResultante::set_stock_resultante($stock_movement, $article);
 
         SetProvider::set_provider($stock_movement, $article, $data);
+
+        SetStockUpdatedAt::set_stock_updated_at($stock_movement, $article);
 
         return $stock_movement;
     }

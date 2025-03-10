@@ -250,6 +250,7 @@ class UserSeeder extends Seeder
                 'comerciocity_interno',
                 'ask_save_current_acount',
                 'articles_default_in_vender',
+                'fecha_impresion_en_article_tickets',
             ];
 
         } else if ($this->for_user == 'fenix') {

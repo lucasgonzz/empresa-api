@@ -10,8 +10,6 @@ class RegresarStockHelper {
 	
 	static function regresar_stock($request) {
 
-		$sale = Sale::find($request->sale_id);
-		
 		foreach ($request->items as $item) {
 			
 			if (isset($item['is_article'])) {
@@ -32,6 +30,10 @@ class RegresarStockHelper {
 		$data = [];
 
 		$data['model_id'] = $article['id'];
+
+		if ($request->sale_id) {
+			$data['sale_id'] = $request->sale_id;
+		}
 		
 		$article_model = Article::find($article['id']);
 		if (count($article_model->addresses) >= 1) {

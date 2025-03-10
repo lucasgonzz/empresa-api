@@ -144,15 +144,15 @@ class AfipTicketPdf extends fpdf {
 		$this->setX(5);
 		$this->y += 5;
 		$this->SetFont('Arial', 'B', 9);
-		if ($this->model->afip_ticket->cbte_letra == 'A') {
-			$this->Cell(60, 5, 'Importe Neto Gravado: $'.Numbers::price($importes['gravado']), 1, 0, 'L');
+		
+		$this->Cell(60, 5, 'Importe Neto Gravado: $'.Numbers::price($importes['gravado']), 1, 0, 'L');
 
-			foreach ($importes['ivas'] as $iva => $importe) {
-				if ($importe['Importe'] > 0) {
-					$this->Cell(40, 5, 'IVA '.$iva.'%: $'.Numbers::price($importe['Importe']), 1, 0, 'L');
-				}
+		foreach ($importes['ivas'] as $iva => $importe) {
+			if ($importe['Importe'] > 0) {
+				$this->Cell(40, 5, 'IVA '.$iva.'%: $'.Numbers::price($importe['Importe']), 1, 0, 'L');
 			}
-		} 
+		}
+		
 		$this->Cell(50, 5, 'Importe Total: $'.Numbers::price($importes['total']), 1, 0, 'L');
 	}
 

@@ -198,8 +198,11 @@ class ArticleImport implements ToCollection
         $this->row = $row;
         
         foreach ($this->props_to_set as $key => $value) {
-            if (!ImportHelper::isIgnoredColumn($value, $this->columns)) {
-                $data[$key] = ImportHelper::getColumnValue($row, $value, $this->columns);
+            $column_value = ImportHelper::getColumnValue($row, $value, $this->columns);
+            
+            if (ImportHelper::usa_columna($column_value)) {
+                Log::info('Usa la columna '.$key.' con el valor: '.$column_value);
+                $data[$key] = $column_value; 
             }
         }
 
@@ -210,12 +213,17 @@ class ArticleImport implements ToCollection
         $data = ArticleImportHelper::get_iva_id($data, $this->columns, $row, $this->articulo_existente);
 
 
-        if (!ImportHelper::isIgnoredColumn('categoria', $this->columns)) {
-            $data['category_id'] = LocalImportHelper::getCategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), $this->ct, $this->user);
-        }
+        $category_excel = ImportHelper::getColumnValue($row, 'categoria', $this->columns);
+        
+        Log::info('Categoria: '.$category_excel);
+        if (ImportHelper::usa_columna($category_excel)) {
+            Log::info('Usa la categoria');
+            $data['category_id'] = LocalImportHelper::getCategoryId($category_excel, $this->ct, $this->user);
 
-        if (!ImportHelper::isIgnoredColumn('categoria', $this->columns)) {
-            $data['sub_category_id'] = LocalImportHelper::getSubcategoryId(ImportHelper::getColumnValue($row, 'categoria', $this->columns), ImportHelper::getColumnValue($row, 'sub_categoria', $this->columns), $this->ct, $this->user);
+
+            $sub_category_excel = ImportHelper::getColumnValue($row, 'sub_categoria', $this->columns);
+            $data['sub_category_id'] = LocalImportHelper::getSubcategoryId($category_excel, $sub_category_excel, $this->ct, $this->user);
+
         }
 
         $article = null;
@@ -330,7 +338,7 @@ class ArticleImport implements ToCollection
 
             foreach ($this->price_types as $price_type) {
 
-                $row_name = '% '.$price_type->name;
+                $row_name = '%_'.str_replace(' ', '_', strtolower($price_type->name));
 
                 $percentage = ImportHelper::getColumnValue($row, $row_name, $this->columns);
 
@@ -424,10 +432,20 @@ class ArticleImport implements ToCollection
         $segundos_para_agregar = 5;
 
         foreach ($this->addresses as $address) {
+            $nombre_columna = str_replace(' ', '_', strtolower($address->street));
+            Log::info('----------------------- ');
+            Log::info('nombre_columna: '.$nombre_columna);
+
+            $address_excel = ImportHelper::getColumnValue($row, $nombre_columna, $this->columns);
+            Log::info('se llamo getColumnValue');
+            Log::info($address_excel);
+
+
+            Log::info('address_excel de '.$nombre_columna.' para '.$this->articulo_existente->name.': '.$address_excel);
             
-            $address_excel = (float)ImportHelper::getColumnValue($row, str_replace($address->street, ' ', '_'), $this->columns);
-            
-            if (!is_null($address_excel) && $address_excel != 0) {
+            if (!is_null($address_excel)) {
+
+                $address_excel = (float)$address_excel;
 
                 // Log::info('Columna '.$address->street.' para articulo '.$this->articulo_existente->name.' vino con '.$address_excel);
                 $data['model_id'] = $this->articulo_existente->id;
@@ -449,14 +467,21 @@ class ArticleImport implements ToCollection
                     $data['amount'] = $address_excel;
                     $set_stock_from_addresses = true;
                     $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id, $segundos_para_agregar);
+                    Log::info('Se mandaron '.$address_excel.' a '.$address->street);
 
                 } else {
+                    Log::info('Ya tenia la direccion '.$finded_address->street);
+                    
                     $cantidad_anterior = $finded_address->pivot->amount;
+                    Log::info('cantidad_anterior: '.$cantidad_anterior);
+
+                    Log::info('address_excel: '.$address_excel);
                     if ($address_excel != $cantidad_anterior) {
                         $set_stock_from_addresses = true;
                         $new_amount = $address_excel - $cantidad_anterior;
                         $data['amount'] = $new_amount;
                         $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id, $segundos_para_agregar);
+                        Log::info('Se mandaron '.$new_amount.' a '.$address->street);
                     } else {
                         // Log::info('No se actualizo porque no hubo ningun cambio');
                     }
@@ -474,21 +499,22 @@ class ArticleImport implements ToCollection
     function setStockMovement($row) {
         $stock_actual = ImportHelper::getColumnValue($row, 'stock_actual', $this->columns);
 
-        Log::info('setStockMovement para '.$stock_actual);
-
-        Log::info('is_numeric: '.is_numeric($stock_actual));
-        // Aca tengo que chequear que stck_actual no sea null
+        // Aca tengo que chequear que stock_actual no sea null
         // Probar cuando importo excel de bellini y ni siquiera marco la columna
         if (!is_null($stock_actual)
             && is_numeric($stock_actual)
-            && !count($this->articulo_existente->addresses) >= 1
+            && count($this->articulo_existente->addresses) == 0
             && $this->articulo_existente->stock != $stock_actual) {
-            $request = new \Illuminate\Http\Request();
-            $request->model_id = $this->articulo_existente->id;
-            $request->from_excel_import = true;
-            $request->amount = $stock_actual - $this->articulo_existente->stock;
-            $this->stock_movement_ct->store($request, true, $this->user, $this->auth_user_id);
-            Log::info('se mando a guardar stock_movement de '.$this->articulo_existente->name.' con amount = '.$request->amount);
+
+            $data = [];
+
+            $data['concepto_stock_movement_name'] = 'Importacion de excel';
+
+            $data['model_id'] = $this->articulo_existente->id;
+            $data['amount'] = $stock_actual - $this->articulo_existente->stock;
+
+            $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id);
+            Log::info('se mando a guardar stock_movement de '.$this->articulo_existente->name.' con amount = '.$data['amount']);
         } 
     }
 

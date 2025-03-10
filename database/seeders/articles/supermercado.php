@@ -46,11 +46,24 @@ $articles = [
                 'amount'        => 50,
             ],
         ],
-        // 'variants'          => [
-        //     [
-        //         'article'
-        //     ],
-        // ],
+        'variants'          => [
+            'article_properties'   => [
+                [
+                    'article_property_type' => 'Color',
+                    'article_property_values'   => [
+                        'Amarillo',
+                        'Azul',
+                    ],
+                ],
+                [
+                    'article_property_type' => 'Talle',
+                    'article_property_values'   => [
+                        'XL',
+                        'L',
+                    ],
+                ],
+            ],
+        ],
     ],
 
 

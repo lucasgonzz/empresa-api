@@ -242,6 +242,11 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Codigos de barra en la tabla de vender',
                 'slug' => 'bar_codes_in_vender_table',
             ],
+            [
+                // 46
+                'name' => 'Fecha impresion en article tickets',
+                'slug' => 'fecha_impresion_en_article_tickets',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

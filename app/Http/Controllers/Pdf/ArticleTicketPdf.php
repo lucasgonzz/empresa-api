@@ -9,6 +9,8 @@ use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\ImageHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
+use Carbon\Carbon;
+
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
@@ -101,10 +103,21 @@ class ArticleTicketPdf extends fpdf {
 			$this->SetFont('Arial', '', 12);
 			$this->Cell(70, 5, $this->user->company_name, 1, 1, 'L');
 
+			$this->fecha_impresion();
+
 			$this->x = $this->start_x;
 			$this->x += 70;
 		}
 
+	}
+
+	function fecha_impresion() {
+		if (UserHelper::hasExtencion('fecha_impresion_en_article_tickets')) {
+			$this->x = $this->start_x;
+			$this->x += 50;
+			$this->y -= 5;
+			$this->Cell(20, 5, Carbon::now()->format('dmy'), 1, 1, 'R');
+		}
 	}
 
 	function price($article) {

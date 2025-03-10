@@ -42,13 +42,14 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $this->getCostInDollars($article),
             $this->getUnidadMedida($article),
             $article->final_price,
-            $article->created_at,
-            $article->updated_at,
+            // $article->created_at,
+            // $article->updated_at,
         ];
         $map = ExportHelper::map_propiedades_de_distribuidora($map, $article);
         $map = ExportHelper::mapAddresses($map, $article);
         $map = ExportHelper::mapPriceTypes($map, $article);
         $map = ExportHelper::mapPreciosBlanco($map, $article);
+        $map = ExportHelper::mapDates($map, $article);
         return $map;
     }
 
@@ -106,13 +107,12 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             'Moneda',
             'Unidad medida',
             'Precio Final',
-            'Ingresado',
-            'Actualizado',
         ];
         $headings = ExportHelper::set_propiedades_de_distribuidora($headings);
         $headings = ExportHelper::setAddressesHeadings($headings);
         $headings = ExportHelper::setPriceTypesHeadings($headings);
         $headings = ExportHelper::setPreciosBlancoHeadings($headings);
+        $headings = ExportHelper::setDatesHeadings($headings);
         // $headings = ExportHelper::setChartsheadings($headings);
         return $headings;
     }

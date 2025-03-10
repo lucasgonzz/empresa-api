@@ -128,9 +128,10 @@ class ArticleImportHelper {
     }
 
     static function get_unidad_medida($data, $columns, $row) {
+    	$column_value = ImportHelper::getColumnValue($row, 'unidad_medida', $columns);
 
-        if (!ImportHelper::isIgnoredColumn('unidad_medida', $columns)) {
-            $data['unidad_medida_id'] = Self::get_unidad_medida_id(ImportHelper::getColumnValue($row, 'unidad_medida', $columns));
+        if (ImportHelper::usa_columna($column_value)) {
+            $data['unidad_medida_id'] = Self::get_unidad_medida_id($column_value);
         }
 
         return $data;

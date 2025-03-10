@@ -198,7 +198,6 @@ class ArticleController extends Controller
 
         Log::info('columns:');
         Log::info($columns);
-        return;
         /*
             Agrego columnas de:
                 1. Direcciones

@@ -70,10 +70,10 @@ class SalePdf extends fpdf {
 
 		if ($this->with_prices) {
 			$fields = array_merge($fields, [
-				'Precio' 	=> 25,
+				'Precio' 	=> 22,
 				'Des' 		=> 13,
-				'U/D' 		=> 10,
-				'Sub total' => 27,
+				'T Des' 	=> 15,
+				'Sub total' => 25,
 			]);
 		}
 		if (!$this->with_costs && !$this->with_prices) {
@@ -101,6 +101,10 @@ class SalePdf extends fpdf {
 				'text' 	=> 'Direccion',
 				'key'	=> 'address',
 			],
+			[
+				'text' 	=> 'Cuit',
+				'key'	=> 'cuit',
+			],
 		];
 	}
 
@@ -108,7 +112,7 @@ class SalePdf extends fpdf {
 		if ($this->precios_netos) {
 			return 'Venta Pre netos';
 		}
-		return 'Remito';
+		return null;
 	}
 
 	function Header() {
@@ -271,14 +275,21 @@ class SalePdf extends fpdf {
 			0, 
 			'C'
 		);
+
+		$codigo = $item->bar_code;
+		if (UserHelper::hasExtencion('codigo_proveedor_en_vender')) {
+			$codigo = $item->provider_code;
+		}
+
 		$this->Cell(
 			$this->getFields()['Codigo'], 
 			$this->line_height, 
-			$item->bar_code, 
+			$codigo, 
 			$this->b, 
 			0, 
 			'C'
 		);
+
 		$y_1 = $this->y;
 	    $this->MultiCell( 
 			$this->getFields()['Nombre'], 
@@ -326,14 +337,23 @@ class SalePdf extends fpdf {
 				0, 
 				'C'
 			);
+
+			$price_descuento = '';
+			if ($item->pivot->discount) {
+				$descuento = $item->pivot->price * $item->pivot->discount / 100;  
+				$price_descuento = $descuento * $item->pivot->amount;
+				$price_descuento = Numbers::price($price_descuento);
+			}
+
 			$this->Cell(
-				$this->getFields()['U/D'], 
+				$this->getFields()['T Des'], 
 				$this->line_height, 
-				$item->pivot->returned_amount, 
+				$price_descuento, 
 				$this->b, 
 				0, 
 				'C'
 			);
+
 			$this->Cell(
 				$this->getFields()['Sub total'], 
 				$this->line_height, 
@@ -565,7 +585,10 @@ class SalePdf extends fpdf {
 				(
 					count($this->sale->discounts) >= 1 
 					|| count($this->sale->surchages) >= 1 
-					|| count($this->sale->seller_commissions) >= 1
+					|| (
+					    count($this->sale->seller_commissions) >= 1
+					    && $this->with_costs
+					)
 					|| $this->sale->descuento > 0
 				) 
 				&& !$this->precios_netos

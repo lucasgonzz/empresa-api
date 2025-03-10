@@ -324,7 +324,7 @@ class SaleController extends Controller
     }
 
     function afipTicketPdf($id) {
-        $sale = Sale::find($id);
+        $sale = Sale::where('id', $id)->withTrashed()->first();
         $pdf = new SaleAfipTicketPdf($sale);
     }
 

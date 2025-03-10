@@ -80,6 +80,8 @@ class DatabaseSeeder extends Seeder
 
             } else if ($for_user == 'feito') {
 
+                $this->article_variants();
+                
                 $this->call(ArticleSeeder::class);
                 
                 $this->call(CurrentAcountPaymentMethodDiscountSeeder::class);
@@ -87,7 +89,6 @@ class DatabaseSeeder extends Seeder
 
                 $this->call(CuotaSeeder::class);
 
-                $this->article_variants();
 
             } else if ($for_user == 'fenix') {
 
@@ -141,7 +142,7 @@ class DatabaseSeeder extends Seeder
                 $this->call(AddressSeeder::class);
                 // $this->call(ProviderOrderSeeder::class);
                 $this->call(ProviderPagosSeeder::class);
-                $this->call(SaleSeeder::class);
+                // $this->call(SaleSeeder::class);
                 $this->call(TitleSeeder::class);
                 $this->call(DeliveryZoneSeeder::class);
                 $this->call(BudgetSeeder::class);
