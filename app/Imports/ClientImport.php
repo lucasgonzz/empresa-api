@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Client;
 use App\Models\CurrentAcount;
+use App\Notifications\GlobalNotification;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
@@ -65,6 +66,29 @@ class ClientImport implements ToCollection {
             }
             $this->num_row++;
         }
+
+        $this->enviar_notificacion();
+    }
+
+    function enviar_notificacion() {
+            
+        $user = UserHelper::user();
+
+        $functions_to_execute = [
+            [
+                'btn_text'      => 'Actualizar lista de clientes',
+                'function_name' => 'update_clients_after_import',
+                'btn_variant'   => 'primary',
+            ],
+        ];
+
+        $user->notify(new GlobalNotification(
+            'Importacion de Excel finalizada correctamente',
+            'success',
+            $functions_to_execute,
+            $user->id,
+            false,
+        ));
     }
 
     function saveModel($row, $client) {

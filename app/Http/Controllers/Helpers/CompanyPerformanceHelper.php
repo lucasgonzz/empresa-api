@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\CompanyPerformanceUsersAddressesPaymentMethodsHelper as PaymentMethodsHelper;
 use App\Http\Controllers\Helpers\PerformanceHelper;
 use App\Models\Address;

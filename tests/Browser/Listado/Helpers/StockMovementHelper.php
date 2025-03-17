@@ -3,18 +3,35 @@
 namespace Tests\Browser\Listado\Helpers;
 
 use App\Models\Address;
+use Tests\Browser\Helpers\TableHelper;
 
 
 class StockMovementHelper {
 
     static function check_movement($browser, $data) {
 
-        $btn = "#table-article tbody tr:nth-child({$data['fila']}) .btn-stock-movement";
+        $fila = null;
+
+        if (is_array($data['fila'])) {
+
+            $table_name = "#table-article";
+            $fila_title = $data['fila']['text'];
+            $fila_value = $data['fila']['value'];
+            
+            $fila = TableHelper::get_fila_a_chequear($browser, $table_name, $fila_title, $fila_value);
+
+            $fila++;
+
+        } else if (is_numeric($data['fila'])) {
+            $fila = $data['fila'];
+        }
+
+        $btn = "#table-article tbody tr:nth-child($fila) .btn-stock-movement";
 
         $browser->waitFor($btn);
 
         $browser->script("
-            let btn = document.querySelector('#table-article tbody tr:nth-child({$data['fila']}) [dusk=\"btn-stock-movements\"]');
+            let btn = document.querySelector('#table-article tbody tr:nth-child($fila) [dusk=\"btn-stock-movements\"]');
             let event = new MouseEvent('click', { bubbles: false });
             btn.dispatchEvent(event);
         ");

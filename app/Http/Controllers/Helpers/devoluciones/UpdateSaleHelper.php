@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Helpers\Devoluciones;
 
 use App\Models\Sale;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class UpdateSaleHelper {
 	
@@ -16,9 +18,26 @@ class UpdateSaleHelper {
 
 				if (isset($item['returned_amount'])) {
 
-					$sale->articles()->updateExistingPivot($item['id'], [
-						'returned_amount'	=> $item['returned_amount'],
-					]);
+					if (
+						isset($item['article_variant_id'])
+						&& $item['article_variant_id'] != 0
+					) {
+
+						DB::table('article_sale')
+						    ->where('sale_id', $sale->id)
+						    ->where('article_id', $item['id'])
+						    ->where('article_variant_id', $item['article_variant_id'])
+						    ->update(['returned_amount' => $item['returned_amount']]);
+
+						Log::info('Actualizando la en base a article_variant_id: '.$item['article_variant_id']);
+
+					} else {
+
+						$sale->articles()->updateExistingPivot($item['id'], [
+							'returned_amount'	=> $item['returned_amount'],
+						]);
+					}
+
 				}
 
 			}

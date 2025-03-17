@@ -25,7 +25,6 @@ class ArticlePricesHelper {
         // Priorizar los tipos de precios de la subcategoría si existen y tienen porcentaje válido
         if (!is_null($sub_category)) {
             $price_types = $sub_category->price_types()
-                // ->withPivot('percentage')
                 ->whereNotNull('price_type_sub_category.percentage') // Asegurar que el porcentaje no sea nulo
                 ->where('price_type_sub_category.percentage', '!=', '') // Asegurar que no sea un string vacío
                 ->get();
@@ -38,8 +37,8 @@ class ArticlePricesHelper {
                     // ->withPivot('percentage')
                     ->get();
                 
-                Log::info('price_types de '.$category->name);
-                Log::info($price_types);
+                // Log::info('price_types de '.$category->name);
+                // Log::info($price_types);
             }
         }
 
@@ -54,18 +53,30 @@ class ArticlePricesHelper {
 
                 $percentage = $price_type->pivot->percentage; // Porcentaje de ganancia
 
-                // Calcular el precio final
-                $price = $cost + ($cost * $percentage / 100);
+                if ($percentage) {
+                    
+                    // Calcular el precio final
+                    
+                    $price = $cost + ($cost * $percentage / 100);
 
-                $final_price = Self::aplicar_iva($article, $price, $user);
+                    $final_price = Self::aplicar_iva($article, $price, $user);
 
-                $article->price_types()->syncWithoutDetaching($price_type->id);
+                    $article->price_types()->syncWithoutDetaching($price_type->id);
 
-                $article->price_types()->updateExistingPivot($price_type->id, [
-                    'percentage'    => $percentage,
-                    'price'         => $price,
-                    'final_price'   => $price,
-                ]);
+                    $article->price_types()->updateExistingPivot($price_type->id, [
+                        'percentage'    => $percentage,
+                        'price'         => $price,
+                        'final_price'   => $price,
+                    ]);
+                } else {
+
+                    $article->price_types()->updateExistingPivot($price_type->id, [
+                        'percentage'    => null,
+                        'price'         => null,
+                        'final_price'   => null,
+                    ]);
+                }
+
             }
         }
         

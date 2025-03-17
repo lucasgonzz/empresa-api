@@ -4,7 +4,7 @@ namespace App\Http\Controllers;
 
 // use App\Http\Controllers\CommonLaravel\AuthController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
-use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\OnlineConfiguration;
 use App\Models\User;
 use App\Models\UserConfiguration;

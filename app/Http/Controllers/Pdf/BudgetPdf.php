@@ -82,7 +82,7 @@ class BudgetPdf extends fpdf {
 		$this->observations();
 		$this->discountsSurchages();
 		$this->total();
-		PdfHelper::comerciocityInfo($this, $this->y);
+		// PdfHelper::comerciocityInfo($this, $this->y);
 	}
 
 	function logo() {

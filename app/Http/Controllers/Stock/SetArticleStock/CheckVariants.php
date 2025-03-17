@@ -16,8 +16,7 @@ class CheckVariants {
 
             $article_variant = ArticleVariant::find($stock_movement->article_variant_id);
             
-            if (!is_null($stock_movement->from_address_id)
-                && count($article_variant->addresses) >= 1) {
+            if (!is_null($stock_movement->from_address_id)) {
 
                 Self::procesar_from_address($stock_movement, $article_variant);
             } 

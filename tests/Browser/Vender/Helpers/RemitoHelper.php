@@ -2,10 +2,31 @@
 
 namespace Tests\Browser\Vender\Helpers;
 
+use App\Models\Address;
+
 
 class RemitoHelper {
 
-    static function add_article_bar_code($browser, $bar_code, $amount) {
+
+    static function cambiar_amount($browser, $data) {
+        $browser->pause(500);
+        $browser->type('@amount_'.$data['index'], $data['new_amount']);
+    }
+
+    static function get_bar_code($bar_code) {
+        // $articles_num = [
+        //     '1234'      => 5,
+        //     '12345'     => 6,
+        // ];
+        // if (env('FOR_USER') == 'feito') {
+        //     return $articles_num[$bar_code];
+        // }
+        return $bar_code;
+    }
+
+    static function add_article_bar_code($browser, $bar_code, $amount = null) {
+
+        $bar_code = Self::get_bar_code($bar_code);
 
         $browser->waitFor('@article_bar_code');
 
@@ -23,15 +44,23 @@ class RemitoHelper {
         
         $browser->pause(1000);
 
-        $browser->waitFor('@article_amount');
-        $browser->pause(500);
+        if ($amount) {
 
-        $browser->click('@article_amount');
-        $browser->type('@article_amount', $amount);
-        
-        $browser->pause(500);
+            if ($browser->element('@article_amount')) {
 
-        $browser->keys('@article_amount', ['{ENTER}']);
+                $browser->waitFor('@article_amount');
+                $browser->pause(500);
+
+                $browser->click('@article_amount');
+                $browser->type('@article_amount', $amount);
+                
+                $browser->pause(500);
+
+                $browser->keys('@article_amount', ['{ENTER}']);
+            }
+
+        }
+
     }
 
     static function add_service($browser, $service) {
@@ -79,4 +108,5 @@ class RemitoHelper {
 
         dump("Total OK ($total)");
     }
+
 }

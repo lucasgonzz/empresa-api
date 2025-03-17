@@ -35,7 +35,7 @@ class crear_venta {
 
         $browser->pause(2000);
 
-        $this->agregar_articulos($browser);
+        $this->agregar_articulos();
 
         $this->forzar_total();
 
@@ -209,11 +209,11 @@ class crear_venta {
 
     function agregar_articulos() {
 
-        RemitoHelper::add_article_bar_code($this->browser,'1234', 5);
+        RemitoHelper::add_article_bar_code($this->browser, '1234', 5);
 
         $this->browser->pause(1000);
 
-        RemitoHelper::add_article_bar_code($this->browser,'12345', 5);
+        RemitoHelper::add_article_bar_code($this->browser, '12345', 5);
 
         $this->browser->pause(1000);
 

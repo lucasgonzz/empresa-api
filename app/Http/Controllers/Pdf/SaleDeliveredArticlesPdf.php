@@ -56,7 +56,7 @@ class SaleDeliveredArticlesPdf extends fpdf {
 	}
 
 	function Footer() {
-		PdfHelper::comerciocityInfo($this, $this->y);
+		// PdfHelper::comerciocityInfo($this, $this->y);
 	}
 
 	function getDeliveredArticles() {

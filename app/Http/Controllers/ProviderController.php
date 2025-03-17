@@ -86,7 +86,6 @@ class ProviderController extends Controller
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
         Excel::import(new ProviderImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id), $request->file('models'));
-        $this->sendUpdateModelsNotification('provider');
     }
 
     function export() {

@@ -4,10 +4,10 @@ namespace App\Http\Controllers\CommonLaravel\Helpers;
 
 use App\Article;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
-use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
@@ -84,6 +84,9 @@ class PdfHelper {
 		if (!is_null($user->afip_information) && !is_null($user->afip_information->iva_condition)) {
 			$instance->x = 35;
 			$instance->Cell(40, 5, $user->afip_information->iva_condition->name, $instance->b, 1, 'L');
+
+			$instance->x = 35;
+			$instance->Cell(40, 5, 'CUIT: '.$user->afip_information->cuit, $instance->b, 1, 'L');
 		}
 
 		// Sitio Web

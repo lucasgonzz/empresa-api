@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\CajaChartsHelper;
 use App\Models\Article;
 use App\Models\PriceType;

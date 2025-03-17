@@ -12,7 +12,11 @@ class UserHelper {
 
         $user = Self::user($from_owner);
 
-        return $user->id;
+        if ($user) {
+            return $user->id;
+        }
+
+        return env('USER_ID');
     }
 
     static function user($from_owner = true) {
@@ -22,11 +26,27 @@ class UserHelper {
                 return session('owner');
             }
             return session('auth_user');
-        } else {
+        } 
 
-            Log::info('No habia user en la sesion');
+        $auth_user = Auth()->user();
+
+        if ($auth_user) {
+            $user_id = null;
+            if ($from_owner) {
+                if ($auth_user->owner_id) {
+                    $user_id = $auth_user->owner_id;
+                } else {
+                    $user_id = $auth_user->id;
+                }
+            } else {
+                $user_id = $auth_user->id;
+            }
+            if ($user_id) {
+                return User::find($user_id);
+            }
         }
 
+        return null;
         return Self::default_user();
     }
 
@@ -35,11 +55,10 @@ class UserHelper {
         return User::where('company_name', 'Autopartes Boxes')->first();
     }
 
-    static function getFullModel($id = null) {
-        Log::info('-----------------> entro a getFullModel');
-        if (is_null($id)) {
-            $id = Self::userId();
-        }
+    static function getFullModel($from_owner = true) {
+        
+        $id = Self::userId($from_owner);
+        
         $user = User::where('id', $id)
                     ->withAll()
                     ->first();

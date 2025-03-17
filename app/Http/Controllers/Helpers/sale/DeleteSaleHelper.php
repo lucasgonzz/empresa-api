@@ -46,8 +46,12 @@ class DeleteSaleHelper {
 
         $stock_movement_nota_credito = StockMovement::where('article_id', $article->id)
                                                     ->where('concepto_stock_movement_id', $concepto->id)
-                                                    ->where('sale_id', $sale->id)
-                                                    ->get();
+                                                    ->where('sale_id', $sale->id);
+        if (!is_null($article->pivot->article_variant_id)) {
+            $stock_movement_nota_credito = $stock_movement_nota_credito->where('article_variant_id', $article->pivot->article_variant_id);
+        }
+             
+        $stock_movement_nota_credito = $stock_movement_nota_credito->get();
 
         foreach ($stock_movement_nota_credito as $stock_movement) {
             

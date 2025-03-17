@@ -4,6 +4,7 @@ namespace Tests\Browser\Listado\Helpers;
 
 use App\Models\Address;
 use App\Models\Article;
+use App\Models\ArticleVariant;
 use App\Models\DepositMovementStatus;
 use App\Models\User;
 
@@ -91,12 +92,28 @@ class DepositMovementHelper {
 
         $article_model = Article::where('name', $article['name'])->first();
 
-        $input_amount = '#article-amount-'.$article_model->id;
+        $input_amount = '.article-amount-'.$article_model->id;
 
         $browser->waitFor($input_amount);
         $browser->type($input_amount, $article['amount']);
 
+        if (isset($article['variant'])) {
+            Self::set_variant_value($browser, $article, $article_model);
+        }
+
         $browser->pause(500);
+    }
+
+    function set_variant_value($browser, $article, $article_model) {
+
+        $browser->pause(500);
+        
+        $select_varaint = '.article-article_variant_id-'.$article_model->id;
+        $browser->waitFor($select_varaint);
+
+        $varaint_model = ArticleVariant::where('variant_description', $article['variant'])->first();
+        dump('variant: '.$varaint_model->variant_description);
+        $browser->select($select_varaint, $varaint_model->id);
     }
 
 }

@@ -86,7 +86,7 @@ class OrderProductionPdf extends fpdf {
 		$this->SetLineWidth(.4);
 		$this->observations();
 		$this->total();
-		PdfHelper::comerciocityInfo($this, $this->y);
+		// PdfHelper::comerciocityInfo($this, $this->y);
 	}
 
 	function articles() {

@@ -7,10 +7,11 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Provider;
-use Illuminate\Support\Collection;
-use Maatwebsite\Excel\Concerns\ToCollection;
-use Illuminate\Support\Facades\Log;
+use App\Notifications\GlobalNotification;
 use Carbon\Carbon;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Log;
+use Maatwebsite\Excel\Concerns\ToCollection;
 
 class ProviderImport implements ToCollection
 {
@@ -69,6 +70,29 @@ class ProviderImport implements ToCollection
             }
             $this->num_row++;
         }
+
+        $this->enviar_notificacion();
+    }
+
+    function enviar_notificacion() {
+            
+        $user = UserHelper::user();
+
+        $functions_to_execute = [
+            [
+                'btn_text'      => 'Actualizar lista de proveedores',
+                'function_name' => 'update_provider_after_import',
+                'btn_variant'   => 'primary',
+            ],
+        ];
+
+        $user->notify(new GlobalNotification(
+            'Importacion de Excel finalizada correctamente',
+            'success',
+            $functions_to_execute,
+            $user->id,
+            false,
+        ));
     }
 
     function saveModel($row, $provider) {

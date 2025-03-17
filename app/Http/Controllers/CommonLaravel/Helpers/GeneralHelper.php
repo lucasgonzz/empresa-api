@@ -2,9 +2,9 @@
 
 namespace App\Http\Controllers\CommonLaravel\Helpers;
 
-use App\Models\Article;
-use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\UserHelper;
+use App\Models\Article;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 

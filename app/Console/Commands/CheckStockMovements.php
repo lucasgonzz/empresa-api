@@ -17,7 +17,7 @@ class CheckStockMovements extends Command
      *
      * @var string
      */
-    protected $signature = 'check_stock_movements {article_id?} {article_num?} {user_id?} {--todos_los_articulos} {--corregir_stock} {--check_movimientos_repetidos}';
+    protected $signature = 'check_stock_movements_viejo {article_id?} {article_num?} {user_id?} {--todos_los_articulos} {--corregir_stock} {--check_movimientos_repetidos}';
 
     /**
      * The console command description.

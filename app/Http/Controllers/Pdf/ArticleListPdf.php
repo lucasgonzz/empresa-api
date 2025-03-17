@@ -85,7 +85,7 @@ class ArticleListPdf extends fpdf {
 
 	function Footer() {
 		
-		PdfHelper::comerciocityInfo($this, $this->y);
+		// PdfHelper::comerciocityInfo($this, $this->y);
 	}
 
 }

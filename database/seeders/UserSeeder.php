@@ -266,6 +266,7 @@ class UserSeeder extends Seeder
                 'bar_code_scanner',
                 'comerciocity_interno',
                 'article_num_in_online',
+                'sales.hide',
             ];
 
         } else if ($this->for_user == 'pack_descartables') {

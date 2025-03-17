@@ -14,7 +14,10 @@ class RegresarStockHelper {
 			
 			if (isset($item['is_article'])) {
 
-				if (isset($item['unidades_devueltas'])) {
+				if (
+					isset($item['unidades_devueltas'])
+					&& $item['unidades_devueltas'] > 0
+				) {
 
 					Self::crear_stock_movement($request, $item);
 				}
@@ -33,6 +36,13 @@ class RegresarStockHelper {
 
 		if ($request->sale_id) {
 			$data['sale_id'] = $request->sale_id;
+		}
+
+		if (
+			isset($article['article_variant_id'])
+			&& $article['article_variant_id']
+		) {
+			$data['article_variant_id'] = $article['article_variant_id'];
 		}
 		
 		$article_model = Article::find($article['id']);

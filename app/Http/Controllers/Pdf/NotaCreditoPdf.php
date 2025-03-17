@@ -192,7 +192,7 @@ class NotaCreditoPdf extends fpdf {
 		}
 
 		PdfHelper::total($this, $total);
-		PdfHelper::comerciocityInfo($this, $this->y);
+		// PdfHelper::comerciocityInfo($this, $this->y);
 	}
 
 }

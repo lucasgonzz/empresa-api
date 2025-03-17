@@ -2,13 +2,13 @@
 
 namespace App\Http\Controllers\CommonLaravel;
 
-use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
-use Carbon\Carbon;
 
 class AuthController extends Controller
 {
@@ -17,22 +17,20 @@ class AuthController extends Controller
         $login = false;
         $user = null;
         $user_last_activity = false;
+
         if ($this->loginLucas($request)) {
-            $user = UserHelper::user(false);
-            $this->set_sessions($user);
-            Log::info('2 user name: '.$user->name);
+
+            $user = $this->procesar_login();
+            
             $login = true;
         } else if (Auth::attempt(['doc_number' => $request->doc_number, 
                            'password' => $request->password], $request->remember)) {
             
             if ($this->checkUserLastActivity()) {
 
-                $user = UserHelper::user(false);
-                
-                $this->set_login_at($user->id);
+                $user = $this->procesar_login();
 
                 $login = true;
-                $this->set_sessions($user);
 
                 Log::info("Usuario {$user->name}, doc: {$user->doc_number} entro desde: ".$request->header('referer'));
             } else {
@@ -47,8 +45,50 @@ class AuthController extends Controller
         ], 200);
     }
 
-    function set_login_at($user_id) {
-        $user = User::find($user_id);
+    function procesar_login() {
+
+        $user = $this->get_auth_user();
+
+        $this->set_login_at($user);
+        
+        $user = $this->set_employee_props($user);
+
+        $this->set_sessions($user);
+
+        return $user;
+    }
+
+
+    function set_employee_props($user) {
+        if ($user->owner_id) {
+            $owner = User::where('id', $user->owner_id)
+                            ->withAll()
+                            ->first();
+
+            $user->owner_extencions = $owner->extencions;
+            $user->owner_configuration = $owner->configuration;
+            $user->iva_included = $owner->iva_included;
+            $user->ask_amount_in_vender = $owner->ask_amount_in_vender;
+            $user->owner = $owner;
+            $user->owner->extencions = $owner->extencions;
+            // Log::info('set_employee_props para '.$user->name);
+            // Log::info('owner_extencions: ');
+            // Log::info($user->owner_extencions);
+        }
+        return $user;
+    }
+
+    function get_auth_user() {
+        $user = Auth()->user();
+        if ($user) {
+            return User::where('id', $user->id)
+                        ->withAll()
+                        ->first();
+        }
+        return null;
+    }
+
+    function set_login_at($user) {
         $user->login_at = Carbon::now();
         $user->save();
         Log::info('se puso login a '.$user->name.' a las '.$user->login_at->format('d/m/y H'));
@@ -61,6 +101,8 @@ class AuthController extends Controller
     }
 
     function set_sessions($auth_user) {
+        Log::info('set_sessions auth_user:');
+        Log::info($auth_user);
         session(['auth_user' => $auth_user, 'owner' => UserHelper::getFullModel()]);
     }
 
@@ -77,7 +119,9 @@ class AuthController extends Controller
 
     public function get_user() {
         if ($this->checkUserLastActivity()) {
+            // $user = UserHelper::user(false);
             $user = UserHelper::getFullModel(false);
+            $user = $this->set_employee_props($user);
             $this->set_sessions($user);
             return response()->json(['user' => $user], 200);
         }
@@ -95,11 +139,15 @@ class AuthController extends Controller
             $user->save();
             if (Auth::attempt(['doc_number' => $doc_number, 
                                 'password' => '1234'])) {
-                Log::info('Se logeo el doc_number: '.$doc_number);
+                
+                Log::info('Lucas logeo el user '.$user->name.', doc_number: '.$doc_number);
+                
                 $user->password = $user->prev_password;
                 $user->save();
-                $user = UserHelper::getFullModel(false);
+                // $user = UserHelper::getFullModel(false);
+                
                 Log::info('user name: '.$user->name);
+                
                 return true;
             }
         } 

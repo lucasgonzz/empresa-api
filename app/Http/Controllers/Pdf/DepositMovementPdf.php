@@ -34,8 +34,8 @@ class DepositMovementPdf extends fpdf {
 		return [
 			'Num' 			=> 20,
 			'Codigo Prov' 	=> 30,
-			'Producto' 		=> 90,
-			'Variante' 		=> 40,
+			'Producto' 		=> 80,
+			'Variante' 		=> 50,
 			'Cant' 			=> 20,
 		];
 	}

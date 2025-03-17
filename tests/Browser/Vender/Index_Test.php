@@ -8,6 +8,7 @@ use Tests\Browser\Helpers\AuthHelper;
 use Tests\Browser\Vender\Clases\actualizar_metodos_de_pago;
 use Tests\Browser\Vender\Clases\crear_venta;
 use Tests\Browser\Vender\Clases\facturar_venta;
+use Tests\Browser\Vender\Clases\presupuesto;
 use Tests\Browser\Vender\Clases\venta_cliente;
 use Tests\Browser\Vender\Clases\venta_cliente_omitir_cc;
 use Tests\DuskTestCase;
@@ -28,6 +29,7 @@ class Index_Test extends DuskTestCase
             $browser->pause(2000);
 
 
+
             dump('**************************');
             dump('TEST_VENDER');
             dump('**************************');
@@ -39,6 +41,9 @@ class Index_Test extends DuskTestCase
             new venta_cliente_omitir_cc($browser);
             new actualizar_metodos_de_pago($browser);
             new facturar_venta($browser);
+
+            $browser->pause(2000);
+            new presupuesto($browser);
 
 
             dump('**************************');

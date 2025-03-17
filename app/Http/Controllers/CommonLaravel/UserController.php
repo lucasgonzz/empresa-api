@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers\CommonLaravel;
 
-use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use Carbon\Carbon;

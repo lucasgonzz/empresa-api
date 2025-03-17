@@ -2,8 +2,8 @@
 
 namespace App\Exports;
 
-use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\ExportHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use Maatwebsite\Excel\Concerns\FromCollection;
 use Maatwebsite\Excel\Concerns\WithHeadings;
