@@ -50,78 +50,95 @@ class ArticleSeeder extends Seeder
                             ->where('name', 'Rosario')
                             ->first();
 
-        // require(database_path().'\seeders\articles\ferreteria.php');
         require('articles/supermercado.php');
-        // require(database_path().'\seeders\articles\auto_partes.php');
-        // require(database_path().'\seeders\articles\marcos_prueba_deposito.php');
+
+        $articles = $this->add_defaults_in_vender($articles);
 
         $num = 1;
         $days = count($articles);
-        // $id = 500000;
-        // for ($i=1; $i <= 2; $i++) { 
-            foreach ($articles as $article) {
 
-                $art = Article::create([
-                    'num'                   => $num,
-                    // 'bar_code'              => $article['name'].rand(99999, 9999999),
-                    'bar_code'              => '00'.$num,
-                    'provider_code'         => 'p/'.$num,
-                    'name'                  => $article['name'],
-                    'slug'                  => ArticleHelper::slug($article['name'], $user->id),
-                    'cost'                  => $article['cost'],
-                    // 'cost'                  => 100 * $num,
-                    'price'                 => isset($article['price']) ? $article['price'] : null,
-                    'costo_mano_de_obra'    => isset($article['costo_mano_de_obra']) ? $article['costo_mano_de_obra'] : null,
-                    'status'                => isset($article['status']) ? $article['status'] : 'active',
-                    'featured'              => isset($article['featured']) ? $article['featured'] : null,
-                    'provider_id'           => isset($article['provider_id']) ? $article['provider_id'] : null,
-                    'percentage_gain'       => 100,
-                    'iva_id'                => isset($article['iva_id']) ? $article['iva_id'] : null,
-                    'featured'              => isset($article['featured']) ? $article['featured'] : null,
-                    // 'apply_provider_percentage_gain'     => 0,
-                    'apply_provider_percentage_gain'    => 0,
-                    'default_in_vender'     => isset($article['default_in_vender']) && $this->for_user == 'hipermax' ? $article['default_in_vender'] : null,
-                    'category_id'           => $this->getCategoryId($user, $article),
-                    'sub_category_id'       => $this->getSubcategoryId($user, $article),
-                    'created_at'            => Carbon::now()->subDays($days),
-                    'updated_at'            => Carbon::now()->subDays($days),
-                    'user_id'               => $user->id,
-                ]);    
-                $art->timestamps = false;
-                $days--;
-                $num++;
-                // $id+;
-                if (isset($article['images'])) {
-                    foreach ($article['images'] as $image) { 
-                        // $image['url']   = 'https://api-prueba.comerciocity.com/public/storage/171837091695431.webp';
-                        Image::create([
-                            'imageable_type'                            => 'article',
-                            'imageable_id'                              => $art->id,
-                            env('IMAGE_URL_PROP_NAME', 'image_url')     => $image['url'],
-                            // env('IMAGE_URL_PROP_NAME', 'image_url')     => env('APP_URL').'/storage/'.$image['url'],
-                            'color_id'                                  => isset($image['color_id']) ? $image['color_id'] : null,
-                        ]);
-                    }    
-                }
-                if (isset($article['provider_id'])) {
-                    $art->providers()->attach($article['provider_id'], [
-                                                'cost'  => $article['cost'],
-                                                'amount' => $article['stock'],
-                                            ]);
-                }
+        foreach ($articles as $article) {
 
-                $this->check_variants($art, $article);
-
-                $this->check_precios_en_blanco($art);
-
-                $this->createDescriptions($art, $article); 
-                $this->setColors($art, $article); 
-                // $this->setAddresses($art, $article); 
-                ArticleHelper::setFinalPrice($art, $user->id);
-                $this->setStockMovement($art, $article);
-                // ArticleHelper::setArticleStockFromAddresses($art);
+            $art = Article::create([
+                'num'                   => $num,
+                // 'bar_code'              => $article['name'].rand(99999, 9999999),
+                'bar_code'              => '00'.$num,
+                'provider_code'         => 'p/'.$num,
+                'name'                  => $article['name'],
+                'slug'                  => ArticleHelper::slug($article['name'], $user->id),
+                'cost'                  => $article['cost'],
+                // 'cost'                  => 100 * $num,
+                'price'                 => isset($article['price']) ? $article['price'] : null,
+                'costo_mano_de_obra'    => isset($article['costo_mano_de_obra']) ? $article['costo_mano_de_obra'] : null,
+                'status'                => isset($article['status']) ? $article['status'] : 'active',
+                'featured'              => isset($article['featured']) ? $article['featured'] : null,
+                'provider_id'           => isset($article['provider_id']) ? $article['provider_id'] : null,
+                'percentage_gain'       => 100,
+                'iva_id'                => isset($article['iva_id']) ? $article['iva_id'] : null,
+                'featured'              => isset($article['featured']) ? $article['featured'] : null,
+                // 'apply_provider_percentage_gain'     => 0,
+                'apply_provider_percentage_gain'    => 0,
+                'default_in_vender'     => isset($article['default_in_vender']) && $this->for_user == 'hipermax' ? $article['default_in_vender'] : null,
+                'category_id'           => $this->getCategoryId($user, $article),
+                'sub_category_id'       => $this->getSubcategoryId($user, $article),
+                'created_at'            => Carbon::now()->subDays($days),
+                'updated_at'            => Carbon::now()->subDays($days),
+                'user_id'               => $user->id,
+            ]);    
+            $art->timestamps = false;
+            $days--;
+            $num++;
+            // $id+;
+            if (isset($article['images'])) {
+                foreach ($article['images'] as $image) { 
+                    // $image['url']   = 'https://api-prueba.comerciocity.com/public/storage/171837091695431.webp';
+                    Image::create([
+                        'imageable_type'                            => 'article',
+                        'imageable_id'                              => $art->id,
+                        env('IMAGE_URL_PROP_NAME', 'image_url')     => $image['url'],
+                        // env('IMAGE_URL_PROP_NAME', 'image_url')     => env('APP_URL').'/storage/'.$image['url'],
+                        'color_id'                                  => isset($image['color_id']) ? $image['color_id'] : null,
+                    ]);
+                }    
             }
+            if (isset($article['provider_id'])) {
+                $art->providers()->attach($article['provider_id'], [
+                                            'cost'  => $article['cost'],
+                                            'amount' => $article['stock'],
+                                        ]);
+            }
+
+            $this->check_variants($art, $article);
+
+            $this->check_precios_en_blanco($art);
+
+            $this->createDescriptions($art, $article); 
+            $this->setColors($art, $article); 
+            // $this->setAddresses($art, $article); 
+            ArticleHelper::setFinalPrice($art, $user->id);
+            $this->setStockMovement($art, $article);
+            // ArticleHelper::setArticleStockFromAddresses($art);
+        }
         // }
+    }
+
+    function add_defaults_in_vender($articles) {
+        if ($this->for_user == 'hipermax') {
+            return array_merge($articles, [
+                [
+                    'bar_code'          => null,
+                    'provider_code'     => null,
+                    'iva_id'            => null,
+                    'name'              => 'Varios',
+                    'stock'             => null,
+                    'cost'              => null,
+                    'sub_category_name' => null,
+                    'provider_id'       => null,
+                    'default_in_vender' => 1,
+                ],
+            ]);
+        }
+        return $articles;
     }
 
     function check_variants($created_article, $article) {

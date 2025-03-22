@@ -263,7 +263,7 @@ class SaleHelper extends Controller {
             Self::attachArticle($sale, $article);
           
             Log::info('No se estaba agregando el articulo '.$article['name'].'. N° '.$article['num'].' a la venta N° '.$sale->num);
-        } else {
+        } else if (isset($article['name'])) {
             Log::info('La venta N° '.$sale->num.' SI tiene el articulo '.$article['name']);
         }
     }
@@ -305,7 +305,10 @@ class SaleHelper extends Controller {
         if (is_null($sale->client_id) || $sale->omitir_en_cuenta_corriente) {
             $sale->current_acount_payment_methods()->detach();
 
-            if (!$request->current_acount_payment_method_id) {
+            if (
+                !$request->current_acount_payment_method_id
+                && is_array($request->selected_payment_methods)
+            ) {
                 foreach ($request->selected_payment_methods as $payment_method) {
 
                     if (!is_null($payment_method['amount'])) {

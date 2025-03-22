@@ -8,7 +8,7 @@ class CheckCartAmount {
     
     static function check_cart_amount($stock_movement, $article) {
 
-        $concepto = $stock_movement->concepto->name;
+        $concepto = $stock_movement->concepto_movement->name;
         
         if (
             $concepto != 'Mov entre depositos'

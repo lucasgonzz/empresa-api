@@ -22,7 +22,7 @@ class BuyerController extends Controller
         $password = '1234';
 
         if (isset($request->num)) {
-            $password = $request->num;
+            $password .= $request->num;
         }
 
         $model = Buyer::create([

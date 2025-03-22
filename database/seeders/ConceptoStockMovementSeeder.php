@@ -86,6 +86,11 @@ class ConceptoStockMovementSeeder extends Seeder
             [
                 'name'  => 'Produccion',
             ],
+
+            // Voy agregando los ultimos aca
+            [
+                'name'  => 'Eliminacion Compra a proveedor',
+            ],
         ];
 
         foreach ($models as $model) {

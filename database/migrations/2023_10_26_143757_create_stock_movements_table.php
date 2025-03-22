@@ -23,6 +23,7 @@ class CreateStockMovementsTable extends Migration
             $table->integer('article_variant_id')->nullable();
             $table->integer('provider_id')->nullable();
             $table->integer('deposit_movement_id')->nullable();
+            $table->integer('provider_order_id')->nullable();
             $table->integer('sale_id')->nullable();
             $table->integer('nota_credito_id')->nullable();
             $table->integer('order_id')->nullable();

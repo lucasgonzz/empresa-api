@@ -31,6 +31,7 @@ for ($dia_atras = 4; $dia_atras >= 0 ; $dia_atras--) {
 
 		$ventas_desde_principio_de_mes[] = [
 			'num'				=> $num,
+			'total'				=> $total,
 			'employee_id'		=> $employee_id,
 			'address_id'		=> $address_id,
 			'client_id'			=> $address_id < 3 ? 1 : null,
@@ -114,6 +115,7 @@ for ($mes=13; $mes >= 1; $mes--) {
 
 		$ventas_meses_anterioires[] = [
 			'num'				=> $num,
+			'total'				=> $total,
 			'employee_id'		=> 504,
 			'address_id'		=> 2,
 			'client_id'			=> null,

@@ -365,6 +365,8 @@ class NewProviderOrderHelper {
 
                 $data['provider_id'] = $this->provider_order->provider_id;
 
+                $data['provider_order_id'] = $this->provider_order->id;
+
                 if ($se_esta_actualizando) {
 
                     $data['concepto_stock_movement_name'] = 'Act Compra a proveedor';

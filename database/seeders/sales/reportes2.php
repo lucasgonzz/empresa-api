@@ -12,6 +12,7 @@ for ($mes=9; $mes >= 1; $mes--) {
 
 	$ventas_meses_anterioires[] = [
 		'num'				=> $num,
+		'total'				=> $total,
 		'employee_id'		=> 504,
 		'address_id'		=> 2,
 		'client_id'			=> get_client($mes),

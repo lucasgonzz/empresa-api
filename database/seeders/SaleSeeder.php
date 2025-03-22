@@ -107,12 +107,15 @@ class SaleSeeder extends Seeder
 
             $data = [
                 'num'               => $sale['num'],
+                'total'             => $sale['total'],
                 'address_id'        => $sale['address_id'],
                 'employee_id'       => $sale['employee_id'],
                 'client_id'         => $sale['client_id'],
                 'created_at'        => $sale['created_at'],
                 'user_id'           => $user->id,
                 'save_current_acount'=> 1,
+                'terminada'         => 1,
+                'terminada_at'      => $sale['created_at'],
             ];
             
             $created_sale = Sale::create($data);

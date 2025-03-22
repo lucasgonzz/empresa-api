@@ -378,7 +378,15 @@ class ArticleController extends Controller
                             ->take(10)
                             ->withAll()
                             ->get();
+
+        $articulos_por_defecto = Article::where('user_id', $this->userId())
+                                        ->orderBy('created_at', 'DESC')
+                                        ->where('default_in_vender', 1)
+                                        ->withAll()
+                                        ->get();
+
+        $results = $models->merge($articulos_por_defecto);
                             
-        return response()->json(['models' => $models], 200);
+        return response()->json(['models' => $results], 200);
     }
 }

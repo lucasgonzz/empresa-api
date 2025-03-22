@@ -34,6 +34,7 @@ class CreateSaleOrderHelper {
         foreach ($order->articles as $article) {
         	$request->items[] = [
                 'id'                => $article->id,
+                'name'              => $article->name,
                 'cost'              => $article->cost,
         		'amount'		    => $article->pivot->amount,
         		'cost'			    => $article->pivot->cost,

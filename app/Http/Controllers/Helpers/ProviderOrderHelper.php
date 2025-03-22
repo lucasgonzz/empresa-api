@@ -6,7 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
-use App\Http\Controllers\StockMovementController;
+use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
 use App\Models\CurrentAcount;
 use App\Models\ProviderOrder;
@@ -350,18 +350,18 @@ class ProviderOrderHelper {
 
 				$amount = -$article->pivot->amount;
 
-		        $request = new \Illuminate\Http\Request();
 
-		        $request->model_id = $article->id;
+		        $data['model_id'] = $article->id;
 
 				if (count($article->addresses) >= 1 && $provider_order->address_id) {
-		            $request->to_address_id = $provider_order->address_id;
+		            $data['to_address_id'] = $provider_order->address_id;
 				} 
 
-				$request->amount = $amount;
-				$request->provider_id = $provider_order->provider_id;
-				$request->concepto = 'Eliminacion Pedido Prov N° '.$provider_order->num;
-		        $ct_stock_movement->store($request);
+				$data['amount'] = $amount;
+				$data['provider_id'] = $provider_order->provider_id;
+				$data['concepto_stock_movement_name'] = 'Eliminacion Compra a proveedor';
+				$data['provider_order_id'] = $provider_order->id;
+		        $ct_stock_movement->crear($data);
 			}
 		}
 	}

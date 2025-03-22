@@ -12,6 +12,9 @@ class CategoryPriceTypeRangeController extends Controller
     public function index() {
         $models = CategoryPriceTypeRange::where('user_id', $this->userId())
                             ->orderBy('created_at', 'DESC')
+                            ->whereHas('category', function($q) {
+                                $q->whereNull('deleted_at');
+                            })
                             ->withAll()
                             ->get();
         return response()->json(['models' => $models], 200);

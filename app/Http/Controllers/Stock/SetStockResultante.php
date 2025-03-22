@@ -10,7 +10,7 @@ class SetStockResultante  {
 
     static function set_stock_resultante($stock_movement, $article) {
 
-        $concepto = $stock_movement->concepto->name;
+        $concepto = $stock_movement->concepto_movement->name;
 
         $article->fresh();
 

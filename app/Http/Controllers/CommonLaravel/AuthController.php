@@ -101,8 +101,8 @@ class AuthController extends Controller
     }
 
     function set_sessions($auth_user) {
-        Log::info('set_sessions auth_user:');
-        Log::info($auth_user);
+        // Log::info('set_sessions auth_user:');
+        // Log::info($auth_user);
         session(['auth_user' => $auth_user, 'owner' => UserHelper::getFullModel()]);
     }
 

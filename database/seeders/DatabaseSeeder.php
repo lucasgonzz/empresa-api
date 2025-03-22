@@ -64,7 +64,10 @@ class DatabaseSeeder extends Seeder
 
             }
 
-            if (env('APP_ENV') == 'local') {
+            if (
+                env('APP_ENV') == 'local'
+                || env('VERSION_DEMO')
+            ) {
 
                 $this->call(CategorySeeder::class);
                 $this->call(SubCategorySeeder::class);
@@ -104,13 +107,13 @@ class DatabaseSeeder extends Seeder
 
             } else if ($for_user == 'golo_norte') {
 
-                if (env('APP_ENV') == 'local') {
+                // if (env('APP_ENV') == 'local') {
 
                     $this->call(ArticleSeeder::class);
                     $this->call(ComboSeeder::class);
                     $this->call(CategoryPriceTypeRangeSeeder::class);
                     $this->call(ArticlePriceTypeGroupSeeder::class);
-                }
+                // }
 
 
             } else if ($for_user == 'ferretodo') {
@@ -128,7 +131,10 @@ class DatabaseSeeder extends Seeder
             }
 
 
-            if (env('APP_ENV') == 'local') {
+            if (
+                env('APP_ENV') == 'local'
+                || env('VERSION_DEMO')
+            ) {
 
                 $this->call(ProviderSeeder::class);
                 $this->call(ProviderPriceListSeeder::class);
@@ -142,7 +148,6 @@ class DatabaseSeeder extends Seeder
                 $this->call(AddressSeeder::class);
                 // $this->call(ProviderOrderSeeder::class);
                 $this->call(ProviderPagosSeeder::class);
-                // $this->call(SaleSeeder::class);
                 $this->call(TitleSeeder::class);
                 $this->call(DeliveryZoneSeeder::class);
                 $this->call(BudgetSeeder::class);
@@ -156,6 +161,10 @@ class DatabaseSeeder extends Seeder
                 $this->call(ExpenseConceptSeeder::class);
                 $this->call(ExpenseSeeder::class);
                 $this->call(PendingSeeder::class);
+            }
+
+            if (ENV('VERSION_DEMO')) {
+                $this->call(SaleSeeder::class);
             }
 
 

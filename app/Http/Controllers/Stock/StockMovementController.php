@@ -58,7 +58,7 @@ class StockMovementController extends Controller
 
     }
 
-    function crear($data, $set_updated_at = true, $owner = null, $auth_user_id = null, $segundos_para_agregar = null) {
+    function crear($data, $set_updated_at = false, $owner = null, $auth_user_id = null, $segundos_para_agregar = null) {
 
         if (!is_null($owner)) {
             $this->user_id = $owner->id;
@@ -79,6 +79,7 @@ class StockMovementController extends Controller
             'amount'                    => (float)$data['amount'],
             'sale_id'                   => GlobalHelper::isset_dist_0($data, 'sale_id'),
             'order_id'                  => GlobalHelper::isset_dist_0($data, 'order_id'),
+            'provider_order_id'         => GlobalHelper::isset_dist_0($data, 'provider_order_id'),
             'deposit_movement_id'       => GlobalHelper::isset_dist_0($data, 'deposit_movement_id'),
             'nota_credito_id'           => GlobalHelper::isset_dist_0($data, 'nota_credito_id'),
             'provider_id'               => $this->get_provider_id($data),
@@ -283,26 +284,26 @@ class StockMovementController extends Controller
         }
     }
 
-    function setConcepto() {
-        if (is_null($this->stock_movement->concepto)) {
-            if (isset($this->request->from_excel_import)) {
-                $this->stock_movement->concepto = 'Importacion Excel';
-            } else if (!is_null($this->stock_movement->provider_id)) {
-                $this->stock_movement->concepto = 'Compra a proveedor';
-            } else if (!is_null($this->stock_movement->sale_id)) {
-                if (!is_null($this->stock_movement->to_address_id)) {
-                    $this->stock_movement->concepto = 'Eliminacion de Venta N° '.$this->stock_movement->sale->num;
-                } else {
-                    $this->stock_movement->concepto = 'Venta N° '.$this->stock_movement->sale->num;
-                }
-            } else if (!is_null($this->stock_movement->from_address_id)) {
-                $this->stock_movement->concepto = 'Movimiento de depositos';
-            } else if (!is_null($this->stock_movement->amount) && $this->stock_movement->amount < 0) {
-                $this->stock_movement->concepto = 'Resta de Stock';
-            }
-            $this->stock_movement->save();
-        }
-    }
+    // function setConcepto() {
+    //     if (is_null($this->stock_movement->concepto)) {
+    //         if (isset($this->request->from_excel_import)) {
+    //             $this->stock_movement->concepto = 'Importacion Excel';
+    //         } else if (!is_null($this->stock_movement->provider_id)) {
+    //             $this->stock_movement->concepto = 'Compra a proveedor';
+    //         } else if (!is_null($this->stock_movement->sale_id)) {
+    //             if (!is_null($this->stock_movement->to_address_id)) {
+    //                 $this->stock_movement->concepto = 'Eliminacion de Venta N° '.$this->stock_movement->sale->num;
+    //             } else {
+    //                 $this->stock_movement->concepto = 'Venta N° '.$this->stock_movement->sale->num;
+    //             }
+    //         } else if (!is_null($this->stock_movement->from_address_id)) {
+    //             $this->stock_movement->concepto = 'Movimiento de depositos';
+    //         } else if (!is_null($this->stock_movement->amount) && $this->stock_movement->amount < 0) {
+    //             $this->stock_movement->concepto = 'Resta de Stock';
+    //         }
+    //         $this->stock_movement->save();
+    //     }
+    // }
 
     function setArticleStock() {
         if (!is_null($this->article)) {

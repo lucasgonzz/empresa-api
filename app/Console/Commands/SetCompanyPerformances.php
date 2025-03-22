@@ -54,7 +54,7 @@ class SetCompanyPerformances extends Command
             */
 
             $currentDate = Carbon::today()->startOfMonth();
-            for ($_mes = 5; $_mes > 0; $_mes--) { 
+            for ($_mes = 12; $_mes > 0; $_mes--) { 
 
                 $this->comment('$_mes = '.$_mes);
 
@@ -62,6 +62,7 @@ class SetCompanyPerformances extends Command
                 $mes = $date->month;
                 $ano = $date->year;
 
+                $ct->borrar_los_realizados_durante_el_mes($mes, $ano, $user_id);
                 $ct->create($mes, $ano, $user_id);
                 
                 $this->info('Se mando del '.$mes.'/'.$ano);

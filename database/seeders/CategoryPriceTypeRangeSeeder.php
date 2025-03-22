@@ -42,6 +42,33 @@ class CategoryPriceTypeRangeSeeder extends Seeder
                     'user_id'       => env('USER_ID'),
                 ]);
 
+
+
+                foreach ($category->sub_categories as $sub_category) {
+                    
+                    $min += 2;
+
+                    if ($index == count($price_types)) {
+                        
+                        $max = null;
+
+                    } else {
+
+                        $max += 2;
+                    }
+
+                    CategoryPriceTypeRange::create([
+                        'category_id'       => $category->id,
+                        'sub_category_id'   => $sub_category->id,
+                        'price_type_id'     => $price_type->id,
+                        'min'               => $min,
+                        'max'               => $max,
+                        'user_id'           => env('USER_ID'),
+                    ]);
+                }
+
+
+
                 $min += 6;
 
                 if ($index == count($price_types)) {

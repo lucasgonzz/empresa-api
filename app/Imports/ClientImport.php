@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\import\ClientImportHelper;
 use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Notifications\GlobalNotification;
@@ -102,8 +103,28 @@ class ClientImport implements ToCollection {
             $data['iva_condition_id'] = $this->ct->getModelBy('iva_conditions', 'name', ImportHelper::getColumnValue($row, 'condicion_frente_al_iva', $this->columns), false, 'id');
         }
         if (!ImportHelper::isIgnoredColumn('localidad', $this->columns)) {
-            LocalImportHelper::saveLocation(ImportHelper::getColumnValue($row, 'localidad', $this->columns), $this->ct);
-            $data['location_id'] = $this->ct->getModelBy('locations', 'name', ImportHelper::getColumnValue($row, 'localidad', $this->columns), true, 'id');
+
+            // if (
+            //     env('FOR_USER') == 'golo_norte'
+            //     && env('APP_ENV') == 'local'
+            // ) {
+
+            //     $res = ClientImportHelper::formateo_golonorte($row, $this->columns);
+
+            //     if ($res['localidad']) {
+            //         $data['address'] = $res['direccion'];
+
+            //         LocalImportHelper::saveLocation($res['localidad'], $this->ct);
+                    
+            //         $data['location_id'] = $this->ct->getModelBy('locations', 'name', $res['localidad'], true, 'id');
+            //     }
+            // } else {
+
+                LocalImportHelper::saveLocation(ImportHelper::getColumnValue($row, 'localidad', $this->columns), $this->ct);
+
+                $data['location_id'] = $this->ct->getModelBy('locations', 'name', ImportHelper::getColumnValue($row, 'localidad', $this->columns), true, 'id');
+            // }
+
         }
         if (!ImportHelper::isIgnoredColumn('vendedor', $this->columns)) {
             LocalImportHelper::saveSeller(ImportHelper::getColumnValue($row, 'vendedor', $this->columns), $this->ct);

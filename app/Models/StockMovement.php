@@ -16,7 +16,7 @@ class StockMovement extends Model
         return $this->belongsTo(Article::class);
     }
 
-    function concepto() {
+    function concepto_movement() {
         return $this->belongsTo(ConceptoStockMovement::class, 'concepto_stock_movement_id');
     }
 

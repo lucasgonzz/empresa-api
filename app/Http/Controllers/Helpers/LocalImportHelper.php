@@ -78,7 +78,7 @@ class LocalImportHelper {
 
 				if (UserHelper::hasExtencion('lista_de_precios_por_categoria', $owner)) {
 
-					SetPriceTypesHelper::set_price_types($sub_category);
+					SetPriceTypesHelper::set_price_types($sub_category, $owner);
 				}
 			}
 			return $sub_category->id;

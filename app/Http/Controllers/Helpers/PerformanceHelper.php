@@ -524,7 +524,9 @@ class PerformanceHelper
             $employee_id = $this->user_id;
         }
 
-        $this->users_payment_methods[$employee_id]['total_vendido'] += (float)$this->total_sale;
+        if (isset($this->users_payment_methods[$employee_id])) {
+            $this->users_payment_methods[$employee_id]['total_vendido'] += (float)$this->total_sale;
+        }
         
         if (is_null($this->sale->client_id) || $this->sale->omitir_en_cuenta_corriente) {
 
@@ -788,13 +790,12 @@ class PerformanceHelper
 
         $this->payment_methods_gastos = $this->get_payment_methods();
 
-        Log::info('Hay '.count($expenses).' Gastos');
-        Log::info('Hay '.count($this->expense_concepts).' conceptos de Gastos');
+        Log::info('Hay '.count($expenses).' Gastos el mes '.$this->mes_inicio);
 
         foreach ($expenses as $expense) {
 
-            Log::info('procesando gasto de '.$expense->amount);
-            Log::info('procesando gasto de '.$expense->expense_concept->name.' de '.$expense->amount);
+            // Log::info('procesando gasto de '.$expense->amount);
+            // Log::info('procesando gasto de '.$expense->expense_concept->name.' de '.$expense->amount);
 
             if (!is_null($expense->expense_concept_id) && $expense->expense_concept_id != 0) {
                 

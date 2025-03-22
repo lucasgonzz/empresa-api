@@ -103,7 +103,7 @@ class CheckVariants {
 
     static function get_amount_for_from_address($stock_movement) {
 
-        $concepto = $stock_movement->concepto;
+        $concepto = $stock_movement->concepto_movement;
 
         if (
             $concepto->name == 'Mov entre depositos'

@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\Article;
 use App\Models\StockMovement;
 use Illuminate\Console\Command;
+use Carbon\Carbon;
 
 class set_conceptos_stock_movements extends Command
 {
@@ -39,26 +40,36 @@ class set_conceptos_stock_movements extends Command
      */
     public function handle()
     {
+        set_time_limit(9999999);
+
         $this->user_id = $this->argument('user_id') ?? null;
 
-        $articles = Article::where('user_id', $this->user_id)
-                            ->get();
+        $stock_movements = StockMovement::where('user_id', $this->user_id)
+                                        ->orderBy('created_at', 'ASC')
+                                        ->whereNull('concepto_stock_movement_id')
+                                        ->get();
 
-        foreach ($articles as $article) {
+        $movimientos_chequeados = 0;
 
-            $stock_movements = StockMovement::where('article_id', $article->id)
-                                            ->orderBy('created_at', 'ASC')
-                                            ->get();
+        $this->info(count($stock_movements).' movimientos');
 
-            foreach ($stock_movements as $stock_movement) {
-                
-                $concepto_id = $this->get_concepto_id($stock_movement);
+        foreach ($stock_movements as $stock_movement) {
+            
+            $movimientos_chequeados++;
 
-                $stock_movement->concepto_stock_movement_id = $concepto_id;
-                $stock_movement->timestamps = false;
-                $stock_movement->save();
+            $concepto_id = $this->get_concepto_id($stock_movement);
+
+            $stock_movement->concepto_stock_movement_id = $concepto_id;
+            $stock_movement->timestamps = false;
+            $stock_movement->save();
+            
+            if ($movimientos_chequeados % 1000 == 0) {
+                $this->comment('Se chequearon '.$movimientos_chequeados);
             }
         }
+
+
+
 
         $this->info('Termino');
     }
@@ -84,6 +95,8 @@ class set_conceptos_stock_movements extends Command
             'Mov entre depositos'           => 12,
             'Mov manual entre depositos'    => 13,
             'Importacion Excel'             => 15, 
+
+            'Eliminacion Compra a proveedor'    => 18,
         ];
 
 
@@ -115,6 +128,10 @@ class set_conceptos_stock_movements extends Command
             return $conceptos['Se elimino la venta'];
         }
         
+        if (substr($stock_movement->concepto, 0, 20) == 'Eliminacion venta') {
+            return $conceptos['Se elimino la venta'];
+        }
+
         if (substr($stock_movement->concepto, 0, 16) == 'Pedido Proveedor') {
             return $conceptos['Compra a proveedor'];
         }
@@ -138,8 +155,19 @@ class set_conceptos_stock_movements extends Command
         if ($stock_movement->concepto == 'Importacion Excel') {
             return $conceptos['Mov manual entre depositos'];
         }
+        
+        if (substr($stock_movement->concepto, 0, 23) == 'Eliminacion Pedido Prov') {
+            return $conceptos['Eliminacion Compra a proveedor'];
+        }
 
-        $this->comment('No se encontro concepto para stock_movement id: '.$stock_movement->id);
+        if (
+            !str_contains($stock_movement->concepto, 'Restauracion')
+            && !str_contains($stock_movement->concepto, 'Eliminacion Nota C.')
+        ) {
+
+            $this->info('No se encontro concepto para stock_movement id: '.$stock_movement->id);
+        }
+
 
     }
 }
