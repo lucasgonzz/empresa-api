@@ -83,7 +83,10 @@ class SaleTicketPdf extends fpdf {
 		if ($this->sale->client) {
 			$this->Cell($this->cell_ancho, 5, 'Cliente: '.$this->sale->client->name, $this->b, 1, 'L');
 
-			if ($this->sale->afip_ticket->iva_cliente != '') {
+			if (
+				$this->sale->afip_ticket
+				&& $this->sale->afip_ticket->iva_cliente != ''
+			) {
 				$this->x = 2;
 				$this->Cell($this->cell_ancho, 5, 'IVA '.$this->sale->afip_ticket->iva_cliente, $this->b, 1, 'L');
 			} 

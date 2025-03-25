@@ -175,9 +175,9 @@ class check_stock_movements extends Command
         
         * A lo utlimo llamo a check_stock_actual y ahi: 
 
-            Si el stock del articulo es distinto al stock resultante del ultimo movimiento (osea lo que calcule en stock_actual),
-
-            seteo el stock del articulo con el stock actual del ultimo movimiento,
+            Si el stock actual del articulo es distinto al stock resultante del ultimo movimiento (osea lo que calcule en stock_actual),
+    
+            calculo el stock resultante que deberia de tener el primer movimiento de stock para que la suma de stock_actual de igual al stock actual del articulo
             
             y cambio todos los movimientos anteriores para que den como resultado el stock resultante del ultimo movimiento
     */
@@ -481,6 +481,13 @@ class check_stock_movements extends Command
             } 
 
             $diferencia = (float)$article->stock - (float)$stock_resultante;
+            
+            // if ($this->encajar_con_stock_actual) {
+
+            // } else if ($this->encajar_con_stock_resultante) {
+            //     $diferencia = (float)$article->stock - (float)$stock_resultante;
+            // }
+
 
             $this->modificar_primer_movimiento_para_compensar($article, $movimientos, $diferencia);
             
@@ -574,9 +581,9 @@ class check_stock_movements extends Command
 
                         $total += $variant_address->pivot->amount;    
                         
-                        if ($this->article_num == $article->num) {
-                            $this->info('sumando: '.$variant_address->pivot->amount);
-                        }
+                        // if ($this->article_num == $article->num) {
+                        //     $this->info('sumando: '.$variant_address->pivot->amount);
+                        // }
                     }
                 }
             }
