@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Models\Sale;
 use Carbon\Carbon;
@@ -50,9 +51,15 @@ class SetSalesTotalCost extends Command
         foreach ($sales as $sale) {
 
             $sale = SaleTotalesHelper::set_total_cost($sale);
-            $this->info('Se seteo total de venta N° '.$sale->num);
-            $this->info('Fecha '.$sale->created_at->format('d/m/Y'));
-            $this->comment('Total cost '.$sale->total_cost);
+
+            $total = SaleHelper::getTotalSale($sale);
+            $sale->total = $total;
+            $sale->timestamps = false;
+            $sale->save();
+
+            $this->info('Se seteo total de venta N° '.$sale->num.'. Total: '.$sale->total);
+            // $this->info('Fecha '.$sale->created_at->format('d/m/Y'));
+            // $this->comment('Total cost '.$sale->total_cost);
             $this->info('');
         }
 

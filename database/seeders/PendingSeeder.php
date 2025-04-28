@@ -17,7 +17,6 @@ class PendingSeeder extends Seeder
     public function run()
     {
 
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
 
         $hace_un_mes = Carbon::now()->subMonth()->startOfMonth();
 
@@ -36,7 +35,7 @@ class PendingSeeder extends Seeder
 
         foreach ($models as $model) {
             
-            $model['user_id'] = $user->id;
+            $model['user_id'] = env('USER_ID');
 
             Pending::create($model);
         }

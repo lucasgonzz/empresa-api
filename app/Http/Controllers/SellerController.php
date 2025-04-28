@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Models\Seller;
 use Illuminate\Http\Request;
@@ -25,6 +26,9 @@ class SellerController extends Controller
             'seller_id'                     => $request->seller_id,
             'user_id'                       => $this->userId(),
         ]);
+
+        GeneralHelper::attachModels($model, 'categories', $request->categories, ['percentage']);
+
         $this->sendAddModelNotification('Seller', $model->id);
         return response()->json(['model' => $this->fullModel('Seller', $model->id)], 201);
     }  
@@ -39,6 +43,9 @@ class SellerController extends Controller
         $model->commission_after_pay_sale           = $request->commission_after_pay_sale;
         $model->seller_id                           = $request->seller_id;
         $model->save();
+
+        GeneralHelper::attachModels($model, 'categories', $request->categories, ['percentage']);
+        
         $this->sendAddModelNotification('Seller', $model->id);
         return response()->json(['model' => $this->fullModel('Seller', $model->id)], 200);
     }

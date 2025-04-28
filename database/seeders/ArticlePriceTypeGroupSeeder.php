@@ -20,10 +20,10 @@ class ArticlePriceTypeGroupSeeder extends Seeder
                 'user_id'   => env('USER_ID'),
                 'articles'  => [
                     [   
-                        'name'  => 'Fanta',
+                        'name'  => 'Fanta 1',
                     ],
                     [   
-                        'name'  => 'Lima limon',
+                        'name'  => 'Lima limon 1',
                     ],
                 ],
             ]

@@ -27,6 +27,7 @@ class AppServiceProvider extends ServiceProvider
     {
         Relation::enforceMorphMap([
             'article' => 'App\Models\Article',
+            'promocion_vinoteca' => 'App\Models\PromocionVinoteca',
         ]);
     }
 }

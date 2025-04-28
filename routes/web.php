@@ -150,6 +150,7 @@ Route::get('home/clients', 'HomeController@clients');
 // PDF
 Route::get('sale/pdf/{id}/{with_prices}/{with_costs}/{precios_netos}/{confirmed?}', 'SaleController@pdf');
 Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
+Route::get('sale/ticket-raw/{id}', 'SaleController@ticketRaw');
 Route::get('sale/afip-ticket-pdf/{id}', 'SaleController@afipTicketPdf');
 Route::get('sale/delivered-articles-pdf/{id}', 'SaleController@deliveredArticlesPdf');
 
@@ -179,7 +180,7 @@ Route::get('order/pdf/{id}/', 'OrderController@pdf');
 
 // Excel
 Route::get('article/excel/export', 'ArticleController@export');
-Route::get('article-clients/excel/export', 'ArticleController@clientsExport');
+Route::get('article-clients/excel/export/{price_type_id?}', 'ArticleController@clientsExport');
 Route::get('article-base/excel/export', 'ArticleController@baseExport');
 Route::get('client/excel/export', 'ClientController@export');
 Route::get('provider/excel/export', 'ProviderController@export');

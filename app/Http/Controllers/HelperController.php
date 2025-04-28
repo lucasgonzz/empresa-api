@@ -16,7 +16,7 @@ use App\Http\Controllers\Helpers\RecalculateCurrentAcountsHelper;
 use App\Http\Controllers\Helpers\RecipeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
-use App\Http\Controllers\StockMovementController;
+use App\Http\Controllers\Stock\StockMovementController;
 use App\Jobs\ProcessCheckInventoryLinkages;
 use App\Jobs\ProcessCheckSaldos;
 use App\Jobs\ProcessRecalculateCurrentAcounts;
@@ -32,6 +32,7 @@ use App\Models\CurrentAcountCurrentAcountPaymentMethod;
 use App\Models\Image;
 use App\Models\InventoryLinkage;
 use App\Models\OnlineConfiguration;
+use App\Models\Order;
 use App\Models\OrderProduction;
 use App\Models\Provider;
 use App\Models\ProviderOrder;
@@ -55,6 +56,248 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null) {
         $this->{$method}($param);
+    }
+
+    function precios_feito() {
+        // echo 'hola';
+        // echo '<br>';
+        $articles = Article::where('user_id', 1)
+                            ->where('final_price', 45000)
+                            // ->take(10)
+                            ->get();
+
+        // echo count($articles).' articles';
+        // echo '<br>';
+        // return;
+
+        // sleep(5);
+
+        foreach ($articles as $article) {
+            
+            echo 'Se va a cmabiar '.$article->name.' de '.$article->final_price.' a '.$article->previus_final_price;
+            echo '<br>';
+
+            // sleep(5);
+            
+            $article->final_price = $article->previus_final_price;
+            $article->timestamps = false;
+            $article->save();
+
+        }
+        echo 'Termino';
+    }
+
+    function diff_entre_order_y_sale() {
+        $order_id = 11;
+        $sale_id = 121;
+
+        $order = Order::find($order_id);
+        $sale = Sale::find($sale_id);
+
+        $articles_order = $order->articles()->pluck('article_order.amount', 'articles.id')->toArray();
+        $articles_sale = $sale->articles()->pluck('article_sale.amount', 'articles.id')->toArray();
+    
+
+        foreach ($articles_order as $id => $amount_order) {
+
+            if (isset($articles_sale[$id]) && $articles_sale[$id] != $amount_order) {
+                $cambiados[] = [
+                    'article' => Article::find($id),
+                    'article_sale' => Article::find($id),
+                    'amount_before' => $amount_order,
+                    'amount_after' => $articles_sale[$id],
+                    'unidades_quitadas' => $amount_order - $articles_sale[$id],
+                ]; 
+            }
+        }
+
+        $total = 0;
+        foreach ($cambiados as $cambiado) {
+            echo $cambiado['article']->name.':';
+            echo '<br>';
+            echo 'Se sacaron: '.$cambiado['unidades_quitadas'];
+            echo '<br>';
+            $total_sacado = $cambiado['unidades_quitadas']*$sale->articles()->where('articles.id', $cambiado['article']->id)->first()->pivot->price;
+            echo 'Total: $'.$total_sacado;
+            $total += $total_sacado;
+            echo '<br>';
+            echo '<br>';
+        }
+        echo 'Total: '.$total;
+        // dd($cambiados);
+    }
+
+    function diferencia_en_actualisaciones($sale_id) {
+
+        $sale = Sale::find($sale_id);
+        $index = 1;
+        foreach ($sale->sale_modifications as $sale_modification) {
+            
+            $articles1 = $sale_modification->articulos_antes_de_actualizar()->pluck('articles.id')->toArray(); 
+            $articles2 = $sale_modification->articulos_despues_de_actualizar()->pluck('articles.id')->toArray();
+
+            $eliminados = Article::whereIn('id', array_diff($articles1, $articles2))->get();
+            $agregados = Article::whereIn('id', array_diff($articles2, $articles1))->get();
+
+            echo "Actualizacion $index:";
+            echo '<br>';
+            echo 'Articulos eliminados:';
+            echo '<br>';
+            // dd($eliminados);
+
+            foreach ($eliminados as $article) {
+                echo $article->name;
+                echo '<br>';
+
+            }
+
+            echo '<br>';
+            echo '***************';
+            echo 'Articulos agrergados:';
+            echo '<br>';
+
+            foreach ($agregados as $article) {
+                echo $article->name;
+                echo '<br>';
+
+            }
+            echo '<br>';
+            echo '***************';
+            echo '<br>';
+            echo '<br>';
+            echo '<br>';
+            $index++;
+        }
+    }
+
+    function articulos_eliminados_de_ventas_sin_stock_movement($user_id) {
+        $errores = [];
+
+        $concepto_venta = 3;
+        $concepto_se_elimino_de_venta = 5;
+        $concepto_se_elimino_la_venta = 6;
+
+        $ventasConMovimientos = StockMovement::where('concepto_stock_movement_id', $concepto_venta)
+                                            ->where('user_id', $user_id)
+                                            ->where('created_at', '>=', Carbon::today()->subDays(8))
+                                            ->get()
+                                            ->groupBy('sale_id');
+
+        foreach ($ventasConMovimientos as $saleId => $movimientos) {
+            // Obtenemos la venta
+            $venta = Sale::with('articles')->withTrashed()->find($saleId);
+
+            foreach ($movimientos as $mov) {
+                $articleId = $mov->article_id;
+
+                // Verificamos si el artículo aún está en la venta
+                $articuloEnVenta = $venta->articles->contains('id', $articleId);
+
+                // Verificamos si existe un movimiento de tipo "Se eliminó de la Venta"
+                $existeDevolucion = StockMovement::where('sale_id', $saleId)
+                                                ->where('article_id', $articleId)
+                                                ->where('concepto_stock_movement_id', $concepto_se_elimino_de_venta)
+                                                ->exists();
+
+
+                // Si el artículo ya no está en la venta y no hay movimiento de devolución, es un error
+                if (!$articuloEnVenta && !$existeDevolucion) {
+
+
+
+                    // Verificamos si existe un movimiento de tipo "Se eliminó la Venta"
+                    $existe_eliminacion = StockMovement::where('sale_id', $saleId)
+                                                    ->where('article_id', $articleId)
+                                                    ->where('concepto_stock_movement_id', $concepto_se_elimino_la_venta)
+                                                    ->exists();
+
+
+
+                    if (!$articuloEnVenta && !$existe_eliminacion) {
+                        
+                        $article = Article::withTrashed()->find($articleId);
+
+                        $errores[] = [
+                            'sale_num' => $venta->num,
+                            'article_num' => $article->num,
+                            'sale_id' => $venta->id,
+                            'article_id' => $article->id,
+                            'amount'    => abs($mov->amount),
+                        ];
+                    }
+                }
+            }
+        }
+
+        // $this->crear_stock_movement_de_eliminacion($errores);
+
+        dd($errores);
+    }
+
+    function crear_stock_movement_de_eliminacion($errores) {
+        $ct = new StockMovementController();
+        foreach ($errores as $error) {
+            $data = [
+                'model_id'                          => $error['article_id'],
+                'sale_id'                           => $error['sale_id'],
+                'concepto_stock_movement_name'      => 'Se elimino de la venta',
+                'amount'                            => $error['amount']
+            ];  
+
+            $ct->crear($data, false);
+        }
+    }
+
+    function set_sales_seller_id($user_id = 500) {
+        $sales = Sale::where('user_id', $user_id)
+                        ->whereNull('seller_id')
+                        ->orderBy('created_at', 'ASC')
+                        ->get();
+
+        echo count($sales).' ventas';
+        echo '<br>';
+
+
+        foreach ($sales as $sale) {
+
+            if (
+                $sale->client
+                && $sale->client->seller_id
+            ) {
+                $sale->seller_id = $sale->client->seller_id;
+                $sale->timestamps = false;
+                $sale->save();
+            }
+
+            if ($sale->seller_id) {
+                SaleHelper::deleteSellerCommissionsFromSale($sale);
+                SaleHelper::crear_comision($sale);
+                echo 'Comision para venta N° '.$sale->num;
+                echo '<br>';
+            }
+            
+        }
+        echo 'TERMINO';
+    }
+
+    function set_sale_comissions($user_id = 500) {
+        $sales = Sale::where('created_at', '>=', Carbon::today())
+                        ->where('user_id', $user_id)
+                        ->orderBy('created_at', 'ASC')
+                        ->get();
+
+        echo count($sales).' ventas';
+        echo '<br>';
+
+
+        foreach ($sales as $sale) {
+            
+            SaleHelper::deleteSellerCommissionsFromSale($sale);
+            SaleHelper::crear_comision($sale);
+            echo 'Comision para venta N° '.$sale->num;
+            echo '<br>';
+        }
+        echo 'TERMINO';
     }
 
     function articles_sin_stock_y_con_direcciones() {

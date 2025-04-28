@@ -11,6 +11,8 @@ class Sale extends Model
     
     protected $guarded = [];
     
+    protected $dates = ['fecha_entrega'];
+
     public function current_acount_payment_methods(){
         return $this->belongsToMany(CurrentAcountPaymentMethod::class)->withPivot('amount', 'discount_percentage', 'discount_amount', 'caja_id');
     }
@@ -32,7 +34,7 @@ class Sale extends Model
     }
 
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles.article_variants', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'nota_credito_afip_tickets', 'combos.articles', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'afip_observations', 'current_acount', 'current_acount_payment_methods', 'price_type', 'sale_modifications')
+        $query->with('client.iva_condition', 'client.price_type', 'buyer.comercio_city_client', 'articles.article_variants', 'articles.price_types', 'impressions', 'discounts', 'surchages', 'afip_ticket', 'nota_credito_afip_tickets', 'combos.articles', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'afip_observations', 'current_acount', 'current_acount_payment_methods', 'price_type', 'sale_modifications', 'seller_commissions', 'promocion_vinotecas.articles', 'afip_information.iva_condition')
         ->withCount('sale_modifications');
     }
 
@@ -114,6 +116,10 @@ class Sale extends Model
 
     public function combos() {
         return $this->belongsToMany('App\Models\Combo')->withPivot('amount', 'price', 'cost')->withTrashed();
+    }
+
+    public function promocion_vinotecas() {
+        return $this->belongsToMany(PromocionVinoteca::class)->withPivot('amount', 'price')->withTrashed();
     }
 
     public function services() {

@@ -33,6 +33,8 @@ class CreateOrdersTable extends Migration
             $table->decimal('payment_method_surchage')->nullable();
             $table->decimal('total', 20,2)->nullable();
             $table->integer('user_id')->unsigned();
+            $table->integer('seller_id')->unsigned()->nullable();
+            $table->text('address')->nullable();
 
             $table->timestamps();
         });

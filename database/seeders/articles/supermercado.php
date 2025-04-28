@@ -16,7 +16,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => get_image_url('/storage/supermercado/yerba.webp'),
+                'url'       => get_image('/storage/supermercado/yerba.webp'),
             ],
         ],
     ],
@@ -33,7 +33,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => get_image_url('/storage/supermercado/matetorpedo.webp'),
+                'url'       => get_image('/storage/supermercado/matetorpedo.webp'),
             ],
         ],
         'addresses'     => [
@@ -82,7 +82,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => get_image_url('/storage/supermercado/fanta.webp'),
+                'url'       => get_image('/storage/supermercado/fanta.webp'),
             ],
         ],
         'addresses'     => [
@@ -109,7 +109,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => get_image_url('/storage/supermercado/limalimon.webp'),
+                'url'       => get_image('/storage/supermercado/limalimon.webp'),
             ],
         ],
         'addresses'     => [
@@ -127,7 +127,7 @@ $articles = [
 ];
 
 
-function get_image_url($url) {
+function get_image($url) {
     if (env('APP_ENV') == 'production') {
         return env('APP_IMAGES_URL').'/public'.$url;
     } else {

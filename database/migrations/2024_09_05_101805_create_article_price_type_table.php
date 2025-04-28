@@ -21,6 +21,8 @@ class CreateArticlePriceTypeTable extends Migration
             $table->decimal('percentage', 12,2)->nullable();
             $table->decimal('price', 30,2)->nullable();
             $table->decimal('final_price', 30,2)->nullable();            
+            $table->decimal('previus_final_price', 30,2)->nullable();            
+            $table->boolean('incluir_en_excel_para_clientes')->nullable();            
             
             $table->timestamps();
         });

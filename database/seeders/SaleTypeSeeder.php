@@ -15,15 +15,14 @@ class SaleTypeSeeder extends Seeder
      */
     public function run()
     {
-    	$user = User::where('company_name', 'Autopartes Boxes')->first();
         $models = [
             [
                 'name'  => 'Juguetes',
-                'user_id'   => $user->id,
+                'user_id'   => env('USER_ID'),
             ],
             [
                 'name'  => 'Varios',
-                'user_id'   => $user->id,
+                'user_id'   => env('USER_ID'),
             ],
         ];
 

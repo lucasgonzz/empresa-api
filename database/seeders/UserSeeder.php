@@ -37,23 +37,26 @@ class UserSeeder extends Seeder
                 'use_archivos_de_intercambio'   => 0,
                 'company_name'                  => 'Autopartes Boxes',
                 // 'image_url'                     => null,
-                'image_url'                     => env('APP_URL').'/storage/icon.png',
+                'image_url'                     => env('APP_ENV') == 'local' ? env('APP_URL').'/storage/icon.png' : 'https://api-demo.comerciocity.com/public/storage/174292591094040.png',
                 'doc_number'                    => '1234',
+                'impresora'                     => 'XP-80',
                 'email'                         => 'lucasgonzalez5500@gmail.com',
                 'phone'                         => '3444622139',
                 'sale_ticket_description'       => 'Hasta 15 dias de cambio trayendo este ticket',
-                'password'                      => bcrypt('123'),
+                'password'                      => bcrypt('1234'),
                 'visible_password'              => null,
                 'dollar'                        => 300,
                 'home_position'                 => 1,
                 'download_articles'             => 0,
                 'online'                        => 'http://tienda.local:8081',
+                // 'payment_expired_at'            => Carbon::now()->subDays(12),
                 'payment_expired_at'            => Carbon::now()->addDays(12),
                 'last_user_activity'            => Carbon::now(),
                 'total_a_pagar'                 => 15000,
                 'plan_id'                       => 3,
                 'plan_discount'                 => 27,
                 'article_ticket_info_id'        => 1,
+                'estable_version'               => null,
                 'siempre_omitir_en_cuenta_corriente'    => 0,
                 'online_configuration'          => [
                     'online_price_type_id'          => 3,
@@ -65,134 +68,47 @@ class UserSeeder extends Seeder
                 'base_de_datos'                     => 'empresa_prueba_1',
                 'google_custom_search_api_key'      => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
             ],
-            [
-                'id'                            => 501,
-                'name'                          => 'Nico',
-                'company_name'                  => 'Ferretodo',
-                'iva_included'                  => 0,
-                // 'image_url'                     => null,
-                'image_url'                     => env('APP_URL').'/storage/icon.png',
-                'doc_number'                    => '123',
-                'email'                         => 'lucasgonzalez210200@gmail.com',
-                'phone'                         => '3444622139',
-                'password'                      => bcrypt('123'),
-                'visible_password'              => null,
-                'dollar'                        => 300,
-                'home_position'                 => 1,
-                'download_articles'             => 0,
-                'online'                        => 'http://tienda.local:8081',
-                'payment_expired_at'            => Carbon::now()->addDays(12),
-                'last_user_activity'            => Carbon::now(),
-                'total_a_pagar'                 => 15000,
-                'plan_id'                       => 3,
-                'plan_discount'                 => 27,
-                'article_ticket_info_id'        => 1,
-                // 'app_url'                       => 'https://comerciocity.com',
-                'online_configuration'          => [
-                    'online_price_type_id'          => 1,
-                    'register_to_buy'               => 1,
-                    'scroll_infinito_en_home'       => 1,
-                    'default_article_image_url'     => 'http://empresa.local:8000/storage/168053912176623.webp',
-                    'quienes_somos'                 => 
-                    'Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!
-
-                    Lorem ipsum dolor sit, amet consectetur adipisicing, elit. Quidem placeat, illo enim excepturi alias numquam, labore. Cum repellat beatae consequatur commodi adipisci, ad, magnam impedit. Aliquid eum, molestias non error!',
-                    'mensaje_contacto'              => 'Contactar tambien por mensaje directo en Facebook o Instagram, es el medio en el que mas activos estamos!',
-                    // 'online_price_surchage'         => 50,
-                    // 'max_items_in_sale'             => 2,
-                    'pausar_tienda_online'          => 0,
-                    'instagram'                     => 'https://www.instagram.com/lucasgonzz/',
-                    'facebook'                      => 'https://www.facebook.com',
-                ],
-                'base_de_datos'                     => 'empresa_prueba_2',
-            ],
-            [
-                'name'              => 'Marcos',
-                'company_name'      => 'Marcos',
-                'image_url'         => env('APP_URL').'/storage/kas.png',
-                'doc_number'        => '12345',
-                'email'             => 'marcosgonzalez5500@gmail.com',
-                'password'          => bcrypt('1234'),
-                'visible_password'  => null,
-                'home_position'                 => 2,
-            ],
-            [
-                'name'              => 'Patricio',
-                'doc_number'        => '1',
-                'email'             => 'lucasgonzalez550022@gmail.com',
-                'password'          => bcrypt('1'),
-                'visible_password'  => '1',
-                'owner_id'          => 500,
-                'address_id'        => 1,
-                'admin_access'      => 1,
-                'image_url'         => null,
-                'permissions_slug'    => [
-                    'article.index',
-                    'article.store',
-                    'article.update',
-                    'client.index',
-                    'client.update',
-                    'sale.store',
-                ],
-            ],
-            [
-                'name'              => 'Miguel',
-                'address_id'        => 2,
-                'doc_number'        => '2',
-                'email'             => 'lucasgonzalez550023@gmail.com',
-                'password'          => bcrypt('2'),
-                'visible_password'  => '2',
-                'image_url'         => null,
-                'owner_id'          => 500,
-                'permissions_slug'    => [
-                    'article.index',
-                    'article.delete',
-
-                    'sale.index',
-                    'sale.store',
-                    'sale.update',
-                ],
-            ],
-            [
-                'name'              => 'Franco',
-                'address_id'        => 3,
-                'doc_number'        => '3',
-                'email'             => 'lucasgonzalez550023@gmail.com',
-                'password'          => bcrypt('3'),
-                'visible_password'  => '3',
-                'image_url'         => null,
-                'owner_id'          => 500,
-                'permissions_slug'    => [
-                    'article.index',
-                    'article.delete',
-
-                    'sale.index',
-                    'sale.store',
-                    'sale.update',
-                ],
-            ],
-            [
-                'name'              => 'Santiago',
-                'address_id'        => 4,
-                'doc_number'        => '4',
-                'email'             => 'lucasgonzalez550023@gmail.com',
-                'password'          => bcrypt('4'),
-                'visible_password'  => '4',
-                'image_url'         => null,
-                'owner_id'          => 500,
-                'permissions_slug'    => [
-                    'article.index',
-                    'article.delete',
-
-                    'sale.index',
-                    'sale.store',
-                    'sale.update',
-                ],
-            ],
         ];
 
 
-        if ($this->for_user == 'colman') {
+        if ($this->for_user == 'electro_lacarra') {
+
+            $models[0]['name'] = 'Maxi';
+            $models[0]['company_name'] = 'Electro lacarra';
+            $models[0]['iva_included'] = 0;
+            $models[0]['iva_condition_id'] = 2;
+            $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
+
+            $models[0]['extencions'] = [
+
+                'comerciocity_interno',
+                'budgets',
+                'bar_code_scanner',
+                'ask_save_current_acount',
+                'imagenes',
+                'forzar_total',
+                'mostrar_diferenia_de_precios_en_excel_para_clientes',
+                'elegir_si_incluir_lista_de_precios_de_excel',
+                'articulo_margen_de_ganancia_segun_lista_de_precios',
+                'cambiar_price_type_en_vender',
+            ];
+
+        } else if ($this->for_user == 'secure_pack') {
+
+            $models[0]['name'] = 'Federico';
+            $models[0]['iva_included'] = 0;
+
+            $models[0]['extencions'] = [
+
+                'comerciocity_interno',
+                'budgets',
+                'bar_code_scanner',
+                'ask_save_current_acount',
+                'imagenes',
+                'forzar_total',
+            ];
+
+        } else if ($this->for_user == 'colman') {
 
             $models[0]['name'] = 'Colman';
 
@@ -257,6 +173,8 @@ class UserSeeder extends Seeder
 
             $models[0]['name'] = 'Fenix';
 
+            $models[0]['comision_funcion'] = 'fenix';
+
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
@@ -291,6 +209,55 @@ class UserSeeder extends Seeder
                 'forzar_total',
                 'cajas',
                 'filtrar_clientes_por_sucursal_en_vender',
+                'cambiar_price_type_en_vender_item_por_item',
+            ];
+
+        } else if ($this->for_user == 'truvari') {
+
+            $models[0]['name'] = 'Fernando';
+
+            $models[0]['iva_included'] = 0;
+
+            $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
+
+            $models[0]['comision_funcion'] = 'truvari';
+            $models[0]['venta_terminada_comision_funcion'] = 'truvari';
+            $models[0]['default_version'] = 'https://truvari.comerciocity.com';
+
+
+            $models[0]['online_configuration'] = [
+                'online_price_type_id'          => 3,
+                'register_to_buy'               => 1,
+                'scroll_infinito_en_home'       => 1,
+                'default_article_image_url'     => 'http://empresa.local:8000/storage/169705209718205.jpg',
+                'pausar_tienda_online'          => 0,
+                'online_template_id'            => 2,
+                'cantidad_tarjetas_en_telefono' => 2,
+                'cantidad_tarjetas_en_tablet'   => 3,
+                'cantidad_tarjetas_en_notebook' => 4,
+                'cantidad_tarjetas_en_escritorio' => 4,
+            ];
+
+            $models[0]['extencions'] = [
+
+                'ask_save_current_acount',
+                'budgets',
+                'bar_code_scanner',
+                'comerciocity_interno',
+                // 'cambiar_price_type_en_vender',
+                'deposit_movements',
+                'online',
+                'forzar_total',
+                'cajas',
+                // 'filtrar_clientes_por_sucursal_en_vender',
+                // 'lista_de_precios_por_categoria',
+                // 'lista_de_precios_por_rango_de_cantidad_vendida',
+                'check_article_stock_en_vender',
+                'atajo_buscar_por_nombre',
+                'bar_codes_in_vender_table',
+                'vinoteca',
+                'ventas_con_fecha_de_entrega',
+                'road_map_detalle_por_articulos_y_no_por_venta',
             ];
 
         } else if ($this->for_user == 'golo_norte') {
@@ -298,6 +265,9 @@ class UserSeeder extends Seeder
             $models[0]['name'] = 'Golo Norte';
 
             $models[0]['iva_included'] = 0;
+            $models[0]['article_ticket_print_function'] = 'golonorte';
+
+            $models[0]['comision_funcion'] = 'golonorte';
 
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
@@ -307,7 +277,6 @@ class UserSeeder extends Seeder
                 'budgets',
                 'bar_code_scanner',
                 'comerciocity_interno',
-                'cambiar_price_type_en_vender',
                 'deposit_movements',
                 'online',
                 'forzar_total',
@@ -319,6 +288,9 @@ class UserSeeder extends Seeder
                 'combos',
                 'atajo_buscar_por_nombre',
                 'bar_codes_in_vender_table',
+                'comisiones_por_categoria',
+                'indicar_vendedor_en_vender',
+                'cambiar_price_type_en_vender_item_por_item',
             ];
 
         } else if ($this->for_user == 'ros_mar') {
@@ -378,9 +350,12 @@ class UserSeeder extends Seeder
                 'name'                          => $model['name'], 
                 'use_archivos_de_intercambio'                  => isset($model['use_archivos_de_intercambio']) ? $model['use_archivos_de_intercambio'] : null,  
                 'company_name'                  => isset($model['company_name']) ? $model['company_name'] : null,  
-                'iva_included'                  => isset($model['iva_included']) ? $model['iva_included'] : 1, 
+                'iva_included'                  => isset($model['iva_included']) ? $model['iva_included'] : 0, 
                 'comision_funcion'                  => isset($model['comision_funcion']) ? $model['comision_funcion'] : null, 
+                'venta_terminada_comision_funcion'                  => isset($model['venta_terminada_comision_funcion']) ? $model['venta_terminada_comision_funcion'] : null, 
+                'impresora'                     => isset($model['impresora']) ? $model['impresora'] : null, 
                 'doc_number'                    => $model['doc_number'], 
+                'tamano_letra'                  => 2.5,
                 'email'                         => $model['email'], 
                 'password'                      => $model['password'],  
                 'image_url'                     => $model['image_url'],  
@@ -398,14 +373,15 @@ class UserSeeder extends Seeder
                 'plan_discount'                 => isset($model['plan_discount']) ? $model['plan_discount'] : null,
                 'article_ticket_info_id'                 => isset($model['article_ticket_info_id']) ? $model['article_ticket_info_id'] : null,
                 'siempre_omitir_en_cuenta_corriente'                 => isset($model['siempre_omitir_en_cuenta_corriente']) ? $model['siempre_omitir_en_cuenta_corriente'] : null,
+                'article_ticket_print_function'                 => isset($model['article_ticket_print_function']) ? $model['article_ticket_print_function'] : null,
                 'total_a_pagar'                 => isset($model['total_a_pagar']) ? $model['total_a_pagar'] : null,
                 'app_url'                       => isset($model['app_url']) ? $model['app_url'] : null,
                 'base_de_datos'                 => isset($model['base_de_datos']) ? $model['base_de_datos'] : null,
                 'google_custom_search_api_key'                 => isset($model['google_custom_search_api_key']) ? $model['google_custom_search_api_key'] : null,
                 'dias_alertar_empleados_ventas_no_cobradas'        => 1,
-                'dias_alertar_administradores_ventas_no_cobradas'  => 2,
-                'default_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8080' : null,
-                'estable_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8081' : null,
+                'dias_alertar_administradores_ventas_no_cobradas'  => 1,
+                'default_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8080' : $model['default_version'],
+                'estable_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8081' : $model['estable_version'],
             ]);
 
             
@@ -425,11 +401,11 @@ class UserSeeder extends Seeder
                     'iva_included'                          => 1,
                     'limit_items_in_sale_per_page'          => null,
                     'can_make_afip_tickets'                 => 1,
-                    'user_id'                               => $user->id,
+                    'user_id'                               => env('USER_ID'),
                 ]);
 
                 AfipInformation::create([
-                    'iva_condition_id'      => 1,
+                    'iva_condition_id'      => isset($model['iva_condition_id']) ? $model['iva_condition_id'] : 1,
                     'razon_social'          => 'Empresa de '.$user->company_name,
                     'domicilio_comercial'   => 'Pellegrini 1876',
                     'cuit'                  => '20381712010',
@@ -439,12 +415,12 @@ class UserSeeder extends Seeder
                     'punto_venta'           => 4,
                     'ingresos_brutos'       => '20381712010',
                     'inicio_actividades'    => Carbon::now()->subYears(5),
-                    'user_id'               => $user->id,
+                    'user_id'               => env('USER_ID'),
                 ]);
 
                 if (isset($model['online_configuration'])) {
                     $online_configuration               = $model['online_configuration'];
-                    $online_configuration['user_id']    = $user->id;
+                    $online_configuration['user_id']    = env('USER_ID');
                     OnlineConfiguration::create($online_configuration);
                 }
             }

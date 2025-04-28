@@ -13,7 +13,13 @@ class SearchController extends Controller
     function search(Request $request, $model_name_param, $_filters = null, $paginate = 0) {
         $model_name = GeneralHelper::getModelName($model_name_param);
         $models = $model_name::where('user_id', $this->userId());
-        Log::info('search User_id: '.$this->userId());
+
+        $auth_user = $this->user(false);
+        if (!is_null($auth_user)) {
+            Log::info('------------------------');
+            Log::info($this->user(false)->name.' esta haciendo un filtrado de '.$model_name_param);
+        }
+
         if (is_null($_filters) || $_filters == 'null') {
             $filters = $request->filters;
         } else {
@@ -54,7 +60,7 @@ class SearchController extends Controller
                         $models = $models->whereNull($filter['key']);
                     }
 
-                    Log::info('en_blanco para '.$filter['key']);
+                    // Log::info('en_blanco para '.$filter['key']);
 
                 } else {
 
@@ -63,19 +69,19 @@ class SearchController extends Controller
                             && $filter['menor_que'] != '') {
                             
                             $models = $models->where($filter['key'], '<', trim($filter['menor_que']));
-                            Log::info('Filtrando por number '.$filter['key'].' menor_que');
+                            // Log::info('Filtrando por number '.$filter['key'].' menor_que');
                         }
                         if (isset($filter['igual_que'])
                             && $filter['igual_que'] != '') {
                             
                             $models = $models->where($filter['key'], '=', trim($filter['igual_que']));
-                            Log::info('Filtrando por number '.$filter['key'].' igual');
+                            // Log::info('Filtrando por number '.$filter['key'].' igual');
                         }
                         if (isset($filter['mayor_que'])
                             && $filter['mayor_que'] != '') {
                             
                             $models = $models->where($filter['key'], '>', trim($filter['mayor_que']));
-                            Log::info('Filtrando por number '.$filter['key'].' mayor_que');
+                            // Log::info('Filtrando por number '.$filter['key'].' mayor_que');
                         }
                     } else if (($filter['type'] == 'text' || $filter['type'] == 'textarea')) {
 
@@ -83,20 +89,20 @@ class SearchController extends Controller
                             && $filter['igual_que'] != '') {
 
                             $models = $models->where($filter['key'], trim($filter['igual_que']));
-                        
+                            Log::info('Que '.$filter['key'].' sea igual que: '.$filter['igual_que']);
+
                         } else if (isset($filter['que_contenga'])
                             && $filter['que_contenga'] != '') {
 
                             $keywords = explode(' ', $filter['que_contenga']);
 
+                            Log::info('Que '.$filter['key'].' contenga '.$filter['que_contenga'].':');
                             foreach ($keywords as $keyword) {
                                 $query = $filter['key'].' LIKE ?';
                                 $models->whereRaw($query, ["%$keyword%"]);
+                                Log::info('keyword: '.$keyword);
                             }
 
-                            Log::info('Que '.$filter['key'].' contenga '.$filter['que_contenga']);
-                            // Log::info('keywords:');
-                            // Log::info($keywords);
 
                             // $models = $models->where($filter['key'], 'like', '%'.$filter['value'].'%');
                         }
@@ -106,7 +112,7 @@ class SearchController extends Controller
                         && $filter['igual_que'] != 0
                         && $filter['igual_que'] != '') {
                         
-                        Log::info('Filtrando por search '.$filter['key'].' igual_que '.$filter['igual_que']);
+                        // Log::info('Filtrando por search '.$filter['key'].' igual_que '.$filter['igual_que']);
 
                         $models = $models->where($filter['key'], $filter['igual_que']);
                     
@@ -121,20 +127,20 @@ class SearchController extends Controller
                         if (isset($filter['menor_que'])) {
 
                             $models = $models->whereDate($filter['key'], '<', $filter['menor_que']);
-                            Log::info('Filtrando por date '.$filter['key'].' menor_que '.$filter['menor_que']);
+                            // Log::info('Filtrando por date '.$filter['key'].' menor_que '.$filter['menor_que']);
                         }
 
                         if (isset($filter['igual_que'])) {
 
                             $models = $models->whereDate($filter['key'], $filter['igual_que']);
-                            Log::info('Filtrando por date '.$filter['key'].' igual_que '.$filter['igual_que']);
+                            // Log::info('Filtrando por date '.$filter['key'].' igual_que '.$filter['igual_que']);
                         }
 
                         if (isset($filter['mayor_que'])) {
 
                             $models = $models->whereDate($filter['key'], '>', $filter['mayor_que']);
                             
-                            Log::info('Filtrando por date '.$filter['key'].' mayor_que '.$filter['mayor_que']);
+                            // Log::info('Filtrando por date '.$filter['key'].' mayor_que '.$filter['mayor_que']);
                         }
 
                     } else if ($filter['type'] == 'select' 
@@ -143,7 +149,7 @@ class SearchController extends Controller
                     ) {
                         
                         $models = $models->where($filter['key'], $filter['igual_que']);
-                        Log::info('Filtrando por select '.$filter['key'].' igual_que '.$filter['igual_que']);
+                        // Log::info('Filtrando por select '.$filter['key'].' igual_que '.$filter['igual_que']);
 
                     } else if ($filter['type'] == 'checkbox' 
                         && isset($filter['checkbox'])
@@ -151,7 +157,7 @@ class SearchController extends Controller
                     ) {
                         
                         $models = $models->where($filter['key'], $filter['checkbox']);
-                        Log::info('Filtrando por checkbox '.$filter['key'].' igual_que '.$filter['checkbox']);
+                        // Log::info('Filtrando por checkbox '.$filter['key'].' igual_que '.$filter['checkbox']);
                     }
 
 
@@ -179,9 +185,10 @@ class SearchController extends Controller
         } else {
             $models = $models->get();
         }
-        // if ($model_name_param == 'article') {
-        //     $models = ArticleHelper::setPrices($models);
-        // }
+
+        Log::info('Resultado de la busqueda: '.count($models).' modelos');
+        Log::info('-------------------');
+
         if (is_null($_filters)) {
             return response()->json(['models' => $models], 200);
         } else {
@@ -221,12 +228,12 @@ class SearchController extends Controller
                 $query->orWhere(function ($subQuery) use ($prop_to_filter, $request) {
                     if ($prop_to_filter == 'num' || $prop_to_filter == 'bar_code') {
                         $subQuery->where($prop_to_filter, $request->query_value);
-                        Log::info($prop_to_filter.' igual a'.$request->query_value);
+                        // Log::info($prop_to_filter.' igual a'.$request->query_value);
                     } else {
                         $keywords = explode(' ', $request->query_value);
                         foreach ($keywords as $keyword) {
                             $subQuery->whereRaw($prop_to_filter . ' LIKE ?', ["%$keyword%"]);
-                            Log::info($prop_to_filter.' contenga '.$keyword);
+                            // Log::info($prop_to_filter.' contenga '.$keyword);
                         }
                     }
                 });

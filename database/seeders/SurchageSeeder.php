@@ -15,22 +15,17 @@ class SurchageSeeder extends Seeder
      */
     public function run()
     {
-        $users = User::where('company_name', 'Autopartes Boxes')
-                    ->get();
-
-        foreach ($users as $user) {
-            Surchage::create([
-                'num'        => 1,
-                'name'       => 'Iva 21',
-                'percentage' => 21,
-                'user_id'    => $user->id,
-            ]);
-            Surchage::create([
-                'num'        => 2,
-                'name'       => 'Envio',
-                'percentage' => 50,
-                'user_id'    => $user->id,
-            ]);
-        }
+        Surchage::create([
+            'num'        => 1,
+            'name'       => 'Iva 21',
+            'percentage' => 21,
+            'user_id'    => env('USER_ID'),
+        ]);
+        Surchage::create([
+            'num'        => 2,
+            'name'       => 'Envio',
+            'percentage' => 50,
+            'user_id'    => env('USER_ID'),
+        ]);
     }
 }

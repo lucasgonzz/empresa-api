@@ -16,8 +16,6 @@ class CurrentAcountPaymentMethodDiscountSeeder extends Seeder
     public function run()
     {
 
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
-
         $models = [
             [
                 'current_acount_payment_method_id'  => 2,
@@ -34,7 +32,7 @@ class CurrentAcountPaymentMethodDiscountSeeder extends Seeder
         ];
 
         foreach ($models as $model) {
-            $model['user_id'] = $user->id;
+            $model['user_id'] = env('USER_ID');
             CurrentAcountPaymentMethodDiscount::create($model);
         }
     }

@@ -25,11 +25,17 @@ class BuyerController extends Controller
             $password .= $request->num;
         }
 
+        if ($request->visible_password) {
+            $password = $request->visible_password;
+        }
+
         $model = Buyer::create([
             'num'                       => $this->num('buyers'),
             'name'                      => $request->name,
             'email'                     => $request->email,
             'phone'                     => $request->phone,
+            'seller_id'                 => $request->seller_id,
+            'visible_password'          => $password,
             'password'                  => bcrypt($password),
             'comercio_city_client_id'   => $request->id,
             'user_id'                   => $this->userId(),
@@ -40,9 +46,16 @@ class BuyerController extends Controller
 
     public function update(Request $request, $id) {
         $model = Buyer::find($id);
-        $model->name      = $request->name;
-        $model->email     = $request->email;
-        $model->phone     = $request->phone;
+        $model->name                    = $request->name;
+        $model->email                   = $request->email;
+        $model->phone                   = $request->phone;
+        $model->seller_id               = $request->seller_id;
+        $model->visible_password        = $request->visible_password;
+
+        if ($request->visible_password && $request->visible_password != '') {
+            $model->password     = bcrypt($request->visible_password);
+        }
+
         $model->save();
         // $this->sendAddModelNotification('Buyer', $model->id);
         return response()->json(['model' => $this->fullModel('Buyer', $model->id)], 201);

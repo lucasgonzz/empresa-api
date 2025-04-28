@@ -13,6 +13,7 @@ use App\Http\Controllers\Helpers\SaleChartHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\SaleProviderOrderHelper;
+use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComisionesHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Helpers\sale\SaleNotaCreditoAfipHelper;
@@ -21,6 +22,7 @@ use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
 use App\Http\Controllers\Pdf\SaleDeliveredArticlesPdf;
 use App\Http\Controllers\Pdf\SalePdf;
 use App\Http\Controllers\Pdf\SaleTicketPdf;
+use App\Http\Controllers\Pdf\SaleTicketRaw;
 use App\Http\Controllers\SellerCommissionController;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
@@ -38,10 +40,6 @@ class SaleController extends Controller
                         ->orderBy('created_at', 'DESC')
                         ->withAll();
 
-        Log::info('from_depositos: '.$from_depositos);
-        $from_depositos = (boolean)$from_depositos;
-
-        Log::info('from_depositos: '.$from_depositos);
         if ($from_depositos) {
 
             $models = $models->where(function($query) {
@@ -80,6 +78,17 @@ class SaleController extends Controller
             
         // }
         $models = $models->get();
+        return response()->json(['models' => $models], 200);
+    }
+
+    public function por_entregar($from_depositos, $from_date = null) {
+        $models = Sale::where('user_id', $this->userId())
+                        ->orderBy('created_at', 'DESC')
+                        ->withAll()
+                        ->where('terminada', 0)
+                        ->whereBetween('fecha_entrega', [$from_depositos, $from_date])
+                        ->get();
+
         return response()->json(['models' => $models], 200);
     }
 
@@ -125,17 +134,19 @@ class SaleController extends Controller
             'surchages_in_services'             => $request->surchages_in_services,
             'employee_id'                       => SaleHelper::getEmployeeId($request),
             'to_check'                          => $request->to_check,
+            'confirmed'                         => SaleHelper::get_confirmed($request->to_check),
             'numero_orden_de_compra'            => $request->numero_orden_de_compra,
             'sub_total'                         => $request->sub_total,
             'total'                             => $request->total,
-            'terminada'                         => SaleHelper::get_terminada($request->to_check),
-            'terminada_at'                      => SaleHelper::get_terminada_at($request->to_check),
+            'terminada'                         => SaleHelper::get_terminada($request->to_check, $request->fecha_entrega),
+            'terminada_at'                      => SaleHelper::get_terminada_at($request->to_check, $request->fecha_entrega),
             'seller_id'                         => SaleHelper::get_seller_id($request),
             'cantidad_cuotas'                   => $request->cantidad_cuotas,
             'cuota_descuento'                   => $request->cuota_descuento,
             'cuota_recargo'                     => $request->cuota_recargo,
             'caja_id'                           => $request->caja_id,
             'afip_tipo_comprobante_id'          => $request->afip_tipo_comprobante_id,
+            'fecha_entrega'                     => $request->fecha_entrega,
             'descuento'                         => round($request->descuento, 2, PHP_ROUND_HALF_UP),
             'user_id'                           => $this->userId(),
         ]);
@@ -174,6 +185,7 @@ class SaleController extends Controller
 
         $previus_articles = $model->articles;
         $previus_combos = $model->combos;
+        $previus_promos = $model->promocion_vinotecas;
 
         $request->items = array_reverse($request->items);
 
@@ -214,11 +226,13 @@ class SaleController extends Controller
         
         $model->numero_orden_de_compra              = $request->numero_orden_de_compra;
         
-        $model->seller_id              = $request->seller_id;
+        // $model->seller_id                           = $request->seller_id;
 
         $model->sub_total                           = $request->sub_total;
         
         $model->total                               = $request->total;
+
+        $model->fecha_entrega                       = $request->fecha_entrega;
         
         $model->employee_id                         = SaleHelper::getEmployeeId($request);
         
@@ -226,7 +240,7 @@ class SaleController extends Controller
         
         $model->save();
 
-        SaleHelper::attachProperies($model, $request, false, $previus_articles, $previus_combos, $sale_modification, $se_esta_confirmando);
+        SaleHelper::attachProperies($model, $request, false, $previus_articles, $previus_combos, $previus_promos, $sale_modification, $se_esta_confirmando);
 
         $model->updated_at = Carbon::now();
         $model->save();
@@ -338,6 +352,11 @@ class SaleController extends Controller
         $pdf = new SaleTicketPdf($sale);
     }
 
+    function ticketRaw($id) {
+        $sale = Sale::find($id);
+        new SaleTicketRaw($sale);
+    }
+
     function caja() {
         $caja = CajaHelper::getCaja($this);
         return response()->json(['caja' => $caja], 200);
@@ -409,6 +428,8 @@ class SaleController extends Controller
             $sale->terminada = 1;
             $sale->terminada_at = Carbon::now();
             $sale->save();
+
+            new VentaTerminadaComisionesHelper($sale, $this->userId(false));
         }
         return response()->json(['sale' => $this->fullModel('Sale', $sale_id)], 201);
     }

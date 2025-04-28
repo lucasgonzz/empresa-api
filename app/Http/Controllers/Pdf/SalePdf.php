@@ -38,6 +38,8 @@ class SalePdf extends fpdf {
 		$this->total_articles = 0;
 		$this->total_services = 0;
 		$this->total_combos = 0;
+		$this->total_promocion_vinotecas = 0;
+
 		$this->AddPage();
 		$this->setTotales();
 		$this->items();
@@ -190,17 +192,26 @@ class SalePdf extends fpdf {
 		$this->SetFont('Arial', '', 10);
 		$this->SetLineWidth(.1);
 		$index = 1;
+		
 		foreach ($this->sale->articles as $article) {
 			// $this->total_articles += $this->get_price($article);
 			$this->printItem($index, $article);
 			$this->total_sale += $this->sub_total($article);
 			$index++;
 		}
+		
 		foreach ($this->sale->combos as $combo) {
 			$this->printItem($index, $combo);
 			$this->total_sale += $this->sub_total($combo);
 			$index++;
 		}
+		
+		foreach ($this->sale->promocion_vinotecas as $promocion_vinoteca) {
+			$this->printItem($index, $promocion_vinoteca);
+			$this->total_sale += $this->sub_total($promocion_vinoteca);
+			$index++;
+		}
+		
 		foreach ($this->sale->services as $service) {
 			// $this->total_services += $this->get_price($service);
 			$this->printItem($index, $service);
@@ -250,6 +261,9 @@ class SalePdf extends fpdf {
 		}
 		foreach ($this->sale->combos as $combo) {
 			$this->total_combos += $this->sub_total($combo);
+		}
+		foreach ($this->sale->promocion_vinotecas as $promocion_vinoteca) {
+			$this->total_promocion_vinotecas += $this->sub_total($promocion_vinoteca);
 		}
 	}
 
@@ -467,8 +481,9 @@ class SalePdf extends fpdf {
 		    $total_articles = $this->total_articles;
 		    $total_services = $this->total_services;
 		    $total_combos = $this->total_combos;
+		    $total_promocion_vinotecas = $this->total_promocion_vinotecas;
 
-	    	$total = $total_articles + $total_services + $total_combos;
+	    	$total = $total_articles + $total_services + $total_combos + $total_promocion_vinotecas;
 	    	$total -= $total * $this->sale->descuento / 100;
 
 	    	$text .= ' = $'.Numbers::price($total);
@@ -499,11 +514,14 @@ class SalePdf extends fpdf {
 
 		    	$this->total_combos -= $this->total_combos * floatval($discount->pivot->percentage) / 100;
 
+		    	$this->total_promocion_vinotecas -= $this->total_promocion_vinotecas * floatval($discount->pivot->percentage) / 100;
+
 		    	if ($this->sale->discounts_in_services) {
 		    		$this->total_services -= $this->total_services * floatval($discount->pivot->percentage) / 100;
 		    	
 		    	}
-		    	$total_with_discounts = $this->total_articles + $this->total_services + $this->total_combos;
+		    	$total_with_discounts = $this->total_articles + $this->total_services + $this->total_combos + $this->total_promocion_vinotecas;
+
 		    	$text .= ' = $'.Numbers::price($total_with_discounts);
 				$this->Cell(
 					50, 
@@ -547,10 +565,12 @@ class SalePdf extends fpdf {
 		    	$this->total_articles += $this->total_articles * floatval($surchage->pivot->percentage) / 100;
 		    	$this->total_combos += $this->total_combos * floatval($surchage->pivot->percentage) / 100;
 		    	
+		    	$this->total_promocion_vinotecas += $this->total_promocion_vinotecas * floatval($surchage->pivot->percentage) / 100;
+
 		    	if ($this->sale->surchages_in_services) {
 		    		$this->total_services += $this->total_services * floatval($surchage->pivot->percentage) / 100;
 		    	}
-		    	$total_with_surchages = $this->total_articles + $this->total_services + $this->total_combos;
+		    	$total_with_surchages = $this->total_articles + $this->total_services + $this->total_combos + $this->total_promocion_vinotecas;
 		    	$text .= ' = $'.Numbers::price($total_with_surchages);
 				$this->Cell(
 					50, 
@@ -600,7 +620,7 @@ class SalePdf extends fpdf {
 		    $this->Cell(
 				50, 
 				5, 
-				'Total: $'.Numbers::price(SaleHelper::getTotalSale($this->sale, true, true, false)), 
+				'Total final: $'.Numbers::price(SaleHelper::getTotalSale($this->sale, true, true, false)), 
 				$this->b, 
 				1, 
 				'L'

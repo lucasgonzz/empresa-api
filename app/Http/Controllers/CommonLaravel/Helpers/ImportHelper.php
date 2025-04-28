@@ -11,7 +11,7 @@ class ImportHelper {
 			// Log::info($row[$columns[$key]]);
 			return $row[$columns[$key]];
 		}
-		Log::info('No habia valor en columna para '.$key);
+		// Log::info('No habia valor en columna para '.$key);
 		return null;
 	}
 

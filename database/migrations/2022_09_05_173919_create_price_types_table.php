@@ -19,6 +19,8 @@ class CreatePriceTypesTable extends Migration
             $table->string('name');
             $table->decimal('percentage')->nullable();
             $table->integer('position')->nullable();
+            $table->boolean('ocultar_al_publico')->nullable();
+            $table->boolean('incluir_en_lista_de_precios_de_excel')->nullable();
             $table->integer('user_id');
             $table->timestamps();
         });

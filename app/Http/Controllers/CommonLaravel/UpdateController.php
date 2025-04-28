@@ -44,7 +44,7 @@ class UpdateController extends Controller
                 } else if ($form['type'] == 'number' && str_contains($form['key'], 'set_') && $form['value'] != '') {
                     $model->{substr($form['key'], 4)} = (float)$form['value'];
                     $model->save();
-                    // Log::info('Se seteo '.substr($form['key'], 4).' de '.$model->name.', quedo en '.$model->{substr($form['key'], 4)});
+                    Log::info('Se seteo '.substr($form['key'], 4).' de '.$model->name.', quedo en '.$model->{substr($form['key'], 4)});
                 } else if ($form['type'] == 'search' && str_contains($form['key'], '_id') && $form['value'] != '' && $form['value'] != 0) {
                     $model->{$form['key']} = $form['value'];
                     $model->save();
@@ -54,9 +54,9 @@ class UpdateController extends Controller
             if ($model_name == 'article') {
                 ArticleHelper::setFinalPrice($model);
             }
-            Log::info('se actualizaron '.count($models).' '.$model_name.' desde updateController');
             $models_response[] = $this->fullModel($model_name, $model->id);
         }
+        Log::info('se actualizaron '.count($models).' '.$model_name.' desde updateController');
         return response()->json(['models' => $models_response], 200);
     }
 }

@@ -11,6 +11,8 @@ class ImportHistoryController extends Controller
         $models = ImportHistory::where('user_id', $this->userId())
                                 ->where('model_name', $model_name)
                                 ->orderBy('id', 'DESC')
+                                ->with('articulos_creados')
+                                ->with('articulos_actualizados')
                                 ->get();
         return response()->json(['models' => $models], 200);
     }

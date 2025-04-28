@@ -15,8 +15,6 @@ class BuyerSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'Autopartes Boxes')
-                        ->first();
         $lucas = Buyer::create([
             'num'                       => 1,
             'name'                      => 'Lucas gonzalez',
@@ -26,7 +24,7 @@ class BuyerSeeder extends Seeder
             'email'                     => 'lucasgonzalez5500@gmail.com',
             'password'                  => bcrypt('1234'),
             'comercio_city_client_id'   => 1,
-            'user_id'                   => $user->id,
+            'user_id'                   => env('USER_ID'),
         ]);
         $marcos = Buyer::create([
             'num'                       => 1,
@@ -37,10 +35,21 @@ class BuyerSeeder extends Seeder
             'email'                     => 'lucasgonzalez210200@gmail.com',
             'password'                  => bcrypt('1234'),
             'comercio_city_client_id'   => 3,
-            'user_id'                   => $user->id,
+            'user_id'                   => env('USER_ID'),
         ]);
 
-        $this->matias();
+        $marcos = Buyer::create([
+            'num'                       => 1,
+            'name'                      => 'Vendedor',
+            'surname'                   => 'Gonzalez',
+            'city'                      => 'Gualeguay',
+            'phone'                     => '+5493444622139',
+            'email'                     => 'vendedor@gmail.com',
+            'password'                  => bcrypt('1234'),
+            'seller_id'                 => 1,
+            'user_id'                   => env('USER_ID'),
+        ]);
+
     }
 
     function matias() {
@@ -55,7 +64,7 @@ class BuyerSeeder extends Seeder
             'email'                     => 'lucasgonzalez5500@gmail.com',
             'password'                  => bcrypt('1234'),
             'comercio_city_client_id'   => 5,
-            'user_id'                   => $user->id,
+            'user_id'                   => env('USER_ID'),
         ]);
     }
 }

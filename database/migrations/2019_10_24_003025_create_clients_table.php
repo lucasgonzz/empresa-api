@@ -39,6 +39,8 @@ class CreateClientsTable extends Migration
             $table->integer('address_id')->nullable();
             $table->softDeletes();
 
+            $table->text('link_google_maps')->nullable();
+
 
             $table->foreign('user_id')
                     ->references('id')->on('users');

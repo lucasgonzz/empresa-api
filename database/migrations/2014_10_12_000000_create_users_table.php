@@ -47,7 +47,7 @@ class CreateUsersTable extends Migration
             $table->boolean('iva_included')->default(false);
             $table->boolean('ask_amount_in_vender')->default(true);
             $table->boolean('discount_stock_from_recipe_after_advance_to_next_status')->default(false);
-            $table->decimal('sale_ticket_width', 12,2)->default(58);
+            $table->decimal('sale_ticket_width', 12,2)->default(80);
             $table->integer('default_current_acount_payment_method_id')->nullable();
             $table->integer('article_ticket_info_id')->nullable();
             $table->string('session_id')->nullable();
@@ -79,7 +79,7 @@ class CreateUsersTable extends Migration
             $table->integer('address_id')->nullable();
             $table->boolean('redondear_centenas_en_vender')->default(0);
 
-            $table->boolean('aplicar_descuentos_en_articulos_antes_del_margen_de_ganancia')->default(0)->nullable();
+            $table->boolean('aplicar_descuentos_en_articulos_antes_del_margen_de_ganancia')->default(1)->nullable();
 
             $table->string('comision_funcion')->nullable();
 
@@ -92,6 +92,14 @@ class CreateUsersTable extends Migration
             $table->string('estable_version')->nullable();
 
             $table->string('text_omitir_cc')->nullable();
+
+            $table->string('article_ticket_print_function')->nullable();
+            $table->string('impresora')->nullable();
+
+            $table->decimal('tamano_letra', 10,2)->nullable();
+            $table->string('venta_terminada_comision_funcion')->nullable();
+
+            $table->integer('seller_id')->unsigned()->nullable();
 
             $table->timestamp('login_at')->nullable();
             $table->timestamp('logout_at')->nullable();

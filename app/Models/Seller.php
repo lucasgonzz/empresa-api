@@ -9,7 +9,11 @@ class Seller extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        $q->withCount('seller_commissions');
+        $q->withCount('seller_commissions')->with('categories');
+    }
+
+    function categories() {
+        return $this->belongsToMany(Category::class)->withPivot('percentage');
     }
 
     public function sellers() {

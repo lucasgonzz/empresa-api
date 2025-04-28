@@ -38,6 +38,11 @@ class OrderHelper {
             $total_article = (float)$article->pivot->price * (float)$article->pivot->amount;
             $total += $total_article;
         }
+
+        foreach ($order->promocion_vinotecas as $promo) {
+            $total_promo = (float)$promo->pivot->price * (float)$promo->pivot->amount;
+            $total += $total_promo;
+        }
         return $total;
     }
 

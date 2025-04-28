@@ -20,12 +20,11 @@ class ProviderSeeder extends Seeder
     public function run()
     {
         $this->oscar();
-        $this->matias();
+        // $this->matias();
     }
 
     function oscar() {
         $ct = new Controller();
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
         $models = [
             [
                 'num'               => 1,
@@ -33,7 +32,7 @@ class ProviderSeeder extends Seeder
                 'percentage_gain'   => 100,
                 'email'             => 'lucasgonzalez5500@gmail.com',
                 'address'           => 'Calle 123',
-                'user_id'           => $user->id,
+                'user_id'           => env('USER_ID'),
                 'saldo'             => 100,
                 'porcentaje_comision_negro' => 10,
                 'porcentaje_comision_blanco' => 5,
@@ -44,7 +43,7 @@ class ProviderSeeder extends Seeder
                 'percentage_gain'   => null,
                 'email'             => 'lucasgonzalez5500@gmail.com',
                 'address'           => 'Calle 123',
-                'user_id'           => $user->id,
+                'user_id'           => env('USER_ID'),
                 'saldo'             => 1200,
                 'porcentaje_comision_negro' => 7,
                 'porcentaje_comision_blanco' => 5,
@@ -55,7 +54,7 @@ class ProviderSeeder extends Seeder
                 'percentage_gain'   => 0,
                 'email'             => 'lucasgonzalez5500@gmail.com',
                 'address'           => 'Calle 123',
-                'user_id'           => $user->id,
+                'user_id'           => env('USER_ID'),
                 'porcentaje_comision_negro' => 6,
                 'porcentaje_comision_blanco' => 5,
             ],
@@ -81,7 +80,7 @@ class ProviderSeeder extends Seeder
             'num'                   => 1,
             'name'                  => 'Oscar Peroni',
             'comercio_city_user_id' => $lucas_user->id,
-            'user_id'               => $user->id,
+            'user_id'               => env('USER_ID'),
             'percentage_gain'       => 10,
         ]);
     }
@@ -101,12 +100,12 @@ class ProviderSeeder extends Seeder
         ];
         foreach ($models as $model) {
             Provider::create([
-                'num'               => $ct->num('providers', $user->id), 
+                'num'               => $ct->num('providers', env('USER_ID')), 
                 'name'              => $model['name'],
                 'percentage_gain'   => $model['percentage_gain'],
                 'email'             => 'lucasgonzalez5500@gmail.com',
                 'address'           => 'Calle 123',
-                'user_id'           => $user->id,
+                'user_id'           => env('USER_ID'),
             ]);
         }
     }

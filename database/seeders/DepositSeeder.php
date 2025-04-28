@@ -15,25 +15,24 @@ class DepositSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
         $models = [
             [
                 'num'           => 1,
                 'name'          => 'Nave',
                 'description'   => 'Este es el mas importante',
-                'user_id'   => $user->id,
+                'user_id'   => env('USER_ID'),
             ],
             [
                 'num'           => 2,
                 'name'          => 'Fila',
                 'description'   => '',
-                'user_id'   => $user->id,
+                'user_id'   => env('USER_ID'),
             ],
             [
                 'num'           => 3,
                 'name'          => 'Columna',
                 'description'   => '',
-                'user_id'   => $user->id,
+                'user_id'   => env('USER_ID'),
             ],
         ];
         foreach ($models as $model) {

@@ -20,6 +20,8 @@ class CreateCommissionsTable extends Migration
             $table->decimal('until', 12,2)->nullable();
             $table->integer('sale_type_id')->nullable();
             $table->decimal('percentage', 12,2)->nullable();
+            // $table->integer('employee_id')->nullable();
+            $table->integer('seller_id')->unsigned()->nullable();
             $table->integer('user_id')->unsigned();
             $table->timestamps();
         });

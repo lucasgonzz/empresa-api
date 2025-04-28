@@ -16,6 +16,7 @@ use App\Models\CurrentAcount;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\Expense;
 use App\Models\ExpenseConcept;
+use App\Models\PriceType;
 use App\Models\ProviderOrder;
 use App\Models\Sale;
 use App\Models\User;
@@ -100,6 +101,8 @@ class PerformanceHelper
         $this->set_pagos_a_proveedores();
 
         $this->set_total_iva_comprado();
+
+        $this->init_ingresos_brutos_price_types();
         
         if (!$this->from_current_month 
             && is_null($this->from_day)
@@ -148,6 +151,8 @@ class PerformanceHelper
 
         $this->attach_addresses_payment_methods();
 
+        $this->attach_ingresos_brutos_price_types();
+
 
 
         $this->attach_gastos_por_conceptos();
@@ -155,6 +160,26 @@ class PerformanceHelper
         $this->attach_gastos_metodos_de_pago();
 
         return $this->company_performance;
+    }
+
+    function attach_ingresos_brutos_price_types() {
+        foreach ($this->ingresos_brutos_price_types as $price_type_id => $total) {
+            $this->company_performance->ingresos_brutos_price_types()->attach($price_type_id, [
+                'total_vendido' => $total,
+            ]);
+        }
+    }
+
+    function init_ingresos_brutos_price_types() {
+        
+        $this->ingresos_brutos_price_types = [];
+
+        $price_types = PriceType::where('user_id', $this->user_id)
+                                ->get();
+
+        foreach ($price_types as $price_type) {
+            $this->ingresos_brutos_price_types[$price_type->id] = 0;
+        }
     }
 
     function set_compras_a_proveedores() {
@@ -254,11 +279,11 @@ class PerformanceHelper
 
         $deuda_clientes = 0;
 
-        Log::info('set_deuda_clientes');
+        // Log::info('set_deuda_clientes');
 
         foreach ($clients as $client) {
 
-            Log::info('sumando '.$client->saldo.' de '.$client->name);
+            // Log::info('sumando '.$client->saldo.' de '.$client->name);
             
             $deuda_clientes += $client->saldo;    
         }
@@ -393,6 +418,8 @@ class PerformanceHelper
 
             $this->total_sale = $sale->total;
 
+            $this->add_ingresos_brutos_price_type();
+
             if (is_null($this->total_sale)
                 ||  $this->total_sale == 0) {
 
@@ -415,9 +442,9 @@ class PerformanceHelper
 
                 $this->total_facturado += $sale->afip_ticket->importe_iva;
                 // $this->total_facturado += $sale->afip_ticket->importe_total;
-                Log::info('Se sumo '.$sale->afip_ticket->importe_iva.' de factuado de la venta N° '.$sale->num);
+                // Log::info('Se sumo '.$sale->afip_ticket->importe_iva.' de factuado de la venta N° '.$sale->num);
             } else {
-                Log::info('No se sumo lo factuado de la venta N° '.$sale->num);
+                // Log::info('No se sumo lo factuado de la venta N° '.$sale->num);
             }
 
 
@@ -458,7 +485,7 @@ class PerformanceHelper
                 $this->total_vendido_a_cuenta_corriente += $this->total_sale;
 
             } else {
-                Log::info('ENTRO ACA LA VENTA N° '.$this->sale->num. ' de '.$this->total_sale);
+                // Log::info('ENTRO ACA LA VENTA N° '.$this->sale->num. ' de '.$this->total_sale);
                 /* 
                     Aca entrarian las ventas a los clientes que tienen desactivado
                     pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar
@@ -473,6 +500,12 @@ class PerformanceHelper
 
         }
 
+    }
+
+    function add_ingresos_brutos_price_type() {
+        if (!is_null($this->sale->price_type_id)) {
+            $this->ingresos_brutos_price_types[$this->sale->price_type_id] += $this->sale->total;
+        }
     }
 
     function set_users_payment_methods() {
@@ -587,12 +620,12 @@ class PerformanceHelper
 
     function set_company_performance_props() {
 
-        Log::info('set_company_performance_props: ');
-        Log::info('total_vendido: '.$this->total_vendido);
-        Log::info('total_pagado_mostrador: '.$this->total_pagado_mostrador);
-        Log::info('total_vendido_a_cuenta_corriente: '.$this->total_vendido_a_cuenta_corriente);
-        Log::info('total_pagado_a_cuenta_corriente: '.$this->total_pagado_a_cuenta_corriente);
-        Log::info('total_facturado: '.$this->total_facturado);
+        // Log::info('set_company_performance_props: ');
+        // Log::info('total_vendido: '.$this->total_vendido);
+        // Log::info('total_pagado_mostrador: '.$this->total_pagado_mostrador);
+        // Log::info('total_vendido_a_cuenta_corriente: '.$this->total_vendido_a_cuenta_corriente);
+        // Log::info('total_pagado_a_cuenta_corriente: '.$this->total_pagado_a_cuenta_corriente);
+        // Log::info('total_facturado: '.$this->total_facturado);
 
 
         $this->company_performance->total_vendido = $this->total_vendido;
@@ -663,7 +696,7 @@ class PerformanceHelper
                 'created_at'                => $article['sale_created_at'],
                 'company_performance_id'    => $this->company_performance->id,
             ]);
-            Log::info('se creo ArticlePerformance para '.$article['name'].' con performance_date = '.$this->mes_inicio->format('d/m/Y'));
+            // Log::info('se creo ArticlePerformance para '.$article['name'].' con performance_date = '.$this->mes_inicio->format('d/m/Y'));
         }
     }
 
@@ -739,7 +772,7 @@ class PerformanceHelper
                         $total = (float)$pago->haber;
                     } else {
 
-                        Log::info('El total estaba en 0 y tiene mas de un metodo de pago');
+                        // Log::info('El total estaba en 0 y tiene mas de un metodo de pago');
                     }
 
                     $suma_payment_methods += $total;
@@ -790,7 +823,7 @@ class PerformanceHelper
 
         $this->payment_methods_gastos = $this->get_payment_methods();
 
-        Log::info('Hay '.count($expenses).' Gastos el mes '.$this->mes_inicio);
+        // Log::info('Hay '.count($expenses).' Gastos el mes '.$this->mes_inicio);
 
         foreach ($expenses as $expense) {
 

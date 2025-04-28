@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\Afip\AfipNotaCreditoHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Devoluciones\RegresarStockHelper;
@@ -39,6 +40,9 @@ class DevolucionesController extends Controller
             $request->sale_id, 
             $request->items
         );
+
+        GeneralHelper::attachModels($nota_credito, 'discounts', $request->discounts, ['percentage']);
+        GeneralHelper::attachModels($nota_credito, 'surchages', $request->surchages, ['percentage']);
 
         if ($request->sale_id) {
             UpdateSaleHelper::update_sale_returned_items($request);

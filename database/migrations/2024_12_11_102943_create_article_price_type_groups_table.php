@@ -17,6 +17,7 @@ class CreateArticlePriceTypeGroupsTable extends Migration
             $table->id();
             
             $table->integer('user_id');
+            $table->string('name')->nullable();
 
             $table->timestamps();
         });

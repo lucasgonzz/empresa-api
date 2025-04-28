@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Sale;
 use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
 
 class CreateSaleOrderHelper {
 
@@ -32,15 +33,25 @@ class CreateSaleOrderHelper {
         $request->items = [];
 
         foreach ($order->articles as $article) {
-        	$request->items[] = [
+            $request->items[] = [
                 'id'                => $article->id,
                 'name'              => $article->name,
-                'cost'              => $article->cost,
-        		'amount'		    => $article->pivot->amount,
-        		'cost'			    => $article->pivot->cost,
-        		'price_vender'		=> $article->pivot->price,
+                'amount'            => $article->pivot->amount,
+                'cost'              => $article->pivot->cost,
+                'price_vender'      => $article->pivot->price,
                 'is_article'        => true
-        	];
+            ];
+        }
+
+        foreach ($order->promocion_vinotecas as $promo) {
+            $request->items[] = [
+                'id'                => $promo->id,
+                'name'              => $promo->name,
+                'cost'              => $promo->pivot->cost,
+                'amount'            => $promo->pivot->amount,
+                'price_vender'      => $promo->pivot->price,
+                'is_promocion_vinoteca'        => true
+            ];
         }
 
         $request->discounts = [];
@@ -63,11 +74,13 @@ class CreateSaleOrderHelper {
             'client_id'             => $client_id,
             'to_check'              => $to_check,
             'terminada'             => !$to_check,
+            'terminada_at'          => !$to_check ? Carbon::now() : null,
             'num'                   => $instance->num('sales'),
             'save_current_acount'   => 1,
             'order_id'              => $order->id,
             'total'                 => $order->total,
             'address_id'            => $order->address_id,
+            'seller_id'             => $order->seller_id,
             'employee_id'           => SaleHelper::getEmployeeId(),
         ]);
 

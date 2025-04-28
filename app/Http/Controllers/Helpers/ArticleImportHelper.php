@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\import\ArticleImportHistoryHelper;
 use App\Models\Address;
 use App\Models\Article;
 use App\Models\ImportHistory;
@@ -105,8 +106,9 @@ class ArticleImportHelper {
         }
     }
 
-    static function create_import_history($user, $auth_user_id, $provider_id, $created_models, $updated_models, $columns, $archivo_excel_path, $error_message = null) {
-        ImportHistory::create([
+    static function create_import_history($user, $auth_user_id, $provider_id, $created_models, $updated_models, $columns, $archivo_excel_path, $error_message = null, $articulos_creados, $articulos_actualizados, $updated_props) {
+    	
+        $import_history = ImportHistory::create([
             'user_id'           => $user->id,
             'employee_id'       => $auth_user_id,
             'model_name'        => 'article',
@@ -117,6 +119,11 @@ class ArticleImportHelper {
             'excel_url'			=> $archivo_excel_path,
             'error_message'		=> $error_message,
         ]);
+
+        ArticleImportHistoryHelper::attach_articulos_creados($import_history, $articulos_creados);
+
+        ArticleImportHistoryHelper::attach_articulos_actualizados($import_history, $articulos_actualizados, $updated_props);
+
         Log::info('Se creo ImportHistory con '.$created_models.' creados y '.$updated_models.' actualizados con provider_id: '.$provider_id);
     }
 

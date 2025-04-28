@@ -40,6 +40,8 @@ class EmployeeController extends Controller
 
         $model->default_version                                 = $request->default_version;
         $model->estable_version                                 = $request->estable_version;
+        
+        $model->seller_id                                 = $request->seller_id;
 
         $model->password                                        = bcrypt($request->visible_password);
         if ($model->doc_number == $request->doc_number || !$this->docNumerRegister($request->doc_number)) {

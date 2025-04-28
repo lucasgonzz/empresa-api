@@ -91,6 +91,13 @@ class ConceptoStockMovementSeeder extends Seeder
             [
                 'name'  => 'Eliminacion Compra a proveedor',
             ],
+            [
+                'name'  => 'Creacion de Promocion',
+            ],
+            [
+                'name'  => 'Eliminacion de Promocion',
+            ],
+
         ];
 
         foreach ($models as $model) {

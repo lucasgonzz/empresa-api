@@ -15,7 +15,6 @@ class AfipSelectedPaymentMethodSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
         
         $models = [
             [
@@ -30,7 +29,7 @@ class AfipSelectedPaymentMethodSeeder extends Seeder
         ];
 
         foreach ($models as $model) {
-            $model['user_id'] = $user->id;
+            $model['user_id'] = env('USER_ID');
             AfipSelectedPaymentMethod::create($model);
         }
     }

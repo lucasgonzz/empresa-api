@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\RecipeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
+use App\Http\Controllers\Helpers\article\VinotecaPriceHelper;
 use App\Http\Controllers\PriceChangeController;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Mail\Advise as AdviseMail;
@@ -128,6 +129,11 @@ class ArticleHelper {
 
             if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)) {
 
+
+                $cost = ArticlePricesHelper::aplicar_descuentos($article, $cost);
+
+                $cost = ArticlePricesHelper::aplicar_recargos($article, $cost);
+
                 ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $cost, $user);
 
             } else if (UserHelper::hasExtencion('lista_de_precios_por_categoria', $user)) {
@@ -156,6 +162,11 @@ class ArticleHelper {
             if (!is_null($article->percentage_gain)) {
                 
                 $final_price += $final_price * $article->percentage_gain / 100; 
+            }
+
+            if (UserHelper::hasExtencion('vinoteca', $user)) {
+
+                $final_price = VinotecaPriceHelper::calcular_presentacion($article, $final_price);
             }
 
 

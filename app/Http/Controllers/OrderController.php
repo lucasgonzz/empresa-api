@@ -78,7 +78,11 @@ class OrderController extends Controller
         $model->address_id = $request->address_id;
         $model->save();
         
-        GeneralHelper::attachModels($model, 'articles', $request->articles, ['price', 'amount', 'address_id']);
+        GeneralHelper::attachModels($model, 'articles', $request->articles, ['price', 'amount']);
+        
+        $model->total = OrderHelper::get_total($model);
+        $model->save();
+
         $this->sendAddModelNotification('Order', $model->id);
         return response()->json(['model' => $this->fullModel('Order', $model->id)], 200);
     }

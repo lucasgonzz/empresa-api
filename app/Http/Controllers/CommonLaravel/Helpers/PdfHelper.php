@@ -265,6 +265,9 @@ class PdfHelper {
 					$y_final = $instance->y; 
 				}
 		    }
+
+		    $instance->y = $y_final;
+		    
 		    $instance->Line(5, $start_y, 105, $start_y);
 		    $instance->Line(105, $start_y, 105, $y_final);
 		    $instance->Line(105, $y_final, 5, $y_final);

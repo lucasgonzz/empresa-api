@@ -17,7 +17,9 @@ class OrderPdf extends fpdf {
 		$this->line_height = 7;
 		
 		$this->user = UserHelper::getFullModel();
-		$this->model = $model;
+		$this->model = $model;	
+
+		$this->total_order = 0;
 
 		$this->AddPage();
 		$this->print();
@@ -74,7 +76,7 @@ class OrderPdf extends fpdf {
 		$this->SetFont('Arial', '', 10);
 		$this->x = 5;
 		foreach ($this->model->articles as $article) {
-			if ($this->y < 210) {
+			if ($this->y < 260) {
 				$this->printModel($article);
 			} else {
 				$this->AddPage();
@@ -82,6 +84,18 @@ class OrderPdf extends fpdf {
 				$this->printModel($article);
 			}
 		}
+
+		$this->total();
+	}
+
+	function total() {
+
+		$this->x = 5;
+		$this->y += 5;
+
+		$this->SetFont('Arial', 'B', 14);
+
+		$this->Cell(200, $this->line_height, 'Total: $'.Numbers::price($this->total_order), $this->b, 1, 'L');
 	}
 
 	function printDescription() {
@@ -114,10 +128,15 @@ class OrderPdf extends fpdf {
 
 		$this->MultiCell($this->getFields()['Notas'], $this->line_height, $model->pivot->notes, $this->b, 'L', false);
 	    $y_3 = $this->y;
-		$this->x = $this->getFields()['C. Barras']+$this->getFields()['Nombre']+$this->getFields()['C. Barras']+$this->getFields()['Precio']+$this->getFields()['Cantidad']+$this->getFields()['Notas']+5;
+		$this->x = $this->getFields()['C. Barras']+$this->getFields()['Nombre']+$this->getFields()['Precio']+$this->getFields()['Cantidad']+$this->getFields()['Notas']+5;
+		// $this->x = $this->getFields()['C. Barras']+$this->getFields()['Nombre']+$this->getFields()['C. Barras']+$this->getFields()['Precio']+$this->getFields()['Cantidad']+$this->getFields()['Notas']+5;
 		$this->y = $y_1;
 
-		$this->Cell($this->getFields()['Total'], $this->line_height, '$'.Numbers::price($model->pivot->price * $model->pivot->amount), $this->b, 0, 'L');
+		$total = (float)$model->pivot->price * (float)$model->pivot->amount;
+
+		$this->Cell($this->getFields()['Total'], $this->line_height, '$'.Numbers::price($total), $this->b, 0, 'L');
+
+		$this->total_order += $total;
 
 		if ($y_3 > $y_2) {
 			$this->y = $y_3;

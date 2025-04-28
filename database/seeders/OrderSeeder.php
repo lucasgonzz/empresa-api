@@ -18,7 +18,6 @@ class OrderSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
         $buyer = Buyer::where('email', 'lucasgonzalez210200@gmail.com')->first();
         $models = [
             [
@@ -42,10 +41,10 @@ class OrderSeeder extends Seeder
                 'order_status_id'       => $model['order_status_id'],
                 'deliver'               => $model['deliver'],
                 'created_at'            => $model['created_at'],
-                'user_id'               => $user->id,
+                'user_id'               => env('USER_ID'),
             ]);
 
-            $articles = Article::where('user_id', $user->id)
+            $articles = Article::where('user_id', env('USER_ID'))
                                 ->get();
 
             foreach ($articles as $article) {

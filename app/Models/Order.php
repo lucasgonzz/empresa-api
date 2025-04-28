@@ -9,7 +9,11 @@ class Order extends Model
     protected $guarded = [];
 
     function scopeWithAll($query) {
-        $query->with('order_status', 'articles.images', 'articles.colors', 'articles.sizes', 'address', 'cupon', 'buyer', 'payment_method.payment_method_type', 'delivery_zone', 'payment_card_info');
+        $query->with('order_status', 'articles.images', 'articles.colors', 'articles.sizes', 'cupon', 'buyer', 'payment_method.payment_method_type', 'delivery_zone', 'payment_card_info', 'promocion_vinotecas.images');
+    }
+
+    function promocion_vinotecas() {
+        return $this->belongsToMany(PromocionVinoteca::class)->withTrashed()->withPivot('cost', 'price', 'amount', 'notes');
     }
 
     function articles() {
@@ -50,9 +54,5 @@ class Order extends Model
 
     function payment() {
         return $this->hasOne('App\Models\Payment');
-    }
-
-    function address() {
-        return $this->belongsTo('App\Models\Address');
     }
 }

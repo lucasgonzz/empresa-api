@@ -21,7 +21,7 @@ class ArticlePriceTypeGroupController extends Controller
 
     public function store(Request $request) {
         $model = ArticlePriceTypeGroup::create([
-            'user_id'                  => $request->user_id,
+            'name'                  => $request->name,
             'user_id'               => $this->userId(),
         ]);
 
@@ -37,6 +37,9 @@ class ArticlePriceTypeGroupController extends Controller
 
     public function update(Request $request, $id) {
         $model = ArticlePriceTypeGroup::find($id);
+
+        $model->name = $request->name;
+        $model->save();
 
         GeneralHelper::attachModels($model, 'articles', $request->articles);
 

@@ -16,13 +16,43 @@ class SubCategorySeeder extends Seeder
      */
     public function run()
     {
-        $this->lucas();
+        $this->truvari();
+
+        $this->default();
     }
 
-    function lucas() {
-        $user = User::where('company_name', 'Autopartes Boxes')
-                    ->first();
-        $categories = Category::where('user_id', $user->id)
+    function truvari() {
+
+        if (env('FOR_USER') != 'truvari') {
+            return;
+        }
+        
+        $categories = Category::where('user_id', env('USER_ID'))
+                                ->get();
+
+        require('subcategories/truvari.php');
+
+        foreach ($sub_categories as $category) {
+            $num = 1;
+            foreach ($category['sub_categories'] as $sub_category) {
+                $sub_category = SubCategory::create([
+                    'num'           => $num,
+                    'name'          => $sub_category,
+                    'category_id'   => $category['category_id'],
+                    'user_id'       => env('USER_ID'),
+                ]);         
+                $num++;
+            }
+        }
+    }
+
+    function default() {
+
+        if (env('FOR_USER') == 'truvari') {
+            return;
+        }
+        
+        $categories = Category::where('user_id', env('USER_ID'))
                                 ->get();
 
         require('subcategories/supermercado.php');
@@ -34,12 +64,11 @@ class SubCategorySeeder extends Seeder
                     'num'           => $num,
                     'name'          => $sub_category,
                     'category_id'   => $category['category_id'],
-                    'user_id'       => $user->id,
+                    'user_id'       => env('USER_ID'),
                 ]);         
                 $num++;
             }
         }
-
     }
 }
  

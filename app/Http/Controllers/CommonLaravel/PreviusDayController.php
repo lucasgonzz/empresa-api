@@ -25,7 +25,7 @@ class PreviusDayController extends Controller
     |   
     */
 
-    static function previusDays($model_name, $index) {
+    static function previusDays($model_name, $index, $date_param = 'created_at') {
         
         $model_name = GeneralHelper::getModelName($model_name);
 
@@ -44,7 +44,7 @@ class PreviusDayController extends Controller
             $start_date = $start->format('Y-m-d H:i:s');
             $end_date = $start->addDay()->format('Y-m-d H:i:s');
             $models = $model_name::where('user_id', UserHelper::userId())
-                            ->whereBetween('created_at', [$start_date, $end_date])
+                            ->whereBetween($date_param, [$start_date, $end_date])
                             ->get();
             $result[$index]['date'] = $start_date;
             $result[$index]['models'] = $models;

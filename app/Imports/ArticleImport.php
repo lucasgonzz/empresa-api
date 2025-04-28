@@ -13,6 +13,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\getIva;
+use App\Http\Controllers\Helpers\import\article\IsArticleUpdated;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Http\Controllers\update;
 use App\Models\Address;
@@ -50,8 +51,16 @@ class ArticleImport implements ToCollection
         $this->import_history_id = $import_history_id;
         $this->pre_import_id = $pre_import_id;
         $this->provider = null;
+        
+
         $this->created_models = 0;
         $this->updated_models = 0;
+
+        $this->articulos_creados = [];
+        $this->articulos_actualizados = [];
+        $this->updated_props = [];
+
+
         $this->setAddresses();
         $this->setProps();
         $this->set_price_types();
@@ -138,7 +147,7 @@ class ArticleImport implements ToCollection
 
 
                         // Registra el progreso y errores en Import History
-                        ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, $error_message);
+                        ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, $error_message, $this->articulos_creados, $this->articulos_actualizados, $this->updated_props);
                         ArticleImportHelper::error_notification($this->user);
                         return;
 
@@ -146,7 +155,7 @@ class ArticleImport implements ToCollection
 
 
                 } else {
-                    Log::info('Se omitio una fila N° '.$this->num_row.' con nombre '.ImportHelper::getColumnValue($row, 'nombre', $this->columns));
+                    // Log::info('Se omitio una fila N° '.$this->num_row.' con nombre '.ImportHelper::getColumnValue($row, 'nombre', $this->columns));
                 } 
 
             } else if ($this->num_row > $this->finish_row) {
@@ -158,7 +167,7 @@ class ArticleImport implements ToCollection
 
         if (!$this->trabajo_terminado) {
 
-            ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path);
+            ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, null, $this->articulos_creados, $this->articulos_actualizados, $this->updated_props);
 
             ArticleImportHelper::enviar_notificacion($this->user);
             
@@ -168,10 +177,10 @@ class ArticleImport implements ToCollection
     }
 
     function set_finish_row($rows) {
-        Log::info('entro a set_finish_row');
+        // Log::info('entro a set_finish_row');
         if (is_null($this->finish_row) || $this->finish_row == '') {
             $this->finish_row = count($rows);
-            Log::info('set_finish_row: '.$this->finish_row);
+            // Log::info('set_finish_row: '.$this->finish_row);
         } 
     }
 
@@ -189,7 +198,7 @@ class ArticleImport implements ToCollection
 
     function saveArticle($row) {
 
-        Log::info('saveArticle para row N° '.$this->num_row);
+        // Log::info('saveArticle para row N° '.$this->num_row);
         
         $data = [];
 
@@ -201,7 +210,6 @@ class ArticleImport implements ToCollection
             $column_value = ImportHelper::getColumnValue($row, $value, $this->columns);
             
             if (ImportHelper::usa_columna($column_value)) {
-                Log::info('Usa la columna '.$key.' con el valor: '.$column_value);
                 $data[$key] = $column_value; 
             }
         }
@@ -215,11 +223,8 @@ class ArticleImport implements ToCollection
 
         $category_excel = ImportHelper::getColumnValue($row, 'categoria', $this->columns);
         
-        Log::info('Categoria: '.$category_excel);
         if (ImportHelper::usa_columna($category_excel)) {
-            Log::info('Usa la categoria');
             $data['category_id'] = LocalImportHelper::getCategoryId($category_excel, $this->ct, $this->user);
-
 
             $sub_category_excel = ImportHelper::getColumnValue($row, 'sub_categoria', $this->columns);
             $data['sub_category_id'] = LocalImportHelper::getSubcategoryId($category_excel, $sub_category_excel, $this->ct, $this->user);
@@ -228,30 +233,35 @@ class ArticleImport implements ToCollection
 
         $article = null;
         
-        if (!is_null($this->articulo_existente) && $this->isDataUpdated($row, $data)) {
-            
-            Log::info('Hubo cambios en fila '.$this->num_row);
-            
-            $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $this->articulo_existente->id, $this->user->id);
+        if (
+            !is_null($this->articulo_existente) 
+        ) {
 
-            if (UserHelper::hasExtencion('articles_pre_import', $this->user)) {
-                
-                Log::info('Se agrego a pre_import la N° '.$this->num_row);
+            $res = IsArticleUpdated::check($this->articulo_existente, $data, $this->updated_props);
 
-                $this->articles_pre_import_helper->add_article($this->articulo_existente, $data);
+            if ($res['is_data_updated']) {
 
-            } else {
+                $this->updated_props = $res['updated_props'];
 
-                $article = Article::find($this->articulo_existente->id);
+                $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), $this->articulo_existente->id, $this->user->id);
 
-                $article->update($data);
+                if (UserHelper::hasExtencion('articles_pre_import', $this->user)) {
+                    
+                    $this->articles_pre_import_helper->add_article($this->articulo_existente, $data);
 
-                Log::info('Se actualizo '.$this->articulo_existente->name);
+                } else {
 
-                $this->articulo_existente = $article;
+                    $article = Article::find($this->articulo_existente->id);
 
-                $this->updated_models++;
+                    $article->update($data);
+
+                    $this->articulo_existente = $article;
+
+                    $this->updated_models++;
+                    $this->articulos_actualizados[] = $article;
+                }
             }
+            
 
         } else if (is_null($this->articulo_existente) && $this->create_and_edit) {
 
@@ -270,17 +280,18 @@ class ArticleImport implements ToCollection
 
             $this->articulo_existente = $article;
 
-            Log::info('Se creo');
+            // Log::info('Se creo');
 
             $this->created_models++;
+            $this->articulos_creados[] = $article;
 
         } else {
-            Log::info('No entro a ningun lado la N° '.$this->num_row);
+            // Log::info('No entro a ningun lado la N° '.$this->num_row);
         }
 
         if (!is_null($this->articulo_existente)) {
             
-            Log::info('$article no es null:');
+            // Log::info('$article no es null:');
 
             $this->aplicar_price_types($row);
 
@@ -300,11 +311,11 @@ class ArticleImport implements ToCollection
 
     function set_propiedades_de_distribuidora() {
 
-        Log::info('set_propiedades_de_distribuidora');
+        // Log::info('set_propiedades_de_distribuidora');
 
         if (UserHelper::hasExtencion('articulos_con_propiedades_de_distribuidora', $this->user)) {
 
-            Log::info('SI ENTRO en set_propiedades_de_distribuidora');
+            // Log::info('SI ENTRO en set_propiedades_de_distribuidora');
 
             ArticleImportHelper::set_tipo_de_envase(
                         $this->articulo_existente, 
@@ -326,7 +337,7 @@ class ArticleImport implements ToCollection
                         $this->row,
                     );
         } else {
-            Log::info('NO ENTRO en set_propiedades_de_distribuidora');
+            // Log::info('NO ENTRO en set_propiedades_de_distribuidora');
         }
     }
 
@@ -342,8 +353,8 @@ class ArticleImport implements ToCollection
 
                 $percentage = ImportHelper::getColumnValue($row, $row_name, $this->columns);
 
-                Log::info('ArticleImport percentage row :');
-                Log::info($percentage);
+                // Log::info('ArticleImport percentage row :');
+                // Log::info($percentage);
 
                 $price_types[] = [
                     'id'            => $price_type->id,
@@ -367,29 +378,105 @@ class ArticleImport implements ToCollection
         return env('SOBRE_ESCRIBIR_ARTICULOS_AL_IMPORTAR', false);
     }
 
-    function isDataUpdated($row, $data) {
-        $epsilon = 0.00001;
+    // function isDataUpdated($row, $data) {
+    //     $epsilon = 0.00001;
 
-        $new_price = null;
-        if (isset($data['price'])) {
-            $new_price = (float)$data['price'];
-        }
+    //     $new_price = null;
+    //     if (isset($data['price'])) {
+    //         $new_price = (float)$data['price'];
+    //     }
 
-        $actual_price = (float)$this->articulo_existente->price;
+    //     $updated_props = [];
 
-        return  (isset($data['name']) && $data['name']                          != $this->articulo_existente->name) ||
-                (isset($data['bar_code']) && $data['bar_code']                  != $this->articulo_existente->bar_code) ||
-                (isset($data['provider_code']) && $data['provider_code']        != $this->articulo_existente->provider_code) ||
-                (isset($data['stock_min']) && $data['stock_min']                != $this->articulo_existente->stock_min) ||
-                (isset($data['iva_id']) && $data['iva_id']                      != $this->articulo_existente->iva_id) ||
-                (isset($data['cost']) && $data['cost']                          != $this->articulo_existente->cost) ||
-                (isset($data['cost_in_dollars']) && $data['cost_in_dollars']    != $this->articulo_existente->cost_in_dollars) ||
-                (isset($data['percentage_gain']) && $data['percentage_gain']    != $this->articulo_existente->percentage_gain) ||
-                (!is_null($new_price) && abs($actual_price - $new_price) > $epsilon) ||
-                (isset($data['category_id']) && $data['category_id']            != $this->articulo_existente->category_id) ||
-                (isset($data['sub_category_id']) && $data['sub_category_id']    != $this->articulo_existente->sub_category_id) ||
-                (isset($data['percentage_gain_blanco']) && $data['percentage_gain_blanco']    != $this->articulo_existente->percentage_gain_blanco);
-    }
+    //     $actual_pricel = (float)$this->articulo_existente->price;
+
+    //             if (
+    //                 isset($data['name']) 
+    //                 && $data['name']                        != $this->articulo_existente->name
+    //             ) {
+    //                 $updated_props[]
+    //             }
+                
+    //             if (
+    //                 isset($data['bar_code']) 
+    //                 && $data['bar_code']                != $this->articulo_existente->bar_code
+    //             ) {
+    //             }
+                
+    //             if (
+    //                 isset($data['provider_code']) 
+    //                 && $data['provider_code']      != $this->articulo_existente->provider_code
+    //             ) {
+    //             }
+                
+    //             if (
+    //                 isset($data['stock_min']) 
+    //                 && $data['stock_min']              != $this->articulo_existente->stock_min
+    //             ) {
+    //             }
+                
+    //             if (
+    //                 isset($data['iva_id']) 
+    //                 && $data['iva_id']                    != $this->articulo_existente->iva_id
+    //             ) {
+    //             }
+                
+    //             if (
+    //                 isset($data['cost']) 
+    //                 && $data['cost']                        != $this->articulo_existente->cost
+    //             ) {
+    //             }
+                
+    //             if (
+    //                 isset($data['cost_in_dollars']) 
+    //                 && $data['cost_in_dollars']  != $this->articulo_existente->cost_in_dollars
+    //             ) {
+    //             }
+                
+    //             if (
+    //                 isset($data['percentage_gain']) 
+    //                 && $data['percentage_gain']  != $this->articulo_existente->percentage_gain
+    //             ) {
+    //             }
+                
+    //             if (!is_null($new_price) && abs($actual_price - $new_price) > $epsilon) {
+
+    //             } 
+
+    //             if (
+    //                 isset($data['category_id']) 
+    //                 && $data['category_id']          != $this->articulo_existente->category_id) 
+    //             {
+    //             }
+                
+    //             if (
+    //                 isset($data['sub_category_id']) 
+    //                 && $data['sub_category_id']  != $this->articulo_existente->sub_category_id) 
+    //             {
+    //             }
+                
+    //             if (
+    //                 isset($data['percentage_gain_blanco']) 
+    //                 && $data['percentage_gain_blanco']    != $this->articulo_existente->percentage_gain_blanco) 
+    //             {
+    //             }
+                
+
+
+
+    //     return  (isset($data['name']) && $data['name']                          != $this->articulo_existente->name) ||
+    //             (isset($data['bar_code']) && $data['bar_code']                  != $this->articulo_existente->bar_code) ||
+    //             (isset($data['provider_code']) && $data['provider_code']        != $this->articulo_existente->provider_code) ||
+    //             (isset($data['stock_min']) && $data['stock_min']                != $this->articulo_existente->stock_min) ||
+    //             (isset($data['iva_id']) && $data['iva_id']                      != $this->articulo_existente->iva_id) ||
+    //             (isset($data['cost']) && $data['cost']                          != $this->articulo_existente->cost) ||
+    //             (isset($data['cost_in_dollars']) && $data['cost_in_dollars']    != $this->articulo_existente->cost_in_dollars) ||
+    //             (isset($data['percentage_gain']) && $data['percentage_gain']    != $this->articulo_existente->percentage_gain) ||
+    //             (!is_null($new_price) && abs($actual_price - $new_price) > $epsilon) ||
+    //             (isset($data['category_id']) && $data['category_id']            != $this->articulo_existente->category_id) ||
+    //             (isset($data['sub_category_id']) && $data['sub_category_id']    != $this->articulo_existente->sub_category_id) ||
+    //             (isset($data['percentage_gain_blanco']) && $data['percentage_gain_blanco']    != $this->articulo_existente->percentage_gain_blanco);
+    // }
 
     // function cambio_el_stock_por_direccion($row, $data) {
         
@@ -433,21 +520,21 @@ class ArticleImport implements ToCollection
 
         foreach ($this->addresses as $address) {
             $nombre_columna = str_replace(' ', '_', strtolower($address->street));
-            Log::info('----------------------- ');
-            Log::info('nombre_columna: '.$nombre_columna);
+            // Log::info('----------------------- ');
+            // Log::info('nombre_columna: '.$nombre_columna);
 
             $address_excel = ImportHelper::getColumnValue($row, $nombre_columna, $this->columns);
-            Log::info('se llamo getColumnValue');
-            Log::info($address_excel);
+            // Log::info('se llamo getColumnValue');
+            // Log::info($address_excel);
 
 
-            Log::info('address_excel de '.$nombre_columna.' para '.$this->articulo_existente->name.': '.$address_excel);
+            // Log::info('address_excel de '.$nombre_columna.' para '.$this->articulo_existente->name.': '.$address_excel);
             
             if (!is_null($address_excel)) {
 
                 $address_excel = (float)$address_excel;
 
-                // Log::info('Columna '.$address->street.' para articulo '.$this->articulo_existente->name.' vino con '.$address_excel);
+                Log::info('Columna '.$address->street.' para articulo '.$this->articulo_existente->name.' vino con '.$address_excel);
                 $data['model_id'] = $this->articulo_existente->id;
                 $data['to_address_id'] = $address->id;
                 $data['concepto_stock_movement_name'] = 'Importacion de excel';
@@ -467,21 +554,21 @@ class ArticleImport implements ToCollection
                     $data['amount'] = $address_excel;
                     $set_stock_from_addresses = true;
                     $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id, $segundos_para_agregar);
-                    Log::info('Se mandaron '.$address_excel.' a '.$address->street);
+                    // Log::info('Se mandaron '.$address_excel.' a '.$address->street);
 
                 } else {
-                    Log::info('Ya tenia la direccion '.$finded_address->street);
+                    // Log::info('Ya tenia la direccion '.$finded_address->street);
                     
                     $cantidad_anterior = $finded_address->pivot->amount;
-                    Log::info('cantidad_anterior: '.$cantidad_anterior);
+                    // Log::info('cantidad_anterior: '.$cantidad_anterior);
 
-                    Log::info('address_excel: '.$address_excel);
+                    // Log::info('address_excel: '.$address_excel);
                     if ($address_excel != $cantidad_anterior) {
                         $set_stock_from_addresses = true;
                         $new_amount = $address_excel - $cantidad_anterior;
                         $data['amount'] = $new_amount;
                         $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id, $segundos_para_agregar);
-                        Log::info('Se mandaron '.$new_amount.' a '.$address->street);
+                        // Log::info('Se mandaron '.$new_amount.' a '.$address->street);
                     } else {
                         // Log::info('No se actualizo porque no hubo ningun cambio');
                     }
@@ -514,11 +601,14 @@ class ArticleImport implements ToCollection
             $data['amount'] = $stock_actual - $this->articulo_existente->stock;
 
             $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id);
-            Log::info('se mando a guardar stock_movement de '.$this->articulo_existente->name.' con amount = '.$data['amount']);
+            // Log::info('se mando a guardar stock_movement de '.$this->articulo_existente->name.' con amount = '.$data['amount']);
         } 
     }
 
     function aplicar_descuentos($row) {
+
+        // Log::info('descuentos:');
+        // Log::info(ImportHelper::getColumnValue($row, 'descuentos', $this->columns));
 
         if (!is_null(ImportHelper::getColumnValue($row, 'descuentos', $this->columns))) {
 
@@ -536,7 +626,7 @@ class ArticleImport implements ToCollection
 
             if (UserHelper::hasExtencion('articulos_precios_en_blanco', $this->user)) {
 
-                Log::info('Tiene extencion para descuentos en blanco');
+                // Log::info('Tiene extencion para descuentos en blanco');
 
                 $this->aplicar_descuentos_en_blanco($row);
             }
@@ -547,12 +637,12 @@ class ArticleImport implements ToCollection
 
         if (!is_null(ImportHelper::getColumnValue($row, 'descuentos_en_blanco', $this->columns))) {
             
-            Log::info('Aplicando descuentos en blanco');
+            // Log::info('Aplicando descuentos en blanco');
 
             $_discounts = explode('_', ImportHelper::getColumnValue($row, 'descuentos_en_blanco', $this->columns));
             
-            Log::info('_discounts:');
-            Log::info($_discounts);
+            // Log::info('_discounts:');
+            // Log::info($_discounts);
 
             $discounts = [];
             

@@ -24,7 +24,7 @@ class StockHelper {
             $browser->pause(1000);
 
             $browser->type('#stock-movement-search-povider-search-modal-input', $data['provider_name']);
-            $browser->keys('#stock-movement-search-povider-search-modal-input', ['{CONTROL}']);
+            $browser->keys('#stock-movement-search-povider-search-modal-input', ['{ENTER}']);
             $browser->pause(1000);
             $browser->keys('#stock-movement-search-povider-search-modal-input', ['{ENTER}']);
 

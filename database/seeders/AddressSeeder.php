@@ -15,31 +15,33 @@ class AddressSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'Autopartes Boxes')
-                    ->first();
+
+        if (env('FOR_USER') == 'fenix') {
+            return;
+        }
         $models = [
             [
                 'num'       => 1,
                 'street'    => 'Tucuman',
-                'user_id'   => $user->id,
+                'user_id'   => env('USER_ID'),
             ],
             [
                 'num'       => 2,
                 'street'    => 'Santa Fe',
                 'default_address'    => 1,
-                'user_id'   => $user->id,
+                'user_id'   => env('USER_ID'),
             ],
             [
                 'num'       => 3,
                 'street'    => 'Buenos Aires',
                 'default_address'    => 1,
-                'user_id'   => $user->id,
+                'user_id'   => env('USER_ID'),
             ],
             [
                 'num'       => 4,
                 'street'    => 'Mar del Plata',
                 'default_address'    => 1,
-                'user_id'   => $user->id,
+                'user_id'   => env('USER_ID'),
             ],
             // [
             //     'street'    => 'San martin 221',

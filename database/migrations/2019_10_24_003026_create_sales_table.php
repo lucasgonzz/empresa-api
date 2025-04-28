@@ -71,6 +71,8 @@ class CreateSalesTable extends Migration
 
             $table->integer('actualizandose_por_id')->nullable();
 
+            $table->timestamp('fecha_entrega')->nullable();
+
             $table->foreign('user_id')
                     ->references('id')->on('users');
             $table->foreign('client_id')

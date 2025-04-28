@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Helpers\sale;
 
 use App\Http\Controllers\Stock\StockMovementController;
-use App\Models\ArticlePurchase;
 
 class ComboHelper {
 	

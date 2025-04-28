@@ -46,7 +46,7 @@ class set_conceptos_stock_movements extends Command
 
         $stock_movements = StockMovement::where('user_id', $this->user_id)
                                         ->orderBy('created_at', 'ASC')
-                                        ->whereNull('concepto_stock_movement_id')
+                                        // ->whereNull('concepto_stock_movement_id')
                                         ->get();
 
         $movimientos_chequeados = 0;
@@ -59,9 +59,13 @@ class set_conceptos_stock_movements extends Command
 
             $concepto_id = $this->get_concepto_id($stock_movement);
 
-            $stock_movement->concepto_stock_movement_id = $concepto_id;
-            $stock_movement->timestamps = false;
-            $stock_movement->save();
+            if (!is_null($concepto_id)) {
+                
+                $stock_movement->concepto_stock_movement_id = $concepto_id;
+                $stock_movement->timestamps = false;
+                $stock_movement->save();
+            }
+
             
             if ($movimientos_chequeados % 1000 == 0) {
                 $this->comment('Se chequearon '.$movimientos_chequeados);
@@ -77,7 +81,7 @@ class set_conceptos_stock_movements extends Command
     function get_concepto_id($stock_movement) {
 
         if (is_null($stock_movement->concepto)) {
-            return;
+            return null;
         }
 
 
@@ -153,7 +157,7 @@ class set_conceptos_stock_movements extends Command
         }
         
         if ($stock_movement->concepto == 'Importacion Excel') {
-            return $conceptos['Mov manual entre depositos'];
+            return $conceptos['Importacion Excel'];
         }
         
         if (substr($stock_movement->concepto, 0, 23) == 'Eliminacion Pedido Prov') {
@@ -167,6 +171,8 @@ class set_conceptos_stock_movements extends Command
 
             $this->info('No se encontro concepto para stock_movement id: '.$stock_movement->id);
         }
+
+        return null;
 
 
     }

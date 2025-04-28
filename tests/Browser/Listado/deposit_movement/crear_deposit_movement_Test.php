@@ -150,7 +150,7 @@ class crear_deposit_movement_Test extends DuskTestCase
         $browser->pause(1000);
 
         $browser->type('#deposit_movement-articles-search-modal-input', $article['name']);
-        $browser->keys('#deposit_movement-articles-search-modal-input', ['{CONTROL}']);
+        $browser->keys('#deposit_movement-articles-search-modal-input', ['{ENTER}']);
         $browser->pause(1000);
         
         $browser->waitFor('@table-results-article');

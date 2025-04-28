@@ -35,7 +35,7 @@ class SetStockResultante  {
         if (!is_null($article)) {
 
             $stock_movement_anterior = StockMovement::where('article_id', $article->id)
-                                                    ->orderBy('created_at', 'DESC')
+                                                    ->orderBy('id', 'DESC')
                                                     ->where('id', '<', $stock_movement->id)
                                                     ->first();
 

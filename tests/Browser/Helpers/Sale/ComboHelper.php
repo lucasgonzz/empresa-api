@@ -41,7 +41,7 @@ class ComboHelper
                 
                 ->pause(500)
 
-                ->keys('#select-combo-search-modal-input', ['{CONTROL}'])
+                ->keys('#select-combo-search-modal-input', ['{ENTER}'])
 
                 ->pause(1500)
 

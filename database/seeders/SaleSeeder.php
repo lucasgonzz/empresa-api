@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\CurrentAcountAndCommissionHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\Seeders\SaleSeederHelper;
 use App\Models\Address;
 use App\Models\Article;
 use App\Models\CurrentAcount;
@@ -39,9 +40,9 @@ class SaleSeeder extends Seeder
 
         require('sales/reportes.php');
 
-        $this->create_sales($ventas_desde_principio_de_mes);
+        SaleSeederHelper::create_sales($ventas_desde_principio_de_mes);
         
-        $this->create_sales($ventas_meses_anterioires);
+        SaleSeederHelper::create_sales($ventas_meses_anterioires);
 
     }
 
@@ -49,9 +50,9 @@ class SaleSeeder extends Seeder
 
         require('sales/reportes2.php');
 
-        // $this->create_sales($ventas_desde_principio_de_mes);
+        // SaleSeederHelper::create_sales($ventas_desde_principio_de_mes);
         
-        $this->create_sales($ventas_meses_anterioires);
+        SaleSeederHelper::create_sales($ventas_meses_anterioires);
 
     }
 
@@ -97,31 +98,31 @@ class SaleSeeder extends Seeder
             ],
         ];
 
-        SaleHelper::attachProperies($created_sale, $this->setRequest($sale));
+        SaleHelper::attachProperies($created_sale, SaleSeederHelper::setRequest($sale));
     }
 
-    function create_sales($sales) {
-        $user = User::find(env('USER_ID'));
+    // function create_sales($sales) {
+    //     $user = User::find(env('USER_ID'));
 
-        foreach ($sales as $sale) {
+    //     foreach ($sales as $sale) {
 
-            $data = [
-                'num'               => $sale['num'],
-                'total'             => $sale['total'],
-                'address_id'        => $sale['address_id'],
-                'employee_id'       => $sale['employee_id'],
-                'client_id'         => $sale['client_id'],
-                'created_at'        => $sale['created_at'],
-                'user_id'           => $user->id,
-                'save_current_acount'=> 1,
-                'terminada'         => 1,
-                'terminada_at'      => $sale['created_at'],
-            ];
+    //         $data = [
+    //             'num'               => $sale['num'],
+    //             'total'             => $sale['total'],
+    //             'address_id'        => $sale['address_id'],
+    //             'employee_id'       => $sale['employee_id'],
+    //             'client_id'         => $sale['client_id'],
+    //             'created_at'        => $sale['created_at'],
+    //             'user_id'           => env('USER_ID'),
+    //             'save_current_acount'=> 1,
+    //             'terminada'         => 1,
+    //             'terminada_at'      => $sale['created_at'],
+    //         ];
             
-            $created_sale = Sale::create($data);
-            SaleHelper::attachProperies($created_sale, $this->setRequest($sale));
-        }
-    }
+    //         $created_sale = Sale::create($data);
+    //         SaleHelper::attachProperies($created_sale, SaleSeederHelper::setRequest($sale));
+    //     }
+    // }
 
     function ventas_meses_atras() {
         $this->ventas_en_mostrador();
@@ -137,7 +138,7 @@ class SaleSeeder extends Seeder
                 'client_id'             => 1,
                 'employee_id'           => 503,
                 'save_current_acount'   => 1,
-                'user_id'               => $user->id,
+                'user_id'               => env('USER_ID'),
             ],
         ];
 
@@ -148,7 +149,7 @@ class SaleSeeder extends Seeder
 
                 $sale = Sale::create($model);
 
-                SaleHelper::attachProperies($sale, $this->setRequest($sale));
+                SaleHelper::attachProperies($sale, SaleSeederHelper::setRequest($sale));
 
                 $this->pago_para_la_venta($sale);
             }
@@ -187,7 +188,7 @@ class SaleSeeder extends Seeder
                 'save_current_acount'   => 0,
                 'omitir_en_cuenta_corriente'   => 1,
                 'current_acount_payment_method_id'  => 2,
-                'user_id'       => $user->id,
+                'user_id'       => env('USER_ID'),
             ],
         ];
 
@@ -199,7 +200,7 @@ class SaleSeeder extends Seeder
 
                 $sale = Sale::create($model);
 
-                SaleHelper::attachProperies($sale, $this->setRequest($sale));
+                SaleHelper::attachProperies($sale, SaleSeederHelper::setRequest($sale));
             }
             $this->multiplo_price++;
         }
@@ -215,49 +216,49 @@ class SaleSeeder extends Seeder
                 'client_id'     => 1,
                 'employee_id'   => 503,
                 'save_current_acount'   => 1,
-                'user_id'       => $user->id,
+                'user_id'       => env('USER_ID'),
             ],
             [
                 'num'           => 2,
                 'client_id'     => 1,
                 'employee_id'   => 504,
                 'save_current_acount'   => 1,
-                'user_id'       => $user->id,
+                'user_id'       => env('USER_ID'),
             ],
             [
                 'num'           => 3,
                 'client_id'     => 1,
                 'employee_id'   => 503,
                 'save_current_acount'   => 1,
-                'user_id'       => $user->id,
+                'user_id'       => env('USER_ID'),
             ],
             [
                 'num'           => 4,
                 'client_id'     => 1,
                 'employee_id'   => 504,
                 'save_current_acount'   => 1,
-                'user_id'       => $user->id,
+                'user_id'       => env('USER_ID'),
             ],
             [
                 'num'           => 5,
                 'client_id'     => 1,
                 'employee_id'   => 504,
                 'save_current_acount'   => 1,
-                'user_id'       => $user->id,
+                'user_id'       => env('USER_ID'),
             ],
             [
                 'num'           => 6,
                 'client_id'     => 1,
                 'employee_id'   => 504,
                 'save_current_acount'   => 1,
-                'user_id'       => $user->id,
+                'user_id'       => env('USER_ID'),
             ],
             [
                 'num'           => 7,
                 'client_id'     => 1,
                 'employee_id'   => 504,
                 'save_current_acount'   => 1,
-                'user_id'       => $user->id,
+                'user_id'       => env('USER_ID'),
             ],
         ];
 
@@ -271,7 +272,7 @@ class SaleSeeder extends Seeder
 
             $sale = Sale::create($model);
 
-            SaleHelper::attachProperies($sale, $this->setRequest($sale));
+            SaleHelper::attachProperies($sale, SaleSeederHelper::setRequest($sale));
         }
     }
 
@@ -399,23 +400,23 @@ class SaleSeeder extends Seeder
 
     function videos() {
         $user = User::find(env('USER_ID'));
-        $addresses = Address::where('user_id', $user->id)
+        $addresses = Address::where('user_id', env('USER_ID'))
                         ->get();
-        $employees = User::where('owner_id', $user->id)
+        $employees = User::where('owner_id', env('USER_ID'))
                         ->get();
         $ct = new Controller();
         for ($day=10; $day >= 0; $day--) { 
             $minutes = 100;
             foreach ($employees as $employee) {
                 $sale = Sale::create([
-                    'user_id'           => $user->id,
-                    'num'               => $ct->num('sales', $user->id),
+                    'user_id'           => env('USER_ID'),
+                    'num'               => $ct->num('sales', env('USER_ID')),
                     'created_at'        => Carbon::now()->subDays($day)->subMinutes($minutes),
                     'employee_id'       => $employee->id,
                     'address_id'        => count($addresses) >= 1 ? $addresses[0]->id : null,
                 ]);
                 $minutes -= 10;
-                $articles = Article::where('user_id', $user->id)
+                $articles = Article::where('user_id', env('USER_ID'))
                                     ->get();
                 foreach ($articles as $article) {
                     $sale->articles()->attach($article->id, [
@@ -428,31 +429,31 @@ class SaleSeeder extends Seeder
         }
     }
 
-    function setRequest($sale) {
-        $request = new \stdClass();
-        $request->items = [];
-        $request->discounts = [];
-        $request->surchages = [];
-        $request->selected_payment_methods = $sale['payment_methods'];
-        $request->current_acount_payment_method_id = null;
-        $request->discount_amount = null;
-        $request->discount_percentage = null;
-        $request->client_id = $sale['client_id'];
+    // function setRequest($sale) {
+    //     $request = new \stdClass();
+    //     $request->items = [];
+    //     $request->discounts = [];
+    //     $request->surchages = [];
+    //     $request->selected_payment_methods = $sale['payment_methods'];
+    //     $request->current_acount_payment_method_id = null;
+    //     $request->discount_amount = null;
+    //     $request->discount_percentage = null;
+    //     $request->client_id = $sale['client_id'];
 
-        foreach ($sale['articles'] as $article) {
-            $_article = [
-                'id'            => $article['id'],
-                'is_article'    => true,
-                'name'          => null,
-                'num'           => null,
-                'amount'        => $article['amount'],
-                'article_variant_id'        => null,
-                'cost'          => $article['cost'],
-                'price_vender'  => $article['price_vender'],
-            ];
-            $request->items[] = $_article; 
-        }
+    //     foreach ($sale['articles'] as $article) {
+    //         $_article = [
+    //             'id'            => $article['id'],
+    //             'is_article'    => true,
+    //             'name'          => null,
+    //             'num'           => null,
+    //             'amount'        => $article['amount'],
+    //             'article_variant_id'        => null,
+    //             'cost'          => $article['cost'],
+    //             'price_vender'  => $article['price_vender'],
+    //         ];
+    //         $request->items[] = $_article; 
+    //     }
 
-        return $request;
-    }
+    //     return $request;
+    // }
 }

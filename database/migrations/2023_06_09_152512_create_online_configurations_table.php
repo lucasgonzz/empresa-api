@@ -34,6 +34,15 @@ class CreateOnlineConfigurationsTable extends Migration
             $table->boolean('save_sale_after_finish_order')->default(1)->nullable();
             $table->string('order_description')->nullable();
             $table->boolean('show_article_image')->default(1);
+            $table->boolean('usar_cupones')->default(0);
+
+            $table->integer('cantidad_tarjetas_en_telefono')->default(1);
+            $table->integer('cantidad_tarjetas_en_tablet')->default(3);
+            $table->integer('cantidad_tarjetas_en_notebook')->default(4);
+            $table->integer('cantidad_tarjetas_en_escritorio')->default(5);
+
+            $table->integer('online_template_id')->default(1);
+            
             $table->integer('user_id');
             $table->timestamps();
         });

@@ -2,11 +2,39 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\AfipHelper;
 use App\Models\Sale;
 use Illuminate\Http\Request;
 
 class AfipTicketController extends Controller
 {
+
+    function get_importes($sale_id) {
+        $sale = Sale::find($sale_id);
+
+        $afip_helper = new AfipHelper($sale);
+
+        $importes = $afip_helper->getImportes();
+
+        $data = [
+            'ver'           => 1,
+            'fecha'         => date_format($sale->afip_ticket->created_at, 'Y-m-d'),
+            'cuit'          => $sale->afip_ticket->cuit_negocio,
+            'ptoVta'        => $sale->afip_ticket->punto_venta,
+            'tipoCmp'       => $sale->afip_ticket->cbte_tipo,
+            'nroCmp'        => $sale->afip_ticket->cbte_numero,
+            'importe'       => $sale->afip_ticket->importe_total,
+            'moneda'        => $sale->afip_ticket->moneda_id,
+            'ctz'           => 1,
+            'tipoDocRec'    => AfipHelper::getDocType('Cuit'),
+            'nroDocRec'     => $sale->afip_ticket->cuit_cliente,
+            'codAut'        => $sale->afip_ticket->cae,
+        ];
+        $afip_link = 'https://www.afip.gob.ar/fe/qr/?'.base64_encode(json_encode($data));
+
+        return response()->json(['importes' => $importes, 'afip_qr_link' => $afip_link]);
+    }
+
     function problemas_al_facturar() {
 
         $sales_with_afip_errors = Sale::where('user_id', $this->userId())

@@ -16,8 +16,6 @@ class ClientsTableSeeder extends Seeder
      */
     public function run()
     {
-        $users = User::where('company_name', 'Autopartes Boxes')
-                        ->get();
         $models = [
             [
                 'name'              => 'Marcos Gonzalez',
@@ -47,8 +45,8 @@ class ClientsTableSeeder extends Seeder
         $ct = new Controller();
         foreach ($users as $user) {
             foreach ($models as $model) {
-                $model['num']     = $ct->num('clients', $user->id);  
-                $model['user_id'] = $user->id;
+                $model['num']     = $ct->num('clients', env('USER_ID'));  
+                $model['user_id'] = env('USER_ID');
             }
             Client::create($model);
         }

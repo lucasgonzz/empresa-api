@@ -15,6 +15,10 @@ class Category extends Model
         $q->with('price_types');
     }
 
+    function sellers() {
+        return $this->belongsToMany(Seller::class)->withPivot('percentage');
+    }
+
     function sub_categories() {
         return $this->hasMany(SubCategory::class);
     }

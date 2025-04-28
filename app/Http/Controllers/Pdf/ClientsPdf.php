@@ -54,12 +54,12 @@ class ClientsPdf extends fpdf {
 		$this->SetFont('Arial', '', 10);
 		$this->x = 5;
 		foreach ($this->clients as $client) {
-			if ($this->y < 210) {
+			if ($this->y < 280) {
 				$this->printClient($client);
 			} else {
 				$this->AddPage();
 				$this->x = 5;
-				$this->y = 90;
+				$this->y = 40;
 				$this->printClient($client);
 			}
 		}

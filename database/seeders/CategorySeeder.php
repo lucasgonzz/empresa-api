@@ -17,13 +17,40 @@ class CategorySeeder extends Seeder
      */
     public function run()
     {
-        $this->lucas();
+        $this->truvari();
+
+        $this->default();
     }
 
 
-    function lucas() {
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
-        // $categories = ['Lava ropas', 'Aires acondicionados', 'Computacion', 'Tanques de oxigeno', 'cosas para la casa', 'Repuestos de lavarropas', 'repuestos de aires acondicionados', 'repuestos de muchas cosas'];
+    function truvari() {
+        if (env('FOR_USER') != 'truvari') {
+            return;
+        }
+
+        $categories = [
+            'Vinos',
+            'Espumantes',
+            'Bebidas varias',
+            'Whiskies Importados',
+        ];
+
+        $num = 1;
+        foreach ($categories as $category) {
+            Category::create([
+                'num'     => $num,
+                'name'    => $category,
+                'user_id' => env('USER_ID'),
+            ]);
+            $num++;
+        }
+    }
+
+
+    function default() {
+        if (env('FOR_USER') == 'truvari') {
+            return;
+        }
         $models = [
             'Herramientas',
             'Utensilios',
@@ -50,19 +77,19 @@ class CategorySeeder extends Seeder
             $categories[] = Category::create([
                 'num'     => $num,
                 'name'    => $category,
-                'user_id' => $user->id,
+                'user_id' => env('USER_ID'),
             ]);
             $num++;
         }
 
         if (env('FOR_USER') == 'golo_norte') {
-            $this->adjuntar_price_types($categories, $user);
+            $this->adjuntar_price_types($categories);
         }
     }
 
-    function adjuntar_price_types($categories, $user) {
+    function adjuntar_price_types($categories) {
 
-        $price_types = PriceType::where('user_id', $user->id)
+        $price_types = PriceType::where('user_id', env('USER_ID'))
                                 ->orderBy('position', 'ASC')
                                 ->get();
 

@@ -79,7 +79,7 @@ class SaleTicketPdf extends fpdf {
 
 	function clientInfo() {
 		$this->x = 2;
-		$this->SetFont('Arial', '', 8);
+		$this->SetFont('Arial', '', 10);
 		if ($this->sale->client) {
 			$this->Cell($this->cell_ancho, 5, 'Cliente: '.$this->sale->client->name, $this->b, 1, 'L');
 
@@ -177,7 +177,7 @@ class SaleTicketPdf extends fpdf {
 		}
 
 		foreach ($this->sale->articles as $article) {
-			$this->SetFont('Arial', '', 9);
+			$this->SetFont('Arial', '', 12);
 			$y_1 = $this->y;
 			$this->MultiCell($ancho_description, $this->line_height, $article->name." ({$article->pivot->amount})", 'BT', 'L', 0);
 			$y_2 = $this->y;
@@ -185,7 +185,7 @@ class SaleTicketPdf extends fpdf {
 			$this->x = $ancho_description + 2;
 			$this->y = $y_1;
 
-			$this->SetFont('Arial', 'B', 9);
+			$this->SetFont('Arial', 'B', 12);
 
 			if ($this->ancho > 60) {
 

@@ -12,6 +12,14 @@ class CurrentAcount extends Model
         return $this->belongsTo(User::class);
     }
 
+    function surchages() {
+        return $this->belongsToMany(Surchage::class)->withPivot('percentage');
+    }
+
+    function discounts() {
+        return $this->belongsToMany(Discount::class)->withPivot('percentage');
+    }
+
     public function pagado_por() {
         return $this->belongsToMany('App\Models\CurrentAcount', 'pagado_por', 'debe_id', 'haber_id')->withPivot('pagado', 'total_pago', 'a_cubrir', 'fondos_iniciales', 'nuevos_fondos', 'remantente')->orderBy('created_at', 'ASC');
     }

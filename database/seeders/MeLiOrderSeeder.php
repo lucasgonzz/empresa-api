@@ -232,8 +232,6 @@ class MeLiOrderSeeder extends Seeder
         ];
 
 
-        $user = User::where('company_name', 'Autopartes Boxes')
-                    ->first();
         for ($dias=0; $dias < 5 ; $dias++) { 
             for ($i=0; $i < 2; $i++) { 
                 foreach ($models as $model) {
@@ -251,7 +249,7 @@ class MeLiOrderSeeder extends Seeder
                         'date_closed'       => $model['date_closed'],
                         'total'             => $model['total'], 
                         'me_li_buyer_id'    => $me_li_buyer->id, 
-                        'user_id'           => $user->id,
+                        'user_id'           => env('USER_ID'),
                         'created_at'        => Carbon::now()->subDays($dias),
                     ]); 
 

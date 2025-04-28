@@ -247,6 +247,48 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Fecha impresion en article tickets',
                 'slug' => 'fecha_impresion_en_article_tickets',
             ],
+            [
+                // 47
+                'name' => 'Vinoteca',
+                'slug' => 'vinoteca',
+            ],
+            [
+                // 48
+                'name' => 'comisiones_por_categoria',
+                'slug' => 'comisiones_por_categoria',
+            ],
+            [
+                // 49
+                'name' => 'Ventas con fecha de entrega',
+                'slug' => 'ventas_con_fecha_de_entrega',
+            ],
+            [
+                // 50
+                /* 
+                    Esta extencion se la aplico a truvari, 
+                    para que en el detalle de la hoja de ruta le aparezcan los articulos de todas las ventas, y no cada venta 
+                
+                */
+                'name' => 'Ventas con fecha de entrega',
+                'slug' => 'road_map_detalle_por_articulos_y_no_por_venta',
+            ],
+            [
+                // 51
+                // Para maxi ferreteria
+                'name' => 'mostrar diferenia de precios en excel para clientes',
+                'slug' => 'mostrar_diferenia_de_precios_en_excel_para_clientes',
+            ],
+            [
+                // 52
+                // Para maxi ferreteria
+                'name' => 'excluir lista de precios de excel',
+                'slug' => 'elegir_si_incluir_lista_de_precios_de_excel',
+            ],
+            [
+                // 53
+                'name' => 'cambiar price type en vender item por item',
+                'slug' => 'cambiar_price_type_en_vender_item_por_item',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

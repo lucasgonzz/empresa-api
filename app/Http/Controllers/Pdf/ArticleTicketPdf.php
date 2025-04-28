@@ -8,9 +8,9 @@ use App\Http\Controllers\CommonLaravel\Helpers\StringHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\ImageHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Pdf\ArticleTicket\Golonorte;
 use App\Models\Article;
 use Carbon\Carbon;
-
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
@@ -42,6 +42,20 @@ class ArticleTicketPdf extends fpdf {
 	function print() {
 		$this->y = 0;
 		$this->x = 0;
+
+		$function = $this->user->article_ticket_print_function;
+		if ($function == 'golonorte') {
+
+			$helper = new Golonorte($this, $this->articles);
+			$helper->print();
+
+		} else {
+			$this->default_print();
+		}
+	}
+
+	function default_print() {
+
 		foreach ($this->articles as $article) {
 			
 			if ($this->x == 0) {
@@ -90,9 +104,10 @@ class ArticleTicketPdf extends fpdf {
 					$info = $article->provider_code;
 				}
 			}
+
 			if (!is_null($info)) {
 				$this->SetFont('Arial', '', 10);
-				$this->Cell(30, 16, $info, 'LTB', 0, 'L');
+				$this->Cell(30, 8, $info, 0, 0, 'L');
 			} else {
 				$this->x += 30;
 			}
@@ -124,80 +139,8 @@ class ArticleTicketPdf extends fpdf {
 
 		$border = 0;
 
-		if (UserHelper::hasExtencion('lista_de_precios_por_rango_de_cantidad_vendida')) {
-			
-			$start_y = $this->y;
-
-			if (
-				!is_null($article->sub_category)
-				&& count($article->sub_category->category_price_type_ranges) >= 1
-			) {
-
-				foreach ($article->sub_category->category_price_type_ranges as $range) {
-
-					$this->print_price_ranges($article, $range, $border);
-				}
-
-			} else if (
-				!is_null($article->category)
-				&& count($article->category->category_price_type_ranges) >= 1
-			) {
-
-				// if ($article->name == 'Mate Torpedo') {
-					// dd($article->category->category_price_type_ranges);
-				// }
-
-				foreach ($article->category->category_price_type_ranges as $range) {
-
-					if (is_null($range->sub_category_id)) {
-
-						$this->print_price_ranges($article, $range, $border);
-					}
-
-				}
-			}
-
-			$y_donde_deberia = $start_y + 16;
-
-			if ($y_donde_deberia > $this->y) {
-
-				$this->y = $y_donde_deberia;
-			}
-
-		} else {
-
-			$this->SetFont('Arial', 'B', 27);
-			$this->Cell(40, 16, '$'.Numbers::price($article->final_price), 'RTB', 1, 'R');
-		}
-	}
-
-	function print_price_ranges($article, $range, $border) {
-
-			
-		$article_price_type = $article->price_types->firstWhere('id', $range->price_type_id);
-
-		$this->x = $this->start_x + 30;
-
-		$ancho = 40;
-		
-		if (
-			!is_null($range->min)
-			&& $range->min > 1
-		) {
-
-			$this->SetFont('Arial', '', 8);
-			$this->Cell(20, 5, 'A partir de '.$range->min, $border, 0, 'R');
-			
-			$ancho = 20;
-
-		} else {
-
-			$this->x += 20;
-		}
-		
-		$this->SetFont('Arial', 'B', 10);
-		
-		$this->Cell(20, 5, '$'.Numbers::price($article_price_type->pivot->price), $border, 1, 'L');
+		$this->SetFont('Arial', 'B', 27);
+		$this->Cell(40, 16, '$'.Numbers::price($article->final_price), 'RTB', 1, 'R');
 	}
 
 }

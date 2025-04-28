@@ -38,6 +38,11 @@ class OnlineConfigurationController extends Controller
         $model->online_description              = $request->online_description;                     
         $model->has_delivery                    = $request->has_delivery;                     
         $model->order_description               = $request->order_description;                     
+        $model->online_template_id               = $request->online_template_id;                     
+        $model->cantidad_tarjetas_en_telefono               = $request->cantidad_tarjetas_en_telefono;                     
+        $model->cantidad_tarjetas_en_tablet               = $request->cantidad_tarjetas_en_tablet;                     
+        $model->cantidad_tarjetas_en_notebook               = $request->cantidad_tarjetas_en_notebook;                     
+        $model->cantidad_tarjetas_en_escritorio               = $request->cantidad_tarjetas_en_escritorio;                     
         $model->save();
         $this->sendAddModelNotification('OnlineConfiguration', $model->id);
         return response()->json(['model' => $this->fullModel('OnlineConfiguration', $model->id)], 200);

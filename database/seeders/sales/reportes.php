@@ -6,21 +6,21 @@ $ventas_desde_principio_de_mes = [];
 $num = 1000;
 for ($dia_atras = 4; $dia_atras >= 0 ; $dia_atras--) { 
 
-	for ($employee_id=503; $employee_id <= 506; $employee_id++) { 
+	for ($employee_id=501; $employee_id <= 504; $employee_id++) { 
 
-		if ($employee_id == 503) {
+		if ($employee_id == 501) {
 
 			$price_vender = 1000;
 			$address_id = 1;
-		} else if ($employee_id == 504) {
+		} else if ($employee_id == 502) {
 
 			$price_vender = 1500;
 			$address_id = 2;
-		} else if ($employee_id == 505) {
+		} else if ($employee_id == 503) {
 
 			$price_vender = 2000;
 			$address_id = 3;
-		} else if ($employee_id == 506) {
+		} else if ($employee_id == 504) {
 
 			$price_vender = 2500;
 			$address_id = 4;

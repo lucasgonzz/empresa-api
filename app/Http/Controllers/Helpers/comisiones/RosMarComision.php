@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\comisiones;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
+use App\Http\Controllers\Helpers\comisiones\Helper;
 use App\Models\SellerCommission;
 use Illuminate\Support\Facades\Log;
 
@@ -89,21 +90,11 @@ class RosMarComision {
             'seller_id'     => $this->sale->seller_id,
             'sale_id'       => $this->sale->id,
             'debe'          => $total,
-            'status'        => $this->get_status(),
+	        'status'        => Helper::get_status($this->sale),
             'user_id'       => $this->ct->userId(),
         ]);
 
         ComisionesHelper::set_saldo($seller_commission);
-	}
-
-	function get_status() {
-
-		if (!is_null($this->sale->client_id)
-			&& !$this->sale->omitir_en_cuenta_corriente) {
-
-			return 'inactive';
-		}
-		return 'active';
 	}
 
 }

@@ -32,18 +32,15 @@ class AfipTipoComprobanteSeeder extends Seeder
                 'codigo'    => 51,
             ],
             [
-                'name'      => 'Factura de Credito Electronica MiPyMEs (FCE) A
-',
+                'name'      => 'Factura de Credito Electronica MiPyMEs (FCE) A',
                 'codigo'    => 201,
             ],
             [
-                'name'      => 'Factura de credito Electronica MiPyMEs (FCE) B
-',
+                'name'      => 'Factura de credito Electronica MiPyMEs (FCE) B',
                 'codigo'    => 206,
             ],
             [
-                'name'      => 'Factura de credito Electronica MiPyMEs (FCE) C
-',
+                'name'      => 'Factura de credito Electronica MiPyMEs (FCE) C',
                 'codigo'    => 211,
             ],
         ];

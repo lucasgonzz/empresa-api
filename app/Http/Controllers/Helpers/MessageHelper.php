@@ -21,8 +21,8 @@ class MessageHelper {
 
         $title = 'Actualizacion de Carrito';
         // Message Broadcast Mail
-        $buyer->notify(new MessageSend($message, false, $title, null, false));
-        UserHelper::getFullModel()->notify(new MessageSend($message, true, null, null, false));
+        // $buyer->notify(new MessageSend($message, false, $title, null, false));
+        // UserHelper::getFullModel()->notify(new MessageSend($message, true, null, null, false));
     }
 
     static function sendOrderConfirmedMessage($order) {

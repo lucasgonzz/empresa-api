@@ -67,7 +67,7 @@ class Article extends Model
     }
 
     function price_types() {
-        return $this->belongsToMany(PriceType::class)->withPivot('percentage', 'price', 'final_price');
+        return $this->belongsToMany(PriceType::class)->withPivot('percentage', 'price', 'final_price', 'previus_final_price', 'incluir_en_excel_para_clientes');
     }
 
     function cart() {

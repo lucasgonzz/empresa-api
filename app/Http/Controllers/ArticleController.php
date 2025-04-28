@@ -90,6 +90,12 @@ class ArticleController extends Controller
         $model->in_offer                          = $request->in_offer;
         $model->default_in_vender                 = $request->default_in_vender;
 
+
+        // Vinoteca
+        $model->bodega_id                           = $request->bodega_id;
+        $model->cepa_id                             = $request->cepa_id;
+        $model->presentacion                        = $request->presentacion;
+
         $model->user_id                           = $this->userId();
         if (isset($request->status)) {
             $model->status = $request->status;
@@ -97,6 +103,8 @@ class ArticleController extends Controller
         $model->save();
 
         $model->addresses()->sync([]);
+        
+        ArticlePriceTypeHelper::attach_price_types($model, $request->price_types);
 
         // GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
         // ArticleHelper::setArticleStockFromAddresses($model);
@@ -152,10 +160,16 @@ class ArticleController extends Controller
         $model->online                            = $request->online;
         $model->in_offer                          = $request->in_offer;
         $model->default_in_vender                 = $request->default_in_vender;
-        // if (strtolower($model->name) != strtolower($request->name)) {
-            $model->name = ucfirst($request->name);
-            $model->slug = ArticleHelper::slug($request->name);
-        // }
+
+
+        // Vinoteca
+        $model->bodega_id                           = $request->bodega_id;
+        $model->cepa_id                             = $request->cepa_id;
+        $model->presentacion                        = $request->presentacion;
+
+        
+        $model->name = ucfirst($request->name);
+        $model->slug = ArticleHelper::slug($request->name);
         $model->save();
         
         // GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
@@ -245,8 +259,9 @@ class ArticleController extends Controller
         return Excel::download(new ArticleExport($models), 'comerciocity-articulos_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
     }
 
-    function clientsExport() {
-        return Excel::download(new ArticleClientsExport, 'cc-articulos-clientes_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
+    function clientsExport($price_type_id = null) {
+        Log::info('controller: '.$price_type_id);
+        return Excel::download(new ArticleClientsExport($price_type_id), 'cc-articulos-clientes_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
     }
 
     function baseExport() {

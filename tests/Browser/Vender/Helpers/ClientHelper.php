@@ -24,7 +24,7 @@ class ClientHelper
                 
                 ->pause(500)
 
-                ->keys('#select_client_vender-search-modal-input', ['{CONTROL}'])
+                ->keys('#select_client_vender-search-modal-input', ['{ENTER}'])
 
                 ->pause(500)
 

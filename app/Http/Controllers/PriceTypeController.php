@@ -24,6 +24,8 @@ class PriceTypeController extends Controller
             'name'                  => $request->name,
             'percentage'            => $request->percentage,
             'position'              => $request->position,
+            'ocultar_al_publico'    => $request->ocultar_al_publico,
+            'incluir_en_lista_de_precios_de_excel'    => $request->incluir_en_lista_de_precios_de_excel,
             'user_id'               => $this->userId(),
         ]);
         $this->sendAddModelNotification('price_type', $model->id);
@@ -43,6 +45,8 @@ class PriceTypeController extends Controller
         $model->name                = $request->name;
         $model->percentage          = $request->percentage;
         $model->position            = $request->position;
+        $model->ocultar_al_publico  = $request->ocultar_al_publico;
+        $model->incluir_en_lista_de_precios_de_excel  = $request->incluir_en_lista_de_precios_de_excel;
         $model->save();
 
         GeneralHelper::attachModels($model, 'categories', $request->categories, ['percentage']);

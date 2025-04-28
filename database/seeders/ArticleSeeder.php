@@ -10,7 +10,9 @@ use App\Models\ArticleDiscount;
 use App\Models\ArticleProperty;
 use App\Models\ArticlePropertyType;
 use App\Models\ArticlePropertyValue;
+use App\Models\Bodega;
 use App\Models\Category;
+use App\Models\Cepa;
 use App\Models\Description;
 use App\Models\Image;
 use App\Models\Provider;
@@ -33,93 +35,135 @@ class ArticleSeeder extends Seeder
         'martillo' => 'http://empresa.local:8000/storage/martillo.jpg',
     ];
 
+    public $repetir_articlulos = 10;
+
     public function run()
     {
-        $this->for_user = env('FOR_USER');
 
-        $this->lucas();
+        if (
+            env('APP_ENV') == 'local'
+            || env('VERSION_DEMO')
+        ) {
+            
+            $this->for_user = env('FOR_USER');
+
+            $this->lucas();
+        }
+
     }
 
     function lucas() {
-        $user = User::where('company_name', 'Autopartes Boxes')
-                    ->first();
-        $bsas = Provider::where('user_id', $user->id)
+        
+        $user = User::find(env('USER_ID'));
+
+        $bsas = Provider::where('user_id', env('USER_ID'))
                             ->where('name', 'Buenos Aires')
                             ->first();
-        $rosario = Provider::where('user_id', $user->id)
+        $rosario = Provider::where('user_id', env('USER_ID'))
                             ->where('name', 'Rosario')
                             ->first();
 
-        require('articles/supermercado.php');
+        if ($this->for_user == 'truvari') {
+
+            require('articles/vinoteca.php');
+        } else {
+
+            require('articles/supermercado.php');
+        }
 
         $articles = $this->add_defaults_in_vender($articles);
 
         $num = 1;
         $days = count($articles);
 
-        foreach ($articles as $article) {
+        for ($vuelta_article=1; $vuelta_article <= $this->repetir_articlulos ; $vuelta_article++) { 
 
-            $art = Article::create([
-                'num'                   => $num,
-                // 'bar_code'              => $article['name'].rand(99999, 9999999),
-                'bar_code'              => '00'.$num,
-                'provider_code'         => 'p/'.$num,
-                'name'                  => $article['name'],
-                'slug'                  => ArticleHelper::slug($article['name'], $user->id),
-                'cost'                  => $article['cost'],
-                // 'cost'                  => 100 * $num,
-                'price'                 => isset($article['price']) ? $article['price'] : null,
-                'costo_mano_de_obra'    => isset($article['costo_mano_de_obra']) ? $article['costo_mano_de_obra'] : null,
-                'status'                => isset($article['status']) ? $article['status'] : 'active',
-                'featured'              => isset($article['featured']) ? $article['featured'] : null,
-                'provider_id'           => isset($article['provider_id']) ? $article['provider_id'] : null,
-                'percentage_gain'       => 100,
-                'iva_id'                => isset($article['iva_id']) ? $article['iva_id'] : null,
-                'featured'              => isset($article['featured']) ? $article['featured'] : null,
-                // 'apply_provider_percentage_gain'     => 0,
-                'apply_provider_percentage_gain'    => 0,
-                'default_in_vender'     => isset($article['default_in_vender']) && $this->for_user == 'hipermax' ? $article['default_in_vender'] : null,
-                'category_id'           => $this->getCategoryId($user, $article),
-                'sub_category_id'       => $this->getSubcategoryId($user, $article),
-                'created_at'            => Carbon::now()->subDays($days),
-                'updated_at'            => Carbon::now()->subDays($days),
-                'user_id'               => $user->id,
-            ]);    
-            $art->timestamps = false;
-            $days--;
-            $num++;
-            // $id+;
-            if (isset($article['images'])) {
-                foreach ($article['images'] as $image) { 
-                    // $image['url']   = 'https://api-prueba.comerciocity.com/public/storage/171837091695431.webp';
-                    Image::create([
-                        'imageable_type'                            => 'article',
-                        'imageable_id'                              => $art->id,
-                        env('IMAGE_URL_PROP_NAME', 'image_url')     => $image['url'],
-                        // env('IMAGE_URL_PROP_NAME', 'image_url')     => env('APP_URL').'/storage/'.$image['url'],
-                        'color_id'                                  => isset($image['color_id']) ? $image['color_id'] : null,
-                    ]);
-                }    
+            foreach ($articles as $article) {
+
+                $art = Article::create([
+                    'num'                   => $num,
+                    // 'bar_code'              => $article['name'].rand(99999, 9999999),
+                    'bar_code'              => '00'.$num,
+                    'provider_code'         => 'p/'.$num,
+                    'name'                  => $article['name'].' '.$vuelta_article,
+                    'slug'                  => ArticleHelper::slug($article['name'], env('USER_ID')),
+                    'cost'                  => $article['cost'],
+                    // 'cost'                  => 100 * $num,
+                    'price'                 => isset($article['price']) ? $article['price'] : null,
+                    'costo_mano_de_obra'    => isset($article['costo_mano_de_obra']) ? $article['costo_mano_de_obra'] : null,
+                    'status'                => isset($article['status']) ? $article['status'] : 'active',
+                    'featured'              => isset($article['featured']) ? $article['featured'] : null,
+                    'provider_id'           => isset($article['provider_id']) ? $article['provider_id'] : null,
+                    'percentage_gain'       => 100,
+                    'iva_id'                => isset($article['iva_id']) ? $article['iva_id'] : 2,
+                    'featured'              => isset($article['featured']) ? $article['featured'] : null,
+                    
+                    'presentacion'          => isset($article['presentacion']) ? $article['presentacion'] : null,
+                    
+                    'apply_provider_percentage_gain'    => 0,
+                    'default_in_vender'     => isset($article['default_in_vender']) && $this->for_user == 'hipermax' ? $article['default_in_vender'] : null,
+                    'category_id'           => $this->getCategoryId($user, $article),
+                    'sub_category_id'       => $this->getSubcategoryId($user, $article),
+                    'created_at'            => Carbon::now()->subDays($days),
+                    'updated_at'            => Carbon::now()->subDays($days),
+                    'user_id'               => env('USER_ID'),
+                ]);    
+                $art->timestamps = false;
+                $days--;
+                $num++;
+                // $id+;
+                if (isset($article['images'])) {
+                    foreach ($article['images'] as $image) { 
+                        // $image['url']   = 'https://api-prueba.comerciocity.com/public/storage/171837091695431.webp';
+                        Image::create([
+                            'imageable_type'                            => 'article',
+                            'imageable_id'                              => $art->id,
+                            env('IMAGE_URL_PROP_NAME', 'image_url')     => $image['url'],
+                            // env('IMAGE_URL_PROP_NAME', 'image_url')     => env('APP_URL').'/storage/'.$image['url'],
+                            'color_id'                                  => isset($image['color_id']) ? $image['color_id'] : null,
+                        ]);
+                    }    
+                }
+                if (isset($article['provider_id'])) {
+                    $art->providers()->attach($article['provider_id'], [
+                                                'cost'  => $article['cost'],
+                                                'amount' => $article['stock'],
+                                            ]);
+                }
+
+                $this->set_props_vinoteca($art, $article);
+
+                $this->check_variants($art, $article);
+
+                $this->check_precios_en_blanco($art);
+
+                $this->createDescriptions($art, $article); 
+                $this->setColors($art, $article); 
+                // $this->setAddresses($art, $article); 
+                ArticleHelper::setFinalPrice($art, env('USER_ID'));
+                $this->setStockMovement($art, $article);
+                // ArticleHelper::setArticleStockFromAddresses($art);
             }
-            if (isset($article['provider_id'])) {
-                $art->providers()->attach($article['provider_id'], [
-                                            'cost'  => $article['cost'],
-                                            'amount' => $article['stock'],
-                                        ]);
-            }
-
-            $this->check_variants($art, $article);
-
-            $this->check_precios_en_blanco($art);
-
-            $this->createDescriptions($art, $article); 
-            $this->setColors($art, $article); 
-            // $this->setAddresses($art, $article); 
-            ArticleHelper::setFinalPrice($art, $user->id);
-            $this->setStockMovement($art, $article);
-            // ArticleHelper::setArticleStockFromAddresses($art);
         }
-        // }
+    }
+
+    function set_props_vinoteca($created_article, $article) {
+
+        if (isset($article['bodega'])) {
+            $bodega = Bodega::where('name', $article['bodega'])
+                                ->first();
+
+            $created_article->bodega_id = $bodega->id;
+            $created_article->save();
+        }
+
+        if (isset($article['cepa'])) {
+            $cepa = Cepa::where('name', $article['cepa'])
+                                ->first();
+
+            $created_article->cepa_id = $cepa->id;
+            $created_article->save();
+        }
     }
 
     function add_defaults_in_vender($articles) {
@@ -241,7 +285,7 @@ class ArticleSeeder extends Seeder
 
     function getCategoryId($user, $article) {
         if (isset($article['category_name'])) {
-            $category = Category::where('user_id', $user->id)
+            $category = Category::where('user_id', env('USER_ID'))
                                     ->where('name', $article['category_name'])
                                     ->first();
             if (!is_null($category)) {
@@ -249,7 +293,7 @@ class ArticleSeeder extends Seeder
             }
         }
         if (isset($article['sub_category_name'])) {
-            $sub_category = SubCategory::where('user_id', $user->id)
+            $sub_category = SubCategory::where('user_id', env('USER_ID'))
                                         ->where('name', $article['sub_category_name'])
                                         ->first();
             if (!is_null($sub_category)) {
@@ -261,10 +305,14 @@ class ArticleSeeder extends Seeder
 
     function getSubcategoryId($user, $article) {
         if (isset($article['sub_category_name'])) {
-            $sub_category = SubCategory::where('user_id', $user->id)
+            $sub_category = SubCategory::where('user_id', env('USER_ID'))
                                         ->where('name', $article['sub_category_name'])
                                         ->first();
-            return $sub_category->id;
+
+            if ($sub_category) {
+
+                return $sub_category->id;
+            }
         }
         return null;
     }
@@ -277,29 +325,26 @@ class ArticleSeeder extends Seeder
     }
 
     function createDescriptions($created_article, $article) {
-        if (isset($article['descriptions'])) {
+        if (env('FOR_USER') == 'truvari') {
             Description::create([
-                'title'      => 'Almacentamiento',
-                'content'    => 'Este modelo nos entrega una importante capacidad de almacenamiento.',
+                'title'      => 'Nota de Cata:',
+                'content'    => 'Color rojo rubí profundo.
+
+En nariz, es muy expresivo e intenso. Las frutillas, cerezas y membrillos son los aromas frutales que más se destacan, fundiéndose con notas de vainilla, madera tostada y sutiles notas a especias.
+
+Su boca es plena, de taninos muy agradables, y suaves. Tiene un medio de boca consistente, frutal y con algunas notas minerales. De cuerpo elegante y buena estructura, termina con un persistente y largo final de boca.',
+                'article_id' => $created_article->id,
+            ]);
+            Description::create([
+                'title'      => null,
+                'content'    => 'De color rojo rubí intenso con reflejos violáceos.
+                                Limpio y brillante.
+
+                                Fuerte presencia de frutos rojos, con notas florales tales como violetas; típicas de las regiones frias del Valle de Uco.
+                                Potencial de guarda: 15 años',
                 'article_id' => $created_article->id,
             ]);
         }
-        return;
-        Description::create([
-            'title'      => 'Almacentamiento',
-            'content'    => 'Este modelo nos entrega una importante capacidad de almacenamiento.',
-            'article_id' => $article->id,
-        ]);
-        Description::create([
-            'title'      => 'Pantalla',
-            'content'    => 'Tiene una pantalla muy linda',
-            'article_id' => $article->id,
-        ]);
-        Description::create([
-            'title'      => 'Materiales',
-            'content'    => 'Esta hecho con los mejores materiales de construccion',
-            'article_id' => $article->id,
-        ]);
     }
 
     function subcategoryId($user_id, $i) {

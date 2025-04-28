@@ -22,11 +22,11 @@ class ComboSeeder extends Seeder
                 'price'         => 1000,
                 'articles'      => [
                     [
-                        'name'      => 'Yerba',
+                        'name'      => 'Yerba 1',
                         'amount'    => 2
                     ],
                     [
-                        'name'      => 'Mate torpedo',
+                        'name'      => 'Mate torpedo 1',
                         'amount'    => 4
                     ],
                 ],

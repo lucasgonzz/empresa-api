@@ -14,7 +14,7 @@ class SearchHelper
         $browser->type($data['input'].'-search-modal-input', $data['search']);
         $browser->pause(500);
         
-        $browser->keys($data['input'].'-search-modal-input', ['{CONTROL}']);
+        $browser->keys($data['input'].'-search-modal-input', ['{ENTER}']);
         $browser->pause(500);
         
         $browser->waitFor('@table-results-'.$data['model_name']);

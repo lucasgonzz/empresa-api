@@ -17,7 +17,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('search/{model_name}/{_filters?}/{paginate?}', 'CommonLaravel\SearchController@search');
     Route::post('search-from-modal/{model_name}', 'CommonLaravel\SearchController@searchFromModal');
     Route::post('search/save-if-not-exist/{model_name}/{propertye}/{query}', 'CommonLaravel\SearchController@saveIfNotExist');
-    Route::get('previus-day/{model_name}/{index}', 'CommonLaravel\PreviusDayController@previusDays');
+    Route::get('previus-day/{model_name}/{index}/{date_param?}', 'CommonLaravel\PreviusDayController@previusDays');
     Route::get('previus-next/{model_name}/{index}', 'CommonLaravel\PreviusNextController@previusNext');
     Route::get('previus-next-index/{model_name}/{id}', 'CommonLaravel\PreviusNextController@getIndexPreviusNext');
     Route::put('update/{model_name}', 'CommonLaravel\UpdateController@update');
@@ -58,6 +58,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
     Route::get('update-feature', 'UpdateFeatureController@index');
 
+    Route::get('online-template', 'OnlineTemplateController@index');
+
     Route::get('concepto-stock-movement', 'ConceptoStockMovementController@index');
 
     // Inventory performance
@@ -77,6 +79,33 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('devoluciones/search-sale/{num}', 'DevolucionesController@search_sale');
     Route::post('devoluciones/', 'DevolucionesController@store');
 
+
+    // Hojas de ruta
+    Route::resource('road-map', 'RoadMapController');
+    Route::get('road-map/search-sales/{fecha_entrega}', 'RoadMapController@search_sales');
+    Route::get('road-map/{employee_id}/from-date/{date_param}/{from_date?}/{until_date?}', 'RoadMapController@index');
+
+    // Observaciones de clientes
+    Route::post('road-map-client-observation', 'RoadMapClientObservationController@store');
+
+    // Repartidores 
+    Route::resource('dealer', 'DealerController');
+
+    // Comisiones por ventas termiandas 
+    Route::resource('venta-terminada-commission', 'VentaTerminadaCommissionController');
+
+    // Promocion vinoteca comision
+    Route::resource('promocion-vinoteca-commission', 'PromocionVinotecaCommissionController');
+    
+
+
+
+    // Vinoteca
+
+    Route::resource('bodega', 'BodegaController');
+    Route::resource('cepa', 'CepaController');
+    Route::resource('promocion-vinoteca', 'PromocionVinotecaController');
+    Route::put('promocion-vinoteca/delete-stock/{id}', 'PromocionVinotecaController@delete_stock');
 
     // Categorias y rangos para tipos de precios | Golo norte
     Route::resource('category-price-type-range', 'CategoryPriceTypeRangeController');
@@ -166,6 +195,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('sales-ventas-sin-cobrar', 'SaleController@ventas_sin_cobrar');
     Route::put('sale-set-terminada/{sale_id}', 'SaleController@set_terminada');
     Route::put('sale-clear-actualizandose-por/{sale_id}', 'SaleController@clear_actualizandose_por');
+    Route::get('sale/por-entregar/{from}/{to}', 'SaleController@por_entregar');
 
     // Hacer Nota de credito AFIP
     Route::post('sale/nota-credito-afip/{sale_id}', 'SaleController@nota_credito_afip');
@@ -220,6 +250,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     
     // Afip tickets
     Route::post('afip-ticket', 'SaleController@makeAfipTicket');
+    Route::get('afip/get-importes/{sale_id}', 'AfipTicketController@get_importes');
 
     // Article Performance
     Route::get('article-performance/{article_id}', 'ArticlePerformanceController@index');

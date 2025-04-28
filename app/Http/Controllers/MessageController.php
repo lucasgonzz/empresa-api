@@ -40,8 +40,8 @@ class MessageController extends Controller
             'article_id' => $request->article_id,
         ]);
         $model = $this->fullModel('Message', $model->id);
-        $buyer = Buyer::find($request->buyer_id);
-        $buyer->notify(new MessageSend($model));
+        // $buyer = Buyer::find($request->buyer_id);
+        // $buyer->notify(new MessageSend($model));
         return response()->json(['model' => $model], 201);
     }
 }

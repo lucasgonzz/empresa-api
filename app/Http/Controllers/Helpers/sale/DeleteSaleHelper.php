@@ -25,15 +25,21 @@ class DeleteSaleHelper {
             }
 
             foreach ($sale->combos as $combo) {
-            	
-            	foreach ($combo->articles as $article) {
-            		
-            		if (!is_null($article->stock)) {
+                
+                foreach ($combo->articles as $article) {
+                    
+                    if (!is_null($article->stock)) {
 
-            			$amount = $combo->pivot->amount * $article->pivot->amount;
-                    	ArticleHelper::resetStock($article, $amount, $sale);
-            		}
-            	}
+                        $amount = $combo->pivot->amount * $article->pivot->amount;
+                        ArticleHelper::resetStock($article, $amount, $sale);
+                    }
+                }
+            }
+
+            foreach ($sale->promocion_vinotecas as $promocion_vinoteca) {
+
+                $promocion_vinoteca->stock += $promocion_vinoteca->pivot->amount;
+                $promocion_vinoteca->save();
             }
         }
 	}

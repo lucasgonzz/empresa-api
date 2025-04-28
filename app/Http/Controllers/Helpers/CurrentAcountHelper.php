@@ -108,9 +108,9 @@ class CurrentAcountHelper {
     } 
 
     static function getSaldo($model_name, $model_id, $until_current_acount = null) {
-        $last = CurrentAcount::orderBy('created_at', 'DESC');
+        $last = CurrentAcount::orderBy('id', 'DESC');
         if (!is_null($until_current_acount)) {
-            $last = $last->where('created_at', '<', $until_current_acount->created_at);
+            $last = $last->where('id', '<', $until_current_acount->id);
         } 
         if ($model_name == 'client') {
             $last = $last->where('client_id', $model_id);

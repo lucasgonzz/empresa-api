@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\article;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\ArticleDiscount;
 use App\Models\ArticleDiscountBlanco;
@@ -65,8 +66,8 @@ class ArticlePricesHelper {
 
                     $article->price_types()->updateExistingPivot($price_type->id, [
                         'percentage'    => $percentage,
-                        'price'         => $price,
-                        'final_price'   => $price,
+                        'price'         => ArticleHelper::redondear($price, $user),
+                        'final_price'   => ArticleHelper::redondear($price, $user),
                     ]);
                 } else {
 
@@ -94,6 +95,8 @@ class ArticlePricesHelper {
 
             $relation = $article->price_types()->find($price_type->id);
 
+            $previus_final_price = null;
+
             if (!is_null($relation)) {
 
                 if (!is_null($relation->pivot->percentage)) {
@@ -101,6 +104,11 @@ class ArticlePricesHelper {
                     $percentage = $relation->pivot->percentage;
 
                 }
+
+                if ($previus_final_price != $relation->pivot->final_price) {
+                    $previus_final_price = $relation->pivot->final_price;
+                }
+
             }
 
             $price = $cost + ($cost * (float)$percentage / 100);
@@ -115,9 +123,10 @@ class ArticlePricesHelper {
             $article->price_types()->syncWithoutDetaching($price_type->id);
 
             $article->price_types()->updateExistingPivot($price_type->id, [
-                'percentage'    => $percentage,
-                'price'         => $price,
-                'final_price'   => $final_price,
+                'percentage'            => $percentage,
+                'price'                 => $price,
+                'final_price'           => $final_price,
+                'previus_final_price'   => $previus_final_price,
             ]);
 
         }

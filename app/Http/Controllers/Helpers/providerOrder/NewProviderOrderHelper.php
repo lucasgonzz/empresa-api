@@ -260,13 +260,18 @@ class NewProviderOrderHelper {
             
             if ($this->provider_order->update_prices) {
 
+                Log::info('update_prices');
+
                 $article = $this->update_cost($article, $new_article);
 
                 $article = $this->update_price($article, $new_article);
             }
 
-            $article = $this->check_article_status($article, $new_article);
+            // Si el articulo esta inacive, se actualiza la info de bar_code y demas
+            $article = $this->update_article_data($article, $new_article);
             
+            $article = $this->check_article_status($article, $new_article);
+
             if ($this->provider_order->update_stock) {
 
                 $article = $this->update_stock($article, $new_article);
@@ -286,6 +291,19 @@ class NewProviderOrderHelper {
             $article->save();
         }
 
+    }
+
+    function update_article_data($article, $new_article) {
+
+        if ($article->status == 'inactive') {
+
+            $article->bar_code          = $new_article['bar_code'];
+            $article->provider_code     = $new_article['provider_code'];
+            $article->save();
+
+        }
+
+        return $article;
     }
 
     function check_article_status($article, $new_article) {
@@ -386,12 +404,19 @@ class NewProviderOrderHelper {
 
     function update_iva($article, $new_article) {
 
-        if (isset($new_article['pivot']['iva_id'])
+        if (
+            isset($new_article['pivot']['iva_id'])
             && !is_null($new_article['pivot']['iva_id']) 
             && $new_article['pivot']['iva_id'] != 0 
-            && $article->iva_id != $new_article['pivot']['iva_id']) {
+            && $article->iva_id != $new_article['pivot']['iva_id']
+        ) {
 
             $article->iva_id = $new_article['pivot']['iva_id'];
+
+            Log::info('update iva con: '.$article->iva_id);
+        } else {
+            Log::info('No se actualizo iva');
+
         }
 
         return $article;
@@ -413,6 +438,8 @@ class NewProviderOrderHelper {
             $article->price = $price;
             $article->save();
 
+            Log::info('update_price');
+
             ArticleHelper::setFinalPrice($article);
         }
 
@@ -432,8 +459,11 @@ class NewProviderOrderHelper {
         if (!is_null($cost) 
             && $article->cost != $cost) {
 
+
             $article->cost = $cost;
             $article->save();
+
+            Log::info('update_cost con '. $article->cost);
 
             ArticleHelper::setFinalPrice($article);
         }

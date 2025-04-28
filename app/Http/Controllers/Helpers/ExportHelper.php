@@ -65,7 +65,6 @@ class ExportHelper {
 			if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
 
 				// Caso Pack descartables
-
 				foreach ($price_types as $price_type) {
 
 					$article_price_type = $article->price_types()->find($price_type->id);

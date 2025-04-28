@@ -22,6 +22,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\ComboHelper;
+use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\sale\SaleCajaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\Helpers\sale\UpdateHelper;
@@ -40,6 +41,7 @@ use App\Models\SaleType;
 use App\Models\SellerCommission;
 use App\Models\Service;
 use App\Models\StockMovement;
+use App\Models\User;
 use App\Models\Variant;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -78,15 +80,20 @@ class SaleHelper extends Controller {
         return false;
     }
 
-    static function get_terminada($to_check) {
+    static function get_terminada($to_check, $fecha_entrega) {
         if (UserHelper::hasExtencion('check_sales') && $to_check) {
             return 0;
         }
+
+        if (UserHelper::hasExtencion('ventas_con_fecha_de_entrega') && $fecha_entrega) {
+            return 0;
+        }
+
         return 1;
     }
 
-    static function get_terminada_at($to_check) {
-        if (Self::get_terminada($to_check)) {
+    static function get_terminada_at($to_check, $fecha_entrega) {
+        if (Self::get_terminada($to_check, $fecha_entrega)) {
             return Carbon::now();
         }
         return null;
@@ -151,6 +158,13 @@ class SaleHelper extends Controller {
         }
     }
 
+    static function get_confirmed($to_check) {
+        if (UserHelper::hasExtencion('check_sales') && $to_check) {
+            return 0;
+        }
+        return 1;
+    }
+
     static function getEmployeeId($request = null) {
         if (!is_null($request) && $request->employee_id != 0) {
             return $request->employee_id;
@@ -196,11 +210,12 @@ class SaleHelper extends Controller {
         return null;
     }
 
-    static function attachProperies($model, $request, $from_store = true, $previus_articles = null, $previus_combos = null, $sale_modification = null, $se_esta_confirmando_por_primera_vez = false) {
+    static function attachProperies($model, $request, $from_store = true, $previus_articles = null, $previus_combos = null, $previus_promos = null, $sale_modification = null, $se_esta_confirmando_por_primera_vez = false) {
 
         Self::attachArticles($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
         
 
+        Self::attachPromocionVinotecas($model, $request->items, $previus_promos);
         Self::attachCombos($model, $request->items, $previus_combos);
         Self::attachServices($model, $request->items);
         
@@ -218,7 +233,7 @@ class SaleHelper extends Controller {
                 (osea ya estaba confirmada antes de actualizarce)
                 Recien ahi veo si se elimino algun articulo para regresar al stock
             */
-            if ($model->confirmed && !$se_esta_confirmando_por_primera_vez) {
+            if (!$model->to_check && !$model->checked && !$se_esta_confirmando_por_primera_vez) {
 
                 UpdateHelper::check_articulos_eliminados($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
             }
@@ -538,6 +553,16 @@ class SaleHelper extends Controller {
             }
         }
 
+        $employee_id = Self::getEmployeeId($request);
+        if (Self::getEmployeeId($request)) {
+
+            $employee = User::find($employee_id);
+            if ($employee->seller_id) {
+                Log::info('retornando seller_id en base al empleado '.$employee->name);
+                return $employee->seller_id;
+            }
+        }
+
         return null;
     }
 
@@ -584,6 +609,7 @@ class SaleHelper extends Controller {
                     if (($sale->to_check || $sale->checked) 
                         || (!is_null($amount) && $amount > 0) ) {
 
+                        Log::info('Agregando el articulos: '.$article['name']);
                         Self::attachArticle($sale, $article);
                     } else {
                         Log::info('No se agrego articulo '.$article['name'].' a la venta N° '.$sale->num.'. Amount: '.$amount);
@@ -650,6 +676,19 @@ class SaleHelper extends Controller {
                 $sale->services()->updateExistingPivot($item['id'], [
                                                         'price' => $item['price_vender'],
                                                     ]);
+            }
+        }
+    }
+
+    static function attachPromocionVinotecas($sale, $promocion_vinotecas, $previus_promos) {
+        foreach ($promocion_vinotecas as $promo) {
+            if (isset($promo['is_promocion_vinoteca'])) {
+                $sale->promocion_vinotecas()->attach($promo['id'], [
+                                                            'amount' => (float)$promo['amount'],
+                                                            'price' => $promo['price_vender'],
+                                                            'created_at' => Carbon::now(),
+                                                        ]);
+                PromocionVinotecaHelper::discount_stock_promocion_vinoteca($sale, $promo, $previus_promos);
             }
         }
     }
@@ -808,6 +847,7 @@ class SaleHelper extends Controller {
         $sale->articles()->detach();
         $sale->combos()->detach();
         $sale->services()->detach();
+        $sale->promocion_vinotecas()->detach();
     }
 
     static function restaurar_stock($sale) {
@@ -844,11 +884,16 @@ class SaleHelper extends Controller {
         $total_articles = 0;
         $total_combos = 0;
         $total_services = 0;
+        $total_promocion_vinotecas = 0;
+        
         foreach ($sale->articles as $article) {
             $total_articles += Self::getTotalItem($article);
         }
         foreach ($sale->combos as $combo) {
             $total_combos += Self::getTotalItem($combo);
+        }
+        foreach ($sale->promocion_vinotecas as $promocion_vinoteca) {
+            $total_promocion_vinotecas += Self::getTotalItem($promocion_vinoteca);
         }
         foreach ($sale->services as $service) {
             $total_services += Self::getTotalItem($service);
@@ -857,6 +902,8 @@ class SaleHelper extends Controller {
             foreach ($sale->discounts as $discount) {
                 $total_articles -= $total_articles * $discount->pivot->percentage / 100;
                 $total_combos -= $total_combos * $discount->pivot->percentage / 100;
+                $total_promocion_vinotecas -= $total_promocion_vinotecas * $discount->pivot->percentage / 100;
+
                 if ($sale->discounts_in_services) {
                     $total_services -= $total_services * $discount->pivot->percentage / 100;
                 }
@@ -866,12 +913,14 @@ class SaleHelper extends Controller {
             foreach ($sale->surchages as $surchage) {
                 $total_articles += $total_articles * $surchage->pivot->percentage / 100;
                 $total_combos += $total_combos * $surchage->pivot->percentage / 100;
+                $total_promocion_vinotecas += $total_promocion_vinotecas * $surchage->pivot->percentage / 100;
+
                 if ($sale->surchages_in_services) {
                     $total_services += $total_services * $surchage->pivot->percentage / 100;
                 }
             }
         }
-        $total = $total_articles + $total_services + $total_combos;
+        $total = $total_articles + $total_services + $total_combos + $total_promocion_vinotecas;
         if (!is_null($sale->percentage_card)) {
             $total += ($total * Numbers::percentage($sale->percentage_card));
         }

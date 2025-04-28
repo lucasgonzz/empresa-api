@@ -17,18 +17,17 @@ class BudgetSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
         $models = [
             [
                 'num'           => 1,
                 'client_id'     => 1,
                 'observations'  => 'Muchas cosas por hacer',
-                'user_id'       => $user->id,
+                'user_id'       => env('USER_ID'),
             ],
         ];
         foreach ($models as $model) {
             $budget = Budget::create($model);
-            $articles = Article::where('user_id', $user->id)->get();
+            $articles = Article::where('user_id', env('USER_ID'))->get();
             $articles_ = [];
             foreach ($articles as $article) {
                 $_article = [];

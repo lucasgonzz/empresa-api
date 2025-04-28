@@ -37,7 +37,12 @@ class UpdateHelper {
         $data = [];
         $data['model_id'] 			= $article->id;
         $data['from_address_id'] 	= null;
-        $data['to_address_id'] 		= $sale->address_id;
+
+        if (count($article->addresses) >= 1) {
+
+        	$data['to_address_id'] 		= $sale->address_id;
+        }
+        
         $data['amount'] 			= (float)$article->pivot->amount;
         $data['sale_id'] 			= $sale->id;
         $data['concepto_stock_movement_name'] 			= 'Se elimino de la venta';

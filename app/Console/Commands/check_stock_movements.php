@@ -8,6 +8,7 @@ use App\Models\Mantenimiento;
 use App\Models\StockMovement;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Mail;
+use Carbon\Carbon;
 
 class check_stock_movements extends Command
 {
@@ -16,7 +17,7 @@ class check_stock_movements extends Command
      *
      * @var string
      */
-    protected $signature = 'check_stock_movements  {article_id?} {article_num?} {user_id?} {id_mayor_que?} {--todos_los_articulos} {--corregir_stock} {--check_movimientos_repetidos}';
+    protected $signature = 'check_stock_movements  {article_id?} {article_num?} {user_id?} {--todos_los_articulos} {--corregir_stock} {--check_movimientos_repetidos}';
 
     /**
      * The console command description.
@@ -57,7 +58,7 @@ class check_stock_movements extends Command
         $this->article_id = $this->argument('article_id') ?? null;
         $this->article_num = $this->argument('article_num') ?? null;
         $this->user_id = $this->argument('user_id') ?? null;
-        $this->id_mayor_que = $this->argument('id_mayor_que') ?? null;
+        // $this->id_mayor_que = $this->argument('id_mayor_que') ?? null;
 
         $this->articulos_afectados = [];
 
@@ -130,9 +131,9 @@ class check_stock_movements extends Command
             $this->articulos_afectados = Article::where('user_id', $this->user_id)
                                             ->orderBy('id', 'ASC');
 
-            if ($this->id_mayor_que) {
-                $this->articulos_afectados = $this->articulos_afectados->where('id', '>=', $this->id_mayor_que);
-            }
+            // if ($this->id_mayor_que) {
+            //     $this->articulos_afectados = $this->articulos_afectados->where('id', '>=', $this->id_mayor_que);
+            // }
             
             $this->articulos_afectados = $this->articulos_afectados->pluck('id');
 
@@ -205,7 +206,10 @@ class check_stock_movements extends Command
         // Inicializar el stock para recalcular
         $stock_actual = 0; 
 
-        $stock_actual = $movimientos[0]->stock_resultante;
+        // Empezar stock_actual con el stock_resultante
+        // $stock_actual = $movimientos[0]->stock_resultante;
+        // Empezar stock_actual con amount
+        $stock_actual = $movimientos[0]->amount;
 
         if ($this->check_movimientos_repetidos) {
             $this->_check_movimientos_repetidos($movimientos);
@@ -216,12 +220,20 @@ class check_stock_movements extends Command
         foreach ($movimientos as $movimiento) {
 
             if ($movimiento->id == $movimientos[0]->id) {
+
+                // if ($this->es_reseteo_de_stock($movimiento)) {
+                
+                //     $stock_actual = $this->reset_stock($movimiento, $stock_actual);
+                // }
                 continue;
             }
 
+            // if ($movimiento->concepto_movement) {
+            //     $this->info($movimiento->concepto_movement->name);
+            // }
             // Si es un movimiento entre depósitos, el stock no cambia
             if (
-                $movimiento->concepto_movement
+                !is_null($movimiento->concepto_movement)
                 && 
                 (
                     $movimiento->concepto_movement->name == 'Mov entre depositos'  
@@ -246,6 +258,11 @@ class check_stock_movements extends Command
                 $stock_actual = $movimiento->amount;
                 $movimiento->stock_resultante = $stock_actual;
 
+            } else if ($this->es_reseteo_de_stock($movimiento)) {
+
+                $this->info('se reseteo de stock');
+                $stock_actual = $this->reset_stock($movimiento, $stock_actual);
+
             } else {
 
                 // Calcular el stock resultante
@@ -253,7 +270,6 @@ class check_stock_movements extends Command
                 $stock_actual += $movimiento->amount;
                 $movimiento->stock_resultante = $stock_actual;
             }
-
             // Guardar el movimiento con el stock recalculado
             $movimiento->timestamps = false;
             $movimiento->save();
@@ -268,7 +284,9 @@ class check_stock_movements extends Command
         // y el articulo tiene 0 en unidades chequeadas,
         // se le regresa al stock y se marca como "se elimino de venta"
         // $this->check_se_elimino_de_venta($article);
-
+        if ($article->stock != $movimientos[count($movimientos)-1]->stock_resultante) {
+            $this->comment('El stock deberia ser: '.$stock_actual.', pero es '.$article->stock);
+        }
         $this->check_stock_actual($article, $movimientos);
 
 
@@ -277,14 +295,39 @@ class check_stock_movements extends Command
         // $this->comment('Resto del proceso: '.$executionTime.' segundos');
     }
 
+    function es_reseteo_de_stock($movimiento) {
+        return !is_null($movimiento->concepto_movement) && $movimiento->concepto_movement->name == 'Reseteo de Stock';
+    }
+
+    function reset_stock($movimiento, $stock_actual) {
+        $anterior = StockMovement::where('article_id', $movimiento->article_id)
+                                        ->where('id', '<', $movimiento->id)
+                                        ->orderBy('id', 'DESC')
+                                        ->first();
+
+        if ($anterior) {
+            $amount = 0 - $anterior->stock_resultante;
+            // $this->info('Article num: '.$movimiento->article->num);
+            // $this->info('Se va a poner la cantidad de: '.$amount);
+            $movimiento->amount = $amount;
+        }
+
+        $stock_actual = 0;
+        $movimiento->stock_resultante = $stock_actual;
+        $movimiento->timestamps = false;
+        $movimiento->save();
+
+        return $stock_actual;
+    }
+
     function stock_ok($article) {
 
-        $primer_movimiento = StockMovement::where('article_id', $article->id)
+        $ultimo_movimiento = StockMovement::where('article_id', $article->id)
                                     ->orderBy('id', 'DESC')
                                     ->first();
         if (
-            $primer_movimiento  
-            && $primer_movimiento->stock_resultante == $article->stock
+            $ultimo_movimiento  
+            && $ultimo_movimiento->stock_resultante == $article->stock
         ) {
             return true;
         }
@@ -304,7 +347,7 @@ class check_stock_movements extends Command
 
             */
             $movimientos_creacion_deposito = StockMovement::where('article_id', $movimiento->article_id)
-                                                ->whereHas('concepto_movement', function ($query) {
+                                                ->whereHas('concepto', function ($query) {
                                                     $query->where('name', 'Creacion de deposito');
                                                 }) 
                                                 ->orderBy('id', 'ASC')
@@ -330,13 +373,13 @@ class check_stock_movements extends Command
             
         foreach ($stock_movements as $stock_movement) {
             
-            if (str_contains($stock_movement->concepto_movement->name, 'Se elimino de la venta')) {
+            if (str_contains($stock_movement->concepto->name, 'Se elimino de la venta')) {
 
-                $num_venta = substr($stock_movement->concepto_movement->name, 23);
+                $num_venta = substr($stock_movement->concepto->name, 23);
                 
 
                 $stock_movement_de_la_venta = StockMovement::where('article_id', $article->id)
-                                        // ->whereHas('concepto_movement', function($q) {
+                                        // ->whereHas('concepto', function($q) {
                                         //     $q->where('')
                                         // })
                                         // ->whereHas('concepto', 'Venta N° '.$num_venta)
@@ -394,7 +437,7 @@ class check_stock_movements extends Command
             $siguiente_movimiento = $movimientos[$index_siguiente];
 
             if (
-                $movimiento->concepto_movement->name == $siguiente_movimiento->concepto_movement->name
+                $movimiento->concepto_movement->name == $siguiente_movimiento->concepto->name
 
                 && $movimiento->amount == $siguiente_movimiento->amount
 
@@ -469,7 +512,7 @@ class check_stock_movements extends Command
             // $this->info($article->name);
 
             $this->info('Article: '.$article->name.' num: '.$article->num);
-            $this->comment('Stock actual diferente al resultante');
+            $this->comment('Stock actual diferente al resultante. resultante: '.$stock_resultante);
             $this->info('');
             $this->info('');
 
@@ -478,7 +521,13 @@ class check_stock_movements extends Command
             if (!$this->corregir_stock) {
 
                 return;
-            } 
+            } else {
+                $article->stock = $stock_resultante;
+                $article->timestamps = false;
+                $article->save();
+                $this->info('Se seteo el stock con el stock resultante');
+            }
+            return;
 
             $diferencia = (float)$article->stock - (float)$stock_resultante;
             

@@ -17,7 +17,6 @@ class ExpenseSeeder extends Seeder
     public function run()
     {
 
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
 
         $num = 1;
         for ($mes=12; $mes >= 0 ; $mes--) { 
@@ -32,7 +31,7 @@ class ExpenseSeeder extends Seeder
 
                 $model['num'] = $num;
                 $model['amount'] = $amount;
-                $model['user_id'] = $user->id;
+                $model['user_id'] = env('USER_ID');
                 $model['created_at'] = Carbon::now()->subMonths($mes);
 
                 Expense::create($model);

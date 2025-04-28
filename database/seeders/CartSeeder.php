@@ -17,18 +17,16 @@ class CartSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'Autopartes Boxes')
-                    ->first();
-        $buyers = Buyer::where('user_id', $user->id)
+        $buyers = Buyer::where('user_id', env('USER_ID'))
                             ->get();
 
-        $articles = Article::where('user_id', $user->id)
+        $articles = Article::where('user_id', env('USER_ID'))
                             ->get();
 
         foreach ($buyers as $buyer) {
             $cart = Cart::create([
                 'buyer_id' => $buyer->id,
-                'user_id'   => $user->id,
+                'user_id'   => env('USER_ID'),
             ]);
             foreach ($articles as $article) {
                 $cart->articles()->attach($article->id, [

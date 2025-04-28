@@ -35,7 +35,11 @@ class CreateBuyersTable extends Migration
             $table->string('remember_token', 128)->nullable();
             $table->integer('comercio_city_client_id')->unsigned()->nullable();
             $table->integer('user_id')->unsigned()->nullable();
-            
+
+            $table->string('visible_password')->nullable();
+            $table->integer('seller_id')->unsigned()->nullable();
+            $table->text('address')->nullable();
+
             $table->timestamps();
         });
     }

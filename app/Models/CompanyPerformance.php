@@ -10,7 +10,11 @@ class CompanyPerformance extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        return $q->with('ingresos_mostrador', 'ingresos_cuenta_corriente', 'expense_concepts', 'gastos', 'users_payment_methods');
+        return $q->with('ingresos_mostrador', 'ingresos_cuenta_corriente', 'expense_concepts', 'gastos', 'users_payment_methods', 'ingresos_brutos_price_types');
+    }
+
+    function ingresos_brutos_price_types() {
+        return $this->belongsToMany(PriceType::class)->withPivot('total_vendido');
     }
 
     function users_total_vendido() {

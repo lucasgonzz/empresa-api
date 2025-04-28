@@ -31,12 +31,10 @@ class ArticlesTableSeeder extends Seeder
     }
 
     function lucas() {
-        $user = User::where('company_name', 'Autopartes Boxes')
-                    ->first();
-        $bsas = Provider::where('user_id', $user->id)
+        $bsas = Provider::where('user_id', env('USER_ID'))
                             ->where('name', 'Buenos Aires')
                             ->first();
-        $rosario = Provider::where('user_id', $user->id)
+        $rosario = Provider::where('user_id', env('USER_ID'))
                             ->where('name', 'Rosario')
                             ->first();
         $articles = [
@@ -264,7 +262,7 @@ class ArticlesTableSeeder extends Seeder
                 'bar_code'          => $article['bar_code'],
                 'provider_code'     => $article['provider_code'],
                 'name'              => $article['name'],
-                'slug'              => ArticleHelper::slug($article['name'], $user->id),
+                'slug'              => ArticleHelper::slug($article['name'], env('USER_ID')),
                 'cost'              => $article['cost'],
                 'status'            => isset($article['status']) ? $article['status'] : 'active',
                 'stock'             => $article['stock'] ,
@@ -272,7 +270,7 @@ class ArticlesTableSeeder extends Seeder
                 'apply_provider_percentage_gain' => 1,
                 'price'             => $article['price'],
                 'sub_category_id'   => $this->getSubcategoryId($user, $article),
-                'user_id'           => $user->id,
+                'user_id'           => env('USER_ID'),
             ]);    
             $num++;
             if (isset($article['images'])) {
@@ -289,7 +287,7 @@ class ArticlesTableSeeder extends Seeder
                                         'amount' => $article['stock'],
                                     ]);
             $this->createDescriptions($art); 
-            ArticleHelper::setFinalPrice($art, $user->id);
+            ArticleHelper::setFinalPrice($art, env('USER_ID'));
         }
     }
 
@@ -306,7 +304,7 @@ class ArticlesTableSeeder extends Seeder
 
     function getSubcategoryId($user, $article) {
         if (isset($article['sub_category_name'])) {
-            $sub_category = SubCategory::where('user_id', $user->id)
+            $sub_category = SubCategory::where('user_id', env('USER_ID'))
                                         ->where('name', $article['sub_category_name'])
                                         ->first();
             return $sub_category->id;

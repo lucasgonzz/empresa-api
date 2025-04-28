@@ -95,6 +95,11 @@ class PermissionSeeder extends Seeder
                 'en'            => 'movimiento_entre_caja',
                 'previus_days'  => true,
             ],
+            [
+                'singular'      => 'Hoja de ruta',
+                'plural'        => 'Hojas de ruta',
+                'en'            => 'road_map',
+            ],
         ];
         $scopes = [
             [
@@ -368,6 +373,24 @@ class PermissionSeeder extends Seeder
                 'singular'      => 'Crear Devoluciones',
                 'plural'        => 'devoluciones',
                 'en'            => 'devolucion.store',
+            ],
+
+
+            // Rutas ya creadas
+            [
+                'singular'      => 'Ver rutas asignadas',
+                'plural'        => 'Hojas de ruta',
+                'en'            => 'road_map.terminadas.index',
+            ],
+            [
+                'singular'      => 'Ver solo sus hojas de ruta',
+                'plural'        => 'Hojas de ruta',
+                'en'            => 'road_map.terminadas.only_your',
+            ],
+            [
+                'singular'      => 'Ver todas las hojas de ruta',
+                'plural'        => 'Hojas de ruta',
+                'en'            => 'road_map.terminadas.all',
             ],
         ];
         foreach ($permissions as $permission) {

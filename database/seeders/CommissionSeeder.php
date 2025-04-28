@@ -16,7 +16,47 @@ class CommissionSeeder extends Seeder
      */
     public function run()
     {
-        $user = User::where('company_name', 'Autopartes Boxes')->first();
+        $this->fenix();
+        $this->truvari();
+    }
+
+    function truvari() {
+
+        if (env('FOR_USER') != 'truvari') {
+            return;
+        }
+
+        $models = [
+            [
+                'num'               => 1,
+                'percentage'        => 10,
+                'user_id'           => env('USER_ID'),
+                'seller_id'         => 1,
+            ],
+            [
+                'num'               => 2,
+                'percentage'        => 10,
+                'user_id'           => env('USER_ID'),
+                'seller_id'         => 3,
+            ],
+        ];
+
+
+        foreach ($models as $model) {
+            $commission = Commission::create([
+                'num'               => isset($model['num']) ? $model['num'] : null,
+                'percentage'        => isset($model['percentage']) ? $model['percentage'] : null,
+                'seller_id'         => $model['seller_id'],
+                'user_id'           => $model['user_id'],
+            ]);
+        }
+    }
+
+    function fenix() {
+
+        if (env('FOR_USER') != 'fenix') {
+            return;
+        }
         $models = [
             // Juguetes
             [
@@ -25,7 +65,7 @@ class CommissionSeeder extends Seeder
                 'until'             => 9,
                 'percentage'        => 10,
                 'sale_type_id'      => 1,
-                'user_id'           => $user->id,
+                'user_id'           => env('USER_ID'),
                 'except_sellers'    => [
                     [
                         'id'    => 3,
@@ -38,7 +78,7 @@ class CommissionSeeder extends Seeder
                 'until'             => 19,
                 'percentage'        => 10,
                 'sale_type_id'      => 1,
-                'user_id'           => $user->id,
+                'user_id'           => env('USER_ID'),
                 'except_sellers'    => [
                     [
                         'id'    => 3,
@@ -51,7 +91,7 @@ class CommissionSeeder extends Seeder
                 'until'             => 24,
                 'percentage'        => 7,
                 'sale_type_id'      => 1,
-                'user_id'           => $user->id,
+                'user_id'           => env('USER_ID'),
                 'except_sellers'    => [
                     [
                         'id'    => 3,
@@ -64,7 +104,7 @@ class CommissionSeeder extends Seeder
                 'until'             => 10,
                 'percentage'        => 7,
                 'sale_type_id'      => 1,
-                'user_id'           => $user->id,
+                'user_id'           => env('USER_ID'),
                 'except_sellers'    => [
                     [
                         'id'    => 3,
@@ -79,7 +119,7 @@ class CommissionSeeder extends Seeder
                 'until'             => 9,
                 'percentage'        => 5,
                 'sale_type_id'      => 2,
-                'user_id'           => $user->id,
+                'user_id'           => env('USER_ID'),
                 'except_sellers'    => [
                     [
                         'id'    => 3,
@@ -92,7 +132,7 @@ class CommissionSeeder extends Seeder
                 'until'             => 14,
                 'percentage'        => 5,
                 'sale_type_id'      => 2,
-                'user_id'           => $user->id,
+                'user_id'           => env('USER_ID'),
                 'except_sellers'    => [
                     [
                         'id'    => 3,
@@ -105,7 +145,7 @@ class CommissionSeeder extends Seeder
                 'until'             => 100,
                 'percentage'        => 5,
                 'sale_type_id'      => 2,
-                'user_id'           => $user->id,
+                'user_id'           => env('USER_ID'),
                 'except_sellers'    => [
                     [
                         'id'    => 3,
@@ -120,7 +160,7 @@ class CommissionSeeder extends Seeder
                 'until'             => 19,
                 'percentage'        => 5,
                 'sale_type_id'      => null,
-                'user_id'           => $user->id,
+                'user_id'           => env('USER_ID'),
                 'for_only_sellers'    => [
                     [
                         'id'    => 3,
@@ -133,7 +173,7 @@ class CommissionSeeder extends Seeder
                 'until'             => 100,
                 'percentage'        => 2,
                 'sale_type_id'      => null,
-                'user_id'           => $user->id,
+                'user_id'           => env('USER_ID'),
                 'for_only_sellers'    => [
                     [
                         'id'    => 3,
@@ -144,7 +184,7 @@ class CommissionSeeder extends Seeder
             // Oscar fede papi
             [
                 'num'               => 10,
-                'user_id'           => $user->id,
+                'user_id'           => env('USER_ID'),
                 'for_all_sellers'           => [
                     [
                         'id'     => 4,

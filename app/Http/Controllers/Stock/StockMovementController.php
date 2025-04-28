@@ -160,7 +160,7 @@ class StockMovementController extends Controller
         if (!is_null($this->article)) {
 
             $stock_movement_anterior = StockMovement::where('article_id', $this->article->id)
-                                                    ->orderBy('created_at', 'DESC')
+                                                    ->orderBy('id', 'DESC')
                                                     ->where('id', '<', $this->stock_movement->id)
                                                     ->first();
 

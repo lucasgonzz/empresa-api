@@ -63,6 +63,9 @@ class CreateArticlesTable extends Migration
 
             $table->timestamp('stock_updated_at')->nullable();
 
+            $table->integer('bodega_id')->nullable();
+            $table->integer('cepa_id')->nullable();
+            $table->integer('presentacion')->nullable();
 
             $table->foreign('user_id')
                     ->references('id')->on('users');
