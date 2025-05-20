@@ -22,7 +22,10 @@ class CreateCurrentAcountCurrentAcountPaymentMethodTable extends Migration
             $table->integer('user_id')->nullable();
             $table->decimal('amount', 14,2)->nullable();
             $table->string('bank')->nullable();
-            $table->timestamp('payment_date')->nullable();
+            $table->timestamp('fecha_emision')->nullable();
+            $table->timestamp('fecha_pago')->nullable();
+            $table->timestamp('cobrado_at')->nullable();
+            $table->integer('check_status_id')->nullable();
             $table->string('num')->nullable();
             $table->timestamps();
         });

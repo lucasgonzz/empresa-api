@@ -58,16 +58,59 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
-    function precios_feito() {
+    function set_renacer_articles_bar_codes() {
+        $articles = Article::orderBy('id', 'ASC')
+                            ->get();
+
+        foreach ($articles as $article) {
+            $article->bar_code = $article->id;
+            $article->timestamps = false;
+            $article->save();
+        }
+        echo 'Listo';
+    }
+
+    function sales_sin_stock_movements($user_id) {
+        $sales = Sale::whereDate('created_at', '>', Carbon::today()->subDays(7))
+                        ->where('user_id', $user_id)
+                        ->get();
+
+        echo count($sales).' ventas';
+        echo '<br>';
+
+        $sin_stock_movements = [];
+
+        foreach ($sales as $sale) {
+
+            foreach ($sale->articles as $article) {
+
+                $stock_movement = StockMovement::where('sale_id', $sale->id)
+                                                ->where('article_id', $article->id)
+                                                ->first();
+                if (!$stock_movement) {
+                    $sin_stock_movements[] = $sale;
+                }
+            }
+        }
+
+        foreach ($sin_stock_movements as $sale) {
+            echo $sale->num;
+            echo '<br>';
+        }
+        echo 'Listo';
+    }
+
+
+    function precios_feito($price) {
         // echo 'hola';
         // echo '<br>';
         $articles = Article::where('user_id', 1)
-                            ->where('final_price', 45000)
+                            ->where('final_price', $price)
                             // ->take(10)
                             ->get();
 
-        // echo count($articles).' articles';
-        // echo '<br>';
+        echo count($articles).' articles';
+        echo '<br>';
         // return;
 
         // sleep(5);
@@ -79,7 +122,8 @@ class HelperController extends Controller
 
             // sleep(5);
             
-            $article->final_price = $article->previus_final_price;
+            $article->price         = $article->previus_final_price;
+            $article->final_price   = $article->previus_final_price;
             $article->timestamps = false;
             $article->save();
 

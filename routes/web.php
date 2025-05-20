@@ -157,6 +157,7 @@ Route::get('sale/delivered-articles-pdf/{id}', 'SaleController@deliveredArticles
 
 Route::get('client/pdf', 'ClientController@pdf');
 
+Route::get('road-map/pdf/{id}', 'RoadMapController@pdf');
 
 
 // Deposit Movement

@@ -7,11 +7,8 @@ class ImportHelper {
 
 	static function getColumnValue($row, $key, $columns) {
 		if (isset($columns[$key]) && isset($row[$columns[$key]])) {
-			// Log::info('Valor de la columna '.$key.':');
-			// Log::info($row[$columns[$key]]);
 			return $row[$columns[$key]];
 		}
-		// Log::info('No habia valor en columna para '.$key);
 		return null;
 	}
 

@@ -3,7 +3,9 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Imports\ArticleImport;
+use App\Jobs\ProcessArticleChunk;
 use App\Notifications\GlobalNotification;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
@@ -55,8 +57,37 @@ class ProcessArticleImport implements ShouldQueue
      */
     public function handle()
     {
-        Log::info('Llamando a ExcelImport');
-        Excel::import(new ArticleImport($this->columns, $this->create_and_edit, $this->start_row, $this->finish_row, $this->provider_id, $this->import_history_id, $this->pre_import_id, $this->user, $this->auth_user_id, $this->archivo_excel_path), $this->archivo_excel);
+        
+        Log::info('cacheando articulos');
+        ArticleIndexCache::build($this->user->id);
+        Log::info('articulos cacheados');
+
+        // $chunkSize = 500;
+        $chunkSize = 1000;
+        $start = $this->start_row; // por ejemplo, 2
+
+        while ($start <= $this->finish_row) {
+            $end = min($start + $chunkSize - 1, $this->finish_row);
+
+            Log::info("Se mandó chunk desde $start hasta $end");
+
+            ProcessArticleChunk::dispatch(
+                $this->archivo_excel_path,
+                $this->columns,
+                $this->create_and_edit,
+                $start,
+                $end,
+                $this->provider_id,
+                $this->import_history_id,
+                $this->pre_import_id,
+                $this->user,
+                $this->auth_user_id
+            );
+
+            $start = $end + 1;
+        }
+        return;
+
     }
 
     public function failed(Throwable $exception)

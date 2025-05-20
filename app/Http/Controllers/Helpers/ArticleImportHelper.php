@@ -113,18 +113,18 @@ class ArticleImportHelper {
             'employee_id'       => $auth_user_id,
             'model_name'        => 'article',
             'provider_id'       => $provider_id,
-            'created_models'    => $created_models,
-            'updated_models'    => $updated_models,
+            'created_models'    => count($articulos_creados),
+            'updated_models'    => count($articulos_actualizados),
             'observations'      => Self::get_observations($columns),
             'excel_url'			=> $archivo_excel_path,
             'error_message'		=> $error_message,
         ]);
 
-        ArticleImportHistoryHelper::attach_articulos_creados($import_history, $articulos_creados);
+        // ArticleImportHistoryHelper::attach_articulos_creados($import_history, $articulos_creados);
 
-        ArticleImportHistoryHelper::attach_articulos_actualizados($import_history, $articulos_actualizados, $updated_props);
+        // ArticleImportHistoryHelper::attach_articulos_actualizados($import_history, $articulos_actualizados, $updated_props);
 
-        Log::info('Se creo ImportHistory con '.$created_models.' creados y '.$updated_models.' actualizados con provider_id: '.$provider_id);
+        Log::info('Se creo ImportHistory con '.count($articulos_creados).' creados y '.count($articulos_actualizados).' actualizados con provider_id: '.$provider_id);
     }
 
     static function guardar_proveedor($columns, $row, $ct, $user) {
@@ -189,22 +189,22 @@ class ArticleImportHelper {
         if (!is_null($num)) {
 
             $article = $article->where('num', $num);
-        	Log::info('-> Filtrando por num');
+        	// Log::info('-> Filtrando por num');
 
         } else if (!is_null($provider_code) && env('FILTRAR_CON_PROVIDER_CODE_EN_IMPORTACION', true)) {
 
-        	Log::info('-> Filtrando por provider_code');
+        	// Log::info('-> Filtrando por provider_code');
                 
             $article = $article->where('provider_code', $provider_code);
 
         } else if (!is_null($bar_code)) {
 
-        	Log::info('-> Filtrando por bar_code');
+        	// Log::info('-> Filtrando por bar_code');
             $article = $article->where('bar_code', $bar_code);
 
         } else if (!is_null($name)) {
 
-        	Log::info('-> Filtrando por name');
+        	// Log::info('-> Filtrando por name');
             $article = $article->where('name', $name);
             
         }

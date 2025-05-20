@@ -283,21 +283,25 @@ class AfipWsController extends Controller
             Log::info('observations:');
             Log::info($observations);
             if (isset($observations['Msg'])) {
-                AfipObservation::create([
-                    'message'   => $observations['Msg'],
-                    'code'      => $observations['Code'],
-                    'sale_id'   => $this->sale->id,
-                ]);
+                if ($observations['Code'] != 10245) {
+                    AfipObservation::create([
+                        'message'   => $observations['Msg'],
+                        'code'      => $observations['Code'],
+                        'sale_id'   => $this->sale->id,
+                    ]);
+                }
             } else {
                 foreach ($observations as $observation) {
                     // Log::info('observation:');
                     // Log::info($observation);
                     $observation = (array)$observation;
-                    AfipObservation::create([
-                        'message'   => $observation['Msg'],
-                        'code'      => $observation['Code'],
-                        'sale_id'   => $this->sale->id,
-                    ]);
+                    if ($observations['Code'] != 10245) {
+                        AfipObservation::create([
+                            'message'   => $observation['Msg'],
+                            'code'      => $observation['Code'],
+                            'sale_id'   => $this->sale->id,
+                        ]);
+                    }
                 }
             }
         }

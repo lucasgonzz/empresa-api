@@ -67,6 +67,8 @@ class PerformanceHelper
             $this->mes_fin = $mes_inicio->endOfMonth();
         }
 
+        Log::info('PerformanceHelper __construct');
+
     }
 
     function set_day() {
@@ -99,6 +101,8 @@ class PerformanceHelper
         $this->set_compras_a_proveedores();
 
         $this->set_pagos_a_proveedores();
+
+        $this->set_pagos_a_proveedores_de_pedidos_sin_cc();
 
         $this->set_total_iva_comprado();
 
@@ -189,7 +193,7 @@ class PerformanceHelper
         $provider_orders = ProviderOrder::where('user_id', $this->user_id)
                                     ->whereDate('created_at', '>=', $this->mes_inicio)
                                     ->whereDate('created_at', '<=', $this->mes_fin)
-                                    ->pluck('id');
+                                    ->get();
 
         // Log::info('provider_orders id:');
         // Log::info($provider_orders);
@@ -202,10 +206,13 @@ class PerformanceHelper
 
                 if (is_null($total)) {
 
-                    $total = ProviderOrderHelper::getTotal($provider_order);
+                    $total = ProviderOrderHelper::getTotal($provider_order->id);
                 }
 
                 $this->total_comprado += $total;
+                Log::info('Total comprado = '.$this->total_comprado);
+            } else {
+
             }
 
         }
@@ -267,6 +274,35 @@ class PerformanceHelper
 
                 $this->pagos_a_proveedores[3]['total'] += $pago->haber;
             }
+
+        }
+
+    }
+
+    function set_pagos_a_proveedores_de_pedidos_sin_cc() {
+
+        Log::info('set_pagos_a_proveedores_de_pedidos_sin_cc');
+
+        $provider_orders = ProviderOrder::where('user_id', $this->user_id)
+                                    ->whereDate('created_at', '>=', $this->mes_inicio)
+                                    ->whereDate('created_at', '<=', $this->mes_fin)
+                                    ->where('generate_current_acount', 0)
+                                    ->get();
+
+        foreach ($provider_orders as $provider_order) {
+            
+            if (is_object($provider_order)) {
+
+                $total = $provider_order->total;
+
+                if (is_null($total)) {
+
+                    $total = ProviderOrderHelper::getTotal($provider_order);
+                }
+
+                $this->total_pagado_a_proveedores += $total;
+                Log::info('total_pagado_a_proveedores: '.$this->total_pagado_a_proveedores);
+            } 
 
         }
 
@@ -504,7 +540,9 @@ class PerformanceHelper
 
     function add_ingresos_brutos_price_type() {
         if (!is_null($this->sale->price_type_id)) {
-            $this->ingresos_brutos_price_types[$this->sale->price_type_id] += $this->sale->total;
+            if (isset($this->ingresos_brutos_price_types[$this->sale->price_type_id])) {
+                $this->ingresos_brutos_price_types[$this->sale->price_type_id] += $this->sale->total;
+            }
         }
     }
 

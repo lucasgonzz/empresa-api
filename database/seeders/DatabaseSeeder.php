@@ -63,11 +63,13 @@ class DatabaseSeeder extends Seeder
 
             if ($for_user == 'truvari') {
 
-                $this->call(BodegaSeeder::class);
-                $this->call(CepaSeeder::class);
-                $this->call(ArticleSeeder::class);
-                $this->call(PromocionVinotecaSeeder::class);
-                $this->call(DealerSeeder::class);
+                if (env('APP_ENV') == 'local') {
+                    $this->call(BodegaSeeder::class);
+                    $this->call(CepaSeeder::class);
+                    $this->call(ArticleSeeder::class);
+                    $this->call(PromocionVinotecaSeeder::class);
+                }
+                $this->call(DeliveryDaySeeder::class);
 
             } else if ($for_user == 'colman') {
 
@@ -179,11 +181,14 @@ class DatabaseSeeder extends Seeder
             // }
 
             if ($for_user == 'truvari') {
-                $this->call(TruvariSaleSeeder::class);
+                if (env('APP_ENV') == 'local') {
+                    $this->call(TruvariSaleSeeder::class);
+                    $this->call(RoadMapSeeder::class);
+                    $this->call(CartSeeder::class);
+                }
                 $this->call(VentaTerminadaCommissionSeeder::class);
                 $this->call(PromocionVinotecaCommissionSeeder::class);
                 $this->call(CommissionSeeder::class);
-                $this->call(RoadMapSeeder::class);
             }
 
 
@@ -237,7 +242,7 @@ class DatabaseSeeder extends Seeder
             $this->call(DiscountSeeder::class);
             $this->call(SurchageSeeder::class);
             $this->call(AddressSeeder::class);
-            // $this->call(ProviderOrderSeeder::class);
+            $this->call(ProviderOrderSeeder::class);
             $this->call(ProviderPagosSeeder::class);
             $this->call(TitleSeeder::class);
             $this->call(DeliveryZoneSeeder::class);
@@ -255,13 +260,17 @@ class DatabaseSeeder extends Seeder
             $this->call(EmployeeSeeder::class);
             $this->call(SellerSeeder::class);
 
-            if (env('FOR_USER') != 'truvari') {
+            if (
+                env('FOR_USER') != 'truvari'
+                || env('FOR_USER') != 'demo'
+            ) {
                 $this->call(SaleSeeder::class);
             }
         }
     }
 
     function common_seeders() {
+        $this->call(CheckStatusSeeder::class);
         $this->call(OnlineTemplateSeeder::class);
         $this->call(ExtencionSeeder::class);
         $this->call(ConceptoStockMovementSeeder::class);

@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
+use App\Http\Controllers\Helpers\article\BarCodeAutomaticoHelper;
 use App\Http\Controllers\Helpers\article\ResetStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateAddressesStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateVariantsStockHelper;
@@ -65,7 +66,7 @@ class ArticleController extends Controller
 
     function store(Request $request) {
         $model = new Article();
-        $model->num                               = $this->num('articles');
+        // $model->num                               = $this->num('articles');
         $model->bar_code                          = $request->bar_code;
         $model->provider_code                     = $request->provider_code;
         $model->provider_id                       = $request->provider_id;
@@ -96,11 +97,16 @@ class ArticleController extends Controller
         $model->cepa_id                             = $request->cepa_id;
         $model->presentacion                        = $request->presentacion;
 
+
+        $model->unidades_individuales              = $request->unidades_individuales;
+
         $model->user_id                           = $this->userId();
         if (isset($request->status)) {
             $model->status = $request->status;
         }
         $model->save();
+
+        BarCodeAutomaticoHelper::set_bar_code($model);
 
         $model->addresses()->sync([]);
         
@@ -166,6 +172,9 @@ class ArticleController extends Controller
         $model->bodega_id                           = $request->bodega_id;
         $model->cepa_id                             = $request->cepa_id;
         $model->presentacion                        = $request->presentacion;
+
+
+        $model->unidades_individuales               = $request->unidades_individuales;
 
         
         $model->name = ucfirst($request->name);
@@ -255,7 +264,12 @@ class ArticleController extends Controller
 
             $search_ct = new SearchController();
             $models = $search_ct->search($request, 'article', $filters);
+        } else if ($request->has('articles_id')) {
+
+            $ids = explode('-', $request->query('articles_id'));
+            $models = Article::find($ids);
         }
+        
         return Excel::download(new ArticleExport($models), 'comerciocity-articulos_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
     }
 

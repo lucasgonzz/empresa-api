@@ -41,7 +41,6 @@ class CurrentAcountController extends Controller
             $models = $models->where('provider_id', $model_id);
         }
         $models = $models->with('current_acount_payment_methods')
-                        ->with('checks')
                         ->with('pagado_por')
                         ->orderBy('created_at', 'ASC')
                         ->get();

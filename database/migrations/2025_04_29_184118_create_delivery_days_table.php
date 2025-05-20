@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class CreateChecksTable extends Migration
+class CreateDeliveryDaysTable extends Migration
 {
     /**
      * Run the migrations.
@@ -13,13 +13,12 @@ class CreateChecksTable extends Migration
      */
     public function up()
     {
-        Schema::create('checks', function (Blueprint $table) {
+        Schema::create('delivery_days', function (Blueprint $table) {
             $table->id();
-            $table->string('bank')->nullable();
-            $table->timestamp('payment_date')->nullable();
-            $table->double('amount', 14,2)->nullable();
-            $table->string('num')->nullable();
-            $table->integer('current_acount_id')->unsigned();
+
+            $table->integer('day_of_week');
+            $table->integer('user_id');
+
             $table->timestamps();
         });
     }
@@ -31,6 +30,6 @@ class CreateChecksTable extends Migration
      */
     public function down()
     {
-        Schema::dropIfExists('checks');
+        Schema::dropIfExists('delivery_days');
     }
 }

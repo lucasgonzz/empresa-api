@@ -24,7 +24,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
     public function map($article): array
     {
         $map = [
-            $article->num,
+            $article->id,
             $article->bar_code,
             $article->provider_code,
             $article->name,
@@ -45,6 +45,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             // $article->created_at,
             // $article->updated_at,
         ];
+        $map = ExportHelper::map_unidades_individuales($map, $article);
         $map = ExportHelper::map_propiedades_de_distribuidora($map, $article);
         $map = ExportHelper::mapAddresses($map, $article);
         $map = ExportHelper::mapPriceTypes($map, $article);
@@ -108,6 +109,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             'Unidad medida',
             'Precio Final',
         ];
+        $headings = ExportHelper::set_unidades_individuales($headings);
         $headings = ExportHelper::set_propiedades_de_distribuidora($headings);
         $headings = ExportHelper::setAddressesHeadings($headings);
         $headings = ExportHelper::setPriceTypesHeadings($headings);

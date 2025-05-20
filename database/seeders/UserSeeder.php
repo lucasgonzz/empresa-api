@@ -71,7 +71,50 @@ class UserSeeder extends Seeder
         ];
 
 
-        if ($this->for_user == 'electro_lacarra') {
+        if ($this->for_user == 'renacer') {
+
+            $models[0]['name'] = 'Anye';
+            $models[0]['company_name'] = 'Renacer Joyas y Perfumes';
+            $models[0]['iva_included'] = 1;
+            $models[0]['iva_condition_id'] = 2;
+            $models[0]['doc_number'] = '34702455';
+            $models[0]['default_version'] = 'https://renacer.comerciocity.com';
+
+            $models[0]['extencions'] = [
+
+                'comerciocity_interno',
+                'budgets',
+                'bar_code_scanner',
+                'ask_save_current_acount',
+                'imagenes',
+                'codigos_de_barra_por_defecto',
+                // 'forzar_total',
+                // 'cambiar_price_type_en_vender',
+            ];
+
+        } else if ($this->for_user == 'demo') {
+
+            $models[0]['name'] = 'Ramiro';
+            $models[0]['company_name'] = 'Autopartes Boxes';
+            $models[0]['iva_included'] = 0;
+            $models[0]['iva_condition_id'] = 1;
+            $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
+
+            $models[0]['extencions'] = [
+
+                'comerciocity_interno',
+                'budgets',
+                'bar_code_scanner',
+                'ask_save_current_acount',
+                'imagenes',
+                'forzar_total',
+                'cajas',
+                'ventas_con_fecha_de_entrega',
+                'road_map_detalle_por_articulos_y_no_por_venta',
+                'online',
+            ];
+
+        } else if ($this->for_user == 'electro_lacarra') {
 
             $models[0]['name'] = 'Maxi';
             $models[0]['company_name'] = 'Electro lacarra';
@@ -91,6 +134,7 @@ class UserSeeder extends Seeder
                 'elegir_si_incluir_lista_de_precios_de_excel',
                 'articulo_margen_de_ganancia_segun_lista_de_precios',
                 'cambiar_price_type_en_vender',
+                'articulos_unidades_individuales',
             ];
 
         } else if ($this->for_user == 'secure_pack') {
@@ -106,6 +150,7 @@ class UserSeeder extends Seeder
                 'ask_save_current_acount',
                 'imagenes',
                 'forzar_total',
+                'cajas',
             ];
 
         } else if ($this->for_user == 'colman') {
@@ -223,6 +268,8 @@ class UserSeeder extends Seeder
             $models[0]['comision_funcion'] = 'truvari';
             $models[0]['venta_terminada_comision_funcion'] = 'truvari';
             $models[0]['default_version'] = 'https://truvari.comerciocity.com';
+            $models[0]['google_custom_search_api_key'] = 'AIzaSyDSOX6FoW1AWN1w7ArrV_OYrrlDxMGIhuE';
+            
 
 
             $models[0]['online_configuration'] = [
@@ -348,6 +395,7 @@ class UserSeeder extends Seeder
             $user = User::create([
                 'id'                            => isset($model['id']) ? $model['id'] : null,  
                 'name'                          => $model['name'], 
+                'phone'                         => $model['phone'], 
                 'use_archivos_de_intercambio'                  => isset($model['use_archivos_de_intercambio']) ? $model['use_archivos_de_intercambio'] : null,  
                 'company_name'                  => isset($model['company_name']) ? $model['company_name'] : null,  
                 'iva_included'                  => isset($model['iva_included']) ? $model['iva_included'] : 0, 
@@ -404,23 +452,35 @@ class UserSeeder extends Seeder
                     'user_id'                               => env('USER_ID'),
                 ]);
 
-                AfipInformation::create([
-                    'iva_condition_id'      => isset($model['iva_condition_id']) ? $model['iva_condition_id'] : 1,
-                    'razon_social'          => 'Empresa de '.$user->company_name,
-                    'domicilio_comercial'   => 'Pellegrini 1876',
-                    'cuit'                  => '20381712010',
-                    // 20175018841 papa 
-                    // 20167430490 felix
-                    // 20381712010 Nico Ferretodo
-                    'punto_venta'           => 4,
-                    'ingresos_brutos'       => '20381712010',
-                    'inicio_actividades'    => Carbon::now()->subYears(5),
-                    'user_id'               => env('USER_ID'),
-                ]);
+
+                if (
+                    env('APP_ENV') == 'local'
+                    || env('VERSION_DEMO')
+                ) {
+                    
+                    AfipInformation::create([
+                        'iva_condition_id'      => isset($model['iva_condition_id']) ? $model['iva_condition_id'] : 1,
+                        'razon_social'          => 'Empresa de '.$user->company_name,
+                        'domicilio_comercial'   => 'Pellegrini 1876',
+                        'cuit'                  => '20381712010',
+                        // 20175018841 papa 
+                        // 20167430490 felix
+                        // 20381712010 Nico Ferretodo
+                        'punto_venta'           => 4,
+                        'ingresos_brutos'       => '20381712010',
+                        'inicio_actividades'    => Carbon::now()->subYears(5),
+                        'user_id'               => env('USER_ID'),
+                    ]);
+                }
 
                 if (isset($model['online_configuration'])) {
                     $online_configuration               = $model['online_configuration'];
                     $online_configuration['user_id']    = env('USER_ID');
+                    $online_configuration['quienes_somos']    = 'Somos un negocio que se dedica a muchas cosas';
+                    $online_configuration['facebook']    = 'htts://facebook.com';
+                    $online_configuration['instagram']    = 'htts://instagram.com';
+                    $online_configuration['mensaje_contacto']    = 'Comunicate con nosotros';
+                    
                     OnlineConfiguration::create($online_configuration);
                 }
             }

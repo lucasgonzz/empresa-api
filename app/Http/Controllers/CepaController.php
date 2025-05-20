@@ -18,7 +18,6 @@ class CepaController extends Controller
 
     public function store(Request $request) {
         $model = Cepa::create([
-            'num'                   => $this->num(''),
             'name'                  => $request->name,
             'user_id'               => $this->userId(),
         ]);

@@ -32,9 +32,11 @@ class PromocionVinotecaController extends Controller
 
         PromocionVinotecaHelper::attach_articles($model, $request->articles);
 
+        PromocionVinotecaHelper::set_cost($model, $request->articles);
+
         $this->updateRelationsCreated('promocion_vinoteca', $model->id, $request->childrens);
 
-        $this->sendAddModelNotification('PromocionVinoteca', $model->id);
+        // $this->sendAddModelNotification('PromocionVinoteca', $model->id);
         return response()->json(['model' => $this->fullModel('PromocionVinoteca', $model->id)], 201);
     }  
 
@@ -52,7 +54,11 @@ class PromocionVinotecaController extends Controller
         $model->address_id          = $request->address_id;
         $model->description         = $request->description;
         $model->save();
-        $this->sendAddModelNotification('PromocionVinoteca', $model->id);
+
+        PromocionVinotecaHelper::set_cost($model, $request->articles);
+        
+        // $this->sendAddModelNotification('PromocionVinoteca', $model->id);
+
         return response()->json(['model' => $this->fullModel('PromocionVinoteca', $model->id)], 200);
     }
 

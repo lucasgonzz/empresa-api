@@ -20,7 +20,7 @@ class CreateOrdersTable extends Migration
             $table->enum('status', ['unconfirmed', 'canceled', 'confirmed', 'finished', 'delivered']);
             $table->boolean('deliver');
             $table->integer('address_id')->unsigned()->nullable();
-            $table->string('description')->nullable();
+            $table->text('description')->nullable();
             $table->integer('payment_id')->nullable();
             $table->integer('payment_method_id')->unsigned()->nullable();
             $table->integer('payment_card_info_id')->unsigned()->nullable();
@@ -35,6 +35,8 @@ class CreateOrdersTable extends Migration
             $table->integer('user_id')->unsigned();
             $table->integer('seller_id')->unsigned()->nullable();
             $table->text('address')->nullable();
+
+            $table->timestamp('fecha_entrega')->nullable();
 
             $table->timestamps();
         });

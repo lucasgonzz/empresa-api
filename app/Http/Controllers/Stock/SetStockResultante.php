@@ -26,7 +26,7 @@ class SetStockResultante  {
             $stock_movement->stock_resultante = $article->stock;
             $stock_movement->save();
 
-            Log::info('Se esta repartiendo stock, se puso stock_resultante con el stock actual de: '.$article->stock);
+            Log::info('Se esta repartiendo stock, concepto: '.$concepto.' se puso stock_resultante con el stock actual de: '.$article->stock);
 
             Self::set_stock_actual_in_observations($stock_movement, $article);
             return;

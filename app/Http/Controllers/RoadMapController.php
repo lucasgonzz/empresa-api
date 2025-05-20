@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\RoadMapHelper;
+use App\Http\Controllers\Pdf\RoadMapPdf;
 use App\Models\RoadMap;
 use App\Models\Sale;
 use Illuminate\Http\Request;
@@ -49,6 +50,8 @@ class RoadMapController extends Controller
         
         GeneralHelper::attachModels($model, 'sales', $request->sales);
 
+        RoadMapHelper::attach_client_positions($model, $request->client_positions);
+
         $this->sendAddModelNotification('RoadMap', $model->id);
         return response()->json(['model' => $this->fullModel('RoadMap', $model->id)], 201);
     }  
@@ -66,6 +69,8 @@ class RoadMapController extends Controller
         $model->save();
 
         GeneralHelper::attachModels($model, 'sales', $request->sales);
+        
+        RoadMapHelper::attach_client_positions($model, $request->client_positions);
         
         $this->sendAddModelNotification('RoadMap', $model->id);
         return response()->json(['model' => $this->fullModel('RoadMap', $model->id)], 200);
@@ -90,6 +95,14 @@ class RoadMapController extends Controller
                         ->get();
 
         return response()->json(['models' => $sales], 200);
+    }
+
+    function pdf($id) {
+        $models = RoadMap::where('id', $id)
+                            ->get();
+                            
+        $model = RoadMapHelper::agrupar_clientes($models)[0];
+        new RoadMapPdf($model);
     }
 
     // function search_sales(Request $request) {

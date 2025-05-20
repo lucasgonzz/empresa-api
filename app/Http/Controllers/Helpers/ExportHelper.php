@@ -26,6 +26,16 @@ class ExportHelper {
 						->get();
 	}
 
+	static function map_unidades_individuales($map, $article) {
+		
+		if (UserHelper::hasExtencion('articulos_unidades_individuales')) {
+
+			$map[] = $article->unidades_individuales;
+		}
+
+		return $map;
+	}
+
 	static function map_propiedades_de_distribuidora($map, $article) {
 		
 		if (UserHelper::hasExtencion('articulos_con_propiedades_de_distribuidora')) {
@@ -122,6 +132,15 @@ class ExportHelper {
 		}
 			
 		return $map;
+	}
+
+	static function set_unidades_individuales($headings) {
+		if (UserHelper::hasExtencion('articulos_unidades_individuales')) {
+
+				$headings[] = 'U Individuales';
+		}
+
+		return $headings;
 	}
 
 	static function set_propiedades_de_distribuidora($headings) {

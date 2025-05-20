@@ -68,18 +68,21 @@ class CreateSaleOrderHelper {
             $client_id = $order->buyer->comercio_city_client_id;
         }
 
+        $terminada = Self::is_terminada($order, $to_check);
+
         $sale = Sale::create([
             'user_id'               => $instance->userId(),
             'buyer_id'              => $order->buyer_id,
             'client_id'             => $client_id,
             'to_check'              => $to_check,
-            'terminada'             => !$to_check,
-            'terminada_at'          => !$to_check ? Carbon::now() : null,
+            'terminada'             => $terminada,
+            'terminada_at'          => $terminada ? Carbon::now() : null,
             'num'                   => $instance->num('sales'),
             'save_current_acount'   => 1,
             'order_id'              => $order->id,
             'total'                 => $order->total,
             'address_id'            => $order->address_id,
+            'fecha_entrega'         => $order->fecha_entrega,
             'seller_id'             => $order->seller_id,
             'employee_id'           => SaleHelper::getEmployeeId(),
         ]);
@@ -96,6 +99,19 @@ class CreateSaleOrderHelper {
         // Self::attach_articles($sale, $order->articles);
 
         return $sale;
+    }
+
+    static function is_terminada($order, $to_check) {
+
+        if ($to_check) {
+            return 0;
+        }
+
+        if ($order->fecha_entrega) {
+            return 0;
+        }
+
+        return 1;
     }
 
 

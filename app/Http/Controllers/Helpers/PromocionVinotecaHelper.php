@@ -2,16 +2,30 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\RequestHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 
 class PromocionVinotecaHelper {
 	
+
+	static function set_cost($promo) {
+		$total_cost = 0;
+
+		foreach ($promo->articles as $article) {
+			$total_article = $article->pivot->amount * $article->final_price;
+			$total_cost += $total_article;
+		}
+
+		$promo->cost = $total_cost;
+		$promo->save();
+	}
+
 	static function attach_articles($promo, $articles) {
 
 		foreach ($articles as $article) {
 			$promo->articles()->attach($article['id'], [
-				'amount'	=> $article['pivot']['amount'],
-				'unidades_por_promo'	=> $article['pivot']['unidades_por_promo'],
+				'amount'				=> RequestHelper::isset_array($article['pivot'], 'amount'),
+				'unidades_por_promo'	=> RequestHelper::isset_array($article['pivot'], 'unidades_por_promo'),
 			]);
 
 			Self::descontar_stock($promo, $article);

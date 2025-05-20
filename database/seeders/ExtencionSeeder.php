@@ -289,6 +289,18 @@ class ExtencionSeeder extends Seeder
                 'name' => 'cambiar price type en vender item por item',
                 'slug' => 'cambiar_price_type_en_vender_item_por_item',
             ],
+            [
+                // 54
+                'name' => 'articulos unidades individuales',
+                'slug' => 'articulos_unidades_individuales',
+            ],
+            [
+                // 56
+                // Setea el codigo de barras con el id del articulo
+                'name' => 'Codigos de barra por defecto',
+                'slug' => 'codigos_de_barra_por_defecto',
+            ],
+
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

@@ -75,6 +75,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('consultora-de-precio/buscador/{codigo}', 'ConsultoraDePrecioController@buscador');
 
 
+    // Dias de entrega
+    Route::resource('/delivery-day', 'DeliveryDayController');
+
+
     // Devolciones
     Route::get('devoluciones/search-sale/{num}', 'DevolucionesController@search_sale');
     Route::post('devoluciones/', 'DevolucionesController@store');
@@ -369,8 +373,6 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Article Purchase
     Route::post('article-purchase', 'ArticlePurchaseController@index');
 
-    // Checks
-    Route::get('check/from-date/{from_date?}/{until_date?}', 'CheckController@index');
 
     Route::get('/import-history/{model_name}', 'ImportHistoryController@index');
 

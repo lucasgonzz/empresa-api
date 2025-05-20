@@ -87,10 +87,24 @@ class ArticleBarCodePdf extends fpdf {
 	function printArticle($article, $variant) {
 		if (!is_null($article)) {
 
-			$code = ''.$article->num;
+			$code = $article->bar_code;
+			if (
+				env('APP_URL') == 'https://api-feitoamao-beta.comerciocity.com'
+				|| env('APP_URL') == 'https://api-feitoamao.comerciocity.com'
+			) {
 
-			if (!is_null($variant)) {
-				$code = '0'.$variant->id;
+				$code = ''.$article->num;
+
+				if (!is_null($variant)) {
+					$code = '0'.$variant->id;
+				}
+			}
+
+			if (
+				is_null($code)
+				|| $code == ''
+			) {
+				return;
 			}
 
 			$this->print_bar_code($code);

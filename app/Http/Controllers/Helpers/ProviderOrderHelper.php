@@ -269,8 +269,6 @@ class ProviderOrderHelper {
 		$total = 0;
 		if (!is_null($provider_order)) {
 			
-			// Log::info('pedido '.$provider_order->id.': ');
-			// Log::info($provider_order->total_from_provider_order_afip_tickets);
 			if ((boolean)$provider_order->total_from_provider_order_afip_tickets) {
 				foreach ($provider_order->provider_order_afip_tickets as $afip_ticket) {
 					$total += $afip_ticket->total;

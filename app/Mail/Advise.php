@@ -31,7 +31,7 @@ class Advise extends Mailable
     {
         if (env('SEND_MAILS', false)) {
             $user = UserHelper::getFullModel();
-            return $this->from('contacto@comerciocity.com', 'comerciocity.com')
+            return $this->from(env('MAIL_FROM_ADDRESS'), 'comerciocity.com')
                         ->subject('Nuevo stock de '.$this->article->name)
                         ->markdown('emails.articles.advise', [
                             'article'       => $this->article,

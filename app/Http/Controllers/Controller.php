@@ -112,8 +112,10 @@ class Controller extends BaseController
 
     function updateRelationsCreated($model_name, $model_id, $childrens) {
         if (isset($childrens)) {
+            Log::info('Hay childrens para '.$model_name);
             foreach ($childrens as $children) {
                 if (isset($children['is_imageable'])) {
+                    Log::info('El children es image');
                     $relation_model = GeneralHelper::getModelName('Image')::where('imageable_id', null)
                                                                             ->where('temporal_id', $children['temporal_id'])
                                                                             ->first();

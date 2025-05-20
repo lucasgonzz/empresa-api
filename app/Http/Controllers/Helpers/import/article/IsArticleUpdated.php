@@ -23,6 +23,9 @@ class IsArticleUpdated {
             'category_id',
             'sub_category_id',
             'percentage_gain_blanco',
+            'unidades_individuales',
+            'presentacion',
+            'bodega_id',
         ];
 
         $is_data_updated = false;
@@ -39,6 +42,7 @@ class IsArticleUpdated {
                 isset($data[$prop]) 
                 && $data[$prop] != $articulo_existente->{$prop}
             ) {
+                Log::info('Hubo cambios en '.$prop);
                 $updated_props[] = $prop;
             }
         }
@@ -51,7 +55,8 @@ class IsArticleUpdated {
         // Cheque si cambio el costo
         $new_cost = null;
         if (isset($data['cost'])) {
-            $new_price = (float)$data['cost'];
+            $new_cost = (float)$data['cost'];
+            Log::info('Esta seteado el cost');
         }
         $actual_cost = (float)$articulo_existente->cost;
         
@@ -59,6 +64,7 @@ class IsArticleUpdated {
             !is_null($new_cost) 
             && abs($actual_cost - $new_cost) > $epsilon) {
             
+            // Log::info('Cambio el cost');
             $updated_props[] = 'cost';
         } 
 

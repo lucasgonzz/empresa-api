@@ -13,7 +13,9 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\getIva;
+use App\Http\Controllers\Helpers\import\article\ActualizarBBDD;
 use App\Http\Controllers\Helpers\import\article\IsArticleUpdated;
+use App\Http\Controllers\Helpers\import\article\ProcessRow;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Http\Controllers\update;
 use App\Models\Address;
@@ -27,7 +29,6 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Session;
 use Maatwebsite\Excel\Concerns\ToCollection;
 use Maatwebsite\Excel\Concerns\WithHeadingRow;
-// use Maatwebsite\Excel\Concerns\WithChunkReading;
 
 class ArticleImport implements ToCollection
 {
@@ -61,11 +62,21 @@ class ArticleImport implements ToCollection
         $this->updated_props = [];
 
 
-        $this->setAddresses();
-        $this->setProps();
-        $this->set_price_types();
 
-        Log::info('Llego hasta aca');
+        // $this->setAddresses();
+        // $this->setProps();
+        // $this->set_price_types();
+
+        Log::info('Empieza ArticleImport');
+
+        $this->process_row = new ProcessRow([
+            'ct'        => $this->ct, 
+            'columns'   => $this->columns,
+            'user'      => $this->user,
+            'provider_id'      => $this->provider_id,
+        ]);
+
+        $this->nombres_proveedores = [];
 
         $this->import_history_chequeado = false;
 
@@ -76,29 +87,6 @@ class ArticleImport implements ToCollection
         $this->trabajo_terminado = false;
     }
 
-
-    function setProps() {
-
-        /* 
-            Estas propiedades son las que se setean automaticamente
-            con los valores que llegan del excel
-            
-            Siempre y cuando no esten ignoradas
-        */
-        $this->props_to_set = [
-            'name'              => 'nombre',
-            'bar_code'          => 'codigo_de_barras',
-            'provider_code'     => 'codigo_de_proveedor',
-            'stock_min'         => 'stock_minimo',
-            'cost'              => 'costo',
-            'percentage_gain'   => 'margen_de_ganancia',
-            'price'             => 'precio',
-        ];
-
-        if (UserHelper::hasExtencion('articulos_precios_en_blanco', $this->user)) {
-            $this->props_to_set['percentage_gain_blanco'] = 'margen_de_ganancia_en_blanco';
-        }
-    }
 
     function setAddresses() {
         $this->addresses = Address::where('user_id', $this->user->id)
@@ -120,30 +108,34 @@ class ArticleImport implements ToCollection
 
         $this->set_finish_row($rows);
 
+        $this->set_providers($rows);
+
         $error_message = null;
 
         foreach ($rows as $row) {
 
-            Log::info('Va por fila '.$this->num_row);
-
             if ($this->esta_en_el_rango_de_filas()) {
+    
+                Log::info('Va por fila '.$this->num_row);
 
                 if ($this->checkRow($row)) {
 
-                    $this->articulo_existente = ArticleImportHelper::get_articulo_encontrado($this->user, $row, $this->columns);
+                    // $this->articulo_existente = ArticleImportHelper::get_articulo_encontrado($this->user, $row, $this->columns);
 
                     try {
 
-                        $this->saveArticle($row);
+                        $this->process_row->procesar($row, $this->nombres_proveedores);
 
-                    } catch (\Exception $e) {
+                    } catch (\Throwable $e) {
 
                         $error_message = 'Error en la linea '.$this->num_row;
 
-                        Log::info('Error al importar, entro en try catch');
 
-                        Log::info('Error: '.$error_message);
-                        Log::info('Codigo Error: '.$e->getMessage());
+                        Log::error('Error al importar, se capturó una excepción.');
+                        Log::error('Mensaje: ' . $e->getMessage());
+                        Log::error('Archivo: ' . $e->getFile());
+                        Log::error('Línea: ' . $e->getLine());
+                        Log::error('Trace: ' . $e->getTraceAsString());
 
 
                         // Registra el progreso y errores en Import History
@@ -167,7 +159,9 @@ class ArticleImport implements ToCollection
 
         if (!$this->trabajo_terminado) {
 
-            ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, null, $this->articulos_creados, $this->articulos_actualizados, $this->updated_props);
+            $this->guardar_articulos();
+
+            ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, null, $this->process_row->getArticulosParaCrear(), $this->process_row->getArticulosParaActualizar(), $this->updated_props);
 
             ArticleImportHelper::enviar_notificacion($this->user);
             
@@ -176,11 +170,17 @@ class ArticleImport implements ToCollection
 
     }
 
+    function guardar_articulos() {
+
+        $articulosParaCrear = $this->process_row->getArticulosParaCrear();
+        $articulosParaActualizar = $this->process_row->getArticulosParaActualizar();
+
+        new ActualizarBBDD($articulosParaCrear, $articulosParaActualizar, $this->user, $this->auth_user_id);
+    }
+
     function set_finish_row($rows) {
-        // Log::info('entro a set_finish_row');
         if (is_null($this->finish_row) || $this->finish_row == '') {
             $this->finish_row = count($rows);
-            // Log::info('set_finish_row: '.$this->finish_row);
         } 
     }
 
@@ -196,6 +196,55 @@ class ArticleImport implements ToCollection
         return $this->num_row <= $this->finish_row;
     }
 
+    function set_providers($rows) {
+
+        if ($this->provider_id != 0) return;
+
+        $this->nombres_proveedores = [];
+
+        if (isset($this->columns['proveedor'])) {
+
+            $index_columna_proveedor = $this->columns['proveedor'];
+
+            $proveedoresNombres = collect($rows)
+                        ->pluck($index_columna_proveedor) // índice de la columna "proveedor"
+                        ->filter(fn($nombre) => !is_null($nombre) && trim($nombre) !== '')
+                        ->map(fn($nombre) => trim($nombre))
+                        ->unique()
+                        ->values();
+
+            // Paso 2: obtener todos los proveedores existentes
+            $proveedoresExistentes = Provider::where('user_id', $this->user->id)
+                                        ->whereIn('name', $proveedoresNombres)
+                                        ->get();
+
+            // Paso 3: mapear por nombre para acceso rápido
+            $this->nombres_proveedores = $proveedoresExistentes->keyBy('name');
+
+            // Paso 4: determinar qué nombres faltan
+            $nombresFaltantes = $proveedoresNombres->diff($this->nombres_proveedores->keys());
+
+            // Paso 5: crear los que faltan
+            foreach ($nombresFaltantes as $nombre) {
+                $this->nombres_proveedores[$nombre] = Provider::create([
+                    'name' => $nombre,
+                    'user_id' => $this->user->id 
+                ]);
+            }
+
+        }
+    }
+
+    // function guardar_proveedor($row) {
+
+    //     $nombreProveedor = ImportHelper::getColumnValue($row, 'proveedor', $this->columns);
+
+    //     if ($nombreProveedor && isset($this->nombres_proveedores[$nombreProveedor])) {
+    //         $proveedor = $this->nombres_proveedores[$nombreProveedor];
+    //         return $provider->id;
+    //     }
+    // }
+
     function saveArticle($row) {
 
         // Log::info('saveArticle para row N° '.$this->num_row);
@@ -210,7 +259,10 @@ class ArticleImport implements ToCollection
             $column_value = ImportHelper::getColumnValue($row, $value, $this->columns);
             
             if (ImportHelper::usa_columna($column_value)) {
-                $data[$key] = $column_value; 
+                $data[$key] = $column_value;
+                // Log::info($key.': '.$column_value); 
+            } else {
+                // Log::info('No usa '.$key);
             }
         }
 
@@ -260,6 +312,8 @@ class ArticleImport implements ToCollection
                     $this->updated_models++;
                     $this->articulos_actualizados[] = $article;
                 }
+            } else {
+                // Log::info('No ubo cambios');
             }
             
 

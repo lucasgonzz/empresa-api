@@ -34,7 +34,7 @@ class SetPriceTypesHelper {
 
 
         } else {
-            Log::info('No entro');
+            // Log::info('No entro');
         }
 
     }

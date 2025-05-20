@@ -22,41 +22,47 @@ class UpdateController extends Controller
                 $models[] = $formated_model_name::find($id);
             }
         }
+
         $models_response = [];
-        foreach ($models as $model) {
-            foreach ($request->update_form as $form) {
-                if ($form['type'] == 'number' && str_contains($form['key'], 'decrement') && $form['value'] != '') {
-                    $value = $model->{substr($form['key'], 10)} * (float)$form['value'] / 100;
-                    $model->{substr($form['key'], 10)} -= $value;
-                    if ($form['round']) {
-                        $model->{substr($form['key'], 10)} = round($model->{substr($form['key'], 10)}, 0, PHP_ROUND_HALF_UP);
+        if (count($models) < 5000) {
+
+            foreach ($models as $model) {
+                foreach ($request->update_form as $form) {
+                    if ($form['type'] == 'number' && str_contains($form['key'], 'decrement') && $form['value'] != '') {
+                        $value = $model->{substr($form['key'], 10)} * (float)$form['value'] / 100;
+                        $model->{substr($form['key'], 10)} -= $value;
+                        if ($form['round']) {
+                            $model->{substr($form['key'], 10)} = round($model->{substr($form['key'], 10)}, 0, PHP_ROUND_HALF_UP);
+                        }
+                        $model->save();
+                        // Log::info('Se disminuyo '.substr($form['key'], 10).' de '.$model->name.', quedo en '.$model->{substr($form['key'], 10)});
+                    } else if ($form['type'] == 'number' && str_contains($form['key'], 'increment') && $form['value'] != '') {
+                        $value = $model->{substr($form['key'], 10)} * (float)$form['value'] / 100;
+                        $model->{substr($form['key'], 10)} += $value; 
+                        if ($form['round']) {
+                            $model->{substr($form['key'], 10)} = round($model->{substr($form['key'], 10)}, 0, PHP_ROUND_HALF_UP);
+                        }
+                        $model->save();
+                        // Log::info('Se aumento '.substr($form['key'], 10).' de '.$model->name.', quedo en '.$model->{substr($form['key'], 10)});
+                    } else if ($form['type'] == 'number' && str_contains($form['key'], 'set_') && $form['value'] != '') {
+                        $model->{substr($form['key'], 4)} = (float)$form['value'];
+                        $model->save();
+                        Log::info('Se seteo '.substr($form['key'], 4).' de '.$model->name.', quedo en '.$model->{substr($form['key'], 4)});
+                    } else if ($form['type'] == 'search' && str_contains($form['key'], '_id') && $form['value'] != '' && $form['value'] != 0) {
+                        $model->{$form['key']} = $form['value'];
+                        $model->save();
+                        // Log::info('Se seteo '.$form['key'].' de '.$model->name.', quedo en '.$model->{$form['key']});
                     }
-                    $model->save();
-                    // Log::info('Se disminuyo '.substr($form['key'], 10).' de '.$model->name.', quedo en '.$model->{substr($form['key'], 10)});
-                } else if ($form['type'] == 'number' && str_contains($form['key'], 'increment') && $form['value'] != '') {
-                    $value = $model->{substr($form['key'], 10)} * (float)$form['value'] / 100;
-                    $model->{substr($form['key'], 10)} += $value; 
-                    if ($form['round']) {
-                        $model->{substr($form['key'], 10)} = round($model->{substr($form['key'], 10)}, 0, PHP_ROUND_HALF_UP);
-                    }
-                    $model->save();
-                    // Log::info('Se aumento '.substr($form['key'], 10).' de '.$model->name.', quedo en '.$model->{substr($form['key'], 10)});
-                } else if ($form['type'] == 'number' && str_contains($form['key'], 'set_') && $form['value'] != '') {
-                    $model->{substr($form['key'], 4)} = (float)$form['value'];
-                    $model->save();
-                    Log::info('Se seteo '.substr($form['key'], 4).' de '.$model->name.', quedo en '.$model->{substr($form['key'], 4)});
-                } else if ($form['type'] == 'search' && str_contains($form['key'], '_id') && $form['value'] != '' && $form['value'] != 0) {
-                    $model->{$form['key']} = $form['value'];
-                    $model->save();
-                    // Log::info('Se seteo '.$form['key'].' de '.$model->name.', quedo en '.$model->{$form['key']});
                 }
+                if ($model_name == 'article') {
+                    ArticleHelper::setFinalPrice($model);
+                }
+                $models_response[] = $this->fullModel($model_name, $model->id);
             }
-            if ($model_name == 'article') {
-                ArticleHelper::setFinalPrice($model);
-            }
-            $models_response[] = $this->fullModel($model_name, $model->id);
+            Log::info('se actualizaron '.count($models).' '.$model_name.' desde updateController');
+        } else {
+            Log::info('NO se permitio actualizar los '.count($models).' '.$model_name);
         }
-        Log::info('se actualizaron '.count($models).' '.$model_name.' desde updateController');
         return response()->json(['models' => $models_response], 200);
     }
 }

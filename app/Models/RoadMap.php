@@ -12,7 +12,7 @@ class RoadMap extends Model
     protected $dates = ['fecha_entrega'];
 
     function scopeWithAll($q) {
-        $q->with('employee', 'sales.articles', 'sales.promocion_vinotecas', 'sales.current_acount', 'sales.client');
+        $q->with('employee', 'sales.articles', 'sales.promocion_vinotecas', 'sales.current_acount', 'sales.client', 'client_positions.client');
     }
 
     function employee() {
@@ -21,5 +21,9 @@ class RoadMap extends Model
 
     function sales() {
         return $this->belongsToMany(Sale::class);
+    }
+
+    public function client_positions() {
+        return $this->hasMany(RoadMapClientPosition::class)->orderBy('position', 'ASC');
     }
 }

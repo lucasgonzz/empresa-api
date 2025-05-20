@@ -112,18 +112,6 @@ class CurrentAcountPagoHelper {
         ]);
     }
 
-    static function saveCheck($pago, $checks) {
-        foreach ($checks as $check) {
-            Check::create([
-                'bank'                  => $check['bank'],
-                'payment_date'          => $check['payment_date'],
-                'amount'                => $check['amount'],
-                'num'                   => $check['num'],
-                'current_acount_id'     => $pago->id,
-            ]);
-        }
-    }
-
     static function attachPaymentMethods($pago, $payment_methods, $model_name = null) {
         foreach ($payment_methods as $payment_method) {
             $amount = $payment_method['amount'];
@@ -131,15 +119,19 @@ class CurrentAcountPagoHelper {
                 $amount = $pago->haber;
             }
             $pago->current_acount_payment_methods()->attach($payment_method['current_acount_payment_method_id'], [
-                                                        'amount'                        => $amount,
-                                                        'bank'                          => $payment_method['bank'],
-                                                        'payment_date'                  => $payment_method['payment_date'],
-                                                        'num'                           => $payment_method['num'],
-                                                        'credit_card_id'                => $payment_method['credit_card_id'] != 0 ? $payment_method['credit_card_id'] : null,
-                                                        'credit_card_payment_plan_id' => $payment_method['credit_card_payment_plan_id'] != 0 ? $payment_method['
-                                                        credit_card_payment_plan_id'] : null,
-                                                        'user_id'   => UserHelper::userId(),
-                                                    ]);
+                    'amount'                        => $amount,
+                    'check_status_id'               => 0,
+                    'bank'                          => $payment_method['bank'],
+                    // 'fecha_emision'                 => $payment_method['fecha_emision'],
+                    // 'fecha_pago'                   => $payment_method['fecha_pago'],
+                    // 'cobrado_at'                    => $payment_method['cobrado_at'],
+                    // 'check_status_id'               => Self::get_check_status($payment_method),
+                    'num'                           => $payment_method['num'],
+                    // 'credit_card_id'                => $payment_method['credit_card_id'] != 0 ? $payment_method['credit_card_id'] : null,
+                    // 'credit_card_payment_plan_id' => $payment_method['credit_card_payment_plan_id'] != 0 ? $payment_method['
+                    // credit_card_payment_plan_id'] : null,
+                    'user_id'   => UserHelper::userId(),
+                ]);
 
             if (isset($payment_method['caja_id'])
                 && $payment_method['caja_id'] != 0
@@ -149,6 +141,34 @@ class CurrentAcountPagoHelper {
             }
 
 
+        }
+    }
+
+    static function get_check_status($payment_method) {
+
+        // if ($this->estadoManual === 'cobrado') return 'Cobrado';
+        // if ($this->estadoManual === 'rechazado') return 'Rechazado';
+
+        return 1;
+
+        $hoy = Carbon::today();
+        $fecha_pago = Carbon::parse($payment_method['fecha_pago']);
+        $vencimiento = $fecha_pago->copy()->addDays(30);
+
+        if ($hoy->lt($fecha_pago)) {
+            return 'Pendiente';
+        }
+
+        if ($hoy->between($fecha_pago, $vencimiento->copy()->subDays(3))) {
+            return 'Disponible para cobrar';
+        }
+
+        if ($hoy->between($vencimiento->copy()->subDays(2), $vencimiento)) {
+            return 'Pronto a vencerse';
+        }
+
+        if ($hoy->gt($vencimiento)) {
+            return 'Vencido';
         }
     }
 

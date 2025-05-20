@@ -14,6 +14,7 @@ class ImportHistoryController extends Controller
                                 ->with('articulos_creados')
                                 ->with('articulos_actualizados')
                                 ->get();
+
         return response()->json(['models' => $models], 200);
     }
 }

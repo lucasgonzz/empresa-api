@@ -16,7 +16,15 @@ class SaleTotalesHelper {
 
 				if (!is_null($article->pivot->cost)) {
 
-					$total += $article->pivot->cost;		
+					$total += $article->pivot->cost * $article->pivot->amount;		
+				}
+			}
+
+			foreach ($sale->promocion_vinotecas as $promo) {
+
+				if (!is_null($promo->cost)) {
+
+					$total += $promo->cost * $promo->pivot->amount;		
 				}
 			}
 		}

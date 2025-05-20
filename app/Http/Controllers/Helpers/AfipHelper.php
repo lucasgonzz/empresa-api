@@ -59,7 +59,7 @@ class AfipHelper extends Controller {
         ];
         $subtotal           = 0;
         $total              = 0;
-        
+
         if ($this->sale->afip_information->iva_condition->name == 'Responsable inscripto') {
 
             if ($this->factura_solo_algunos_metodos_de_pago) {
@@ -121,13 +121,19 @@ class AfipHelper extends Controller {
                 }
             }
 
+        } else {
+            $total              = $this->sale->total;
+            $gravado            = $this->sale->total;
         }
 
-        $gravado = Numbers::redondear($gravado);
         $neto_no_gravado = Numbers::redondear($neto_no_gravado);
         $exento = Numbers::redondear($exento);
         $iva = Numbers::redondear($iva);
-        $total = Numbers::redondear($gravado + $neto_no_gravado + $exento + $iva);
+
+        if ($total == 0) {
+            $gravado = Numbers::redondear($gravado);
+            $total = Numbers::redondear($gravado + $neto_no_gravado + $exento + $iva);
+        }
         return [
             'gravado'           => $gravado,
             'neto_no_gravado'   => $neto_no_gravado,

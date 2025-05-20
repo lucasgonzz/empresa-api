@@ -83,11 +83,15 @@ class ArticlePricesHelper {
         
     }
 
-    static function aplicar_precios_segun_listas_de_precios($article, $cost, $user) {
+    static function aplicar_precios_segun_listas_de_precios($article, $cost, $user, $price_types = null) {
         
-        $price_types = PriceType::where('user_id', $user->id)
-                                ->orderBy('position', 'ASC')
-                                ->get();
+        if (is_null($price_types)) {
+            $price_types = PriceType::where('user_id', $user->id)
+                                    ->orderBy('position', 'ASC')
+                                    ->get();
+        }
+                                
+        // Log::info('aplicar_precios_segun_listas_de_precios, price_types: '.count($price_types));
 
         foreach ($price_types as $price_type) {
 
@@ -109,6 +113,8 @@ class ArticlePricesHelper {
                     $previus_final_price = $relation->pivot->final_price;
                 }
 
+            } else {
+                // Log::info('El articulo num '.$article->id.' NO tenia relacion con el price_type '.$price_type->name.'. Se usa porcentaje por defecto');
             }
 
             $price = $cost + ($cost * (float)$percentage / 100);
@@ -129,6 +135,8 @@ class ArticlePricesHelper {
                 'previus_final_price'   => $previus_final_price,
             ]);
 
+            // Log::info('Seteando price_type '.$price_type->name.' para article num: '.$article->id.' con percentage '.$percentage.'% y final_price de '.$final_price);
+
         }
     }
 
@@ -141,12 +149,7 @@ class ArticlePricesHelper {
             $importe_iva = $price * $article->iva->percentage / 100;
 
             $precio_con_iva += $importe_iva;
-        
-            // Log::info('sumando el iva a '.$article->name);
-            // Log::info('price '.$price);
-            // Log::info('iva '.$article->iva->percentage);
-            // Log::info('importe_iva '.$importe_iva);
-            // Log::info('quedo en '.$precio_con_iva);
+
         }
 
         return $precio_con_iva;

@@ -78,9 +78,9 @@ class ArticleHelper {
         }
     }
 
-    static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null) {
+    static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null) {
 
-        Log::info('setFinalPrice para '.$article->name.' con costo de '.$article->cost.' y precio de '.$article->price);
+        // Log::info('setFinalPrice para '.$article->name.' con costo de '.$article->cost.' y precio de '.$article->price);
         
         if (is_null($user)) {
             if (is_null($user_id)) {
@@ -117,6 +117,10 @@ class ArticleHelper {
                 }
             }
 
+            if ($article->unidades_individuales) {
+                $cost = $cost / $article->unidades_individuales;
+            }
+
             $final_price = $cost;
 
             if ($user->aplicar_descuentos_en_articulos_antes_del_margen_de_ganancia) {
@@ -129,12 +133,11 @@ class ArticleHelper {
 
             if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)) {
 
-
                 $cost = ArticlePricesHelper::aplicar_descuentos($article, $cost);
 
                 $cost = ArticlePricesHelper::aplicar_recargos($article, $cost);
 
-                ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $cost, $user);
+                ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $cost, $user, $price_types);
 
             } else if (UserHelper::hasExtencion('lista_de_precios_por_categoria', $user)) {
 
@@ -193,7 +196,10 @@ class ArticleHelper {
 
         $article->final_price = $final_price;
 
-        if ($current_final_price != $article->final_price) {
+        if (
+            !is_null($current_final_price)
+            && $current_final_price != $article->final_price
+        ) {
             $article->previus_final_price = $current_final_price; 
             $article->final_price_updated_at = Carbon::now();
             PriceChangeController::store($article, $auth_user_id);
@@ -205,8 +211,16 @@ class ArticleHelper {
             $article = ArticlePricesHelper::set_precios_en_blanco($article);
         }
 
-        $article->timestamps = false;
-        $article->save();
+        if ($guardar_cambios) {
+            $article->timestamps = false;
+            $article->save();
+        } else {
+            return [
+                'final_price'           => $final_price,
+                'current_final_price'   => $current_final_price,
+            ];
+        }
+
     }
 
     static function redondear($price, $user) {
@@ -297,6 +311,8 @@ class ArticleHelper {
                             })
                             ->whereDate('terminada_at', '>=', $from_date)
                             ->whereDate('terminada_at', '<=', $until_date)
+                            ->where('terminada', 1)
+                            ->orderBy('created_at', 'DESC')
                             ->withAll()
                             ->get();
         return $sales;

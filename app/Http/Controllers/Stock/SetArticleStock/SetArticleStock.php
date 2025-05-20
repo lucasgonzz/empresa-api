@@ -26,10 +26,10 @@ class SetArticleStock  {
 
             CheckGlobalStock::check_global_stock($stock_movement, $article, $set_updated_at);
     
-            ArticleHelper::checkAdvises($article);
-
             ArticleHelper::setArticleStockFromAddresses($article, false, $user_id);
 
+            ArticleHelper::checkAdvises($article);
+            
             CheckCartAmount::check_cart_amount($stock_movement, $article);
 
         } 
