@@ -18,7 +18,7 @@ class act_articulo_repetido {
 
         dump('articulo_repetido');
         ActualizarRepetidoHelper::actualizar_repetido($this->browser, [
-            'bar_code'      => 12345,
+            'bar_code'      => 002,
             'cost'          => 2000,
             'check'         => [
                 'key'   => 'final_price',

@@ -58,6 +58,37 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function corregir_stock($user_id) {
+        $articulos_mal = [];
+        $articles = Article::where('user_id', $user_id)
+                            ->get();
+
+        echo count($articles).' articulos';      
+        echo '<br>';
+
+        foreach ($articles as $article) {
+            
+            $last_stock_movement = StockMovement::where('article_id', $article->id)
+                                                ->orderBy('id', 'DESC')
+                                                ->first();
+
+            if ($last_stock_movement) {
+                $stock_resultante = $last_stock_movement->stock_resultante;
+                if ($article->stock != $stock_resultante) {
+
+                    $article->stock = $stock_resultante;
+                    $article->timestamps = false;
+                    $article->save();
+
+                    echo 'Se corrigio article id'.$article->id;
+                    echo '<br>';
+                }
+            }
+        }
+
+        echo 'Listo';
+    }
+
     function set_renacer_articles_bar_codes() {
         $articles = Article::orderBy('id', 'ASC')
                             ->get();

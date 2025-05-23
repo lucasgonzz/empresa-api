@@ -36,6 +36,8 @@ class CreateOnlineConfigurationsTable extends Migration
             $table->boolean('show_article_image')->default(1);
             $table->boolean('usar_cupones')->default(0);
 
+            $table->boolean('enviar_whatsapp_al_terminar_pedido')->default(0);
+
             $table->integer('cantidad_tarjetas_en_telefono')->default(1);
             $table->integer('cantidad_tarjetas_en_tablet')->default(3);
             $table->integer('cantidad_tarjetas_en_notebook')->default(4);

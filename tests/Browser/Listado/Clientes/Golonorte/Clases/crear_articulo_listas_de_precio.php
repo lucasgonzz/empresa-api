@@ -48,7 +48,7 @@ class crear_articulo_listas_de_precio {
             'props' => [
                 [
                     'key'   => 'bar_code',
-                    'value' => '123456',
+                    'value' => '005',
                 ],
                 [
                     'key'   => 'name',

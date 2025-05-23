@@ -283,6 +283,7 @@ class UserSeeder extends Seeder
                 'cantidad_tarjetas_en_tablet'   => 3,
                 'cantidad_tarjetas_en_notebook' => 4,
                 'cantidad_tarjetas_en_escritorio' => 4,
+                'enviar_whatsapp_al_terminar_pedido'    => 1,
             ];
 
             $models[0]['extencions'] = [
@@ -338,6 +339,23 @@ class UserSeeder extends Seeder
                 'comisiones_por_categoria',
                 'indicar_vendedor_en_vender',
                 'cambiar_price_type_en_vender_item_por_item',
+                'ventas_con_fecha_de_entrega',
+                'road_map_detalle_por_articulos_y_no_por_venta',
+            ];
+
+
+            $models[0]['online_configuration'] = [
+                'online_price_type_id'          => 3,
+                'register_to_buy'               => 1,
+                'scroll_infinito_en_home'       => 1,
+                'default_article_image_url'     => 'http://empresa.local:8000/storage/169705209718205.jpg',
+                'pausar_tienda_online'          => 0,
+                'online_template_id'            => 1,
+                'cantidad_tarjetas_en_telefono' => 2,
+                'cantidad_tarjetas_en_tablet'   => 3,
+                'cantidad_tarjetas_en_notebook' => 4,
+                'cantidad_tarjetas_en_escritorio' => 4,
+                'enviar_whatsapp_al_terminar_pedido'    => 0,
             ];
 
         } else if ($this->for_user == 'ros_mar') {
@@ -455,7 +473,7 @@ class UserSeeder extends Seeder
 
                 if (
                     env('APP_ENV') == 'local'
-                    || env('VERSION_DEMO')
+                    || $this->for_user == 'demo'
                 ) {
                     
                     AfipInformation::create([

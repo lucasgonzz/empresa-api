@@ -76,7 +76,10 @@ class EmployeeController extends Controller
                 'created_at'        => Carbon::now(),
             ]);
 
-            $model->permissions()->attach($request->permissions_id);
+            foreach ($request->permissions as $permission) {
+                $model->permissions()->attach($permission['id']);
+            }
+            
             $model = User::where('id', $model->id)
                                 ->with('permissions')
                                 ->first();

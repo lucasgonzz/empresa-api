@@ -16,13 +16,6 @@ class RoadMapSeeder extends Seeder
      */
     public function run()
     {
-        $this->truvari();
-    }
-
-    function truvari() {
-        if (env('FOR_USER') != 'truvari') {
-            return;
-        }
 
         $models = [
             // Fecha de entrega Ayer

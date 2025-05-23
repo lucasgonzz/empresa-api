@@ -43,6 +43,7 @@ class ClientController extends Controller
             'saldo'                     => $request->saldo,
             'comercio_city_user_id'     => $request->comercio_city_user_id,
             'seller_id'                 => $request->seller_id,
+            'link_google_maps'          => $request->link_google_maps,
             'pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar'                 => $request->pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar,
             'address_id'                => $request->address_id,
             'user_id'                   => $this->userId(),
@@ -74,6 +75,7 @@ class ClientController extends Controller
         $model->seller_id                   = $request->seller_id;
         $model->pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar                   = $request->pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar;
         $model->address_id                  = $request->address_id;
+        $model->link_google_maps                  = $request->link_google_maps;
         $model->save();
         $this->sendAddModelNotification('Client', $model->id);
         return response()->json(['model' => $this->fullModel('Client', $model->id)], 200);

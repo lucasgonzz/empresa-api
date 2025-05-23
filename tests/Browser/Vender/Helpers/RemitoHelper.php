@@ -15,8 +15,8 @@ class RemitoHelper {
 
     static function get_bar_code($bar_code) {
         // $articles_num = [
-        //     '1234'      => 5,
-        //     '12345'     => 6,
+        //     '001'      => 5,
+        //     '002'     => 6,
         // ];
         // if (env('FOR_USER') == 'feito') {
         //     return $articles_num[$bar_code];

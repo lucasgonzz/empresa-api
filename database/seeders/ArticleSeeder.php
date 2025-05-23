@@ -42,7 +42,7 @@ class ArticleSeeder extends Seeder
 
         if (
             env('APP_ENV') == 'local'
-            || env('VERSION_DEMO')
+            || env('FOR_USER') == 'demo'
         ) {
             
             $this->for_user = env('FOR_USER');

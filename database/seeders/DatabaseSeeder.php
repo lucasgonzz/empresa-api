@@ -3,7 +3,9 @@
 namespace Database\Seeders;
 
 use App\Http\Controllers\Helpers\Seeders\ExcluirListaDePrecioExcelHelper;
-use Database\Seeders\Truvari\TruvariSaleSeeder;
+use Database\Seeders\sales\SaleReporteArticuloSeeder;
+use Database\Seeders\sales\SaleReporteSeeder;
+use Database\Seeders\sales\SaleRoadMapSeeder;
 use Illuminate\Database\Seeder;
 
 class DatabaseSeeder extends Seeder
@@ -108,6 +110,9 @@ class DatabaseSeeder extends Seeder
                 $this->call(CategoryPriceTypeRangeSeeder::class);
                 $this->call(ArticlePriceTypeGroupSeeder::class);
 
+                $this->call(SaleRoadMapSeeder::class);
+
+                $this->call(RoadMapSeeder::class);
 
             } else if ($for_user == 'ferretodo') {
 
@@ -133,7 +138,7 @@ class DatabaseSeeder extends Seeder
 
                 if (
                     env('APP_ENV') == 'local'
-                    || env('VERSION_DEMO')
+                    || $for_user == 'demo'
                 ) {
 
                     $this->call(ArticleSeeder::class);
@@ -145,7 +150,7 @@ class DatabaseSeeder extends Seeder
 
             // if (
             //     env('APP_ENV') == 'local'
-            //     || env('VERSION_DEMO')
+            //     || $for_user == 'demo'
             // ) {
 
             //     $this->call(ProviderSeeder::class);
@@ -176,13 +181,14 @@ class DatabaseSeeder extends Seeder
             //     $this->call(SellerSeeder::class);
             // }
 
-            // if (ENV('VERSION_DEMO')) {
-            //     $this->call(SaleSeeder::class);
-            // }
+            if ($for_user == 'demo') {
+                $this->call(SaleReporteSeeder::class);
+                $this->call(SaleReporteArticuloSeeder::class);
+            }
 
             if ($for_user == 'truvari') {
                 if (env('APP_ENV') == 'local') {
-                    $this->call(TruvariSaleSeeder::class);
+                    $this->call(SaleRoadMapSeeder::class);
                     $this->call(RoadMapSeeder::class);
                     $this->call(CartSeeder::class);
                 }
@@ -223,7 +229,7 @@ class DatabaseSeeder extends Seeder
 
         if (
             env('APP_ENV') == 'local'
-            || env('VERSION_DEMO')
+            || $for_user == 'demo'
         ) {
 
             $this->call(CategorySeeder::class);
@@ -260,12 +266,6 @@ class DatabaseSeeder extends Seeder
             $this->call(EmployeeSeeder::class);
             $this->call(SellerSeeder::class);
 
-            if (
-                env('FOR_USER') != 'truvari'
-                || env('FOR_USER') != 'demo'
-            ) {
-                $this->call(SaleSeeder::class);
-            }
         }
     }
 

@@ -139,11 +139,11 @@ class presupuesto {
 
     function agregar_articulos() {
 
-        RemitoHelper::add_article_bar_code($this->browser,'1234', 5);
+        RemitoHelper::add_article_bar_code($this->browser,'001', 5);
 
         $this->browser->pause(1000);
 
-        RemitoHelper::add_article_bar_code($this->browser,'12345', 5);
+        RemitoHelper::add_article_bar_code($this->browser,'002', 5);
 
         $this->browser->pause(1000);
 

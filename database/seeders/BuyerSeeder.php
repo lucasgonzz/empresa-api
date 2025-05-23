@@ -34,7 +34,7 @@ class BuyerSeeder extends Seeder
             'phone'                     => '+5493444622139',
             'email'                     => 'lucasgonzalez210200@gmail.com',
             'password'                  => bcrypt('1234'),
-            'comercio_city_client_id'   => 3,
+            'comercio_city_client_id'   => 2,
             'user_id'                   => env('USER_ID'),
         ]);
 

@@ -66,7 +66,7 @@ class venta_cliente_omitir_cc {
 
     function agregar_articulo() {
 
-        RemitoHelper::add_article_bar_code($this->browser, '12345', 10);
+        RemitoHelper::add_article_bar_code($this->browser, '002', 10);
 
         $this->browser->pause(500);
         

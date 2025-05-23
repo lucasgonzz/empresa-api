@@ -27,34 +27,12 @@ class SaleSeeder extends Seeder
     public function run()
     {
 
-        $this->reportes();
-        $this->reportes_articulos();
-
         // $this->pagos(500);
 
         // $this->venta_sin_confirmar_a_fin_de_mes();
 
     }
 
-    function reportes() {
-
-        require('sales/reportes.php');
-
-        SaleSeederHelper::create_sales($ventas_desde_principio_de_mes);
-        
-        SaleSeederHelper::create_sales($ventas_meses_anterioires);
-
-    }
-
-    function reportes_articulos() {
-
-        require('sales/reportes2.php');
-
-        // SaleSeederHelper::create_sales($ventas_desde_principio_de_mes);
-        
-        SaleSeederHelper::create_sales($ventas_meses_anterioires);
-
-    }
 
     function venta_sin_confirmar_a_fin_de_mes() {
         $data = [

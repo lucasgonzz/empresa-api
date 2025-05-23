@@ -148,7 +148,7 @@ class venta_cliente {
 
     function agregar_articulo() {
 
-        RemitoHelper::add_article_bar_code($this->browser, '1234', 5);
+        RemitoHelper::add_article_bar_code($this->browser, '001', 5);
 
         $this->browser->pause(500);
         

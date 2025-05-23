@@ -5,6 +5,7 @@ namespace Tests\Browser\Vender;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Laravel\Dusk\Browser;
 use Tests\Browser\Helpers\AuthHelper;
+use Tests\Browser\Helpers\ConsoleOutput;
 use Tests\Browser\Vender\Clases\actualizar_metodos_de_pago;
 use Tests\Browser\Vender\Clases\crear_venta;
 use Tests\Browser\Vender\Clases\facturar_venta;
@@ -23,16 +24,15 @@ class Index_Test extends DuskTestCase
     public function test_vender()
     {
         $this->browse(function (Browser $browser) {
+            ConsoleOutput::info('Logeando');
             $browser = AuthHelper::login($browser);
             
             $browser->visit('/vender/remito');
             $browser->pause(2000);
 
-
-
-            dump('**************************');
-            dump('TEST_VENDER');
-            dump('**************************');
+            ConsoleOutput::info('');
+            ConsoleOutput::info('TEST VENDER');
+            ConsoleOutput::info('');
 
             new crear_venta($browser);
 

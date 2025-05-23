@@ -277,7 +277,7 @@ class SaleHelper extends Controller {
         if (!$article_sale) {
             Self::attachArticle($sale, $article);
           
-            Log::info('No se estaba agregando el articulo '.$article['name'].'. N° '.$article['num'].' a la venta N° '.$sale->num);
+            // Log::info('No se estaba agregando el articulo '.$article['name'].'. N° '.$article['num'].' a la venta N° '.$sale->num);
         } else if (isset($article['name'])) {
             Log::info('La venta N° '.$sale->num.' SI tiene el articulo '.$article['name']);
         }

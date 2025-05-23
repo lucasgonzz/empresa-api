@@ -56,7 +56,7 @@ class ClientSeeder extends Seeder
 
                 'num'                   => 3,
                 'name'                  => 'Sabrina Herrero',
-                'address'               => 'Martin Fierro 23 - Gualeguay, Entre Rios',
+                'address'               => 'Juan Bosco 009 - Victoria, Entre Rios',
                 'phone'                 => '3444622139',
                 'cuit'                  => '20242112025',
                 'razon_social'          => 'MARCOS SRL', 

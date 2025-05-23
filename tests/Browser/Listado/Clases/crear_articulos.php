@@ -24,7 +24,7 @@ class crear_articulos {
             'props' => [
                 [
                     'key'   => 'bar_code',
-                    'value' => '1234',
+                    'value' => '001',
                 ],
                 [
                     'key'   => 'name',
@@ -62,7 +62,7 @@ class crear_articulos {
             'props' => [
                 [
                     'key'   => 'bar_code',
-                    'value' => '12345',
+                    'value' => '002',
                 ],
                 [
                     'key'   => 'name',

@@ -15,7 +15,7 @@ class AuthHelper
                 ->press('@login-btn')
                 ->waitFor('@dni') 
                 ->type('@dni', '1234')
-                ->type('@password', '123')
+                ->type('@password', '1234')
                 ->press('login')
                 ->waitForLocation('/reportes/generales')
                 ->assertPathIs('/reportes/generales');

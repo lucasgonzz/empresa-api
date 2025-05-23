@@ -16,7 +16,7 @@ class Index_Test extends DuskTestCase
      *
      * @return void
      */
-    public function test_vender_Feito()
+    public function feito_test_vender()
     {
         $this->browse(function (Browser $browser) {
             $browser = AuthHelper::login($browser);
