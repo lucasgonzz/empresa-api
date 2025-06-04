@@ -101,6 +101,9 @@ class CreateUsersTable extends Migration
 
             $table->integer('seller_id')->unsigned()->nullable();
 
+            $table->integer('default_article_iva_id')->nullable();
+
+
             $table->timestamp('login_at')->nullable();
             $table->timestamp('logout_at')->nullable();
             // $table->foreign('owner_id')->references('id')->on('users');

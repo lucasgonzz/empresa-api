@@ -24,6 +24,7 @@ class CreateImportHistoriesTable extends Migration
             $table->text('observations')->nullable();
             $table->text('excel_url')->nullable();
             $table->text('error_message')->nullable();
+            $table->integer('no_actualizar_articulos_de_otro_proveedor')->nullable();
             $table->timestamps();
         });
     }

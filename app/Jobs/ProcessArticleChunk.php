@@ -18,15 +18,16 @@ class ProcessArticleChunk implements ShouldQueue
     protected $archivo_excel_path;
     protected $columns, $create_and_edit, $start_row, $finish_row,
               $provider_id, $import_history_id, $pre_import_id,
-              $user, $auth_user_id;
+              $user, $auth_user_id, $no_actualizar_articulos_de_otro_proveedor;
 
     public $timeout = 1200; // 20 minutos por chunk, ajustable
 
-    public function __construct($archivo_excel_path, $columns, $create_and_edit, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id)
+    public function __construct($archivo_excel_path, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id)
     {
         $this->archivo_excel_path = $archivo_excel_path;
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
+        $this->no_actualizar_articulos_de_otro_proveedor = $no_actualizar_articulos_de_otro_proveedor;
         $this->start_row = $start_row;
         $this->finish_row = $finish_row;
         $this->provider_id = $provider_id;
@@ -40,6 +41,7 @@ class ProcessArticleChunk implements ShouldQueue
     {
         Excel::import(new ArticleImport(
             $this->columns, $this->create_and_edit,
+            $this->no_actualizar_articulos_de_otro_proveedor,
             $this->start_row, $this->finish_row,
             $this->provider_id, $this->import_history_id,
             $this->pre_import_id, $this->user,

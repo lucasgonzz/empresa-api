@@ -124,7 +124,11 @@ class ArticlePricesHelper {
             // Log::info('al costo '.$cost);
             // Log::info('price '.$price);
 
+            // Log::info('article id: '.$article->id.' '.$price_type->name.' queda en '.$price);
+
             $final_price = Self::aplicar_iva($article, $price, $user);
+
+            // Log::info('Mas el '.$article->iva->percentage.' de iva, final_price: '.$final_price);
             
             $article->price_types()->syncWithoutDetaching($price_type->id);
 
@@ -144,7 +148,11 @@ class ArticlePricesHelper {
 
         $precio_con_iva = $price;
 
+        $article->load('iva');
+
         if (!$user->iva_included && Self::hasIva($article)) {
+
+            Log::info('iva: '.$article->iva->percentage);
 
             $importe_iva = $price * $article->iva->percentage / 100;
 

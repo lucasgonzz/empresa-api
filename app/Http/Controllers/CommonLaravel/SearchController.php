@@ -74,24 +74,29 @@ class SearchController extends Controller
 
                 } else {
 
+                    $key = $filter['key'];
+                    if ($key == 'num' && $model_name_param == 'article') {
+                        $key = 'id';
+                    }
+
                     if ($filter['type'] == 'number') {
                         if (isset($filter['menor_que'])
                             && $filter['menor_que'] != '') {
                             
-                            $models = $models->where($filter['key'], '<', trim($filter['menor_que']));
-                            Log::info('Filtrando por number '.$filter['key'].' menor_que');
+                            $models = $models->where($key, '<', trim($filter['menor_que']));
+                            Log::info('Filtrando por number '.$key.' menor_que');
                         }
                         if (isset($filter['igual_que'])
                             && $filter['igual_que'] != '') {
                             
-                            $models = $models->where($filter['key'], '=', trim($filter['igual_que']));
-                            Log::info('Filtrando por number '.$filter['key'].' igual');
+                            $models = $models->where($key, '=', trim($filter['igual_que']));
+                            Log::info('Filtrando por number '.$key.' igual');
                         }
                         if (isset($filter['mayor_que'])
                             && $filter['mayor_que'] != '') {
                             
-                            $models = $models->where($filter['key'], '>', trim($filter['mayor_que']));
-                            Log::info('Filtrando por number '.$filter['key'].' mayor_que');
+                            $models = $models->where($key, '>', trim($filter['mayor_que']));
+                            Log::info('Filtrando por number '.$key.' mayor_que');
                         }
                     } else if (($filter['type'] == 'text' || $filter['type'] == 'textarea')) {
 

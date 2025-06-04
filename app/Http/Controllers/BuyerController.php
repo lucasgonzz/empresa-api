@@ -25,6 +25,10 @@ class BuyerController extends Controller
             $password .= $request->num;
         }
 
+        if (isset($request->cuit)) {
+            $password = $cuit;
+        }
+
         if ($request->visible_password) {
             $password = $request->visible_password;
         }

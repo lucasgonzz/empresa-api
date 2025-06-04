@@ -13,7 +13,7 @@ class ImportHelper {
 	}
 
 	static function usa_columna($value) {
-		return !is_null($value) && $value != '';
+		return !is_null($value) && $value !== '';
 	}
 
 	static function isIgnoredColumn($key, $columns) {

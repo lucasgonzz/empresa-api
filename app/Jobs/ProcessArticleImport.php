@@ -24,6 +24,7 @@ class ProcessArticleImport implements ShouldQueue
     protected $archivo_excel;
     protected $columns;
     protected $create_and_edit;
+    protected $no_actualizar_articulos_de_otro_proveedor;
     protected $start_row;
     protected $finish_row;
     protected $provider_id;
@@ -35,10 +36,11 @@ class ProcessArticleImport implements ShouldQueue
 
     public $timeout = 3600;
 
-    public function __construct($archivo_excel, $columns, $create_and_edit, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id, $archivo_excel_path) {
+    public function __construct($archivo_excel, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id, $archivo_excel_path) {
         $this->archivo_excel = $archivo_excel;
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
+        $this->no_actualizar_articulos_de_otro_proveedor = $no_actualizar_articulos_de_otro_proveedor;        
         $this->start_row = $start_row;
         $this->finish_row = $finish_row;
         $this->provider_id = $provider_id;
@@ -75,6 +77,7 @@ class ProcessArticleImport implements ShouldQueue
                 $this->archivo_excel_path,
                 $this->columns,
                 $this->create_and_edit,
+                $this->no_actualizar_articulos_de_otro_proveedor,
                 $start,
                 $end,
                 $this->provider_id,

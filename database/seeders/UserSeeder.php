@@ -94,11 +94,12 @@ class UserSeeder extends Seeder
 
         } else if ($this->for_user == 'demo') {
 
-            $models[0]['name'] = 'Ramiro';
+            $models[0]['name'] = 'Lucas';
             $models[0]['company_name'] = 'Autopartes Boxes';
             $models[0]['iva_included'] = 0;
             $models[0]['iva_condition_id'] = 1;
-            $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
+            // $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
+            $models[0]['default_version'] = null;
 
             $models[0]['extencions'] = [
 
@@ -118,6 +119,7 @@ class UserSeeder extends Seeder
 
             $models[0]['name'] = 'Maxi';
             $models[0]['company_name'] = 'Electro lacarra';
+            $models[0]['doc_number'] = '34505584';
             $models[0]['iva_included'] = 0;
             $models[0]['iva_condition_id'] = 2;
             $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
@@ -270,6 +272,7 @@ class UserSeeder extends Seeder
             $models[0]['default_version'] = 'https://truvari.comerciocity.com';
             $models[0]['google_custom_search_api_key'] = 'AIzaSyDSOX6FoW1AWN1w7ArrV_OYrrlDxMGIhuE';
             
+            $models[0]['default_article_iva_id'] = 6;
 
 
             $models[0]['online_configuration'] = [
@@ -284,6 +287,8 @@ class UserSeeder extends Seeder
                 'cantidad_tarjetas_en_notebook' => 4,
                 'cantidad_tarjetas_en_escritorio' => 4,
                 'enviar_whatsapp_al_terminar_pedido'    => 1,
+                'titulo_quienes_somos'    => 'Forma de compra',
+                'retiro_por_local'              => 0,
             ];
 
             $models[0]['extencions'] = [
@@ -444,6 +449,7 @@ class UserSeeder extends Seeder
                 'app_url'                       => isset($model['app_url']) ? $model['app_url'] : null,
                 'base_de_datos'                 => isset($model['base_de_datos']) ? $model['base_de_datos'] : null,
                 'google_custom_search_api_key'                 => isset($model['google_custom_search_api_key']) ? $model['google_custom_search_api_key'] : null,
+                'default_article_iva_id'                 => isset($model['default_article_iva_id']) ? $model['default_article_iva_id'] : null,
                 'dias_alertar_empleados_ventas_no_cobradas'        => 1,
                 'dias_alertar_administradores_ventas_no_cobradas'  => 1,
                 'default_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8080' : $model['default_version'],

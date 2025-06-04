@@ -36,8 +36,8 @@ class ArticleIndexCache
             }
         }
 
-        Log::info('se puso este cache:');
-        Log::info($index);
+        // Log::info('se puso este cache:');
+        // Log::info($index);
 
         Cache::put("article_index_user_{$user_id}", $index, now()->addMinutes(30));
     }
@@ -56,7 +56,16 @@ class ArticleIndexCache
     {
         $index = self::get($user_id);
 
-        // Buscar primero por bar_code si está definido
+        // Buscar primero por id si está definido
+        if (!empty($data['id'])) {
+            $lookup = $data['id'];
+            if (isset($index['ids'][$lookup])) {
+                return Article::find($index['ids'][$lookup]);
+            }
+            return null;
+        }
+
+        // Si no hay id, buscar por bar_code si está definido
         if (!empty($data['bar_code'])) {
             $lookup = $data['bar_code'];
             if (isset($index['bar_codes'][$lookup])) {

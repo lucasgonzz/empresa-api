@@ -34,7 +34,7 @@ class ArticleImport implements ToCollection
 {
 
     
-    public function __construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id, $archivo_excel_path) {
+    public function __construct($columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id, $archivo_excel_path) {
         set_time_limit(9999999999);
 
         Log::info('Se creo ArticleImport');
@@ -45,6 +45,7 @@ class ArticleImport implements ToCollection
 
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
+        $this->no_actualizar_articulos_de_otro_proveedor = $no_actualizar_articulos_de_otro_proveedor;
         $this->start_row = $start_row;
         $this->finish_row = $finish_row;
         $this->ct = new Controller();
@@ -74,6 +75,8 @@ class ArticleImport implements ToCollection
             'columns'   => $this->columns,
             'user'      => $this->user,
             'provider_id'      => $this->provider_id,
+            'create_and_edit'      => $this->create_and_edit,
+            'no_actualizar_articulos_de_otro_proveedor'      => $this->no_actualizar_articulos_de_otro_proveedor,
         ]);
 
         $this->nombres_proveedores = [];
@@ -116,6 +119,7 @@ class ArticleImport implements ToCollection
 
             if ($this->esta_en_el_rango_de_filas()) {
     
+                Log::info('');
                 Log::info('Va por fila '.$this->num_row);
 
                 if ($this->checkRow($row)) {
@@ -132,15 +136,16 @@ class ArticleImport implements ToCollection
 
 
                         Log::error('Error al importar, se capturó una excepción.');
+                        Log::error('error_message: '.$error_message);
                         Log::error('Mensaje: ' . $e->getMessage());
                         Log::error('Archivo: ' . $e->getFile());
                         Log::error('Línea: ' . $e->getLine());
-                        Log::error('Trace: ' . $e->getTraceAsString());
+                        // Log::error('Trace: ' . $e->getTraceAsString());
 
 
                         // Registra el progreso y errores en Import History
                         ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, $error_message, $this->articulos_creados, $this->articulos_actualizados, $this->updated_props);
-                        ArticleImportHelper::error_notification($this->user);
+                        ArticleImportHelper::error_notification($this->user, $this->num_row, $e->getMessage());
                         return;
 
                     } 
@@ -161,9 +166,12 @@ class ArticleImport implements ToCollection
 
             $this->guardar_articulos();
 
-            ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, null, $this->process_row->getArticulosParaCrear(), $this->process_row->getArticulosParaActualizar(), $this->updated_props);
+            $articulos_creados = count($this->process_row->getArticulosParaCrear());
+            $articulos_actualizados = count($this->process_row->getArticulosParaActualizar());
 
-            ArticleImportHelper::enviar_notificacion($this->user);
+            ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, null, $articulos_creados, $articulos_actualizados, $this->updated_props);
+
+            ArticleImportHelper::enviar_notificacion($this->user, $articulos_creados, $articulos_actualizados);
             
             $this->trabajo_terminado = true;
         }
@@ -172,10 +180,32 @@ class ArticleImport implements ToCollection
 
     function guardar_articulos() {
 
+
         $articulosParaCrear = $this->process_row->getArticulosParaCrear();
         $articulosParaActualizar = $this->process_row->getArticulosParaActualizar();
 
-        new ActualizarBBDD($articulosParaCrear, $articulosParaActualizar, $this->user, $this->auth_user_id);
+
+        try {
+
+            new ActualizarBBDD($articulosParaCrear, $articulosParaActualizar, $this->user, $this->auth_user_id);
+
+
+        } catch (\Throwable $e) {
+
+            $error_message = 'Error al guardar cambios';
+
+            Log::error('Error al importar, se capturó una excepción.');
+            Log::error('Mensaje: ' . $e->getMessage());
+            Log::error('Archivo: ' . $e->getFile());
+            Log::error('Línea: ' . $e->getLine());
+            // Log::error('Trace: ' . $e->getTraceAsString());
+
+
+            // Registra el progreso y errores en Import History
+            ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, $error_message, $this->articulos_creados, $this->articulos_actualizados, $this->updated_props);
+
+            ArticleImportHelper::error_notification($this->user, null, $e->getMessage());
+        } 
     }
 
     function set_finish_row($rows) {

@@ -178,7 +178,12 @@ class ActualizarBBDD {
             $article_id = $article_model->id;
 
             foreach ($article_cache['discounts_data'] as $discount) {
-                if ($discount->percentage !== '') {
+                if (
+                    $discount->percentage !== ''
+                    && $discount->percentage !== 0
+                    && $discount->percentage !== '0'
+                ) {
+                    Log::info('Argegando descuento de '.$discount->percentage.' para article id: '.$article_id);
                     $insertData[] = [
                         'article_id' => $article_id,
                         'percentage' => $discount->percentage,
@@ -201,7 +206,12 @@ class ActualizarBBDD {
             $article_id = $article_model->id;
 
             foreach ($article_cache['discounts_data'] as $discount) {
-                if ($discount->percentage !== '') {
+                if (
+                    $discount->percentage !== ''
+                    && $discount->percentage !== 0
+                    && $discount->percentage !== '0'
+                ) {
+                    Log::info('Argegando descuento de '.$discount->percentage.' para article id: '.$article_id);
                     $insertData[] = [
                         'article_id' => $article_id,
                         'percentage' => $discount->percentage,

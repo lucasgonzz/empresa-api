@@ -23,7 +23,8 @@ class RoadMapSeeder extends Seeder
                 [
                     'fecha_entrega' => Carbon::now()->subDays(1),
                     'employee_id'   => 502,
-                    'sales'         => [1,2,3,4],
+                    'sales'         => [1,2,3,4,5,6,7,8,9,10],
+                    // 'sales'         => [1,2,3,4],
                 ],
                 // Repartidor: Vendedor y Repartidor
                 [

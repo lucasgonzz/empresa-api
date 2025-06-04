@@ -135,6 +135,30 @@ class SaleRoadMapSeeder extends Seeder
                     'cost'              => 1000,
                     'price_vender'      => 12000,
                 ],
+                [
+                    'id'                => 3,
+                    'amount'            => 5,
+                    'cost'              => 1000,
+                    'price_vender'      => 12000,
+                ],
+                [
+                    'id'                => 4,
+                    'amount'            => 5,
+                    'cost'              => 1000,
+                    'price_vender'      => 12000,
+                ],
+                [
+                    'id'                => 5,
+                    'amount'            => 5,
+                    'cost'              => 1000,
+                    'price_vender'      => 12000,
+                ],
+                [
+                    'id'                => 6,
+                    'amount'            => 5,
+                    'cost'              => 1000,
+                    'price_vender'      => 12000,
+                ],
             ];
 
             $num++;

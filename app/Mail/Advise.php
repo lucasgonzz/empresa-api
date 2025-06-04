@@ -7,6 +7,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Mail\Mailable;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Log;
 
 class Advise extends Mailable
 {
@@ -30,13 +31,20 @@ class Advise extends Mailable
     public function build()
     {
         if (env('SEND_MAILS', false)) {
+            Log::info('Se envio mail advise');
             $user = UserHelper::getFullModel();
+
+            $article_url = null;
+            if (env('APP_ENV') == 'production') {
+                $article_url = $user->online.'/articulos/'.$this->article->slug.'/'.$user->id;
+            }
+
             return $this->from(env('MAIL_FROM_ADDRESS'), 'comerciocity.com')
                         ->subject('Nuevo stock de '.$this->article->name)
                         ->markdown('emails.articles.advise', [
                             'article'       => $this->article,
                             'user'          => $user,
-                            'article_url'   => $user->online.'/articulos/'.$this->article->slug.'/'.$user->id,
+                            'article_url'   => $article_url,
                             'logo_url'      => $user->hosting_image_url,
                         ]);
         }

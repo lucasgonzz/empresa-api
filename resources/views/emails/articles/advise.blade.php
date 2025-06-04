@@ -14,9 +14,12 @@
 	Puedes ingresar a ver el artículo presionando el botón de abajo.
 </p>
 
+
+@if (!is_null($article_url))
 @component('mail::button', ['url' => $article_url])
 Ver artículo
 @endcomponent
+@endif
 
 @slot('footer')
 @component('mail::footer')

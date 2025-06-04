@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Models\Cepa;
 use Illuminate\Http\Request;
 

@@ -13,7 +13,7 @@ $articles = [
         'stock'             => 100,
         'cost'              => 1000,
         'sub_category_name' => 'Yerbas',
-        'provider_id'       => 1,
+        'provider_id'       => 2,
         'images'            => [
             [
                 'url'       => get_image('/storage/supermercado/yerba.webp'),
@@ -30,7 +30,7 @@ $articles = [
         'stock'             => null,
         'cost'              => 1000,
         'sub_category_name' => 'Mates',
-        'provider_id'       => 1,
+        'provider_id'       => 3,
         'images'            => [
             [
                 'url'       => get_image('/storage/supermercado/matetorpedo.webp'),

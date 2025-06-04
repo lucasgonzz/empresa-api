@@ -28,6 +28,8 @@ class ProcessRow {
         $this->user = $data['user'];
         $this->ct = $data['ct'];
         $this->provider_id = $data['provider_id'];
+        $this->create_and_edit = $data['create_and_edit'];
+        $this->no_actualizar_articulos_de_otro_proveedor = $data['no_actualizar_articulos_de_otro_proveedor'];
 
         $this->set_price_types();
     }
@@ -70,8 +72,11 @@ class ProcessRow {
         ];
 
 
+        /* 
+            Si el articulo ya estaba previamente en una fila del excel, 
+            se omite para no sobreescribirlo
+        */
         $ya_estaba_en_excel = $this->ya_estaba_en_el_excel($data);
-
 
         if ($ya_estaba_en_excel) {
             Log::info('SE OMITIO EN PROCES ROW');
@@ -81,6 +86,16 @@ class ProcessRow {
         $articulo_ya_creado = ArticleIndexCache::find($data, $this->user->id);
 
         if ($articulo_ya_creado) {
+
+            if (
+                !is_null($articulo_ya_creado->provider_id)
+                && !is_null($provider_id)
+                && $this->no_actualizar_articulos_de_otro_proveedor
+                && $articulo_ya_creado->provider_id != $provider_id
+            ) {
+                Log::info('El articulo '.$articulo_ya_creado->name.' ya pertenecia al proveedor id '.$articulo_ya_creado->provider_id);
+                return;
+            }
             // Log::info('El articulo ya existia');
 
             // Comparar propiedades y obtener las que cambiaron
@@ -107,6 +122,9 @@ class ProcessRow {
                 $cambios['stock_a_agregar'] = $stock_a_agregar;
             }
 
+            // Log::info('Cambios:');
+            // Log::info($cambios);
+
             if (!empty($cambios)) {
 
                 $cambios['id'] = $articulo_ya_creado->id;
@@ -114,7 +132,7 @@ class ProcessRow {
                 $this->articulosParaActualizar[] = $cambios;
             } 
 
-        } else {
+        } else if ($this->create_and_edit) {
 
             // Log::info('El articulo NO existia');
             // Si no existe, lo agregamos a los artículos para crear
@@ -131,6 +149,7 @@ class ProcessRow {
             $data['price_types_data'] = $price_types_data;
 
             $discounts_data = $this->obtener_descuentos($row);
+
             if (count($discounts_data) > 0) {
                 $data['discounts_data'] = $discounts_data;
             }
@@ -157,7 +176,7 @@ class ProcessRow {
     function ya_estaba_en_el_excel($data) {
 
         // Verificamos si ya existe un artículo con este identificador en el mismo archivo
-        $key = $data['bar_code'] ?? $data['provider_code'] ?? $data['name'];
+        $key = $data['id'] ?? $data['bar_code'] ?? $data['provider_code'] ?? $data['name'];
 
 
         if ($key) {
@@ -166,9 +185,10 @@ class ProcessRow {
 
             foreach ($this->articulosParaCrear as $index => $art) {
                 if (
-                    (!empty($art['bar_code']) && $art['bar_code'] === $data['bar_code']) ||
-                    (!empty($art['provider_code']) && $art['provider_code'] === $data['provider_code']) ||
-                    (!empty($art['name']) && $art['name'] === $data['name'])
+                    (!empty($art['id']) && $art['id'] === $data['id']) 
+                    || (!empty($art['bar_code']) && $art['bar_code'] === $data['bar_code']) 
+                    || (!empty($art['provider_code']) && $art['provider_code'] === $data['provider_code']) 
+                    || (!empty($art['name']) && $art['name'] === $data['name'])
                 ) {
                     // $this->articulosParaCrear[$index] = $data;
                     $ya_en_para_crear = true;
@@ -179,9 +199,10 @@ class ProcessRow {
             if (!$ya_en_para_crear) {
                 foreach ($this->articulosParaActualizar as $index => $art) {
                     if (
-                        (!empty($art['bar_code']) && $art['bar_code'] === $data['bar_code']) ||
-                        (!empty($art['provider_code']) && $art['provider_code'] === $data['provider_code']) ||
-                        (!empty($art['name']) && $art['name'] === $data['name'])
+                        (!empty($art['id']) && $art['id'] === $data['id']) 
+                        || (!empty($art['bar_code']) && $art['bar_code'] === $data['bar_code']) 
+                        || (!empty($art['provider_code']) && $art['provider_code'] === $data['provider_code']) 
+                        || (!empty($art['name']) && $art['name'] === $data['name'])
                     ) {
                         // $this->articulosParaActualizar[$index] = $data;
                         $ya_en_para_actualizar = true;
@@ -208,7 +229,10 @@ class ProcessRow {
         $modified = [];
 
         foreach ($data as $key => $value) {
-            if ($existing->$key != $value) {
+            if (
+                $existing->$key != $value
+                && !is_null($value)
+            ) {
                 $modified[$key] = $value;
             }
         }
@@ -263,16 +287,85 @@ class ProcessRow {
     }
 
 
+    private function obtener_stock_addresses($row, $articulo_ya_creado = null) {
+        $set_stock_from_addresses = false;
+
+        $segundos_para_agregar = 5;
+
+        $stock_addresses = [];
+
+        foreach ($this->addresses as $address) {
+            $nombre_columna = str_replace(' ', '_', strtolower($address->street));
+            // Log::info('----------------------- ');
+            // Log::info('nombre_columna: '.$nombre_columna);
+
+            $address_excel = ImportHelper::getColumnValue($row, $nombre_columna, $this->columns);
+
+            if (!is_null($address_excel)) {
+
+                $address_excel = (float)$address_excel;
+
+                Log::info('Columna '.$address->street.' para articulo '.$this->articulo_existente->name.' vino con '.$address_excel);
+
+                $data['model_id'] = $this->articulo_existente->id;
+                $data['to_address_id'] = $address->id;
+                $data['concepto_stock_movement_name'] = 'Importacion de excel';
+
+                $finded_address = null;
+                foreach ($this->articulo_existente->addresses as $article_address) {
+                    if ($article_address->id == $address->id) {
+                        $finded_address = $article_address;
+                    }
+                }
+
+                if (is_null($finded_address)) {
+
+                    // Esta la comente el 22 de enero del 2025 
+                    // $this->articulo_existente->addresses()->attach($address->id);
+
+                    $data['amount'] = $address_excel;
+                    $set_stock_from_addresses = true;
+                    $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id, $segundos_para_agregar);
+                    // Log::info('Se mandaron '.$address_excel.' a '.$address->street);
+
+                } else {
+                    // Log::info('Ya tenia la direccion '.$finded_address->street);
+                    
+                    $cantidad_anterior = $finded_address->pivot->amount;
+                    // Log::info('cantidad_anterior: '.$cantidad_anterior);
+
+                    // Log::info('address_excel: '.$address_excel);
+                    if ($address_excel != $cantidad_anterior) {
+                        $set_stock_from_addresses = true;
+                        $new_amount = $address_excel - $cantidad_anterior;
+                        $data['amount'] = $new_amount;
+                        $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id, $segundos_para_agregar);
+                        // Log::info('Se mandaron '.$new_amount.' a '.$address->street);
+                    } else {
+                        // Log::info('No se actualizo porque no hubo ningun cambio');
+                    }
+                }
+
+                $segundos_para_agregar += 5;
+                // Log::info('---------------------------------');
+            }
+        }
+        if ($set_stock_from_addresses) {
+            ArticleHelper::setArticleStockFromAddresses($this->articulo_existente, false);
+        }
+    }
+
+
     private function obtener_descuentos($row) {
 
         $discounts_data = [];
         
         $excel_descuentos = ImportHelper::getColumnValue($row, 'descuentos', $this->columns);
         
+        Log::info('excel_descuentos article id: '.$row[0].':');
+        Log::info($excel_descuentos);
 
         if (ImportHelper::usa_columna($excel_descuentos)) {
-            // Log::info('excel_descuentos article num: '.$row[0].':');
-            // Log::info($excel_descuentos);
 
             $_discounts = explode('_', $excel_descuentos);
             
@@ -286,6 +379,9 @@ class ProcessRow {
             // ArticlePricesHelper::adjuntar_descuentos($this->articulo_existente, $discounts);
 
         }
+
+        // Log::info('descuentos:');
+        // Log::info($discounts_data);
 
         return $discounts_data;
 
@@ -381,6 +477,8 @@ class ProcessRow {
             $proveedor = $this->nombres_proveedores[$nombreProveedor];
             return $proveedor->id;
         }
+
+        return null;
     }
 
     /**

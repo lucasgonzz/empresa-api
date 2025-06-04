@@ -23,12 +23,18 @@ class PromocionVinotecaHelper {
 	static function attach_articles($promo, $articles) {
 
 		foreach ($articles as $article) {
+
+			$amount = RequestHelper::isset_array($article['pivot'], 'amount');
+
 			$promo->articles()->attach($article['id'], [
-				'amount'				=> RequestHelper::isset_array($article['pivot'], 'amount'),
+				'amount'				=> $amount,
 				'unidades_por_promo'	=> RequestHelper::isset_array($article['pivot'], 'unidades_por_promo'),
 			]);
 
-			Self::descontar_stock($promo, $article);
+			if (!is_null($amount)) {
+				Self::descontar_stock($promo, $article);
+			}
+
 		}
 	}
 

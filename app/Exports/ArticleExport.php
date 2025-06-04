@@ -75,7 +75,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
                             ->with('addresses')
                             ->with('price_types')
                             ->with('tipo_envase')
-                            ->orderBy('created_at', 'DESC')
+                            ->orderBy('id', 'DESC')
                             ->get();
         }
 

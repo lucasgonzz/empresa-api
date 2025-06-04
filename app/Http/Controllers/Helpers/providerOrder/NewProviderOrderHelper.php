@@ -89,6 +89,10 @@ class NewProviderOrderHelper {
 
                 $total_article = $cost * (float)($article->pivot->amount);
 
+                if (!is_null($article->presentacion)) {
+                    $total_article *= $article->presentacion;
+                }
+
                 $sub_total += $total_article;
 
                 if (!is_null($article->pivot->discount)) {

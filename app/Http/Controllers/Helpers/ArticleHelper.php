@@ -12,7 +12,8 @@ use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\VinotecaPriceHelper;
 use App\Http\Controllers\PriceChangeController;
 use App\Http\Controllers\Stock\StockMovementController;
-use App\Mail\Advise as AdviseMail;
+use App\Jobs\ProcessSendAdviseMail;
+// use App\Mail\Advise as AdviseMail;
 use App\Mail\ArticleAdvise;
 use App\Models\Address;
 use App\Models\Advise;
@@ -416,8 +417,7 @@ class ArticleHelper {
                             ->get();
         if ($article->stock >= 1 && count($advises) >= 1) {
             foreach ($advises as $advise) {
-                Mail::to($advise->email)->send(new AdviseMail($article));
-                $advise->delete();
+                ProcessSendAdviseMail::dispatch($advise, $article);
             }
         }
     }

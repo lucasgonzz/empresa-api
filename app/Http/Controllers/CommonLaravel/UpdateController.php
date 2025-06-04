@@ -52,6 +52,10 @@ class UpdateController extends Controller
                         $model->{$form['key']} = $form['value'];
                         $model->save();
                         // Log::info('Se seteo '.$form['key'].' de '.$model->name.', quedo en '.$model->{$form['key']});
+                    } else if ($form['type'] == 'select' && str_contains($form['key'], '_id') && $form['value'] != '' && $form['value'] != 0) {
+                        $model->{$form['key']} = $form['value'];
+                        $model->save();
+                        // Log::info('Se seteo '.$form['key'].' de '.$model->name.', quedo en '.$model->{$form['key']});
                     }
                 }
                 if ($model_name == 'article') {

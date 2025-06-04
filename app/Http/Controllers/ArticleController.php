@@ -251,7 +251,7 @@ class ArticleController extends Controller
         Log::info('archivo_excel_path: '.$archivo_excel_path);
         $archivo_excel = storage_path('app/' . $archivo_excel_path);
         
-        ProcessArticleImport::dispatch($archivo_excel, $columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id, UserHelper::user(), Auth()->user()->id, $archivo_excel_path);
+        ProcessArticleImport::dispatch($archivo_excel, $columns, $request->create_and_edit, $request->no_actualizar_articulos_de_otro_proveedor, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id, UserHelper::user(), Auth()->user()->id, $archivo_excel_path);
 
         return response(null, 200);
     }

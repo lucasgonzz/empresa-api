@@ -45,6 +45,12 @@ class CreateOnlineConfigurationsTable extends Migration
 
             $table->integer('online_template_id')->default(1);
             
+            $table->string('titulo_quienes_somos')->default('quienes somos');
+            
+            $table->integer('default_amount_add_to_cart')->nullable();
+            
+            $table->boolean('retiro_por_local')->default(1);
+
             $table->integer('user_id');
             $table->timestamps();
         });

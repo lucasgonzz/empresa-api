@@ -29,12 +29,20 @@ class CartSeeder extends Seeder
                 'buyer_id' => $buyer->id,
                 'user_id'   => env('USER_ID'),
             ]);
+
+            $total = 0;
+            
             foreach ($articles as $article) {
+                $amount = rand(1,6);
                 $cart->articles()->attach($article->id, [
-                    'amount'    => rand(1,6),
+                    'amount'    => $amount,
                     'price'     => $article->final_price,
                 ]);
+                $total += $article->final_price * $amount;
             }
+
+            $cart->total = $total;
+            $cart->save();
         }
     }
 }

@@ -229,7 +229,7 @@ class DatabaseSeeder extends Seeder
 
         if (
             env('APP_ENV') == 'local'
-            || $for_user == 'demo'
+            || env('FOR_USER') == 'demo'
         ) {
 
             $this->call(CategorySeeder::class);

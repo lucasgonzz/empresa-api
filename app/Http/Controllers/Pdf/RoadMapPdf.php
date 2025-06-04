@@ -101,7 +101,7 @@ class RoadMapPdf extends fpdf {
 			} else {
 				$this->AddPage();
 				$this->x = 5;
-				$this->y = 90;
+				$this->y = 40;
 				$this->print_cliente($cliente);
 			}
 		}
