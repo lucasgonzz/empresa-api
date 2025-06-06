@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
+use App\Models\Address;
 use App\Models\PriceType;
 use Illuminate\Support\Facades\Log;
 
@@ -32,6 +33,7 @@ class ProcessRow {
         $this->no_actualizar_articulos_de_otro_proveedor = $data['no_actualizar_articulos_de_otro_proveedor'];
 
         $this->set_price_types();
+        $this->set_addresses();
     }
 
     /**
@@ -105,7 +107,7 @@ class ProcessRow {
 
             $discounts_data = $this->obtener_descuentos($row);
 
-            $stock_a_agregar = $this->obtener_stock($row, $articulo_ya_creado);
+            $stock = $this->obtener_stock($row, $articulo_ya_creado);
 
             // Log::info('Descuentos para article num: '.$articulo_ya_creado->id.':');
             // Log::info($discounts_data);
@@ -118,12 +120,14 @@ class ProcessRow {
                 $cambios['discounts_data'] = $discounts_data;
             }
 
-            if (!is_null($stock_a_agregar)) {
-                $cambios['stock_a_agregar'] = $stock_a_agregar;
+            if (!is_null($stock['stock_global'])) {
+                $cambios['stock_global'] = $stock['stock_global'];
+            } else if (count($stock['stock_addresses']) > 0) {
+                $cambios['stock_addresses'] = $stock['stock_addresses'];
             }
 
-            // Log::info('Cambios:');
-            // Log::info($cambios);
+            Log::info('Cambios:');
+            Log::info($cambios);
 
             if (!empty($cambios)) {
 
@@ -155,10 +159,12 @@ class ProcessRow {
             }
 
 
-            $stock_a_agregar = $this->obtener_stock($row);
+            $stock = $this->obtener_stock($row);
 
-            if (!is_null($stock_a_agregar)) {
-                $data['stock_a_agregar'] = $stock_a_agregar;
+            if (!is_null($stock['stock_global'])) {
+                $data['stock_global'] = $stock['stock_global'];
+            } else if (count($stock['stock_addresses']) > 0) {
+                $data['stock_addresses'] = $stock['stock_addresses'];
             }
 
             $this->articulosParaCrear[] = $data;
@@ -262,30 +268,61 @@ class ProcessRow {
 
         $excel_stock = ImportHelper::getColumnValue($row, 'stock_actual', $this->columns);
 
+        $stock_global = null;
+        $stock_addresses = [];
+
+        $indico_stock_en_addresses = Self::hay_stock_indicado_en_columnas_addresses($row);
+
         if (
-            ImportHelper::usa_columna($excel_stock)
-            && is_numeric($excel_stock)
+            (
+                ImportHelper::usa_columna($excel_stock)
+                && is_numeric($excel_stock)
+            )
+            || $indico_stock_en_addresses
         ) {
 
             if ($articulo_ya_creado) {
 
-                if (
-                    count($articulo_ya_creado->addresses) == 0
-                    && $articulo_ya_creado->stock != $excel_stock
-                ) {
-                    return $excel_stock - $articulo_ya_creado->stock;
+                if ($indico_stock_en_addresses) {
+
+                    $stock_addresses = $this->obtener_stock_addresses($row, $articulo_ya_creado);
+                
+                } else {
+
+                    if ($articulo_ya_creado->stock != $excel_stock) {
+                        $stock_global = $excel_stock - $articulo_ya_creado->stock;
+                    }
                 }
 
             } else {
 
-                return $excel_stock;
+                if ($indico_stock_en_addresses) {
+                    $stock_addresses = $this->obtener_stock_addresses($row);
+                } else {
+                    $stock_global = $excel_stock;
+                }
             }
             
         }
 
-        return null;
+        return [
+            'stock_global'      => $stock_global,
+            'stock_addresses'   => $stock_addresses,
+        ];
     }
 
+    function hay_stock_indicado_en_columnas_addresses($row) {
+
+        foreach ($this->addresses as $address) {
+            $nombre_columna = str_replace(' ', '_', strtolower($address->street));
+
+            $address_excel = ImportHelper::getColumnValue($row, $nombre_columna, $this->columns);
+
+            if (!is_null($address_excel)) {
+                return true;
+            }
+        }   
+    }
 
     private function obtener_stock_addresses($row, $articulo_ya_creado = null) {
         $set_stock_from_addresses = false;
@@ -296,63 +333,44 @@ class ProcessRow {
 
         foreach ($this->addresses as $address) {
             $nombre_columna = str_replace(' ', '_', strtolower($address->street));
-            // Log::info('----------------------- ');
-            // Log::info('nombre_columna: '.$nombre_columna);
 
             $address_excel = ImportHelper::getColumnValue($row, $nombre_columna, $this->columns);
 
             if (!is_null($address_excel)) {
 
+                Log::info('Hay info en la columna '.$nombre_columna);
+
+                if (!is_null($articulo_ya_creado)) {
+
+                    $article_address = $articulo_ya_creado->addresses()->where('address_id', $address->id)->first();
+                    if ($article_address) {
+                        $stock_actual_en_address = $article_address->pivot->amount;
+                    } else {
+                        $stock_actual_en_address = 0;
+                    }
+                
+                } else {
+                    $stock_actual_en_address = 0;
+                }
+
                 $address_excel = (float)$address_excel;
 
-                Log::info('Columna '.$address->street.' para articulo '.$this->articulo_existente->name.' vino con '.$address_excel);
+                $diferencia = $address_excel - $stock_actual_en_address;
 
-                $data['model_id'] = $this->articulo_existente->id;
-                $data['to_address_id'] = $address->id;
-                $data['concepto_stock_movement_name'] = 'Importacion de excel';
-
-                $finded_address = null;
-                foreach ($this->articulo_existente->addresses as $article_address) {
-                    if ($article_address->id == $address->id) {
-                        $finded_address = $article_address;
-                    }
+                if ($diferencia != 0) {
+                    Log::info('Hay una diferencia de '.$diferencia);
+                    $stock_addresses[] = [
+                        'address_id'    => $address->id,
+                        'amount'        => $diferencia,
+                    ];
                 }
-
-                if (is_null($finded_address)) {
-
-                    // Esta la comente el 22 de enero del 2025 
-                    // $this->articulo_existente->addresses()->attach($address->id);
-
-                    $data['amount'] = $address_excel;
-                    $set_stock_from_addresses = true;
-                    $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id, $segundos_para_agregar);
-                    // Log::info('Se mandaron '.$address_excel.' a '.$address->street);
-
-                } else {
-                    // Log::info('Ya tenia la direccion '.$finded_address->street);
-                    
-                    $cantidad_anterior = $finded_address->pivot->amount;
-                    // Log::info('cantidad_anterior: '.$cantidad_anterior);
-
-                    // Log::info('address_excel: '.$address_excel);
-                    if ($address_excel != $cantidad_anterior) {
-                        $set_stock_from_addresses = true;
-                        $new_amount = $address_excel - $cantidad_anterior;
-                        $data['amount'] = $new_amount;
-                        $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id, $segundos_para_agregar);
-                        // Log::info('Se mandaron '.$new_amount.' a '.$address->street);
-                    } else {
-                        // Log::info('No se actualizo porque no hubo ningun cambio');
-                    }
-                }
-
-                $segundos_para_agregar += 5;
-                // Log::info('---------------------------------');
             }
         }
-        if ($set_stock_from_addresses) {
-            ArticleHelper::setArticleStockFromAddresses($this->articulo_existente, false);
-        }
+
+        return $stock_addresses;
+        // if ($set_stock_from_addresses) {
+        //     ArticleHelper::setArticleStockFromAddresses($this->articulo_existente, false);
+        // }
     }
 
 
@@ -362,8 +380,8 @@ class ProcessRow {
         
         $excel_descuentos = ImportHelper::getColumnValue($row, 'descuentos', $this->columns);
         
-        Log::info('excel_descuentos article id: '.$row[0].':');
-        Log::info($excel_descuentos);
+        // Log::info('excel_descuentos article id: '.$row[0].':');
+        // Log::info($excel_descuentos);
 
         if (ImportHelper::usa_columna($excel_descuentos)) {
 
@@ -533,6 +551,11 @@ class ProcessRow {
     function set_price_types() {
         $this->price_types = PriceType::where('user_id', $this->user->id)
                                         ->orderBy('position', 'ASC')
+                                        ->get();
+    }
+
+    function set_addresses() {
+        $this->addresses = Address::where('user_id', $this->user->id)
                                         ->get();
     }
 }

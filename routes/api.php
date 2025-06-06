@@ -102,12 +102,15 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('promocion-vinoteca-commission', 'PromocionVinotecaCommissionController');
     
 
+    // Observaciones para pdf de articulos
+    Route::resource('article-pdf-observation', 'ArticlePdfObservationController');
+
 
 
     // Vinoteca
 
-    Route::resource('bodega', 'BodegaController');
     Route::resource('cepa', 'CepaController');
+    Route::resource('bodega', 'BodegaController');
     Route::resource('promocion-vinoteca', 'PromocionVinotecaController');
     Route::put('promocion-vinoteca/delete-stock/{id}', 'PromocionVinotecaController@delete_stock');
 

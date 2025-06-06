@@ -266,6 +266,8 @@ class UserSeeder extends Seeder
             $models[0]['iva_included'] = 0;
 
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
+            $models[0]['redondear_miles_en_vender'] = 1;
+            $models[0]['article_pdf_personalizado'] = 'truvari';
 
             $models[0]['comision_funcion'] = 'truvari';
             $models[0]['venta_terminada_comision_funcion'] = 'truvari';
@@ -436,6 +438,8 @@ class UserSeeder extends Seeder
                 'owner_id'                      => isset($model['owner_id']) ? $model['owner_id'] : null,  
                 'admin_access'                  => isset($model['admin_access']) ? $model['admin_access'] : null, 
                 'redondear_centenas_en_vender'  => isset($model['redondear_centenas_en_vender']) ? $model['redondear_centenas_en_vender'] : 0, 
+                'redondear_miles_en_vender'  => isset($model['redondear_miles_en_vender']) ? $model['redondear_miles_en_vender'] : 0, 
+                'article_pdf_personalizado'  => isset($model['article_pdf_personalizado']) ? $model['article_pdf_personalizado'] : 0, 
                 'ask_amount_in_vender'  => isset($model['ask_amount_in_vender']) ? $model['ask_amount_in_vender'] : 1, 
                 'payment_expired_at'            => isset($model['payment_expired_at']) ? $model['payment_expired_at'] : null,  
                 'online'                        => isset($model['online']) ? $model['online'] : null,

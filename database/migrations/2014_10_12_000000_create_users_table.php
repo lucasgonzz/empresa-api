@@ -78,6 +78,7 @@ class CreateUsersTable extends Migration
             
             $table->integer('address_id')->nullable();
             $table->boolean('redondear_centenas_en_vender')->default(0);
+            $table->boolean('redondear_miles_en_vender')->default(0);
 
             $table->boolean('aplicar_descuentos_en_articulos_antes_del_margen_de_ganancia')->default(1)->nullable();
 
@@ -102,6 +103,8 @@ class CreateUsersTable extends Migration
             $table->integer('seller_id')->unsigned()->nullable();
 
             $table->integer('default_article_iva_id')->nullable();
+
+            $table->string('article_pdf_personalizado')->nullable();
 
 
             $table->timestamp('login_at')->nullable();

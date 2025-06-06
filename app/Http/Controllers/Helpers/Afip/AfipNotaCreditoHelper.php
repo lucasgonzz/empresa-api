@@ -50,6 +50,7 @@ class AfipNotaCreditoHelper
         $doc_type     = $res['doc_type'];
 
         $cbte_tipo = $this->getTipoCbte();
+        Log::info('cbte_tipo para nota de credito: '.$cbte_tipo);
 
         $wsfe = new WSFE(['testing'=> $this->testing, 'cuit_representada' => $cuit_negocio]);
         $wsfe->setXmlTa(file_get_contents(TA_file));
@@ -270,7 +271,7 @@ class AfipNotaCreditoHelper
 
         $cbte_tipo = $this->sale->afip_ticket->cbte_tipo;
 
-        if (SaleHelper::getTotalSale($this->sale) >= $this->monto_minimo_para_factura_de_credito) {
+        // if (SaleHelper::getTotalSale($this->sale) >= $this->monto_minimo_para_factura_de_credito) {
 
 
             if ($cbte_tipo == '201') {
@@ -284,7 +285,7 @@ class AfipNotaCreditoHelper
                 return  213;
             }
 
-        } else {
+        // } else {
 
             if ($cbte_tipo == '1') {
                 #A
@@ -296,7 +297,7 @@ class AfipNotaCreditoHelper
                 #C
                 return  13;
             }
-        } 
+        // } 
     }
 
     function getTipoLetra($cbte_tipo) {

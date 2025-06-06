@@ -51,7 +51,8 @@ class ActualizarBBDD {
                 return collect($art)->except([
                     'price_types_data',
                     'discounts_data',
-                    'stock_a_agregar',
+                    'stock_global',
+                    'stock_addresses',
                 ])->merge([
                     'created_at' => $this->now,
                     'updated_at' => $this->now,
@@ -89,7 +90,8 @@ class ActualizarBBDD {
                             $column === 'id'
                             || $column === 'price_types_data'
                             || $column === 'discounts_data'
-                            || $column === 'stock_a_agregar'
+                            || $column === 'stock_global'
+                            || $column === 'stock_addresses'
                         ) continue;
 
                         if (
@@ -241,46 +243,51 @@ class ActualizarBBDD {
 
             foreach ($this->articulos_para_crear_CACHE as $article_cache) {
 
-                if (empty($article_cache['stock_a_agregar'])) continue;
-
-                // if (app()->environment('local')) { Log::info('article_cache '.$article_cache['name'].' stock_a_agregar:'); }
-                // if (app()->environment('local')) { Log::info($article_cache['stock_a_agregar']); }
+                if (
+                    empty($article_cache['stock_global'])
+                    && empty($article_cache['stock_addresses'])
+                ) continue;
 
                 $article_model = $this->get_article_model_from_cache($article_cache);
 
                 if (!$article_model) continue;
 
-                // if (app()->environment('local')) { Log::info('Se va a mandar attach_price_types para '.$article_model->name); }
-
-                $this->guardar_stock_movement($article_model, $article_cache['stock_a_agregar']);
+                if (!empty($article_cache['stock_global'])) {
+                    Log::info('Act stock global de '.$article_model->name);
+                    $this->guardar_stock_movement_global($article_model, $article_cache['stock_global']);
+                } else {
+                    Log::info('Act stock por direcciones de '.$article_model->name);
+                    $this->guardar_stock_movement_addresses($article_model, $article_cache['stock_addresses']);
+                }
 
             }
         } else {
 
-            // Log::info('stock_a_agregar para '.count($this->articulos_para_actualizar_CACHE).' articulos actualizados');
-
-            // Para artículos existentes por ID
-            // $ids = array_column($this->articulos_para_actualizar_CACHE, 'id');
-            // $articles = Article::whereIn('id', $ids)->get()->keyBy('id');
-
             foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
 
-                if (empty($article_cache['stock_a_agregar'])) continue;
+                if (
+                    empty($article_cache['stock_global'])
+                    && empty($article_cache['stock_addresses'])
+                ) continue;
 
-                // if (app()->environment('local')) { Log::info('article id '.$article_cache['id'].' tiene este stock_a_agregar:'); }
-                // if (app()->environment('local')) { Log::info($article_cache['stock_a_agregar']); }
 
                 $article = $this->articulos_actualizados_models[$article_cache['id']] ?? null;
 
                 if (!$article) continue;
 
-                $this->guardar_stock_movement($article, $article_cache['stock_a_agregar']);
+                if (!empty($article_cache['stock_global'])) {
+                    Log::info('Act stock global de '.$article->name);
+                    $this->guardar_stock_movement_global($article, $article_cache['stock_global']);
+                } else {
+                    Log::info('Act stock por direcciones de '.$article->name);
+                    $this->guardar_stock_movement_addresses($article, $article_cache['stock_addresses']);
+                }
                 
             }
         }
     }
 
-    function guardar_stock_movement($article, $amount) {
+    function guardar_stock_movement_global($article, $amount) {
 
         $data = [];
 
@@ -292,6 +299,21 @@ class ActualizarBBDD {
         $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id);
     }
 
+    function guardar_stock_movement_addresses($article, $addresses) {
+
+        $data = [];
+
+        $data['concepto_stock_movement_name'] = 'Importacion de excel';
+
+        $data['model_id'] = $article->id;
+
+        foreach ($addresses as $address) {
+            $data['to_address_id'] = $address['address_id'];
+            $data['amount'] = $address['amount'];
+            $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id);
+        }
+
+    }
 
     function asignar_price_types() {
         // Preparar los datos

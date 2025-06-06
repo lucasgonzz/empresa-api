@@ -12,4 +12,8 @@ class Bodega extends Model
     function scopeWithAll($q) {
         
     }
+
+    function articles() {
+        return $this->hasMany(Article::class);
+    }
 }

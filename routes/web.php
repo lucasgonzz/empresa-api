@@ -169,6 +169,7 @@ Route::get('article/pdf/{ids}', 'ArticleController@pdf');
 Route::get('article/tickets-pdf/{ids}', 'ArticleController@ticketsPdf');
 Route::get('article/bar-codes-pdf/{ids}', 'ArticleController@barCodePdf');
 Route::get('article/list-pdf/{ids}', 'ArticleController@listPdf');
+Route::get('article/pdf-personalizado', 'ArticleController@pdfPersonalizado');
 
 Route::get('budget/pdf/{id}/{with_prices}', 'BudgetController@pdf');
 Route::get('order-production/pdf/{id}/{with_prices}', 'OrderProductionController@pdf');

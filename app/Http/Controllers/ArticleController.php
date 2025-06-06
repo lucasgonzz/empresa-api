@@ -19,6 +19,7 @@ use App\Http\Controllers\Helpers\article\UpdateVariantsStockHelper;
 use App\Http\Controllers\Pdf\ArticleBarCodePdf;
 use App\Http\Controllers\Pdf\ArticleListPdf;
 use App\Http\Controllers\Pdf\ArticlePdf;
+use App\Http\Controllers\Pdf\ArticlePdf\TruvariArticleListPdf;
 use App\Http\Controllers\Pdf\ArticleTicketPdf;
 use App\Http\Controllers\StockMovementController;
 use App\Imports\ArticleImport;
@@ -358,6 +359,14 @@ class ArticleController extends Controller
 
     function listPdf($ids) {
         new ArticleListPdf($ids);
+    }
+
+    function pdfPersonalizado() {
+        if ($this->user()->article_pdf_personalizado) {
+            if ($this->user()->article_pdf_personalizado == 'truvari') {
+                new TruvariArticleListPdf($this->user());
+            }
+        }
     }
 
     function resetStock(Request $request) {

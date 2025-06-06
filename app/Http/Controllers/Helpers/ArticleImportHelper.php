@@ -87,6 +87,7 @@ class ArticleImportHelper {
         	'is_only_for_auth_user'		=> false,
         	])
     	);
+    	Log::info('SE ENVIO NOTIFICACION DE ERROR');
 	}
 
     static function set_unidades_por_bulto($article, $columns, $row) {

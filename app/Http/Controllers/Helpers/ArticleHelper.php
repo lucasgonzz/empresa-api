@@ -226,6 +226,11 @@ class ArticleHelper {
 
     static function redondear($price, $user) {
 
+        if ($user->redondear_miles_en_vender) {
+
+            return round($price / 1000) * 1000;
+        }
+
         if ($user->redondear_centenas_en_vender) {
 
             return ceil($price / 100) * 100;

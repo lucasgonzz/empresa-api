@@ -6,6 +6,8 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\ArticlePurchase;
 use App\Models\InventoryPerformance;
+use App\Models\PromocionVinoteca;
+use Illuminate\Support\Facades\Log;
 
 class InventoryPerformanceHelper {
 
@@ -53,6 +55,8 @@ class InventoryPerformanceHelper {
 		$this->set_articles();
 
 		$this->procesar_articulos();
+
+		$this->promocion_vinotecas();
 
 		$this->crear_inventory_performance();
 
@@ -117,7 +121,13 @@ class InventoryPerformanceHelper {
 
 				if (!is_null($article->cost)) {
 
-					$total_article_cost = $article->cost * $article->stock;
+					$cost = $article->cost;
+
+					if (!is_null($article->presentacion)) {
+						$cost *= $article->presentacion;
+					}
+
+					$total_article_cost = $cost * $article->stock;
 
 					$this->valor_inventario_en_costos += $total_article_cost;
 
@@ -145,7 +155,20 @@ class InventoryPerformanceHelper {
 			}
 		}
 
-	}		
+	}	
+
+	function promocion_vinotecas() {
+		$promos = PromocionVinoteca::all();
+		foreach ($promos as $promo) {
+			if (!is_null($promo->stock)) {
+				
+				Log::info('Sumando costo '.$promo->cost * $promo->stock.' de la promo '.$promo->name);
+				Log::info('Sumando precio '.$promo->final_price * $promo->stock.' de la promo '.$promo->name);
+				$this->valor_inventario_en_costos += $promo->cost * $promo->stock;
+				$this->valor_inventario_en_precios += $promo->final_price * $promo->stock;
+			}
+		}
+	}	
 
 	function set_articles() {
 

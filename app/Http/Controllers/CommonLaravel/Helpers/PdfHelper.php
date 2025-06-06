@@ -326,10 +326,10 @@ class PdfHelper {
 		return $start;
 	}
 
-	static function tableHeader($instance, $fields) {
-		$instance->SetFont('Arial', 'B', 12);
+	static function tableHeader($instance, $fields, $size = 12, $margen = 2) {
+		$instance->SetFont('Arial', 'B', $size);
 		$instance->x = 5;
-		$instance->y += 2;
+		$instance->y += $margen;
 		$instance->SetLineWidth(.4);
 		foreach ($fields as $text => $width) {
 			$instance->Cell($width, 7, $text, 1, 0, 'C');

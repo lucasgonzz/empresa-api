@@ -72,6 +72,7 @@ class DatabaseSeeder extends Seeder
                     $this->call(PromocionVinotecaSeeder::class);
                 }
                 $this->call(DeliveryDaySeeder::class);
+                $this->call(ArticlePdfObservationSeeder::class);
 
             } else if ($for_user == 'colman') {
 
