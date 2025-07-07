@@ -54,7 +54,7 @@ class CheckFromAddress {
     }
 
 
-    function get_amount_for_from_address($stock_movement) {
+    static function get_amount_for_from_address($stock_movement) {
 
         $concepto = $stock_movement->concepto_movement;
 

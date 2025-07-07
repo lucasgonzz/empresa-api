@@ -100,6 +100,8 @@ class ArticleController extends Controller
 
 
         $model->unidades_individuales              = $request->unidades_individuales;
+        $model->omitir_en_lista_pdf                = $request->omitir_en_lista_pdf;
+
 
         $model->user_id                           = $this->userId();
         if (isset($request->status)) {
@@ -176,6 +178,7 @@ class ArticleController extends Controller
 
 
         $model->unidades_individuales               = $request->unidades_individuales;
+        $model->omitir_en_lista_pdf                 = $request->omitir_en_lista_pdf;
 
         
         $model->name = ucfirst($request->name);
@@ -411,7 +414,7 @@ class ArticleController extends Controller
 
     function ultimos_actualizados() {
         $models = Article::where('user_id', $this->userId())
-                            ->orderBy('created_at', 'DESC')
+                            ->orderBy('id', 'DESC')
                             // ->orderBy('updated_at', 'DESC')
                             ->take(10)
                             ->withAll()

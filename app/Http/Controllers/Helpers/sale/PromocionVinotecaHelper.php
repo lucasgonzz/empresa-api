@@ -7,7 +7,7 @@ use App\Models\PromocionVinoteca;
 
 class PromocionVinotecaHelper {
 	
-	static function discount_stock_promocion_vinoteca($sale, $promo, $previus_promos) {
+	static function discount_stock_promocion_vinoteca($sale, $promo, $previus_promos = null) {
 
 		if (!$sale->to_check && !$sale->checked) {
 

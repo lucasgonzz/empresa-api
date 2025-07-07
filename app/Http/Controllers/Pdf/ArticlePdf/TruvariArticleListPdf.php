@@ -31,15 +31,10 @@ class TruvariArticleListPdf extends fpdf {
 
 		$this->printItems();
 
+		$this->_Footer();
+
         $this->Output();
         exit;
-	}
-
-	function setArticles($ids) {
-		$this->articles = [];
-		foreach (explode('-', $ids) as $id) {
-			$this->articles[] = Article::find($id);
-		}
 	}
 
 	function getFields() {
@@ -52,7 +47,7 @@ class TruvariArticleListPdf extends fpdf {
 	}
 
 	function _header() {
-		$this->logo();
+		// $this->logo();
 
 		$this->observations();
 
@@ -70,24 +65,37 @@ class TruvariArticleListPdf extends fpdf {
 
 		$this->SetFont('Arial', 'B', 9);
 
-		$this->y = 50;
-
 		foreach ($observations as $observation) {
 
-			$this->x = 5;
-				
-			if ($observation->color) {
-				$codigo = explode('-', $observation->color);
-				$this->SetTextColor($codigo[0], $codigo[1], $codigo[2]);
-				$this->SetTextColor($codigo[0], $codigo[1], $codigo[2]);
+
+			if ($observation->image_url) {
+
+				$image = $observation->image_url;
+
+		    	$res = PdfHelper::coordenadas_y_ancho_de_imagen($image, 200);
+
+				$this->Image($image, $res['x'], $this->y, $res['width'], $res['height']);
+
+				$this->y += $res['height'];
 			}
 
-			if ($observation->background) {
-				$codigo = explode('-', $observation->background);
-				$this->SetFillColor($codigo[0], $codigo[1], $codigo[2]);
-			}
+			if ($observation->text) {
+				$this->x = 5;
+					
+				if ($observation->color) {
+					$codigo = explode('-', $observation->color);
+					$this->SetTextColor($codigo[0], $codigo[1], $codigo[2]);
+				}
 
-			$this->Cell(200, 7, $observation->text, 1, 1, 'C', 1);
+				if ($observation->background) {
+					$codigo = explode('-', $observation->background);
+					$this->SetFillColor($codigo[0], $codigo[1], $codigo[2]);
+				}
+
+				$text = str_replace('__fecha__', date('d/m/Y'), $observation->text); 
+
+				$this->Cell(200, 7, $text, 1, 1, 'C', 1);
+			}
 		}
 	}
 
@@ -96,7 +104,10 @@ class TruvariArticleListPdf extends fpdf {
 		if (env('APP_ENV') == 'local') {
     		$image = 'https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png';
     	}
-		$this->Image($image, 80, 5, 50, 50);
+    	if ($image) {
+			$this->Image($image, 80, 5, 50, 50);
+			$this->y = 55;
+    	}
 	}
 
 	function printItems() {
@@ -123,6 +134,12 @@ class TruvariArticleListPdf extends fpdf {
 			$this->SetFont('Arial', 'B', 10);
 
 			foreach ($bodega->articles as $article) {
+
+				if ($article->omitir_en_lista_pdf) {
+					continue;
+				}
+
+
 				$this->x = 5;
 
 				$this->Cell($this->getFields()['Nombre'], 7, $article->name, $this->b, 0, 'C');
@@ -143,9 +160,19 @@ class TruvariArticleListPdf extends fpdf {
 		}
 	}
 
-	function Footer() {
+	function _Footer() {
 		
-		// PdfHelper::comerciocityInfo($this, $this->y);
+		$this->x = 5;
+		$this->y += 5;
+
+		$text = '**LOS PRECIOS PUEDEN MODIFICARSE SIN PREVIO AVISO** '.date('d/m/Y');
+		$this->SetTextColor(231, 33, 33);
+
+		$this->SetFillColor(250, 250, 33);
+		
+		$this->SetFont('Arial', 'B', 12);
+		
+		$this->Cell(200, 7, $text, 1, 0, 'C', 1);
 	}
 
 }

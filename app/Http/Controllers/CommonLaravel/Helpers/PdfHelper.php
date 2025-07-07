@@ -425,4 +425,38 @@ class PdfHelper {
 		return $url;
 	}
 
+
+
+	/*
+		Calculo el ancho maximo de la imagen, respetando sus dimensiones originales
+	*/
+	static function coordenadas_y_ancho_de_imagen($image_url, $max_width = 190) {
+
+		// Obtener tamaño original de la imagen en píxeles
+		list($widthPx, $heightPx) = getimagesize($image_url);
+
+		// Resolución estándar de FPDF: 72 DPI (puntos por pulgada)
+		// Pero como FPDF usa mm, y la mayoría de imágenes tienen 96 DPI, convertimos a mm con un factor:
+		$ppi = 96; // píxeles por pulgada
+		$mmPerInch = 25.4;
+		$widthMm = ($widthPx / $ppi) * $mmPerInch;
+		$heightMm = ($heightPx / $ppi) * $mmPerInch;
+
+		// Escalar para que el ancho máximo sea 190 mm
+		if ($widthMm > $max_width) {
+		    $scale = $max_width / $widthMm;
+		    $widthMm = $max_width;
+		    $heightMm *= $scale;
+		}
+
+		$x = (210 - $widthMm) / 2;
+
+		return [
+			'x'			=> $x,
+			'width'		=> $widthMm,
+			'height'	=> $heightMm,
+		];
+
+	}
+
 }

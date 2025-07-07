@@ -157,10 +157,10 @@ class AfipWsController extends Controller
             return; 
         }
 
-        if (is_null($this->sale->total_a_facturar)) {
+        // if (is_null($this->sale->total_a_facturar)) {
             $this->sale->total_a_facturar = $importes['total'];
             $this->sale->save();
-        }
+        // }
 
         $moneda_id = 'PES';
         $iva_receptor = CondicionIvaReceptorHelper::get_iva_receptor($this->sale);
@@ -251,8 +251,17 @@ class AfipWsController extends Controller
 
     function save_error($result) {
         if (isset($result['error'])) {
+
+            $message = $result['error']; 
+            if (
+                $message == 'Could not connect to host'
+                || $message == 'Error Fetching http headers'
+            ) {
+                $message = 'No se pudo establecer conexion con AFIP. Intente nuevamente en unos minutos';
+            }
+            
             AfipError::create([
-                'message'   => $result['error'],
+                'message'   => $message,
                 'code'      => 'Error del lado de AFIP',
                 'sale_id'   => $this->sale->id,
             ]);
@@ -265,9 +274,16 @@ class AfipWsController extends Controller
             $errors = $result->FECAESolicitarResult->Errors;
             $errors = $this->convertir_utf8($errors);
             foreach ($errors as $error) {
+                $code = $error['Code']; 
+                if (
+                    $code == 'Could not connect to host'
+                    || $code == 'Error Fetching http headers'
+                ) {
+                    $code = 'No se pudo establecer conexion con AFIP. Intente nuevamente en unos minutos';
+                }
                 AfipError::create([
                     'message'   => $error['Msg'],
-                    'code'      => $error['Code'],
+                    'code'      => $code,
                     'sale_id'   => $this->sale->id,
                 ]);
             }

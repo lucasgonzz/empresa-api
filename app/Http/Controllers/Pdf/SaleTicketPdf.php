@@ -83,6 +83,11 @@ class SaleTicketPdf extends fpdf {
 		if ($this->sale->client) {
 			$this->Cell($this->cell_ancho, 5, 'Cliente: '.$this->sale->client->name, $this->b, 1, 'L');
 
+			if (!is_null($this->sale->client->address)) {
+				$this->x = 2;
+				$this->Cell($this->cell_ancho, 5, 'Direccion: '.$this->sale->client->address, $this->b, 1, 'L');
+			}
+
 			if (
 				$this->sale->afip_ticket
 				&& $this->sale->afip_ticket->iva_cliente != ''
@@ -185,7 +190,7 @@ class SaleTicketPdf extends fpdf {
 			$this->x = $ancho_description + 2;
 			$this->y = $y_1;
 
-			$this->SetFont('Arial', 'B', 12);
+			$this->SetFont('Arial', 'B', 10);
 
 			if ($this->ancho > 60) {
 
@@ -197,16 +202,59 @@ class SaleTicketPdf extends fpdf {
 			$this->x = 2;
 			$this->y = $y_2;
 		}
+
+		foreach ($this->sale->promocion_vinotecas as $promo) {
+			$this->SetFont('Arial', '', 12);
+			$y_1 = $this->y;
+			$this->MultiCell($ancho_description, $this->line_height, $promo->name." ({$promo->pivot->amount})", 'BT', 'L', 0);
+			$y_2 = $this->y;
+
+			$this->x = $ancho_description + 2;
+			$this->y = $y_1;
+
+			$this->SetFont('Arial', 'B', 10);
+
+			if ($this->ancho > 60) {
+
+				$this->Cell($ancho_price, $y_2 - $y_1, '$'.Numbers::Price($promo->pivot->price), 'BT', 0, 'R');
+			}
+
+			$this->Cell($ancho_price, $y_2 - $y_1, $this->totalItem($promo), 'BT', 0, 'R');
+			
+			$this->x = 2;
+			$this->y = $y_2;
+		}
+
+		foreach ($this->sale->services as $service) {
+			$this->SetFont('Arial', '', 12);
+			$y_1 = $this->y;
+			$this->MultiCell($ancho_description, $this->line_height, $service->name." ({$service->pivot->amount})", 'BT', 'L', 0);
+			$y_2 = $this->y;
+
+			$this->x = $ancho_description + 2;
+			$this->y = $y_1;
+
+			$this->SetFont('Arial', 'B', 10);
+
+			if ($this->ancho > 60) {
+
+				$this->Cell($ancho_price, $y_2 - $y_1, '$'.Numbers::Price($service->pivot->price), 'BT', 0, 'R');
+			}
+
+			$this->Cell($ancho_price, $y_2 - $y_1, $this->totalItem($service), 'BT', 0, 'R');
+			
+			$this->x = 2;
+			$this->y = $y_2;
+		}
 	}
 
 	function totalItem($item) {
 		$total = $item->pivot->price * $item->pivot->amount;
-		// foreach ($this->sale->discounts as $discount) {
-		// 	$total -= $total * $discount->pivot->percentage / 100; 
-		// }
-		// foreach ($this->sale->surchages as $surchage) {
-		// 	$total += $total * $surchage->pivot->percentage / 100; 
-		// }
+
+		if ($item->discount) {
+			$total -= $total * (float)$item->discount / 100; 
+		}
+
 		return '$'.Numbers::Price($total);
 	}
 
@@ -250,10 +298,11 @@ class SaleTicketPdf extends fpdf {
 	}
 
 	function surchages() {
-	    $this->x = 2;
 	    $this->SetFont('Arial', 'B', 10);
 	    foreach ($this->sale->surchages as $surchage) {
 	    	$this->total_sale += $this->total_sale * (float)$surchage->pivot->percentage / 100;
+	    	
+	    	$this->x = 2;
 			$this->Cell($this->cell_ancho / 2, 7, 'Rec '. $surchage->pivot->percentage.'%', 'B', 0, 'L');
 			$this->Cell($this->cell_ancho / 2, 7, '$'.Numbers::price($this->total_sale), 'B', 1, 'R');
 	    }

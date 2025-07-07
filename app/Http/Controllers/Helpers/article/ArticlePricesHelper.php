@@ -91,7 +91,7 @@ class ArticlePricesHelper {
                                     ->get();
         }
                                 
-        // Log::info('aplicar_precios_segun_listas_de_precios, price_types: '.count($price_types));
+        Log::info('aplicar_precios_segun_listas_de_precios, price_types: '.count($price_types));
 
         foreach ($price_types as $price_type) {
 

@@ -4,7 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
-use App\Http\Controllers\StockMovementController;
+use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\OrderProductionStatus;
 use App\Models\ProductionMovement;
 use Carbon\Carbon;
@@ -62,15 +62,17 @@ class ProductionMovementHelper {
 											->first();
 		if ($production_movement->order_production_status_id == $last_status->id) {
 			
-			$request = new \Illuminate\Http\Request();
-            $request->model_id = $production_movement->article_id;
+			$data = [];
+            $data['model_id'] = $production_movement->article_id;
 
             if ($from_destroy) {
-            	$request->concepto = 'Eliminacion de Prod terminada';
-            	$request->amount = -$production_movement->amount;
+            	$data['concepto_stock_movement_name'] = 'Produccion';
+            	$data['observations'] = 'Eliminacion de Prod terminada';
+            	$data['amount'] = -$production_movement->amount;
             } else {
-            	$request->concepto = 'Produccion terminada';
-            	$request->amount = $production_movement->amount;
+            	$data['concepto_stock_movement_name'] = 'Produccion';
+            	$data['observations'] = 'Produccion terminada';
+            	$data['amount'] = $production_movement->amount;
             }
 
             Log::info('checkIsLastStatus');
@@ -78,12 +80,12 @@ class ProductionMovementHelper {
             Log::info('!is_null address_id: '.!is_null($production_movement->article->recipe->address_id));
 			if (count($production_movement->article->addresses) >= 1 
 				&& !is_null($production_movement->article->recipe->address_id)) {
-            	$request->to_address_id = $production_movement->article->recipe->address_id;
+            	$data['to_address_id'] = $production_movement->article->recipe->address_id;
 				Log::info('entro y se puse address_id: '.$production_movement->article->recipe->address_id);
 			}
 
 			$stock_movement_ct = new StockMovementController();
-            $stock_movement_ct->store($request, false);
+            $stock_movement_ct->crear($data);
         	// $instance->sendAddModelNotification('article', $production_movement->article->id, false);
 		}
 	}
@@ -95,18 +97,20 @@ class ProductionMovementHelper {
     		
 
 			$stock_movement_ct = new StockMovementController();
-    		$request = new \Illuminate\Http\Request();
-			$request->model_id = $article_recipe->id;
-			$request->amount = -$amount_to_discount;
-			$request->concepto = 'Prod. '.$production_movement->article->name;
+			
+			$data = [];
+			$data['model_id'] = $article_recipe->id;
+			$data['amount'] = -$amount_to_discount;
+			$data['concepto_stock_movement_name'] = 'Insumo de produccion';
+
+			$data['observations'] = 'Prod. de '.$production_movement->article->name;
 			
 			if (!is_null($article_recipe->pivot->address_id) && count($article_recipe->addresses) >= 1) {
-				$request->from_address_id = $article_recipe->pivot->address_id;
+				$data['from_address_id'] = $article_recipe->pivot->address_id;
 			} else {
-				$request->amount = -$amount_to_discount;
+				$data['amount'] = -$amount_to_discount;
 			}
-           	$stock_movement_ct->store($request);
-
+           	$stock_movement_ct->crear($data);
         	// $instance->sendAddModelNotification('article', $article_recipe->id, false);
 			Log::info('Nuevo Stock de '.$article_recipe->name.': '.$article_recipe->stock);
 			// Log::info('Nuevo Stock de '.$article_recipe->name.': '.$article_recipe->stock);
@@ -119,15 +123,17 @@ class ProductionMovementHelper {
 			$amount_to_increase = $article_recipe->pivot->amount * $production_movement->amount;
 			
 			$stock_movement_ct = new StockMovementController();
-    		$request = new \Illuminate\Http\Request();
-			$request->model_id = $article_recipe->id;
-			$request->amount = $amount_to_increase;
-			$request->concepto = 'Eliminacion Mov. Prod. '.$production_movement->article->name;
+
+			$data = [];
+			$data['model_id'] = $article_recipe->id;
+			$data['amount'] = $amount_to_increase;
+			$data['concepto_stock_movement_name'] = 'Insumo de produccion';
+			$data['observations'] = 'Eliminacion Mov. Prod. '.$production_movement->article->name;
 
 			if (!is_null($article_recipe->pivot->address_id) && count($article_recipe->addresses) >= 1) {
-				$request->to_address_id = $article_recipe->pivot->address_id;
+				$data['to_address_id'] = $article_recipe->pivot->address_id;
 			} 
-           	$stock_movement_ct->store($request);
+           	$stock_movement_ct->crear($data);
 		}
 
 	}

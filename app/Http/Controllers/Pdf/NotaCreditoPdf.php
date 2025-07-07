@@ -25,7 +25,7 @@ class NotaCreditoPdf extends fpdf {
 	}
 
 	function getFields() {
-		return [
+		$fields =  [
 			'Codigo' 	=> 40,
 			'Producto/Servicio' 	=> 70,
 			'Precio' 	=> 20,
@@ -33,6 +33,13 @@ class NotaCreditoPdf extends fpdf {
 			'Desc' 		=> 20,
 			'Total' 	=> 30,
 		];
+
+		if (UserHelper::hasExtencion('costos_en_nota_credito_pdf')) {
+			unset($fields['Desc']);
+			$fields['Total Cos'] = 20;
+		}
+
+		return $fields;
 	}
 
 	function getModelProps() {
@@ -88,8 +95,18 @@ class NotaCreditoPdf extends fpdf {
 		    	$this->x = 5 + $this->getFields()['Codigo'] + $this->getFields()['Producto/Servicio'];
 				$this->Cell($this->getFields()['Precio'], 5, '$'.Numbers::price($article->pivot->price), $this->b, 0, 'C');
 				$this->Cell($this->getFields()['Cant'], 5, $article->pivot->amount, $this->b, 0, 'C');
-				$this->Cell($this->getFields()['Desc'], 5, $article->pivot->discount, $this->b, 0, 'C');
+
+				if (isset($this->getFields()['Desc'])) {
+					$this->Cell($this->getFields()['Desc'], 5, $article->pivot->discount, $this->b, 0, 'C');
+				}
+
 				$this->Cell($this->getFields()['Total'], 5, $this->getTotal($article), $this->b, 0, 'C');
+
+				if (UserHelper::hasExtencion('costos_en_nota_credito_pdf')) {
+
+					$this->Cell($this->getFields()['Total Cos'], 5, $this->getTotal($article, true, true), $this->b, 0, 'C');
+				}
+				
 				$this->y = $y_2;
 				$this->x = 5;
 				$this->Line(5, $this->y, 205, $this->y);
@@ -130,9 +147,14 @@ class NotaCreditoPdf extends fpdf {
 		}
 	}
 
-	function getTotal($item, $is_article = true) {
+	function getTotal($item, $is_article = true, $from_cost = false) {
 
 		$total = (float)$item->pivot->amount * $item->pivot->price;
+
+		if ($from_cost) {
+			$total = (float)$item->pivot->amount * $item->cost;
+			return $total;
+		}
 
 		if (!is_null($item->pivot->discount) && (float)$item->pivot->discount > 0) {
             $total -= $total * (float)$item->pivot->discount / 100; 
@@ -168,6 +190,7 @@ class NotaCreditoPdf extends fpdf {
 
 		if (count($this->model->articles) >= 1) {
 			$total = $this->total;
+			// dd('total de los articulos: '.$total);
 		} else {
 			$total = $this->model->haber;
 		}
@@ -192,7 +215,27 @@ class NotaCreditoPdf extends fpdf {
 		}
 
 		PdfHelper::total($this, $total);
+
+		if (
+			count($this->model->articles) >= 1
+			&& UserHelper::hasExtencion('costos_en_nota_credito_pdf')
+		) {
+
+			$total_cost = $this->get_total_cost();
+		    $this->x = 155;
+		    $this->SetFont('Arial', 'B', 12);
+			$this->Cell(50, 10, 'Total Costos: $'.Numbers::price($total_cost), $this->b, 1, 'R');
+		}
 		// PdfHelper::comerciocityInfo($this, $this->y);
+	}
+
+	function get_total_cost() {
+		$total = 0;
+		foreach ($this->model->articles as $article) {
+			$total_article = $article->cost * $article->pivot->amount;
+			$total += $total_article;
+		}
+		return $total;
 	}
 
 }

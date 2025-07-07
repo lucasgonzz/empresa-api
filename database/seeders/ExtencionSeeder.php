@@ -300,6 +300,12 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Codigos de barra por defecto',
                 'slug' => 'codigos_de_barra_por_defecto',
             ],
+            [
+                // 56
+                // Setea el codigo de barras con el id del articulo
+                'name' => 'costos_en_nota_credito_pdf',
+                'slug' => 'costos_en_nota_credito_pdf',
+            ],
 
         ];
         foreach ($extencions as $extencion) {

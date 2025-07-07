@@ -20,9 +20,10 @@ class ArticlePdfObservationController extends Controller
     public function store(Request $request) {
         $model = ArticlePdfObservation::create([
             'text'                  => $request->text,
-            'color'                  => $request->color,
-            'background'                  => $request->background,
-            'position'                  => $request->position,
+            'color'                 => $request->color,
+            'background'            => $request->background,
+            'position'              => $request->position,
+            'image_url'             => $request->image_url,
             'user_id'               => $this->userId(),
         ]);
         return response()->json(['model' => $this->fullModel('ArticlePdfObservation', $model->id)], 201);
@@ -35,9 +36,11 @@ class ArticlePdfObservationController extends Controller
     public function update(Request $request, $id) {
         $model = ArticlePdfObservation::find($id);
         $model->position                = $request->position;
-        $model->text                = $request->text;
-        $model->color                = $request->color;
-        $model->background                = $request->background;
+        $model->text                    = $request->text;
+        $model->color                   = $request->color;
+        $model->background              = $request->background;
+        $model->image_url               = $request->image_url;
+
         $model->save();
         return response()->json(['model' => $this->fullModel('ArticlePdfObservation', $model->id)], 200);
     }

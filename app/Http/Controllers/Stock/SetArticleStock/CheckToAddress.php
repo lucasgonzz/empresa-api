@@ -34,7 +34,7 @@ class CheckToAddress {
 
             * Produccion
     */
-    function check_to_address($stock_movement, $article) {
+    static function check_to_address($stock_movement, $article) {
 
         if (
             !is_null($stock_movement->to_address_id)

@@ -12,8 +12,20 @@ class PromocionVinotecaHelper {
 		$total_cost = 0;
 
 		foreach ($promo->articles as $article) {
-			$total_article = $article->pivot->amount * $article->final_price;
+			$total_article = $article->pivot->amount * $article->cost;
+
+			if (!is_null($article->presentacion)) {
+				$total_article *= $article->presentacion;
+			}
+
 			$total_cost += $total_article;
+		}
+
+		if (
+			$total_cost > 0
+			&& $promo->stock > 0
+		) {
+			$total_cost = $total_cost / $promo->stock; 
 		}
 
 		$promo->cost = $total_cost;

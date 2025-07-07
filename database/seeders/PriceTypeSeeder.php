@@ -25,6 +25,8 @@ class PriceTypeSeeder extends Seeder
             $this->golo_norte();
         } else if ($for_user == 'electro_lacarra') {
             $this->electro_lacarra();
+        } else {
+            $this->golo_norte();
         }
 
     }

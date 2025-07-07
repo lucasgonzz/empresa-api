@@ -25,6 +25,7 @@ class PromocionVinotecaController extends Controller
             'cost'                  => $request->cost,
             'final_price'           => $request->final_price,
             'stock'                 => $request->stock,
+            'online'                => $request->online,
             'address_id'            => $request->address_id,
             'description'           => $request->description,
             'user_id'               => $this->userId(),
@@ -51,6 +52,7 @@ class PromocionVinotecaController extends Controller
         $model->slug                = ArticleHelper::slug($request->name);
         $model->final_price         = $request->final_price;
         $model->stock               = $request->stock;
+        $model->online              = $request->online;
         $model->address_id          = $request->address_id;
         $model->description         = $request->description;
         $model->save();
@@ -70,7 +72,7 @@ class PromocionVinotecaController extends Controller
 
         PromocionVinotecaHelper::regresar_stock($model, $request->articles);
         
-        if ($model->stock == 0) {
+        if ($model->stock <= 0) {
             $model->delete();
         }
 

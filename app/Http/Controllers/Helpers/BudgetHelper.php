@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\SaleController;
 use App\Models\Article;
 use App\Models\Budget;
@@ -55,6 +56,11 @@ class BudgetHelper {
 	            'terminada'				=> UserHelper::hasExtencion('check_sales') ? 0 : 1,
 	        ]);
 	        Self::attachSaleArticles($sale, $budget, $previus_articles);
+
+	        Self::attachSaleServices($sale, $budget);
+
+	        Self::attachSalePromocionVinotecas($sale, $budget);
+
 	        Self::attachSaleDiscountsAndSurchages($sale, $budget);
 
 	        if (!$sale->to_check) {
@@ -105,7 +111,35 @@ class BudgetHelper {
 
             	ArticleHelper::discountStock($article->id, $article->pivot->amount, $sale, [], false, null);
 			}
+		}
+	}
 
+	static function attachSalePromocionVinotecas($sale, $budget) {
+
+		foreach($budget->promocion_vinotecas as $promo) {
+			
+			$sale->promocion_vinotecas()->attach($promo->id, [
+				'amount'			=> $promo->pivot->amount,
+				'price'	    		=> $promo->pivot->price,
+			]);
+
+			$promo_array = [
+				'id'		=> $promo->id,
+				'amount'	=> $promo->pivot->amount,
+			];
+
+            PromocionVinotecaHelper::discount_stock_promocion_vinoteca($sale, $promo_array);
+		}
+	}
+
+	static function attachSaleServices($sale, $budget) {
+		
+		foreach($budget->services as $service) {
+			
+			$sale->services()->attach($service->id, [
+				'amount'			=> $service->pivot->amount,
+				'price'	    		=> $service->pivot->price,
+			]);
 
 		}
 	}
@@ -222,6 +256,37 @@ class BudgetHelper {
 									'bonus' 	=> $bonus,
 									'location' 	=> $location,
 									'price_type_personalizado_id' 	=> $price_type_personalizado_id,
+								]);
+		}		
+	}
+
+	static function attachServices($budget, $services) {
+		$budget->services()->detach();
+
+		foreach ($services as $service) {
+			$id = (int)$service['id'];
+			$amount = $service['pivot']['amount'];
+			$price = $service['pivot']['price'];
+			
+			$budget->services()->attach($service['id'], [
+									'amount' 	=> $amount,
+									'price' 	=> $price,
+								]);
+		}		
+	}
+
+	static function attachPromocionVinotecas($budget, $promocion_vinotecas) {
+		$budget->promocion_vinotecas()->detach();
+
+		foreach ($promocion_vinotecas as $service) {
+
+			$id = (int)$service['id'];
+			$amount = $service['pivot']['amount'];
+			$price = $service['pivot']['price'];
+			
+			$budget->promocion_vinotecas()->attach($service['id'], [
+									'amount' 	=> $amount,
+									'price' 	=> $price,
 								]);
 		}		
 	}

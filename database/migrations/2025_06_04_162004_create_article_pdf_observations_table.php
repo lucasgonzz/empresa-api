@@ -16,9 +16,10 @@ class CreateArticlePdfObservationsTable extends Migration
         Schema::create('article_pdf_observations', function (Blueprint $table) {
             $table->id();
 
-            $table->text('text');
+            $table->text('text')->nullable();
             $table->string('color')->nullable();
             $table->string('background')->nullable();
+            $table->text('image_url')->nullable();
             $table->integer('position');
             $table->integer('user_id');            
 

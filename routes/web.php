@@ -39,6 +39,12 @@ Route::get('/afip-get-data', function () {
 });
 
 
+Route::get('/demo-setup', 'DemoSetupController@form')->name('demo.form');
+Route::post('/demo-setup', 'DemoSetupController@setup')->name('demo.setup');
+
+Route::get('/user-setup', 'UserSetupController@form')->name('user.form');
+Route::post('/user-setup', 'UserSetupController@setup')->name('user.setup');
+
 
 
 // ------------------------------------------------------------------------------

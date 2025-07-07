@@ -34,6 +34,10 @@ class CreateBudgetsTable extends Migration
             $table->text('observations')->nullable();
             $table->decimal('total', 30,2)->nullable();
 
+            
+            $table->boolean('discounts_in_services')->unsigned()->default(1);
+            $table->boolean('surchages_in_services')->unsigned()->default(1);
+
             $table->integer('user_id')->unsigned();
             $table->timestamps();
         });

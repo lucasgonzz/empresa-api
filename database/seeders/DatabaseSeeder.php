@@ -78,7 +78,8 @@ class DatabaseSeeder extends Seeder
 
                 $this->call(ArticleSeeder::class);
                 $this->call(PriceTypeSeeder::class);
-                // $this->call(RecipeSeeder::class);
+                $this->call(RecipeArticleSeeder::class);
+                $this->call(RecipeSeeder::class);
 
             } else if ($for_user == 'feito') {
 

@@ -109,6 +109,8 @@ class CreateUsersTable extends Migration
 
             $table->timestamp('login_at')->nullable();
             $table->timestamp('logout_at')->nullable();
+
+            $table->text('api_url')->nullable();
             // $table->foreign('owner_id')->references('id')->on('users');
             // $table->foreign('admin_id')->references('id')->on('users');
             $table->timestamps();

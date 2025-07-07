@@ -74,6 +74,7 @@ class StockMovementController extends Controller
 
         $article = Article::find($data['model_id']);
 
+        // Log::info('observations: '.$data['observations']);
         $stock_movement = StockMovement::create([
             'article_id'                => $data['model_id'],
             'amount'                    => (float)$data['amount'],
@@ -91,6 +92,8 @@ class StockMovementController extends Controller
             'user_id'                   => $this->user_id,
             'created_at'                => $this->get_created_at($segundos_para_agregar),
         ]);
+
+        Log::info('stock_movement->observations: '.$stock_movement->observations);
 
         $stock_movement = SetConcepto::set_concepto($stock_movement, $data);
 
@@ -137,81 +140,81 @@ class StockMovementController extends Controller
         return null;
     }
 
-    function setStockResultante() {
+    // function setStockResultante() {
 
 
-        // Si el movimiento es porque se esta repartiendo el stock en depositos
-        // Se pone de stock actual el mismo que el stock del articulo
-        if (
-                isset($this->request->from_create_article_addresses)
-                || isset($this->request->is_movimiento_de_depositos)
-                || isset($this->request->from_excel_import)
-            ) {
+    //     // Si el movimiento es porque se esta repartiendo el stock en depositos
+    //     // Se pone de stock actual el mismo que el stock del articulo
+    //     if (
+    //             isset($this->request->from_create_article_addresses)
+    //             || isset($this->request->is_movimiento_de_depositos)
+    //             || isset($this->request->from_excel_import)
+    //         ) {
             
-            $this->stock_movement->stock_resultante = $this->article->stock;
-            $this->stock_movement->save();
+    //         $this->stock_movement->stock_resultante = $this->article->stock;
+    //         $this->stock_movement->save();
 
-            Log::info('Se esta repartiendo stock, se puso stock_resultante con el stock actual de: '.$this->article->stock);
+    //         Log::info('Se esta repartiendo stock, se puso stock_resultante con el stock actual de: '.$this->article->stock);
 
-            $this->set_stock_actual_in_observations();
-            return;
-        }
+    //         $this->set_stock_actual_in_observations();
+    //         return;
+    //     }
 
-        if (!is_null($this->article)) {
+    //     if (!is_null($this->article)) {
 
-            $stock_movement_anterior = StockMovement::where('article_id', $this->article->id)
-                                                    ->orderBy('id', 'DESC')
-                                                    ->where('id', '<', $this->stock_movement->id)
-                                                    ->first();
+    //         $stock_movement_anterior = StockMovement::where('article_id', $this->article->id)
+    //                                                 ->orderBy('id', 'DESC')
+    //                                                 ->where('id', '<', $this->stock_movement->id)
+    //                                                 ->first();
 
-            if (!is_null($stock_movement_anterior)) {
+    //         if (!is_null($stock_movement_anterior)) {
 
-                $stock_resultante = (float)$stock_movement_anterior->stock_resultante + (float)$this->stock_movement->amount;
+    //             $stock_resultante = (float)$stock_movement_anterior->stock_resultante + (float)$this->stock_movement->amount;
 
-                $this->stock_movement->stock_resultante = $stock_resultante;
+    //             $this->stock_movement->stock_resultante = $stock_resultante;
 
-            } else {
-                $this->stock_movement->stock_resultante = $this->stock_movement->amount;
-            }
+    //         } else {
+    //             $this->stock_movement->stock_resultante = $this->stock_movement->amount;
+    //         }
 
-            $this->stock_movement->save();
-        } else {
-            $this->stock_movement->stock_resultante = $this->stock_movement->amount;
-            $this->stock_movement->save();
-        }
+    //         $this->stock_movement->save();
+    //     } else {
+    //         $this->stock_movement->stock_resultante = $this->stock_movement->amount;
+    //         $this->stock_movement->save();
+    //     }
 
-        $this->set_stock_actual_in_observations();
+    //     $this->set_stock_actual_in_observations();
 
-    }
+    // }
 
-    function set_stock_resultante_por_creacion_de_depositos() {
+    // function set_stock_resultante_por_creacion_de_depositos() {
 
-        $last_stock_movement = StockMovement::where('article_id', $this->article_id)
-                                            ->where('concepto', '!=', 'Creacion de deposito')
-                                            ->orderBy('created_at', 'DESC')
-                                            ->first();
+    //     $last_stock_movement = StockMovement::where('article_id', $this->article_id)
+    //                                         ->where('concepto', '!=', 'Creacion de deposito')
+    //                                         ->orderBy('created_at', 'DESC')
+    //                                         ->first();
 
-        if (!is_null($last_stock_movement)) {
+    //     if (!is_null($last_stock_movement)) {
 
-            $this->stock_movement->stock_resultante = $last_stock_movement->stock_resultante;
-            $this->stock_movement->save();
+    //         $this->stock_movement->stock_resultante = $last_stock_movement->stock_resultante;
+    //         $this->stock_movement->save();
 
-        }
+    //     }
 
-    }
+    // }
 
-    function set_stock_actual_in_observations() {
+    // function set_stock_actual_in_observations() {
 
-        if (!is_null($this->article)) {
-            if (!is_null($this->stock_movement->observations)) {
-                $this->stock_movement->observations .= ' - '.$this->article->stock;
-            } else {
-                $this->stock_movement->observations = $this->article->stock;
-            }
-            $this->stock_movement->save();
-        }
+    //     if (!is_null($this->article)) {
+    //         if (!is_null($this->stock_movement->observations)) {
+    //             $this->stock_movement->observations .= ' - '.$this->article->stock;
+    //         } else {
+    //             $this->stock_movement->observations = $this->article->stock;
+    //         }
+    //         $this->stock_movement->save();
+    //     }
 
-    }
+    // }
 
     function getFromAddressId($data) {
         // Log::info('getFromAddressId: '.$data['from_address_id']);

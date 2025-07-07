@@ -42,6 +42,8 @@ class BudgetController extends Controller
             'total'                     => $request->total,
             'budget_status_id'          => $request->budget_status_id,
             'address_id'                => $request->address_id,
+            'surchages_in_services'     => $request->surchages_in_services,
+            'discounts_in_services'     => $request->discounts_in_services,
             'user_id'                   => $this->userId(),
         ]);
         GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
@@ -50,6 +52,10 @@ class BudgetController extends Controller
         $previus_articles = $model->articles;
 
         BudgetHelper::attachArticles($model, $request->articles);
+
+        BudgetHelper::attachServices($model, $request->services);
+        BudgetHelper::attachPromocionVinotecas($model, $request->promocion_vinotecas);
+
         BudgetHelper::checkStatus($this->fullModel('Budget', $model->id), $previus_articles);
 
         $this->sendAddModelNotification('Budget', $model->id);
@@ -69,6 +75,10 @@ class BudgetController extends Controller
         $model->total                     = $request->total;
         $model->budget_status_id          = $request->budget_status_id;
         $model->address_id                = $request->address_id;
+
+        $model->surchages_in_services     = $request->surchages_in_services;
+        $model->discounts_in_services     = $request->discounts_in_services;
+
         $model->save();
         GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
         GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
@@ -76,6 +86,9 @@ class BudgetController extends Controller
         $previus_articles = $model->articles;
 
         BudgetHelper::attachArticles($model, $request->articles);
+        BudgetHelper::attachServices($model, $request->services);
+        BudgetHelper::attachPromocionVinotecas($model, $request->promocion_vinotecas);
+
         BudgetHelper::checkStatus($this->fullModel('Budget', $model->id), $previus_articles);
         
         $this->sendAddModelNotification('Budget', $model->id);

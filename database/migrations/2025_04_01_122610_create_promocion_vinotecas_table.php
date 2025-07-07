@@ -25,6 +25,7 @@ class CreatePromocionVinotecasTable extends Migration
             // $table->text('image_url')->nullable();
             $table->text('description')->nullable();
             $table->integer('address_id')->nullable();
+            $table->boolean('online')->nullable();
             $table->integer('user_id');
             $table->softDeletes();
 

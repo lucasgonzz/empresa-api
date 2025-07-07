@@ -119,6 +119,32 @@ class AfipHelper extends Controller {
                     $gravado                += $res['BaseImp'];
                     $iva                    += $res['Importe'];
                 }
+
+                foreach ($this->sale->services as $service) {
+
+                    Log::info('Pidiendo iva de '.$service->name);
+                    
+                    $res                    = $this->get_combo_iva($service);
+                    Log::info($res);
+                    $ivas['21']['Importe']  += $res['Importe'];
+                    $ivas['21']['BaseImp']  += $res['BaseImp'];
+                    
+                    $gravado                += $res['BaseImp'];
+                    $iva                    += $res['Importe'];
+                }
+
+                foreach ($this->sale->promocion_vinotecas as $promo) {
+
+                    Log::info('Pidiendo iva de '.$promo->name);
+                    
+                    $res                    = $this->get_combo_iva($promo);
+                    Log::info($res);
+                    $ivas['21']['Importe']  += $res['Importe'];
+                    $ivas['21']['BaseImp']  += $res['BaseImp'];
+                    
+                    $gravado                += $res['BaseImp'];
+                    $iva                    += $res['Importe'];
+                }
             }
 
         } else {

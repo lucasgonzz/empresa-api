@@ -17,7 +17,7 @@ class RecipeSeeder extends Seeder
     public function run()
     {
         $article = Article::where('user_id', env('USER_ID'))
-                            ->where('name', 'Prensa Espirales Universal')
+                            ->where('name', 'Gabinete')
                             ->first();
 
         $recipe = Recipe::create([
@@ -29,34 +29,22 @@ class RecipeSeeder extends Seeder
         
         $articles = [
             [
-                'name'                          => 'Kit 1',
-                'order_production_status_id'    => 1,
+                'name'                          => 'Pintura negra',
+                'order_production_status_id'    => 5,
                 'address_id'                    => 1,
-                'amount'                        => 1,
+                'amount'                        => 0.5,
             ],
             [
-                'name'                          => 'Amortiguadores de Baul',
-                'order_production_status_id'    => 1,
+                'name'                          => 'Tornillo N° 8',
+                'order_production_status_id'    => 6,
                 'address_id'                    => 1,
-                'amount'                        => 1,
+                'amount'                        => 10,
             ],
             [
-                'name'                          => 'PLACA REGULADOR PH224502',
-                'order_production_status_id'    => 1,
+                'name'                          => 'Enchufe embra',
+                'order_production_status_id'    => 6,
                 'address_id'                    => 1,
-                'amount'                        => 1,
-            ],
-            [
-                'name'                          => 'Batería de auto UB450M',
-                'order_production_status_id'    => 2,
-                'address_id'                    => 1,
-                'amount'                        => 1,
-            ],
-            [
-                'name'                          => 'Axial Cremallera MO-0064',
-                'order_production_status_id'    => 2,
-                'address_id'                    => 1,
-                'amount'                        => 1,
+                'amount'                        => 5,
             ],
         ];
         foreach ($articles as $article) {

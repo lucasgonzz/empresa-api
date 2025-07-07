@@ -92,6 +92,31 @@ class UserSeeder extends Seeder
                 // 'cambiar_price_type_en_vender',
             ];
 
+        } else if ($this->for_user == '3dtisk') {
+
+            $models[0]['name'] = 'Juance';
+            $models[0]['company_name'] = '3d Tisk';
+            $models[0]['iva_included'] = 0;
+            $models[0]['iva_condition_id'] = 1;
+            $models[0]['doc_number'] = '42385504';
+            
+            // $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
+            $models[0]['default_version'] = null;
+
+            $models[0]['extencions'] = [
+
+                'comerciocity_interno',
+                'budgets',
+                // 'bar_code_scanner',
+                'ask_save_current_acount',
+                'imagenes',
+                // 'forzar_total',
+                'cajas',
+                // 'ventas_con_fecha_de_entrega',
+                // 'road_map_detalle_por_articulos_y_no_por_venta',
+                // 'online',
+            ];
+
         } else if ($this->for_user == 'demo') {
 
             $models[0]['name'] = 'Lucas';
@@ -112,6 +137,7 @@ class UserSeeder extends Seeder
                 'cajas',
                 'ventas_con_fecha_de_entrega',
                 'road_map_detalle_por_articulos_y_no_por_venta',
+                'cambiar_price_type_en_vender',
                 'online',
             ];
 
@@ -232,6 +258,7 @@ class UserSeeder extends Seeder
                 'comerciocity_interno',
                 'article_num_in_online',
                 'sales.hide',
+                'costos_en_nota_credito_pdf',
             ];
 
         } else if ($this->for_user == 'pack_descartables') {
@@ -418,7 +445,8 @@ class UserSeeder extends Seeder
 
         foreach ($models as $model) {
             $user = User::create([
-                'id'                            => isset($model['id']) ? $model['id'] : null,  
+                'id'                            => isset($model['id']) ? $model['id'] : null, 
+                'api_url'                       => 'http://empresa.local:8000',
                 'name'                          => $model['name'], 
                 'phone'                         => $model['phone'], 
                 'use_archivos_de_intercambio'                  => isset($model['use_archivos_de_intercambio']) ? $model['use_archivos_de_intercambio'] : null,  
@@ -439,7 +467,7 @@ class UserSeeder extends Seeder
                 'admin_access'                  => isset($model['admin_access']) ? $model['admin_access'] : null, 
                 'redondear_centenas_en_vender'  => isset($model['redondear_centenas_en_vender']) ? $model['redondear_centenas_en_vender'] : 0, 
                 'redondear_miles_en_vender'  => isset($model['redondear_miles_en_vender']) ? $model['redondear_miles_en_vender'] : 0, 
-                'article_pdf_personalizado'  => isset($model['article_pdf_personalizado']) ? $model['article_pdf_personalizado'] : 0, 
+                'article_pdf_personalizado'  => isset($model['article_pdf_personalizado']) ? $model['article_pdf_personalizado'] : null, 
                 'ask_amount_in_vender'  => isset($model['ask_amount_in_vender']) ? $model['ask_amount_in_vender'] : 1, 
                 'payment_expired_at'            => isset($model['payment_expired_at']) ? $model['payment_expired_at'] : null,  
                 'online'                        => isset($model['online']) ? $model['online'] : null,
@@ -456,8 +484,10 @@ class UserSeeder extends Seeder
                 'default_article_iva_id'                 => isset($model['default_article_iva_id']) ? $model['default_article_iva_id'] : null,
                 'dias_alertar_empleados_ventas_no_cobradas'        => 1,
                 'dias_alertar_administradores_ventas_no_cobradas'  => 1,
-                'default_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8080' : $model['default_version'],
-                'estable_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8081' : $model['estable_version'],
+                'default_version'               => null,
+                // 'default_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8080' : $model['default_version'],
+                'estable_version'               => null,
+                // 'estable_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8081' : $model['estable_version'],
             ]);
 
             

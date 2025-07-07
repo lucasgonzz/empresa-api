@@ -67,6 +67,7 @@ class CreateArticlesTable extends Migration
             $table->integer('cepa_id')->nullable();
             $table->integer('presentacion')->nullable();
 
+            $table->integer('omitir_en_lista_pdf')->nullable();
             
             $table->foreign('user_id')
                     ->references('id')->on('users');

@@ -15,7 +15,8 @@ class RegresarStockHelper {
 			if (isset($item['is_article'])) {
 
 				if (
-					isset($item['unidades_devueltas'])
+					!is_null($item['stock'])
+					&& isset($item['unidades_devueltas'])
 					&& $item['unidades_devueltas'] > 0
 				) {
 

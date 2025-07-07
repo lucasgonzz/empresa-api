@@ -58,6 +58,13 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function set_costos_promocion_vinotecas() {
+        $promos = PromocionVinoteca::all();
+        foreach ($promos as $promo) {
+            // $promo->
+        }
+    }
+
     function corregir_stock($user_id) {
         $articulos_mal = [];
         $articles = Article::where('user_id', $user_id)

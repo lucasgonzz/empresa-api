@@ -175,6 +175,7 @@ class PromocionVinotecaSeeder extends Seeder
             $model['user_id'] = env('USER_ID');
 
             $promo = PromocionVinoteca::create([
+                'online'            => 1,
                 'name'              => $model['name'],
                 'cost'              => $model['cost'],
                 'final_price'       => $model['final_price'],
