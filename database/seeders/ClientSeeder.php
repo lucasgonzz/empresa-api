@@ -66,6 +66,20 @@ class ClientSeeder extends Seeder
                 'user_id'               => env('USER_ID'),
                 'comercio_city_user_id' => null,
             ],
+            [
+
+                'num'                   => 4,
+                'name'                  => 'Brisa Fiorotto',
+                'address'               => 'Juan Bosco 009 - Victoria, Entre Rios',
+                'phone'                 => '3444622139',
+                'cuit'                  => '20242112025',
+                'razon_social'          => 'MARCOS SRL', 
+                'iva_condition_id'      => 1,
+                'seller_id'             => env('FOR_USER') == 'colman' ? 3 : null,
+                'price_type_id'         => 3,
+                'user_id'               => env('USER_ID'),
+                'comercio_city_user_id' => null,
+            ],
         ];
         foreach ($models as $model) {
 

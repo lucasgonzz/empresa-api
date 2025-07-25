@@ -174,8 +174,12 @@ Route::get('deposit-movement/pdf/{id}', 'DepositMovementController@pdf');
 Route::get('article/pdf/{ids}', 'ArticleController@pdf');
 Route::get('article/tickets-pdf/{ids}', 'ArticleController@ticketsPdf');
 Route::get('article/bar-codes-pdf/{ids}', 'ArticleController@barCodePdf');
+Route::get('article/bar-codes-etiquetas-pdf/{ids}', 'ArticleController@barCodeEtiquetasPdf');
 Route::get('article/list-pdf/{ids}', 'ArticleController@listPdf');
 Route::get('article/pdf-personalizado', 'ArticleController@pdfPersonalizado');
+
+
+Route::get('articles-stock-minimo/excel', 'InventoryPerformanceController@stock_minimo_excel');
 
 Route::get('budget/pdf/{id}/{with_prices}', 'BudgetController@pdf');
 Route::get('order-production/pdf/{id}/{with_prices}', 'OrderProductionController@pdf');

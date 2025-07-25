@@ -23,7 +23,7 @@ class BudgetPdf extends fpdf {
 		$this->with_prices = $with_prices;
 
 		$this->AddPage();
-		$this->articles();
+		$this->items();
         $this->Output();
         exit;
 	}
@@ -136,9 +136,11 @@ class BudgetPdf extends fpdf {
 		}
 	}
 
-	function articles() {
+	function items() {
 		$this->SetFont('Arial', '', 10);
 		$this->x = 5;
+		
+		// Articulos
 		foreach ($this->budget->articles as $article) {
 			if ($this->y < 210) {
 				$this->printArticle($article);
@@ -147,6 +149,18 @@ class BudgetPdf extends fpdf {
 				$this->x = 5;
 				$this->y = 55;
 				$this->printArticle($article);
+			}
+		}
+
+		// Servicios
+		foreach ($this->budget->services as $service) {
+			if ($this->y < 210) {
+				$this->printArticle($service);
+			} else {
+				$this->AddPage();
+				$this->x = 5;
+				$this->y = 55;
+				$this->printArticle($service);
 			}
 		}
 	}

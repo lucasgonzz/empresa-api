@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
+use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\SellerCommissionHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
@@ -113,29 +114,30 @@ class CurrentAcountPagoHelper {
     }
 
     static function attachPaymentMethods($pago, $payment_methods, $model_name = null) {
+        
         foreach ($payment_methods as $payment_method) {
             $amount = $payment_method['amount'];
+            
             if ($amount == '' || is_null($amount)) {
                 $amount = $pago->haber;
             }
+            
+            // Si es cheque
+            if ($payment_method['current_acount_payment_method_id'] == 1) {
+                ChequeHelper::crear_cheque($pago, $payment_method);
+            }
+
             $pago->current_acount_payment_methods()->attach($payment_method['current_acount_payment_method_id'], [
                     'amount'                        => $amount,
-                    'check_status_id'               => 0,
-                    'bank'                          => $payment_method['bank'],
-                    // 'fecha_emision'                 => $payment_method['fecha_emision'],
-                    // 'fecha_pago'                   => $payment_method['fecha_pago'],
-                    // 'cobrado_at'                    => $payment_method['cobrado_at'],
-                    // 'check_status_id'               => Self::get_check_status($payment_method),
-                    'num'                           => $payment_method['num'],
-                    // 'credit_card_id'                => $payment_method['credit_card_id'] != 0 ? $payment_method['credit_card_id'] : null,
-                    // 'credit_card_payment_plan_id' => $payment_method['credit_card_payment_plan_id'] != 0 ? $payment_method['
-                    // credit_card_payment_plan_id'] : null,
                     'user_id'   => UserHelper::userId(),
-                ]);
+            ]);
 
-            if (isset($payment_method['caja_id'])
+            if (
+                $payment_method['current_acount_payment_method_id'] != 1
+                && isset($payment_method['caja_id'])
                 && $payment_method['caja_id'] != 0
-                && !is_null($model_name)) {
+                && !is_null($model_name)
+            ) {
 
                 CurrentAcountCajaHelper::guardar_pago($amount, $payment_method['caja_id'], $model_name, $pago);
             }

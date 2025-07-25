@@ -40,6 +40,8 @@ class CreateBuyersTable extends Migration
             $table->integer('seller_id')->unsigned()->nullable();
             $table->text('address')->nullable();
 
+            $table->text('barrio')->nullable();
+
             $table->timestamps();
         });
     }

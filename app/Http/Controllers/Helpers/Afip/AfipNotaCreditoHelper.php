@@ -62,10 +62,13 @@ class AfipNotaCreditoHelper
             $cbte_nro = $cbte_nro['numero_comprobante'];
         }
 
-        Log::info('articulos para obtener importes:');
-        Log::info($this->nota_credito->articles);
+        // Log::info('articulos para obtener importes:');
+        // Log::info($this->nota_credito->articles);
 
-        $afip_helper = new AfipHelper($this->sale, $this->nota_credito->articles);
+        // Log::info('services para obtener importes:');
+        // Log::info($this->nota_credito->services);
+
+        $afip_helper = new AfipHelper($this->sale, $this->nota_credito->articles, $this->nota_credito->services);
         $importes = $afip_helper->getImportes();
         $today = date('Ymd');
         $moneda_id = 'PES';

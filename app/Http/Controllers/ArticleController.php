@@ -21,6 +21,7 @@ use App\Http\Controllers\Pdf\ArticleListPdf;
 use App\Http\Controllers\Pdf\ArticlePdf;
 use App\Http\Controllers\Pdf\ArticlePdf\TruvariArticleListPdf;
 use App\Http\Controllers\Pdf\ArticleTicketPdf;
+use App\Http\Controllers\Pdf\ArticleTicket\ArticleBarCodeEtiquetasPdf;
 use App\Http\Controllers\StockMovementController;
 use App\Imports\ArticleImport;
 use App\Imports\LocationImport;
@@ -350,6 +351,10 @@ class ArticleController extends Controller
 
     function barCodePdf($ids) {
         new ArticleBarCodePdf($ids);
+    }
+
+    function barCodeEtiquetasPdf($ids) {
+        new ArticleBarCodeEtiquetasPdf($ids);
     }
 
     function ticketsPdf($ids) {

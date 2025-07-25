@@ -50,7 +50,10 @@ class ActualizarBBDD {
             Article::insert(array_map(function ($art) {
                 return collect($art)->except([
                     'price_types_data',
-                    'discounts_data',
+                    'discounts_data_percentage',
+                    'discounts_data_amount',
+                    'surchages_data_percentage',
+                    'surchages_data_amount',
                     'stock_global',
                     'stock_addresses',
                 ])->merge([
@@ -89,7 +92,10 @@ class ActualizarBBDD {
                         if (
                             $column === 'id'
                             || $column === 'price_types_data'
-                            || $column === 'discounts_data'
+                            || $column === 'discounts_data_percentage'
+                            || $column === 'discounts_data_amount'
+                            || $column === 'surchages_data_percentage'
+                            || $column === 'surchages_data_amount'
                             || $column === 'stock_global'
                             || $column === 'stock_addresses'
                         ) continue;
@@ -145,8 +151,15 @@ class ActualizarBBDD {
 
  
         // 🔁 Asignar descuentos (a nuevos y actualizados)
-        $this->asignar_discounts();
+        $this->asignar_discounts_percentages();
+        $this->asignar_discounts_amounts();
         Log::info('Se asignaron discounts');
+
+ 
+        // 🔁 Asignar recargos (a nuevos y actualizados)
+        $this->asignar_surchages_percentages();
+        $this->asignar_surchages_amounts();
+        Log::info('Se asignaron surchages');
 
         // 👉 Calcular precios finales para todos los artículos
         // $this->calcular_precios_finales(true);
@@ -164,14 +177,13 @@ class ActualizarBBDD {
         $this->set_precios_finales();
     }
 
-    function asignar_discounts() {
+    function asignar_discounts_percentages() {
 
         $insertData = [];
 
         foreach ($this->articulos_para_crear_CACHE as $article_cache) {
 
-
-            if (empty($article_cache['discounts_data'])) continue;
+            if (empty($article_cache['discounts_data_percentage'])) continue;
 
             $article_model = $this->get_article_model_from_cache($article_cache);
 
@@ -179,7 +191,7 @@ class ActualizarBBDD {
 
             $article_id = $article_model->id;
 
-            foreach ($article_cache['discounts_data'] as $discount) {
+            foreach ($article_cache['discounts_data_percentage'] as $discount) {
                 if (
                     $discount->percentage !== ''
                     && $discount->percentage !== 0
@@ -196,10 +208,13 @@ class ActualizarBBDD {
             }
         }
 
+
+
+        $articles_id_para_eliminarles_descuentos = [];
+
         foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
 
-
-            if (empty($article_cache['discounts_data'])) continue;
+            if (empty($article_cache['discounts_data_percentage'])) continue;
 
             $article_model = $this->articulos_actualizados_models[$article_cache['id']] ?? null;
 
@@ -207,7 +222,9 @@ class ActualizarBBDD {
 
             $article_id = $article_model->id;
 
-            foreach ($article_cache['discounts_data'] as $discount) {
+            $articles_id_para_eliminarles_descuentos[] = $article_id;
+
+            foreach ($article_cache['discounts_data_percentage'] as $discount) {
                 if (
                     $discount->percentage !== ''
                     && $discount->percentage !== 0
@@ -224,16 +241,249 @@ class ActualizarBBDD {
             }
         }
 
-        $article_ids = collect($this->articulos_para_actualizar_CACHE)->pluck('id');
+        // $article_ids = collect($this->articulos_para_actualizar_CACHE)->pluck('id');
+
+        // DB::table('article_discounts')
+        //     ->whereIn('article_id', $article_ids)
+        //     ->whereNotNull('percentage')
+        //     ->delete();
 
         DB::table('article_discounts')
-            ->whereIn('article_id', $article_ids)
+            ->whereIn('article_id', $articles_id_para_eliminarles_descuentos)
+            ->whereNotNull('percentage')
             ->delete();
 
-        Log::info('Se eliminaron descuentos de '.count($article_ids).' articulos');
+        Log::info('Se eliminaron descuentos con percentage de '.count($articles_id_para_eliminarles_descuentos).' articulos');
 
         if (!empty($insertData)) {
             DB::table('article_discounts')->insert($insertData);
+        }
+    }
+
+    function asignar_discounts_amounts() {
+
+        $insertData = [];
+
+        foreach ($this->articulos_para_crear_CACHE as $article_cache) {
+
+            if (empty($article_cache['discounts_data_amount'])) continue;
+
+            $article_model = $this->get_article_model_from_cache($article_cache);
+
+            if (!$article_model) continue;
+
+            $article_id = $article_model->id;
+
+            foreach ($article_cache['discounts_data_amount'] as $discount) {
+                if (
+                    $discount->amount !== ''
+                    && $discount->amount !== 0
+                    && $discount->amount !== '0'
+                ) {
+                    Log::info('Argegando descuento de '.$discount->amount.' para article id: '.$article_id);
+                    $insertData[] = [
+                        'article_id' => $article_id,
+                        'amount' => $discount->amount,
+                        'created_at' => $this->now,
+                        'updated_at' => $this->now,
+                    ];
+                }
+            }
+        }
+
+        $articles_id_para_eliminarles_descuentos = [];
+
+        foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
+
+            if (empty($article_cache['discounts_data_amount'])) continue;
+
+            $article_model = $this->articulos_actualizados_models[$article_cache['id']] ?? null;
+
+            if (!$article_model) continue;
+
+            $article_id = $article_model->id;
+
+            $articles_id_para_eliminarles_descuentos[] = $article_id;
+
+            foreach ($article_cache['discounts_data_amount'] as $discount) {
+                if (
+                    $discount->amount !== ''
+                    && $discount->amount !== 0
+                    && $discount->amount !== '0'
+                ) {
+                    Log::info('Argegando descuento de '.$discount->amount.' para article id: '.$article_id);
+                    $insertData[] = [
+                        'article_id' => $article_id,
+                        'amount' => $discount->amount,
+                        'created_at' => $this->now,
+                        'updated_at' => $this->now,
+                    ];
+                }
+            }
+        }
+
+
+        DB::table('article_discounts')
+            ->whereIn('article_id', $articles_id_para_eliminarles_descuentos)
+            ->whereNotNull('amount')
+            ->delete();
+
+        Log::info('Se eliminaron descuentos con amount de '.count($articles_id_para_eliminarles_descuentos).' articulos');
+
+        if (!empty($insertData)) {
+            DB::table('article_discounts')->insert($insertData);
+        }
+    }
+
+    function asignar_surchages_percentages() {
+
+        $insertData = [];
+
+        foreach ($this->articulos_para_crear_CACHE as $article_cache) {
+
+            if (empty($article_cache['surchages_data_percentage'])) continue;
+
+            $article_model = $this->get_article_model_from_cache($article_cache);
+
+            if (!$article_model) continue;
+
+            $article_id = $article_model->id;
+
+            foreach ($article_cache['surchages_data_percentage'] as $surchage) {
+                if (
+                    $surchage->percentage !== ''
+                    && $surchage->percentage !== 0
+                    && $surchage->percentage !== '0'
+                ) {
+                    Log::info('Argegando recargo de '.$surchage->percentage.' para article id: '.$article_id);
+                    $insertData[] = [
+                        'article_id' => $article_id,
+                        'percentage' => $surchage->percentage,
+                        'luego_del_precio_final' => $surchage->luego_del_precio_final,
+                        'created_at' => $this->now,
+                        'updated_at' => $this->now,
+                    ];
+                }
+            }
+        }
+
+        $articles_id_para_eliminarles_recargos = [];
+
+        foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
+
+            if (empty($article_cache['surchages_data_percentage'])) continue;
+
+            $article_model = $this->articulos_actualizados_models[$article_cache['id']] ?? null;
+
+            if (!$article_model) continue;
+
+            $article_id = $article_model->id;
+
+            $articles_id_para_eliminarles_recargos[] = $article_id;
+
+            foreach ($article_cache['surchages_data_percentage'] as $surchage) {
+                if (
+                    $surchage->percentage !== ''
+                    && $surchage->percentage !== 0
+                    && $surchage->percentage !== '0'
+                ) {
+                    Log::info('Argegando recargo de '.$surchage->percentage.' para article id: '.$article_id);
+                    $insertData[] = [
+                        'article_id' => $article_id,
+                        'percentage' => $surchage->percentage,
+                        'luego_del_precio_final' => $surchage->luego_del_precio_final,
+                        'created_at' => $this->now,
+                        'updated_at' => $this->now,
+                    ];
+                }
+            }
+        }
+
+        DB::table('article_surchages')
+            ->whereIn('article_id', $articles_id_para_eliminarles_recargos)
+            ->whereNotNull('percentage')
+            ->delete();
+
+        Log::info('Se eliminaron recargos con percentage de '.count($articles_id_para_eliminarles_recargos).' articulos');
+
+        if (!empty($insertData)) {
+            DB::table('article_surchages')->insert($insertData);
+        }
+    }
+
+    function asignar_surchages_amounts() {
+
+        $insertData = [];
+
+        foreach ($this->articulos_para_crear_CACHE as $article_cache) {
+
+            if (empty($article_cache['surchages_data_amount'])) continue;
+
+            $article_model = $this->get_article_model_from_cache($article_cache);
+
+            if (!$article_model) continue;
+
+            $article_id = $article_model->id;
+
+            foreach ($article_cache['surchages_data_amount'] as $surchage) {
+                if (
+                    $surchage->amount !== ''
+                    && $surchage->amount !== 0
+                    && $surchage->amount !== '0'
+                ) {
+                    Log::info('Argegando recargo de '.$surchage->amount.' para article id: '.$article_id);
+                    $insertData[] = [
+                        'article_id' => $article_id,
+                        'amount' => $surchage->amount,
+                        'luego_del_precio_final' => $surchage->luego_del_precio_final,
+                        'created_at' => $this->now,
+                        'updated_at' => $this->now,
+                    ];
+                }
+            }
+        }
+
+        $articles_id_para_eliminarles_recargos = [];
+
+        foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
+
+            if (empty($article_cache['surchages_data_amount'])) continue;
+
+            $article_model = $this->articulos_actualizados_models[$article_cache['id']] ?? null;
+
+            if (!$article_model) continue;
+
+            $article_id = $article_model->id;
+
+            $articles_id_para_eliminarles_recargos[] =  $article_id;
+
+            foreach ($article_cache['surchages_data_amount'] as $surchage) {
+                if (
+                    $surchage->amount !== ''
+                    && $surchage->amount !== 0
+                    && $surchage->amount !== '0'
+                ) {
+                    Log::info('Argegando recargo de '.$surchage->amount.' para article id: '.$article_id);
+                    $insertData[] = [
+                        'article_id' => $article_id,
+                        'amount' => $surchage->amount,
+                        'luego_del_precio_final' => $surchage->luego_del_precio_final,
+                        'created_at' => $this->now,
+                        'updated_at' => $this->now,
+                    ];
+                }
+            }
+        }
+
+        DB::table('article_surchages')
+            ->whereIn('article_id', $articles_id_para_eliminarles_recargos)
+            ->whereNotNull('amount')
+            ->delete();
+
+        Log::info('Se eliminaron recargos con amount de '.count($articles_id_para_eliminarles_recargos).' articulos');
+
+        if (!empty($insertData)) {
+            DB::table('article_surchages')->insert($insertData);
         }
     }
 
@@ -639,6 +889,8 @@ class ActualizarBBDD {
         $this->articulos_actualizados_models = Article::whereIn('id', $ids)->get()->keyBy('id');
 
         Log::info('Se seteo articulos_actualizados_models con '.count($this->articulos_actualizados_models).' articulos');
+        Log::info('$ids:');
+        Log::info($ids);
     }
     
 }

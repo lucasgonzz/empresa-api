@@ -171,17 +171,45 @@ class ArticlePricesHelper {
 
         if (count($article->article_discounts) >= 1) {
             foreach ($article->article_discounts as $discount) {
-                $final_price -= $final_price * $discount->percentage / 100;
+
+                if (!is_null($discount->percentage)) {
+                    $final_price -= $final_price * $discount->percentage / 100;
+                } else if (!is_null($discount->amount)) {
+                    $final_price -= $discount->amount;
+                }
+
             }
         }
         return $final_price;
     }
 
-    static function aplicar_recargos($article, $final_price) {
+    static function aplicar_recargos($article, $final_price, $luego_del_precio_final = false) {
 
         if (count($article->article_surchages) >= 1) {
+
             foreach ($article->article_surchages as $surchage) {
-                $final_price += $final_price * $surchage->percentage / 100;
+
+                if (
+                    (
+                        $surchage->luego_del_precio_final == 0
+                        && !$luego_del_precio_final
+                    )
+                    || 
+                    (
+                        $surchage->luego_del_precio_final == 1
+                        && $luego_del_precio_final
+                    )
+                ) {
+                    Log::info('Aplicando recargo luego_del_precio_final: '.$surchage->luego_del_precio_final);
+                    Log::info('luego_del_precio_final param: '.$luego_del_precio_final);
+                    if (!is_null($surchage->percentage)) {
+                        $final_price += $final_price * $surchage->percentage / 100;
+                    } else if (!is_null($surchage->amount)) {
+                        $final_price += $surchage->amount;
+                    }
+                } 
+
+
             }
         }
         return $final_price;

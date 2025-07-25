@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers;
 
-// use App\Http\Controllers\CommonLaravel\AuthController;
+use App\Http\Controllers\CommonLaravel\AuthController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\OnlineConfiguration;
@@ -65,6 +65,9 @@ class UserController extends Controller
         $model->article_ticket_info_id          = $request->article_ticket_info_id;
 
         $model->dias_alertar_empleados_ventas_no_cobradas          = $request->dias_alertar_empleados_ventas_no_cobradas;
+
+        $model->aplicar_descuentos_en_articulos_antes_del_margen_de_ganancia          = $request->aplicar_descuentos_en_articulos_antes_del_margen_de_ganancia;
+        
        
         $model->dias_alertar_administradores_ventas_no_cobradas          = $request->dias_alertar_administradores_ventas_no_cobradas;
 
@@ -80,12 +83,14 @@ class UserController extends Controller
         $model->text_omitir_cc                  = $request->text_omitir_cc;
 
         $model->save();
+
+        $auth_controller = new AuthController();
+        $auth_controller->set_sessions($model);
+
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_dolar, $request->dollar);
         GeneralHelper::checkNewValuesForArticlesPrices($this, $current_iva_included, $request->iva_included);
         $model = UserHelper::getFullModel();
 
-        // $auth_controller = new AuthController();
-        // $auth_controller->set_sessions($model);
 
         return response()->json(['model' => $model], 200);
     }

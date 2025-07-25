@@ -14,18 +14,30 @@ class AfipHelper extends Controller {
     public $factura_solo_algunos_metodos_de_pago;
     public $afip_selected_payment_methods;
 
-    function __construct($sale, $articles = null, $user = null) {
+    function __construct($sale, $articles = null, $services = null, $user = null) {
 
         if (is_null($user)) {
            $this->user = $this->user();
         } else {
            $this->user = $user;
         }
+        
         $this->sale = $sale;
+
+
+        // Seteo articulos
         if (is_null($articles)) {
             $articles = $this->sale->articles;
         }
         $this->articles = $articles;
+
+
+        // Seteo servicios
+        if (is_null($services)) {
+            $services = $this->sale->services;
+        }
+        $this->services = $services;
+
 
         $this->set_afip_selected_payment_methods();
     }
@@ -76,6 +88,9 @@ class AfipHelper extends Controller {
             } else {
 
                 foreach ($this->articles as $article) {
+
+                    // Log::info('Pidiendo iva del article '.$article->name);
+
                     $this->article = $article;
                     $gravado                += $this->getImporteGravado();
                     $exento                 += $this->getImporteIva('Exento')['BaseImp'];
@@ -105,14 +120,16 @@ class AfipHelper extends Controller {
                     $res                    = $this->getImporteIva('0');
                     $ivas['0']['Importe']  += $res['Importe'];
                     $ivas['0']['BaseImp']  += $res['BaseImp'];
+
+                    // Log::info($ivas);
                 } 
 
                 foreach ($this->sale->combos as $combo) {
 
-                    Log::info('Pidiendo iva de '.$combo->name);
+                    // Log::info('Pidiendo iva de '.$combo->name);
                     
                     $res                    = $this->get_combo_iva($combo);
-                    Log::info($res);
+                    // Log::info($res);
                     $ivas['21']['Importe']  += $res['Importe'];
                     $ivas['21']['BaseImp']  += $res['BaseImp'];
                     
@@ -120,12 +137,12 @@ class AfipHelper extends Controller {
                     $iva                    += $res['Importe'];
                 }
 
-                foreach ($this->sale->services as $service) {
+                foreach ($this->services as $service) {
 
-                    Log::info('Pidiendo iva de '.$service->name);
+                    // Log::info('Pidiendo iva del servicio '.$service->name);
                     
                     $res                    = $this->get_combo_iva($service);
-                    Log::info($res);
+                    // Log::info($res);
                     $ivas['21']['Importe']  += $res['Importe'];
                     $ivas['21']['BaseImp']  += $res['BaseImp'];
                     

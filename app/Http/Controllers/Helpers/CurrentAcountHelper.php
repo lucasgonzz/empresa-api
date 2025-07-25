@@ -107,22 +107,32 @@ class CurrentAcountHelper {
         Log::info('se seteo saldo de '.$model->name.' a '.$model->saldo);
     } 
 
+
     static function getSaldo($model_name, $model_id, $until_current_acount = null) {
-        $last = CurrentAcount::orderBy('id', 'DESC');
-        if (!is_null($until_current_acount)) {
-            $last = $last->where('id', '<', $until_current_acount->id);
-        } 
-        if ($model_name == 'client') {
-            $last = $last->where('client_id', $model_id);
+        $query = CurrentAcount::query();
+
+        if ($model_name === 'client') {
+            $query->where('client_id', $model_id);
         } else {
-            $last = $last->where('provider_id', $model_id);
+            $query->where('provider_id', $model_id);
         }
-        $last = $last->first();
+
+        if (!is_null($until_current_acount)) {
+            $query->where(function ($q) use ($until_current_acount) {
+                $q->where('created_at', '<', $until_current_acount->created_at)
+                  ->orWhere(function ($q2) use ($until_current_acount) {
+                      $q2->where('created_at', $until_current_acount->created_at)
+                         ->where('id', '<', $until_current_acount->id);
+                  });
+            });
+        }
+
+        $last = $query->orderBy('created_at', 'desc')->orderBy('id', 'desc')->first();
+
         if (is_null($last)) {
-            // Log::info('es null el ultimo movimiento y se retorna 0 con model_name = '.$model_name);
             return 0;
         } else {
-            // Log::info('Se retorna el saldo de '.$last->saldo);
+            Log::info('Se retorna el saldo de current_acount_id ' . $last->id);
             return $last->saldo;
         }
     }
@@ -180,12 +190,16 @@ class CurrentAcountHelper {
             $nota_credito->services()->detach();
             foreach ($items as $item) {
                 if (isset($item['is_service'])) {
-                    Log::info('attach service '.$item['id']);
-                    $nota_credito->services()->attach($item['id'], [
-                                                        'amount'    => $item['returned_amount'],
-                                                        'price'     => $item['price_vender'],
-                                                        'discount'  => $item['discount'],
-                                                    ]);
+
+                    if (isset($item['unidades_devueltas'])) {
+
+                        Log::info('attach service '.$item['name'].' con '.$item['unidades_devueltas']);
+                        $nota_credito->services()->attach($item['id'], [
+                                                            'amount'    => $item['unidades_devueltas'],
+                                                            'price'     => $item['price_vender'],
+                                                            'discount'  => $item['discount'],
+                                                        ]);
+                    }
                 }
             }
         }
@@ -327,11 +341,17 @@ class CurrentAcountHelper {
         foreach ($current_acounts as $current_acount) {
             $saldo = Self::getSaldo($model_name, $model_id, $current_acount);
             if (!is_null($current_acount->debe)) {
+                Log::info('sumando '.Numbers::price($current_acount->debe));
+                Log::info('Saldo anterior: '.Numbers::price($saldo));
                 $current_acount->saldo = Numbers::redondear($saldo + $current_acount->debe);
             } else if (!is_null($current_acount->haber)) {
+                Log::info('restando '.Numbers::price($current_acount->haber));
+                Log::info('Saldo anterior: '.Numbers::price($saldo));
                 $current_acount->saldo = Numbers::redondear($saldo - $current_acount->haber);
             }
             $current_acount->save();
+            Log::info('Quedo en '.Numbers::price($current_acount->saldo));
+            Log::info('');
         }
         $app_model_name = GeneralHelper::getModelName($model_name);
         $model = $app_model_name::find($model_id);
@@ -341,8 +361,8 @@ class CurrentAcountHelper {
             $model->saldo = 0;
         }
         $model->save();
+        Log::info('se actualizo saldo del modelo '.$model->name.' a '.$model->saldo);
         return $model;
-        // Log::info('se actualizo saldo del modelo '.$model->name.' a '.$model->saldo);
     }
 
 

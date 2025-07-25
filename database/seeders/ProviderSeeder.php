@@ -50,7 +50,7 @@ class ProviderSeeder extends Seeder
             ],
             [
                 'num'               => 3,
-                'name'              => 'Mc Electronica',
+                'name'              => 'Proveedor S.A',
                 'percentage_gain'   => 0,
                 'email'             => 'lucasgonzalez5500@gmail.com',
                 'address'           => 'Calle 123',

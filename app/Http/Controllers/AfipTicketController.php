@@ -93,7 +93,9 @@ class AfipTicketController extends Controller
                 )
             ) {
 
-                $errores_de_facturacion[] = $sale_afip_obs;
+                if (!collect($errores_de_facturacion)->pluck('id')->contains($sale_afip_obs->id)) {
+                    $errores_de_facturacion[] = $sale_afip_obs;
+                }
             }
         }
 

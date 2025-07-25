@@ -307,11 +307,23 @@ class SaleController extends Controller
         $sale = Sale::find($request->sale_id);
         if (!is_null($sale)) {
 
-            if (isset(($request->afip_tipo_comprobante_id))) {
+            if (
+                isset($request->afip_tipo_comprobante_id)
+                && $request->afip_tipo_comprobante_id != 0
+            ) {
+                Log::info('seteando afip_tipo_comprobante_id con '.$request->afip_tipo_comprobante_id);
                 $sale->afip_tipo_comprobante_id = $request->afip_tipo_comprobante_id;
             }
 
-            $sale->afip_information_id = $request->afip_information_id;
+            if (
+                isset($request->afip_information_id)
+                && $request->afip_information_id != 0
+            ) {
+                Log::info('seteando afip_information_id con '.$request->afip_information_id);
+                $sale->afip_information_id = $request->afip_information_id;
+            }
+
+            $sale->timestamps = false;
             $sale->save();
             $ct = new AfipWsController($sale);
             $result = $ct->init();

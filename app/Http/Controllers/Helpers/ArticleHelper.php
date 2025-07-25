@@ -129,6 +129,10 @@ class ArticleHelper {
                 $final_price = ArticlePricesHelper::aplicar_descuentos($article, $final_price);
 
                 $final_price = ArticlePricesHelper::aplicar_recargos($article, $final_price);
+
+                $article->costo_real = $final_price;
+                
+                Log::info('Aplicando recargos antes del margen de ganancia, final_price va en '.$final_price);
             }  
 
 
@@ -138,6 +142,8 @@ class ArticleHelper {
 
                 $cost = ArticlePricesHelper::aplicar_recargos($article, $cost);
 
+                $article->costo_real = $cost;
+                
                 ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $cost, $user, $price_types);
 
             } else if (UserHelper::hasExtencion('lista_de_precios_por_categoria', $user)) {
@@ -148,24 +154,28 @@ class ArticleHelper {
 
             if ($article->apply_provider_percentage_gain) {
 
-                if (!is_null($article->provider_price_list)) {
 
+                if (!is_null($article->provider_price_list)) {
                     $final_price = $cost + ($cost * $article->provider_price_list->percentage / 100);
 
                 } else if ((!is_null($article->provider) && $article->provider->percentage_gain)) {
-
                     $final_price = $cost + ($cost * $article->provider->percentage_gain / 100);
 
-                } else {
+                } 
+                // else {
+                //     Log::info('ENTRO 3');
 
-                    $final_price = $cost;
-                }
+                //     $final_price = $cost;
+                // }
             }
             
 
             if (!is_null($article->percentage_gain)) {
+                Log::info('Sumando percentage_gain, va en '.$final_price);
                 
-                $final_price += $final_price * $article->percentage_gain / 100; 
+                $final_price += $final_price * $article->percentage_gain / 100;
+
+                Log::info('Y quedo en '.$final_price);
             }
 
             if (UserHelper::hasExtencion('vinoteca', $user)) {
@@ -174,6 +184,8 @@ class ArticleHelper {
             }
 
 
+
+            Log::info('final_price: '.$final_price);
         } else {
 
             $final_price = $article->price;
@@ -182,6 +194,9 @@ class ArticleHelper {
 
         $final_price = ArticlePricesHelper::aplicar_iva($article, $final_price, $user);
 
+        $final_price = ArticlePricesHelper::aplicar_recargos($article, $final_price, true);
+        
+        Log::info('aplico iva y final_price: '.$final_price);
 
 
         if (!$user->aplicar_descuentos_en_articulos_antes_del_margen_de_ganancia) {
@@ -190,7 +205,7 @@ class ArticleHelper {
             
             $final_price = ArticlePricesHelper::aplicar_recargos($article, $final_price);
 
-            Log::info('6 final_price: '.$final_price);
+            Log::info('Aplicando recargos despues del margen de ganancia');
         }
 
         $final_price = Self::redondear($final_price, $user);
@@ -233,7 +248,8 @@ class ArticleHelper {
 
         if ($user->redondear_centenas_en_vender) {
 
-            return ceil($price / 100) * 100;
+            return round($price, -2);
+            // return ceil($price / 100) * 100;
         }
 
         if (env('REDONDEAR_PRECIOS_EN_CENTAVOS', false)) {

@@ -30,4 +30,8 @@ class Category extends Model
     function category_price_type_ranges() {
         return $this->hasMany(CategoryPriceTypeRange::class)->orderBy('min', 'asc');
     }
+
+    function articles() {
+        return $this->hasMany(Article::class)->orderBy('name', 'asc');
+    }
 }

@@ -36,8 +36,10 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             !is_null($article->provider) ? $article->provider->name : '',
             $article->cost,
             $article->percentage_gain,
-            $article->discounts_formated,
-            $article->surchages_formated,
+            $article->discounts_percentage_formated,
+            $article->surchages_percentage_formated,
+            $article->discounts_amount_formated,
+            $article->surchages_amount_formated,
             $article->price,
             $this->getCostInDollars($article),
             $this->getUnidadMedida($article),
@@ -104,6 +106,8 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             'Margen de ganancia',
             'Descuentos',
             'Recargos',
+            'Descuentos montos',
+            'Recargos montos',
             'Precio',
             'Moneda',
             'Unidad medida',
@@ -133,17 +137,17 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
         return null;
     }
 
-    function setDiscounts($articles) {
-        foreach ($articles as $article) {
-            $article->discounts_formated = '';
-            if (count($article->article_discounts) >= 1) {
-                foreach ($article->article_discounts as $discount) {
-                    $article->discounts_formated .= $discount->percentage.'_';
-                }
-                $article->discounts_formated = substr($article->discounts_formated, 0, strlen($article->discounts_formated)-1);
-            }
-        }
-        return $articles;
-    }
+    // function setDiscounts($articles) {
+    //     foreach ($articles as $article) {
+    //         $article->discounts_formated = '';
+    //         if (count($article->article_discounts) >= 1) {
+    //             foreach ($article->article_discounts as $discount) {
+    //                 $article->discounts_formated .= $discount->percentage.'_';
+    //             }
+    //             $article->discounts_formated = substr($article->discounts_formated, 0, strlen($article->discounts_formated)-1);
+    //         }
+    //     }
+    //     return $articles;
+    // }
 
 }

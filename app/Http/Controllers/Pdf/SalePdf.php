@@ -77,6 +77,14 @@ class SalePdf extends fpdf {
 				'T Des' 	=> 15,
 				'Sub total' => 25,
 			]);
+
+
+			if ($this->user->id == 700) {
+				$fields['Nombre'] = 35;
+				$fields['Caja'] = 20;
+				$fields['Sub total'] = 25;
+			}
+
 		}
 		if (!$this->with_costs && !$this->with_prices) {
 			$fields['Nombre'] = 120;
@@ -284,7 +292,7 @@ class SalePdf extends fpdf {
 		$this->Cell(
 			$this->getFields()['Num'], 
 			$this->line_height, 
-			$item->num, 
+			$item->id, 
 			$this->b, 
 			0, 
 			'C'
@@ -376,6 +384,20 @@ class SalePdf extends fpdf {
 				0, 
 				'C'
 			);
+
+			if (
+				isset($this->getFields()['Caja'])
+				&& $item->unidades_por_bulto
+			) {
+				$this->Cell(
+					$this->getFields()['Caja'], 
+					$this->line_height, 
+					$this->truncar_a_dos_decimales($item->pivot->amount / $item->unidades_por_bulto),
+					$this->b, 
+					0, 
+					'C'
+				);	
+			}
 		}
 		$this->x = $this->start_x;
 		$this->y = $y_2;
@@ -385,6 +407,10 @@ class SalePdf extends fpdf {
 			$width = 5 + $this->getFields()['#'] + $this->getFields()['Num'] + $this->getFields()['Codigo'] + $this->getFields()['Nombre'] + $this->getFields()['Cant'];
 			$this->Line($this->start_x, $this->y, $width, $this->y);
 		}
+	}
+
+	function truncar_a_dos_decimales($numero) {
+	    return floor($numero * 100) / 100;
 	}
 
 	function sub_total($item) {
@@ -407,7 +433,7 @@ class SalePdf extends fpdf {
 	}
 
 	function is_article($item) {
-		return isset($item->num);
+		return isset($item->bar_code);
 	}
 
 	function commissions() {

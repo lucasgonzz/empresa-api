@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
+use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\SaleController;
 use App\Models\Article;
 use App\Models\Budget;
@@ -67,6 +68,8 @@ class BudgetHelper {
 	        	SaleHelper::create_current_acount($sale);
 	        }
 
+	        SaleTotalesHelper::set_total_cost($sale);
+
         	$ct->sendAddModelNotification('Sale', $sale->id, false);
 		}
 	}
@@ -103,6 +106,7 @@ class BudgetHelper {
 				'amount'			=> $article->pivot->amount,
 				'checked_amount'	=> Self::get_checked_amount($has_extencion_check_sales, $article),
 				'price'	    		=> $article->pivot->price,
+				'cost'	    		=> $article->pivot->cost,
 				'price_type_personalizado_id'	    		=> $article->pivot->price_type_personalizado_id,
 				'discount'			=> $article->pivot->bonus,
 			]);
@@ -241,6 +245,9 @@ class BudgetHelper {
 			$bonus = $article['pivot']['bonus'];
 			$location = $article['pivot']['location'];
 			$price = $article['pivot']['price'];
+			
+			$cost = Self::getCost($article);
+
 			$price_type_personalizado_id = isset($article['pivot']['price_type_personalizado_id']) ? $article['pivot']['price_type_personalizado_id'] : null;
 			
 			if ($article['status'] == 'inactive' && $id > 0) {
@@ -253,12 +260,33 @@ class BudgetHelper {
 			$budget->articles()->attach($article['id'], [
 									'amount' 	=> $amount,
 									'price' 	=> $price,
+									'cost' 		=> $cost,
 									'bonus' 	=> $bonus,
 									'location' 	=> $location,
 									'price_type_personalizado_id' 	=> $price_type_personalizado_id,
 								]);
 		}		
 	}
+
+    static function getCost($item) {
+        if (isset($item['pivot']['presentacion'])) {
+
+            $item_cost = (float)$item['pivot']['cost'];
+            if (isset($item['pivot']['costo_real'])) {
+                $item_cost = (float)$item['pivot']['costo_real'];
+            }
+            
+            $cost =  $item_cost * (float)$item['pivot']['presentacion'];
+            return $cost;
+        }
+        if (isset($item['pivot']['costo_real'])) {
+            return $item['pivot']['costo_real'];
+        }
+        if (isset($item['pivot']['cost'])) {
+            return $item['pivot']['cost'];
+        }
+        return null;
+    }
 
 	static function attachServices($budget, $services) {
 		$budget->services()->detach();

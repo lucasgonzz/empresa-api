@@ -75,7 +75,10 @@ class ArticleIndexCache
         }
 
         // Si no hay bar_code, buscar por provider_code
-        if (!empty($data['provider_code'])) {
+        if (
+            !empty($data['provider_code'])
+            && !env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false)
+        ) {
             $lookup = $data['provider_code'];
             if (isset($index['provider_codes'][$lookup])) {
                 return Article::find($index['provider_codes'][$lookup]);

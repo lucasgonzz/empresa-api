@@ -103,7 +103,7 @@ class DatabaseSeeder extends Seeder
 
                 $this->call(PriceTypeSeeder::class);
                 $this->call(ArticleSeeder::class);
-                $this->call(CajaSeeder::class);
+                // $this->call(CajaSeeder::class);
 
             } else if ($for_user == 'golo_norte') {
 
@@ -146,42 +146,10 @@ class DatabaseSeeder extends Seeder
                     $this->call(ArticleSeeder::class);
                 }
             }
+            
+            $this->call(ChequeSeeder::class);
+            $this->call(CajaSeeder::class);
 
-
-
-
-            // if (
-            //     env('APP_ENV') == 'local'
-            //     || $for_user == 'demo'
-            // ) {
-
-            //     $this->call(ProviderSeeder::class);
-            //     $this->call(ProviderPriceListSeeder::class);
-            //     $this->call(ColorSeeder::class);
-            //     $this->call(DepositSeeder::class);
-            //     $this->call(ClientSeeder::class);
-            //     $this->call(BuyerSeeder::class);
-            //     $this->call(DiscountSeeder::class);
-            //     $this->call(SurchageSeeder::class);
-            //     $this->call(AddressSeeder::class);
-            //     // $this->call(ProviderOrderSeeder::class);
-            //     $this->call(ProviderPagosSeeder::class);
-            //     $this->call(TitleSeeder::class);
-            //     $this->call(DeliveryZoneSeeder::class);
-            //     $this->call(BudgetSeeder::class);
-            //     $this->call(UpdateFeatureSeeder::class);
-            //     $this->call(OrderSeeder::class);
-            //     $this->call(InventoryLinkageScopeSeeder::class);
-                
-            //     $this->call(MessageSeeder::class);
-
-            //     $this->call(ExpenseConceptSeeder::class);
-            //     $this->call(ExpenseSeeder::class);
-            //     $this->call(PendingSeeder::class);
-
-            //     $this->call(EmployeeSeeder::class);
-            //     $this->call(SellerSeeder::class);
-            // }
 
             if ($for_user == 'demo') {
                 $this->call(SaleReporteSeeder::class);
@@ -199,30 +167,7 @@ class DatabaseSeeder extends Seeder
                 $this->call(CommissionSeeder::class);
             }
 
-
-
-
-            /* 
-                Estos de abajo se ejectuan siempre.
-                Son los unicos que se ejectuan en produccion,
-                junto con los propios de caja "for_user"
-            */
-            // $this->call(IvaSeeder::class);
-            
-            // $this->call(IvaConditionSeeder::class);
-
-            // $this->call(OrderProductionStatusSeeder::class);
-            // $this->call(CurrentAcountPaymentMethodSeeder::class);
-            // $this->call(BudgetStatusSeeder::class);
-
-            // $this->call(ArticleTicketInfoSeeder::class);
-
-            // $this->call(UnidadFrecuenciaSeeder::class);
-
-            // $this->call(ConceptoMovimientoCajaSeeder::class);
-
-            // $this->call(AfipTipoComprobanteSeeder::class);
-
+            $this->call(SaleDemoSeeder::class);
 
         }
     }

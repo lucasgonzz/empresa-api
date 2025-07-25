@@ -25,8 +25,11 @@ class BuyerController extends Controller
             $password .= $request->num;
         }
 
-        if (isset($request->cuit)) {
-            $password = $request->cuit;
+        if (
+            str_contains(env('APP_URL'), 'truvari')
+            && isset($request->phone)
+        ) {
+            $password = 'truvari'.substr($request->phone, -3);
         }
 
         if ($request->visible_password) {

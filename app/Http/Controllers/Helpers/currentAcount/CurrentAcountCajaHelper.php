@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Log;
 
 class CurrentAcountCajaHelper {
 
-	static function guardar_pago($pago_amount, $caja_id, $model_name, $pago) {
+	static function guardar_pago($pago_amount, $caja_id, $model_name, $pago, $notas = null) {
 
         $ingreso = null;
         $egreso = null;
@@ -20,12 +20,17 @@ class CurrentAcountCajaHelper {
 
             $concepto_movimiento_caja_id = 3;
             $ingreso = $pago_amount;
-            $notas = $pago->client->name.'. Pago N° '.$pago->num_receipt;
+
+            if (!$notas) {
+                $notas = $pago->client->name.'. Pago N° '.$pago->num_receipt;
+            }
         } else {
 
             $concepto_movimiento_caja_id = 4;
             $egreso = $pago_amount;
-            $notas = $pago->provider->name.'. Pago N° '.$pago->num_receipt;
+            if (!$notas) {
+                $notas = $pago->provider->name.'. Pago N° '.$pago->num_receipt;
+            }
         }
 
         $data = [

@@ -367,6 +367,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // CurrentAcounts Cheques
     Route::get('/cheque', 'ChequeController@index');
+    Route::put('/cheque/cobrar', 'ChequeController@cobrar');
+    Route::put('/cheque/rechazar', 'ChequeController@rechazar');
+    Route::put('/cheque/endosar', 'ChequeController@endosar');
 
 
 

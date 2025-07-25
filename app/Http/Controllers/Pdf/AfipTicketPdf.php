@@ -29,7 +29,7 @@ class AfipTicketPdf extends fpdf {
 			$this->model = $current_acount;
 			$this->sale = $current_acount->sale;
 			$this->is_nota_credito = true;
-        	$this->afip_helper = new AfipHelper($this->sale, $current_acount->articles);
+        	$this->afip_helper = new AfipHelper($this->sale, $current_acount->articles, $current_acount->services);
 		} else {
 			$this->model = $sale;
 			$this->sale = $sale;
@@ -75,28 +75,33 @@ class AfipTicketPdf extends fpdf {
 
 		$this->num_page = 0;
 		$this->Y = 220;
-		$this->printArticles();
+		$this->print_items();
 	}
 
-	function printArticles() {
+	function print_items() {
 		$user = Auth()->user();
     	$this->AddPage();
 
 		$this->cantidad_articulos_de_esta_venta = count($this->model->articles);
 
         foreach ($this->model->articles as $article) {
-            $this->addArticle($article);
+            $this->add_item($article);
         }	
+
+        foreach ($this->model->services as $service) {
+            $this->add_item($service);
+        }	
+
 		$this->printPieDePagina();
         
         $this->Output();
         exit;
 	}
 
-	function addArticle($article) {
-		$this->sumarCostosYPrecios($article);
+	function add_item($item) {
+		$this->sumarCostosYPrecios($item);
 		$this->sumarCantidadDeArticulos();
-        $this->printArticle($article);
+        $this->print_item($item);
 	}
 
 	function printPieDePagina() {
@@ -240,24 +245,24 @@ class AfipTicketPdf extends fpdf {
         $this->SetX(5);
 	}
 	
-	function printArticle($article) {
+	function print_item($item) {
 	    $this->SetArticleConf();
     	$this->setFont('Arial', '', 8);
-        $this->Cell($this->widths['codigo'], 6, StringHelper::short($article->bar_code, 14), 0, 0, 'L');
-        $this->Cell($this->widths['producto'], 6, StringHelper::short($article->name, 30), 0, 0, 'L');
-        $this->Cell($this->widths['cantidad'], 6, $article->pivot->amount, 0, 0, 'R');
+        $this->Cell($this->widths['codigo'], 6, StringHelper::short($item->bar_code, 14), 0, 0, 'L');
+        $this->Cell($this->widths['producto'], 6, StringHelper::short($item->name, 30), 0, 0, 'L');
+        $this->Cell($this->widths['cantidad'], 6, $item->pivot->amount, 0, 0, 'R');
         // $this->Cell($this->widths['unidad_medida'], 6, 'unidad', 0, 0, 'C');
-        $this->Cell($this->widths['precio_unitario'], 6, Numbers::price($this->afip_helper->getArticlePrice($this->sale, $article)), 0, 0, 'R');
+        $this->Cell($this->widths['precio_unitario'], 6, Numbers::price($this->afip_helper->getArticlePrice($this->sale, $item)), 0, 0, 'R');
 
-        $this->Cell($this->widths['bonif'], 6, $article->pivot->discount, 0, 0, 'R');
-        $this->Cell($this->widths['subtotal'], 6, Numbers::price($this->afip_helper->subTotal($article)), 0, 0, 'R');
+        $this->Cell($this->widths['bonif'], 6, $item->pivot->discount, 0, 0, 'R');
+        $this->Cell($this->widths['subtotal'], 6, Numbers::price($this->afip_helper->subTotal($item)), 0, 0, 'R');
 		if ($this->model->afip_ticket->cbte_letra == 'A') {
 			$iva = 21;
-			if (!is_null($article->iva)) {
-				$iva = $article->iva->percentage;
+			if (!is_null($item->iva)) {
+				$iva = $item->iva->percentage;
 			} 
         	$this->Cell($this->widths['iva'], 6, $iva, 0, 0, 'C');
-        	$this->Cell($this->widths['subtotal_con_iva'], 6, $this->subtotalConIva($article), 0, 0, 'R');
+        	$this->Cell($this->widths['subtotal_con_iva'], 6, $this->subtotalConIva($item), 0, 0, 'R');
 		}
         $this->y += 6;
     }

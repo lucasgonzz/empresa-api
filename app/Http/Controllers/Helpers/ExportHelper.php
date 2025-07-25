@@ -271,13 +271,24 @@ class ExportHelper {
 
 	static function set_article_discounts($article) {
 
-	  	$article->discounts_formated = '';
+	  	$article->discounts_percentage_formated = '';
+	  	$article->discounts_amount_formated = '';
 
         if (count($article->article_discounts) >= 1) {
+
             foreach ($article->article_discounts as $discount) {
-                $article->discounts_formated .= $discount->percentage.'_';
+                
+                if (!is_null($discount->percentage)) {
+                	$article->discounts_percentage_formated .= $discount->percentage.'_';
+                } else if (!is_null($discount->amount)) {
+                	$article->discounts_amount_formated .= $discount->amount.'_';
+                }
             }
-            $article->discounts_formated = substr($article->discounts_formated, 0, strlen($article->discounts_formated)-1);
+
+            // Limpio el ultimo _ que se agrego en el foreach
+            $article->discounts_percentage_formated = substr($article->discounts_percentage_formated, 0, strlen($article->discounts_percentage_formated)-1);
+           
+            $article->discounts_amount_formated = substr($article->discounts_amount_formated, 0, strlen($article->discounts_amount_formated)-1);
         }
 
         return $article;
@@ -302,15 +313,36 @@ class ExportHelper {
 
 	static function set_article_surchages($article) {
 
-	  	$article->surchages_formated = '';
+	  	$article->surchages_percentage_formated = '';
+	  	$article->surchages_amount_formated = '';
 
         if (count($article->article_surchages) >= 1) {
             foreach ($article->article_surchages as $surchage) {
 
-                $article->surchages_formated .= $surchage->percentage.'_';
+            	Log::info('Recargo de '.$article->name.' luego_del_precio_final: '.$surchage->luego_del_precio_final);
+            	
+            	if (!is_null($surchage->percentage)) {
+                	
+	        		if ($surchage->luego_del_precio_final) {
+	            		$article->surchages_percentage_formated .= 'F';
+	        		} 
+                	$article->surchages_percentage_formated .= $surchage->percentage.'_';
+					Log::info('percentage: '.$surchage->percentage);            	
+            	} else if (!is_null($surchage->amount)) {
+
+	        		if ($surchage->luego_del_precio_final) {
+	            		$article->surchages_amount_formated .= 'F';
+	        		} 
+                	$article->surchages_amount_formated .= $surchage->amount.'_';
+					Log::info('amount: '.$surchage->amount);            	
+            	}
             }
 
-            $article->surchages_formated = substr($article->surchages_formated, 0, strlen($article->surchages_formated)-1);
+        	Log::info('Quedo asi: '.$article->surchages_percentage_formated);
+
+            $article->surchages_percentage_formated = substr($article->surchages_percentage_formated, 0, strlen($article->surchages_percentage_formated)-1);
+            $article->surchages_amount_formated = substr($article->surchages_amount_formated, 0, strlen($article->surchages_amount_formated)-1);
+        	Log::info('Y despyes asi: '.$article->surchages_percentage_formated);
         }
 
         return $article;

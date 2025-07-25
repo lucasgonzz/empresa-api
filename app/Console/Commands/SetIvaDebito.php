@@ -57,7 +57,7 @@ class SetIvaDebito extends Command
 
                 if (is_null($afip_ticket->importe_iva)) {
 
-                    $afip_helper = new AfipHelper($sale, null, $user);
+                    $afip_helper = new AfipHelper($sale, null, null, $user);
                     $importes = $afip_helper->getImportes();
 
                     $afip_ticket->importe_iva = $importes['iva'];

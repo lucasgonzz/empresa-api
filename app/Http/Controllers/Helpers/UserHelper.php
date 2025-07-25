@@ -47,7 +47,6 @@ class UserHelper {
         }
 
         return null;
-        return Self::default_user();
     }
 
     static function default_user() {

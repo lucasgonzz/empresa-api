@@ -32,7 +32,7 @@ class TitleSeeder extends Seeder
             [
                 'num'       => 1,
                 'color'     => '#333',
-                'image_url' => 'http://empresa.local:8000/storage/banner.jpg',
+                'image_url' => env('APP_ENV') == 'local' ? 'http://empresa.local:8000/storage/banner.jpg' : 'https://api-prueba.comerciocity.com/public/storage/171398787529312.webp',
                 'crop_image_url' => 'http://empresa.local:8000/storage/banner_mobile.webp',
             ],
         ];

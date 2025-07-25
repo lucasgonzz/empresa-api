@@ -40,6 +40,16 @@ class UpdateSaleHelper {
 
 				}
 
+			} else if (isset($item['is_service'])) {
+
+				if (isset($item['returned_amount'])) {
+
+					$sale->services()->updateExistingPivot($item['id'], [
+						'returned_amount'	=> $item['returned_amount'],
+					]);
+
+				}
+
 			}
 		}
 	}

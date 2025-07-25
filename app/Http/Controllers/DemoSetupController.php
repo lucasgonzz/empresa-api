@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Address;
 use App\Models\AfipInformation;
 use App\Models\ExtencionEmpresa;
 use App\Models\Extension;
@@ -76,7 +77,7 @@ class DemoSetupController extends Controller
 
 
         // Asignar extensiones según configuración
-        $extencions = ['comerciocity_interno', 'ask_save_current_acount'];
+        $extencions = ['comerciocity_interno', 'ask_save_current_acount', 'online'];
         $seeders = [
             'CheckStatusSeeder',
             'OnlineTemplateSeeder',
@@ -101,6 +102,7 @@ class DemoSetupController extends Controller
             'UnidadFrecuenciaSeeder',
 
             'ConceptoMovimientoCajaSeeder',
+            // 'CajaSeeder',
 
             'AfipTipoComprobanteSeeder',
 
@@ -111,8 +113,8 @@ class DemoSetupController extends Controller
 
             // Estos los llamaba despues en el DatabaseSeeder
 
-            'CategorySeeder',
-            'SubCategorySeeder',
+            // 'CategorySeeder',
+            // 'SubCategorySeeder',
 
             'ProviderSeeder',
             'ProviderPriceListSeeder',
@@ -140,6 +142,7 @@ class DemoSetupController extends Controller
 
             'EmployeeSeeder',
             'SellerSeeder',            
+            'ChequeSeeder',            
         ];
 
 
@@ -150,8 +153,15 @@ class DemoSetupController extends Controller
             $seeders[] = 'ArticlePropertyValueSeeder';
             $seeders[] = 'ArticlePropertySeeder';
             $seeders[] = 'ArticleVariantSeeder';
+            $seeders[] = 'CategoryIndumentariaSeeder';
+            $seeders[] = 'ArticleIndumentariaSeeder';
 
             $extencions[] = 'article_variants';
+        }
+
+        if ($request->business_type == 'forrajeria') {
+            $seeders[] = 'CategoryForrajeriaSeeder';
+            $seeders[] = 'ArticleForrajeriaSeeder';
         }
 
 
@@ -169,7 +179,8 @@ class DemoSetupController extends Controller
         }
         
         if ($request->use_deposits) {
-            $seeders[] = 'AddressSeeder';
+            // $seeders[] = 'AddressSeeder';
+            $this->crear_depositos($request);
             $extencions[] = 'deposit_movements';
         }
 
@@ -196,6 +207,8 @@ class DemoSetupController extends Controller
 
         if ($request->cajas) {
             $extencions[] = 'cajas';
+            $seeders[] = 'CajaSeeder';
+            Log::info('Se agrego caja seeder');
         }
 
         if ($request->consultora_de_precios) {
@@ -221,7 +234,7 @@ class DemoSetupController extends Controller
         $user->extencions()->sync($extModels->pluck('id'));
 
         // Ejecutar seeders 
-        $seeders[] = 'ArticleSeeder';
+        // $seeders[] = 'ArticleSeeder';
 
 
         if ($request->produccion) {
@@ -292,5 +305,19 @@ class DemoSetupController extends Controller
             'user_id'               => $user->id,
             'description'           => 'Monotributista',
         ]);
+    }
+
+    function crear_depositos($request) {
+        for ($i=1; $i <= 3 ; $i++) {
+
+            $address = $request->{'address_'.$i}; 
+            
+            if ($address != '') {
+                Address::create([
+                    'street'    => $address,
+                    'user_id'   => env('USER_ID'),
+                ]); 
+            }
+        }
     }
 }

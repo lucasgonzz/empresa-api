@@ -101,12 +101,17 @@
                 <option value="ferreteria">Ferretería</option>
                 <option value="distribuidora">Distribuidora</option>
                 <option value="ropa">Tienda de ropa</option>
+                <option value="forrajeria">Forrajeria</option>
             </select>
 
             
             <hr>
             <p>Sucursales</p>
             <label><input type="checkbox" name="use_deposits" value="1"> Usa depósitos</label>
+            <label>Direccion 1<input type="text" name="address_1"></label>
+            <label>Direccion 2<input type="text" name="address_2"></label>
+            <label>Direccion 3<input type="text" name="address_3"></label>
+
 
             <hr>
             <p>Precios</p>

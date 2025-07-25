@@ -320,6 +320,11 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'articulos',
                 'en'            => 'article.export_excel_clients',
             ],
+            [
+                'singular'      => 'Ver costos de los articulos',
+                'plural'        => 'articulos',
+                'en'            => 'article.cost',
+            ],
 
 
             // Permisos para ver ventas
@@ -342,6 +347,11 @@ class PermissionSeeder extends Seeder
                 'singular'      => 'Ver solo sus ventas',
                 'plural'        => 'ventas',
                 'en'            => 'sale.index.employees.only_your',
+            ],
+            [
+                'singular'      => 'Ver el total vendido',
+                'plural'        => 'ventas',
+                'en'            => 'sale.index.total',
             ],
 
 

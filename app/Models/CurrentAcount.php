@@ -12,6 +12,10 @@ class CurrentAcount extends Model
         return $this->belongsTo(User::class);
     }
 
+    function cheques() {
+        return $this->hasMany(Cheque::class);
+    }
+
     function surchages() {
         return $this->belongsToMany(Surchage::class)->withPivot('percentage');
     }
@@ -46,7 +50,7 @@ class CurrentAcount extends Model
     }
 
     public function services() {
-        return $this->belongsToMany('App\Models\Service')->withPivot('amount', 'price', 'discount');
+        return $this->belongsToMany(Service::class)->withPivot('amount', 'price', 'discount');
     }
 
     public function budget() {

@@ -145,8 +145,11 @@ class InventoryPerformanceHelper {
 
 					$this->sin_stock++;
 				
-				} else if (!is_null($article->stock_min)
-							&& $article->stock < $article->stock_min) {
+				} else if (
+					!is_null($article->stock_min)
+					&& !is_null($article->stock)
+					&& $article->stock < $article->stock_min
+				) {
 
 					$this->stock_minimo++;
 

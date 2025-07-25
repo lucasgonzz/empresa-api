@@ -157,7 +157,6 @@ class ArticlePdf extends fpdf {
 
 	        // Si la imagen ya es JPG, simplemente devuelve la URL
 	        if ($this->isJpg($img_url)) {
-	        	dd('asd');
 	            return $img_url;
 	        }
 		}

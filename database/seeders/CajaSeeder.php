@@ -8,6 +8,7 @@ use App\Models\Address;
 use App\Models\Caja;
 use App\Models\DefaultPaymentMethodCaja;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Log;
 
 class CajaSeeder extends Seeder
 {
@@ -18,9 +19,10 @@ class CajaSeeder extends Seeder
      */
     public function run()
     {
+        Log::info('Caja seeder');
         $models = [
             [
-                'name'    => 'Caja principal Efectivo',
+                'name'    => 'Caja Fuerte',
                 'user_id'   => env('USER_ID')
             ],
             [
@@ -71,25 +73,12 @@ class CajaSeeder extends Seeder
                     ]
                 ],
             ];
-            
-            $models[] = [
-                'name'      => $address->street.' credito',
-                'user_id'   => env('USER_ID'),
-                'default_payment_method_caja' => [
-                    'payment_method_id'     => 5,
-                    'address_id'            => $address->id,
-                ],
-                'current_acount_payment_methods'    => [
-                    [
-                        'id'    => 5,
-                    ]
-                ],
-            ];
         }
 
         $num = 1;
 
         foreach ($models as $model) {
+            Log::info('creando caja '.$model['name']);
             $model_to_create = [];
             $model_to_create['num'] = $num;
             $model_to_create['name'] = $model['name'];

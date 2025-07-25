@@ -3,9 +3,10 @@
 namespace App\Http\Controllers\Pdf;
 
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
-use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\sale\SalePdfHelper;
 use App\Http\Controllers\Pdf\AfipQrPdf;
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
@@ -40,19 +41,22 @@ class SaleTicketPdf extends fpdf {
 	}
 
 	function afipInformation() {
-		if (!is_null($this->sale->afip_information) && !is_null($this->sale->afip_ticket)) {
+
+		$afip_information = SalePdfHelper::get_afip_information($this->sale, $this->user);
+
+		if (!is_null($afip_information)) {
 			$this->SetFont('Arial', '', 10);
 			$this->x = 2;
-			$this->Cell($this->cell_ancho, 5, 'IVA: '.$this->user->afip_information->iva_condition->name, $this->b, 1, 'L');
+			$this->Cell($this->cell_ancho, 5, 'IVA: '.$afip_information->iva_condition->name, $this->b, 1, 'L');
 			$this->x = 2;
-			$this->Cell($this->cell_ancho, 5, 'Cuit: '.$this->user->afip_information->cuit, $this->b, 1, 'L');
+			$this->Cell($this->cell_ancho, 5, 'Cuit: '.$afip_information->cuit, $this->b, 1, 'L');
 
 			$this->x = 2;
-			$this->Cell($this->cell_ancho, 5, 'Razon social: '.$this->user->afip_information->razon_social, $this->b, 1, 'L');
+			$this->Cell($this->cell_ancho, 5, 'Razon social: '.$afip_information->razon_social, $this->b, 1, 'L');
 			
 			$this->SetFont('Arial', 'B', 10);
 			$this->x = 2;
-			$this->Cell($this->cell_ancho, 5, 'Punto de venta: '.$this->sale->afip_information->punto_venta, $this->b, 1, 'L');
+			$this->Cell($this->cell_ancho, 5, 'Punto de venta: '.$afip_information->punto_venta, $this->b, 1, 'L');
 			$this->x = 2;
 			$this->Cell($this->cell_ancho, 5, 'N° comprobante: '.$this->sale->afip_ticket->cbte_numero, $this->b, 1, 'L');
 			$this->x = 2;
@@ -152,7 +156,7 @@ class SaleTicketPdf extends fpdf {
 		$this->x = 2;
 		$this->y += 2;
 
-		$ancho_description = 60 * $this->cell_ancho / 100; 
+		$ancho_description = 50 * $this->cell_ancho / 100; 
 
 		$ancho_price = $this->cell_ancho - $ancho_description; 
 		

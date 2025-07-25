@@ -35,6 +35,11 @@ class SearchController extends Controller
         Log::info($filters);
 
         foreach ($filters as $filter) {
+            
+            if ($filter['key'] == 'total_facturado') {
+                continue;
+            } 
+
             if (isset($filter['type'])) {
 
                 if (isset($filter['ordenar_de'])

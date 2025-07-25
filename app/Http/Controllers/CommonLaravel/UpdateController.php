@@ -24,7 +24,7 @@ class UpdateController extends Controller
         }
 
         $models_response = [];
-        if (count($models) < 5000) {
+        if (count($models) < 3000) {
 
             foreach ($models as $model) {
                 foreach ($request->update_form as $form) {

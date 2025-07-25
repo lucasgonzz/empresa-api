@@ -23,6 +23,8 @@ class ArticleSurchageController extends Controller
             'article_id'            => $request->model_id,
             'temporal_id'           => $this->getTemporalId($request),
             'percentage'            => $request->percentage,
+            'amount'                => $request->amount,
+            'luego_del_precio_final'                => $request->luego_del_precio_final,
         ]);
         if (!is_null($request->model_id)) {
             ArticleHelper::setFinalPrice($model->article);
@@ -38,6 +40,8 @@ class ArticleSurchageController extends Controller
     public function update(Request $request, $id) {
         $model = ArticleSurchage::find($id);
         $model->percentage                = $request->percentage;
+        $model->amount                    = $request->amount;
+        $model->luego_del_precio_final    = $request->luego_del_precio_final;
         $model->save();
         ArticleHelper::setFinalPrice($model->article);
         $this->sendAddModelNotification('article', $model->article_id, false);

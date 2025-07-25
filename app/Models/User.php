@@ -63,7 +63,7 @@ class User extends Authenticatable
     }
 
     public function permissions() {
-        return $this->belongsToMany(GeneralHelper::getModelName(env('PERMISSION_CLASS_NAME', 'Permission')));
+        return $this->belongsToMany(PermissionEmpresa::class);
     }
 
     public function articles() {

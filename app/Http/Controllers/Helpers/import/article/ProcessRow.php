@@ -98,26 +98,45 @@ class ProcessRow {
                 Log::info('El articulo '.$articulo_ya_creado->name.' ya pertenecia al proveedor id '.$articulo_ya_creado->provider_id);
                 return;
             }
-            // Log::info('El articulo ya existia');
 
             // Comparar propiedades y obtener las que cambiaron
             $cambios = $this->getModifiedFields($articulo_ya_creado, $data);
 
             $price_types_data = $this->obtener_price_types($row, $articulo_ya_creado);
 
-            $discounts_data = $this->obtener_descuentos($row);
+            $discounts_data_percentage = $this->obtener_descuentos_percentage($row);
+            $discounts_data_amount = $this->obtener_descuentos_amount($row);
+
+            $surchages_data_percentage = $this->obtener_recargos_percentage($row);
+            $surchages_data_amount = $this->obtener_recargos_amount($row);
+            
 
             $stock = $this->obtener_stock($row, $articulo_ya_creado);
-
-            // Log::info('Descuentos para article num: '.$articulo_ya_creado->id.':');
-            // Log::info($discounts_data);
 
             if (count($price_types_data) > 0) {
                 $cambios['price_types_data'] = $price_types_data;
             }
 
-            if (count($discounts_data) > 0) {
-                $cambios['discounts_data'] = $discounts_data;
+            if (count($discounts_data_percentage) > 0) {
+                Log::info('Agregando los discounts_data_percentage para el article id: '.$articulo_ya_creado->id);
+                Log::info($discounts_data_percentage);
+                $cambios['discounts_data_percentage'] = $discounts_data_percentage;
+            }
+            if (count($discounts_data_amount) > 0) {
+                Log::info('Agregando los discounts_data_amount para el article id: '.$articulo_ya_creado->id);
+                Log::info($discounts_data_amount);
+                $cambios['discounts_data_amount'] = $discounts_data_amount;
+            }
+
+            if (count($surchages_data_percentage) > 0) {
+                Log::info('Agregando los surchages_data_percentage para el article id: '.$articulo_ya_creado->id);
+                Log::info($surchages_data_percentage);
+                $cambios['surchages_data_percentage'] = $surchages_data_percentage;
+            }
+            if (count($surchages_data_amount) > 0) {
+                Log::info('Agregando los surchages_data_amount para el article id: '.$articulo_ya_creado->id);
+                Log::info($surchages_data_amount);
+                $cambios['surchages_data_amount'] = $surchages_data_amount;
             }
 
             if (!is_null($stock['stock_global'])) {
@@ -126,8 +145,8 @@ class ProcessRow {
                 $cambios['stock_addresses'] = $stock['stock_addresses'];
             }
 
-            Log::info('Cambios:');
-            Log::info($cambios);
+            // Log::info('Cambios:');
+            // Log::info($cambios);
 
             if (!empty($cambios)) {
 
@@ -152,10 +171,24 @@ class ProcessRow {
             $price_types_data = $this->obtener_price_types($row);
             $data['price_types_data'] = $price_types_data;
 
-            $discounts_data = $this->obtener_descuentos($row);
+            $discounts_data_percentage = $this->obtener_descuentos_percentage($row);
+            $discounts_data_amount = $this->obtener_descuentos_amount($row);
 
-            if (count($discounts_data) > 0) {
-                $data['discounts_data'] = $discounts_data;
+            $surchages_data_percentage = $this->obtener_recargos_percentage($row);
+            $surchages_data_amount = $this->obtener_recargos_amount($row);
+
+            if (count($discounts_data_percentage) > 0) {
+                $data['discounts_data_percentage'] = $discounts_data_percentage;
+            }
+            if (count($discounts_data_amount) > 0) {
+                $data['discounts_data_amount'] = $discounts_data_amount;
+            }
+
+            if (count($surchages_data_percentage) > 0) {
+                $data['surchages_data_percentage'] = $surchages_data_percentage;
+            }
+            if (count($surchages_data_amount) > 0) {
+                $data['surchages_data_amount'] = $surchages_data_amount;
             }
 
 
@@ -193,7 +226,7 @@ class ProcessRow {
                 if (
                     (!empty($art['id']) && $art['id'] === $data['id']) 
                     || (!empty($art['bar_code']) && $art['bar_code'] === $data['bar_code']) 
-                    || (!empty($art['provider_code']) && $art['provider_code'] === $data['provider_code']) 
+                    || (!env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false) && !empty($art['provider_code']) && $art['provider_code'] === $data['provider_code'])
                     || (!empty($art['name']) && $art['name'] === $data['name'])
                 ) {
                     // $this->articulosParaCrear[$index] = $data;
@@ -207,7 +240,7 @@ class ProcessRow {
                     if (
                         (!empty($art['id']) && $art['id'] === $data['id']) 
                         || (!empty($art['bar_code']) && $art['bar_code'] === $data['bar_code']) 
-                        || (!empty($art['provider_code']) && $art['provider_code'] === $data['provider_code']) 
+                        || (!env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false) && !empty($art['provider_code']) && $art['provider_code'] === $data['provider_code']) 
                         || (!empty($art['name']) && $art['name'] === $data['name'])
                     ) {
                         // $this->articulosParaActualizar[$index] = $data;
@@ -374,35 +407,106 @@ class ProcessRow {
     }
 
 
-    private function obtener_descuentos($row) {
+    private function obtener_descuentos_percentage($row) {
 
         $discounts_data = [];
         
         $excel_descuentos = ImportHelper::getColumnValue($row, 'descuentos', $this->columns);
         
-        // Log::info('excel_descuentos article id: '.$row[0].':');
-        // Log::info($excel_descuentos);
-
         if (ImportHelper::usa_columna($excel_descuentos)) {
 
             $_discounts = explode('_', $excel_descuentos);
-            
             
             foreach ($_discounts as $_discount) {
                 $discount = new \stdClass;
                 $discount->percentage = $_discount;
                 $discounts_data[] = $discount;
             } 
-            
-            // ArticlePricesHelper::adjuntar_descuentos($this->articulo_existente, $discounts);
 
         }
 
-        // Log::info('descuentos:');
-        // Log::info($discounts_data);
+        return $discounts_data;
+    }
+
+
+    private function obtener_descuentos_amount($row) {
+
+        $discounts_data = [];
+        
+        $excel_descuentos = ImportHelper::getColumnValue($row, 'descuentos_montos', $this->columns);
+        
+        if (ImportHelper::usa_columna($excel_descuentos)) {
+
+            $_discounts = explode('_', $excel_descuentos);
+            
+            foreach ($_discounts as $_discount) {
+                $discount = new \stdClass;
+                $discount->amount = $_discount;
+                $discounts_data[] = $discount;
+            } 
+
+        }
 
         return $discounts_data;
+    }
 
+
+    private function obtener_recargos_percentage($row) {
+
+        $surchages_data = [];
+        
+        $excel_recargos = ImportHelper::getColumnValue($row, 'recargos', $this->columns);
+        
+        if (ImportHelper::usa_columna($excel_recargos)) {
+
+            $_surchages = explode('_', $excel_recargos);
+            
+            foreach ($_surchages as $_surchage) {
+                $surchage = new \stdClass;
+
+                $surchage->luego_del_precio_final = 0;
+                if (substr($_surchage, 0, 1) == 'F') {
+                    $_surchage = substr($_surchage, 1);
+                    $surchage->luego_del_precio_final = 1;
+                }
+
+                $surchage->percentage = $_surchage;
+                $surchages_data[] = $surchage;
+            } 
+
+        }
+
+        return $surchages_data;
+    }
+
+
+    private function obtener_recargos_amount($row) {
+
+        $surchages_data = [];
+        
+        $excel_recargos = ImportHelper::getColumnValue($row, 'recargos_montos', $this->columns);
+        
+        if (ImportHelper::usa_columna($excel_recargos)) {
+
+            $_surchages = explode('_', $excel_recargos);
+            
+            foreach ($_surchages as $_surchage) {
+                $surchage = new \stdClass;
+
+                $surchage->luego_del_precio_final = 0;
+                
+                if (substr($_surchage, 0, 1) == 'F') {
+                    $_surchage = substr($_surchage, 1);
+                    $surchage->luego_del_precio_final = 1;
+                } 
+
+                $surchage->amount = $_surchage;
+                $surchages_data[] = $surchage;
+            } 
+
+        }
+
+        return $surchages_data;
     }
 
 

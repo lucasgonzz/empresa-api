@@ -17,6 +17,7 @@ class CreateArticleBudgetTable extends Migration
             $table->id();
             $table->decimal('amount', 10,2)->nullable();
             $table->decimal('price', 12,2)->nullable();
+            $table->decimal('cost', 12,2)->nullable();
             $table->decimal('bonus', 10,2)->nullable();
             $table->string('location')->nullable();
             $table->integer('price_type_personalizado_id')->nullable();

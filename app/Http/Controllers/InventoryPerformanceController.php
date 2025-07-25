@@ -2,10 +2,13 @@
 
 namespace App\Http\Controllers;
 
+use App\Exports\ArticleStockMinimoExport;
 use App\Http\Controllers\Helpers\inventoryPerformance\InventoryPerformanceHelper;
+use App\Models\Article;
 use App\Models\InventoryPerformance;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Maatwebsite\Excel\Facades\Excel;
 
 class InventoryPerformanceController extends Controller
 {
@@ -37,5 +40,10 @@ class InventoryPerformanceController extends Controller
         }
 
         return $inventory_performance;
+    }
+
+    function stock_minimo_excel() {
+        
+        return Excel::download(new ArticleStockMinimoExport(), 'articulos_stock_minimo'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
     }
 }

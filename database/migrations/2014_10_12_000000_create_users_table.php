@@ -110,6 +110,8 @@ class CreateUsersTable extends Migration
             $table->timestamp('login_at')->nullable();
             $table->timestamp('logout_at')->nullable();
 
+            $table->boolean('info_afip_del_primer_punto_de_venta')->nullable();
+            
             $table->text('api_url')->nullable();
             // $table->foreign('owner_id')->references('id')->on('users');
             // $table->foreign('admin_id')->references('id')->on('users');

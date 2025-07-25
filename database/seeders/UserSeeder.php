@@ -67,6 +67,7 @@ class UserSeeder extends Seeder
                 ],
                 'base_de_datos'                     => 'empresa_prueba_1',
                 'google_custom_search_api_key'      => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
+                'info_afip_del_primer_punto_de_venta'   => 0,
             ],
         ];
 
@@ -99,6 +100,7 @@ class UserSeeder extends Seeder
             $models[0]['iva_included'] = 0;
             $models[0]['iva_condition_id'] = 1;
             $models[0]['doc_number'] = '42385504';
+            $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
             
             // $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
             $models[0]['default_version'] = null;
@@ -284,6 +286,7 @@ class UserSeeder extends Seeder
                 'cajas',
                 'filtrar_clientes_por_sucursal_en_vender',
                 'cambiar_price_type_en_vender_item_por_item',
+                'article.costo_real',
             ];
 
         } else if ($this->for_user == 'truvari') {
@@ -293,7 +296,7 @@ class UserSeeder extends Seeder
             $models[0]['iva_included'] = 0;
 
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
-            $models[0]['redondear_miles_en_vender'] = 1;
+            // $models[0]['redondear_miles_en_vender'] = 1;
             $models[0]['article_pdf_personalizado'] = 'truvari';
 
             $models[0]['comision_funcion'] = 'truvari';
@@ -318,11 +321,13 @@ class UserSeeder extends Seeder
                 'enviar_whatsapp_al_terminar_pedido'    => 1,
                 'titulo_quienes_somos'    => 'Forma de compra',
                 'retiro_por_local'              => 0,
+                'pedir_barrio_al_registrarse'   => 1,
             ];
 
             $models[0]['extencions'] = [
 
                 'ask_save_current_acount',
+                'article.costo_real',
                 'budgets',
                 'bar_code_scanner',
                 'comerciocity_interno',
@@ -456,6 +461,7 @@ class UserSeeder extends Seeder
                 'venta_terminada_comision_funcion'                  => isset($model['venta_terminada_comision_funcion']) ? $model['venta_terminada_comision_funcion'] : null, 
                 'impresora'                     => isset($model['impresora']) ? $model['impresora'] : null, 
                 'doc_number'                    => $model['doc_number'], 
+                'info_afip_del_primer_punto_de_venta'                    => $model['info_afip_del_primer_punto_de_venta'],                 
                 'tamano_letra'                  => 2.5,
                 'email'                         => $model['email'], 
                 'password'                      => $model['password'],  

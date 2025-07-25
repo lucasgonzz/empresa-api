@@ -45,7 +45,7 @@ class Advise extends Mailable
                             'article'       => $this->article,
                             'user'          => $user,
                             'article_url'   => $article_url,
-                            'logo_url'      => $user->hosting_image_url,
+                            'logo_url'      => $user->image_url,
                         ]);
         }
     }

@@ -12,6 +12,8 @@ class Article extends Model
     
     protected $guarded = [];
 
+    protected $dates = ['stock_updated_at'];
+
     // protected $appends = ['costo_real'];
 
     function scopeWithAll($query) {

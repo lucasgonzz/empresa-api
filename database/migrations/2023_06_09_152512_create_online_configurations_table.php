@@ -51,6 +51,8 @@ class CreateOnlineConfigurationsTable extends Migration
             
             $table->boolean('retiro_por_local')->default(1);
 
+            $table->boolean('pedir_barrio_al_registrarse')->default(0);
+
             $table->integer('user_id');
             $table->timestamps();
         });

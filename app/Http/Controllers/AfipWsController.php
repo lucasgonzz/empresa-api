@@ -56,6 +56,9 @@ class AfipWsController extends Controller
         }
 
         if (!$this->ya_se_obtuvo_cae_desde_consultar_comprobante) {
+
+            $this->eliminar_errores();
+
             $this->solicitar_cae();
         }
 
@@ -78,6 +81,14 @@ class AfipWsController extends Controller
 
         $this->wsfe->setXmlTa(file_get_contents(TA_file));
 
+    }
+
+    function eliminar_errores() {
+        AfipObservation::where('sale_id', $this->sale->id)
+                                    ->delete();
+
+        AfipError::where('sale_id', $this->sale->id)
+                                    ->delete();
     }
 
     function consultar_comprobante() {
@@ -274,7 +285,13 @@ class AfipWsController extends Controller
             $errors = $result->FECAESolicitarResult->Errors;
             $errors = $this->convertir_utf8($errors);
             foreach ($errors as $error) {
+
                 $code = $error['Code']; 
+                
+                if ($code == 10245) {
+                    continue;
+                }
+
                 if (
                     $code == 'Could not connect to host'
                     || $code == 'Error Fetching http headers'
@@ -296,8 +313,8 @@ class AfipWsController extends Controller
         if (isset($result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones)) {
             $observations = (array)$result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones->Obs;
             // $observations = $this->convertir_utf8($observations);
-            Log::info('observations:');
-            Log::info($observations);
+            // Log::info('observations:');
+            // Log::info($observations);
             if (isset($observations['Msg'])) {
                 if ($observations['Code'] != 10245) {
                     AfipObservation::create([

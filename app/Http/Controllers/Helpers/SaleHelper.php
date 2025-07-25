@@ -821,7 +821,13 @@ class SaleHelper extends Controller {
 
     static function getCost($item) {
         if (isset($item['presentacion'])) {
-            $cost = (float)$item['cost'] * (float)$item['presentacion'];
+
+            $item_cost = (float)$item['cost'];
+            if (isset($item['costo_real'])) {
+                $item_cost = (float)$item['costo_real'];
+            }
+            
+            $cost =  $item_cost * (float)$item['presentacion'];
             return $cost;
         }
         if (isset($item['costo_real'])) {
