@@ -39,6 +39,8 @@ class CheckToAddress {
         if (
             !is_null($stock_movement->to_address_id)
             && $stock_movement->to_address_id != 0
+            && $stock_movement->concepto_movement->name != 'Se elimino la venta'
+            // && count($article->addresses) >= 1
             // && is_null($stock_movement->article_variant_id)
             // && (
             //         $articleHasAddresses()

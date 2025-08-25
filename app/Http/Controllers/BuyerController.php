@@ -41,6 +41,9 @@ class BuyerController extends Controller
             'name'                      => $request->name,
             'email'                     => $request->email,
             'phone'                     => $request->phone,
+            'ciudad'                     => $request->ciudad,
+            'barrio'                     => $request->barrio,
+            'address'                     => $request->address,
             'seller_id'                 => $request->seller_id,
             'visible_password'          => $password,
             'password'                  => bcrypt($password),
@@ -56,6 +59,9 @@ class BuyerController extends Controller
         $model->name                    = $request->name;
         $model->email                   = $request->email;
         $model->phone                   = $request->phone;
+        $model->ciudad                   = $request->ciudad;
+        $model->barrio                   = $request->barrio;
+        $model->address                   = $request->address;
         $model->seller_id               = $request->seller_id;
         $model->visible_password        = $request->visible_password;
 

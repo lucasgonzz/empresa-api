@@ -22,6 +22,6 @@ class ArticleVariant extends Model
     }
 
     function addresses() {
-        return $this->belongsToMany(Address::class)->withPivot('amount');
+        return $this->belongsToMany(Address::class)->withPivot('amount', 'on_display');
     }
 }

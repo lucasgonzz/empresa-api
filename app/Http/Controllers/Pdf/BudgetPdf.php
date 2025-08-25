@@ -22,6 +22,8 @@ class BudgetPdf extends fpdf {
 		$this->budget = $budget;
 		$this->with_prices = $with_prices;
 
+		$this->total_original = 0;
+
 		$this->AddPage();
 		$this->items();
         $this->Output();
@@ -65,9 +67,11 @@ class BudgetPdf extends fpdf {
 	}
 
 	function Header() {
+		$address = $this->user->afip_information ? $this->user->afip_information->domicilio_comercial : null;
 		$data = [
 			'num' 				=> $this->budget->num,
 			'date'				=> $this->budget->created_at,
+			'address'			=> $address,
 			'title' 			=> 'Presupuesto',
 			'model_info'		=> $this->budget->client,
 			'model_props' 		=> $this->getModelProps(),
@@ -190,7 +194,11 @@ class BudgetPdf extends fpdf {
 		$this->Cell($this->getFields()['Cant'], $this->line_height, $article->pivot->amount, $this->b, 0, 'L');
 		if ($this->with_prices) {
 			$this->Cell($this->getFields()['Bonif'], $this->line_height, $this->getBonus($article), $this->b, 0, 'L');
-			$this->Cell($this->getFields()['Importe'], $this->line_height, '$'.Numbers::price(BudgetHelper::totalArticle($article)), $this->b, 0, 'L');
+
+			$total_article = BudgetHelper::totalArticle($article);
+			$this->total_original += BudgetHelper::totalArticle($article, false);
+
+			$this->Cell($this->getFields()['Importe'], $this->line_height, '$'.Numbers::price($total_article), $this->b, 0, 'L');
 		}
 		$this->y = $y_2;
 		$this->Line(5, $this->y, 205, $this->y);
@@ -236,24 +244,48 @@ class BudgetPdf extends fpdf {
 	}
 
 	function discountsSurchages() {
+
 		if ($this->with_prices) {
+
+		    if ($this->total_original > $this->budget->total) {
+
+		    	$this->SetFont('Arial', 'B', 12);
+		    	$this->y += 5;
+		    	$this->x = 5;
+
+		    	$text = 'Sub Total sin descuentos: $'.Numbers::price($this->total_original);
+
+		    	$diferencia = $this->total_original - $this->budget->total;
+
+		    	$text .= ' (Ahorro $' . Numbers::price($diferencia) . ')';
+
+				$this->Cell(100, 7, $text, 0, 1, 'L');
+		    }
+
 		    $this->SetFont('Arial', '', 10);
+
 		    foreach ($this->budget->discounts as $discount) {
+				
 		    	$this->x = 5;
 				$this->Cell(100, 7, '- '.$discount->pivot->percentage.'% '.$discount->name, 0, 1, 'L');
 		    }
 		    foreach ($this->budget->surchages as $surchage) {
+
 		    	$this->x = 5;
 				$this->Cell(100, 7, '+ '.$surchage->pivot->percentage.'% '.$surchage->name, 0, 1, 'L');
 		    }
+
 		}
+
+
 	}
 
 	function total() {
 		if ($this->with_prices) {
 		    $this->x = 5;
 		    $this->SetFont('Arial', 'B', 14);
-			$this->Cell(100, 10, 'Total: $'. Numbers::price(BudgetHelper::getTotal($this->budget)), 0, 1, 'L');
+			$this->Cell(100, 10, 'Total: $'. Numbers::price($this->budget->total), 0, 1, 'L');
+			// $this->Cell(100, 10, 'Total: $'. Numbers::price(BudgetHelper::getTotal($this->budget)), 0, 1, 'L');
 		}
 	}
 

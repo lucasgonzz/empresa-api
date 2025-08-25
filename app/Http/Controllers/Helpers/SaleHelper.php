@@ -609,10 +609,10 @@ class SaleHelper extends Controller {
                     if (($sale->to_check || $sale->checked) 
                         || (!is_null($amount) && $amount > 0) ) {
 
-                        Log::info('Agregando el articulos: '.$article['name']);
+                        // Log::info('Agregando el articulos: '.$article['name']);
                         Self::attachArticle($sale, $article);
                     } else {
-                        Log::info('No se agrego articulo '.$article['name'].' a la venta N° '.$sale->num.'. Amount: '.$amount);
+                        // Log::info('No se agrego articulo '.$article['name'].' a la venta N° '.$sale->num.'. Amount: '.$amount);
                     }
 
                 }
@@ -648,12 +648,15 @@ class SaleHelper extends Controller {
     }
 
     static function attachArticle($sale, $article) {
+        
+        $delivered_amount = Self::getDeliveredAmount($article);
+
         $sale->articles()->attach($article['id'], [
             'amount'                => Self::getAmount($sale, $article),
             'cost'                  => Self::getCost($article),
             'price'                 => $article['price_vender'],
             'returned_amount'       => Self::getReturnedAmount($article),
-            'delivered_amount'      => Self::getDeliveredAmount($article),
+            'delivered_amount'      => $delivered_amount,
             'discount'              => Self::getDiscount($article),
             'checked_amount'        => Self::getCheckedAmount($sale, $article),
             'article_variant_id'    => Self::getArticleVariantId($article),
@@ -661,6 +664,11 @@ class SaleHelper extends Controller {
             'price_type_personalizado_id'    => Self::get_price_type_personalizado($article),
             'created_at'            => Carbon::now(),
         ]);
+
+        if (!is_null($delivered_amount) && !$sale->en_acopio) {
+            $sale->en_acopio = 1;
+            $sale->save();
+        }
     }
 
     static function updateItemsPrices($sale, $items) {

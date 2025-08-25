@@ -7,6 +7,7 @@ use Database\Seeders\sales\SaleReporteArticuloSeeder;
 use Database\Seeders\sales\SaleReporteSeeder;
 use Database\Seeders\sales\SaleRoadMapSeeder;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Log;
 
 class DatabaseSeeder extends Seeder
 {
@@ -23,6 +24,7 @@ class DatabaseSeeder extends Seeder
         // return;
 
         $for_user = env('FOR_USER');
+        Log::info('env user_Id: '.env('USER_ID'));
 
         if (env('FOR_SERVER') == 'la_barraca') {
             $this->call(UserSeeder::class);
@@ -129,6 +131,23 @@ class DatabaseSeeder extends Seeder
 
                 $this->call(ArticleSeeder::class);
                 
+            } else if ($for_user == 'mza_group') {
+
+                Log::info('mza_group seeder');
+                $this->call(PriceTypeSeeder::class);
+                // $this->call(ArticleSeeder::class);
+                // $this->article_variants();
+                
+
+            } else if ($for_user == 'bad_girls') {
+
+                Log::info('bad_girls seeder');
+                $this->call(PriceTypeSeeder::class);
+                $this->call(AddressSeeder::class);
+                $this->call(ArticleSeeder::class);
+                $this->article_variants();
+                
+
             } else if ($for_user == 'electro_lacarra') {
 
                 $this->call(PriceTypeSeeder::class);
@@ -194,7 +213,6 @@ class DatabaseSeeder extends Seeder
             $this->call(BuyerSeeder::class);
             $this->call(DiscountSeeder::class);
             $this->call(SurchageSeeder::class);
-            $this->call(AddressSeeder::class);
             $this->call(ProviderOrderSeeder::class);
             $this->call(ProviderPagosSeeder::class);
             $this->call(TitleSeeder::class);
@@ -234,7 +252,7 @@ class DatabaseSeeder extends Seeder
         
         $this->call(IvaConditionSeeder::class);
 
-        $this->call(OrderProductionStatusSeeder::class);
+        // $this->call(OrderProductionStatusSeeder::class);
         $this->call(CurrentAcountPaymentMethodSeeder::class);
         $this->call(BudgetStatusSeeder::class);
 

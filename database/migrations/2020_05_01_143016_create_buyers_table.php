@@ -41,6 +41,7 @@ class CreateBuyersTable extends Migration
             $table->text('address')->nullable();
 
             $table->text('barrio')->nullable();
+            $table->text('ciudad')->nullable();
 
             $table->timestamps();
         });

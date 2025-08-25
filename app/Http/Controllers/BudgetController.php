@@ -44,6 +44,7 @@ class BudgetController extends Controller
             'address_id'                => $request->address_id,
             'surchages_in_services'     => $request->surchages_in_services,
             'discounts_in_services'     => $request->discounts_in_services,
+            'employee_id'               => $this->userId(false),
             'user_id'                   => $this->userId(),
         ]);
         GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);

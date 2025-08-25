@@ -13,6 +13,7 @@ use App\Http\Controllers\Stock\SetArticleStock\SetArticleStock;
 use App\Http\Controllers\Stock\SetConcepto;
 use App\Http\Controllers\Stock\SetProvider;
 use App\Http\Controllers\Stock\SetStockUpdatedAt;
+use App\Jobs\ProcessSyncArticleToTiendaNube;
 use App\Models\Article;
 use App\Models\ArticleVariant;
 use App\Models\StockMovement;
@@ -22,6 +23,10 @@ use Illuminate\Support\Facades\Log;
 
 class StockMovementController extends Controller
 {
+
+    function __construct($update_tienda_nube = true) {
+        $this->update_tienda_nube = $update_tienda_nube;
+    }
 
     function index($article_id) {
         $models = StockMovement::where('article_id', $article_id)
@@ -93,7 +98,7 @@ class StockMovementController extends Controller
             'created_at'                => $this->get_created_at($segundos_para_agregar),
         ]);
 
-        Log::info('stock_movement->observations: '.$stock_movement->observations);
+        // Log::info('stock_movement->observations: '.$stock_movement->observations);
 
         $stock_movement = SetConcepto::set_concepto($stock_movement, $data);
 
@@ -105,7 +110,19 @@ class StockMovementController extends Controller
 
         SetStockUpdatedAt::set_stock_updated_at($stock_movement, $article);
 
+        $this->check_tienda_nube($article);
+
         return $stock_movement;
+    }
+
+    function check_tienda_nube($article) {
+
+        if (env('USA_TIENDA_NUBE', false) && $this->update_tienda_nube) {
+            Log::info('Se llamo ProcessSyncArticleToTiendaNube desde StockMovementController');
+            dispatch(new ProcessSyncArticleToTiendaNube($article));
+        } else {
+            Log::info('No se va a llamar a tienda nube');
+        }
     }
 
     function get_provider_id($data) {

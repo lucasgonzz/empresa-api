@@ -11,4 +11,8 @@ class Description extends Model
     function scopeWithAll($q) {
         
     }
+
+    function article() {
+        return $this->belongsTo(Article::class);
+    }
 }

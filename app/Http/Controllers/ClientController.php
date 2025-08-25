@@ -104,6 +104,8 @@ class ClientController extends Controller
 
     function get_afip_information_by_cuit($cuit) {
         $ct = new AfipConstanciaInscripcionController();
+        
+        // $data = $ct->get_persona_padron_a13($cuit);
         $data = $ct->get_constancia_inscripcion($cuit);
 
         if ($data['hubo_un_error']) {

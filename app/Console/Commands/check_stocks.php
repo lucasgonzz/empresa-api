@@ -2,11 +2,12 @@
 
 namespace App\Console\Commands;
 
+use App\Mail\SimpleMail;
 use App\Models\Article;
 use App\Models\StockMovement;
+use App\Models\User;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Mail;
-use App\Mail\SimpleMail;
 
 class check_stocks extends Command
 {
@@ -69,8 +70,11 @@ class check_stocks extends Command
     function enviar_mail($articulos_mal) {
 
         if (count($articulos_mal) > 0) {
+
+            $owner = User::find($this->argument('user_id'));
+
             Mail::to('lucasgonzalez5500@gmail.com')->send(new SimpleMail([
-                'asunto'    => 'Stocks Mal',
+                'asunto'    => 'Stocks Mal | '.$owner->company_name . ' | user_id: '.$this->argument('user_id'),
                 'mensajes'  => $articulos_mal,
             ]));      
             $this->comment('Se envio mail');      

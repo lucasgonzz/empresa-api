@@ -135,13 +135,21 @@ class SalePdf extends fpdf {
 			'fields' 			=> $this->getFields(),
 			'address'			=> $this->get_address(),
 		];
-		if (!is_null($this->sale->client) && $this->sale->save_current_acount && !is_null($this->sale->current_acount) && $this->with_prices) {
+
+		if (!is_null($this->sale->client) && !is_null($this->sale->client->description) && !$this->with_prices) {
+			$data = array_merge($data, [
+				'client_description' 	=> true,
+				'client'			=> $this->sale->client,
+			]);
+		} else if (!is_null($this->sale->client) && $this->sale->save_current_acount && !is_null($this->sale->current_acount) && $this->with_prices) {
 			$data = array_merge($data, [
 				'current_acount' 	=> $this->sale->current_acount,
 				'client_id'			=> $this->sale->client_id,
 				'compra_actual'		=> SaleHelper::getTotalSale($this->sale),
 			]);
 		}
+
+
 		PdfHelper::header($this, $data);
 		return;
 	}
@@ -176,6 +184,9 @@ class SalePdf extends fpdf {
 				$this->commissions();
 			}
 			$this->totalFinal();
+		} else {
+
+			// $this->total_final();
 		}
 		// PdfHelper::comerciocityInfo($this, $this->y);
 	}
@@ -624,6 +635,21 @@ class SalePdf extends fpdf {
 				);
 		    } 
 		}
+	}
+
+	function total_final() {
+
+    	$this->SetFont('Arial', 'B', 12);
+    	$this->x = 5;
+    	$this->y += 2;
+	    $this->Cell(
+			50, 
+			5, 
+			'Total: $'.Numbers::price($this->sale->total), 
+			$this->b, 
+			1, 
+			'L'
+		);
 	}
 
 	function totalFinal() {

@@ -38,6 +38,7 @@ class CreateBudgetsTable extends Migration
             $table->boolean('discounts_in_services')->unsigned()->default(1);
             $table->boolean('surchages_in_services')->unsigned()->default(1);
 
+            $table->integer('employee_id')->nullable()->unsigned();
             $table->integer('user_id')->unsigned();
             $table->timestamps();
         });

@@ -101,9 +101,35 @@ class AuthController extends Controller
     }
 
     function set_sessions($auth_user) {
+
+
+
+        // Convertimos el user a array seguro (solo lo necesario)
+
+        $user_data = (object) $auth_user->attributesToArray();
+        $user_data->permissions    = $auth_user->permissions;
+
+        // Hacemos lo mismo con el owner
+        $owner = UserHelper::getFullModel();
+
+        $owner_data = (object) $owner->attributesToArray();
+        $owner_data->extencions    = $owner->extencions;
+
+        // Log::info('Session ID before: ', session()->all());
+
+        session()->put('auth_user', $user_data);
+        session()->put('owner', $owner_data);
+
+        // session([
+        //     'auth_user' => $user_data,
+        //     'owner'     => $owner_data,
+        // ]);
+
+        // Log::info('Session ID after: ', session()->all());
+
         // Log::info('set_sessions auth_user:');
         // Log::info($auth_user);
-        session(['auth_user' => $auth_user, 'owner' => UserHelper::getFullModel()]);
+        // session(['auth_user' => $auth_user, 'owner' => UserHelper::getFullModel()]);
     }
 
     public function logout(Request $request) {

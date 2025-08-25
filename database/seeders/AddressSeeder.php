@@ -18,7 +18,35 @@ class AddressSeeder extends Seeder
 
         if (env('FOR_USER') == 'fenix') {
             return;
+        } else if (env('FOR_USER') == 'bad_girls') {
+            $this->bad_girls();
+        } else {
+            $this->default();
         }
+    }
+
+    function bad_girls() {
+
+        $models = [
+            [
+                'num'       => 1,
+                'street'    => 'Arriba',
+                'user_id'   => env('USER_ID'),
+            ],
+            [
+                'num'       => 2,
+                'street'    => 'Abajo',
+                'default_address'    => 1,
+                'user_id'   => env('USER_ID'),
+            ],
+        ];
+        foreach ($models as $model) {
+            Address::create($model);
+        }
+    }
+
+    function default() {
+
         $models = [
             [
                 'num'       => 1,
@@ -43,14 +71,6 @@ class AddressSeeder extends Seeder
                 'default_address'    => 1,
                 'user_id'   => env('USER_ID'),
             ],
-            // [
-            //     'street'    => 'San martin 221',
-            //     'city'      => 'Coronel Pringles',
-            //     'province'  => 'San Luis',
-            //     'lat'       => '-37.98283990485',
-            //     'lng'       => '-61.347817694165',
-            //     'buyer_id'  => 1,
-            // ],
         ];
         foreach ($models as $model) {
             Address::create($model);

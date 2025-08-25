@@ -116,8 +116,15 @@
             <hr>
             <p>Precios</p>
             <label><input type="checkbox" name="use_price_lists" value="1"> Usa listas de precios</label>
-            <label><input type="checkbox" name="cambiar_price_type_en_vender" value="1"> Cambian manualmente la lista de precios en VENDER</label>
-            <label><input type="checkbox" name="cambiar_price_type_en_vender_item_por_item" value="1"> Cambian la lista de precios a cada item individualmente</label>
+
+
+            <label>Lista 1<input type="text" name="price_type_1"></label>
+            <label>Lista 2<input type="text" name="price_type_2"></label>
+            <label>Lista 3<input type="text" name="price_type_3"></label>
+
+            <!-- <label><input type="checkbox" name="cambiar_price_type_en_vender" value="1"> Cambian manualmente la lista de precios en VENDER</label>
+            <label><input type="checkbox" name="cambiar_price_type_en_vender_item_por_item" value="1"> Cambian la lista de precios a cada item individualmente</label> -->
+            
             <label><input type="checkbox" name="iva_included" value="1"> Iva ya incluido en los precios</label>
 
             <hr>

@@ -125,11 +125,11 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Numero orden de compra para las ventas',
                 'slug' => 'numero_orden_de_compra_para_las_ventas',
             ],
-            [
+            // [
                 // 23
-                'name' => 'Unidades individuales para los articulos',
-                'slug' => 'unidades_individuales_en_articulos',
-            ],
+                // 'name' => 'Unidades individuales para los articulos',
+                // 'slug' => 'unidades_individuales_en_articulos',
+            // ],
             [
                 // 24
                 'name' => 'Mostrar maximo descuento posible para un articulo en VENDER',
@@ -295,7 +295,7 @@ class ExtencionSeeder extends Seeder
                 'slug' => 'articulos_unidades_individuales',
             ],
             [
-                // 56
+                // 55
                 // Setea el codigo de barras con el id del articulo
                 'name' => 'Codigos de barra por defecto',
                 'slug' => 'codigos_de_barra_por_defecto',
@@ -305,6 +305,32 @@ class ExtencionSeeder extends Seeder
                 // Setea el codigo de barras con el id del articulo
                 'name' => 'costos_en_nota_credito_pdf',
                 'slug' => 'costos_en_nota_credito_pdf',
+            ],
+            [
+                // 57
+                // Setea el codigo de barras con el id del articulo
+                'name' => 'setear_precio_final_en_listas_de_precio',
+                'slug' => 'setear_precio_final_en_listas_de_precio',
+            ],
+            [
+                // 58
+                'name' => 'Chequear stock de articulos en VENDER',
+                'slug' => 'warn_article_stock_en_vender',
+            ],
+            [
+                // 59
+                'name' => 'Cambiar el empleado en VENDER',
+                'slug' => 'cambiar_empleado_en_vender',
+            ],
+            [
+                // 60
+                'name' => 'Usa tienda nube',
+                'slug' => 'usa_tienda_nube',
+            ],
+            [
+                // 61
+                'name' => 'articulos_en_exhibicion',
+                'slug' => 'articulos_en_exhibicion',
             ],
 
         ];

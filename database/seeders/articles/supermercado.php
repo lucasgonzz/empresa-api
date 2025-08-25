@@ -129,7 +129,7 @@ $articles = [
 
 function get_image($url) {
     if (env('APP_ENV') == 'production') {
-        return env('APP_IMAGES_URL').'/public'.$url;
+        return env('APP_IMAGES_URL').'/'.$url;
     } else {
         return env('APP_IMAGES_URL').$url;
     }

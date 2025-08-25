@@ -84,6 +84,20 @@ class ChequeController extends Controller
         return response()->json(['models' => $agrupados], 200);
     }
 
+    function pagar(Request $request) {
+        $cheque = Cheque::find($request->cheque_id);
+        $cheque->estado_manual = 'cobrado';
+        $cheque->cobrado_en = Carbon::now();
+        $cheque->cobrado_por_id = $this->userId(false);
+        $cheque->save();
+
+        if ($request->caja_id != 0) {
+            CurrentAcountCajaHelper::guardar_pago($cheque->amount, $request->caja_id, 'provider', $cheque->current_acount, 'Pago cheque N° '.$cheque->numero);
+        }
+
+        return response()->json(['model' => $cheque], 200);
+    }
+
     function cobrar(Request $request) {
         $cheque = Cheque::find($request->cheque_id);
         $cheque->estado_manual = 'cobrado';

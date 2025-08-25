@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Imports\ArticleImport;
+use App\Jobs\FinalizeArticleImport;
 use App\Jobs\ProcessArticleChunk;
 use App\Notifications\GlobalNotification;
 use Illuminate\Bus\Queueable;
@@ -21,6 +22,7 @@ class ProcessArticleImport implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
+    protected $import_uuid;
     protected $archivo_excel;
     protected $columns;
     protected $create_and_edit;
@@ -36,7 +38,8 @@ class ProcessArticleImport implements ShouldQueue
 
     public $timeout = 3600;
 
-    public function __construct($archivo_excel, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id, $archivo_excel_path) {
+    public function __construct($import_uuid, $archivo_excel, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id, $archivo_excel_path) {
+        $this->import_uuid = $import_uuid;
         $this->archivo_excel = $archivo_excel;
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
@@ -64,8 +67,10 @@ class ProcessArticleImport implements ShouldQueue
         ArticleIndexCache::build($this->user->id);
         Log::info('articulos cacheados');
 
-        // $chunkSize = 500;
         $chunkSize = 1000;
+        if (env('APP_ENV') == 'local') {
+            $chunkSize = 100;
+        } 
         $start = $this->start_row; // por ejemplo, 2
 
         while ($start <= $this->finish_row) {
@@ -74,6 +79,7 @@ class ProcessArticleImport implements ShouldQueue
             Log::info("Se mandó chunk desde $start hasta $end");
 
             ProcessArticleChunk::dispatch(
+                $this->import_uuid,
                 $this->archivo_excel_path,
                 $this->columns,
                 $this->create_and_edit,
@@ -89,8 +95,16 @@ class ProcessArticleImport implements ShouldQueue
 
             $start = $end + 1;
         }
-        return;
 
+        FinalizeArticleImport::dispatch(
+            $this->import_uuid,
+            'article',
+            $this->columns,
+            $this->user,
+            $this->auth_user_id,
+            $this->provider_id,
+            $this->archivo_excel_path,
+        );
     }
 
     public function failed(Throwable $exception)

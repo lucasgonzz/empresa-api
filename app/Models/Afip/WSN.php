@@ -70,7 +70,7 @@ abstract class WSN extends WS
         $this->ta_token             = null;
         $this->ta_sign              = null;
         $this->cuit_representada    = $config['cuit_representada'];
-        $this->for_constancia_de_inscripcion = $config['for_constancia_de_inscripcion'];
+        $this->for_constancia_de_inscripcion = isset($config['for_constancia_de_inscripcion']) ? $config['for_constancia_de_inscripcion'] : false;
         parent::__construct($config);
     }
 
@@ -279,7 +279,14 @@ abstract class WSN extends WS
             Log::info('EL wsaa Esta vencido');
             // throw new WsnException('El TA está vencido');
         }
+
         if ($this->for_constancia_de_inscripcion) {
+
+            Log::info('name:');
+            Log::info($name);
+
+            Log::info('arguments:');
+            Log::info($arguments);
 
             $datos = array(
                 'token'              => $this->ta_token,

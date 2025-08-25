@@ -19,8 +19,10 @@ class CreateCategoriesTable extends Migration
             $table->integer('num')->nullable();
             $table->string('name', 128);
             $table->string('image_url', 128)->nullable();
+            $table->decimal('percentage_gain', 22,2)->nullable();
             $table->integer('user_id')->unsigned();
             $table->integer('provider_category_id')->nullable();
+            $table->integer('tiendanube_category_id')->nullable();
             $table->softDeletes();
             $table->timestamps();
             

@@ -18,6 +18,7 @@ class CreateAddressArticleVariantTable extends Migration
             $table->integer('address_id');
             $table->integer('article_variant_id');
             $table->integer('amount')->nullable();
+            $table->boolean('on_display')->nullable();
             $table->timestamps();
         });
     }

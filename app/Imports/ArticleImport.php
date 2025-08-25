@@ -34,11 +34,12 @@ class ArticleImport implements ToCollection
 {
 
     
-    public function __construct($columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id, $archivo_excel_path) {
+    public function __construct($import_uuid, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id, $archivo_excel_path) {
         set_time_limit(9999999999);
 
-        Log::info('Se creo ArticleImport');
+        Log::info('Se creo ArticleImport con import_uuid: '.$import_uuid);
 
+        $this->import_uuid = $import_uuid;
         $this->user = $user;
         $this->auth_user_id = $auth_user_id;
         $this->archivo_excel_path = $archivo_excel_path;
@@ -63,11 +64,6 @@ class ArticleImport implements ToCollection
         $this->updated_props = [];
 
 
-
-        // $this->setAddresses();
-        // $this->setProps();
-        // $this->set_price_types();
-
         Log::info('Empieza ArticleImport');
 
         $this->process_row = new ProcessRow([
@@ -89,6 +85,8 @@ class ArticleImport implements ToCollection
 
         $this->trabajo_terminado = false;
     }
+
+
 
 
     function setAddresses() {
@@ -145,6 +143,7 @@ class ArticleImport implements ToCollection
 
                         // Registra el progreso y errores en Import History
                         ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, $error_message, $this->articulos_creados, $this->articulos_actualizados, $this->updated_props);
+
                         ArticleImportHelper::error_notification($this->user, $this->num_row, $e->getMessage());
                         return;
 
@@ -169,9 +168,11 @@ class ArticleImport implements ToCollection
             $articulos_creados = count($this->process_row->getArticulosParaCrear());
             $articulos_actualizados = count($this->process_row->getArticulosParaActualizar());
 
-            ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, null, $articulos_creados, $articulos_actualizados, $this->updated_props);
+            ArticleImportHelper::create_article_import_result($this->import_uuid, $articulos_creados, $articulos_actualizados);
+            
+            // ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, null, $articulos_creados, $articulos_actualizados, $this->updated_props);
 
-            ArticleImportHelper::enviar_notificacion($this->user, $articulos_creados, $articulos_actualizados);
+            // ArticleImportHelper::enviar_notificacion($this->user, $articulos_creados, $articulos_actualizados);
             
             $this->trabajo_terminado = true;
         }

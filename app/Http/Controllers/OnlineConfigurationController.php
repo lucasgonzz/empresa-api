@@ -46,7 +46,9 @@ class OnlineConfigurationController extends Controller
 
 
         $model->titulo_quienes_somos               = $request->titulo_quienes_somos;                     
-        $model->default_amount_add_to_cart               = $request->default_amount_add_to_cart;                     
+        $model->default_amount_add_to_cart               = $request->default_amount_add_to_cart;       
+        $model->pedir_barrio_al_registrarse               = $request->pedir_barrio_al_registrarse;       
+        $model->logear_cliente_al_registrar               = $request->logear_cliente_al_registrar;       
         
         $model->save();
         $this->sendAddModelNotification('OnlineConfiguration', $model->id);

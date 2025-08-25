@@ -52,7 +52,7 @@ class OrderSeeder extends Seeder
                 $order->articles()->attach($article->id, [
                     'amount'        => rand(1,20),
                     'price'         => $article->final_price,
-                    'notes'         => 'Esta es una nota bastante larga como para ocupar mucho lugar viste'
+                    'notes'         => 'Nota de ejemplo'
                 ]); 
              }     
         }

@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Provider;
+use App\Models\User;
 use App\Notifications\GlobalNotification;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -76,7 +77,7 @@ class ProviderImport implements ToCollection
 
     function enviar_notificacion() {
             
-        $user = UserHelper::user();
+        $user = User::find(UserHelper::userId());
 
         $functions_to_execute = [
             [
@@ -86,26 +87,27 @@ class ProviderImport implements ToCollection
             ],
         ];
 
-        $user->notify(new GlobalNotification(
-            'Importacion de Excel finalizada correctamente',
-            'success',
-            $functions_to_execute,
-            $user->id,
-            false,
-        ));
+        $user->notify(new GlobalNotification([
+            'message_text'              => 'Importacion de Excel finalizada correctamente',
+            'color_variant'             => 'success',
+            'functions_to_execute'      => $functions_to_execute,
+            'info_to_show'              => [],
+            'owner_id'                  => $user->id,
+            'is_only_for_auth_user'     => false,
+        ]));
     }
 
     function saveModel($row, $provider) {
         $data = [];
         foreach ($this->props_to_set as $key => $value) {
-            if (!ImportHelper::isIgnoredColumn($value, $this->columns)) {
+            if (!is_null(ImportHelper::getColumnValue($row, $value, $this->columns))) {
                 $data[$key] = ImportHelper::getColumnValue($row, $value, $this->columns);
             }
         }
-        if (!ImportHelper::isIgnoredColumn('condicion_frente_al_iva', $this->columns)) {
+        if (!is_null(ImportHelper::getColumnValue($row, 'condicion_frente_al_iva', $this->columns))) {
             $data['iva_condition_id'] = $this->ct->getModelBy('iva_conditions', 'name', ImportHelper::getColumnValue($row, 'condicion_frente_al_iva', $this->columns), false, 'id');
         }
-        if (!ImportHelper::isIgnoredColumn('localidad', $this->columns)) {
+        if (!is_null(ImportHelper::getColumnValue($row, 'localidad', $this->columns))) {
             LocalImportHelper::saveLocation(ImportHelper::getColumnValue($row, 'localidad', $this->columns), $this->ct);
             $data['location_id'] = $this->ct->getModelBy('locations', 'name', ImportHelper::getColumnValue($row, 'localidad', $this->columns), true, 'id');
         }

@@ -111,6 +111,9 @@ class UserSetupController extends Controller
             // 'ProviderSeeder',
             // 'ProviderPriceListSeeder',
             'ColorSeeder',
+            'ArticlePropertyTypeSeeder',
+            'ArticlePropertyValueSeeder',
+            'ArticlePropertySeeder',
             // 'DepositSeeder',
             // 'ClientSeeder',
             // 'BuyerSeeder',
@@ -140,9 +143,6 @@ class UserSetupController extends Controller
 
 
         if ($request->business_type == 'ropa') {
-            $seeders[] = 'ArticlePropertyTypeSeeder';
-            $seeders[] = 'ArticlePropertyValueSeeder';
-            $seeders[] = 'ArticlePropertySeeder';
             $seeders[] = 'ArticleVariantSeeder';
 
             $extencions[] = 'article_variants';
@@ -203,11 +203,9 @@ class UserSetupController extends Controller
 
 
         // Agregá más lógicas según el tipo de negocio
-        // if ($request->business_type === 'ferreteria') {
-        //     $extencions[] = 'caja';
-        // } elseif ($request->business_type === 'distribuidora') {
-        //     $extencions[] = 'rutas';
-        // }
+        if ($request->business_type === 'ferreteria') {
+            $extencions[] = 'unidades_individuales_en_articulos';
+        }
 
         Artisan::call('db:seed', ['--class' => 'ExtencionSeeder', '--force' => true]);
 

@@ -6,8 +6,13 @@ use Illuminate\Support\Facades\Log;
 class ImportHelper {
 
 	static function getColumnValue($row, $key, $columns) {
-		if (isset($columns[$key]) && isset($row[$columns[$key]])) {
-			return $row[$columns[$key]];
+		if (
+			isset($columns[$key]) 
+			&& isset($row[$columns[$key]])
+			&& $row[$columns[$key]] != ''
+			&& $row[$columns[$key]] != -1
+		) {
+			return trim($row[$columns[$key]]);
 		}
 		return null;
 	}
@@ -17,7 +22,10 @@ class ImportHelper {
 	}
 
 	static function isIgnoredColumn($key, $columns) {
-		if (!isset($columns[$key])) {
+		if (
+			!isset($columns[$key])
+			&& $columns[$key] != -1
+		) {
 			return true;
 		} else {
 			return false;

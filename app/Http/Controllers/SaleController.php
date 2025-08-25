@@ -461,5 +461,4 @@ class SaleController extends Controller
         return response(null, 200);
 
     }
-
 }

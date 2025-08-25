@@ -6,19 +6,24 @@ use App\Http\Controllers\Helpers\Excel\Article\ArticleClientsExportHelper;
 use App\Http\Controllers\Helpers\ExportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
+use App\Models\PriceType;
+use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Concerns\FromCollection;
+use Maatwebsite\Excel\Concerns\WithEvents;
 use Maatwebsite\Excel\Concerns\WithHeadings;
 use Maatwebsite\Excel\Concerns\WithMapping;
-use Illuminate\Support\Facades\Log;
-use Maatwebsite\Excel\Concerns\WithEvents;
-use PhpOffice\PhpSpreadsheet\Style\Fill;
 use Maatwebsite\Excel\Events\AfterSheet;
+use PhpOffice\PhpSpreadsheet\Style\Fill;
 
 class ArticleClientsExport implements FromCollection, WithHeadings, WithMapping, WithEvents
 {
 
     public function __construct($price_type_id) {
         $this->price_type_id = $price_type_id;
+
+        $this->price_types = PriceType::where('user_id', UserHelper::userId())
+                                        ->get();
+
         $this->columnas_cambio_precio = [];
     }
 
@@ -29,8 +34,16 @@ class ArticleClientsExport implements FromCollection, WithHeadings, WithMapping,
             $article->bar_code,
             $article->provider_code,
             $article->name,
+            $article->category ? $article->category->name : '',
+            date_format($article->updated_at, 'd/m/Y'),
         ];
-        $map = ArticleClientsExportHelper::map_price_types($map, $article, $this->price_type_id);
+
+        if (count($this->price_types) >= 1) {
+            $map = ArticleClientsExportHelper::map_price_types($map, $article, $this->price_type_id);
+        } else {
+            $map[] = $article->final_price;
+        }
+
         return $map;
     }
 
@@ -76,10 +89,21 @@ class ArticleClientsExport implements FromCollection, WithHeadings, WithMapping,
             'Codigo de barras',
             'Codigo de proveedor',
             'Nombre',
+            'Categoria',
+            'Fecha modificacion',
         ];
-        $res = ArticleClientsExportHelper::set_price_types_headings($headings, $this->price_type_id);
-        $headings = $res['headings'];
-        $this->columnas_cambio_precio = $res['columnas_cambio_precio'];
+
+        if (count($this->price_types) >= 1) {
+            
+            $res = ArticleClientsExportHelper::set_price_types_headings($headings, $this->price_type_id);
+            $headings = $res['headings'];
+            $this->columnas_cambio_precio = $res['columnas_cambio_precio'];
+
+        } else {
+
+            $headings[] = 'Precio';
+        }
+        
         return $headings;
     }
 

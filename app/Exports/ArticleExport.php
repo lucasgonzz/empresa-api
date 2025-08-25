@@ -21,8 +21,10 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
         $this->archivo_base = $archivo_base;
     }
 
-    public function map($article): array
+    public function map($row): array
     {
+        $article = $row; // alias más claro
+
         $map = [
             $article->id,
             $article->bar_code,
@@ -30,7 +32,8 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $article->name,
             !is_null($article->category) ? $article->category->name : '',
             !is_null($article->sub_category) ? $article->sub_category->name : '',
-            $article->stock,
+            !is_null($article->brand) ? $article->brand->name : '',
+            $row->is_variant ? $row->variant->stock : $article->stock,
             $article->stock_min,
             !is_null($article->iva) ? $article->iva->percentage : '',
             !is_null($article->provider) ? $article->provider->name : '',
@@ -44,16 +47,62 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $this->getCostInDollars($article),
             $this->getUnidadMedida($article),
             $article->final_price,
-            // $article->created_at,
-            // $article->updated_at,
         ];
+
+        // Ahora continuás con los helpers
         $map = ExportHelper::map_unidades_individuales($map, $article);
         $map = ExportHelper::map_propiedades_de_distribuidora($map, $article);
-        $map = ExportHelper::mapAddresses($map, $article);
+
+
+        // Si es variante, completamos columnas extras
+        if ($row->is_variant && $row->variant) {
+            // $variant = $row->variant;
+            // Por ejemplo, índice 20: Talle, 21: Color, 22: Stock variante, 23+: stock por depósito
+            $map = ExportHelper::map_variant_stock_addresses($map, $row);
+
+            $map = ExportHelper::map_property_types($map, $row);
+           
+
+        } else {
+            // Si no es variante, rellenar con valores vacíos en esas columnas
+            $map = ExportHelper::mapAddresses($map, $article);
+
+            $map = ExportHelper::map_property_types_vacios($map);
+        }
+
+
         $map = ExportHelper::mapPriceTypes($map, $article);
         $map = ExportHelper::mapPreciosBlanco($map, $article);
         $map = ExportHelper::mapDates($map, $article);
         return $map;
+    }
+
+    /**
+     * Expande la colección de artículos incluyendo filas por cada variante.
+     *
+     * @param \Illuminate\Support\Collection $articles
+     * @return \Illuminate\Support\Collection
+     */
+    protected function expandWithVariants($articles)
+    {
+        $rows = collect();
+
+        foreach ($articles as $article) {
+            // Fila base del artículo (puede omitirse si no la querés)
+            $row = clone $article;
+            $row->is_variant = false;
+            $row->variant = null;
+            $rows->push($row);
+
+            foreach ($article->article_variants as $variant) {
+                $vRow = clone $article;
+                $vRow->is_variant = true;
+                $vRow->variant = $variant;
+                $rows->push($vRow);
+            }
+        }
+
+        return $rows;
     }
 
 
@@ -77,6 +126,8 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
                             ->with('addresses')
                             ->with('price_types')
                             ->with('tipo_envase')
+                            ->with('brand')
+                            ->with('article_variants')
                             ->orderBy('id', 'DESC')
                             ->get();
         }
@@ -86,7 +137,8 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
         $articles = ExportHelper::setAddresses($articles);
         $articles = ExportHelper::setPriceTypes($articles);
         
-        return $articles;
+        // Expandir colección con variantes
+        return $this->expandWithVariants($articles);
     }
 
     public function headings(): array
@@ -98,6 +150,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             'Nombre',
             'Categoria',
             'Sub Categoria',
+            'Marca',
             'Stock actual',
             'Stock minimo',
             'Iva',
@@ -113,11 +166,19 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             'Unidad medida',
             'Precio Final',
         ];
+        
         $headings = ExportHelper::set_unidades_individuales($headings);
+        
         $headings = ExportHelper::set_propiedades_de_distribuidora($headings);
+        
         $headings = ExportHelper::setAddressesHeadings($headings);
+        
+        $headings = ExportHelper::setPropertyTypesHeadings($headings);
+        
         $headings = ExportHelper::setPriceTypesHeadings($headings);
+        
         $headings = ExportHelper::setPreciosBlancoHeadings($headings);
+        
         $headings = ExportHelper::setDatesHeadings($headings);
         // $headings = ExportHelper::setChartsheadings($headings);
         return $headings;

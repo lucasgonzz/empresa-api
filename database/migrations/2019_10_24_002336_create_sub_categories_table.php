@@ -22,6 +22,7 @@ class CreateSubCategoriesTable extends Migration
             $table->boolean('show_in_vender')->default(0)->nullable();
             $table->integer('provider_sub_category_id')->nullable();
             $table->integer('user_id')->unsigned();
+            $table->integer('tiendanube_category_id')->nullable();
 
             $table->foreign('user_id')->references('id')->on('users');
             $table->softDeletes();

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\CommonLaravel;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
+use App\Jobs\ProcessSyncArticleImageToTiendaNube;
 use App\Models\Image;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -51,6 +52,13 @@ class ImageController extends Controller
             if ($request->model_name == 'article' && !is_null($model)) {
                 $helper = new InventoryLinkageHelper();
                 $helper->check_created_image($model, $image);
+
+                $model->needs_sync_with_tn = true;
+                $model->timestamps = false;
+                $model->save();
+
+                // Aca meto tiendanube
+                dispatch(new ProcessSyncArticleImageToTiendaNube($model, $image));
             }
 
         } else {

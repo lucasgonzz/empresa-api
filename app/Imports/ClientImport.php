@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\import\ClientImportHelper;
 use App\Models\Client;
 use App\Models\CurrentAcount;
+use App\Models\User;
 use App\Notifications\GlobalNotification;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -73,7 +74,7 @@ class ClientImport implements ToCollection {
 
     function enviar_notificacion() {
             
-        $user = UserHelper::user();
+        $user = User::find(UserHelper::userId());
 
         $functions_to_execute = [
             [
@@ -83,26 +84,28 @@ class ClientImport implements ToCollection {
             ],
         ];
 
-        $user->notify(new GlobalNotification(
-            'Importacion de Excel finalizada correctamente',
-            'success',
-            $functions_to_execute,
-            $user->id,
-            false,
-        ));
+
+        $user->notify(new GlobalNotification([
+            'message_text'              => 'Importacion de Excel finalizada correctamente',
+            'color_variant'             => 'success',
+            'functions_to_execute'      => $functions_to_execute,
+            'info_to_show'              => [],
+            'owner_id'                  => $user->id,
+            'is_only_for_auth_user'     => false,
+        ]));
     }
 
     function saveModel($row, $client) {
         $data = [];
         foreach ($this->props_to_set as $key => $value) {
-            if (!ImportHelper::isIgnoredColumn($value, $this->columns)) {
+            if (!is_null(ImportHelper::getColumnValue($row, $value, $this->columns))) {
                 $data[$key] = ImportHelper::getColumnValue($row, $value, $this->columns);
             }
         }
-        if (!ImportHelper::isIgnoredColumn('condicion_frente_al_iva', $this->columns)) {
+        if (!is_null(ImportHelper::getColumnValue($row, 'condicion_frente_al_iva', $this->columns))) {
             $data['iva_condition_id'] = $this->ct->getModelBy('iva_conditions', 'name', ImportHelper::getColumnValue($row, 'condicion_frente_al_iva', $this->columns), false, 'id');
         }
-        if (!ImportHelper::isIgnoredColumn('localidad', $this->columns)) {
+        if (!is_null(ImportHelper::getColumnValue($row, 'localidad', $this->columns))) {
 
             // if (
             //     env('FOR_USER') == 'golo_norte'
@@ -126,11 +129,11 @@ class ClientImport implements ToCollection {
             // }
 
         }
-        if (!ImportHelper::isIgnoredColumn('vendedor', $this->columns)) {
+        if (!is_null(ImportHelper::getColumnValue($row, 'vendedor', $this->columns))) {
             LocalImportHelper::saveSeller(ImportHelper::getColumnValue($row, 'vendedor', $this->columns), $this->ct);
             $data['seller_id'] = $this->ct->getModelBy('sellers', 'name', ImportHelper::getColumnValue($row, 'vendedor', $this->columns), true, 'id');
         }
-        if (!ImportHelper::isIgnoredColumn('tipo_de_precio', $this->columns)) {
+        if (!is_null(ImportHelper::getColumnValue($row, 'tipo_de_precio', $this->columns))) {
             LocalImportHelper::savePriceType(ImportHelper::getColumnValue($row, 'tipo_de_precio', $this->columns), $this->ct);
             $data['price_type_id'] = $this->ct->getModelBy('price_types', 'name', ImportHelper::getColumnValue($row, 'tipo_de_precio', $this->columns), true, 'id');
         }

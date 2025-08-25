@@ -225,7 +225,7 @@ class ArticleSeeder extends Seeder
             return;
         }
 
-        $ct = new StockMovementController();
+        $ct = new StockMovementController(false);
         
         $data['model_id'] = $created_article->id;
         $data['provider_id'] = $created_article->provider_id;

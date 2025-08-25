@@ -70,7 +70,8 @@ class SaleAfipTicketPdf extends fpdf {
     	$this->AddPage();
         $this->__Header();
 
-		$this->cantidad_articulos_de_esta_venta = count($this->sale->articles) + count($this->sale->combos) + count($this->sale->services);
+		$this->cantidad_articulos_de_esta_venta = count($this->sale->articles) + count($this->sale->promocion_vinotecas) + count($this->sale->combos) + count($this->sale->services);
+
 		$this->setTotalPaginas();
 
 
@@ -126,6 +127,24 @@ class SaleAfipTicketPdf extends fpdf {
                 	$this->AddPage();
                 	$this->__Header();
             		$this->addArticle($combo);
+                }
+            }	 
+        }	
+
+        foreach ($this->sale->promocion_vinotecas as $promo) {
+            if (
+            	$this->articulos_en_esta_pagina < $this->articulos_por_pagina 
+            	&& $this->articulos_en_esta_venta < $this->cantidad_articulos_de_esta_venta) {
+            	$this->addArticle($promo);
+            } else {
+                $this->num_page++;
+				$this->printPieDePagina();
+    			// $this->Y = 220;
+                if ($this->articulos_en_esta_venta < $this->cantidad_articulos_de_esta_venta) {
+                    $this->resetPage();
+                	$this->AddPage();
+                	$this->__Header();
+            		$this->addArticle($promo);
                 }
             }	 
         }	
@@ -687,17 +706,34 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->SetFont('Arial', 'B', 8);
 		$this->Cell(10, 5, 'CUIT:',0,0,'L');
 		$this->SetFont('Arial', '', 8);
-		$this->Cell(20, 5, $this->sale->afip_ticket->cuit_cliente, 0, 1, 'C');
+
+		if (
+			!is_null($this->sale->client)
+		) {
+
+			$this->Cell(20, 5, $this->sale->client->cuit, 0, 1, 'C');
+		}
+
 		// Iva
 		$this->SetX(6);
 		$this->SetFont('Arial', 'B', 8);
 		$this->Cell(37, 5, 'Condición frente al IVA:', 0, 0, 'L');
 		$this->SetFont('Arial', '', 8);
-		if ($this->sale->afip_ticket->iva_cliente != '') {
-			$this->Cell(50, 5, 'IVA '.$this->sale->afip_ticket->iva_cliente, 0, 1, 'L');
+		
+		if (
+			!is_null($this->sale->client)
+			&& !is_null($this->sale->client->iva_condition)
+		) {
+			$this->Cell(50, 5, $this->sale->client->iva_condition->name, 0, 1, 'L');
 		} else {
 			$this->Cell(50, 5, 'IVA consumidor final', 0, 1, 'L');
 		}
+		
+		// if ($this->sale->afip_ticket->iva_cliente != '') {
+		// 	$this->Cell(50, 5, 'IVA '.$this->sale->afip_ticket->iva_cliente, 0, 1, 'L');
+		// } else {
+		// 	$this->Cell(50, 5, 'IVA consumidor final', 0, 1, 'L');
+		// }
 
 		$this->SetX(6);
 		$this->SetFont('Arial', 'B', 8);
@@ -737,12 +773,12 @@ class SaleAfipTicketPdf extends fpdf {
 
 		// Razon social
 		$this->SetY(19);
-		$this->SetX(6);
+		$this->SetX(42);
 		// $this->SetFont('Arial', 'B', 9);
 		// $this->Cell(23,12,'Razón Social:',0,0,'L');
-		$this->SetFont('Arial', 'B', 20);
+		$this->SetFont('Arial', 'B', 12);
 	    $this->MultiCell( 
-			90, 
+			55, 
 			6, 
 			$this->afip_information->razon_social, 
 	    	0, 
@@ -752,30 +788,39 @@ class SaleAfipTicketPdf extends fpdf {
 
 		$this->SetY(32);
 		// Domicilio
-		$this->SetX(6);
+		$this->SetX(42);
 		$this->SetFont('Arial', 'B', 9);
-		$this->Cell(35,5,'Domicilio Comercial:',0,0,'L');
+		$this->Cell(20,5,'Domicilio:',0,0,'L');
 		$this->SetFont('Arial', '', 9);
 		$this->Cell(50,5,$this->afip_information->domicilio_comercial,0,1,'L');
+
 		// Iva
-		$this->SetX(6);
+		$this->SetX(42);
 		$this->SetFont('Arial', 'B', 9);
-		$this->Cell(40,5,'Condición frente al IVA:',0,0,'L');
+		$this->Cell(20,5,'IVA:',0,0,'L');
 		$this->SetFont('Arial', 'B', 9);
 		// $this->Cell(50,5,'IVA '.Auth()->user()->iva->name,0,0,'L');
 		$this->Cell(50,5,'IVA '.$this->afip_information->iva_condition->name,0,1,'L');
 
-		$this->SetX(6);
+		$this->SetX(42);
 		$this->Cell(20,4,'Telefono:',0,0,'L');
 		$this->Cell(50,4,$this->user->phone,0,1,'L');
 		
 		// Inicio actividades
 		if ($this->afip_information->inicio_actividades != '') {
-			$this->SetX(6);
+			$this->SetX(42);
 			$this->SetFont('Arial', 'B', 9);
-			$this->Cell(52,4,'Fecha de Inicio de Actividades:', 0, 0,'L');
+			$this->Cell(20,4,'Inicio Act:', 0, 0,'L');
 			$this->Cell(25,4,date_format($this->afip_information->inicio_actividades, 'd/m/Y'), 0, 1,'L');
 		}
+
+		if (env('APP_ENV') == 'local') {
+    		$this->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 5, 15.2, 35, 35);
+    	} else {
+    		if (!is_null($this->user->image_url) && GeneralHelper::file_exists_2($this->user->image_url)) {
+    			$this->Image($this->user->image_url, 5, 15.2, 35, 35);
+    		}
+    	}
 	}
 
 	function printAfipTicketInfo() {

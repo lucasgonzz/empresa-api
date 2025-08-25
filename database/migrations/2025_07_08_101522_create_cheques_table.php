@@ -20,8 +20,8 @@ class CreateChequesTable extends Migration
             $table->string('numero');
             $table->string('banco')->nullable();
             $table->decimal('amount', 22, 2);
-            $table->date('fecha_emision');
-            $table->date('fecha_pago');
+            $table->date('fecha_emision')->nullable();
+            $table->date('fecha_pago')->nullable();
 
             // Tipo de cheque: recibido (de cliente) o emitido (a proveedor)
             $table->enum('tipo', ['recibido', 'emitido']);

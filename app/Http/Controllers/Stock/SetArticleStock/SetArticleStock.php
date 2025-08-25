@@ -10,8 +10,6 @@ use App\Http\Controllers\Stock\SetArticleStock\CheckToAddress;
 use App\Http\Controllers\Stock\SetArticleStock\CheckVariants;
 use App\Models\ConceptoStockMovement;
 
-use Illuminate\Support\Facades\Log;
-
 class SetArticleStock  {
     
     static function set_article_stock($stock_movement, $article, $set_updated_at, $user_id = null) {

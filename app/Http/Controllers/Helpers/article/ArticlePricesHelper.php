@@ -15,6 +15,23 @@ use Illuminate\Support\Facades\Log;
 
 class ArticlePricesHelper {
 
+    static function aplicar_category_percentage_gain($article, $final_price) {
+
+        if (
+            $article->category
+            && $article->category->percentage_gain
+        ) {
+            Log::info('La categoria tiene margen de ganancia del '.$article->category->percentage_gain);
+            Log::info('final_price: '.$final_price);
+            $final_price += $final_price * $article->category->percentage_gain / 100;
+            Log::info('final_price luego: '.$final_price);
+        } else {
+            Log::info('La categoria NO tiene margen de ganancia');
+        }
+        return $final_price;
+    }
+
+
     // Extencion de golo norte
     static function aplicar_precios_segun_listas_de_precios_y_categorias($article, $cost, $user) {
 
@@ -91,45 +108,75 @@ class ArticlePricesHelper {
                                     ->get();
         }
                                 
-        Log::info('aplicar_precios_segun_listas_de_precios, price_types: '.count($price_types));
+        // Log::info('aplicar_precios_segun_listas_de_precios, price_types: '.count($price_types));
 
         foreach ($price_types as $price_type) {
 
             $percentage = $price_type->percentage;
 
+            $final_price = null;
+
             $relation = $article->price_types()->find($price_type->id);
 
             $previus_final_price = null;
 
+
+            /* 
+                Calculo el precio final, o el porcentaje, en base a la relacion ya existente
+            */
             if (!is_null($relation)) {
 
-                if (!is_null($relation->pivot->percentage)) {
+                if ($relation->pivot->setear_precio_final) {
 
-                    $percentage = $relation->pivot->percentage;
+                    if (!is_null($relation->pivot->final_price)) {
 
+                        $final_price = $relation->pivot->final_price;
+                    }
+
+                } else {
+
+                    if (!is_null($relation->pivot->percentage)) {
+
+                        $percentage = $relation->pivot->percentage;
+                    }
+
+                    if ($previus_final_price != $relation->pivot->final_price) {
+                        $previus_final_price = $relation->pivot->final_price;
+                    }
                 }
-
-                if ($previus_final_price != $relation->pivot->final_price) {
-                    $previus_final_price = $relation->pivot->final_price;
-                }
-
-            } else {
-                // Log::info('El articulo num '.$article->id.' NO tenia relacion con el price_type '.$price_type->name.'. Se usa porcentaje por defecto');
             }
 
-            $price = $cost + ($cost * (float)$percentage / 100);
 
-            // Log::info($article->name.' se va a aplicar: ');
-            // Log::info('% '.$percentage);
-            // Log::info('al costo '.$cost);
-            // Log::info('price '.$price);
 
-            // Log::info('article id: '.$article->id.' '.$price_type->name.' queda en '.$price);
+            /*
+                Si esta seteado el precio final, calculo el procentaje que deberia de tener para 
+                llegar a ese precio final, al costo ya con el IVA.
 
-            $final_price = Self::aplicar_iva($article, $price, $user);
+                Sino, calculo el precio final en base al porcentaje
+            */
 
-            // Log::info('Mas el '.$article->iva->percentage.' de iva, final_price: '.$final_price);
+            $price = null;
             
+            $costo_con_iva = Self::aplicar_iva($article, $cost, $user);
+
+            if (!is_null($final_price)) {
+
+                // $costo_con_iva = Self::aplicar_iva($article, $cost, $user);
+
+                $percentage = ($final_price - $costo_con_iva) / $costo_con_iva * 100;
+
+            } else {
+
+                $price = $cost + ($cost * (float)$percentage / 100);
+
+                $final_price = Self::aplicar_iva($article, $price, $user);
+            }
+
+
+            $res = Self::aplicar_price_type_surchages($price_type, $final_price, $costo_con_iva);
+
+
+
             $article->price_types()->syncWithoutDetaching($price_type->id);
 
             $article->price_types()->updateExistingPivot($price_type->id, [
@@ -137,11 +184,38 @@ class ArticlePricesHelper {
                 'price'                 => $price,
                 'final_price'           => $final_price,
                 'previus_final_price'   => $previus_final_price,
+                'precio_luego_de_recargos'  => $res['precio_luego_de_recargos'],
+                'monto_ganancia'  => $res['monto_ganancia'],
             ]);
 
             // Log::info('Seteando price_type '.$price_type->name.' para article num: '.$article->id.' con percentage '.$percentage.'% y final_price de '.$final_price);
 
         }
+    }
+
+    static function aplicar_price_type_surchages($price_type, $final_price, $cost) {
+
+        $precio_luego_de_recargos = $final_price;
+
+        foreach ($price_type->price_type_surchages as $price_type_surchage) {
+            
+            if (!is_null($price_type_surchage->percentage)) {
+
+                $precio_luego_de_recargos -= $precio_luego_de_recargos * $price_type_surchage->percentage / 100;
+            
+            } else if (!is_null($price_type_surchage->amount)) {
+
+                $precio_luego_de_recargos -= $price_type_surchage->amount;
+
+            }
+        }
+
+        return [
+            'precio_luego_de_recargos'  => $precio_luego_de_recargos,
+            'monto_ganancia'            => $precio_luego_de_recargos - $cost,
+        ];
+
+
     }
 
     static function aplicar_iva($article, $price, $user) {
@@ -152,7 +226,7 @@ class ArticlePricesHelper {
 
         if (!$user->iva_included && Self::hasIva($article)) {
 
-            Log::info('iva: '.$article->iva->percentage);
+            // Log::info('iva: '.$article->iva->percentage);
 
             $importe_iva = $price * $article->iva->percentage / 100;
 

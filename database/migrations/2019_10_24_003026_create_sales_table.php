@@ -78,6 +78,8 @@ class CreateSalesTable extends Migration
             $table->foreign('client_id')
                     ->references('id')->on('clients');
 
+            $table->boolean('en_acopio')->default(0);
+
             $table->softDeletes();
             $table->timestamps();
         });

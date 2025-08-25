@@ -58,6 +58,14 @@ class ArticleVariantController extends Controller
         ArticleVariant::where('article_id', $article_id)->delete();
     }
 
+    function destroy($id) {
+        $model = ArticleVariant::find($id);
+        if ($model) {
+            $model->delete();
+        }
+        return response(null);
+    }
+
     function attachArticlePropertyValues($article_variant, $article_properties) {
         foreach ($article_properties as $article_property) {
             $article_variant->article_property_values()->attach($article_property['id']);

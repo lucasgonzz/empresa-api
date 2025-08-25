@@ -27,26 +27,58 @@ use App\Imports\ArticleImport;
 use App\Imports\LocationImport;
 use App\Imports\ProvinciaImport;
 use App\Jobs\ProcessArticleImport;
+use App\Jobs\ProcessSyncArticleToTiendaNube;
 use App\Models\Article;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Session;
+use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
 
 class ArticleController extends Controller
 {
-    function index($last_updated, $status = 'active') {
-        // Log::info('Se esta usando la bbdd = '.config('database.connections.mysql.database'));
+    function index(Request $request) {
         $models = Article::where('user_id', $this->userId())
-                            ->where('status', $status)
-                            // ->where(function($query) use ($last_updated) {
-                            //     $query->where('updated_at', '>', $last_updated);
-                            //     $query->orWhere('final_price_updated_at', '>', $last_updated);
-                            // })
-                            ->orderBy('created_at', 'DESC')
+                            ->where('status', 'active');
+
+        $updated_after = $request->input('updated_after');
+
+        if ($updated_after) {
+
+            Log::info('updated_after: '.$updated_after);
+
+            $models = $models->where(function($query) use ($updated_after) {
+                                $query->where('updated_at', '>', $updated_after)
+                                    ->orWhere('final_price_updated_at', '>', $updated_after);
+                            });
+        }
+        $models = $models->orderBy('created_at', 'DESC')
                             ->withAll()
                             ->paginate(200);
+
+        return response()->json(['models' => $models], 200);
+    }
+
+    function index_deleted(Request $request) {
+
+        $updated_after = $request->input('updated_after');
+
+        $models = Article::where('user_id', $this->userId())
+                            ->withTrashed()
+                            ->whereNotNull('deleted_at');
+
+        if ($updated_after) {
+
+            Log::info('index_deleted updated_after: '.$updated_after);
+
+            $models = $models->where('deleted_at', '>=', $updated_after);
+        }
+        
+        $models = $models->orderBy('created_at', 'DESC')
+                            ->get();
+
         return response()->json(['models' => $models], 200);
     }
 
@@ -128,7 +160,9 @@ class ArticleController extends Controller
 
         // ArticleHelper::setStockFromStockMovement($model);
 
-        $this->sendAddModelNotification('article', $model->id);
+        // $this->sendAddModelNotification('article', $model->id);
+
+        $this->check_tienda_nube($model);
 
         $inventory_linkage_helper = new InventoryLinkageHelper();
         $inventory_linkage_helper->checkArticle($model);
@@ -181,6 +215,8 @@ class ArticleController extends Controller
         $model->unidades_individuales               = $request->unidades_individuales;
         $model->omitir_en_lista_pdf                 = $request->omitir_en_lista_pdf;
 
+        $model->needs_sync_with_tn                  = true;
+
         
         $model->name = ucfirst($request->name);
         $model->slug = ArticleHelper::slug($request->name);
@@ -198,12 +234,21 @@ class ArticleController extends Controller
 
         ArticleHelper::checkRecipesForSetPirces($model, $this);
 
-        $this->sendAddModelNotification('article', $model->id);
+        // $this->sendAddModelNotification('article', $model->id);
 
+        $this->check_tienda_nube($model);
+        
         $inventory_linkage_helper = new InventoryLinkageHelper();
         $inventory_linkage_helper->checkArticle($model);
         
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 200);
+    }
+
+    function check_tienda_nube($article) {
+
+        if (env('USA_TIENDA_NUBE', false)) {
+            dispatch(new ProcessSyncArticleToTiendaNube($article));
+        }
     }
 
     function newArticle(Request $request) {
@@ -238,8 +283,12 @@ class ArticleController extends Controller
 
             Log::info('se va a guardar archivo');
             Log::info($request->file('models'));
+
+            $original_extension = 'xlsx';
+            // $original_extension = $request->file('models')->getClientOriginalExtension();
             
-            $archivo_excel_path = $request->file('models')->store('imported_files');
+            $filename = 'import_' . time() . '.' . $original_extension;
+            $archivo_excel_path = $request->file('models')->storeAs('imported_files', $filename);
 
             Log::info($archivo_excel_path);
 
@@ -255,8 +304,12 @@ class ArticleController extends Controller
 
         Log::info('archivo_excel_path: '.$archivo_excel_path);
         $archivo_excel = storage_path('app/' . $archivo_excel_path);
+
+        $import_uuid = (string) Str::uuid();    
+
+        $owner = User::find($this->userId());
         
-        ProcessArticleImport::dispatch($archivo_excel, $columns, $request->create_and_edit, $request->no_actualizar_articulos_de_otro_proveedor, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id, UserHelper::user(), Auth()->user()->id, $archivo_excel_path);
+        ProcessArticleImport::dispatch($import_uuid, $archivo_excel, $columns, $request->create_and_edit, $request->no_actualizar_articulos_de_otro_proveedor, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id, $owner, Auth()->user()->id, $archivo_excel_path);
 
         return response(null, 200);
     }

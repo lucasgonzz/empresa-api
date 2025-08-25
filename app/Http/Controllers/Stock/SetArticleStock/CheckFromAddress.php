@@ -1,6 +1,7 @@
 <?php
 
 namespace App\Http\Controllers\Stock\SetArticleStock;
+use Illuminate\Support\Facades\Log;
 
 class CheckFromAddress {
 
@@ -20,6 +21,9 @@ class CheckFromAddress {
             && $stock_movement->from_address_id != 0 
             && count($article->addresses) >= 1
         ) {
+            
+            Log::info('Actualizando stock from addresses para '.$article->name.'. Addresses:');
+            Log::info($article->addresses);
             
             $article->load('addresses');
 

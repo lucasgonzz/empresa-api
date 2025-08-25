@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Address;
 use App\Models\Article;
+use App\Models\ArticlePropertyType;
 use App\Models\PriceType;
 use App\Models\Sale;
 use Carbon\Carbon;
@@ -24,6 +25,71 @@ class ExportHelper {
 		return Address::where('user_id', UserHelper::userId())
 						->orderBy('created_at', 'DESC')
 						->get();
+	}
+
+	static function getPropertyTypes() {
+		return ArticlePropertyType::orderBy('created_at', 'DESC')
+						->get();
+	}
+
+	static function map_property_types($map, $article) {
+			
+		$models = Self::getPropertyTypes();
+		if (count($models) >= 1) {
+
+			foreach ($models as $property_type) {
+				$variant_property_value = $article->variant->article_property_values->where('article_property_type_id', $property_type->id)->first();
+				
+				if ($variant_property_value) {
+
+					$map[] = $variant_property_value->name;
+				} else {
+					$map[] = '';
+				}
+			}
+		}
+
+
+		return $map;
+	}
+
+	static function map_property_types_vacios($map) {
+			
+		$models = Self::getPropertyTypes();
+		if (count($models) >= 1) {
+
+			foreach ($models as $property_type) {
+
+				$map[] = '';
+			}
+		}
+
+
+		return $map;
+	}
+
+	static function map_variant_stock_addresses($map, $article) {
+			
+		$models = Self::getAddresses();
+		if (
+			count($models) >= 1
+		) {
+
+			foreach ($models as $address) {
+
+				$variant_address = $article->variant->addresses->find($address->id);
+				
+				if ($variant_address) {
+
+					$map[] = $variant_address->pivot->amount;
+				} else {
+					$map[] = '';
+				}
+			}
+		}
+
+
+		return $map;
 	}
 
 	static function map_unidades_individuales($map, $article) {
@@ -165,7 +231,17 @@ class ExportHelper {
 		}
 		return $headings;
 	}
-	
+
+	static function setPropertyTypesHeadings($headings) {
+		$models = Self::getPropertyTypes();
+		if (count($models) >= 1) {
+			foreach ($models as $property_type) {
+				$headings[] = $property_type->name;
+			}
+		}
+		return $headings;
+	}
+
 	static function setPriceTypesHeadings($headings) {
 		$price_types = Self::getPriceTypes();
 		if (count($price_types) >= 1) {

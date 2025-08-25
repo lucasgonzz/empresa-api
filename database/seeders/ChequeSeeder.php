@@ -23,7 +23,7 @@ class ChequeSeeder extends Seeder
                 'banco' => 'Banco nacion',
                 'fecha_emision' => Carbon::today()->subDays(10),
                 'fecha_pago'    => Carbon::today()->addDays(10),
-                'amount'        => 10000,
+                'amount'        => 1000,
                 'tipo'          => 'recibido',
                 'client_id'     => 1,
                 'es_echeq'      => 0,
@@ -32,7 +32,7 @@ class ChequeSeeder extends Seeder
                 'banco' => 'Banco Entre Rios',
                 'fecha_emision' => Carbon::today()->subDays(10),
                 'fecha_pago'    => Carbon::today()->addDays(12),
-                'amount'        => 10000,
+                'amount'        => 1000,
                 'tipo'          => 'recibido',
                 'client_id'     => 1,
                 'es_echeq'      => 1,
@@ -67,7 +67,7 @@ class ChequeSeeder extends Seeder
 
             $model['current_acount_payment_method_id'] = 1;
             $model['numero'] = rand(11111111, 99999999999);
-            $model['amount'] = rand(10000, 100000);
+            $model['amount'] = rand(1000, 10000);
 
             $pago = CurrentAcount::create([
                 'haber'                             => $model['amount'],

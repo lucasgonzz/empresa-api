@@ -69,6 +69,11 @@ class CreateArticlesTable extends Migration
             $table->integer('presentacion')->nullable();
 
             $table->integer('omitir_en_lista_pdf')->nullable();
+
+            $table->boolean('needs_sync_with_tn')->nullable();   
+            $table->integer('tiendanube_product_id')->nullable();     
+            $table->integer('tiendanube_variant_id')->nullable();     
+                   
             
             $table->foreign('user_id')
                     ->references('id')->on('users');

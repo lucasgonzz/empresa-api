@@ -77,8 +77,18 @@ class StockMovementController extends Controller
         $this->setArticleProvider();
 
         // $this->sendUpdateNotification();
+
+        $this->check_tienda_nube();
+
         
         return response()->json(['model' => $this->stock_movement], 201);
+    }
+
+    function check_tienda_nube() {
+
+        if (env('USA_TIENDA_NUBE', false)) {
+            dispatch(new ProcessSyncArticleToTiendaNube($this->article));
+        }
     }
 
     function get_created_at($segundos_para_agregar) {

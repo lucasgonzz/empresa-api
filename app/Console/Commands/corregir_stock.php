@@ -13,7 +13,7 @@ class corregir_stock extends Command
      *
      * @var string
      */
-    protected $signature = 'corregir_stock {user_id}';
+    protected $signature = 'corregir_stock {user_id} {--solo_informar}';
 
     /**
      * The console command description.
@@ -39,9 +39,26 @@ class corregir_stock extends Command
      */
     public function handle()
     {
+        
+        $this->solo_informar = $this->option('solo_informar');
+
+        if ($this->solo_informar) {
+            
+            $this->info('solo informar');
+
+        } else {
+            $this->info('se van a corregir los articulos');
+        }
+
+        sleep(3);
 
         // Articulos cuyo stock actual no coincide con el stock resultante del ultimo movimiento
         $articles = $this->get_articles_mal();
+
+        // $articles = Article::where('num', 29599)
+        //                     ->where('user_id', 2)
+        //                     ->get();
+
 
 
         foreach ($articles as $article) {
@@ -53,17 +70,38 @@ class corregir_stock extends Command
             $stock = 0;
 
             foreach ($movimientos as $movimiento) {
-                $stock += (float)$movimiento->amount;
-                $movimiento->stock_resultante = $stock;
-                $movimiento->save();
+
+                if ($movimiento->concepto_movement->name == 'Reseteo de Stock') {
+                    $stock = 0;
+                } else {
+                    $stock += (float)$movimiento->amount;
+                }
+
+
+                if (!$this->solo_informar) {
+
+                    $movimiento->stock_resultante = $stock;
+                    $movimiento->save();
+                }
+
             }
 
-            $article->stock = $stock;
-            $article->timestamps = false;
-            $article->save();
+            if ($this->solo_informar) {
 
-            $this->info($article->name.' corregido');
+                $this->comment($article->name.' deberia tener '.$stock.'. Tiene '.$article->stock);
+
+            } else {
+
+                $article->stock = $stock;
+                $article->timestamps = false;
+                $article->save();
+
+                $this->info($article->name.' corregido');
+            }
+
+
         }
+
 
         $this->comment('Listo');
         

@@ -21,6 +21,10 @@ class CreatePriceTypesTable extends Migration
             $table->integer('position')->nullable();
             $table->boolean('ocultar_al_publico')->nullable();
             $table->boolean('incluir_en_lista_de_precios_de_excel')->nullable();
+            $table->boolean('setear_precio_final')->nullable();
+
+            $table->boolean('se_usa_en_tienda_nube')->nullable();
+
             $table->integer('user_id');
             $table->timestamps();
         });

@@ -15,7 +15,7 @@ class CreateArticlePropertyTypesTable extends Migration
     {
         Schema::create('article_property_types', function (Blueprint $table) {
             $table->id();
-            $table->integer('num');
+            $table->integer('num')->nullable();
             $table->string('name');
             $table->integer('user_id')->nullable();
             $table->timestamps();

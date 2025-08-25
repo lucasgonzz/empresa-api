@@ -28,37 +28,28 @@ class CajaSeeder extends Seeder
             [
                 'name'    => 'MercadoPago Transferencias',
                 'user_id'   => env('USER_ID'),
-                'current_acount_payment_methods'    => [
-                    [
-                        'id'    => 6,
-                    ]
-                ],
+                'default_payment_method_caja'   => [
+                    // Id de CurrentAcountPaymentMethod "MercadoPago"
+                    'payment_method_id'    => 6,
+                    'payment_method_id'    => 4,
+                ],  
             ],
             [
-                'name'    => 'MercadoPago QR',
-                'user_id'   => env('USER_ID'),
-                'current_acount_payment_methods'    => [
-                    [
-                        'id'    => 6,
-                    ]
-                ],
-            ],
-            [
-                'name'    => 'BNA',
+                'name'    => 'Santender',
                 'saldo'   => 10000,
                 'user_id'   => env('USER_ID'),
-                'current_acount_payment_methods'    => [
-                    [
-                        'id'    => 5,
-                    ]
-                ],
+                'default_payment_method_caja'   => [
+                    // Id de CurrentAcountPaymentMethod "Debito"
+                    'payment_method_id'    => 2,
+                    'payment_method_id'    => 5,
+                ],  
             ],
         ];
 
-        $addresses = Address::where('user_id', env('USER_ID'))
+        $this->addresses = Address::where('user_id', env('USER_ID'))
                                 ->get();
 
-        foreach ($addresses as $address) {
+        foreach ($this->addresses as $address) {
             
             $models[] = [
                 'name'      => $address->street.' efectivo',
@@ -66,11 +57,6 @@ class CajaSeeder extends Seeder
                 'default_payment_method_caja' => [
                     'payment_method_id'     => 3,
                     'address_id'            => $address->id,
-                ],
-                'current_acount_payment_methods'    => [
-                    [
-                        'id'    => 3,
-                    ]
                 ],
             ];
         }
@@ -120,13 +106,31 @@ class CajaSeeder extends Seeder
 
             $default_payment_method_caja = $seeder_model['default_payment_method_caja'];
 
-            DefaultPaymentMethodCaja::create([
+            if (isset($default_payment_method_caja['address_id'])) {
 
-                'current_acount_payment_method_id'  => $default_payment_method_caja['payment_method_id'],
-                'address_id'                        => $default_payment_method_caja['address_id'],
-                'caja_id'                           => $caja_creada->id,
-                'user_id'                           => $caja_creada->user_id,
-            ]);
+                DefaultPaymentMethodCaja::create([
+
+                    'current_acount_payment_method_id'  => $default_payment_method_caja['payment_method_id'],
+                    'address_id'                        => $default_payment_method_caja['address_id'],
+                    'caja_id'                           => $caja_creada->id,
+                    'user_id'                           => $caja_creada->user_id,
+                ]);
+
+            } else {
+
+                foreach ($this->addresses as $address) {
+                    
+                    DefaultPaymentMethodCaja::create([
+
+                        'current_acount_payment_method_id'  => $default_payment_method_caja['payment_method_id'],
+                        'address_id'                        => $address['id'],
+                        'caja_id'                           => $caja_creada->id,
+                        'user_id'                           => $caja_creada->user_id,
+                    ]);
+
+                }
+            }
+
         }
     }
 

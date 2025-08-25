@@ -13,7 +13,7 @@ class GlobalHelper {
 		) {
 			return $array[$index];
 		}
-		Log::info('No esta definido el indice '.$index);
+		// Log::info('No esta definido el indice '.$index);
 		return null;
 	}
 }

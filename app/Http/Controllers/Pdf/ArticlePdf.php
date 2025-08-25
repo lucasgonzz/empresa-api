@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Pdf; 
 
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\StringHelper;
@@ -60,8 +61,10 @@ class ArticlePdf extends fpdf {
 		if (env('APP_ENV') == 'local') {
     		$this->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 2, 2, 45, 45);
     	} else {
-    		if (!is_null($this->user->image_url) && file_exists($this->user->image_url)) {
-    			$this->Image($this->user->image_url, 2, 2, 45, 45);
+    		$logo = $this->user->image_url;
+    		if (!is_null($logo) && GeneralHelper::file_exists_2($logo)) {
+    			$this->Image($logo, 2, 2, 45, 45);
+    		} else {
     		}
     	}
 

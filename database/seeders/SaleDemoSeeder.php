@@ -4,9 +4,10 @@ namespace Database\Seeders;
 
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\Seeders\SaleSeederHelper;
+use App\Models\PriceType;
 use App\Models\Sale;
-use Illuminate\Database\Seeder;
 use Carbon\Carbon;
+use Illuminate\Database\Seeder;
 
 class SaleDemoSeeder extends Seeder
 {
@@ -20,6 +21,9 @@ class SaleDemoSeeder extends Seeder
         $num = 1;
 
         $cantidad_de_ventas_por_dia = 5;
+
+        $price_types = PriceType::where('user_id', env('USER_ID'))
+                                    ->get();
 
         for ($dias_atras=3; $dias_atras >= 0 ; $dias_atras--) { 
 
@@ -36,6 +40,7 @@ class SaleDemoSeeder extends Seeder
                     'terminada'         => 1,
                     'confirmed'         => 1,
                     'save_current_acount'=> 1,
+                    'price_type_id'     => count($price_types) >= 1 ? rand(1, count($price_types)) : null,
                 ];
 
                 $num++;

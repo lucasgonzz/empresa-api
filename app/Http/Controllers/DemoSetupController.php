@@ -7,6 +7,7 @@ use App\Models\AfipInformation;
 use App\Models\ExtencionEmpresa;
 use App\Models\Extension;
 use App\Models\OnlineConfiguration;
+use App\Models\PriceType;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -77,7 +78,7 @@ class DemoSetupController extends Controller
 
 
         // Asignar extensiones según configuración
-        $extencions = ['comerciocity_interno', 'ask_save_current_acount', 'online'];
+        $extencions = ['comerciocity_interno', 'ask_save_current_acount', 'online', 'costo_en_dolares'];
         $seeders = [
             'CheckStatusSeeder',
             'OnlineTemplateSeeder',
@@ -157,11 +158,12 @@ class DemoSetupController extends Controller
             $seeders[] = 'ArticleIndumentariaSeeder';
 
             $extencions[] = 'article_variants';
-        }
-
-        if ($request->business_type == 'forrajeria') {
+        } else if ($request->business_type == 'forrajeria') {
             $seeders[] = 'CategoryForrajeriaSeeder';
             $seeders[] = 'ArticleForrajeriaSeeder';
+        } else {
+            $seeders[] = 'CategorySeeder';
+            $seeders[] = 'ArticleSeeder';
         }
 
 
@@ -185,17 +187,14 @@ class DemoSetupController extends Controller
         }
 
         if ($request->use_price_lists) {
-            $seeders[] = 'PriceTypeSeeder';
+            // $seeders[] = 'PriceTypeSeeder';
+            
+            $this->crear_price_types($request);
             $extencions[] = 'articulo_margen_de_ganancia_segun_lista_de_precios';
-        }
-
-        if ($request->cambiar_price_type_en_vender) {
             $extencions[] = 'cambiar_price_type_en_vender';
-        }
-
-        if ($request->cambiar_price_type_en_vender_item_por_item) {
             $extencions[] = 'cambiar_price_type_en_vender_item_por_item';
         }
+
 
         if (!$request->usar_codigos_de_barra) {
             $extencions[] = 'no_usar_codigos_de_barra';
@@ -223,10 +222,8 @@ class DemoSetupController extends Controller
 
         // Agregá más lógicas según el tipo de negocio
         if ($request->business_type === 'ferreteria') {
-            $extencions[] = 'caja';
-        } elseif ($request->business_type === 'distribuidora') {
-            $extencions[] = 'rutas';
-        }
+            $extencions[] = 'unidades_individuales_en_articulos';
+        } 
 
         Artisan::call('db:seed', ['--class' => 'ExtencionSeeder', '--force' => true]);
 
@@ -241,6 +238,8 @@ class DemoSetupController extends Controller
             $seeders[] = 'RecipeArticleSeeder';
             $seeders[] = 'RecipeSeeder';
         }
+
+        $seeders[] = 'SaleDemoSeeder';
         
         foreach ($seeders as $seeder) {
             Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);
@@ -313,9 +312,29 @@ class DemoSetupController extends Controller
             $address = $request->{'address_'.$i}; 
             
             if ($address != '') {
+                Log::info('creando address '.$address);
                 Address::create([
                     'street'    => $address,
                     'user_id'   => env('USER_ID'),
+                ]); 
+            }
+        }
+    }
+
+    function crear_price_types($request) {
+        for ($i=1; $i <= 3 ; $i++) {
+
+            $price_type = $request->{'price_type_'.$i}; 
+            
+            if ($price_type != '') {
+                Log::info('creando lista de precios '.$price_type);
+                PriceType::create([
+                    'num'           => $i,
+                    'name'          => $price_type,
+                    'percentage'    => 5 * $i,
+                    'position'      => $i,
+                    'ocultar_al_publico'    => 0,
+                    'user_id'       => env('USER_ID'),
                 ]); 
             }
         }

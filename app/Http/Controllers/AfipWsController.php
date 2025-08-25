@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
 use App\Http\Controllers\Helpers\Afip\CondicionIvaReceptorHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\Utf8Helper;
 use App\Models\AfipError;
 use App\Models\AfipObservation;
 use App\Models\AfipTicket;
@@ -45,6 +46,8 @@ class AfipWsController extends Controller
         $afip_wsaa = new AfipWSAAHelper($this->testing);
         $afip_wsaa->checkWsaa();
 
+        $this->eliminar_errores();
+        
         $this->init_wsfe();
 
 
@@ -57,7 +60,6 @@ class AfipWsController extends Controller
 
         if (!$this->ya_se_obtuvo_cae_desde_consultar_comprobante) {
 
-            $this->eliminar_errores();
 
             $this->solicitar_cae();
         }
@@ -283,7 +285,7 @@ class AfipWsController extends Controller
         $errors = null;
         if (isset($result->FECAESolicitarResult->Errors)) {
             $errors = $result->FECAESolicitarResult->Errors;
-            $errors = $this->convertir_utf8($errors);
+            $errors = Utf8Helper::convertir_utf8($errors);
             foreach ($errors as $error) {
 
                 $code = $error['Code']; 
@@ -312,7 +314,7 @@ class AfipWsController extends Controller
         $observations = null;
         if (isset($result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones)) {
             $observations = (array)$result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones->Obs;
-            // $observations = $this->convertir_utf8($observations);
+            // $observations = Utf8Helper::convertir_utf8($observations);
             // Log::info('observations:');
             // Log::info($observations);
             if (isset($observations['Msg'])) {
@@ -540,27 +542,27 @@ class AfipWsController extends Controller
         // print_r($result);
     }
 
-    function convertir_utf8($value) {
-        if (is_object($value)) {
-            $value = (array)$value;
-        }
-        if(is_array($value)) {
-            foreach($value as $key => $val) {
-                $value[$key] = $this->convertir_utf8($val);
-            }
-            return $value;
-        } else if(is_string($value)) {
-            $value = $this->limpiar_cadena($value);
-            $value = str_replace("\'", "", $value);
-            return mb_convert_encoding($value, 'UTF-8', 'UTF-8');
-        } else {
-            return $value;
-        }
-    }
+    // function convertir_utf8($value) {
+    //     if (is_object($value)) {
+    //         $value = (array)$value;
+    //     }
+    //     if(is_array($value)) {
+    //         foreach($value as $key => $val) {
+    //             $value[$key] = $this->convertir_utf8($val);
+    //         }
+    //         return $value;
+    //     } else if(is_string($value)) {
+    //         $value = $this->limpiar_cadena($value);
+    //         $value = str_replace("\'", "", $value);
+    //         return mb_convert_encoding($value, 'UTF-8', 'UTF-8');
+    //     } else {
+    //         return $value;
+    //     }
+    // }
 
-    function limpiar_cadena($value) {
-        return preg_replace('/[^\x{0020}-\x{007E}\x{00A0}-\x{00FF}]/u', '', $value);
-    }
+    // function limpiar_cadena($value) {
+    //     return preg_replace('/[^\x{0020}-\x{007E}\x{00A0}-\x{00FF}]/u', '', $value);
+    // }
 
     function check_guardad_cuenta_corriente_despues_de_facturar() {
         if (UserHelper::hasExtencion('guardad_cuenta_corriente_despues_de_facturar')) {

@@ -58,6 +58,69 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function liberar_ventas($user_id = 800) {
+        $sales = Sale::whereNotNull('actualizandose_por_id')
+                        ->where('user_id', $user_id)
+                        ->get();
+
+        foreach ($sales as $sale) {
+            $sale->actualizandose_por_id = null;
+            $sale->timestamps = false;
+            $sale->save();
+            echo 'Venta N° '.$sale->num.' liberada </br>';
+        }
+
+        echo 'Listo';
+    }
+
+    function provider_code_repetidos($user_id) {
+        $articles = Article::where('user_id', $user_id)
+                            // ->whereNull('bar_code')
+                            ->get();
+
+        $repetidos = $articles->groupBy('provider_code')
+                        ->filter(function ($items) {
+                            return $items->count() > 1 && !is_null($items->first()->provider_code);
+                        })
+                        ->flatten();
+
+        foreach ($repetidos as $article) {
+            echo $article->name.' | provider_code: '.$article->provider_code.' repetido <br>';
+        }
+        echo 'Listo';
+    }
+
+    function restablecer_sale_modifications($sale_modification_id) {
+
+        $sale_modification = SaleModification::find($sale_modification_id);
+
+        $sale = Sale::create([
+            'client_id'     => $sale_modification->sale->client_id,
+            'price_type_id' => $sale_modification->sale->price_type_id,
+            'user_id'       => $sale_modification->sale->user_id,
+        ]);
+
+        foreach ($sale_modification->articulos_antes_de_actualizar as $article) {
+            $sale->articles()->attach($article->id, [
+                'amount'                => $article->pivot->amount,
+                'cost'                  => $article->cost,
+                'price'                 => $article->final_price,
+                'returned_amount'       => null,
+                'delivered_amount'      => null,
+                'discount'              => null,
+                'checked_amount'        => null,
+                'article_variant_id'    => null,
+                'variant_description'    => null,
+                'price_type_personalizado_id'    => null,
+                'created_at'            => Carbon::now(),
+            ]);
+
+            echo 'Agregando '.$article->name.' <br>';
+        }
+
+        echo 'Listo';
+    } 
+
     function set_costos_promocion_vinotecas() {
         $promos = PromocionVinoteca::all();
         foreach ($promos as $promo) {
@@ -93,6 +156,21 @@ class HelperController extends Controller
             }
         }
 
+        echo 'Listo';
+    }
+
+    function set_articles_bar_codes() {
+        $articles = Article::whereNull('bar_code')
+                            ->orderBy('id', 'ASC')
+                            ->get();
+
+        echo count($articles).' articulos <br>';
+
+        foreach ($articles as $article) {
+            $article->bar_code = $article->id;
+            $article->timestamps = false;
+            $article->save();
+        }
         echo 'Listo';
     }
 

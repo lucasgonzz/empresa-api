@@ -118,6 +118,10 @@ class ArticleHelper {
                 }
             }
 
+            if (!is_null($user->percentage_gain)) {
+                $cost += $cost * $user->percentage_gain / 100;
+            }
+
             if ($article->unidades_individuales) {
                 $cost = $cost / $article->unidades_individuales;
             }
@@ -138,17 +142,17 @@ class ArticleHelper {
 
             if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)) {
 
-                $cost = ArticlePricesHelper::aplicar_descuentos($article, $cost);
+                // $final_price = ArticlePricesHelper::aplicar_descuentos($article, $final_price);
 
-                $cost = ArticlePricesHelper::aplicar_recargos($article, $cost);
+                // $final_price = ArticlePricesHelper::aplicar_recargos($article, $final_price);
 
-                $article->costo_real = $cost;
+                // $article->costo_real = $final_price;
                 
-                ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $cost, $user, $price_types);
+                ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $final_price, $user, $price_types);
 
             } else if (UserHelper::hasExtencion('lista_de_precios_por_categoria', $user)) {
 
-                ArticlePricesHelper::aplicar_precios_segun_listas_de_precios_y_categorias($article, $cost, $user);
+                ArticlePricesHelper::aplicar_precios_segun_listas_de_precios_y_categorias($article, $final_price, $user);
 
             } 
 
@@ -156,18 +160,17 @@ class ArticleHelper {
 
 
                 if (!is_null($article->provider_price_list)) {
-                    $final_price = $cost + ($cost * $article->provider_price_list->percentage / 100);
+                    $final_price = $final_price + ($final_price * $article->provider_price_list->percentage / 100);
 
                 } else if ((!is_null($article->provider) && $article->provider->percentage_gain)) {
-                    $final_price = $cost + ($cost * $article->provider->percentage_gain / 100);
+                    $final_price = $final_price + ($final_price * $article->provider->percentage_gain / 100);
+                    
+                    Log::info('Aplicando margen del proveedor de '.$article->provider->percentage_gain.', quedo en '.$final_price);
 
                 } 
-                // else {
-                //     Log::info('ENTRO 3');
-
-                //     $final_price = $cost;
-                // }
             }
+
+            $final_price = ArticlePricesHelper::aplicar_category_percentage_gain($article, $final_price);
             
 
             if (!is_null($article->percentage_gain)) {
@@ -191,8 +194,11 @@ class ArticleHelper {
             $final_price = $article->price;
         }
 
-
+        // if (!$user->aplicar_iva_antes_del_margen_de_ganancia) {
+        //     $final_price = ArticlePricesHelper::aplicar_iva($article, $final_price, $user);
+        // }
         $final_price = ArticlePricesHelper::aplicar_iva($article, $final_price, $user);
+
 
         $final_price = ArticlePricesHelper::aplicar_recargos($article, $final_price, true);
         
@@ -212,10 +218,16 @@ class ArticleHelper {
 
         $article->final_price = $final_price;
 
+
+
+        // if (
+        //     !is_null($current_final_price)
+        //     && $current_final_price != $article->final_price
+        // ) {
         if (
-            !is_null($current_final_price)
-            && $current_final_price != $article->final_price
+            $current_final_price != $article->final_price
         ) {
+
             $article->previus_final_price = $current_final_price; 
             $article->final_price_updated_at = Carbon::now();
             PriceChangeController::store($article, $auth_user_id);
@@ -250,6 +262,10 @@ class ArticleHelper {
 
             return round($price, -2);
             // return ceil($price / 100) * 100;
+        }
+
+        if (env('REDONDEAR_DE_A_50', false)) {
+            return ceil($price / 50) * 50;
         }
 
         if (env('REDONDEAR_PRECIOS_EN_CENTAVOS', false)) {

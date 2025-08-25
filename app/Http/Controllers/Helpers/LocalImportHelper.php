@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
+use App\Models\Brand;
 use App\Models\Category;
 use App\Models\CurrentAcount;
 use App\Models\Iva;
@@ -34,6 +35,25 @@ class LocalImportHelper {
                 $model->save();
             }
         }
+	}
+
+	static function get_bran_id($brand_excel, $ct, $owner) {
+		if ($brand_excel != '') {
+			
+			$brand = Brand::where('user_id', $owner->id)
+								->where('name', $brand_excel)
+								->first();
+
+			if (is_null($brand)) {
+				$brand = Brand::create([
+	        		// 'num'		=> $ct->num('categories', $owner->id, 'user_id', $owner->id),
+					'name' 		=> $brand_excel,
+					'user_id' 	=> $owner->id,
+				]);
+			}
+			return $brand->id;
+		}
+		return null;
 	}
 
 	static function getCategoryId($categoria, $ct, $owner) {

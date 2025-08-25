@@ -20,6 +20,13 @@ class Article extends Model
         $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'article_variants.addresses', 'addresses', 'price_types', 'article_discounts_blanco', 'article_surchages', 'article_surchages_blanco');
     }
 
+    public function price_type_tienda_nube()
+    {
+        return $this->price_types()
+                ->where('se_usa_en_tienda_nube', 1)
+                ->first();
+    }
+
     public function lastStockMovement() {
         return $this->hasOne(StockMovement::class)->latestOfMany();
     }
@@ -69,7 +76,7 @@ class Article extends Model
     }
 
     function price_types() {
-        return $this->belongsToMany(PriceType::class)->withPivot('percentage', 'price', 'final_price', 'previus_final_price', 'incluir_en_excel_para_clientes');
+        return $this->belongsToMany(PriceType::class)->withPivot('percentage', 'price', 'final_price', 'previus_final_price', 'incluir_en_excel_para_clientes', 'setear_precio_final', 'precio_luego_de_recargos', 'monto_ganancia');
     }
 
     function cart() {

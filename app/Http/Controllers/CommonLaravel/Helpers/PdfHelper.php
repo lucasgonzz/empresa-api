@@ -25,6 +25,11 @@ class PdfHelper {
 		if (isset($data['current_acount'])) {
 			Self::currentAcountInfo($instance, $data['current_acount'], $data['client_id'], $data['compra_actual']);
 		}
+
+		if (isset($data['client_description'])) {
+			Self::client_description($instance, $data['client']);
+		}
+
 		if (isset($data['fields'])) {
 			Self::tableHeader($instance, $data['fields']);
 		}
@@ -376,6 +381,27 @@ class PdfHelper {
 		}
 	}
 
+	static function client_description($instance, $client, $start_y = 32){
+		$instance->y = $start_y;
+		$instance->x = 105;
+
+		$text = 'Observaciones: '.$client->description;
+		$instance->SetFont('Arial', 'B', 10);
+	    $instance->MultiCell(
+			90, 
+			5, 
+			$text, 
+	    	$instance->b, 
+	    	'L', 
+	    	false
+	    );
+
+		$instance->y = 52;
+		$instance->Line(105, $start_y, 205, $start_y);
+		$instance->Line(205, $start_y, 205, $instance->y);
+		$instance->Line(205, $instance->y, 105, $instance->y);
+	}
+
 	static function currentAcountInfo($instance, $current_acount, $client_id, $compra_actual, $start_y = 32){
 		$saldo_anterior = CurrentAcountHelper::getSaldo('client', $client_id, $current_acount);
 		$instance->y = $start_y;
@@ -411,8 +437,6 @@ class PdfHelper {
 		$instance->Line(105, $start_y, 205, $start_y);
 		$instance->Line(205, $start_y, 205, $instance->y);
 		$instance->Line(205, $instance->y, 105, $instance->y);
-		// $instance->Line(105, $instance->y, 105, $start_y);
-		// $instance->y += 50;
 	}
 
 	static function getWebUrl($url) {

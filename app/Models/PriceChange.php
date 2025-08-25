@@ -10,6 +10,10 @@ class PriceChange extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        
+        $q->with('price_types');        
+    }
+
+    function price_types() {
+        return $this->belongsToMany(PriceType::class)->withPivot('final_price');
     }
 }

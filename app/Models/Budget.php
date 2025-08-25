@@ -59,4 +59,8 @@ class Budget extends Model
         return $this->belongsToMany('App\Models\OrderProductionStatus');
     }
 
+    function address() {
+        return $this->belongsTo(Address::class);
+    }
+
 }

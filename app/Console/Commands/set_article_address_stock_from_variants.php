@@ -51,22 +51,38 @@ class set_article_address_stock_from_variants extends Command
 
             if (count($article->article_variants) >= 1) {
                 
+                $stock = 0;
+                
                 $addresses = $this->get_addresses();
                 
                 foreach ($article->article_variants as $variant) {
 
-                    foreach ($variant->addresses as $variant_address) {
-                        
-                        $addresses[$variant_address->pivot->address_id] += (float)$variant_address->pivot->amount;
+                    if (count($addresses) >= 1) {
 
+                        foreach ($variant->addresses as $variant_address) {
+                            
+                            $addresses[$variant_address->pivot->address_id] += (float)$variant_address->pivot->amount;
+
+                        }
+                    } else {
+
+                        $stock += $variant->stock;
                     }
+
                 }
 
-                $this->actualizar_article_addresses($article, $addresses);
+                if (count($addresses) >= 1) {
 
-                $this->actualizar_article_stock($article);
+                    $this->actualizar_article_addresses($article, $addresses);
 
-                $this->info('Se actualizo '.$article->name);
+                    $this->actualizar_article_stock($article);
+
+                    $this->info('Se actualizo '.$article->name);
+                } else {
+                    $article->stock = $stock;
+                    $article->timestamps = false;
+                    $article->save();
+                }
             }
 
         }

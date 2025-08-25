@@ -6,6 +6,11 @@ use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Database\Eloquent\Relations\Relation;
 
+use App\Models\Category;
+use App\Models\SubCategory;
+use App\Observers\CategoryObserver;
+use App\Observers\SubCategoryObserver;
+
 class AppServiceProvider extends ServiceProvider
 {
     /**
@@ -29,5 +34,9 @@ class AppServiceProvider extends ServiceProvider
             'article' => 'App\Models\Article',
             'promocion_vinoteca' => 'App\Models\PromocionVinoteca',
         ]);
+
+
+        Category::observe(CategoryObserver::class);
+        SubCategory::observe(SubCategoryObserver::class);
     }
 }

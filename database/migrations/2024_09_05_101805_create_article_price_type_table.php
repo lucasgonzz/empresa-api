@@ -22,7 +22,11 @@ class CreateArticlePriceTypeTable extends Migration
             $table->decimal('price', 30,2)->nullable();
             $table->decimal('final_price', 30,2)->nullable();            
             $table->decimal('previus_final_price', 30,2)->nullable();            
-            $table->boolean('incluir_en_excel_para_clientes')->nullable();            
+            $table->boolean('incluir_en_excel_para_clientes')->default(0)->nullable();            
+            $table->boolean('setear_precio_final')->default(0)->nullable();  
+
+            $table->decimal('precio_luego_de_recargos', 30,2)->nullable();            
+            $table->decimal('monto_ganancia', 30,2)->nullable();            
             
             $table->timestamps();
         });

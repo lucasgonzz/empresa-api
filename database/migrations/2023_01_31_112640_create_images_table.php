@@ -20,6 +20,7 @@ class CreateImagesTable extends Migration
             $table->string('imageable_type');
             $table->integer('color_id')->nullable();
             $table->string('temporal_id')->nullable();
+            $table->integer('tiendanube_image_id')->nullable();
             $table->timestamps();
         });
     }

@@ -10,6 +10,9 @@ use App\Models\Address;
 use App\Models\PriceType;
 use Illuminate\Support\Facades\Log;
 
+use App\Models\ArticlePropertyType;
+use App\Models\ArticlePropertyValue;
+
 class ProcessRow {
 
     protected $columns;
@@ -19,6 +22,7 @@ class ProcessRow {
     protected $articulosParaActualizar = [];
     protected $articulosParaCrear = [];
     protected $price_types = [];
+    protected $property_types = [];
 
 
     /**
@@ -34,6 +38,7 @@ class ProcessRow {
 
         $this->set_price_types();
         $this->set_addresses();
+        $this->set_property_types();
     }
 
     /**
@@ -51,6 +56,8 @@ class ProcessRow {
         $provider_id = $this->get_provider_id($row);
 
         $iva_id = $this->get_iva_id($row);
+
+        $brand_id = $this->get_brand_id($row);
 
         $cost = Self::get_number(ImportHelper::getColumnValue($row, 'costo', $this->columns));
         $price = Self::get_number(ImportHelper::getColumnValue($row, 'precio', $this->columns));
@@ -70,6 +77,7 @@ class ProcessRow {
             'sub_category_id'      => $sub_category_id,
             'provider_id'          => $provider_id,
             'iva_id'               => $iva_id,
+            'brand_id'             => $brand_id,
             'user_id'              => $this->user->id,
         ];
 
@@ -81,13 +89,27 @@ class ProcessRow {
         $ya_estaba_en_excel = $this->ya_estaba_en_el_excel($data);
 
         if ($ya_estaba_en_excel) {
-            Log::info('SE OMITIO EN PROCES ROW');
+
+            // 👇 Nuevo: si esta fila forma parte del mismo producto y tiene propiedades -> agregar como variante
+            $variant_payload = $this->build_variant_payload($row);
+
+            if (!is_null($variant_payload)) {
+
+                $this->attach_variant_to_existing_article($data, $variant_payload);
+                Log::info('Fila repetida tratada como VARIANTE del artículo base');
+                return;
+            }
+            Log::info('SE OMITIO EN PROCES ROW (fila repetida sin propiedades de variante)');
             return;
+        } else {
+            Log::info('No esta aun en el excel');
         }
 
         $articulo_ya_creado = ArticleIndexCache::find($data, $this->user->id);
 
         if ($articulo_ya_creado) {
+
+            Log::info('Articulo ya creado');
 
             if (
                 !is_null($articulo_ya_creado->provider_id)
@@ -152,12 +174,14 @@ class ProcessRow {
 
                 $cambios['id'] = $articulo_ya_creado->id;
 
+                $cambios['variants_data'] = []; // 👈
+
                 $this->articulosParaActualizar[] = $cambios;
             } 
 
         } else if ($this->create_and_edit) {
 
-            // Log::info('El articulo NO existia');
+            Log::info('El articulo NO existia');
             // Si no existe, lo agregamos a los artículos para crear
             
             /* 
@@ -200,6 +224,7 @@ class ProcessRow {
                 $data['stock_addresses'] = $stock['stock_addresses'];
             }
 
+            $data['variants_data'] = []; // 👈 espacio para variantes
             $this->articulosParaCrear[] = $data;
 
             // Lo agregamos al índice para evitar procesarlo duplicado en siguientes filas
@@ -219,31 +244,24 @@ class ProcessRow {
 
 
         if ($key) {
+
             $ya_en_para_crear = false;
             $ya_en_para_actualizar = false;
 
             foreach ($this->articulosParaCrear as $index => $art) {
-                if (
-                    (!empty($art['id']) && $art['id'] === $data['id']) 
-                    || (!empty($art['bar_code']) && $art['bar_code'] === $data['bar_code']) 
-                    || (!env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false) && !empty($art['provider_code']) && $art['provider_code'] === $data['provider_code'])
-                    || (!empty($art['name']) && $art['name'] === $data['name'])
-                ) {
-                    // $this->articulosParaCrear[$index] = $data;
+
+                if ($this->esta_repetido($data, $art)) {
                     $ya_en_para_crear = true;
                     break;
                 }
             }
 
             if (!$ya_en_para_crear) {
+                // Log::info('Se va a chequear si ya esta para actualizar dentro de '.count($this->articulosParaActualizar).' articulosParaActualizar');
                 foreach ($this->articulosParaActualizar as $index => $art) {
-                    if (
-                        (!empty($art['id']) && $art['id'] === $data['id']) 
-                        || (!empty($art['bar_code']) && $art['bar_code'] === $data['bar_code']) 
-                        || (!env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false) && !empty($art['provider_code']) && $art['provider_code'] === $data['provider_code']) 
-                        || (!empty($art['name']) && $art['name'] === $data['name'])
-                    ) {
-                        // $this->articulosParaActualizar[$index] = $data;
+
+                    if ($this->esta_repetido($data, $art)) {
+                        
                         $ya_en_para_actualizar = true;
                         break;
                     }
@@ -258,6 +276,84 @@ class ProcessRow {
         }
     }
 
+    function esta_repetido($data, $art) {
+
+        $repetido = false;
+
+        // Aseguramos boolean real por si el .env viene como string
+        $codigos_repetidos = filter_var(env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false), FILTER_VALIDATE_BOOLEAN);
+
+        // 1) Coincidencia por ID
+        if (!empty($data['id'])) {
+
+            if (isset($art['id']) && $art['id'] === $data['id']) {
+                Log::info('Ya esta para crear, id: '.$art['id'].' = '.$data['id']);
+                return true;
+            }
+            return false;
+        }
+
+        // 2) Coincidencia por bar_code
+        if (!empty($data['bar_code'])) {
+
+            if (isset($art['bar_code']) && $art['bar_code'] === $data['bar_code']) {
+                Log::info('Ya esta para crear, bar_code: '.$art['bar_code'].' = '.$data['bar_code']);
+                return true;
+            }
+            return false;
+        }
+
+        // 3) Coincidencia por provider_code (solo si NO se permiten repetidos)
+        if (!empty($data['provider_code']) && !$codigos_repetidos) {
+
+            if (!empty($art['provider_code']) && $art['provider_code'] === $data['provider_code']) {
+                Log::info('Ya esta para crear, provider_code: '.$art['provider_code'].' = '.$data['provider_code']);
+                return true;
+            }
+            return false;
+        }
+
+        // 4) Coincidencia por name
+        if (!empty($data['name'])) {
+
+            if (!empty($art['name']) && $art['name'] === $data['name']) {
+
+                // --- REGLA NUEVA ---
+                // Si se permiten codigos de proveedor repetidos, SOLO marcamos repetido
+                // cuando el provider_code también coincide (si ambos existen).
+                if ($codigos_repetidos) {
+
+                    // Si ambos tienen provider_code y SON IGUALES => repetido = true
+                    if (!empty($data['provider_code']) && !empty($art['provider_code'])) {
+                        if ($art['provider_code'] === $data['provider_code']) {
+                            Log::info('Ya esta para crear, name+provider_code: '.$art['name'].' / '.$art['provider_code'].' = '.$data['name'].' / '.$data['provider_code']);
+                            return true;
+                        } else {
+                            // Mismo nombre pero distinto provider_code => NO repetido
+                            Log::info('Mismo name pero distinto provider_code con repetidos habilitados: '.$art['name'].' / '.$art['provider_code'].' != '.$data['name'].' / '.$data['provider_code']);
+                            return false;
+                        }
+                    }
+
+                    // Si falta alguno de los provider_code, no podemos garantizar que no esté repetido.
+                    // Por seguridad, consideramos repetido (conservador).
+                    Log::info('Name coincide pero falta provider_code para contrastar con repetidos habilitados. Se marca como repetido por seguridad: '.$art['name'].' = '.$data['name']);
+                    return true;
+
+                } else {
+                    // Si NO se permiten repetidos de provider_code, con que coincida el nombre basta.
+                    Log::info('Ya esta para crear, name: '.$art['name'].' = '.$data['name']);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return $repetido;
+    }
+
+
 
     /**
      * Compara un artículo existente con nuevos datos, y devuelve
@@ -268,13 +364,18 @@ class ProcessRow {
         $modified = [];
 
         foreach ($data as $key => $value) {
-            if (
-                $existing->$key != $value
-                && !is_null($value)
-            ) {
-                $modified[$key] = $value;
-            }
+            $modified[$key] = $value;
         }
+
+        // Antes solo agrego las propiedades que cambiaron, lo cambio para agregar todas las propiedades
+        // foreach ($data as $key => $value) {
+        //     if (
+        //         $existing->$key != $value
+        //         && !is_null($value)
+        //     ) {
+        //         $modified[$key] = $value;
+        //     }
+        // }
 
         return $modified;
     }
@@ -371,7 +472,7 @@ class ProcessRow {
 
             if (!is_null($address_excel)) {
 
-                Log::info('Hay info en la columna '.$nombre_columna);
+                // Log::info('Hay info en la columna '.$nombre_columna);
 
                 if (!is_null($articulo_ya_creado)) {
 
@@ -517,8 +618,13 @@ class ProcessRow {
 
             foreach ($this->price_types as $price_type) {
             
-                $row_name = '%_' . str_replace(' ', '_', strtolower($price_type->name));
-                $percentage = ImportHelper::getColumnValue($row, $row_name, $this->columns);
+                $row_percentage_name = '%_' . str_replace(' ', '_', strtolower($price_type->name));
+                $percentage = ImportHelper::getColumnValue($row, $row_percentage_name, $this->columns);
+            
+                $row_final_price_name = '$_final_' . str_replace(' ', '_', strtolower($price_type->name));
+                $final_price = ImportHelper::getColumnValue($row, $row_final_price_name, $this->columns);
+
+                Log::info('final_price: '.$final_price);
 
 
                 /*
@@ -542,27 +648,39 @@ class ProcessRow {
 
                     if ($price_type_ya_relacionado) {
 
-                        if ($price_type_ya_relacionado->pivot->percentage != $percentage) {
-                            
-                            // Log::info('Hubo cambios en price_type ya creado '.$price_type->name.' para article '.$articulo_ya_creado->id);
-
+                        Log::info('YA estaba relacionado con price_type');
+                        
+                        if (
+                            $price_type_ya_relacionado->pivot->percentage != $percentage
+                            && !$price_type_ya_relacionado->pivot->setear_precio_final
+                        ) {
+                            Log::info('Entro con percentage');    
                             $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $percentage);
 
+                        } else if (
+                            $price_type_ya_relacionado->pivot->final_price != $final_price
+                            && $price_type_ya_relacionado->pivot->setear_precio_final
+                        ) {
+
+                            Log::info('Entro con final_price');    
+                            $price_types_data = $this->add_price_type_data($price_types_data, $price_type, null, $final_price);
+
+                        } else {
+
+                            Log::info('No entro con ninguno');    
                         }
+
                     } else {
 
-                        $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $percentage);
+                        Log::info('No estaba relacionado con price_type');
+
+                        $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $percentage, $final_price);
+
                     }
 
                 } else {
 
-                    $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $percentage);
-                    // $price_types_data[] = [
-                    //     'id'            => $price_type->id,
-                    //     'pivot'         => [
-                    //         'percentage'    => $percentage,
-                    //     ]
-                    // ];
+                    $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $percentage, $final_price);
                 }
 
             }
@@ -571,12 +689,13 @@ class ProcessRow {
         return $price_types_data;
     }
 
-    function add_price_type_data($price_types_data, $price_type, $percentage) {
+    function add_price_type_data($price_types_data, $price_type, $percentage, $final_price = null) {
 
         $price_types_data[] = [
             'id'            => $price_type->id,
             'pivot'         => [
-                'percentage'    => $percentage,
+                'percentage'    => !is_null($percentage) ? $percentage : null,
+                'final_price'   => !is_null($final_price) ? $final_price : null,
             ]
         ];
         return $price_types_data;
@@ -610,6 +729,19 @@ class ProcessRow {
         $iva_excel = ImportHelper::getColumnValue($row, 'iva', $this->columns);
         $iva_id = LocalImportHelper::getIvaId($iva_excel);
         return $iva_id;
+    }
+
+    /**
+     * Devuelve el ID del IVA a partir del valor textual en la columna "iva"
+     */
+    function get_brand_id($row) {
+        $brand_excel = ImportHelper::getColumnValue($row, 'marca', $this->columns);
+
+        $brand_id = LocalImportHelper::get_bran_id($brand_excel, $this->ct, $this->user);
+
+        // Log::info('brand_id para article num: '.$row[0].' = '.$brand_id);
+
+        return $brand_id;
     }
 
     /**
@@ -661,5 +793,133 @@ class ProcessRow {
     function set_addresses() {
         $this->addresses = Address::where('user_id', $this->user->id)
                                         ->get();
+    }
+
+
+
+    // Variantes de los productos
+
+    function set_property_types() {
+        // Globales (no por user), según tus migrations actuales
+        $this->property_types = ArticlePropertyType::orderBy('id', 'ASC')->get();
+    }
+
+    function row_property_values($row) : array {
+        $props = [];
+        foreach ($this->property_types as $type) {
+            $key = mb_strtolower(trim($type->name));
+            $val = ImportHelper::getColumnValue($row, $key, $this->columns);
+            if (!is_null($val) && trim((string)$val) !== '') {
+                $props[$key] = trim((string)$val);
+            }
+        }
+        return $props; // ej: ['color' => 'Rojo', 'talle' => '42']
+    }
+
+    /**
+     * Devuelve null si la fila NO tiene propiedades; si tiene, arma el payload de variante
+     */
+    function build_variant_payload($row) : ?array {
+        $props = $this->row_property_values($row);
+        if (count($props) === 0) return null;
+
+        // Campos de variante opcionales si vienen en la fila
+
+        $variant_price = self::get_number(ImportHelper::getColumnValue($row, 'precio', $this->columns));
+        $variant_stock = ImportHelper::getColumnValue($row, 'stock_actual', $this->columns);
+        $image_url     = ImportHelper::getColumnValue($row, 'imagen', $this->columns); // si mapeás una columna 'imagen'
+        $sku           = ImportHelper::getColumnValue($row, 'sku', $this->columns);
+        
+        // 👇 NUEVO: extraer stocks por address desde columnas stock_*
+        $address_stocks = $this->extract_address_stocks($row);
+        $address_display = $this->extract_address_display_by_street($row);
+        
+        return [
+            'properties' => $props,                  // ['color'=>'Rojo','talle'=>'42', ...]
+            'price'      => $variant_price ?? null,  // num o null
+            'stock'      => is_null($variant_stock) ? null : (int)$variant_stock,
+            'image_url'  => $image_url ?? null,
+            'sku'        => $sku ?? null,
+            'address_stocks' => $address_stocks, 
+            'address_display'=> $address_display,  
+        ];
+    }
+
+    protected function extract_address_display_by_street($row): array
+    {
+        // Devuelve [address_id => bool]
+        $display = [];
+
+        foreach ($this->addresses as $address) {
+
+            $nombre_columna = str_replace(' ', '_', strtolower('Exhibicion '.$address->street));
+
+            $exhibicion_excel = ImportHelper::getColumnValue($row, $nombre_columna, $this->columns);
+
+            if (!is_null($exhibicion_excel)) {
+
+
+                $truthy = ['si','sí','true','1','x','ok','s','y','yes'];
+                $on_display = in_array($exhibicion_excel, $truthy, true);
+
+                $display[$address->id] = $on_display;
+            }
+        }
+
+        return $display;
+    }
+
+
+    /**
+     * Lee todas las columnas que empiecen con stock_ y arma:
+     *   ['address_key' => amount, ...]
+     * address_key puede ser id (número), code, o nombre normalizado.
+     */
+    function extract_address_stocks($row) : array {
+        $stocks = [];
+
+        foreach ($this->addresses as $address) {
+
+
+            $nombre_columna = str_replace(' ', '_', strtolower($address->street));
+
+            $address_excel = ImportHelper::getColumnValue($row, $nombre_columna, $this->columns);
+
+            if (!is_null($address_excel)) {
+
+                // normalizamos cantidad a int >= 0
+                $amount = (int) round((float) str_replace(',', '.', (string)$address_excel));
+                if ($amount < 0) $amount = 0;
+
+                $stocks[$address->id] = $amount;
+
+            }
+
+        }
+
+        return $stocks;
+    }
+
+    function attach_variant_to_existing_article($data, $variant_payload) : void {
+        // Buscamos el artículo correspondiente en los arrays cacheados
+        // Reutilizamos tu lógica de comparación con esta_repetido()
+        foreach (['articulosParaCrear', 'articulosParaActualizar'] as $bucket) {
+
+            foreach ($this->{$bucket} as $i => $art) {
+
+                if ($this->esta_repetido($data, $art)) {
+
+                    if (!isset($this->{$bucket}[$i]['variants_data']) || !is_array($this->{$bucket}[$i]['variants_data'])) {
+                        $this->{$bucket}[$i]['variants_data'] = [];
+                    }
+
+                    $this->{$bucket}[$i]['variants_data'][] = $variant_payload;
+
+                    return;
+                }
+            }
+        }
+        // Si no lo encontramos (raro), no rompemos el flujo
+        Log::warning('No se encontró artículo base para adjuntar variante en cache');
     }
 }

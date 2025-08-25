@@ -39,7 +39,7 @@ class Advise extends Mailable
                 $article_url = $user->online.'/articulos/'.$this->article->slug.'/'.$user->id;
             }
 
-            return $this->from(env('MAIL_FROM_ADDRESS'), 'comerciocity.com')
+            return $this->from(env('MAIL_FROM_ADDRESS'), env('MAIL_DOMAIN', 'comerciocity.com'))
                         ->subject('Nuevo stock de '.$this->article->name)
                         ->markdown('emails.articles.advise', [
                             'article'       => $this->article,

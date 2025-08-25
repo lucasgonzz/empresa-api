@@ -40,11 +40,11 @@ class PreviusNextController extends Controller
         $model_name = GeneralHelper::getModelName($_model_name);
         $model = $model_name::find($id);
 
-        if (!$this->check_sale_actualizado_por($model, $_model_name)) {
+        // if (!$this->check_sale_actualizado_por($model, $_model_name)) {
 
-            return response()->json(['actualizandose_por' => $model->actualizandose_por]);
+        //     return response()->json(['actualizandose_por' => $model->actualizandose_por]);
 
-        } 
+        // } 
 
         $models = $model_name::where('user_id', UserHelper::userId())
                                 ->where('id', '>=', $model->id)

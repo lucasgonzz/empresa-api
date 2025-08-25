@@ -15,6 +15,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\PdfPrintCurrentAcounts;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCuotaHelper;
 use App\Http\Controllers\Pdf\AfipTicketPdf;
 use App\Http\Controllers\Pdf\CurrentAcountPdf;
 use App\Http\Controllers\Pdf\NotaCreditoPdf;
@@ -88,6 +89,8 @@ class CurrentAcountController extends Controller
         }
         
         // CurrentAcountHelper::checkPagos($request->model_name, $request->model_id, true);
+
+        CurrentAcountCuotaHelper::pagar_cuota($pago, $request);
 
         $this->sendAddModelNotification($request->model_name, $request->model_id);
         Log::info('Terminando de guardar pago');

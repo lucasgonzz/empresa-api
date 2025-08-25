@@ -4,12 +4,14 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\category\PriceTypeHelper;
 use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
 use App\Models\Article;
 use App\Models\Category;
 use App\Models\SubCategory;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class CategoryController extends Controller
 {
@@ -26,6 +28,8 @@ class CategoryController extends Controller
         $model = Category::create([
             'num'                   => $this->num('categories'),
             'name'                  => $request->name,
+            'image_url'             => $request->image_url,
+            'percentage_gain'       => $request->percentage_gain,
             'user_id'               => $this->userId(),
         ]);
 
@@ -46,11 +50,18 @@ class CategoryController extends Controller
 
     public function update(Request $request, $id) {
         $model = Category::find($id);
+
+        $previus_percentage_gain = $model->percentage_gain;
+
         $model->name                = $request->name;
+        $model->image_url           = $request->image_url;
+        $model->percentage_gain     = $request->percentage_gain;
         $model->save();
         GeneralHelper::attachModels($model, 'price_types', $request->price_types, ['percentage']);
 
         PriceTypeHelper::update_article_prices($model);
+
+        $this->check_percetange_gain($model, $previus_percentage_gain);
         
         $this->sendAddModelNotification('Category', $model->id);
         return response()->json(['model' => $this->fullModel('Category', $model->id)], 200);
@@ -78,5 +89,17 @@ class CategoryController extends Controller
 
     public function deleteSubCategories($category) {
         SubCategory::where('category_id', $category->id)->delete();
+    }
+
+    function check_percetange_gain($category, $previus_percentage_gain) {
+
+        if ($previus_percentage_gain != $category->percentage_gain) {
+
+            Log::info('Hubo cambios en percentage_gain de la categoria');
+            foreach ($category->articles as $article) {
+
+                ArticleHelper::setFinalPrice($article);
+            }
+        }
     }
 }

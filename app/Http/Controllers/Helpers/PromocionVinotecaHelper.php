@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\RequestHelper;
 use App\Http\Controllers\Stock\StockMovementController;
+use Illuminate\Support\Facades\Log;
 
 class PromocionVinotecaHelper {
 	
@@ -13,19 +14,27 @@ class PromocionVinotecaHelper {
 
 		foreach ($promo->articles as $article) {
 			$total_article = $article->pivot->amount * $article->cost;
+			Log::info($article->name.' costo: '.$article->cost);
+			Log::info('amount: '.$article->pivot->amount);
+			Log::info('total_article: '.$total_article);
 
 			if (!is_null($article->presentacion)) {
 				$total_article *= $article->presentacion;
+				Log::info('presentacion: '.$article->presentacion);
+				Log::info('total_article: '.$total_article);
 			}
 
 			$total_cost += $total_article;
 		}
+
+		Log::info('total_cost: '.$total_cost);
 
 		if (
 			$total_cost > 0
 			&& $promo->stock > 0
 		) {
 			$total_cost = $total_cost / $promo->stock; 
+			Log::info('dividido: '.$promo->stock.': '.$total_cost);
 		}
 
 		$promo->cost = $total_cost;

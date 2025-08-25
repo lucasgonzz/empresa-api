@@ -22,9 +22,7 @@ class InventoryPerformanceController extends Controller
 
     function get_current() {
 
-        $inventory_performance = InventoryPerformance::where('user_id', $this->userId())
-                                    ->orderBy('created_at', 'DESC')
-                                    ->first();
+        $inventory_performance = $this->get_created_inventory_performance();
 
         if (is_null($inventory_performance) 
             || $inventory_performance->created_at->lt(Carbon::now()->subMinutes(env('DURACION_REPORTES', 1)))) {
@@ -39,6 +37,21 @@ class InventoryPerformanceController extends Controller
             $inventory_performance = $helper->create();
         }
 
+        $inventory_performance = $this->get_created_inventory_performance(true);
+
+        return $inventory_performance;
+    }
+
+    function get_created_inventory_performance($with_all = false) {
+
+        $inventory_performance = InventoryPerformance::where('user_id', $this->userId())
+                                    ->orderBy('created_at', 'DESC');
+        if ($with_all) {
+            $inventory_performance = $inventory_performance->withAll();
+        }
+                                    
+        $inventory_performance = $inventory_performance->first();
+        
         return $inventory_performance;
     }
 

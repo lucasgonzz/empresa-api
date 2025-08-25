@@ -9,7 +9,7 @@ class PriceType extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        $q->with('categories', 'sub_categories');
+        $q->with('categories', 'sub_categories', 'price_type_surchages');
     }
 
     function categories() {
@@ -18,5 +18,9 @@ class PriceType extends Model
 
     function sub_categories() {
         return $this->belongsToMany(SubCategory::class)->withPivot('percentage');
+    }
+
+    function price_type_surchages() {
+        return $this->hasMany(PriceTypeSurchage::class)->orderBy('position', 'ASC');
     }
 }

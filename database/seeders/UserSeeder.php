@@ -11,6 +11,7 @@ use App\Models\User;
 use App\Models\UserConfiguration;
 use Carbon\Carbon;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Log;
 
 class UserSeeder extends Seeder
 {
@@ -37,7 +38,7 @@ class UserSeeder extends Seeder
                 'use_archivos_de_intercambio'   => 0,
                 'company_name'                  => 'Autopartes Boxes',
                 // 'image_url'                     => null,
-                'image_url'                     => env('APP_ENV') == 'local' ? env('APP_URL').'/storage/icon.png' : 'https://api-demo.comerciocity.com/public/storage/174292591094040.png',
+                'image_url'                     => env('APP_ENV') == 'local' ? env('APP_URL').'/storage/icon.png' : 'https://comerciocity.com/img/logo.95c86b81.jpg',
                 'doc_number'                    => '1234',
                 'impresora'                     => 'XP-80',
                 'email'                         => 'lucasgonzalez5500@gmail.com',
@@ -117,6 +118,35 @@ class UserSeeder extends Seeder
                 // 'ventas_con_fecha_de_entrega',
                 // 'road_map_detalle_por_articulos_y_no_por_venta',
                 // 'online',
+            ];
+
+        } else if ($this->for_user == 'san_blas') {
+
+            $models[0]['name'] = 'Fabian';
+            $models[0]['company_name'] = 'San blas';
+            $models[0]['iva_included'] = 0;
+            $models[0]['iva_condition_id'] = 1;
+            $models[0]['doc_number'] = '1234';
+            $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
+            
+            // $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
+            $models[0]['default_version'] = null;
+
+            $models[0]['extencions'] = [
+
+                'comerciocity_interno',
+                'budgets',
+                // 'bar_code_scanner',
+                'ask_save_current_acount',
+                'imagenes',
+                // 'forzar_total',
+                'cajas',
+                // 'ventas_con_fecha_de_entrega',
+                // 'road_map_detalle_por_articulos_y_no_por_venta',
+                'acopios',
+                'articulos_unidades_individuales',
+                'check_article_stock_en_vender',
+                // 'warn_article_stock_en_vender',
             ];
 
         } else if ($this->for_user == 'demo') {
@@ -289,6 +319,53 @@ class UserSeeder extends Seeder
                 'article.costo_real',
             ];
 
+        } else if ($this->for_user == 'mza_group') {
+
+            $models[0]['name'] = 'Gabi';
+
+            $models[0]['iva_included'] = 0;
+
+            $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
+
+            $models[0]['extencions'] = [
+
+                'budgets',
+                'bar_code_scanner',
+                'comerciocity_interno',
+                'articulo_margen_de_ganancia_segun_lista_de_precios',
+                'cambiar_price_type_en_vender',
+                'online',
+                'article.costo_real',
+                'setear_precio_final_en_listas_de_precio',
+                'articulos_unidades_individuales',
+                'usa_tienda_nube',
+                'cajas',
+                'article_variants',
+            ];
+
+        }  else if ($this->for_user == 'bad_girls') {
+
+            $models[0]['name'] = 'Angeles';
+
+            $models[0]['iva_included'] = 0;
+
+            $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
+
+            $models[0]['extencions'] = [
+
+                'budgets',
+                'bar_code_scanner',
+                'comerciocity_interno',
+                'articulo_margen_de_ganancia_segun_lista_de_precios',
+                'cambiar_price_type_en_vender',
+                'online',
+                'article.costo_real',
+                'setear_precio_final_en_listas_de_precio',
+                'cajas',
+                'article_variants',
+                'articulos_en_exhibicion',
+            ];
+
         } else if ($this->for_user == 'truvari') {
 
             $models[0]['name'] = 'Fernando';
@@ -322,6 +399,7 @@ class UserSeeder extends Seeder
                 'titulo_quienes_somos'    => 'Forma de compra',
                 'retiro_por_local'              => 0,
                 'pedir_barrio_al_registrarse'   => 1,
+                'logear_cliente_al_registrar'   => 0,
             ];
 
             $models[0]['extencions'] = [
@@ -507,6 +585,8 @@ class UserSeeder extends Seeder
                     }
                 }
                 
+                Log::info('env user_Id: '.env('USER_ID'));
+                Log::info('env FOR_USER: '.env('FOR_USER'));
                 UserConfiguration::create([
                     'current_acount_pagado_details'         => 'Saldado',
                     'current_acount_pagandose_details'      => 'Recibo de pago',

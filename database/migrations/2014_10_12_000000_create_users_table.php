@@ -112,7 +112,11 @@ class CreateUsersTable extends Migration
 
             $table->boolean('info_afip_del_primer_punto_de_venta')->nullable();
             
+            $table->boolean('aplicar_iva_antes_del_margen_de_ganancia')->nullable();
+            
             $table->text('api_url')->nullable();
+
+            $table->decimal('percentage_gain', 20,2)->nullable();
             // $table->foreign('owner_id')->references('id')->on('users');
             // $table->foreign('admin_id')->references('id')->on('users');
             $table->timestamps();

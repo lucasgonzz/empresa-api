@@ -3,8 +3,10 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Jobs\ProcessSyncArticleDescriptionTiendaNube;
 use App\Models\Description;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class DescriptionController extends Controller
 {
@@ -25,9 +27,12 @@ class DescriptionController extends Controller
             'content'               => $request->content,
             // 'user_id'               => $this->userId(),
         ]);
-        if (!is_null($request->model_id)) {
-            $this->sendAddModelNotification('article', $model->article_id, false);
-        }
+
+        $this->check_tienda_nube($model);
+
+        // if (!is_null($request->model_id)) {
+        //     $this->sendAddModelNotification('article', $model->article_id, false);
+        // }
         return response()->json(['model' => $this->fullModel('Description', $model->id)], 201);
     }  
 
@@ -40,7 +45,8 @@ class DescriptionController extends Controller
         $model->title                = $request->title;
         $model->content              = $request->content;
         $model->save();
-        $this->sendAddModelNotification('Description', $model->id);
+        $this->check_tienda_nube($model);
+        // $this->sendAddModelNotification('Description', $model->id);
         return response()->json(['model' => $this->fullModel('Description', $model->id)], 200);
     }
 
@@ -50,5 +56,15 @@ class DescriptionController extends Controller
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('Description', $model->id);
         return response(null);
+    }
+
+    function check_tienda_nube($description) {
+
+        if (env('USA_TIENDA_NUBE', false) && $description->article) {
+            Log::info('Mandando ProcessSyncArticleDescriptionTiendaNube');
+            dispatch(new ProcessSyncArticleDescriptionTiendaNube($description->article));
+        } else {
+            Log::info('NO SE MANDO ProcessSyncArticleDescriptionTiendaNube');
+        }
     }
 }

@@ -15,7 +15,7 @@ class CreateArticlePropertyValuesTable extends Migration
     {
         Schema::create('article_property_values', function (Blueprint $table) {
             $table->id();
-            $table->integer('num');
+            $table->integer('num')->nullable();
             $table->string('name');
             $table->string('value')->nullable();
             $table->integer('article_property_type_id')->unsigned();

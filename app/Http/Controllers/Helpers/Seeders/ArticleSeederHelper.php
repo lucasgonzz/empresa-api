@@ -29,10 +29,11 @@ class ArticleSeederHelper {
     }
 
     function set_images($created_article, $article, $rubro, $formato = 'jpg') {
+        $category_name = strtolower($created_article->category->name);
         Image::create([
             'imageable_type'                            => 'article',
             'imageable_id'                              => $created_article->id,
-            env('IMAGE_URL_PROP_NAME', 'image_url')     => env('API_URL').'/storage/'.$rubro.'/'.str_replace(' ', '_', $created_article->category->name).'.'.$formato,
+            env('IMAGE_URL_PROP_NAME', 'image_url')     => env('APP_IMAGES_URL').'/storage/'.$rubro.'/'.str_replace(' ', '_', $category_name).'.'.$formato,
         ]);
     }
 

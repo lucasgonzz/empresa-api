@@ -155,8 +155,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     Route::resource('article', 'ArticleController')->except(['index']);
-    Route::get('article/index/from-status/{status?}', 'ArticleController@index');
-    // Route::get('article/index/from-status/{last_updated}/{status?}', 'ArticleController@index');
+    Route::get('article/index/from-status', 'ArticleController@index');
+    Route::get('article/index/eliminados', 'ArticleController@index_deleted');
     Route::get('/article/deleted-models/{last_updated}', 'ArticleController@deletedModels');
     Route::post('/article/excel/import', 'ArticleController@import');
     Route::post('/article/new-article', 'ArticleController@newArticle');
@@ -368,6 +368,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // CurrentAcounts Cheques
     Route::get('/cheque', 'ChequeController@index');
     Route::put('/cheque/cobrar', 'ChequeController@cobrar');
+    Route::put('/cheque/pagar', 'ChequeController@pagar');
     Route::put('/cheque/rechazar', 'ChequeController@rechazar');
     Route::put('/cheque/endosar', 'ChequeController@endosar');
 
@@ -419,6 +420,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::post('article-variant', 'ArticleVariantController@store');
     Route::put('article-variant/{id}', 'ArticleVariantController@update');
+    Route::delete('article-variant/{id}', 'ArticleVariantController@destroy');
 
     Route::resource('payment-method-installment', 'PaymentMethodInstallmentController');
 
@@ -436,6 +438,20 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Unidades de medida
     Route::resource('unidad-medida', 'UnidadMedidaController');
+
+
+    Route::resource('column-position', 'ColumnPositionController');
+
+    Route::resource('price-type-surchage', 'PriceTypeSurchageController');
+
+    Route::get('google/custom-search/aumentar-contador', 'GoogleController@aumentar_contador_custom_search');
+
+
+    Route::post('payment-plan', 'PaymentPlanController@store');
+
+    Route::resource('payment-plan-cuota', 'PaymentPlanCuotaController');
+    Route::get('payment-plan-cuota/{estado}/from-date/{from_date?}/{until_date?}', 'PaymentPlanCuotaController@index');
+
 });
 
 

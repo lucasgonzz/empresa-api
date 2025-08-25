@@ -229,9 +229,9 @@ class BudgetHelper {
 		return $total;
 	}
 
-	static function totalArticle($article) {
+	static function totalArticle($article, $con_descuentos = true) {
 		$total = $article->pivot->price * $article->pivot->amount;
-		if (!is_null($article->pivot->bonus)) {
+		if (!is_null($article->pivot->bonus) && $con_descuentos) {
 			$total -= $total * (float)$article->pivot->bonus / 100;
 		}
 		return $total;

@@ -37,7 +37,7 @@ class ArticleIndumentariaSeeder extends Seeder
                 'user_id'      => env('USER_ID'),
             ]);
 
-            ArticleSeederHelper::set_images($created_article, $article);
+            ArticleSeederHelper::set_images($created_article, $article, 'indumentaria');
 
             ArticleSeederHelper::set_provider($created_article, $article);
 

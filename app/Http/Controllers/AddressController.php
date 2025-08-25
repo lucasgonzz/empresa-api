@@ -11,7 +11,7 @@ class AddressController extends Controller
 
     public function index() {
         $models = Address::where('user_id', $this->userId())
-                            ->orderBy('created_at', 'DESC')
+                            ->orderBy('created_at', 'ASC')
                             ->withAll()
                             ->get();
         return response()->json(['models' => $models], 200);

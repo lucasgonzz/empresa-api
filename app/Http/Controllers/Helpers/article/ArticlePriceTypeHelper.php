@@ -18,6 +18,8 @@ class ArticlePriceTypeHelper {
 
             $price_type_model = null;
 
+            $final_price = null;
+
             if (isset($price_type['pivot']['percentage'])) {
 
                 $percentage = $price_type['pivot']['percentage'];
@@ -28,14 +30,36 @@ class ArticlePriceTypeHelper {
                 $percentage = $price_type_model->percentage;
             }
 
+            if (isset($price_type['pivot']['final_price'])) {
+                $final_price = $price_type['pivot']['final_price'];
+            }
+
 
             $incluir_en_excel_para_clientes = Self::get_incluir_en_excel_para_clientes($price_type, $price_type_model);
+            $setear_precio_final = Self::get_setear_precio_final($price_type, $price_type_model);
+
 
             $article->price_types()->updateExistingPivot($price_type['id'], [
-                'percentage'    => $percentage,
+                'percentage'                        => $percentage,
+                'final_price'                       => $final_price,
                 'incluir_en_excel_para_clientes'    => $incluir_en_excel_para_clientes,
+                'setear_precio_final'               => $setear_precio_final,
             ]);
         }
+    }
+
+    static function get_setear_precio_final($price_type, $price_type_model) {
+        
+        if (isset($price_type['pivot']['setear_precio_final'])) {
+
+            return $price_type['pivot']['setear_precio_final'];
+        }
+
+        if (is_null($price_type_model)) {
+            $price_type_model = Self::get_price_type($price_type['id']);
+        }
+
+        return $price_type_model['setear_precio_final'];
     }
 
     static function get_incluir_en_excel_para_clientes($price_type, $price_type_model) {

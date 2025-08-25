@@ -27,6 +27,7 @@ class InventoryPerformanceHelper {
     
 	public $sin_stock;
 	public $stock_minimo;
+	public $articles_stock_minimo;
 
 	public $inventory_performance;
 
@@ -46,6 +47,7 @@ class InventoryPerformanceHelper {
 	    
 		$this->sin_stock = 0;
 		$this->stock_minimo = 0;
+		$this->articles_stock_minimo = [];
 
 
 	}
@@ -90,6 +92,10 @@ class InventoryPerformanceHelper {
 
 				'user_id'							=> UserHelper::userId(),
 			]);
+
+			foreach ($this->articles_stock_minimo as $article) {
+				$this->inventory_performance->articles_stock_minimo()->attach($article->id);
+			}
 		}
 
 	}
@@ -153,6 +159,7 @@ class InventoryPerformanceHelper {
 
 					$this->stock_minimo++;
 
+					$this->articles_stock_minimo[] = $article;
 				}
 
 			}

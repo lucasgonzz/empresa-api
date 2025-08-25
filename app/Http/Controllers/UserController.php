@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\AuthController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\OnlineConfiguration;
 use App\Models\User;
@@ -12,6 +13,7 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 
 class UserController extends Controller
 {
@@ -49,6 +51,7 @@ class UserController extends Controller
 
         $current_dolar                          = $model->dollar;
         $current_iva_included                   = $model->iva_included;
+        $current_percentage_gain                = $model->percentage_gain;
 
         $model->name                            = $request->name;
         $model->doc_number                      = $request->doc_number;
@@ -81,18 +84,34 @@ class UserController extends Controller
         $model->estable_version                 = $request->estable_version;
 
         $model->text_omitir_cc                  = $request->text_omitir_cc;
+        $model->percentage_gain                  = $request->percentage_gain;
 
         $model->save();
 
         $auth_controller = new AuthController();
         $auth_controller->set_sessions($model);
 
-        GeneralHelper::checkNewValuesForArticlesPrices($this, $current_dolar, $request->dollar);
-        GeneralHelper::checkNewValuesForArticlesPrices($this, $current_iva_included, $request->iva_included);
+        $this->check_actualizar_articulos($model, $current_dolar, $current_iva_included, $current_percentage_gain);
+
         $model = UserHelper::getFullModel();
 
 
         return response()->json(['model' => $model], 200);
+    }
+
+    function check_actualizar_articulos($model, $current_dolar, $current_iva_included, $current_percentage_gain) {
+
+        if (
+            $model->dollar != $current_dolar
+            || $model->iva_included != $current_iva_included
+            || $model->percentage_gain != $current_percentage_gain
+        ) {
+            Log::info($model->dollar.' | '.$current_dolar);
+            Log::info($model->iva_included.' | '.$current_iva_included);
+            Log::info($model->percentage_gain.' | '.$current_percentage_gain);
+            Log::info('Hubo cambios en propiedades de user');
+            ArticleHelper::setArticlesFinalPrice();
+        }
     }
 
     function updatePassword(Request $request) {

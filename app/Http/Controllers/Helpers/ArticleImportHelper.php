@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\import\ArticleImportHistoryHelper;
 use App\Models\Address;
 use App\Models\Article;
+use App\Models\ArticleImportResult;
 use App\Models\ImportHistory;
 use App\Models\PriceType;
 use App\Models\UnidadMedida;
@@ -64,19 +65,19 @@ class ArticleImportHelper {
 
         $info_to_show = [];
 
-        if (!is_null($linea_error)) {
-        	$linea_error[] = [
-        		'title'	=> 'Linea error',
-        		'value'	=> $linea_error,
-        	];
-        }
-
         $info_to_show = [
         	[
         		'title'	=> 'Detalle del error',
         		'value'	=> $detalle_error,
         	],
         ];
+
+        if (!is_null($linea_error)) {
+        	$info_to_show[] = [
+        		'title'	=> 'Linea error',
+        		'value'	=> $linea_error,
+        	];
+        }
 
         $user->notify(new GlobalNotification([
         	'message_text'				=> 'Hubo un error durante la importacion de articulos',
@@ -135,7 +136,21 @@ class ArticleImportHelper {
         }
     }
 
-    static function create_import_history($user, $auth_user_id, $provider_id, $created_models, $updated_models, $columns, $archivo_excel_path, $error_message = null, $articulos_creados, $articulos_actualizados, $updated_props) {
+    static function create_article_import_result($import_uuid, $articulos_creados, $articulos_actualizados) {
+    	
+        $import_history = ArticleImportResult::create([
+		    'import_uuid'    => $import_uuid,
+		    'created_count'  => $articulos_creados,
+		    'updated_count'  => $articulos_actualizados,
+        ]);
+
+        Log::info('Se creo ArticleImportResult con '.$articulos_creados.' creados y '.$articulos_actualizados.' actualizados con import_uuid: '.$import_uuid);
+    }
+
+    static function create_import_history($user, $auth_user_id, $provider_id, $columns, $archivo_excel_path, $error_message = null, $articulos_creados, $articulos_actualizados) {
+
+    	Log::info('create_import_history, columns:');
+    	Log::info($columns);
     	
         $import_history = ImportHistory::create([
             'user_id'           => $user->id,

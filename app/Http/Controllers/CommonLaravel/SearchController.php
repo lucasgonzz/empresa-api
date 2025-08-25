@@ -30,15 +30,14 @@ class SearchController extends Controller
             $models = $models->whereNotNull('deleted_at')
                             ->withTrashed();
         }
-
+        
         Log::info('filters:');
         Log::info($filters);
 
         foreach ($filters as $filter) {
             
-            if ($filter['key'] == 'total_facturado') {
-                continue;
-            } 
+            Log::info('Va con ');
+            Log::info($filter);
 
             if (isset($filter['type'])) {
 
@@ -180,20 +179,10 @@ class SearchController extends Controller
                         Log::info('Filtrando por checkbox '.$filter['key'].' igual_que '.$filter['checkbox']);
                     }
 
-
-                    // else if ($filter['type'] == 'search' && $filter['value'] != 0) {
-                    //     $models = $models->where($filter['key'], $filter['value']);
-                    //     Log::info('Filtrando por text '.$filter['text'].' value = '.$filter['value']);
-                    // } else if ($filter['type'] == 'boolean' && $filter['value'] != -1) {
-                    //     $models = $models->where($filter['key'], $filter['value']);
-                    //     Log::info('Filtrando por boolean '.$filter['text']);
-                    // } else if ($filter['type'] != 'boolean' && $filter['value'] != 0) {
-                    //     $models = $models->where($filter['key'], $filter['value']);
-                    //     Log::info('Filtrando por value '.$filter['text']);
-                    // }
                 }
             }
         }
+
         if ($model_name_param == 'article' || $model_name_param == 'client' || $model_name_param == 'provider') {
             $models = $models->where('status', 'active');
         }
