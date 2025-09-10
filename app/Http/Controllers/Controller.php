@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\User;
 use App\Notifications\AddedModel;
 use App\Notifications\AddedModelNow;
@@ -24,42 +25,49 @@ class Controller extends BaseController
     use AuthorizesRequests, DispatchesJobs, ValidatesRequests;
 
     function userId($from_owner = true, $user_id = null) {
+        
         if (!is_null($user_id)) {
             return $user_id;
         }
-
-        if (session()->has('auth_user')) {
-
-            $user = session('auth_user');
-        } else {
-
-            $user = Auth()->user();
-        }
         
-        if (is_null($user)) {
-            $user = User::where('company_name', 'Autopartes Boxes')->first();
-            return $user->id;
-        }
-        if ($from_owner) {
-            if (is_null($user->owner_id)) {
-                return $user->id;
-            } else {
-                return $user->owner_id;
-            }
-        } else {
-            return $user->id;
-        }
+        return UserHelper::userId($from_owner);
+
+
+        // if (session()->has('auth_user')) {
+
+        //     $user = session('auth_user');
+        // } else {
+
+        //     $user = Auth()->user();
+        // }
+        
+        // if (is_null($user)) {
+        //     $user = User::where('company_name', 'Autopartes Boxes')->first();
+        //     return $user->id;
+        // }
+        // if ($from_owner) {
+        //     if (is_null($user->owner_id)) {
+        //         return $user->id;
+        //     } else {
+        //         return $user->owner_id;
+        //     }
+        // } else {
+        //     return $user->id;
+        // }
     }
 
     function user($from_owner = true) {
-        if (session()->has('auth_user')) {
+
+        return UserHelper::user($from_owner);
+
+        // if (session()->has('auth_user')) {
             
-            if ($from_owner) {
-                return session('owner');
-            }
-            return session('auth_user');
-        }
-        return User::find($this->userId($from_owner));
+        //     if ($from_owner) {
+        //         return session('owner');
+        //     }
+        //     return session('auth_user');
+        // }
+        // return User::find($this->userId($from_owner));
     }
 
     function is_owner() {

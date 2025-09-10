@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\StringHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\GeneralHelper as GH;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\PdfArticleHelper;
 use App\Http\Controllers\Helpers\PdfPrintArticles;
@@ -641,9 +642,19 @@ class SaleAfipTicketPdf extends fpdf {
 	function printArticle($article) {
 	    $this->SetArticleConf();
     	$this->setFont('Arial', '', 8);
-        $this->Cell($this->widths['codigo'], 6, StringHelper::short($article->bar_code, 14), 0, 0, 'L');
-        $this->Cell($this->widths['producto'], 6, StringHelper::short($article->name, 30), 0, 0, 'L');
-        $this->Cell($this->widths['cantidad'], 6, $article->pivot->amount, 0, 0, 'R');
+    	
+    	$codigo = $article->bar_code;
+
+		if (
+			UserHelper::hasExtencion('no_usar_codigos_de_barra')
+			|| UserHelper::hasExtencion('codigo_proveedor_en_vender')
+		) {
+			$codigo = $article->provider_code;
+		}
+
+        $this->Cell($this->widths['codigo'], 6, StringHelper::short($codigo, 14), 0, 0, 'L');
+        $this->Cell($this->widths['producto'], 6, StringHelper::short(GH::article_name($article), 30), 0, 0, 'L');
+        $this->Cell($this->widths['cantidad'], 6, Numbers::price($article->pivot->amount), 0, 0, 'R');
         // $this->Cell($this->widths['unidad_medida'], 6, 'unidad', 0, 0, 'C');
         $this->Cell($this->widths['precio_unitario'], 6, Numbers::price($this->afip_helper->getArticlePrice($this->sale, $article)), 0, 0, 'R');
 
@@ -680,7 +691,8 @@ class SaleAfipTicketPdf extends fpdf {
 
 	function subtotalConIva($article) {
 		$this->afip_helper->article = $article;		
-		return $this->afip_helper->getArticlePriceWithDiscounts() * $article->pivot->amount;
+		$total = $this->afip_helper->getArticlePriceWithDiscounts() * $article->pivot->amount;
+		return '$'.Numbers::price($total);
 	}
 
 	function printTicketCommerceInfo() {
@@ -703,14 +715,15 @@ class SaleAfipTicketPdf extends fpdf {
 		// Cuit
 		$this->SetY(53);
 		$this->SetX(6);
-		$this->SetFont('Arial', 'B', 8);
-		$this->Cell(10, 5, 'CUIT:',0,0,'L');
-		$this->SetFont('Arial', '', 8);
 
 		if (
 			!is_null($this->sale->client)
 		) {
 
+			$this->SetFont('Arial', 'B', 8);
+			$this->Cell(10, 5, 'CUIT:',0,0,'L');
+			$this->SetFont('Arial', '', 8);
+			
 			$this->Cell(20, 5, $this->sale->client->cuit, 0, 1, 'C');
 		}
 

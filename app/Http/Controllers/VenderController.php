@@ -6,6 +6,9 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\ArticleVariant;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Log;
 
 class VenderController extends Controller
 {
@@ -46,5 +49,139 @@ class VenderController extends Controller
                         ->first();
 
         return response()->json(['article' => $article, 'variant_id' => $variant_id, 'variant' => $variant], 200);
+    }
+
+    function search_nombre(Request $request) {
+
+        $keywords = explode(' ', trim($request->query_value));
+        $per_page = 50;
+        $current_page = LengthAwarePaginator::resolveCurrentPage();
+
+        $results = collect();
+
+        // 1. Buscar todos los artículos cuyo name o provider_code coincidan con alguna palabra
+        $articles = Article::where('status', 'active')
+            ->where(function ($query_builder) use ($keywords) {
+                if (count($keywords) === 1) {
+                    $keyword = $keywords[0];
+                    $query_builder->where('name', 'LIKE', "%$keyword%")
+                                  ->orWhere('provider_code', 'LIKE', "%$keyword%");
+                } else {
+                    foreach ($keywords as $keyword) {
+                        $query_builder->orWhere('name', 'LIKE', "%$keyword%");
+                    }
+                }
+            })
+            ->with(['article_variants', 'images', 'price_types', 'addresses', 'price_type_monedas'])
+            ->get();
+
+        // Log::info('articles:');
+        // Log::info($articles);
+
+        foreach ($articles as $article) {
+
+            // Detectar qué palabras de la búsqueda coincidieron con el nombre o código del artículo
+            $matched_keywords = collect($keywords)->filter(function ($word) use ($article) {
+                return str_contains(
+                                   mb_strtolower($article->name ?? '', 'UTF-8'),
+                                   mb_strtolower($word, 'UTF-8')
+                               ) ||
+                               str_contains(
+                                   mb_strtolower($article->provider_code ?? '', 'UTF-8'),
+                                   mb_strtolower($word, 'UTF-8')
+                               );
+            })->values();
+
+            // Palabras restantes para buscar dentro de variant_description
+            $remaining_keywords = array_diff($keywords, $matched_keywords->toArray());
+
+            // Log::info('remaining_keywords:');
+            // Log::info($remaining_keywords);
+
+            // Si el artículo tiene variantes
+            if ($article->article_variants->count() > 0) {
+
+                // Filtrar variantes que coincidan con todas las palabras restantes
+                $matching_variants = $article->article_variants->filter(function ($variant) use ($remaining_keywords) {
+                    foreach ($remaining_keywords as $word) {
+                        if (!str_contains(
+                                mb_strtolower($variant->variant_description ?? '', 'UTF-8'),
+                                mb_strtolower($word, 'UTF-8')
+                            )) {
+                            return false;
+                        }
+                    }
+                    return true;
+                });
+
+                if ($matching_variants->count() > 0) {
+                    foreach ($matching_variants as $variant) {
+                        $results->push((object)[
+                            'is_variant'            => true,
+                            'id'                    => $variant->article->id,
+                            'variant_id'            => $variant->id,
+                            'variant_description'   => $variant->variant_description,
+                            'final_price'           => $this->get_variant_price($variant),
+                            'price_types'           => $article->price_types,
+                            'bar_code'              => $variant->bar_code,
+                            'name'                  => $article->name. ' '.$variant->variant_description,
+                            'article'               => $article,
+                            'images'                => $this->get_variant_images($variant),
+                            'addresses'             => $variant->addresses,
+                        ]);
+                    }
+                }
+
+            } else {
+                // Si no tiene variantes, y al menos una keyword matcheó → agregar el artículo
+                if ($matched_keywords->isNotEmpty()) {
+                    $article->is_variant = false;
+                    $results->push($article);
+                }
+            }
+        }
+
+        // Paginar manualmente
+        $paginated = new LengthAwarePaginator(
+            $results->forPage($current_page, $per_page),
+            $results->count(),
+            $per_page,
+            $current_page
+        );
+
+        return response()->json([
+            'current_page' => $paginated->currentPage(),
+            'data' => array_values($paginated->items()), // 👈 forzar índices numéricos planos
+            'per_page' => $paginated->perPage(),
+            'total' => $paginated->total(),
+            'last_page' => $paginated->lastPage(),
+        ], 200);
+
+    }
+
+
+
+
+    function get_variant_images($variant) {
+        $images = $variant->article->images;
+        if (!is_null($variant->image_url)) {
+            $images = [
+                [
+                    env('IMAGE_URL_PROP_NAME', 'image_url') => $variant->image_url,
+                ]
+            ];
+        }
+        return $images;
+    }
+
+    function get_variant_price($variant) {
+
+        $final_price = $variant->article->final_price;
+
+        if (!is_null($variant->price)) {
+            $final_price = $variant->price;
+        }
+
+        return $final_price;
     }
 }

@@ -332,6 +332,22 @@ class ExtencionSeeder extends Seeder
                 'name' => 'articulos_en_exhibicion',
                 'slug' => 'articulos_en_exhibicion',
             ],
+            [
+                // 61
+                'name' => 'autopartes',
+                'slug' => 'autopartes',
+            ],
+            [
+                // 62
+                'name' => 'ventas_en_dolares',
+                'slug' => 'ventas_en_dolares',
+            ],
+            [
+                // 63
+                'name' => 'pagos_provisorios',
+                'slug' => 'pagos_provisorios',
+            ],
+
 
         ];
         foreach ($extencions as $extencion) {

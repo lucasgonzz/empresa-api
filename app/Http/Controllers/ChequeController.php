@@ -153,6 +153,8 @@ class ChequeController extends Controller
 
         $num_receipt = CurrentAcountHelper::getNumReceipt();
 
+        $credit_account = $cheque->current_acount->credit_account;
+
         $pago = CurrentAcount::create([
             'haber'                             => $cheque->amount,
             'description'                       => null,
@@ -162,14 +164,18 @@ class ChequeController extends Controller
             'detalle'                           => 'Pago N°'.$num_receipt,
             'provider_id'                       => $cheque->endosado_a_provider_id,
             'created_at'                        => Carbon::now(),
+            'credit_account'                    => $credit_account->id,
         ]);
 
         CurrentAcountPagoHelper::attachPaymentMethods($pago, $payment_methods);
-        $pago->saldo = CurrentAcountHelper::getSaldo('provider', $pago->provider_id, $pago) - $pago->haber;
+        $pago->saldo = CurrentAcountHelper::getSaldo($credit_account->id, $pago) - $pago->haber;
         $pago->save();
-        $pago_helper = new CurrentAcountPagoHelper('provider', $pago->provider_id, $pago);
+
+        $pago_helper = new CurrentAcountPagoHelper($credit_account->id, 'provider', $pago->provider_id, $pago);
         $pago_helper->init();
-        CurrentAcountHelper::updateModelSaldo($pago, 'provider', $pago->provider_id);
+
+        $credit_account->saldo = $pago->saldo;
+        // CurrentAcountHelper::updateModelSaldo($pago, 'provider', $pago->provider_id);
     }
 }
  

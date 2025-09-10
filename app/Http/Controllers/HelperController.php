@@ -58,6 +58,34 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function check_ventas_stock_movements() {
+        $user = User::whereNull('owner_id')->first();
+
+        $sales = Sale::where('user_id', $user->id)
+                        ->orderBy('created_at', 'ASC')
+                        ->get();
+
+        foreach ($sales as $sale) {
+            
+            foreach ($sale->articles as $article) {
+                
+                $stock_movement = StockMovement::where('article_id', $article->id)
+                                                ->where('sale_id', $sale->id)
+                                                ->first();
+
+                if ($stock_movement) {
+
+                    if (abs($stock_movement->amount) != abs($article->pivot->amount)) {
+
+                        echo $article->name.' venta id '.$sale->id.' <br>';
+                        echo 'Se vendieron '.$article->pivot->amount.' y se registraron '.$stock_movement->amount.' <br>';
+                    }
+                }
+            }
+        }
+        echo 'Listo';
+    }
+
     function liberar_ventas($user_id = 800) {
         $sales = Sale::whereNotNull('actualizandose_por_id')
                         ->where('user_id', $user_id)

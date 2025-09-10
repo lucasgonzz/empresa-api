@@ -47,8 +47,13 @@ class ProcessRecalculateCurrentAcounts implements ShouldQueue
 
         foreach ($clients as $client) {
             Log::info('Entro con '.$client->name);
-            CurrentAcountHelper::checkSaldos('client', $client->id);
-            CurrentAcountHelper::checkPagos('client', $client->id, true);
+
+
+            foreach ($client->credit_accounts as $credit_account) {
+                CurrentAcountHelper::checkSaldos($credit_account->id);
+                CurrentAcountHelper::checkPagos($credit_account->id, true);
+            }
+            
             foreach ($client->current_acounts as $current_acount) {
                 if (!is_null($current_acount->debe)) {
                     if (!is_null($current_acount->sale)) {

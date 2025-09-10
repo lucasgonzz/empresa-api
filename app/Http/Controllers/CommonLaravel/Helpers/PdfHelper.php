@@ -403,7 +403,7 @@ class PdfHelper {
 	}
 
 	static function currentAcountInfo($instance, $current_acount, $client_id, $compra_actual, $start_y = 32){
-		$saldo_anterior = CurrentAcountHelper::getSaldo('client', $client_id, $current_acount);
+		$saldo_anterior = CurrentAcountHelper::getSaldo($current_acount->credit_account_id, $current_acount);
 		$instance->y = $start_y;
 		$instance->x = 105;
 		$instance->SetFont('Arial', 'B', 10);

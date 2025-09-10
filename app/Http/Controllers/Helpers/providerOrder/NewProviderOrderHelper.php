@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\caja\MovimientoCajaHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Iva;
 use App\Models\MovimientoCaja;
@@ -28,6 +29,8 @@ class NewProviderOrderHelper {
         $this->ya_se_actualizo_stock    = $ya_se_actualizo_stock;
         $this->user                     = UserHelper::user();
 
+        $this->set_credit_account();
+
         $this->set_ultimos_articulos_recividos();
 
         $this->set_ivas();
@@ -40,6 +43,13 @@ class NewProviderOrderHelper {
         $this->set_totales();
 
         $this->set_current_acount();
+    }
+
+    function set_credit_account() {
+        $this->credit_account = CreditAccount::where('model_name', 'provider')
+                                                ->where('model_id', $this->provider_order->provider_id)
+                                                ->where('moneda_id', $this->provider_order->moneda_id)
+                                                ->first();
     }
 
     function set_totales() {
@@ -55,7 +65,7 @@ class NewProviderOrderHelper {
 
             foreach ($this->provider_order->provider_order_afip_tickets as $afip_ticket) {
 
-                $total_iva  += $afip_ticket->total_iva;
+                // $total_iva  += $afip_ticket->total_iva;
                 $total      += $afip_ticket->total;
             }
 
@@ -69,7 +79,10 @@ class NewProviderOrderHelper {
 
                 $cost = (float)($article->pivot->cost);
                 
-                if ($article->pivot->cost_in_dollars) {
+                if (
+                    $article->pivot->cost_in_dollars
+                    && $this->provider_order->moneda_id == 1
+                ) {
 
                     $valor_dolar = $this->user->dollar;
 
@@ -106,7 +119,9 @@ class NewProviderOrderHelper {
 
                 $article_iva = 0;
 
-                if (!is_null($article->pivot->iva_id)
+                if (
+                    !$this->user->iva_included
+                    && !is_null($article->pivot->iva_id)
                     && $article->pivot->iva_id != 0) {
 
                     $iva = $this->get_iva($article->pivot->iva_id);
@@ -131,6 +146,16 @@ class NewProviderOrderHelper {
 
             }
         }
+
+        if (count($this->provider_order->provider_order_afip_tickets) >= 1) {
+
+            $total_iva = 0;
+            foreach ($this->provider_order->provider_order_afip_tickets as $afip_ticket) {
+
+                $total_iva  += $afip_ticket->total_iva;
+            }
+        } 
+
 
         $this->provider_order->total_descuento      = $total_descuento;
         $this->provider_order->total_iva            = $total_iva;
@@ -187,8 +212,7 @@ class NewProviderOrderHelper {
                 $current_acount = $this->actualizar_current_acount($current_acount);
             }
 
-            CurrentAcountHelper::checkSaldos('provider', $this->provider_order->provider_id, $current_acount, true);
-
+            CurrentAcountHelper::check_saldos_y_pagos($this->credit_account->id);
         }
 
     }
@@ -197,7 +221,7 @@ class NewProviderOrderHelper {
         
         $current_acount->debe = $this->provider_order->total;
 
-        $saldo = CurrentAcountHelper::getSaldo('provider', $this->provider_order->provider_id, $current_acount) + $this->provider_order->total;
+        $saldo = CurrentAcountHelper::getSaldo($this->credit_account->id, $current_acount) + $this->provider_order->total;
 
         $current_acount->saldo = $saldo;
 
@@ -215,9 +239,10 @@ class NewProviderOrderHelper {
             'user_id'           => UserHelper::userId(),
             'provider_id'       => $this->provider_order->provider_id,
             'provider_order_id' => $this->provider_order->id,
+            'credit_account_id' => $this->credit_account->id,
         ]);
 
-        $saldo = CurrentAcountHelper::getSaldo('provider', $this->provider_order->provider_id, $current_acount) + $this->provider_order->total;
+        $saldo = CurrentAcountHelper::getSaldo($this->credit_account->id, $current_acount) + $this->provider_order->total;
 
         $current_acount->saldo = $saldo;
 
@@ -279,6 +304,7 @@ class NewProviderOrderHelper {
             if ($this->provider_order->update_stock) {
 
                 $article = $this->update_stock($article, $new_article);
+                
             }
 
             $this->update_article_provider($article, $new_article);
@@ -312,9 +338,11 @@ class NewProviderOrderHelper {
 
     function check_article_status($article, $new_article) {
 
-        if ($article->status == 'inactive' 
+        if (
+            $article->status == 'inactive' 
             && $this->provider_order->update_stock
-            && $new_article['pivot']['amount'] > 0) {
+            && $new_article['pivot']['amount'] > 0
+        ) {
 
             $article->status = 'active';
             $article->apply_provider_percentage_gain = 1;
@@ -461,10 +489,14 @@ class NewProviderOrderHelper {
         }
 
         if (!is_null($cost) 
+
             && $article->cost != $cost) {
 
 
             $article->cost = $cost;
+            
+            $article->cost_in_dollars = $new_article['pivot']['cost_in_dollars'];
+
             $article->save();
 
             Log::info('update_cost con '. $article->cost);

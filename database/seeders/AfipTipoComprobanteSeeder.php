@@ -43,6 +43,10 @@ class AfipTipoComprobanteSeeder extends Seeder
                 'name'      => 'Factura de credito Electronica MiPyMEs (FCE) C',
                 'codigo'    => 211,
             ],
+            [
+                'name'      => 'Factura de Exportacion',
+                'codigo'    => 19,
+            ],
         ];
 
         foreach ($models as $model) {

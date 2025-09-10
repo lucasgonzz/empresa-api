@@ -5,11 +5,12 @@ namespace App\Http\Controllers;
 use App\Exports\ProviderExport;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Imports\ProviderImport;
 use App\Models\Provider;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Maatwebsite\Excel\Facades\Excel;
-use Carbon\Carbon;
 
 class ProviderController extends Controller
 {
@@ -42,6 +43,8 @@ class ProviderController extends Controller
             'user_id'               => $this->userId(),
         ]);
 
+        CreditAccountHelper::crear_credit_accounts('provider', $model->id);
+
         $this->updateRelationsCreated('Provider', $model->id, $request->childrens);
         $this->sendAddModelNotification('Provider', $model->id);
         return response()->json(['model' => $this->fullModel('Provider', $model->id)], 201);
@@ -69,8 +72,22 @@ class ProviderController extends Controller
         $model->porcentaje_comision_negro               = $request->porcentaje_comision_negro; 
         $model->porcentaje_comision_blanco              = $request->porcentaje_comision_blanco; 
         $model->save();
-        GeneralHelper::checkNewValuesForArticlesPrices($this, $last_percentage_gain, $model->percentage_gain, 'provider_id', $model->id);
-        GeneralHelper::checkNewValuesForArticlesPrices($this, $last_dolar, $model->dolar, 'provider_id', $model->id);
+
+
+        $should_update_prices = false;
+
+        if ($last_percentage_gain != $model->percentage_gain) {
+            $should_update_prices = true;
+        }
+
+        if ($last_dolar != $model->dolar) {
+            $should_update_prices = true;
+        }
+
+        if ($should_update_prices) {
+            GeneralHelper::checkNewValuesForArticlesPrices($this, 0, 1, 'provider_id', $model->id);
+        }
+
         $this->sendAddModelNotification('Provider', $model->id);
         return response()->json(['model' => $this->fullModel('Provider', $model->id)], 200);
     }

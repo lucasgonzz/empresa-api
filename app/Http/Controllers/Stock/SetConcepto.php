@@ -7,6 +7,40 @@ use Illuminate\Support\Facades\Log;
 
 class SetConcepto  {
 
+    static function get_concepto($data) {
+
+        $concepto_id = null;
+
+        if (
+            isset($data['concepto_stock_movement_id'])
+            && !is_null($data['concepto_stock_movement_id'])
+        ) {
+
+            $concepto_id = $data['concepto_stock_movement_id'];
+        
+        } else if (
+            isset($data['concepto_stock_movement_name'])
+            && !is_null($data['concepto_stock_movement_name'])
+        ) {
+
+            Log::info('viene concepto_stock_movement_name: '.$data['concepto_stock_movement_name']);
+
+            $concepto = ConceptoStockMovement::where('name', $data['concepto_stock_movement_name'])
+                                                ->first();
+
+            if ($concepto) {
+                Log::info('se encontro');
+                $concepto_id = $concepto->id;
+            }
+
+        } else {
+            
+            $concepto_id = 1;
+        }
+
+        return $concepto_id;
+    }
+
     static function set_concepto($stock_movement, $data) {
 
         $concepto_id = null;

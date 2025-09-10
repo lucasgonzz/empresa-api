@@ -29,18 +29,12 @@ class ProcessCheckSaldosChunk implements ShouldQueue
         $saldos_diferentes = 0;
 
         foreach ($this->clients as $client) {
-            Log::info('chequeando saldo y pagos de '.$client->name);
-            $saldo_anterior = $client->saldo;
-            $client = CurrentAcountHelper::checkSaldos('client', $client->id);
-            CurrentAcountHelper::checkPagos('client', $client->id, true);
-            $nuevo_saldo = $client->saldo;
 
-            if ($saldo_anterior != $nuevo_saldo) {
-                Log::info('Tenia el saldo diferente');
-                $saldos_diferentes++;
+            foreach ($client->credit_accounts as $credit_account) {
+                CurrentAcountHelper::checkSaldos($credit_account->id);
+                CurrentAcountHelper::checkPagos($credit_account->id, true);
             }
-        }
 
-        Log::info('habia '.$saldos_diferentes.' saldos diferentes');
+        }
     }
 }

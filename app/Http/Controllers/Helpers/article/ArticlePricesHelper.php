@@ -222,16 +222,19 @@ class ArticlePricesHelper {
 
         $precio_con_iva = $price;
 
-        $article->load('iva');
+        if ($article->aplicar_iva) {
+            
+            $article->load('iva');
 
-        if (!$user->iva_included && Self::hasIva($article)) {
+            if (!$user->iva_included && Self::hasIva($article)) {
 
-            // Log::info('iva: '.$article->iva->percentage);
+                // Log::info('iva: '.$article->iva->percentage);
 
-            $importe_iva = $price * $article->iva->percentage / 100;
+                $importe_iva = $price * $article->iva->percentage / 100;
 
-            $precio_con_iva += $importe_iva;
+                $precio_con_iva += $importe_iva;
 
+            }
         }
 
         return $precio_con_iva;

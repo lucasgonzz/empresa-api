@@ -85,6 +85,32 @@ class AfipHelper extends Controller {
                 $ivas['21']['Importe']  += $helper->get_importe_iva();
                 $ivas['21']['BaseImp']  += $gravado;
 
+            } else if ($this->sale->facturar_importe_personalizado) {
+
+                $importe_personalizado = (float)$this->sale->facturar_importe_personalizado;
+                
+                $base_imponible = round($importe_personalizado / 1.21, 2);
+                $importe_iva = round($importe_personalizado - $base_imponible, 2);
+
+
+                // $total_iva = $total_a_facturar / ((21 / 100) + 1); 
+                // $total_iva = round($total_iva, 2); 
+
+                // Log::info('total_a_facturar: '.$total_a_facturar);
+                // Log::info('total_iva: '.$total_iva);
+
+                // $total_sin_iva = $total_a_facturar - $total_iva;
+                // $total_sin_iva = round($total_sin_iva, 2);
+
+                // Log::info('total_sin_iva: '.$total_iva);
+
+                $gravado += $base_imponible;
+
+                $iva += $importe_iva;
+
+                $ivas['21']['Importe']  += $importe_iva;
+                $ivas['21']['BaseImp']  += $base_imponible;
+
             } else {
 
                 foreach ($this->articles as $article) {
@@ -165,8 +191,15 @@ class AfipHelper extends Controller {
             }
 
         } else {
-            $total              = $this->sale->total;
-            $gravado            = $this->sale->total;
+
+            $total_a_facturar = $this->sale->total;
+
+            if (!is_null($this->sale->facturar_importe_personalizado)) {
+                $total_a_facturar = $this->sale->facturar_importe_personalizado;
+            }
+            
+            $total              = $total_a_facturar;
+            $gravado            = $total_a_facturar;
         }
 
         $neto_no_gravado = Numbers::redondear($neto_no_gravado);
@@ -203,7 +236,16 @@ class AfipHelper extends Controller {
 
     function getImporteIva($iva = null) {
         if (is_null($iva)) {
-            return $this->montoIvaDelPrecio() * $this->article->pivot->amount;
+            $monto_iva = $this->montoIvaDelPrecio() * $this->article->pivot->amount;
+
+            if (
+                $this->sale->moneda_id == 2
+                && !is_null($this->sale->valor_dolar)
+            ) {
+                $monto_iva *= (float)$this->sale->valor_dolar;
+            }
+
+            return $monto_iva;
         }
         $importe = 0;
         $base_imp = 0;
@@ -219,6 +261,14 @@ class AfipHelper extends Controller {
         ) {
             $importe = $this->montoIvaDelPrecio() * $this->article->pivot->amount;
             $base_imp = $this->getPriceWithoutIva() * $this->article->pivot->amount;
+
+            if (
+                $this->sale->moneda_id == 2
+                && !is_null($this->sale->valor_dolar)
+            ) {
+                $importe *= (float)$this->sale->valor_dolar;
+                $base_imp *= (float)$this->sale->valor_dolar;
+            }
         }
         return ['Importe' => round($importe, 2), 'BaseImp' => round($base_imp, 2)];
     }
@@ -340,7 +390,16 @@ class AfipHelper extends Controller {
                 && $this->article->iva->percentage != 'Exento'
             )
         ) {
-            return $this->getPriceWithoutIva() * $this->article->pivot->amount;
+            $gravado = $this->getPriceWithoutIva() * $this->article->pivot->amount;
+
+            if (
+                $this->sale->moneda_id == 2
+                && !is_null($this->sale->valor_dolar)
+            ) {
+                $gravado *= (float)$this->sale->valor_dolar;
+            }
+
+            return $gravado;
         }
         return 0;
     }
@@ -379,8 +438,10 @@ class AfipHelper extends Controller {
             'CbteTipo'  => $cbte_tipo
         ];
         $result = $wsfe->FECompUltimoAutorizado($pto_vta);
+
         Log::info('getNumeroComprobante');
         Log::info((array)$result);
+        
         if (!$result['hubo_un_error']) {
             return [
                 'hubo_un_error'         => false,

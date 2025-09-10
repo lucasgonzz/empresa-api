@@ -4,9 +4,10 @@ namespace App\Http\Controllers\Pdf;
 
 use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
+use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ImageHelper;
 use App\Http\Controllers\Helpers\Numbers;
-use App\Http\Controllers\Helpers\UserHelper;
+use App\Models\User;
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
@@ -18,7 +19,10 @@ class BudgetPdf extends fpdf {
 		$this->b = 0;
 		$this->line_height = 7;
 		
-		$this->user = UserHelper::getFullModel();
+		$this->user = User::where('id', $budget->user_id)
+							->withAll()
+							->first();
+							
 		$this->budget = $budget;
 		$this->with_prices = $with_prices;
 
@@ -33,10 +37,11 @@ class BudgetPdf extends fpdf {
 	function getFields() {
 		if ($this->with_prices) {
 			return [
-				'Codigo' 	=> 30,
-				'Producto' 	=> 75,
+				'Imagen'	=> 40,
+				// 'Codigo' 	=> 30,
+				'Producto' 	=> 70,
 				'Precio' 	=> 30,
-				'Cant' 		=> 20,
+				'Cant' 		=> 15,
 				'Bonif' 	=> 15,
 				'Importe' 	=> 30,
 			];
@@ -156,6 +161,18 @@ class BudgetPdf extends fpdf {
 			}
 		}
 
+		// Promociones vinotecas
+		foreach ($this->budget->promocion_vinotecas as $promo) {
+			if ($this->y < 210) {
+				$this->printArticle($promo);
+			} else {
+				$this->AddPage();
+				$this->x = 5;
+				$this->y = 55;
+				$this->printArticle($promo);
+			}
+		}
+
 		// Servicios
 		foreach ($this->budget->services as $service) {
 			if ($this->y < 210) {
@@ -180,7 +197,29 @@ class BudgetPdf extends fpdf {
 
 	function printArticle($article) {
 		$this->x = 5;
-		$this->Cell($this->getFields()['Codigo'], $this->line_height, $article->bar_code, $this->b, 0, 'L');
+
+		$image_height = 0;
+
+		if (isset($article->images) && count($article->images) >= 1) {
+
+            $url = $article->images[0]['hosting_url'];
+
+            if (env('APP_ENV') == 'local') {
+
+                $url = 'https://api-colman-prueba.comerciocity.com/public/storage/171699179550596.webp';
+            }
+
+
+            $img_url = GeneralHelper::getJpgImage($url);
+
+	        $this->Image($img_url, 5, $this->y+1, 40, 40);
+
+	        $image_height = 35;
+		}
+	    
+	    $this->x += 40;
+
+		// $this->Cell($this->getFields()['Codigo'], $this->line_height, $article->bar_code, $this->b, 0, 'L');
 		$y_1 = $this->y;
 		$this->MultiCell($this->getFields()['Producto'], $this->line_height, $article->name, $this->b, 'L', false);
 		
@@ -191,7 +230,7 @@ class BudgetPdf extends fpdf {
 		if ($this->with_prices) {
 			$this->Cell($this->getFields()['Precio'], $this->line_height, '$'.Numbers::price($article->pivot->price), $this->b, 0, 'L');
 		}
-		$this->Cell($this->getFields()['Cant'], $this->line_height, $article->pivot->amount, $this->b, 0, 'L');
+		$this->Cell($this->getFields()['Cant'], $this->line_height, Numbers::price($article->pivot->amount), $this->b, 0, 'L');
 		if ($this->with_prices) {
 			$this->Cell($this->getFields()['Bonif'], $this->line_height, $this->getBonus($article), $this->b, 0, 'L');
 
@@ -201,6 +240,9 @@ class BudgetPdf extends fpdf {
 			$this->Cell($this->getFields()['Importe'], $this->line_height, '$'.Numbers::price($total_article), $this->b, 0, 'L');
 		}
 		$this->y = $y_2;
+
+		$this->y += $image_height;
+
 		$this->Line(5, $this->y, 205, $this->y);
 	}
 
@@ -284,7 +326,7 @@ class BudgetPdf extends fpdf {
 		if ($this->with_prices) {
 		    $this->x = 5;
 		    $this->SetFont('Arial', 'B', 14);
-			$this->Cell(100, 10, 'Total: $'. Numbers::price($this->budget->total), 0, 1, 'L');
+			$this->Cell(100, 10, 'Total: $'. Numbers::price($this->budget->total), 0, 1, 'R');
 			// $this->Cell(100, 10, 'Total: $'. Numbers::price(BudgetHelper::getTotal($this->budget)), 0, 1, 'L');
 		}
 	}

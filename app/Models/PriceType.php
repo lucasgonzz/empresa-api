@@ -12,6 +12,10 @@ class PriceType extends Model
         $q->with('categories', 'sub_categories', 'price_type_surchages');
     }
 
+    function monedas() {
+        return $this->belongsToMany(Moneda::class)->withPivot('percentage', 'final_price', 'setear_precio_final');
+    }
+
     function categories() {
         return $this->belongsToMany(Category::class)->withPivot('percentage');
     }

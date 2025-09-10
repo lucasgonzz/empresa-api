@@ -30,4 +30,41 @@ class Numbers {
 		}
 		return $resutl;
 	}
+
+	
+    function normalize_number($value) {
+        if (is_null($value) || $value === '') {
+            return null;
+        }
+
+        // Eliminar espacios
+        $value = trim($value);
+
+        // Caso 1: si el número contiene coma y punto
+        if (strpos($value, ',') !== false && strpos($value, '.') !== false) {
+            // Detectar cuál es el separador decimal
+            if (strrpos($value, ',') > strrpos($value, '.')) {
+                // Ej: "1.000,80" → quitar puntos y cambiar coma a punto
+                $value = str_replace('.', '', $value);
+                $value = str_replace(',', '.', $value);
+            } else {
+                // Ej: "1,000.80" → quitar comas
+                $value = str_replace(',', '', $value);
+            }
+        } 
+        // Caso 2: solo coma → se asume que es decimal
+        elseif (strpos($value, ',') !== false) {
+            $value = str_replace(',', '.', $value);
+        } 
+        // Caso 3: solo punto → ya está ok, pero quitar separadores de miles si existieran
+        else {
+            // Eliminar cualquier separador de miles erróneo
+            if (preg_match('/\.\d{3}$/', $value) === 0) {
+                // Si no es decimal, quitar puntos de miles
+                $value = str_replace('.', '', $value);
+            }
+        }
+
+        return (float) $value;
+    }
 }

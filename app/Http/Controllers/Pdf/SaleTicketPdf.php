@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\SalePdfHelper;
 use App\Http\Controllers\Pdf\AfipQrPdf;
+use App\Models\AfipInformation;
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
@@ -134,22 +135,48 @@ class SaleTicketPdf extends fpdf {
 
 	function logo() {
         // Logo
+        $image_width = $this->ancho / 2;
         if (!is_null($this->user->image_url)) {
-        	$image_width = 25;
-        	$sobrante = $this->ancho - $image_width;
         	if (env('APP_ENV') == 'local') {
-        		$this->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', $sobrante / 2, 0, 0, $image_width);
+        		$this->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', 0, 0, $image_width, $image_width);
         	} else {
-	        	$this->Image($this->user->image_url, $sobrante / 2, 0, 0, 25);
+	        	$this->Image($this->user->image_url, 0, 0, $image_width, $image_width);
         	}
         }
 		
         // Company name
 		$this->SetFont('Arial', 'B', 14);
-		$this->x = 2;	
-		$this->y = 25;
-		$this->Cell($this->cell_ancho, 10, $this->user->company_name, $this->b, 0, 'C');
-		$this->y += 10;
+		$image_width += 2;
+		$this->x = $image_width;	
+		$this->y = 5;
+
+		$this->MultiCell($image_width, 7, $this->user->company_name, $this->b, 'L', 0);
+
+		$address = null;
+		if (!is_null($this->sale->afip_information)) {
+			$address = $this->sale->afip_information->domicilio_comercial;
+		} else {
+			$punto_venta = AfipInformation::where('user_id', $this->user->id)
+										->first();
+
+			if ($punto_venta) {
+				$address = $punto_venta->domicilio_comercial;
+			}
+		}
+
+		$this->SetFont('Arial', '', 10);
+		if ($address) {
+
+			$this->x = $image_width;	
+			$this->Cell($image_width, 7, $address, $this->b, 1, 'L');
+		}
+
+		$this->x = $image_width;	
+		$this->Cell($image_width, 7, 'Tel: '.$this->user->phone, $this->b, 1, 'L');
+
+
+		$this->y = $image_width;
+		$this->y += 5;
 	}
 
 	function items() {
@@ -320,8 +347,7 @@ class SaleTicketPdf extends fpdf {
 			$total_sale = $this->sale->total;
 		}
 		   
-
-		if (!is_null($this->sale->total) && $this->sale->total != $this->total_sale) {
+		if (!is_null($this->sale->total) && (int)$this->sale->total != (int)$this->total_sale) {
 
 			$this->SetFont('Arial', 'B', 10);
 		    $this->x = 2;
@@ -332,9 +358,10 @@ class SaleTicketPdf extends fpdf {
 		$this->iva_discriminado();
 
 
-		$this->SetFont('Arial', 'B', 12);
+		$this->SetFont('Arial', 'B', 14);
 	    $this->x = 2;
-		$this->Cell($this->cell_ancho, 10, 'Total: $'. Numbers::price($total_sale), 1, 0, 'C');
+	    $this->y += 2;
+		$this->Cell($this->cell_ancho, 10, 'Total: $'. Numbers::price($total_sale), 0, 0, 'C');
 		$this->y += 10;
 	}
 
@@ -436,7 +463,7 @@ class SaleTicketPdf extends fpdf {
 			}
 		}
 		foreach ($this->sale->articles as $article) {
-			$height += $this->getHeight($article, 15);
+			$height += $this->getHeight($article, 8);
 		}
 		// $height += 
 		return $height;

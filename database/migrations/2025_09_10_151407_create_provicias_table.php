@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class CreatePriceChangePriceTypeTable extends Migration
+class CreateProviciasTable extends Migration
 {
     /**
      * Run the migrations.
@@ -13,13 +13,8 @@ class CreatePriceChangePriceTypeTable extends Migration
      */
     public function up()
     {
-        Schema::create('price_change_price_type', function (Blueprint $table) {
+        Schema::create('provicias', function (Blueprint $table) {
             $table->id();
-
-            $table->integer('price_change_id');
-            $table->integer('price_type_id');
-            $table->decimal('final_price', 20,2);
-
             $table->timestamps();
         });
     }
@@ -31,6 +26,6 @@ class CreatePriceChangePriceTypeTable extends Migration
      */
     public function down()
     {
-        Schema::dropIfExists('price_change_price_type');
+        Schema::dropIfExists('provicias');
     }
 }

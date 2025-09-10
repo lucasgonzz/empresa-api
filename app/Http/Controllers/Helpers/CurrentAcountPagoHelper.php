@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\SellerCommissionHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Models\Check;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -23,11 +24,14 @@ class CurrentAcountPagoHelper {
     public $sin_pagar;
     public $sin_pagar_index;
 
-    function __construct($model_name, $model_id, $pago) {
+    function __construct($credit_account_id, $model_name, $model_id, $pago) {
         Log::info('-------------');
         Log::info('procesando '.$pago->detalle);
         $this->model_name = $model_name;
         $this->model_id = $model_id;
+
+        $this->credit_account = CreditAccount::find($credit_account_id);
+
         $this->pago = $pago;
         $this->fondos = $pago->haber;
         $this->sin_pagar = null;
@@ -40,14 +44,19 @@ class CurrentAcountPagoHelper {
         $this->sin_pagar_index++;
 
         if (!is_null($this->pago->to_pay_id) && is_null($this->sin_pagar)) {
+
             $this->sin_pagar = CurrentAcount::find($this->pago->to_pay_id);
+
             Log::info('con to_pay_id '.$this->pago->to_pay_id);
         } else {
-            $this->sin_pagar = CurrentAcount::where($this->model_name.'_id', $this->model_id)
+
+            $this->sin_pagar = CurrentAcount::where('credit_account_id', $this->credit_account->id)
                                             ->whereIn('status', ['sin_pagar', 'pagandose'])
                                             ->orderBy('created_at', 'ASC')
                                             ->first();
+
         }
+
         if (!is_null($this->sin_pagar)) {
             Log::info('se puso '.$this->sin_pagar->detalle.' para sin pagar');
         }

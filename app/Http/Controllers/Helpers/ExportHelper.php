@@ -102,6 +102,26 @@ class ExportHelper {
 		return $map;
 	}
 
+	static function map_autopartes($map, $article) {
+		
+		if (UserHelper::hasExtencion('autopartes')) {
+
+			$map[] = $article->espesor;
+			$map[] = $article->modelo;
+			$map[] = $article->pastilla;
+			$map[] = $article->diametro;
+			$map[] = $article->litros;
+			// $map[] = $article->descripcion;
+			$map[] = $article->contenido;
+			$map[] = $article->cm3;
+			$map[] = $article->calipers;
+			$map[] = $article->juego;
+
+		}
+
+		return $map;
+	}
+
 	static function map_propiedades_de_distribuidora($map, $article) {
 		
 		if (UserHelper::hasExtencion('articulos_con_propiedades_de_distribuidora')) {
@@ -204,6 +224,24 @@ class ExportHelper {
 		if (UserHelper::hasExtencion('articulos_unidades_individuales')) {
 
 				$headings[] = 'U Individuales';
+		}
+
+		return $headings;
+	}
+
+	static function set_props_autopartes($headings) {
+		if (UserHelper::hasExtencion('autopartes')) {
+
+				$headings[] = 'espesor';
+				$headings[] = 'modelo';
+				$headings[] = 'pastilla';
+				$headings[] = 'diametro';
+				$headings[] = 'litros';
+				// $headings[] = 'descripcion';
+				$headings[] = 'contenido';
+				$headings[] = 'cm3';
+				$headings[] = 'calipers';
+				$headings[] = 'juego';
 		}
 
 		return $headings;

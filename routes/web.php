@@ -2,6 +2,7 @@
 
 use Illuminate\Support\Facades\Route;
 
+
 Route::post('login', 'CommonLaravel\AuthController@login');
 Route::post('logout', 'CommonLaravel\AuthController@logout');
 
@@ -16,16 +17,15 @@ Route::post('/password-reset/update-password',
 	'CommonLaravel\PasswordResetController@updatePassword'
 );
 
+Route::get('/storage/{path}', function ($path) {
+    $full_path = storage_path('app/public/' . $path);
 
-Route::get('/storage/{filename}', function ($filename) {
-    $path = storage_path('app/public/' . $filename);
-
-    if (!file_exists($path)) {
+    if (!file_exists($full_path)) {
         abort(404);
     }
 
-    return response()->file($path);
-});
+    return response()->file($full_path);
+})->where('path', '.*');
 
 
 
@@ -198,6 +198,9 @@ Route::get('client/excel/export', 'ClientController@export');
 Route::get('provider/excel/export', 'ProviderController@export');
 Route::get('apertura-caja/excel/export/{id}', 'AperturaCajaController@export');
 
+Route::get('/provider-orders/export/{id}', function ($id) {
+    return Maatwebsite\Excel\Facades\Excel::download(new App\Exports\ProviderOrderExport($id), 'pedido_proveedor_'.$id.'.xlsx');
+});
 // Registrar Pago de usuario
 Route::get('user/register-payment/{company_name}', 'CommonLaravel\UserController@registerPayment');
 Route::get('caja', 'SaleController@caja');

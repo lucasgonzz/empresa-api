@@ -51,16 +51,20 @@ class CurrentAcountController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
-    function check_saldos_y_pagos($model_name, $model_id) {
-        CurrentAcountHelper::checkSaldos($model_name, $model_id);
-        CurrentAcountHelper::checkPagos($model_name, $model_id, true);
+    function check_saldos_y_pagos($credit_account_id) {
+        CurrentAcountHelper::check_saldos_y_pagos($credit_account_id);
     }
 
     public function pago(Request $request) {
+
+        // CurrentAcountHelper::eliminar_pagos_provisorios($request->credit_account_id, $request->is_provisorio);
+
         $pago = CurrentAcount::create([
             'haber'                             => $this->get_haber($request),
             'description'                       => $request->description,
             'numero_orden_de_compra'            => $request->numero_orden_de_compra,
+            'credit_account_id'                 => $request->credit_account_id,
+            'is_provisorio'                     => $request->is_provisorio,
             'status'                            => 'pago_from_client',
             'user_id'                           => $this->userId(),
             'num_receipt'                       => CurrentAcountHelper::getNumReceipt(),
@@ -71,26 +75,22 @@ class CurrentAcountController extends Controller
             'employee_id'                       => UserHelper::userId(false),
         ]);
 
-        CurrentAcountPagoHelper::attachPaymentMethods($pago, $request->current_acount_payment_methods, $request->model_name);
-
-        $pago->saldo = CurrentAcountHelper::getSaldo($request->model_name, $request->model_id, $pago) - $request->haber;
-        
         $pago->detalle = 'Pago N°'.$pago->num_receipt;
         $pago->save();
 
-        $pago_helper = new CurrentAcountPagoHelper($request->model_name, $request->model_id, $pago);
-        $pago_helper->init();
-        
-        if (!$request->current_date) {
-            CurrentAcountHelper::checkSaldos($request->model_name, $request->model_id);
-        } else {
-            CurrentAcountHelper::checkCurrentAcountSaldo($request->model_name, $request->model_id);
-            CurrentAcountHelper::updateModelSaldo($pago, $request->model_name, $request->model_id);
-        }
-        
-        // CurrentAcountHelper::checkPagos($request->model_name, $request->model_id, true);
+        CurrentAcountPagoHelper::attachPaymentMethods($pago, $request->current_acount_payment_methods, $request->model_name);
 
-        CurrentAcountCuotaHelper::pagar_cuota($pago, $request);
+        if (!$pago->is_provisorio) {
+
+            $pago->saldo = CurrentAcountHelper::getSaldo($request->credit_account_id, $pago) - (float)$request->haber;
+
+            $pago_helper = new CurrentAcountPagoHelper($request->credit_account_id, $request->model_name, $request->model_id, $pago);
+            $pago_helper->init();
+            
+            CurrentAcountHelper::check_saldos_y_pagos($request->credit_account_id);
+
+            CurrentAcountCuotaHelper::pagar_cuota($pago, $request);
+        }
 
         $this->sendAddModelNotification($request->model_name, $request->model_id);
         Log::info('Terminando de guardar pago');
@@ -107,8 +107,8 @@ class CurrentAcountController extends Controller
     }
 
     public function notaCredito(Request $request) {
-        $nota_credito = CurrentAcountHelper::notaCredito($request->form['nota_credito'], $request->form['description'], $request->model_name, $request->model_id);
-        CurrentAcountHelper::checkCurrentAcountSaldo($request->model_name, $request->model_id);
+        $nota_credito = CurrentAcountHelper::notaCredito($request->credit_account_id, $request->form['nota_credito'], $request->form['description'], $request->model_name, $request->model_id);
+        CurrentAcountHelper::checkCurrentAcountSaldo($request->credit_account_id);
         $this->sendAddModelNotification($request->model_name, $request->model_id);
         return response()->json(['current_acount' => $nota_credito], 201);
     }
@@ -116,18 +116,21 @@ class CurrentAcountController extends Controller
 
     public function notaDebito(Request $request) {
         $nota_debito = CurrentAcount::create([
-            'detalle'       => 'Nota de debito',
-            'description'   => $request->description,
-            'debe'          => $request->debe,
-            'status'        => 'sin_pagar',
-            'client_id'     => $request->model_name == 'client' ? $request->model_id : null,
-            'provider_id'   => $request->model_name == 'provider' ? $request->model_id : null,
-            'user_id'       => $this->userId(),
+            'detalle'           => 'Nota de debito',
+            'description'       => $request->description,
+            'debe'              => $request->debe,
+            'status'            => 'sin_pagar',
+            'client_id'         => $request->model_name == 'client' ? $request->model_id : null,
+            'provider_id'       => $request->model_name == 'provider' ? $request->model_id : null,
+            'user_id'           => $this->userId(),
+            'credit_account_id' => $request->credit_account_id,
         ]);
-        $nota_debito->saldo = CurrentAcountHelper::getSaldo($request->model_name, $request->model_id, $nota_debito) + $request->debe;
+        $nota_debito->saldo = CurrentAcountHelper::getSaldo($request->credit_account_id, $nota_debito) + $request->debe;
         $nota_debito->save();
-        CurrentAcountHelper::checkCurrentAcountSaldo($request->model_name, $request->model_id);
-        CurrentAcountHelper::updateModelSaldo($nota_debito, $request->model_name, $request->model_id);
+
+        CurrentAcountHelper::checkCurrentAcountSaldo($request->credit_account_id);
+        CurrentAcountHelper::update_credit_account_saldo($request->credit_account_id);
+
         $this->sendAddModelNotification($request->model_name, $request->model_id);
         return response()->json(['current_acount' => $nota_debito], 201);
     }
@@ -189,24 +192,18 @@ class CurrentAcountController extends Controller
             CurrentAcountHelper::updateSellerCommissionsStatus($current_acount);
 
         } else {
-            CurrentAcountDeleteNotaDebitoHelper::deleteNotaDebito($current_acount, $model_name);
+            // CurrentAcountDeleteNotaDebitoHelper::deleteNotaDebito($current_acount, $model_name);
         }
+
+        $credit_account_id = $current_acount->credit_account_id;
 
         $current_acount->delete();
-        if ($model_name == 'client') {
-            $model_id = $current_acount->client_id;
-        } else {
-            $model_id = $current_acount->provider_id;
-        }
-        $model = GeneralHelper::getModelName($model_name)::find($model_id);
-        $model->pagos_checkeados = 0;
-        $model->save();
         
-        CurrentAcountHelper::checkSaldos($model_name, $model_id);
+        CurrentAcountHelper::checkSaldos($credit_account_id);
         
-        CurrentAcountHelper::checkPagos($model_name, $model_id, true);
+        CurrentAcountHelper::checkPagos($credit_account_id, true);
 
-        $this->sendAddModelNotification($model_name, $model_id, false);
+        // $this->sendAddModelNotification($model_name, $model_id, false);
     }
 
     function pdfFromModel($model_name, $model_id, $months_ago) {

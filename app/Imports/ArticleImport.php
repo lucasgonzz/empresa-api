@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\getIva;
 use App\Http\Controllers\Helpers\import\article\ActualizarBBDD;
+use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\article\IsArticleUpdated;
 use App\Http\Controllers\Helpers\import\article\ProcessRow;
 use App\Http\Controllers\Stock\StockMovementController;
@@ -104,6 +105,11 @@ class ArticleImport implements ToCollection
 
     public function collection(Collection $rows) {
         Log::info('entro a collection');
+
+        
+        Log::info('cacheando articulos');
+        ArticleIndexCache::build($this->user->id);
+        Log::info('articulos cacheados');
 
         $this->num_row = 1;
 

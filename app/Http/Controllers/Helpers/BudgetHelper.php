@@ -36,7 +36,7 @@ class BudgetHelper {
 
 	        Self::saveSale($budget, $previus_articles);
 		} 
-	    CurrentAcountHelper::checkSaldos('client', $budget->client_id);
+	    // CurrentAcountHelper::checkSaldos('client', $budget->client_id);
 	}
 
 	static function saveSale($budget, $previus_articles) {
@@ -50,6 +50,7 @@ class BudgetHelper {
 	            'observations' 			=> $budget->observations,
 	            'total' 				=> $budget->total,
 	            'address_id' 			=> $budget->address_id,
+	            'moneda_id' 			=> $budget->moneda_id,
             	'price_type_id'         => Self::get_price_type_id($budget),
             	'employee_id'           => SaleHelper::getEmployeeId(),
 	            'save_current_acount' 	=> Self::get_guardar_cuenta_corriente($budget),

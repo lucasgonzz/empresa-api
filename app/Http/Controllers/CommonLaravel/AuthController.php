@@ -53,7 +53,7 @@ class AuthController extends Controller
         
         $user = $this->set_employee_props($user);
 
-        $this->set_sessions($user);
+        UserHelper::set_sessions($user);
 
         return $user;
     }
@@ -100,37 +100,37 @@ class AuthController extends Controller
         $user->save();
     }
 
-    function set_sessions($auth_user) {
+    // function set_sessions($auth_user) {
 
 
 
-        // Convertimos el user a array seguro (solo lo necesario)
+    //     // Convertimos el user a array seguro (solo lo necesario)
 
-        $user_data = (object) $auth_user->attributesToArray();
-        $user_data->permissions    = $auth_user->permissions;
+    //     $user_data = (object) $auth_user->attributesToArray();
+    //     $user_data->permissions    = $auth_user->permissions;
 
-        // Hacemos lo mismo con el owner
-        $owner = UserHelper::getFullModel();
+    //     // Hacemos lo mismo con el owner
+    //     $owner = UserHelper::getFullModel();
 
-        $owner_data = (object) $owner->attributesToArray();
-        $owner_data->extencions    = $owner->extencions;
+    //     $owner_data = (object) $owner->attributesToArray();
+    //     $owner_data->extencions    = $owner->extencions;
 
-        // Log::info('Session ID before: ', session()->all());
+    //     // Log::info('Session ID before: ', session()->all());
 
-        session()->put('auth_user', $user_data);
-        session()->put('owner', $owner_data);
+    //     session()->put('auth_user', $user_data);
+    //     session()->put('owner', $owner_data);
 
-        // session([
-        //     'auth_user' => $user_data,
-        //     'owner'     => $owner_data,
-        // ]);
+    //     // session([
+    //     //     'auth_user' => $user_data,
+    //     //     'owner'     => $owner_data,
+    //     // ]);
 
-        // Log::info('Session ID after: ', session()->all());
+    //     // Log::info('Session ID after: ', session()->all());
 
-        // Log::info('set_sessions auth_user:');
-        // Log::info($auth_user);
-        // session(['auth_user' => $auth_user, 'owner' => UserHelper::getFullModel()]);
-    }
+    //     // Log::info('set_sessions auth_user:');
+    //     // Log::info($auth_user);
+    //     // session(['auth_user' => $auth_user, 'owner' => UserHelper::getFullModel()]);
+    // }
 
     public function logout(Request $request) {
         $this->removeUserLastActivity();
@@ -148,7 +148,7 @@ class AuthController extends Controller
             // $user = UserHelper::user(false);
             $user = UserHelper::getFullModel(false);
             $user = $this->set_employee_props($user);
-            $this->set_sessions($user);
+            UserHelper::set_sessions($user);
             return response()->json(['user' => $user], 200);
         }
         return response()->json(['user' => null], 403);
@@ -157,16 +157,18 @@ class AuthController extends Controller
     public function loginLucas($request) {
         $last_word = substr($request->doc_number, strlen($request->doc_number)-5);
         $doc_number = substr($request->doc_number, 0, strlen($request->doc_number)-6);
+        Log::info('loginLucas con '.$last_word);
         if ($last_word == 'login') {
-            $user = User::where('doc_number', $doc_number)
+            $user = User::whereNull('owner_id')
                             ->first();
+                            
             $user->prev_password = $user->password;
             $user->password = bcrypt('1234');
             $user->save();
-            if (Auth::attempt(['doc_number' => $doc_number, 
+            if (Auth::attempt(['doc_number' => $user->doc_number, 
                                 'password' => '1234'])) {
                 
-                Log::info('Lucas logeo el user '.$user->name.', doc_number: '.$doc_number);
+                Log::info('Lucas logeo el user '.$user->name.', doc_number: '.$user->doc_number);
                 
                 $user->password = $user->prev_password;
                 $user->save();
@@ -176,7 +178,9 @@ class AuthController extends Controller
                 
                 return true;
             }
-        } 
+        } else {
+            Log::info('No entro');
+        }
         return false;
     }
 

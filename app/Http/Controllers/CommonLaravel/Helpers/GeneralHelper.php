@@ -4,7 +4,9 @@ namespace App\Http\Controllers\CommonLaravel\Helpers;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Jobs\ProcessSetFinalPrices;
 use App\Models\Article;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
@@ -85,18 +87,25 @@ class GeneralHelper {
     }
 
     static function checkNewValuesForArticlesPrices($instance, $current_value, $new_value, $from_model_id = null, $model_id = null) {
+        Log::info('current_value: '.$current_value);
+        Log::info('new_value: '.$new_value);
         if ($current_value != $new_value) {
+
+            $user = User::find(UserHelper::userId());
+
             if (!is_null($from_model_id)) {
-                $articles = Article::where($from_model_id, $model_id)
-                                    ->get();
-                foreach ($articles as $article) {
-                    ArticleHelper::setFinalPrice($article);
-                }
+                
+                ProcessSetFinalPrices::dispatch($user, $from_model_id, $model_id);
+
             } else {
-                ArticleHelper::setArticlesFinalPrice();
+                
+                ProcessSetFinalPrices::dispatch($user);
             }
+            
             Log::info('entro a checkNewValuesForArticlesPrices');
             // $instance->sendUpdateModelsNotification('article', false);
+        } else {
+            Log::info('No hubo cambios en el proveedor');
         }
     }
 

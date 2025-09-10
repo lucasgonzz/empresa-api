@@ -49,6 +49,7 @@ class ArticleVariantController extends Controller
         $model->stock = $request->stock;
         $model->price = $request->price;
         $model->image_url = $request->image_url;
+        $model->oculta = $request->oculta;
         $model->save();
 
         return response()->json(['model' => $model], 200);

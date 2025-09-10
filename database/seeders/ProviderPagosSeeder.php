@@ -4,9 +4,11 @@ namespace Database\Seeders;
 
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
-use Illuminate\Database\Seeder;
+use App\Models\Provider;
 use Carbon\Carbon;
+use Illuminate\Database\Seeder;
 
 class ProviderPagosSeeder extends Seeder
 {
@@ -20,11 +22,18 @@ class ProviderPagosSeeder extends Seeder
     {
         $num = 1;
 
-        $user_id = 500;
+        $user_id = env('USER_ID');
+
+        $provider = Provider::where('name', 'Buenos Aires')->first();
+
+        $credit_account = CreditAccount::where('model_name', 'provider')
+                                        ->where('model_id', $provider->id)
+                                        ->where('moneda_id', 1)
+                                        ->first();
 
         for ($mes=12; $mes >= 0 ; $mes--) {
 
-            $total = 700 + (12 - $mes) * 100;
+            $total = 100 + (12 - $mes) * 100;
 
             $pago = CurrentAcount::create([
                 'haber'                             => $total,
@@ -36,6 +45,7 @@ class ProviderPagosSeeder extends Seeder
                 'provider_id'                       => 1,
                 'created_at'                        => Carbon::now()->subMonths($mes),
                 'employee_id'                       => $user_id,
+                'credit_account_id'                 => $credit_account->id,
             ]);
 
             $num++;
@@ -65,9 +75,9 @@ class ProviderPagosSeeder extends Seeder
                 ],
             ]);
 
-            $pago->saldo = CurrentAcountHelper::getSaldo('provider', 1, $pago) - $pago->haber;
+            $pago->saldo = CurrentAcountHelper::getSaldo($credit_account->id, $pago) - $pago->haber;
             $pago->save();
-            $pago_helper = new CurrentAcountPagoHelper('provider', 1, $pago);
+            $pago_helper = new CurrentAcountPagoHelper($credit_account->id, 'provider', $provider->id, $pago);
             $pago_helper->init();
         } 
     }

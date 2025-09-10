@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Models\Client;
 use App\Models\User;
 use Illuminate\Database\Seeder;
@@ -17,6 +18,7 @@ class ClientSeeder extends Seeder
      */
     public function run()
     {
+        Log::info('ClientSeeder');
         $link_google_maps = 'https://www.google.com/maps/place/%C3%81ngel+Justiniano+Carranza+2038,+C1414+Cdad.+Aut%C3%B3noma+de+Buenos+Aires/@-34.5795941,-58.4380356,17z/data=!3m1!4b1!4m6!3m5!1s0x95bcb593c3e82309:0x9a790614083c577a!8m2!3d-34.5795985!4d-58.4354607!16s%2Fg%2F11c1796wqb?entry=ttu&g_ep=EgoyMDI1MDQwOC4wIKXMDSoASAFQAw%3D%3D';
 
         $models = [
@@ -25,6 +27,7 @@ class ClientSeeder extends Seeder
                 'num'                   => 1,
                 'name'                  => 'Lucas Gonzalez',
                 'email'                 => 'lucasgonzalez5500@gmail.com',
+                'pais_exportacion_id'   => 3,
                 'address'               => 'San antonio 23 - Gualeguay, Entre Rios',
                 'phone'                 => '3444622139',
                 'cuit'                  => '20242112025',
@@ -81,15 +84,21 @@ class ClientSeeder extends Seeder
                 'comercio_city_user_id' => null,
             ],
         ];
+
         foreach ($models as $model) {
 
             $model['link_google_maps'] = $link_google_maps;
             
             $client = Client::create($model);
+
             if (isset($model['id'])) {
+
                 $client->id = $model['id'];
                 $client->save();
             }
+            
+            Log::info('Se va a mandar crear_credit_accounts para client id '.$client->id);
+            CreditAccountHelper::crear_credit_accounts('client', $client->id);
         }
 
     }

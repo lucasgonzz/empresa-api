@@ -5,6 +5,7 @@ namespace App\Http\Controllers\CommonLaravel;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\CreditAccountHelper;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -219,8 +220,19 @@ class SearchController extends Controller
         foreach ($request->properties_to_set as $property_to_set) {
             $data[$property_to_set['key']] = $property_to_set['value'];     
         }
+
         // $data[$property] = $query;
         $model = $model_name::create($data);
+
+        if (
+            $_model_name == 'client'
+            || $_model_name == 'provider'
+        ) {
+            
+            CreditAccountHelper::crear_credit_accounts($_model_name, $model->id);
+
+        }
+        
         return response()->json(['model' => $this->fullModel($_model_name, $model->id)], 201);
     }
 

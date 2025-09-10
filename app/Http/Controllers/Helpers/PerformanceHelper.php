@@ -12,11 +12,13 @@ use App\Models\Address;
 use App\Models\ArticlePerformance;
 use App\Models\Client;
 use App\Models\CompanyPerformance;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\Expense;
 use App\Models\ExpenseConcept;
 use App\Models\PriceType;
+use App\Models\Provider;
 use App\Models\ProviderOrder;
 use App\Models\Sale;
 use App\Models\User;
@@ -145,6 +147,8 @@ class PerformanceHelper
         if (is_null($this->from_day)) {
 
             $this->set_deuda_clientes();
+
+            $this->set_deuda_proveedores();
         }
 
 
@@ -189,6 +193,7 @@ class PerformanceHelper
     function set_compras_a_proveedores() {
 
         $this->total_comprado = 0;
+        $this->total_comprado_usd = 0;
 
         $provider_orders = ProviderOrder::where('user_id', $this->user_id)
                                     ->whereDate('created_at', '>=', $this->mes_inicio)
@@ -209,8 +214,14 @@ class PerformanceHelper
                     $total = ProviderOrderHelper::getTotal($provider_order->id);
                 }
 
-                $this->total_comprado += $total;
-                Log::info('Total comprado = '.$this->total_comprado);
+                if ($provider_order->moneda_id == 2) {
+
+                    $this->total_comprado_usd += $total;
+                } else {
+
+                    $this->total_comprado += $total;
+                }
+
             } else {
 
             }
@@ -229,12 +240,12 @@ class PerformanceHelper
 
         foreach ($provider_orders as $provider_order) {
 
-            $this->total_iva_comprado += (float)$provider_order->total_iva;
+            // $this->total_iva_comprado += (float)$provider_order->total_iva;
 
-            // foreach ($provider_order->provider_order_afip_tickets as $afip_ticket) {
+            foreach ($provider_order->provider_order_afip_tickets as $afip_ticket) {
 
-            //     $this->total_iva_comprado += $afip_ticket->total;
-            // }
+                $this->total_iva_comprado += $afip_ticket->total_iva;
+            }
         }
     }
 
@@ -249,12 +260,20 @@ class PerformanceHelper
                                 ->get();
 
         $this->total_pagado_a_proveedores = 0;
+        $this->total_pagado_a_proveedores_usd = 0;
 
         $this->pagos_a_proveedores = $this->get_payment_methods();
 
         foreach ($pagos as $pago) {
 
-            $this->total_pagado_a_proveedores += $pago->haber;
+            if ($pago->credit_account->moneda_id == 2) {
+
+                $this->total_pagado_a_proveedores_usd += $pago->haber;
+            } else {
+
+                $this->total_pagado_a_proveedores += $pago->haber;
+            }
+
 
             if (count($pago->current_acount_payment_methods) >= 1) {
 
@@ -300,8 +319,14 @@ class PerformanceHelper
                     $total = ProviderOrderHelper::getTotal($provider_order);
                 }
 
-                $this->total_pagado_a_proveedores += $total;
-                Log::info('total_pagado_a_proveedores: '.$this->total_pagado_a_proveedores);
+                if ($provider_order->moneda_id == 2) {
+
+                    $this->total_pagado_a_proveedores_usd += $total;
+                } else {
+
+                    $this->total_pagado_a_proveedores += $total;
+                }
+
             } 
 
         }
@@ -309,24 +334,66 @@ class PerformanceHelper
     }
 
     function set_deuda_clientes() {
-        $clients = Client::where('user_id', $this->user_id)
-                        ->where('status', 'active')
-                        ->get();
+        $credit_accounts_clients = CreditAccount::where('user_id', $this->user_id)
+                                ->where('model_name', 'client')
+                                ->get();
 
         $deuda_clientes = 0;
+        $deuda_clientes_usd = 0;
 
         // Log::info('set_deuda_clientes');
+        Log::info('Deuda clientes');
 
-        foreach ($clients as $client) {
+        foreach ($credit_accounts_clients as $credit_account) {
+            Log::info($credit_account->saldo);
 
-            // Log::info('sumando '.$client->saldo.' de '.$client->name);
-            
-            $deuda_clientes += $client->saldo;    
+            if ($credit_account->moneda_id == 2) {
+
+                $deuda_clientes_usd += $credit_account->saldo;    
+            } else {
+
+                $deuda_clientes += $credit_account->saldo;    
+            }
         }
 
-        Log::info('deuda_clientes quedo en: '.$deuda_clientes);
 
+        Log::info('deuda_clientes: '.$deuda_clientes);
+        Log::info('deuda_clientes_usd: '.$deuda_clientes_usd);
+        
         $this->company_performance->deuda_clientes = $deuda_clientes;
+        $this->company_performance->deuda_clientes_usd = $deuda_clientes_usd;
+        $this->company_performance->save();
+    }
+
+    function set_deuda_proveedores() {
+        $credit_accounts_providers = CreditAccount::where('user_id', $this->user_id)
+                                ->where('model_name', 'provider')
+                                ->get();
+
+        $deuda_proveedores = 0;
+        $deuda_proveedores_usd = 0;
+
+        Log::info('Deuda proveedores');
+        foreach ($credit_accounts_providers as $credit_account) {
+
+            Log::info($credit_account->saldo);
+
+            if ($credit_account->moneda_id == 2) {
+
+                $deuda_proveedores_usd += $credit_account->saldo;    
+            } else {
+
+                $deuda_proveedores += $credit_account->saldo;    
+            }
+        }
+
+
+        Log::info('deuda_proveedores: '.$deuda_proveedores);
+        Log::info('deuda_proveedores_usd: '.$deuda_proveedores_usd);
+
+        $this->company_performance->deuda_proveedores = $deuda_proveedores;
+        $this->company_performance->deuda_proveedores_usd = $deuda_proveedores_usd;
+        
         $this->company_performance->save();
     }
 
@@ -433,16 +500,20 @@ class PerformanceHelper
     function procesar_sales() {
 
         $this->total_vendido = 0;
+        $this->total_vendido_usd = 0;
 
         $this->total_vendido_costos = 0;
+        $this->total_vendido_costos_usd = 0;
 
         $this->total_facturado = 0;
 
         $this->total_pagado_mostrador = 0;
+        $this->total_pagado_mostrador_usd = 0;
 
         $this->cantidad_ventas = 0;
 
         $this->total_vendido_a_cuenta_corriente = 0;
+        $this->total_vendido_a_cuenta_corriente_usd = 0;
 
         $this->ingresos_mostrador = $this->get_payment_methods();
 
@@ -467,9 +538,16 @@ class PerformanceHelper
             }
 
             
-            $this->total_vendido += $this->total_sale;
+            if ($this->sale->moneda_id == 2) {
 
-            $this->total_vendido_costos += $sale->total_cost;
+                $this->total_vendido_usd += $this->total_sale;
+                $this->total_vendido_costos_usd += $sale->total_cost;
+            } else {
+
+                $this->total_vendido += $this->total_sale;
+                $this->total_vendido_costos += $sale->total_cost;
+            }
+
 
             if (!is_null($sale->afip_information_id) 
                 && $sale->afip_information_id != 0 
@@ -477,16 +555,19 @@ class PerformanceHelper
                 && $sale->afip_ticket->resultado == 'A') {
 
                 $this->total_facturado += $sale->afip_ticket->importe_iva;
-                // $this->total_facturado += $sale->afip_ticket->importe_total;
-                // Log::info('Se sumo '.$sale->afip_ticket->importe_iva.' de factuado de la venta N° '.$sale->num);
-            } else {
-                // Log::info('No se sumo lo factuado de la venta N° '.$sale->num);
-            }
+            } 
 
 
             if (is_null($sale->client_id) || $sale->omitir_en_cuenta_corriente) {
 
-                $this->total_pagado_mostrador += $this->total_sale;
+                if ($sale->moneda_id == 2) {
+
+                    $this->total_pagado_mostrador_usd += $this->total_sale;
+                } else {
+
+                    $this->total_pagado_mostrador += $this->total_sale;
+                }
+
 
                 if (count($sale->current_acount_payment_methods) >= 1) {
 
@@ -518,7 +599,13 @@ class PerformanceHelper
                 
             } else if (!is_null($sale->current_acount)) {
 
-                $this->total_vendido_a_cuenta_corriente += $this->total_sale;
+                if ($this->sale->moneda_id == 2) {
+
+                    $this->total_vendido_a_cuenta_corriente_usd += $this->total_sale;
+                } else {
+
+                    $this->total_vendido_a_cuenta_corriente += $this->total_sale;
+                }
 
             } else {
                 // Log::info('ENTRO ACA LA VENTA N° '.$this->sale->num. ' de '.$this->total_sale);
@@ -667,30 +754,39 @@ class PerformanceHelper
 
 
         $this->company_performance->total_vendido = $this->total_vendido;
+        $this->company_performance->total_vendido_usd = $this->total_vendido_usd;
         
         $this->company_performance->total_facturado = $this->total_facturado;
 
         $this->company_performance->total_comprado = $this->total_comprado;
+        $this->company_performance->total_comprado_usd = $this->total_comprado_usd;
 
         $this->company_performance->total_pagado_a_proveedores = $this->total_pagado_a_proveedores;
+        $this->company_performance->total_pagado_a_proveedores_usd = $this->total_pagado_a_proveedores_usd;
 
         $this->company_performance->total_iva_comprado = $this->total_iva_comprado;
         
         $this->company_performance->total_vendido_costos = $this->total_vendido_costos;
+        $this->company_performance->total_vendido_costos_usd = $this->total_vendido_costos_usd;
 
         $this->company_performance->ingresos_netos = $this->total_vendido - $this->total_vendido_costos;
         
         $this->company_performance->rentabilidad = $this->total_vendido - $this->total_vendido_costos - $this->total_gastos;
 
         $this->company_performance->total_pagado_mostrador = $this->total_pagado_mostrador;
+        $this->company_performance->total_pagado_mostrador_usd = $this->total_pagado_mostrador_usd;
 
         $this->company_performance->total_vendido_a_cuenta_corriente = $this->total_vendido_a_cuenta_corriente;
+        $this->company_performance->total_vendido_a_cuenta_corriente_usd = $this->total_vendido_a_cuenta_corriente_usd;
 
         $this->company_performance->total_pagado_a_cuenta_corriente = $this->total_pagado_a_cuenta_corriente;
+        $this->company_performance->total_pagado_a_cuenta_corriente_usd = $this->total_pagado_a_cuenta_corriente_usd;
 
         $this->company_performance->total_devolucion = $this->total_devolucion;
+        $this->company_performance->total_devolucion_usd = $this->total_devolucion_usd;
 
         $this->company_performance->total_ingresos = $this->total_pagado_mostrador + $this->total_pagado_a_cuenta_corriente;
+        $this->company_performance->total_ingresos_usd = $this->total_pagado_mostrador_usd + $this->total_pagado_a_cuenta_corriente_usd;
 
 
         $this->company_performance->total_gastos = $this->total_gastos;
@@ -780,6 +876,7 @@ class PerformanceHelper
                                 ->get();
 
         $this->total_pagado_a_cuenta_corriente = 0;
+        $this->total_pagado_a_cuenta_corriente_usd = 0;
 
         $this->ingresos_cuenta_corriente = $this->get_payment_methods();
 
@@ -787,7 +884,17 @@ class PerformanceHelper
 
         foreach ($pagos as $pago) {
 
-            $this->total_pagado_a_cuenta_corriente += $pago->haber;
+            // Log::info('Pago de '.$pago->client->name.' por '.$pago->haber);
+            if ($pago->credit_account->moneda_id == 2) {
+
+                // Log::info('DOLARES');
+
+                $this->total_pagado_a_cuenta_corriente_usd += $pago->haber;
+            } else {
+
+                // Log::info('PESOS');
+                $this->total_pagado_a_cuenta_corriente += $pago->haber;
+            }
 
             $suma_payment_methods = 0;
 
@@ -833,6 +940,7 @@ class PerformanceHelper
     }
 
     function procesar_devoluciones() {
+
         $notas_de_credito = CurrentAcount::where('user_id', $this->user_id)
                                         ->whereNotNull('haber')
                                         ->where('status', 'nota_credito')
@@ -840,11 +948,27 @@ class PerformanceHelper
                                         ->whereDate('created_at', '<=', $this->mes_fin)
                                         ->get();
 
+        Log::info('procesar_devoluciones mes_inicio '.$this->mes_inicio);
+        Log::info('procesar_devoluciones mes_fin '.$this->mes_fin);
+
+        Log::info('Notas de credito:');
+        Log::info($notas_de_credito);
+        
         $this->total_devolucion = 0;
+        $this->total_devolucion_usd = 0;
 
         foreach ($notas_de_credito as $nota_de_credito) {
 
-            $this->total_devolucion += $nota_de_credito->haber;
+            if (
+                !is_null($nota_de_credito->credit_account)
+                && $nota_de_credito->credit_account->moneda_id == 2
+            ) {
+
+                $this->total_devolucion_usd += $nota_de_credito->haber;
+            } else {
+
+                $this->total_devolucion += $nota_de_credito->haber;
+            }
         }
 
     }

@@ -2,11 +2,12 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Client;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
 use Carbon\Carbon;
@@ -19,6 +20,15 @@ class CurrentAcountFromSaleHelper extends Controller {
 
     function __construct($sale, $index = null) {
         $this->sale = $sale;
+
+
+        $this->credit_account = CreditAccount::where('model_name', 'client')
+                                            ->where('model_id', $this->sale->client_id)
+                                            ->where('moneda_id', $this->sale->moneda_id)
+                                            ->first();
+
+
+
     }
 
     function crear_current_acount() {
@@ -26,32 +36,29 @@ class CurrentAcountFromSaleHelper extends Controller {
         $debe = $this->sale->total;
 
         $this->current_acount = CurrentAcount::create([
-            'detalle'     => 'Venta N°'.$this->sale->num,
-            'debe'        => $debe,
-            'status'      => 'sin_pagar',
-            'client_id'   => $this->sale->client_id,
-            'seller_id'   => $this->sale->seller_id,
-            'sale_id'     => $this->sale->id,
-            // 'description' => CurrentAcountHelper::getDescription($this->sale, $this->debe_sin_descuentos),
-            'created_at'  => $this->sale->created_at,
-            'employee_id' => UserHelper::userId(false),
+            'detalle'           => 'Venta N°'.$this->sale->num,
+            'debe'              => $debe,
+            'status'            => 'sin_pagar',
+            'client_id'         => $this->sale->client_id,
+            'seller_id'         => $this->sale->seller_id,
+            'sale_id'           => $this->sale->id,
+            // 'description'        => CurrentAcountHelper::getDescription($this->sale, $this->debe_sin_descuentos),
+            'created_at'        => $this->sale->created_at,
+            'employee_id'       => UserHelper::userId(false),
+            'credit_account_id' => $this->credit_account->id,
         ]);
 
-        $this->saldo_actual = CurrentAcountHelper::getSaldo('client', $this->sale->client_id, $this->current_acount);
+        $this->saldo_actual = CurrentAcountHelper::getSaldo($this->credit_account->id, $this->current_acount);
+        // $this->saldo_actual = CurrentAcountHelper::getSaldo('client', $this->sale->client_id, $this->current_acount);
 
         $saldo = $this->saldo_actual + $debe;
 
         $this->current_acount->saldo = Numbers::redondear($saldo);
         $this->current_acount->save();
 
-        $this->check_current_acount_saldo();
+        CurrentAcountHelper::checkCurrentAcountSaldo($this->credit_account->id);
 
         $this->update_client_saldo();
-    }
-
-    function check_current_acount_saldo() {
-
-        CurrentAcountHelper::checkCurrentAcountSaldo('client', $this->sale->client_id);
     }
 
     function update_client_saldo() {
@@ -60,36 +67,34 @@ class CurrentAcountFromSaleHelper extends Controller {
 
         if ($this->es_el_ultimo_movimiento()) {
 
-            $client = Client::find($client_id);
 
-            $saldo_anterior = $client->saldo;
-
-            $client->saldo = $this->current_acount->saldo;
-            $client->save();
+            $this->credit_account->saldo = $this->current_acount->saldo;
+            $this->credit_account->save();
 
             /* 
                 Si tiene saldo negativo (a favor del cliente)
                 Se ejecuta checkPagos para que se marque esta venta como pagandose
             */
-            $this->check_saldo_a_favor($client);
+            $this->check_saldo_a_favor();
 
         } else {
 
-            CurrentAcountHelper::checkSaldos('client', $client_id);
-            CurrentAcountHelper::checkPagos('client', $client_id, true);
+            CurrentAcountHelper::checkSaldos($this->credit_account->id);
+            CurrentAcountHelper::checkPagos($this->credit_account->id, true);
         }
     }
 
-    function check_saldo_a_favor($client) {
+    function check_saldo_a_favor() {
         if ($this->saldo_actual < 0) {
 
-            CurrentAcountHelper::checkPagos('client', $client->id, true);
+            CurrentAcountHelper::checkPagos($this->credit_account->id, true);
         }
     }
 
     function es_el_ultimo_movimiento() {
 
         $current_acount = CurrentAcount::where('client_id', $this->sale->client_id)
+                                    ->where('credit_account_id', $this->credit_account->id)
                                     ->whereDate('created_at', '>', $this->current_acount->created_at)
                                     ->first();
 

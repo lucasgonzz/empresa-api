@@ -25,6 +25,7 @@ class CajaController extends Controller
         $model = Caja::create([
             'num'                   => $this->num('cajas'),
             'name'                  => $request->name,
+            'moneda_id'             => $request->moneda_id,
             'notas'                 => $request->notas,
             'user_id'               => $this->userId(),
         ]);
@@ -45,6 +46,7 @@ class CajaController extends Controller
         $model = Caja::find($id);
         $model->name                = $request->name;
         $model->notas               = $request->notas;
+        $model->moneda_id           = $request->moneda_id;
         $model->save();
 
         GeneralHelper::attachModels($model, 'current_acount_payment_methods', $request->current_acount_payment_methods);

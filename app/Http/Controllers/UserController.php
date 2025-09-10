@@ -6,9 +6,11 @@ use App\Http\Controllers\CommonLaravel\AuthController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Jobs\ProcessSetFinalPrices;
 use App\Models\OnlineConfiguration;
 use App\Models\User;
 use App\Models\UserConfiguration;
+use App\Notifications\GlobalNotification;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -85,18 +87,41 @@ class UserController extends Controller
 
         $model->text_omitir_cc                  = $request->text_omitir_cc;
         $model->percentage_gain                  = $request->percentage_gain;
+        $model->scroll_en_tablas                  = $request->scroll_en_tablas;
 
         $model->save();
 
-        $auth_controller = new AuthController();
-        $auth_controller->set_sessions($model);
+        UserHelper::set_sessions($model);
 
         $this->check_actualizar_articulos($model, $current_dolar, $current_iva_included, $current_percentage_gain);
 
         $model = UserHelper::getFullModel();
 
+        // $this->actualizar_empleados($model);
 
         return response()->json(['model' => $model], 200);
+    }
+
+    function actualizar_empleados($user) {
+        
+        $functions_to_execute = [
+            [
+                'btn_text'      => 'Recargar pagina',
+                'function_name' => 'recargar_pagina',
+                'btn_variant'   => 'primary',
+            ],
+        ];
+
+        $info_to_show = [];
+
+        $user->notify(new GlobalNotification([
+            'message_text'              => 'Informacion de la cuenta actualizada',
+            'color_variant'             => 'success',
+            'functions_to_execute'      => $functions_to_execute,
+            'info_to_show'              => $info_to_show,
+            'owner_id'                  => $user->id,
+            'is_only_for_auth_user'     => false,
+        ]));
     }
 
     function check_actualizar_articulos($model, $current_dolar, $current_iva_included, $current_percentage_gain) {
@@ -110,7 +135,10 @@ class UserController extends Controller
             Log::info($model->iva_included.' | '.$current_iva_included);
             Log::info($model->percentage_gain.' | '.$current_percentage_gain);
             Log::info('Hubo cambios en propiedades de user');
-            ArticleHelper::setArticlesFinalPrice();
+
+            $user = User::find(UserHelper::userId());
+            
+            ProcessSetFinalPrices::dispatch($user);
         }
     }
 

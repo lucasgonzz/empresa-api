@@ -135,6 +135,7 @@ class DatabaseSeeder extends Seeder
 
                 Log::info('mza_group seeder');
                 $this->call(PriceTypeSeeder::class);
+                $this->call(ArticlesTiendaNubeSeeder::class);
                 // $this->call(ArticleSeeder::class);
                 // $this->article_variants();
                 
@@ -155,6 +156,11 @@ class DatabaseSeeder extends Seeder
                 
                 ExcluirListaDePrecioExcelHelper::set_articles();
 
+            } else if ($for_user == 'racing_carts') {
+
+                $this->call(PriceTypeSeeder::class);
+                $this->call(ArticleSeeder::class);
+
             } else {
 
                 if (
@@ -166,6 +172,7 @@ class DatabaseSeeder extends Seeder
                 }
             }
             
+            $this->call(BudgetSeeder::class);
             $this->call(ChequeSeeder::class);
             $this->call(CajaSeeder::class);
 
@@ -217,7 +224,6 @@ class DatabaseSeeder extends Seeder
             $this->call(ProviderPagosSeeder::class);
             $this->call(TitleSeeder::class);
             $this->call(DeliveryZoneSeeder::class);
-            $this->call(BudgetSeeder::class);
             $this->call(UpdateFeatureSeeder::class);
             $this->call(OrderSeeder::class);
             $this->call(InventoryLinkageScopeSeeder::class);
@@ -235,6 +241,8 @@ class DatabaseSeeder extends Seeder
     }
 
     function common_seeders() {
+        $this->call(MonedaSeeder::class);
+        $this->call(PaisExportacionSeeder::class);
         $this->call(CheckStatusSeeder::class);
         $this->call(OnlineTemplateSeeder::class);
         $this->call(ExtencionSeeder::class);
@@ -242,6 +250,7 @@ class DatabaseSeeder extends Seeder
         $this->call(UnidadMedidaSeeder::class);
         $this->call(PermissionSeeder::class);
         $this->call(OrderStatusSeeder::class);
+        $this->call(TiendaNubeOrderStatusSeeder::class);
         $this->call(ProviderOrderStatusSeeder::class);
         $this->call(OnlinePriceTypeSeeder::class);
         $this->call(DepositMovementStatusSeeder::class);

@@ -4,36 +4,17 @@ namespace App\Services;
 
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use App\Services\BaseTiendaNubeService;
+use App\Services\TiendaNube\BaseTiendaNubeService;
 use Illuminate\Support\LazyCollection;
 
 class TiendaNubeDeleteProductsService extends BaseTiendaNubeService
 {
-    protected string $base_url;
-    protected int $store_id;
-    protected string $access_token;
-    protected string $user_agent;
-    protected int $per_page;
 
     public function __construct()
     {
+        parent::__construct();
         $this->per_page     = 200;
 
-    }
-
-    /**
-     * Cliente HTTP con headers requeridos por Tienda Nube.
-     */
-    protected function http()
-    {
-        return Http::withHeaders([
-                'Authentication' => 'bearer ' . $this->access_token,
-                'User-Agent'     => $this->user_agent,
-                'Accept'         => 'application/json',
-            ])
-            ->baseUrl($this->base_url)
-            ->timeout(60)
-            ->retry(3, 500); // reintentos ante fallos transitorios
     }
 
     /**

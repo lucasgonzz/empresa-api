@@ -14,12 +14,21 @@ class Client extends Model
     protected $guarded = [];
 
     function scopeWithAll($query) {
-        $query->with('iva_condition', 'price_type', 'location', 'comercio_city_user', 'buyer');
+        $query->with('iva_condition', 'price_type', 'location', 'comercio_city_user', 'buyer', 'credit_accounts.moneda');
         // $query->with('iva_condition', 'price_type', 'location', 'comercio_city_user', 'buyer')->withCount('current_acounts');
+    }
+
+    public function credit_accounts() {
+        return $this->hasMany(CreditAccount::class, 'model_id')
+                            ->where('model_name', 'client');
     }
 
     public function purchases() {
         return $this->hasMany(ArticlePurchase::class);
+    }
+    
+    public function pais_exportacion() {
+        return $this->belongsTo(PaisExportacion::class);
     }
     
     public function sales() {

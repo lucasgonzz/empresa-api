@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
 use App\Models\Brand;
 use App\Models\Category;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Iva;
 use App\Models\SubCategory;
@@ -13,15 +14,27 @@ use App\Models\SubCategory;
 class LocalImportHelper {
 
 	static function setSaldoInicial($row, $columns, $model_name, $model) {
-        if (!is_null(ImportHelper::getColumnValue($row, 'saldo_actual', $columns))) {
-            $current_acounts = CurrentAcount::where($model_name.'_id', $model->id)
+
+		$saldo_actual = ImportHelper::getColumnValue($row, 'saldo_actual', $columns);
+        
+        if (!is_null($saldo_actual)) {
+
+        	$credit_account = CreditAccount::where('model_name', $model_name)
+        									->where('model_id', $model->id)
+        									->where('moneda_id', 1)
+        									->first();
+
+            $current_acounts = CurrentAcount::where('credit_account_id', $credit_account->id)
                                             ->get();
+
             if (count($current_acounts) == 0) {
+            	
                 $is_for_debe = false;
-                $saldo_inicial = (float)ImportHelper::getColumnValue($row, 'saldo_actual', $columns);
+                $saldo_inicial = (float)$saldo_actual;
                 if ($saldo_inicial >= 0) {
                     $is_for_debe = true;
                 }
+
                 $current_acount = CurrentAcount::create([
                     'detalle'   => 'Saldo inicial',
                     'status'    => $is_for_debe ? 'sin_pagar' : 'pago_from_client',
@@ -29,13 +42,46 @@ class LocalImportHelper {
                     'provider_id' => $model_name == 'provider' ? $model->id : null,
                     'debe'      => $is_for_debe ? $saldo_inicial : null,
                     'haber'     => !$is_for_debe ? $saldo_inicial : null,
+                    'credit_account_id'	=> $credit_account->id,
                     'saldo'     => $saldo_inicial,
                 ]);
+
                 $model->saldo = $saldo_inicial;
                 $model->save();
             }
         }
 	}
+
+	// static function setSaldoInicial($row, $columns, $model_name, $model) {
+
+	// 	$saldo_actual = ImportHelper::getColumnValue($row, 'saldo_actual', $columns);
+        
+    //     if (!is_null($saldo_actual)) {
+
+    //         $current_acounts = CurrentAcount::where($model_name.'_id', $model->id)
+    //                                         ->get();
+
+    //         if (count($current_acounts) == 0) {
+            	
+    //             $is_for_debe = false;
+    //             $saldo_inicial = (float)$saldo_actual;
+    //             if ($saldo_inicial >= 0) {
+    //                 $is_for_debe = true;
+    //             }
+    //             $current_acount = CurrentAcount::create([
+    //                 'detalle'   => 'Saldo inicial',
+    //                 'status'    => $is_for_debe ? 'sin_pagar' : 'pago_from_client',
+    //                 'client_id' => $model_name == 'client' ? $model->id : null,
+    //                 'provider_id' => $model_name == 'provider' ? $model->id : null,
+    //                 'debe'      => $is_for_debe ? $saldo_inicial : null,
+    //                 'haber'     => !$is_for_debe ? $saldo_inicial : null,
+    //                 'saldo'     => $saldo_inicial,
+    //             ]);
+    //             $model->saldo = $saldo_inicial;
+    //             $model->save();
+    //         }
+    //     }
+	// }
 
 	static function get_bran_id($brand_excel, $ct, $owner) {
 		if ($brand_excel != '') {

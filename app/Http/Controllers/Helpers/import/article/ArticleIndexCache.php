@@ -28,9 +28,18 @@ class ArticleIndexCache
             if ($article->bar_code) {
                 $index['bar_codes'][$article->bar_code] = $article->id;
             }
+            
+            // if ($article->provider_code) {
+            //     $index['provider_codes'][$article->provider_code] = $article->id;
+            // }
             if ($article->provider_code) {
-                $index['provider_codes'][$article->provider_code] = $article->id;
+                if (!isset($index['provider_codes'][$article->provider_code])) {
+                    $index['provider_codes'][$article->provider_code] = [];
+                }
+
+                $index['provider_codes'][$article->provider_code][] = $article->id;
             }
+
             if ($article->name) {
                 $index['names'][strtolower(trim($article->name))] = $article->id;
             }
@@ -142,5 +151,25 @@ class ArticleIndexCache
         }
 
         Cache::put($key, $index, now()->addMinutes(30));
+    }
+
+    public static function find_all_by_provider_code($provider_code, $user_id)
+    {
+        $index = self::get($user_id);
+        $ids = [];
+
+        if (isset($index['provider_codes'][$provider_code])) {
+            $matched_ids = $index['provider_codes'][$provider_code];
+
+            if (is_array($matched_ids)) {
+                foreach ($matched_ids as $id) {
+                    $ids[] = $id;
+                }
+            } else {
+                $ids[] = $matched_ids;
+            }
+        }
+
+        return Article::whereIn('id', $ids)->get();
     }
 }

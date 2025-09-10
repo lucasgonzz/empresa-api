@@ -130,14 +130,30 @@ class TruvariArticleListPdf extends fpdf {
 		}
 
 
+		$articulos_sin_bodega = Article::where('user_id', $this->user->id)
+										->where('bodega_id', 0)
+										->whereNotNull('category_id')
+										->orderBy('category_id')
+										->get();
 
+		// dd($articulos_sin_bodega);
+		// $espumantes = Category::find(9);
+		// if (!$espumantes) return;
 
-		$espumantes = Category::find(9);
-		if (!$espumantes) return;
+		$currentCategory = null;
 
-		$this->print_titulo($espumantes->name);
+		foreach ($articulos_sin_bodega as $article) {
 
-		foreach ($espumantes->articles as $article) {
+			if (
+				!is_null($article->category)
+				&& $currentCategory !== $article->category->name
+			) {
+			
+				$currentCategory = $article->category->name;
+				$this->print_titulo($article->category->name);
+			
+			}
+			
 			$this->print_article($article);
 		}
 

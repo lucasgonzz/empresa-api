@@ -113,4 +113,56 @@ class GeneralHelper {
         return $models;
     }
 
+
+    static function article_name($article) {
+        $name = $article->name;
+        if (!is_null($article->pivot->variant_description)) {
+            $name .= ' '.$article->pivot->variant_description;
+        }
+        return $name;
+    }
+
+    static function getJpgImage($image_url) {
+
+
+        if (!is_null($image_url)) {
+            $array = explode('/', $image_url); 
+            $array_name = end($array);
+            $name = explode('.', $array_name)[0];
+            $extension = strtolower(pathinfo($array_name, PATHINFO_EXTENSION));
+
+            if (env('APP_ENV') == 'local') {
+                // $jpg_file_url = storage_path('app/' . $name . '.jpg');
+                $jpg_file_url = storage_path('app/public/' . $name . '.jpg');
+            } else {
+                $jpg_file_url = storage_path('app/public/' . $name . '.jpg');
+            }
+
+
+            // Convertir a JPG si la imagen es WEBP
+            if ($extension === 'webp') {
+                if (!file_exists($jpg_file_url)) {
+                    try {
+                        $image = imagecreatefromwebp($image_url);
+                        if ($image !== false) {
+                            imagejpeg($image, $jpg_file_url, 100);
+                            imagedestroy($image);
+                        } else {
+                            throw new \Exception("No se pudo crear la imagen desde WEBP.");
+                        }
+                    } catch (\Exception $e) {
+                        return $image_url; // Devuelve la URL original si falla la conversión
+                    }
+                }
+                return $jpg_file_url;
+            }
+
+            // Si la imagen ya es JPG, simplemente devuelve la URL
+            if ($this->isJpg($image_url)) {
+                return $image_url;
+            }
+        }
+        return $image_url;
+    }
+
 }

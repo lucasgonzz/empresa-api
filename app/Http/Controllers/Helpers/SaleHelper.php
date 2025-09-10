@@ -34,6 +34,7 @@ use App\Models\ArticleVariant;
 use App\Models\Cart;
 use App\Models\Client;
 use App\Models\Commissioner;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Discount;
 use App\Models\Sale;
@@ -114,8 +115,8 @@ class SaleHelper extends Controller {
         return false;
     }
 
-    static function setPrinted($instance, $sale, $confirmed) {
-        if (UserHelper::hasExtencion('check_sales') && $confirmed) {
+    static function setPrinted($instance, $sale, $confirmed, $user) {
+        if (UserHelper::hasExtencion('check_sales', $user) && $confirmed) {
             $sale->printed = 1;
             $sale->save();
             $instance->sendAddModelNotification('Sale', $sale->id, false);
@@ -739,10 +740,15 @@ class SaleHelper extends Controller {
 
         if (!$sale->omitir_en_cuenta_corriente) {
 
-            $sale->client->pagos_checkeados = 0;
-            $sale->client->save();
+            // $sale->client->pagos_checkeados = 0;
+            // $sale->client->save();
 
-            CurrentAcountHelper::checkSaldos('client', $sale->client_id);
+            $credit_account = CreditAccount::where('model_name', 'client')
+                                        ->where('model_id', $sale->client_id)
+                                        ->where('moneda_id', $sale->moneda_id)
+                                        ->first();
+
+            CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
         }
 
     }

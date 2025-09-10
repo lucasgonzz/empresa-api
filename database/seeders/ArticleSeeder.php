@@ -74,7 +74,7 @@ class ArticleSeeder extends Seeder
         $articles = $this->add_defaults_in_vender($articles);
 
         $num = 1;
-        $days = count($articles);
+        $days = count($articles) * $this->repetir_articlulos;
 
         for ($vuelta_article=1; $vuelta_article <= $this->repetir_articlulos ; $vuelta_article++) { 
 
@@ -83,7 +83,7 @@ class ArticleSeeder extends Seeder
                 $art = Article::create([
                     'num'                   => $num,
                     // 'bar_code'              => $article['name'].rand(99999, 9999999),
-                    'bar_code'              => '00'.$num,
+                    'bar_code'              => $article['bar_code'],
                     'provider_code'         => 'p/'.$num,
                     'name'                  => $article['name'].' '.$vuelta_article,
                     'slug'                  => ArticleHelper::slug($article['name'], env('USER_ID')),
@@ -111,6 +111,7 @@ class ArticleSeeder extends Seeder
                 $art->timestamps = false;
                 $days--;
                 $num++;
+                Log::info('Se creo '.$art->name.' num '.$num.' el '.date_format(Carbon::now()->subDays($days), 'd/m/Y'));
                 // $id+;
                 if (isset($article['images'])) {
                     foreach ($article['images'] as $image) { 

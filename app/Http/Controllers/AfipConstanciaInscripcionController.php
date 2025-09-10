@@ -71,10 +71,14 @@ class AfipConstanciaInscripcionController extends Controller
 
             if (isset($result->personaReturn->datosGenerales->nombre)) {
                 $data['nombre'] = $result->personaReturn->datosGenerales->nombre;
+            } else if (isset($result->personaReturn->datosGenerales->razonSocial)) {
+                $data['nombre'] = $result->personaReturn->datosGenerales->razonSocial;
             }
 
             if (isset($result->personaReturn->datosGenerales->apellido)) {
                 $data['apellido'] = $result->personaReturn->datosGenerales->apellido;
+            } else {
+                $data['apellido'] = '';
             }
 
             if (isset($result->personaReturn->datosGenerales->razonSocial)) {
@@ -82,8 +86,8 @@ class AfipConstanciaInscripcionController extends Controller
             }
 
             $data['cuit']          = $result->personaReturn->datosGenerales->idPersona;
-            $data['localidad']     = $result->personaReturn->datosGenerales->domicilioFiscal->localidad;
-            $data['direccion']     = $result->personaReturn->datosGenerales->domicilioFiscal->direccion;
+            $data['localidad']     = property_exists($result->personaReturn->datosGenerales->domicilioFiscal, 'localidad') ? $result->personaReturn->datosGenerales->domicilioFiscal->localidad : 'S/A';
+            $data['direccion']     = property_exists($result->personaReturn->datosGenerales->domicilioFiscal, 'direccion') ? $result->personaReturn->datosGenerales->domicilioFiscal->direccion : null;
             $data['condicion_iva'] = $this->obtener_condicion_iva($result->personaReturn);
 
             return [

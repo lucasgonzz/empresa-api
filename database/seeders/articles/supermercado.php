@@ -16,7 +16,7 @@ $articles = [
         'provider_id'       => 2,
         'images'            => [
             [
-                'url'       => get_image('/storage/supermercado/yerba.webp'),
+                'url'       => get_image('storage/supermercado/yerba.webp'),
             ],
         ],
     ],
@@ -33,7 +33,7 @@ $articles = [
         'provider_id'       => 3,
         'images'            => [
             [
-                'url'       => get_image('/storage/supermercado/matetorpedo.webp'),
+                'url'       => get_image('storage/supermercado/matetorpedo.webp'),
             ],
         ],
         'addresses'     => [
@@ -82,7 +82,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => get_image('/storage/supermercado/fanta.webp'),
+                'url'       => get_image('storage/supermercado/fanta.webp'),
             ],
         ],
         'addresses'     => [
@@ -109,8 +109,36 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => get_image('/storage/supermercado/limalimon.webp'),
+                'url'       => get_image('storage/supermercado/limalimon.webp'),
             ],
+        ],
+        'addresses'     => [
+            [
+                'id'            => 1,
+                'amount'        => 50,
+            ],
+            [
+                'id'            => 2,
+                'amount'        => 50,
+            ],
+        ],
+    ],
+    
+
+    [
+        'featured'          => null,
+        'bar_code'          => '7622201735364',
+        'provider_code'     => 'p-221132',
+        'iva_id'            => 3,
+        'name'              => 'Jugo tang',
+        'stock'             => null,
+        'cost'              => 100,
+        'sub_category_name' => 'Manaos',
+        'provider_id'       => 1,
+        'images'            => [
+            // [
+            //     'url'       => get_image('storage/supermercado/limalimon.webp'),
+            // ],
         ],
         'addresses'     => [
             [

@@ -2,8 +2,9 @@
 
 namespace Database\Seeders;
 
-use App\Models\Article;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\CreditAccountHelper;
+use App\Models\Article;
 use App\Models\Provider;
 use App\Models\User;
 use Carbon\Carbon;
@@ -69,7 +70,9 @@ class ProviderSeeder extends Seeder
             ],
         ];
         foreach ($models as $model) {
-            Provider::create($model);
+            $provider = Provider::create($model);
+
+            CreditAccountHelper::crear_credit_accounts('provider', $provider->id);
         }
     }
 

@@ -56,11 +56,13 @@ class ProcessRow {
         $provider_id = $this->get_provider_id($row);
 
         $iva_id = $this->get_iva_id($row);
+        $aplicar_iva = $this->get_aplicar_iva($row);
 
         $brand_id = $this->get_brand_id($row);
 
         $cost = Self::get_number(ImportHelper::getColumnValue($row, 'costo', $this->columns));
         $price = Self::get_number(ImportHelper::getColumnValue($row, 'precio', $this->columns));
+        $percentage_gain = Self::get_number(ImportHelper::getColumnValue($row, 'margen_de_ganancia', $this->columns), 2);
 
         // Construir array de datos del artículo usando los valores extraídos del Excel
         $data = [
@@ -70,15 +72,30 @@ class ProcessRow {
             'name'                 => ImportHelper::getColumnValue($row, 'nombre', $this->columns),
             'stock_min'            => ImportHelper::getColumnValue($row, 'stock_minimo', $this->columns),
             'cost'                 => $cost,
-            'percentage_gain'      => ImportHelper::getColumnValue($row, 'margen_de_ganancia', $this->columns),
+            'percentage_gain'      => $percentage_gain,
             'price'                => $price,
             'unidades_individuales'=> ImportHelper::getColumnValue($row, 'u_individuales', $this->columns),
+            'cost_in_dollars'      => $this->get_cost_in_dollars($row),
             'category_id'          => $category_id,
             'sub_category_id'      => $sub_category_id,
             'provider_id'          => $provider_id,
             'iva_id'               => $iva_id,
+            'aplicar_iva'          => $aplicar_iva,
             'brand_id'             => $brand_id,
             'user_id'              => $this->user->id,
+
+
+            // autopartes
+            'espesor'               => ImportHelper::getColumnValue($row, 'espesor', $this->columns),
+            'modelo'                => ImportHelper::getColumnValue($row, 'modelo', $this->columns),
+            'pastilla'              => ImportHelper::getColumnValue($row, 'pastilla', $this->columns),
+            'diametro'              => ImportHelper::getColumnValue($row, 'diametro', $this->columns),
+            'litros'                => ImportHelper::getColumnValue($row, 'litros', $this->columns),
+            'descripcion'           => ImportHelper::getColumnValue($row, 'descripcion', $this->columns),
+            'contenido'             => ImportHelper::getColumnValue($row, 'contenido', $this->columns),
+            'cm3'                   => ImportHelper::getColumnValue($row, 'cm3', $this->columns),
+            'calipers'              => ImportHelper::getColumnValue($row, 'calipers', $this->columns),
+            'juego'                 => ImportHelper::getColumnValue($row, 'juego', $this->columns),
         ];
 
 
@@ -105,135 +122,186 @@ class ProcessRow {
             Log::info('No esta aun en el excel');
         }
 
-        $articulo_ya_creado = ArticleIndexCache::find($data, $this->user->id);
 
-        if ($articulo_ya_creado) {
 
-            Log::info('Articulo ya creado');
 
-            if (
-                !is_null($articulo_ya_creado->provider_id)
-                && !is_null($provider_id)
-                && $this->no_actualizar_articulos_de_otro_proveedor
-                && $articulo_ya_creado->provider_id != $provider_id
-            ) {
-                Log::info('El articulo '.$articulo_ya_creado->name.' ya pertenecia al proveedor id '.$articulo_ya_creado->provider_id);
-                return;
-            }
+        $codigos_repetidos = filter_var(env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false), FILTER_VALIDATE_BOOLEAN);
+        if ($codigos_repetidos && !empty($data['provider_code'])) {
 
-            // Comparar propiedades y obtener las que cambiaron
-            $cambios = $this->getModifiedFields($articulo_ya_creado, $data);
 
-            $price_types_data = $this->obtener_price_types($row, $articulo_ya_creado);
+            // Aca entra para actualizar todas las coincidencias del producto en base al codigo de proveedor, caso SAN BLAS
 
-            $discounts_data_percentage = $this->obtener_descuentos_percentage($row);
-            $discounts_data_amount = $this->obtener_descuentos_amount($row);
+            $articulos = ArticleIndexCache::find_all_by_provider_code($data['provider_code'], $this->user->id);
+            Log::info('find_all_by_provider_code:');
+            Log::info($articulos);
 
-            $surchages_data_percentage = $this->obtener_recargos_percentage($row);
-            $surchages_data_amount = $this->obtener_recargos_amount($row);
-            
+            foreach ($articulos as $articulo_ya_creado) {
 
-            $stock = $this->obtener_stock($row, $articulo_ya_creado);
+                if (
+                    !is_null($articulo_ya_creado->provider_id)
+                    && !is_null($provider_id)
+                    && $this->no_actualizar_articulos_de_otro_proveedor
+                    && $articulo_ya_creado->provider_id != $provider_id
+                ) {
+                    Log::info('El articulo '.$articulo_ya_creado->name.' ya pertenecia al proveedor id '.$articulo_ya_creado->provider_id);
+                    continue;
+                }
 
-            if (count($price_types_data) > 0) {
-                $cambios['price_types_data'] = $price_types_data;
-            }
-
-            if (count($discounts_data_percentage) > 0) {
-                Log::info('Agregando los discounts_data_percentage para el article id: '.$articulo_ya_creado->id);
-                Log::info($discounts_data_percentage);
-                $cambios['discounts_data_percentage'] = $discounts_data_percentage;
-            }
-            if (count($discounts_data_amount) > 0) {
-                Log::info('Agregando los discounts_data_amount para el article id: '.$articulo_ya_creado->id);
-                Log::info($discounts_data_amount);
-                $cambios['discounts_data_amount'] = $discounts_data_amount;
-            }
-
-            if (count($surchages_data_percentage) > 0) {
-                Log::info('Agregando los surchages_data_percentage para el article id: '.$articulo_ya_creado->id);
-                Log::info($surchages_data_percentage);
-                $cambios['surchages_data_percentage'] = $surchages_data_percentage;
-            }
-            if (count($surchages_data_amount) > 0) {
-                Log::info('Agregando los surchages_data_amount para el article id: '.$articulo_ya_creado->id);
-                Log::info($surchages_data_amount);
-                $cambios['surchages_data_amount'] = $surchages_data_amount;
-            }
-
-            if (!is_null($stock['stock_global'])) {
-                $cambios['stock_global'] = $stock['stock_global'];
-            } else if (count($stock['stock_addresses']) > 0) {
-                $cambios['stock_addresses'] = $stock['stock_addresses'];
-            }
-
-            // Log::info('Cambios:');
-            // Log::info($cambios);
-
-            if (!empty($cambios)) {
-
+                $cambios = $this->getModifiedFields($articulo_ya_creado, $data);
                 $cambios['id'] = $articulo_ya_creado->id;
-
-                $cambios['variants_data'] = []; // 👈
+                $cambios['variants_data'] = [];
 
                 $this->articulosParaActualizar[] = $cambios;
-            } 
-
-        } else if ($this->create_and_edit) {
-
-            Log::info('El articulo NO existia');
-            // Si no existe, lo agregamos a los artículos para crear
-            
-            /* 
-                * Agrego siempre price_types_data, porque si el articulo no esta creado le agrego todos
-                    los price_types.
-                * Cuando termino de procesar el Excel y actualizo la bbdd, 
-                    le adjunto todos estos price_types,
-                * Y desde el ArticleHelper veo si le pongo el % que viene en el excel o 
-                    el % por defecto del price_type 
-            */
-            $price_types_data = $this->obtener_price_types($row);
-            $data['price_types_data'] = $price_types_data;
-
-            $discounts_data_percentage = $this->obtener_descuentos_percentage($row);
-            $discounts_data_amount = $this->obtener_descuentos_amount($row);
-
-            $surchages_data_percentage = $this->obtener_recargos_percentage($row);
-            $surchages_data_amount = $this->obtener_recargos_amount($row);
-
-            if (count($discounts_data_percentage) > 0) {
-                $data['discounts_data_percentage'] = $discounts_data_percentage;
-            }
-            if (count($discounts_data_amount) > 0) {
-                $data['discounts_data_amount'] = $discounts_data_amount;
             }
 
-            if (count($surchages_data_percentage) > 0) {
-                $data['surchages_data_percentage'] = $surchages_data_percentage;
+        } else {
+
+            $articulo_ya_creado = ArticleIndexCache::find($data, $this->user->id);
+
+            if ($articulo_ya_creado) {
+
+                Log::info('Articulo ya creado');
+
+                if (
+                    !is_null($articulo_ya_creado->provider_id)
+                    && !is_null($provider_id)
+                    && $this->no_actualizar_articulos_de_otro_proveedor
+                    && $articulo_ya_creado->provider_id != $provider_id
+                ) {
+                    Log::info('El articulo '.$articulo_ya_creado->name.' ya pertenecia al proveedor id '.$articulo_ya_creado->provider_id);
+                    return;
+                }
+
+                // Comparar propiedades y obtener las que cambiaron
+                $cambios = $this->getModifiedFields($articulo_ya_creado, $data);
+
+                $price_types_data = $this->obtener_price_types($row, $articulo_ya_creado);
+
+                $discounts_data_percentage = $this->obtener_descuentos_percentage($row);
+                $discounts_data_amount = $this->obtener_descuentos_amount($row);
+
+                $surchages_data_percentage = $this->obtener_recargos_percentage($row);
+                $surchages_data_amount = $this->obtener_recargos_amount($row);
+                
+
+                $stock = $this->obtener_stock($row, $articulo_ya_creado);
+
+                if (count($price_types_data) > 0) {
+                    $cambios['price_types_data'] = $price_types_data;
+                }
+
+                if (count($discounts_data_percentage) > 0) {
+                    Log::info('Agregando los discounts_data_percentage para el article id: '.$articulo_ya_creado->id);
+                    Log::info($discounts_data_percentage);
+                    $cambios['discounts_data_percentage'] = $discounts_data_percentage;
+                }
+                if (count($discounts_data_amount) > 0) {
+                    Log::info('Agregando los discounts_data_amount para el article id: '.$articulo_ya_creado->id);
+                    Log::info($discounts_data_amount);
+                    $cambios['discounts_data_amount'] = $discounts_data_amount;
+                }
+
+                if (count($surchages_data_percentage) > 0) {
+                    Log::info('Agregando los surchages_data_percentage para el article id: '.$articulo_ya_creado->id);
+                    Log::info($surchages_data_percentage);
+                    $cambios['surchages_data_percentage'] = $surchages_data_percentage;
+                }
+                if (count($surchages_data_amount) > 0) {
+                    Log::info('Agregando los surchages_data_amount para el article id: '.$articulo_ya_creado->id);
+                    Log::info($surchages_data_amount);
+                    $cambios['surchages_data_amount'] = $surchages_data_amount;
+                }
+
+                if (!is_null($stock['stock_global'])) {
+                    $cambios['stock_global'] = $stock['stock_global'];
+                } else if (count($stock['stock_addresses']) > 0) {
+                    $cambios['stock_addresses'] = $stock['stock_addresses'];
+                }
+
+                // Log::info('Cambios:');
+                // Log::info($cambios);
+
+                if (!empty($cambios)) {
+
+                    $cambios['id'] = $articulo_ya_creado->id;
+
+                    $cambios['variants_data'] = []; // 👈
+
+                    $this->articulosParaActualizar[] = $cambios;
+                } 
+
+            } else if ($this->create_and_edit) {
+
+                Log::info('El articulo NO existia');
+                // Si no existe, lo agregamos a los artículos para crear
+                
+                /* 
+                    * Agrego siempre price_types_data, porque si el articulo no esta creado le agrego todos
+                        los price_types.
+                    * Cuando termino de procesar el Excel y actualizo la bbdd, 
+                        le adjunto todos estos price_types,
+                    * Y desde el ArticleHelper veo si le pongo el % que viene en el excel o 
+                        el % por defecto del price_type 
+                */
+                $price_types_data = $this->obtener_price_types($row);
+                $data['price_types_data'] = $price_types_data;
+
+                $discounts_data_percentage = $this->obtener_descuentos_percentage($row);
+                $discounts_data_amount = $this->obtener_descuentos_amount($row);
+
+                $surchages_data_percentage = $this->obtener_recargos_percentage($row);
+                $surchages_data_amount = $this->obtener_recargos_amount($row);
+
+                if (count($discounts_data_percentage) > 0) {
+                    $data['discounts_data_percentage'] = $discounts_data_percentage;
+                }
+                if (count($discounts_data_amount) > 0) {
+                    $data['discounts_data_amount'] = $discounts_data_amount;
+                }
+
+                if (count($surchages_data_percentage) > 0) {
+                    $data['surchages_data_percentage'] = $surchages_data_percentage;
+                }
+                if (count($surchages_data_amount) > 0) {
+                    $data['surchages_data_amount'] = $surchages_data_amount;
+                }
+
+
+                $stock = $this->obtener_stock($row);
+
+                if (!is_null($stock['stock_global'])) {
+                    $data['stock_global'] = $stock['stock_global'];
+                } else if (count($stock['stock_addresses']) > 0) {
+                    $data['stock_addresses'] = $stock['stock_addresses'];
+                }
+
+                $data['variants_data'] = []; // 👈 espacio para variantes
+                $this->articulosParaCrear[] = $data;
+
+                // Lo agregamos al índice para evitar procesarlo duplicado en siguientes filas
+                $fakeArticle = new \App\Models\Article($data);
+                // $num = $this->ct->num('articles', $this->user->id);
+                $fakeArticle->id = 'fake_' . uniqid(); // ID temporal único
+
+                ArticleIndexCache::add($fakeArticle);
             }
-            if (count($surchages_data_amount) > 0) {
-                $data['surchages_data_amount'] = $surchages_data_amount;
-            }
-
-
-            $stock = $this->obtener_stock($row);
-
-            if (!is_null($stock['stock_global'])) {
-                $data['stock_global'] = $stock['stock_global'];
-            } else if (count($stock['stock_addresses']) > 0) {
-                $data['stock_addresses'] = $stock['stock_addresses'];
-            }
-
-            $data['variants_data'] = []; // 👈 espacio para variantes
-            $this->articulosParaCrear[] = $data;
-
-            // Lo agregamos al índice para evitar procesarlo duplicado en siguientes filas
-            $fakeArticle = new \App\Models\Article($data);
-            // $num = $this->ct->num('articles', $this->user->id);
-            $fakeArticle->id = 'fake_' . uniqid(); // ID temporal único
-
-            ArticleIndexCache::add($fakeArticle);
         }
+
+    }
+
+    function get_cost_in_dollars($row) {
+        $cost_in_dollars = 0;
+
+        $moneda = ImportHelper::getColumnValue($row, 'moneda', $this->columns);
+        
+        if (
+            $moneda == 'USD'
+            || $moneda == 'usd'
+        ) {
+            Log::info('Costo en dolares');
+            $cost_in_dollars = 1;
+        }
+        return $cost_in_dollars;
     }
 
 
@@ -380,7 +448,7 @@ class ProcessRow {
         return $modified;
     }
 
-    static function get_number($number) {
+    static function get_number($number, $decimales = 2) {
 
         if (is_null($number) || $number == '') {
             return null;
@@ -392,7 +460,7 @@ class ProcessRow {
         $normalized = str_replace(',', '.', $original);
 
         // 2. Convertir a float y limitar a 4 decimales
-        $limited = number_format((float)$normalized, 4, '.', '');
+        $limited = number_format((float)$normalized, $decimales, '.', '');
 
         return $limited;
     }
@@ -730,6 +798,24 @@ class ProcessRow {
         $iva_id = LocalImportHelper::getIvaId($iva_excel);
         return $iva_id;
     }
+
+
+    function get_aplicar_iva($row) {
+        $aplicar_iva = 1;
+
+        $iva_excel = ImportHelper::getColumnValue($row, 'aplicar_iva', $this->columns);
+        Log::info('get_aplicar_iva: '.$iva_excel);
+        if (
+            $iva_excel == 'No'
+            || $iva_excel == 'no'
+            || $iva_excel == 'N'
+            || $iva_excel == 'n'
+        ) {
+            $aplicar_iva = 0;
+        }
+        return $aplicar_iva;
+    }
+
 
     /**
      * Devuelve el ID del IVA a partir del valor textual en la columna "iva"

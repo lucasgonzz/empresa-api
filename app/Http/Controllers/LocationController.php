@@ -18,6 +18,11 @@ class LocationController extends Controller
     }
 
     public function store(Request $request) {
+
+        // if (is_null($request->name)) {
+        //     return response(null, 200);
+        // }
+        
         $model = Location::create([
             'num'                   => $this->num('locations'),
             'name'                  => $request->name,

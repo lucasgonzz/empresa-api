@@ -6,16 +6,19 @@ use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ImageHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use Illuminate\Support\Facades\Log;
+use App\Models\User;
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class SalePdf extends fpdf {
 
-	function __construct($sale, $with_prices, $with_costs, $precios_netos, $save_doc_as = false) {
+	function __construct($sale, $user, $with_prices, $with_costs, $precios_netos, $save_doc_as = false) {
 		parent::__construct();
 		$this->SetAutoPageBreak(false);
 		$this->start_x = 5;
@@ -25,8 +28,9 @@ class SalePdf extends fpdf {
 		
 		$this->sale = $sale;
 		
-		$this->user = UserHelper::getFullModel();
-        $this->afip_helper = new AfipHelper($this->sale);
+		$this->user = $user;
+
+        $this->afip_helper = new AfipHelper($this->sale, null, null, $user);
 
 		$this->with_prices = $with_prices;
 		$this->with_costs = $with_costs;
@@ -310,7 +314,10 @@ class SalePdf extends fpdf {
 		);
 
 		$codigo = $item->bar_code;
-		if (UserHelper::hasExtencion('codigo_proveedor_en_vender')) {
+		if (
+			UserHelper::hasExtencion('no_usar_codigos_de_barra', $this->user)
+			|| UserHelper::hasExtencion('codigo_proveedor_en_vender', $this->user)
+		) {
 			$codigo = $item->provider_code;
 		}
 
@@ -327,7 +334,7 @@ class SalePdf extends fpdf {
 	    $this->MultiCell( 
 			$this->getFields()['Nombre'], 
 			$this->line_height, 
-			$item->name, 
+			GeneralHelper::article_name($item), 
 	    	$this->b, 
 	    	'L', 
 	    	false
@@ -338,7 +345,7 @@ class SalePdf extends fpdf {
 		$this->Cell(
 			$this->getFields()['Cant'], 
 			$this->line_height, 
-			$item->pivot->amount, 
+			Numbers::price($item->pivot->amount), 
 			$this->b, 
 			0, 
 			'C'
@@ -477,10 +484,17 @@ class SalePdf extends fpdf {
 	    $this->x = $this->start_x;
 	    // $this->y = 247;
 	    $this->SetFont('Arial', 'B', 12);
+		
+		$text = 'Total: $'. Numbers::price(SaleHelper::getTotalSale($this->sale, false, false, false));
+		
+		if ($this->sale->moneda_id == 2) {
+			$text .= ' (USD)';
+		}
+
 		$this->Cell(
-			100,
+			200,
 			7,
-			'Total: $'. Numbers::price(SaleHelper::getTotalSale($this->sale, false, false, false)),
+			$text,
 
 			/*
 				* Se motraba el total que habia hasta esta pagina, no el total real de la venta.
@@ -489,7 +503,7 @@ class SalePdf extends fpdf {
 			// 'Total: $'. Numbers::price($this->total_sale),
 			$this->b,
 			1,
-			'L'
+			'R'
 		);
 	}
 

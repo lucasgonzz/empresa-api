@@ -36,6 +36,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $row->is_variant ? $row->variant->stock : $article->stock,
             $article->stock_min,
             !is_null($article->iva) ? $article->iva->percentage : '',
+            $article->aplicar_iva ? 'Si' : 'No',
             !is_null($article->provider) ? $article->provider->name : '',
             $article->cost,
             $article->percentage_gain,
@@ -45,12 +46,16 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $article->surchages_amount_formated,
             $article->price,
             $this->getCostInDollars($article),
+            $article->descripcion,
             $this->getUnidadMedida($article),
             $article->final_price,
         ];
 
         // Ahora continuás con los helpers
         $map = ExportHelper::map_unidades_individuales($map, $article);
+
+        $map = ExportHelper::map_autopartes($map, $article);
+
         $map = ExportHelper::map_propiedades_de_distribuidora($map, $article);
 
 
@@ -154,6 +159,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             'Stock actual',
             'Stock minimo',
             'Iva',
+            'Aplicar Iva',
             'Proveedor',
             'Costo',
             'Margen de ganancia',
@@ -163,11 +169,14 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             'Recargos montos',
             'Precio',
             'Moneda',
+            'Descripcion',
             'Unidad medida',
             'Precio Final',
         ];
         
         $headings = ExportHelper::set_unidades_individuales($headings);
+
+        $headings = ExportHelper::set_props_autopartes($headings);
         
         $headings = ExportHelper::set_propiedades_de_distribuidora($headings);
         

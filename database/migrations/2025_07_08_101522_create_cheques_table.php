@@ -19,7 +19,7 @@ class CreateChequesTable extends Migration
             // Datos del cheque
             $table->string('numero');
             $table->string('banco')->nullable();
-            $table->decimal('amount', 22, 2);
+            $table->decimal('amount', 22, 2)->nullable();
             $table->date('fecha_emision')->nullable();
             $table->date('fecha_pago')->nullable();
 

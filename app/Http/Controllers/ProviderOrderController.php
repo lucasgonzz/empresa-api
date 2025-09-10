@@ -2,13 +2,17 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ProviderOrderHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
+use App\Imports\ProviderOrderArticleImport;
+use App\Jobs\ProcessProviderOrderArticleImport;
 use App\Models\ProviderOrder;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Maatwebsite\Excel\Facades\Excel;
 
 class ProviderOrderController extends Controller
 {
@@ -61,8 +65,10 @@ class ProviderOrderController extends Controller
             'days_to_advise'                            => $request->days_to_advise,
             'update_stock'                              => $request->update_stock,
             'update_prices'                             => $request->update_prices,
+            'moneda_id'                                 => $request->moneda_id,
             'generate_current_acount'                   => $request->generate_current_acount,
             'address_id'                                => $request->address_id,
+            'numero_comprobante'                        => $request->numero_comprobante,
             'user_id'                                   => $this->userId(),
         ]);
 
@@ -91,6 +97,7 @@ class ProviderOrderController extends Controller
         $model->update_stock                                = $request->update_stock;
         $model->update_prices                               = $request->update_prices;
         $model->generate_current_acount                     = $request->generate_current_acount;
+        $model->numero_comprobante                          = $request->numero_comprobante;        
         $model->save();
 
         $helper = new NewProviderOrderHelper($model, $request->articles, $ya_se_actualizo_stock);
@@ -101,15 +108,68 @@ class ProviderOrderController extends Controller
 
     public function destroy($id) {
         $model = ProviderOrder::find($id);
+        
         ProviderOrderHelper::deleteCurrentAcount($model);
         ProviderOrderHelper::resetArticlesStock($model);
-        if (!is_null($model->provider)) {
-            $model->provider->pagos_checkeados = 0;
-            $model->provider->save();
-        }
+
+        // if (!is_null($model->provider)) {
+        //     $model->provider->pagos_checkeados = 0;
+        //     $model->provider->save();
+        // }
         $model->delete();
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('ProviderOrder', $model->id);
         return response(null);
+    }
+
+    function import_excel_articles(Request $request) {
+
+        $columns = GeneralHelper::getImportColumns($request);
+
+        Log::info('columns provider_order:');
+        Log::info($columns);
+
+        if ($request->has('models') && $request->file('models')->isValid()) {
+
+            Log::info('se va a guardar archivo');
+            Log::info($request->file('models'));
+
+            $original_extension = 'xlsx';
+            // $original_extension = $request->file('models')->getClientOriginalExtension();
+            
+            $filename = 'import_' . time() . '.' . $original_extension;
+            $archivo_excel_path = $request->file('models')->storeAs('imported_files', $filename);
+
+            Log::info($archivo_excel_path);
+
+        } else if ($request->has('archivo_excel_path')) {
+
+            Log::info('ya viene la ruta del archivo');
+            $archivo_excel_path = $request->archivo_excel_path;
+
+        } else {
+            Log::info('NO se va a guardar archivo');
+            Log::info($request->file('models')->getError());
+        }
+
+        Log::info('archivo_excel_path: '.$archivo_excel_path);
+        $archivo_excel = storage_path('app/' . $archivo_excel_path);
+
+        $user = $this->user();
+
+        $provider_order = ProviderOrder::find($request->provider_order_id);
+
+
+        Excel::import(new ProviderOrderArticleImport(
+            $columns,
+            $request->start_row, 
+            $request->finish_row,
+            $user,
+            $provider_order,
+        ), $archivo_excel_path);
+        
+        // ProcessProviderOrderArticleImport::dispatch($columns, $request->start_row, $request->finish_row, $owner, $provider_order, $archivo_excel_path);
+
+        return response(null, 200);
     }
 }

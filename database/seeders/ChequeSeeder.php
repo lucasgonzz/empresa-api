@@ -4,6 +4,7 @@ namespace Database\Seeders;
 
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use Carbon\Carbon;
 use Illuminate\Database\Seeder;
@@ -69,6 +70,12 @@ class ChequeSeeder extends Seeder
             $model['numero'] = rand(11111111, 99999999999);
             $model['amount'] = rand(1000, 10000);
 
+
+            $credit_account = CreditAccount::where('model_name', 'client')
+                                            ->where('model_id', $model['client_id'])
+                                            ->where('moneda_id', 1)
+                                            ->first();
+
             $pago = CurrentAcount::create([
                 'haber'                             => $model['amount'],
                 'description'                       => null,
@@ -78,16 +85,20 @@ class ChequeSeeder extends Seeder
                 'detalle'                           => 'Pago N°'.$index,
                 'client_id'                         => $model['client_id'],
                 'created_at'                        => Carbon::now(),
+                'credit_account_id'                 => $credit_account->id,
             ]);
 
             $index++;
 
             CurrentAcountPagoHelper::attachPaymentMethods($pago, [$model]);
-            $pago->saldo = CurrentAcountHelper::getSaldo('client', $model['client_id'], $pago) - $pago->haber;
+
+            $pago->saldo = CurrentAcountHelper::getSaldo($credit_account->id, $pago) - $pago->haber;
             $pago->save();
-            $pago_helper = new CurrentAcountPagoHelper('client', $model['client_id'], $pago);
+
+            $pago_helper = new CurrentAcountPagoHelper($credit_account->id, 'client', $model['client_id'], $pago);
             $pago_helper->init();
-            CurrentAcountHelper::updateModelSaldo($pago, 'client', $model['client_id']);
+            
+            CurrentAcountHelper::update_credit_account_saldo($credit_account->id);
         }
 
     }

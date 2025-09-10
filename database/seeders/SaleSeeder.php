@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\Seeders\SaleSeederHelper;
 use App\Models\Address;
 use App\Models\Article;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
 use App\Models\User;
@@ -117,6 +118,7 @@ class SaleSeeder extends Seeder
                 'employee_id'           => 503,
                 'save_current_acount'   => 1,
                 'user_id'               => env('USER_ID'),
+                'moneda_id'             => 1,
             ],
         ];
 
@@ -137,6 +139,12 @@ class SaleSeeder extends Seeder
 
     function pago_para_la_venta($sale) {
 
+
+        $credit_account = CreditAccount::where('model_name', 'client')
+                                        ->where('model_id', $sale->client_id)
+                                        ->where('moneda_id', 1)
+                                        ->first();
+
         $pago = CurrentAcount::create([
             'haber'                             => 10,
             'description'                       => null,
@@ -146,13 +154,18 @@ class SaleSeeder extends Seeder
             'detalle'                           => 'Pago N°'.$sale->num,
             'client_id'                         => $sale->client_id,
             'created_at'                        => $sale->created_at,
+            'credit_account_id'                 => $credit_account->id,
         ]);
+
         CurrentAcountPagoHelper::attachPaymentMethods($pago, $this->checks());
-        $pago->saldo = CurrentAcountHelper::getSaldo('client', $sale->client_id, $pago) - $pago->haber;
+
+        $pago->saldo = CurrentAcountHelper::getSaldo($credit_account->id, $pago) - $pago->haber;
         $pago->save();
-        $pago_helper = new CurrentAcountPagoHelper('client', $sale->client_id, $pago);
+
+        $pago_helper = new CurrentAcountPagoHelper($credit_account->id, 'client', $sale->client_id, $pago);
         $pago_helper->init();
-        CurrentAcountHelper::updateModelSaldo($pago, 'client', $sale->client_id);
+
+        CurrentAcountHelper::update_credit_account_saldo($credit_account->id);
     }
 
     function ventas_en_mostrador() {

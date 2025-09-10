@@ -29,7 +29,7 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 		$this->etiqueta_height  = 50;  
 
 		// Nombre
-		$this->alto_nombre = 7;
+		$this->alto_nombre = 20;
 		$this->size_nombre = 12; 
 
 		// Precio
@@ -73,7 +73,7 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 			$this->print_bar_code($article->bar_code);
 		}
 		
-		$this->precio($article);
+		// $this->precio($article);
 		
 		$this->nombre_negocio();
 
@@ -81,7 +81,7 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 
 	function nombre($article) {
 		$this->SetFont('Arial', '', $this->size_nombre);
-		$this->Cell($this->etiqueta_width, $this->alto_nombre, $article->name, $this->b, 1, 'L');
+		$this->Cell($this->etiqueta_width, $this->alto_nombre, $article->name, $this->b, 1, 'C');
 	}
 
 	function precio($article) {
@@ -93,14 +93,19 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 	}
 
 	function nombre_negocio() {
+
+		// Este incremento de y lo hacia en precio, pero como lo comente ahora lo hago aca
+		$this->y += $this->code_height;
+		$this->y += 5;
+
 		$this->x = 0;
 		$this->SetFont('Arial', '', 10);
-		$this->Cell($this->etiqueta_width, 5, $this->user->company_name, $this->b, 1, 'R');
+		$this->Cell($this->etiqueta_width, 5, $this->user->company_name, $this->b, 1, 'C');
 	}
 
 	function print_bar_code($code) {
 		$this->x = 0;
-		$this->y += 5;
+		$this->y += 0;
 		$barcode = $this->barcodeGenerator->getBarcodePNG($code, 'C128');
 		$imgData = base64_decode($barcode);
 		$file = 'temp_barcode'.$code.'.png';
@@ -108,7 +113,7 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 
 		$img_width = $this->code_width - 10;
 		$start_x = ($this->code_width - $img_width) / 2;
-		$start_x += $this->x;
+		$start_x += 29;
 
 		$this->Image($file, $start_x, $this->y, $img_width, $this->code_height);
 		unlink($file);

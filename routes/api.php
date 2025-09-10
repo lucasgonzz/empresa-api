@@ -186,6 +186,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Vender
     // Esta ruta se usa en VENDER - LISTADO - CONSULTORA DE PRECIOS
     Route::get('/vender/buscar-articulo-por-codido/{code}', 'VenderController@search_bar_code');
+    Route::post('/vender/buscar-articulo-por-nombre', 'VenderController@search_nombre');
 
 
 
@@ -282,6 +283,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('price-type', 'PriceTypeController');
 
     Route::resource('provider-order', 'ProviderOrderController');
+    Route::post('provider-order/excel/import', 'ProviderOrderController@import_excel_articles');
     Route::get('provider-order/from-date/{from_date?}/{until_date?}', 'ProviderOrderController@index');
     Route::get('provider-order/days-to-advise/not-received', 'ProviderOrderController@indexDaysToAdvise');
     Route::resource('provider-order-status', 'ProviderOrderStatusController');
@@ -345,13 +347,17 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('-', '-Controller');
 
     // CurrentAcounts
-    Route::get('/current-acount/{model_name}/{model_id}/{months_ago}', 'CurrentAcountController@index');
+    
+    // Antes usaba esta ruta para obtener los current_acounts, ahora llamo al controlador de CreditAccount
+    // Route::get('/current-acount/{model_name}/{model_id}/{months_ago}', 'CurrentAcountController@index');
+    Route::get('/current-acount/{credit_account_id}/{cantidad_movimientos}', 'CreditAccountController@index');
+
     Route::post('/current-acount/pago', 'CurrentAcountController@pago');
     Route::post('/current-acount/nota-credito', 'CurrentAcountController@notaCredito');
     Route::post('/current-acount/nota-debito', 'CurrentAcountController@notaDebito');
     Route::post('/current-acount/saldo-inicial', 'CurrentAcountController@saldoInicial');
     Route::delete('/current-acount/{model_name}/{id}', 'CurrentAcountController@delete');
-    Route::get('check-saldos/{model_name}/{id}', 'CurrentAcountController@check_saldos_y_pagos');
+    Route::get('check-saldos/{credit_account_id}', 'CurrentAcountController@check_saldos_y_pagos');
 
 
 
@@ -451,6 +457,18 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('payment-plan-cuota', 'PaymentPlanCuotaController');
     Route::get('payment-plan-cuota/{estado}/from-date/{from_date?}/{until_date?}', 'PaymentPlanCuotaController@index');
+
+
+    Route::resource('tienda-nube-order', 'TiendaNubeOrderController');
+    Route::get('tienda-nube-order/from-date/{from_date?}/{until_date?}', 'TiendaNubeOrderController@index');
+
+    Route::get('tienda-nube-order-status', 'TiendaNubeOrderStatusController@index');
+
+    Route::get('moneda', 'MonedaController@index');
+
+    Route::get('pais-exportacion', 'PaisExportacionController@index');
+
+    Route::resource('current-acount-payment-method-discount', 'CurrentAcountPaymentMethodDiscountController');
 
 });
 

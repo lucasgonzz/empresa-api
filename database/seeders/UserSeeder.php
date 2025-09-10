@@ -46,7 +46,7 @@ class UserSeeder extends Seeder
                 'sale_ticket_description'       => 'Hasta 15 dias de cambio trayendo este ticket',
                 'password'                      => bcrypt('1234'),
                 'visible_password'              => null,
-                'dollar'                        => 300,
+                'dollar'                        => 1000,
                 'home_position'                 => 1,
                 'download_articles'             => 0,
                 'online'                        => 'http://tienda.local:8081',
@@ -147,6 +147,34 @@ class UserSeeder extends Seeder
                 'articulos_unidades_individuales',
                 'check_article_stock_en_vender',
                 // 'warn_article_stock_en_vender',
+            ];
+
+        }  else if ($this->for_user == 'racing_carts') {
+
+            $models[0]['name'] = 'Rafa';
+            $models[0]['company_name'] = 'Racing carts';
+            $models[0]['iva_included'] = 0;
+            $models[0]['iva_condition_id'] = 1;
+            $models[0]['doc_number'] = '1234';
+            $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
+            
+            // $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
+            $models[0]['default_version'] = null;
+
+            $models[0]['extencions'] = [
+
+                'comerciocity_interno',
+                'budgets',
+                'ask_save_current_acount',
+                'imagenes',
+                'cajas',
+                'articulos_unidades_individuales',
+                'autopartes',
+                'ventas_en_dolares',
+                'pagos_provisorios',
+                'ventas_en_dolares',
+                'articulo_margen_de_ganancia_segun_lista_de_precios',
+                'cambiar_price_type_en_vender',
             ];
 
         } else if ($this->for_user == 'demo') {
@@ -532,6 +560,7 @@ class UserSeeder extends Seeder
                 'api_url'                       => 'http://empresa.local:8000',
                 'name'                          => $model['name'], 
                 'phone'                         => $model['phone'], 
+                'dollar'                        => $model['dollar'], 
                 'use_archivos_de_intercambio'                  => isset($model['use_archivos_de_intercambio']) ? $model['use_archivos_de_intercambio'] : null,  
                 'company_name'                  => isset($model['company_name']) ? $model['company_name'] : null,  
                 'iva_included'                  => isset($model['iva_included']) ? $model['iva_included'] : 0, 
@@ -578,6 +607,7 @@ class UserSeeder extends Seeder
             if (is_null($user->owner_id)) {
 
                 if (isset($model['extencions'])) {
+                    $model['extencions'][] = 'costo_en_dolares';
                     foreach ($model['extencions'] as $extencion_slug) {
                         $extencion = ExtencionEmpresa::where('slug', $extencion_slug)
                                                     ->first();
@@ -603,8 +633,8 @@ class UserSeeder extends Seeder
                 ) {
                     
                     AfipInformation::create([
-                        'iva_condition_id'      => isset($model['iva_condition_id']) ? $model['iva_condition_id'] : 1,
-                        'razon_social'          => 'Empresa de '.$user->company_name,
+                        'iva_condition_id'      => 1,
+                        'razon_social'          => 'RRII Ferretodo',
                         'domicilio_comercial'   => 'Pellegrini 1876',
                         'cuit'                  => '20381712010',
                         // 20175018841 papa 
@@ -612,6 +642,27 @@ class UserSeeder extends Seeder
                         // 20381712010 Nico Ferretodo
                         'punto_venta'           => 4,
                         'ingresos_brutos'       => '20381712010',
+                        'inicio_actividades'    => Carbon::now()->subYears(5),
+                        'user_id'               => env('USER_ID'),
+                    ]);
+                    
+                    AfipInformation::create([
+                        'iva_condition_id'      => 2,
+                        'razon_social'          => 'Lucas Mono',
+                        'domicilio_comercial'   => 'Pellegrini 1876',
+                        'cuit'                  => '20423548984',
+                        'punto_venta'           => 2,
+                        'ingresos_brutos'       => '20423548984',
+                        'inicio_actividades'    => Carbon::now()->subYears(5),
+                        'user_id'               => env('USER_ID'),
+                    ]);
+                    AfipInformation::create([
+                        'iva_condition_id'      => 2,
+                        'razon_social'          => 'Lucas Mono E',
+                        'domicilio_comercial'   => 'Pellegrini 1876',
+                        'cuit'                  => '20423548984',
+                        'punto_venta'           => 3,
+                        'ingresos_brutos'       => '20423548984',
                         'inicio_actividades'    => Carbon::now()->subYears(5),
                         'user_id'               => env('USER_ID'),
                     ]);

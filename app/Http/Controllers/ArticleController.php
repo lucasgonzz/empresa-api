@@ -10,8 +10,11 @@ use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
+use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
+use App\Http\Controllers\Helpers\article\ArticlePriceTypeMonedaHelper;
+use App\Http\Controllers\Helpers\article\ArticleVariantHelper;
 use App\Http\Controllers\Helpers\article\BarCodeAutomaticoHelper;
 use App\Http\Controllers\Helpers\article\ResetStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateAddressesStockHelper;
@@ -27,9 +30,12 @@ use App\Imports\ArticleImport;
 use App\Imports\LocationImport;
 use App\Imports\ProvinciaImport;
 use App\Jobs\ProcessArticleImport;
+use App\Jobs\ProcessDeleteArticleFromTiendaNube;
 use App\Jobs\ProcessSyncArticleToTiendaNube;
 use App\Models\Article;
 use App\Models\User;
+use App\Services\Pdf\Catalog\CatalogClassic;
+use App\Services\Pdf\Catalog\TCPDCCatalog;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -41,6 +47,7 @@ class ArticleController extends Controller
 {
     function index(Request $request) {
         $models = Article::where('user_id', $this->userId())
+                            ->where('id', 0)
                             ->where('status', 'active');
 
         $updated_after = $request->input('updated_after');
@@ -119,6 +126,8 @@ class ArticleController extends Controller
         $model->percentage_gain_blanco                   = $request->percentage_gain_blanco;
         $model->provider_price_list_id            = $request->provider_price_list_id;
         $model->iva_id                            = $request->iva_id;
+        $model->aplicar_iva                       = $request->aplicar_iva;
+
         // $model->stock                             = $request->stock;
         $model->stock_min                         = $request->stock_min;
         $model->online                            = $request->online;
@@ -130,6 +139,19 @@ class ArticleController extends Controller
         $model->bodega_id                           = $request->bodega_id;
         $model->cepa_id                             = $request->cepa_id;
         $model->presentacion                        = $request->presentacion;
+
+
+        // Autopartes
+        $model->espesor                         = $request->espesor;
+        $model->modelo                          = $request->modelo;
+        $model->pastilla                        = $request->pastilla;
+        $model->diametro                        = $request->diametro;
+        $model->litros                          = $request->litros;
+        $model->descripcion                     = $request->descripcion;
+        $model->contenido                       = $request->contenido;
+        $model->cm3                             = $request->cm3;
+        $model->calipers                        = $request->calipers;
+        $model->juego                           = $request->juego;
 
 
         $model->unidades_individuales              = $request->unidades_individuales;
@@ -146,6 +168,8 @@ class ArticleController extends Controller
 
         $model->addresses()->sync([]);
         
+        ArticlePriceTypeMonedaHelper::attach_price_type_monedas($model, $request->price_type_monedas);
+
         ArticlePriceTypeHelper::attach_price_types($model, $request->price_types);
 
         // GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
@@ -162,7 +186,10 @@ class ArticleController extends Controller
 
         // $this->sendAddModelNotification('article', $model->id);
 
+        ArticleVariantHelper::set_default_properties($model);
+
         $this->check_tienda_nube($model);
+
 
         $inventory_linkage_helper = new InventoryLinkageHelper();
         $inventory_linkage_helper->checkArticle($model);
@@ -193,6 +220,7 @@ class ArticleController extends Controller
         $model->provider_cost_in_dollars          = $request->provider_cost_in_dollars;
         $model->brand_id                          = $request->brand_id;
         $model->iva_id                            = $request->iva_id;
+        $model->aplicar_iva                       = $request->aplicar_iva;
         $model->percentage_gain                   = $request->percentage_gain;
         $model->percentage_gain_blanco                   = $request->percentage_gain_blanco;
         $model->provider_price_list_id            = $request->provider_price_list_id;
@@ -217,6 +245,21 @@ class ArticleController extends Controller
 
         $model->needs_sync_with_tn                  = true;
 
+
+
+        // Autopartes
+        
+        $model->espesor                         = $request->espesor;
+        $model->modelo                          = $request->modelo;
+        $model->pastilla                        = $request->pastilla;
+        $model->diametro                        = $request->diametro;
+        $model->litros                          = $request->litros;
+        $model->descripcion                     = $request->descripcion;
+        $model->contenido                       = $request->contenido;
+        $model->cm3                             = $request->cm3;
+        $model->calipers                        = $request->calipers;
+        $model->juego                           = $request->juego;
+
         
         $model->name = ucfirst($request->name);
         $model->slug = ArticleHelper::slug($request->name);
@@ -225,6 +268,8 @@ class ArticleController extends Controller
         // GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
         // ArticleHelper::setArticleStockFromAddresses($model);
 
+        ArticlePriceTypeMonedaHelper::attach_price_type_monedas($model, $request->price_type_monedas);
+        
         ArticlePriceTypeHelper::attach_price_types($model, $request->price_types);
 
         ArticleHelper::setFinalPrice($model);
@@ -248,6 +293,13 @@ class ArticleController extends Controller
 
         if (env('USA_TIENDA_NUBE', false)) {
             dispatch(new ProcessSyncArticleToTiendaNube($article));
+        }
+    }
+
+    function check_delete_tienda_nube($article) {
+
+        if (env('USA_TIENDA_NUBE', false)) {
+            dispatch(new ProcessDeleteArticleFromTiendaNube($article));
         }
     }
 
@@ -380,6 +432,8 @@ class ArticleController extends Controller
         $recipes_donde_esta_este_articulo = ArticleHelper::get_recipes_que_tienen_este_articulo_como_insumo($model);
 
         ArticleHelper::check_article_recipe_to_delete($model);
+
+        $this->check_delete_tienda_nube($model);
         
         ImageController::deleteModelImages($model);
         $model->delete();
@@ -415,7 +469,19 @@ class ArticleController extends Controller
     }
 
     function pdf($ids) {
-        new ArticlePdf($ids);
+        $user = $this->user();            
+        $pdf = new TCPDCCatalog();
+        $pdf->generate(
+            $user->image_url,
+            $user->company_name,
+            [
+                'Telefono' => $user->phone,
+                'Email' => $user->email,
+                'Email' => $user->email,
+            ],
+            $ids,
+        );
+        // new ArticlePdf($ids);
     }
 
     function listPdf($ids) {
@@ -471,6 +537,13 @@ class ArticleController extends Controller
     }
 
     function ultimos_actualizados() {
+
+        $articulos_por_defecto = Article::where('user_id', $this->userId())
+                                        ->orderBy('id', 'DESC')
+                                        ->where('default_in_vender', 1)
+                                        ->withAll()
+                                        ->get();
+                                        
         $models = Article::where('user_id', $this->userId())
                             ->orderBy('id', 'DESC')
                             // ->orderBy('updated_at', 'DESC')
@@ -478,14 +551,13 @@ class ArticleController extends Controller
                             ->withAll()
                             ->get();
 
-        $articulos_por_defecto = Article::where('user_id', $this->userId())
-                                        ->orderBy('created_at', 'DESC')
-                                        ->where('default_in_vender', 1)
-                                        ->withAll()
-                                        ->get();
 
-        $results = $models->merge($articulos_por_defecto);
-                            
+        $results = $articulos_por_defecto->merge($models->reverse());
+        // $results = $articulos_por_defecto->merge(array_reverse($models));
+
+        // Invertimos el orden usando Collection::reverse() y reindexamos con values()
+        $models_invertidos = $models->reverse()->values();
+
         return response()->json(['models' => $results], 200);
     }
 }

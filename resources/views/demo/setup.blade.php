@@ -125,30 +125,30 @@
             <!-- <label><input type="checkbox" name="cambiar_price_type_en_vender" value="1"> Cambian manualmente la lista de precios en VENDER</label>
             <label><input type="checkbox" name="cambiar_price_type_en_vender_item_por_item" value="1"> Cambian la lista de precios a cada item individualmente</label> -->
             
-            <label><input type="checkbox" name="iva_included" value="1"> Iva ya incluido en los precios</label>
+            <!-- <label><input type="checkbox" name="iva_included" value="1"> Iva ya incluido en los precios</label> -->
 
             <hr>
             <p>Vender</p>
 
             <label><input type="checkbox" name="ventas_con_fecha_de_entrega" value="1"> Ventas con fecha de entrega (Hojas de ruta)</label>
             
-            <label><input type="checkbox" name="ask_amount_in_vender" value="1"> Preguntar la cantidad en vender</label>
+            <!-- <label><input type="checkbox" name="ask_amount_in_vender" value="1"> Preguntar la cantidad en vender</label>
             <label><input type="checkbox" name="redondear_centenas_en_vender" value="1"> Redondear precios de a centenas</label>
             <label><input type="checkbox" name="usan_cuentas_corrientes" value="1"> Usan cuentas corrientes con los clientes</label>
-            <label><input type="checkbox" name="budgets" value="1"> Usa presupuestos</label>
+            <label><input type="checkbox" name="budgets" value="1"> Usa presupuestos</label> -->
             
             <hr>
 
             <p>Tesoreria</p>
-            <label><input type="checkbox" name="cajas" value="1"> Usa cajas</label>
+            <label><input type="checkbox" name="cajas" value="1" checked> Usa cajas</label>
             
             <hr>
             <p>Articulos</p>
-            <label><input type="checkbox" name="imagenes" value="1"> Usa imágenes en los artículos</label>
-            <label><input type="checkbox" name="usar_codigos_de_barra" value="1"> Usa códigos de barra</label>
-            <label><input type="checkbox" name="consultora_de_precios" value="1"> Ofrece consultoras de precio a sus clientes en el local</label>
+            <!-- <label><input type="checkbox" name="imagenes" value="1"> Usa imágenes en los artículos</label> -->
+            <label><input type="checkbox" name="usar_codigos_de_barra" value="1" checked> Usa códigos de barra</label>
+            <!-- <label><input type="checkbox" name="consultora_de_precios" value="1"> Ofrece consultoras de precio a sus clientes en el local</label>
 
-            <label><input type="checkbox" name="codigos_de_barra_por_defecto" value="1"> Codigos de barra por defecto (se generan con el numero interno del producto)</label>
+            <label><input type="checkbox" name="codigos_de_barra_por_defecto" value="1"> Codigos de barra por defecto (se generan con el numero interno del producto)</label> -->
 
             <hr>
             <p>Produccion</p>

@@ -21,12 +21,12 @@ class CreateArticlesTable extends Migration
             $table->string('provider_code', 128)->nullable();
             $table->text('name')->nullable();
             $table->string('slug')->nullable();
-            $table->decimal('cost', 16, 6)->nullable();
-            $table->decimal('costo_real', 16, 6)->nullable();
-            $table->decimal('costo_mano_de_obra', 16, 6)->nullable();
+            $table->decimal('cost', 16, 2)->nullable();
+            $table->decimal('costo_real', 16, 2)->nullable();
+            $table->decimal('costo_mano_de_obra', 16, 2)->nullable();
             $table->decimal('percentage_gain', 8, 2)->nullable();
-            $table->decimal('price', 16, 6)->nullable();
-            $table->decimal('final_price', 16, 6)->nullable();
+            $table->decimal('price', 16, 2)->nullable();
+            $table->decimal('final_price', 16, 2)->nullable();
             $table->decimal('previus_final_price', 12, 2)->nullable();
             $table->decimal('stock', 12,2)->nullable();
             $table->integer('stock_min')->nullable();

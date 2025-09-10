@@ -24,9 +24,11 @@ use App\Http\Controllers\Pdf\SalePdf;
 use App\Http\Controllers\Pdf\SaleTicketPdf;
 use App\Http\Controllers\Pdf\SaleTicketRaw;
 use App\Http\Controllers\SellerCommissionController;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
 use App\Models\SaleModification;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -147,6 +149,8 @@ class SaleController extends Controller
             'caja_id'                           => $request->caja_id,
             'afip_tipo_comprobante_id'          => $request->afip_tipo_comprobante_id,
             'fecha_entrega'                     => $request->fecha_entrega,
+            'moneda_id'                         => $request->moneda_id,
+            'valor_dolar'                       => $request->valor_dolar,
             'descuento'                         => round($request->descuento, 2, PHP_ROUND_HALF_UP),
             'user_id'                           => $this->userId(),
         ]);
@@ -233,6 +237,8 @@ class SaleController extends Controller
         $model->total                               = $request->total;
 
         $model->fecha_entrega                       = $request->fecha_entrega;
+
+        $model->valor_dolar                         = $request->valor_dolar;
         
         $model->employee_id                         = SaleHelper::getEmployeeId($request);
         
@@ -287,10 +293,15 @@ class SaleController extends Controller
             SaleHelper::deleteSellerCommissionsFromSale($model);
 
             if (is_null($model->client->deleted_at)) {
+
+                $credit_account = CreditAccount::where('model_name', 'client')
+                                                    ->where('model_id', $model->client_id)
+                                                    ->where('moneda_id', $model->moneda_id)
+                                                    ->first();
                 
-                $model->client->pagos_checkeados = 0;
-                $model->client->save();
-                CurrentAcountHelper::checkSaldos('client', $model->client_id);
+                // $model->client->pagos_checkeados = 0;
+                // $model->client->save();
+                CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
                 $this->sendAddModelNotification('client', $model->client_id, false);
             }
         }
@@ -304,14 +315,15 @@ class SaleController extends Controller
     }
 
     function makeAfipTicket(Request $request) {
+
         $sale = Sale::find($request->sale_id);
+        
         if (!is_null($sale)) {
 
             if (
                 isset($request->afip_tipo_comprobante_id)
                 && $request->afip_tipo_comprobante_id != 0
             ) {
-                Log::info('seteando afip_tipo_comprobante_id con '.$request->afip_tipo_comprobante_id);
                 $sale->afip_tipo_comprobante_id = $request->afip_tipo_comprobante_id;
             }
 
@@ -319,15 +331,26 @@ class SaleController extends Controller
                 isset($request->afip_information_id)
                 && $request->afip_information_id != 0
             ) {
-                Log::info('seteando afip_information_id con '.$request->afip_information_id);
                 $sale->afip_information_id = $request->afip_information_id;
+            }
+
+            if (
+                isset($request->monto_a_facturar)
+                && (float)$request->monto_a_facturar > 0
+            ) {
+                $sale->facturar_importe_personalizado = (float)$request->monto_a_facturar;
+            } else {
+                $sale->facturar_importe_personalizado = null;
             }
 
             $sale->timestamps = false;
             $sale->save();
+            
             $ct = new AfipWsController($sale);
             $result = $ct->init();
-            return response()->json(['sale' => $this->fullModel('Sale', $request->sale_id), 'result' => $result], 201);
+
+            return response()->json(['sale' => $this->fullModel('Sale', $request->sale_id)], 201);
+            // return response()->json(['sale' => $this->fullModel('Sale', $request->sale_id), 'result' => $result], 201);
         }
         return response(null, 200);
     }
@@ -338,15 +361,20 @@ class SaleController extends Controller
         if ($model->client_id) {
             SaleHelper::updateCurrentAcountsAndCommissions($model);
         }
-        $this->sendAddModelNotification('Sale', $id);
+        // $this->sendAddModelNotification('Sale', $id);
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
     }
 
     function pdf($id, $with_prices, $with_costs, $precios_netos, $confirmed = 0) {
         $sale = Sale::find($id);
-        Log::info('El usuario '.Auth()->user()->name.' id '.Auth()->user()->id.' va a imprimir la venta N° '.$sale->num.' id: '.$sale->id);
-        SaleHelper::setPrinted($this, $sale, $confirmed);
-        $pdf = new SalePdf($sale, (boolean)$with_prices, (boolean)$with_costs, (boolean)$precios_netos);
+
+        
+        $user = User::where('id', $sale->user_id)
+                            ->with('extencions')
+                            ->first();
+
+        SaleHelper::setPrinted($this, $sale, $confirmed, $user);
+        $pdf = new SalePdf($sale, $user, (boolean)$with_prices, (boolean)$with_costs, (boolean)$precios_netos);
     }
 
     function afipTicketPdf($id) {

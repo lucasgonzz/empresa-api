@@ -63,11 +63,11 @@ class ProcessArticleImport implements ShouldQueue
     public function handle()
     {
         
-        Log::info('cacheando articulos');
-        ArticleIndexCache::build($this->user->id);
-        Log::info('articulos cacheados');
+        // Log::info('cacheando articulos');
+        // ArticleIndexCache::build($this->user->id);
+        // Log::info('articulos cacheados');
 
-        $chunkSize = 1000;
+        $chunkSize = 5000;
         if (env('APP_ENV') == 'local') {
             $chunkSize = 100;
         } 

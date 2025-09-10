@@ -40,7 +40,7 @@ class DemoSetupController extends Controller
             'name'                          => $request->user_name,
             'use_archivos_de_intercambio'   => 0,
             'company_name'                  => $request->company_name,
-            'image_url'                     => 'https://api-demo.comerciocity.com/public/storage/174292591094040.png',
+            'image_url'                     => 'https://comerciocity.com/img/logo.95c86b81.jpg',
             'doc_number'                    => '1234',
             'impresora'                     => 'XP-80',
             'email'                         => 'lucasgonzalez5500@gmail.com',
@@ -59,7 +59,7 @@ class DemoSetupController extends Controller
             'article_ticket_info_id'        => 1,
             'estable_version'               => null,
             'iva_included'                  => $request->iva_included ? 1 : 0,
-            'ask_amount_in_vender'          => $request->ask_amount_in_vender ? 1 : 0,
+            'ask_amount_in_vender'          => 1,
             'redondear_centenas_en_vender'          => $request->redondear_centenas_en_vender ? 1 : 0,
             'siempre_omitir_en_cuenta_corriente'    => $request->usan_cuentas_corrientes ? 0 : 1,
             // 'online_configuration'          => [
@@ -78,7 +78,7 @@ class DemoSetupController extends Controller
 
 
         // Asignar extensiones según configuración
-        $extencions = ['comerciocity_interno', 'ask_save_current_acount', 'online', 'costo_en_dolares'];
+        $extencions = ['comerciocity_interno', 'ask_save_current_acount', 'online', 'costo_en_dolares', 'budgets', 'acopios'];
         $seeders = [
             'CheckStatusSeeder',
             'OnlineTemplateSeeder',
@@ -130,9 +130,9 @@ class DemoSetupController extends Controller
             'ProviderPagosSeeder',
             'TitleSeeder',
             'DeliveryZoneSeeder',
-            'BudgetSeeder',
+            // 'BudgetSeeder',
             'UpdateFeatureSeeder',
-            'OrderSeeder',
+            // 'OrderSeeder',
             'InventoryLinkageScopeSeeder',
             
             'MessageSeeder',
@@ -165,6 +165,8 @@ class DemoSetupController extends Controller
             $seeders[] = 'CategorySeeder';
             $seeders[] = 'ArticleSeeder';
         }
+        
+        $seeders[] = 'BudgetSeeder';
 
 
         if ($request->codigos_de_barra_por_defecto) {
@@ -200,9 +202,9 @@ class DemoSetupController extends Controller
             $extencions[] = 'no_usar_codigos_de_barra';
         }
 
-        if ($request->budgets) {
-            $extencions[] = 'budgets';
-        }
+        // if ($request->budgets) {
+        //     $extencions[] = 'budgets';
+        // }
 
         if ($request->cajas) {
             $extencions[] = 'cajas';

@@ -10,23 +10,26 @@ use Carbon\Carbon;
 
 class CreateSaleOrderHelper {
 
-    static function save_sale($order, $instance) {
+    static function save_sale($order, $instance, $from_tienda_nube = false) {
         if (
-        	$order->order_status->name == 'Confirmado' 
-        	&& Self::saveSaleAfterFinishOrder() 
+            $from_tienda_nube
+        	|| (
+                $order->order_status->name == 'Confirmado' 
+        	   && Self::saveSaleAfterFinishOrder() 
+            )
         ) {
 
             $to_check = UserHelper::hasExtencion('check_sales');
             
-            $sale = Self::createSale($order, $instance, $to_check);
+            $sale = Self::createSale($order, $instance, $to_check, $from_tienda_nube);
 
-            Self::attach_sale_properties($order, $sale);
+            Self::attach_sale_properties($order, $sale, $from_tienda_nube);
 
             Log::info('se guardo venta para el pedido online, sale_id: '.$sale->id);
         }
     }
 
-    static function attach_sale_properties($order, $sale) {
+    static function attach_sale_properties($order, $sale, $from_tienda_nube) {
 
         $request = new \Illuminate\Http\Request();
 
@@ -37,21 +40,24 @@ class CreateSaleOrderHelper {
                 'id'                => $article->id,
                 'name'              => $article->name,
                 'amount'            => $article->pivot->amount,
-                'cost'              => $article->pivot->cost,
+                'cost'              => $article->pivot->cost ?? $article->cost,
                 'price_vender'      => $article->pivot->price,
                 'is_article'        => true
             ];
         }
 
-        foreach ($order->promocion_vinotecas as $promo) {
-            $request->items[] = [
-                'id'                => $promo->id,
-                'name'              => $promo->name,
-                'cost'              => $promo->pivot->cost,
-                'amount'            => $promo->pivot->amount,
-                'price_vender'      => $promo->pivot->price,
-                'is_promocion_vinoteca'        => true
-            ];
+        if (!$from_tienda_nube) {
+
+            foreach ($order->promocion_vinotecas as $promo) {
+                $request->items[] = [
+                    'id'                => $promo->id,
+                    'name'              => $promo->name,
+                    'cost'              => $promo->pivot->cost,
+                    'amount'            => $promo->pivot->amount,
+                    'price_vender'      => $promo->pivot->price,
+                    'is_promocion_vinoteca'        => true
+                ];
+            }
         }
 
         $request->discounts = [];
@@ -61,10 +67,13 @@ class CreateSaleOrderHelper {
     }
 	
 
-    static function createSale($order, $instance, $to_check = false) {
+    static function createSale($order, $instance, $to_check = false, $from_tienda_nube) {
         $client_id = null;
         
-        if (!is_null($order->buyer->comercio_city_client)) {
+        if (
+            !$from_tienda_nube
+            && !is_null($order->buyer->comercio_city_client)
+        ) {
             $client_id = $order->buyer->comercio_city_client_id;
         }
 
@@ -79,7 +88,8 @@ class CreateSaleOrderHelper {
             'terminada_at'          => $terminada ? Carbon::now() : null,
             'num'                   => $instance->num('sales'),
             'save_current_acount'   => 1,
-            'order_id'              => $order->id,
+            'order_id'              => $from_tienda_nube ? null : $order->id,
+            'tienda_nube_order_id'  => $from_tienda_nube ? $order->id : null,
             'total'                 => $order->total,
             'address_id'            => $order->address_id,
             'fecha_entrega'         => $order->fecha_entrega,

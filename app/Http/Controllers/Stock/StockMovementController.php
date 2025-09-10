@@ -16,6 +16,7 @@ use App\Http\Controllers\Stock\SetStockUpdatedAt;
 use App\Jobs\ProcessSyncArticleToTiendaNube;
 use App\Models\Article;
 use App\Models\ArticleVariant;
+use App\Models\ConceptoStockMovement;
 use App\Models\StockMovement;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -79,10 +80,14 @@ class StockMovementController extends Controller
 
         $article = Article::find($data['model_id']);
 
+        $concepto_id = SetConcepto::get_concepto($data);
+        
+        $amount = $this->check_unidades_individuales($article, (float)$data['amount'], $concepto_id);
+
         // Log::info('observations: '.$data['observations']);
         $stock_movement = StockMovement::create([
             'article_id'                => $data['model_id'],
-            'amount'                    => (float)$data['amount'],
+            'amount'                    => $amount,
             'sale_id'                   => GlobalHelper::isset_dist_0($data, 'sale_id'),
             'order_id'                  => GlobalHelper::isset_dist_0($data, 'order_id'),
             'provider_order_id'         => GlobalHelper::isset_dist_0($data, 'provider_order_id'),
@@ -113,6 +118,28 @@ class StockMovementController extends Controller
         $this->check_tienda_nube($article);
 
         return $stock_movement;
+    }
+
+    function check_unidades_individuales($article, $amount, $concepto_id) {
+
+        $concepto = ConceptoStockMovement::find($concepto_id);
+
+        if (!is_null($article->unidades_individuales)) {
+
+            if (
+                // Ingreso manual
+                $concepto->name == 'Ingreso manual'
+                // Compra a proveedor
+                || $concepto->name == 'Compra a proveedor'
+                // Act. Compra a proveedor
+                || $concepto->name == 'Act Compra a proveedor'
+                || $concepto->name == 'Eliminacion Compra a proveedor'
+            ) {
+                $amount *= $article->unidades_individuales;
+            }
+        }
+
+        return $amount;
     }
 
     function check_tienda_nube($article) {

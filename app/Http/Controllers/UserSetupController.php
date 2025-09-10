@@ -45,7 +45,7 @@ class UserSetupController extends Controller
             'sale_ticket_description'       => null,
             'password'                      => bcrypt('1234'),
             'visible_password'              => null,
-            'dollar'                        => 0,
+            'dollar'                        => 1000,
             'home_position'                 => 1,
             'download_articles'             => 0,
             'online'                        => null,
@@ -87,6 +87,7 @@ class UserSetupController extends Controller
             'DepositMovementStatusSeeder',
 
             'IvaSeeder',
+            'MonedaSeeder',
             
             'IvaConditionSeeder',
 

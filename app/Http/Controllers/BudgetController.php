@@ -44,6 +44,7 @@ class BudgetController extends Controller
             'address_id'                => $request->address_id,
             'surchages_in_services'     => $request->surchages_in_services,
             'discounts_in_services'     => $request->discounts_in_services,
+            'moneda_id'                 => $request->moneda_id,
             'employee_id'               => $this->userId(false),
             'user_id'                   => $this->userId(),
         ]);
@@ -79,6 +80,7 @@ class BudgetController extends Controller
 
         $model->surchages_in_services     = $request->surchages_in_services;
         $model->discounts_in_services     = $request->discounts_in_services;
+        $model->moneda_id                 = $request->moneda_id;
 
         $model->save();
         GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
@@ -97,12 +99,17 @@ class BudgetController extends Controller
     }
 
     public function destroy($id) {
+
         $model = Budget::find($id);
-        if (BudgetHelper::deleteCurrentAcount($model)) {
-            CurrentAcountHelper::checkSaldos('client', $model->client_id);
-            SaleHelper::deleteSaleFrom('budget', $model->id, $this);
-            $this->sendAddModelNotification('client', $model->client_id, false);
-        }
+
+        // Quito esto porque los presupuestos confirmados no se pueden eliminar, y los sin confirmar no impactan en la cuenta corriente
+        // if (BudgetHelper::deleteCurrentAcount($model)) {
+            
+        //     CurrentAcountHelper::checkSaldos($model->credit_account_id);
+        //     SaleHelper::deleteSaleFrom('budget', $model->id, $this);
+        //     $this->sendAddModelNotification('client', $model->client_id, false);
+        // }
+
         $model->delete();
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('Budget', $model->id);

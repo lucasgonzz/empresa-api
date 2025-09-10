@@ -41,9 +41,9 @@ class ArticleListPdf extends fpdf {
 		return [
 			'Codigo' 	=> 40,
 			'Codigo Prov' 	=> 30,
-			'Nombre' 	=> 80,
+			'Nombre' 	=> 100,
 			'Precio' 	=> 30,
-			'Stock' 	=> 20,
+			// 'Stock' 	=> 20,
 		];
 	}
 
@@ -75,7 +75,7 @@ class ArticleListPdf extends fpdf {
 	    	$this->x = 5 + $this->getFields()['Codigo'] + $this->getFields()['Codigo Prov'] + $this->getFields()['Nombre'];
 			$this->Cell($this->getFields()['Precio'], 5, '$'.Numbers::price($article->final_price), $this->b, 0, 'C');
 			// $this->Cell($this->getFields()['Proveedor'], 5, !is_null($article->provider) ? $article->provider->name : null, $this->b, 0, 'C');
-			$this->Cell($this->getFields()['Stock'], 5, $article->stock, $this->b, 0, 'C');
+			// $this->Cell($this->getFields()['Stock'], 5, $article->stock, $this->b, 0, 'C');
 			$this->y = $y_2;
 			$this->x = 5;
 			$this->Line(5, $this->y, 205, $this->y);

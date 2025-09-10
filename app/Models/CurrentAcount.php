@@ -12,6 +12,10 @@ class CurrentAcount extends Model
         return $this->belongsTo(User::class);
     }
 
+    function credit_account() {
+        return $this->belongsTo(CreditAccount::class);
+    }
+
     function cheques() {
         return $this->hasMany(Cheque::class);
     }

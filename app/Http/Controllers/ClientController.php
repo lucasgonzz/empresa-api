@@ -7,6 +7,7 @@ use App\Http\Controllers\AfipConstanciaInscripcionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\CommonLaravel\SearchController;
+use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Pdf\ClientsPdf;
 use App\Imports\ClientImport;
 use App\Models\Client;
@@ -28,7 +29,7 @@ class ClientController extends Controller
     public function store(Request $request) {
         $model = Client::create([
             'num'                       => $this->num('clients'),
-            'name'                      => $request->name,
+            'name'                      => ucfirst($request->name),
             'email'                     => $request->email,
             'phone'                     => $request->phone,
             'address'                   => $request->address,
@@ -41,6 +42,8 @@ class ClientController extends Controller
             'location_id'               => $request->location_id,
             'description'               => $request->description,
             'saldo'                     => $request->saldo,
+            'moneda_id'                 => $request->moneda_id,
+            'pais_exportacion_id'       => $request->pais_exportacion_id,
             'comercio_city_user_id'     => $request->comercio_city_user_id,
             'seller_id'                 => $request->seller_id,
             'link_google_maps'          => $request->link_google_maps,
@@ -48,6 +51,9 @@ class ClientController extends Controller
             'address_id'                => $request->address_id,
             'user_id'                   => $this->userId(),
         ]);
+
+        CreditAccountHelper::crear_credit_accounts('client', $model->id);
+        
         $this->sendAddModelNotification('Client', $model->id);
         return response()->json(['model' => $this->fullModel('Client', $model->id)], 201);
     }  
@@ -71,6 +77,8 @@ class ClientController extends Controller
         $model->location_id                 = $request->location_id;
         $model->description                 = $request->description;
         $model->saldo                       = $request->saldo;
+        $model->moneda_id                   = $request->moneda_id;
+        $model->pais_exportacion_id         = $request->pais_exportacion_id;
         $model->comercio_city_user_id       = $request->comercio_city_user_id;
         $model->seller_id                   = $request->seller_id;
         $model->pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar                   = $request->pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar;

@@ -13,6 +13,7 @@ class AfipWSAAHelper {
 	}
 
     function define() {
+        
         if (!defined('TRA_xml')) {
             define ('TRA_xml', public_path().'/afip/wsaa/'.$this->ws_name.'/TRA.xml'); 
         }
@@ -26,10 +27,6 @@ class AfipWSAAHelper {
             define ('CMS_file', public_path().'/afip/wsaa/'.$this->ws_name.'/CMS.txt'); 
         }
 
-        // define ('TRA_xml', public_path().'/afip/wsaa/TRA.xml'); 
-        // define ('TRA_tmp', public_path().'/afip/wsaa/TRA.tmp'); 
-        // define ('TA_file', public_path().'/afip/wsaa/TA.xml'); 
-        // define ('CMS_file', public_path().'/afip/wsaa/CMS.txt'); 
         if ($this->testing) {
             $this->cert = 'file://'.realpath(public_path().'/afip/testing/MiCertificado.pem');
             $this->private_key = 'file://'.realpath(public_path().'/afip/testing/MiClavePrivada.key');
@@ -41,42 +38,51 @@ class AfipWSAAHelper {
         }
     }
 
-    function checkWsaa($service = 'wsfe') {
+    function checkWsaa() {
         if (file_exists(TA_file)) {
+
             Log::info('file_exists');
             $ta = new \SimpleXMLElement(file_get_contents(TA_file));
+
             if (!isset($ta->header->expirationTime) || !isset($ta->credentials->token) || !isset($ta->credentials->sign)) {
                 Log::info('El TA no tiene los datos necesarios');
-                $this->wsaa($service);
+                $this->wsaa();
             } else if (strtotime($ta->header->expirationTime) < time()) {
+
                 Log::info('El TA estaba vencido');
-                $this->wsaa($service);
+                $this->wsaa();
             } else {
-                Log::info('Todo OK');
+
+                Log::info('Todo TA esta OK');
             }
         } else {
+
             Log::info('El TA no estaba creado');
-            $this->wsaa($service);
+            $this->wsaa();
         }
     }
 
-    function wsaa($service) {
-        $this->createTRA($service);
+    function wsaa() {
+
+        $this->createTRA();
+
         $cms = $this->signTRA();
         $ta = $this->callWSAA($cms);
         file_put_contents(TA_file, $ta);
     }
 
-    function createTRA($service) {
+    function createTRA() {
+
         $tra = new \SimpleXMLElement(
                     '<?xml version="1.0" encoding="UTF-8"?>' .
                     '<loginTicketRequest version="1.0">'.
                     '</loginTicketRequest>');
+
         $tra->addChild('header');
         $tra->header->addChild('uniqueId',date('U'));
         $tra->header->addChild('generationTime',date('c',date('U')-60));
         $tra->header->addChild('expirationTime',date('c',date('U')+60));
-        $tra->addChild('service', $service);
+        $tra->addChild('service', $this->ws_name);
         $tra->asXML(TRA_xml);
     }
 

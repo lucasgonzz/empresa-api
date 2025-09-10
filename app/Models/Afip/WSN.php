@@ -71,6 +71,7 @@ abstract class WSN extends WS
         $this->ta_sign              = null;
         $this->cuit_representada    = $config['cuit_representada'];
         $this->for_constancia_de_inscripcion = isset($config['for_constancia_de_inscripcion']) ? $config['for_constancia_de_inscripcion'] : false;
+        $this->for_wsfex            = isset($config['for_wsfex']) ? $config['for_wsfex'] : false;
         parent::__construct($config);
     }
 
@@ -277,16 +278,10 @@ abstract class WSN extends WS
     {
         if ($this->ta_expiration_time < time()) {
             Log::info('EL wsaa Esta vencido');
-            // throw new WsnException('El TA está vencido');
         }
 
+
         if ($this->for_constancia_de_inscripcion) {
-
-            Log::info('name:');
-            Log::info($name);
-
-            Log::info('arguments:');
-            Log::info($arguments);
 
             $datos = array(
                 'token'              => $this->ta_token,
@@ -304,22 +299,27 @@ abstract class WSN extends WS
                    'Cuit'               => $this->ta_cuit
                 )
             );
-            
-            if (isset($arguments[0])) {
+
+            if (
+                isset($arguments[1])
+                && $arguments[1] == true
+            ) {
+
+                $datos['Auth'] += $arguments[0];
+
+            } else if ($this->for_wsfex) {
+
+                $datos['FEXRequest'] = $arguments[0];
+
+            } else if (isset($arguments[0])) {
+
                 $datos += $arguments[0];
+
             }
 
         }
 
-
-        // print_r('Se le manda el token: '.$this->ta_token.'</br>');
-        // print_r('Se le manda el sign: '.$this->ta_sign.'</br>');
-        // print_r('Para la CUIT: '.$this->ta_cuit.'</br>');
-
-
-        // Log::info('datos:');
-        // Log::info($datos);
-
-        return parent::__call($name, array($datos));
+        return parent::__call($name, $datos);
+        // return parent::__call($name, array($datos));
     }
 }

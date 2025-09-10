@@ -1,6 +1,7 @@
 <?php
 
 namespace App\Models\Afip;
+use Illuminate\Support\Facades\Log;
 
 /**
  * WS (WebService).
@@ -138,19 +139,34 @@ abstract class WS
         $error = null;
         if (is_null($this->soap_client)) {
             $wsdl = $this->wsdl_url;
-            if (!empty($this->wsdl_cache_file) && (file_exists($this->wsdl_cache_file) || $this->updateWsdlCacheFile())) {
-                $wsdl = $this->wsdl_cache_file;
-            }
+
+
+            // if (!empty($this->wsdl_cache_file) && (file_exists($this->wsdl_cache_file) || $this->updateWsdlCacheFile())) {
+            //     Log::info('Va a usar cache:');
+            //     $wsdl = $this->wsdl_cache_file;
+            //     Log::info($wsdl);
+            // }
+            
             ini_set('default_socket_timeout', 1);
+
+            // Log::info('se va a usar este wsdl:');
+            // Log::info($wsdl);
+            
             $this->soap_client = new \SoapClient($wsdl, $this->soap_options);
-            // \Illuminate\Support\Facades\Log::info('Entro a crear soap');
-            // \Illuminate\Support\Facades\Log::info($this->soap_options);
+
         }
-        // \Illuminate\Support\Facades\Log::info('por ejecutar');
-        // \Illuminate\Support\Facades\Log::info($arguments[0]);
 
         try {
-            $result = $this->soap_client->$name($arguments[0]);
+
+            Log::info('Se va a enviar:');
+            Log::info($arguments);
+
+            $result = $this->soap_client->$name($arguments);
+
+            $last_request = $this->soap_client->__getLastRequest();
+
+            // Log::info("SOAP Request XML:\n" . $last_request);
+            
         } catch(\SoapFault $e) {
             $hubo_un_error = true;
             $error = $e->getMessage();

@@ -22,9 +22,13 @@ class ProviderOrderHelper {
 		$current_acount = CurrentAcount::where('provider_order_id', $provider_order->id)->first();
 		if (!is_null($current_acount)) {
 			Log::info('Eliminando current_acount');
+
+			$credit_account_id = $current_acount->credit_account_id;
+            
             $current_acount->pagado_por()->detach();
             $current_acount->delete();
-			CurrentAcountHelper::checkSaldos('provider', $provider_order->provider_id);
+			
+			CurrentAcountHelper::check_saldos_y_pagos($credit_account_id);
 		} else {
 			Log::info('No se elimino current_acount');
 		}

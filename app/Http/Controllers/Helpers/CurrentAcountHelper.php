@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\Check;
 use App\Models\Client;
+use App\Models\CreditAccount;
 use App\Models\CreditCard;
 use App\Models\CreditCardPaymentPlan;
 use App\Models\CurrentAcount;
@@ -24,6 +25,11 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class CurrentAcountHelper {
+
+    // Si este nuevo pago no es provisorio, significa que es el pago que cancela los demas pagos, 
+    static function eliminar_pagos_provisorios($credit_account_id, $is_provisorio) {
+
+    }
 
     static function recalculateCurrentAcountsSalesDebe($client_id) {
         $clients = Client::where('user_id', 121)
@@ -52,13 +58,15 @@ class CurrentAcountHelper {
         }
     }
 
-    static function checkCurrentAcountSaldo($model_name, $model_id) {
-        $current_acounts = CurrentAcount::where($model_name.'_id', $model_id)
+    static function checkCurrentAcountSaldo($credit_account_id) {
+
+        $current_acounts = CurrentAcount::where('credit_account_id', $credit_account_id)
                                         ->orderBy('created_at', 'DESC')
                                         ->take(3)
                                         ->get();
+        
         if (isset($current_acounts[2])) {
-            Self::checkSaldos($model_name, $model_id, $current_acounts[2]);
+            Self::checkSaldos($credit_account_id, $current_acounts[2]);
         }
     }
 
@@ -108,17 +116,32 @@ class CurrentAcountHelper {
     } 
 
 
-    static function getSaldo($model_name, $model_id, $until_current_acount = null) {
+    static function update_credit_account_saldo($credit_account_id) {
+
+        $credit_account = CreditAccount::find($credit_account_id);
+
+        $credit_account->saldo = Self::getSaldo($credit_account_id);
+        $credit_account->save();
+
+        // Log::info('se seteo saldo de '.$model->name.' a '.$model->saldo);
+    } 
+
+
+    static function getSaldo($credit_account_id, $until_current_acount = null) {
         $query = CurrentAcount::query();
 
-        if ($model_name === 'client') {
-            $query->where('client_id', $model_id);
-        } else {
-            $query->where('provider_id', $model_id);
-        }
+        // if ($model_name === 'client') {
+        //     $query->where('client_id', $model_id);
+        // } else {
+        //     $query->where('provider_id', $model_id);
+        // }
+
+        $query->where('credit_account_id', $credit_account_id);
 
         if (!is_null($until_current_acount)) {
+
             $query->where(function ($q) use ($until_current_acount) {
+            
                 $q->where('created_at', '<', $until_current_acount->created_at)
                   ->orWhere(function ($q2) use ($until_current_acount) {
                       $q2->where('created_at', $until_current_acount->created_at)
@@ -127,7 +150,10 @@ class CurrentAcountHelper {
             });
         }
 
-        $last = $query->orderBy('created_at', 'desc')->orderBy('id', 'desc')->first();
+        $last = $query->where('is_provisorio', 0)
+                        ->orderBy('created_at', 'desc')
+                        ->orderBy('id', 'desc')
+                        ->first();
 
         if (is_null($last)) {
             return 0;
@@ -137,31 +163,66 @@ class CurrentAcountHelper {
         }
     }
 
-    static function notaCredito($haber, $description, $model_name, $model_id, $sale_id = null, $items = null) {
+    // Esta usaba antes de credit_account 
+    // static function getSaldo($model_name, $model_id, $until_current_acount = null) {
+    //     $query = CurrentAcount::query();
+
+    //     if ($model_name === 'client') {
+    //         $query->where('client_id', $model_id);
+    //     } else {
+    //         $query->where('provider_id', $model_id);
+    //     }
+
+    //     $query->where('credit_account_id', $model_id);
+
+    //     if (!is_null($until_current_acount)) {
+    //         $query->where(function ($q) use ($until_current_acount) {
+    //             $q->where('created_at', '<', $until_current_acount->created_at)
+    //               ->orWhere(function ($q2) use ($until_current_acount) {
+    //                   $q2->where('created_at', $until_current_acount->created_at)
+    //                      ->where('id', '<', $until_current_acount->id);
+    //               });
+    //         });
+    //     }
+
+    //     $last = $query->orderBy('created_at', 'desc')->orderBy('id', 'desc')->first();
+
+    //     if (is_null($last)) {
+    //         return 0;
+    //     } else {
+    //         Log::info('Se retorna el saldo de current_acount_id ' . $last->id);
+    //         return $last->saldo;
+    //     }
+    // }
+
+    static function notaCredito($credit_account_id, $haber, $description, $model_name, $model_id, $sale_id = null, $items = null) {
+
         $nota_credito = CurrentAcount::create([
-            'description'   => $description,
-            'haber'         => $haber,
-            'status'        => 'nota_credito',
-            'client_id'     => $model_name == 'client' ? $model_id : null,
-            'provider_id'   => $model_name == 'provider' ? $model_id : null,
-            'sale_id'       => $sale_id,
-            'num_receipt'   => CurrentAcountHelper::getNumReceipt(true),
-            'user_id'       => UserHelper::userId(),
-            'employee_id'   => UserHelper::userId(false),
+            'description'       => $description,
+            'haber'             => $haber,
+            'status'            => 'nota_credito',
+            'client_id'         => $model_name == 'client' ? $model_id : null,
+            'provider_id'       => $model_name == 'provider' ? $model_id : null,
+            'sale_id'           => $sale_id,
+            'num_receipt'       => CurrentAcountHelper::getNumReceipt(true),
+            'user_id'           => UserHelper::userId(),
+            'employee_id'       => UserHelper::userId(false),
+            'credit_account_id' => $credit_account_id,
         ]); 
 
         if (!is_null($model_name) && !is_null($model_id)) {
-            $nota_credito->saldo = Self::getSaldo($model_name, $model_id, $nota_credito) - $haber;
+            $nota_credito->saldo = Self::getSaldo($credit_account_id, $nota_credito) - $haber;
         }
 
         $nota_credito->detalle = 'Nota Credito N°'.$nota_credito->num_receipt;
         $nota_credito->save();
+
         Self::attachNotaCreditoArticles($nota_credito, $items);
         Self::attachNotaCreditoServices($nota_credito, $items);
 
         if (!is_null($model_name) && !is_null($model_id)) {
-            Self::updateModelSaldo($nota_credito, $model_name, $model_id);
-            $pago_helper = new CurrentAcountPagoHelper($model_name, $model_id, $nota_credito);
+            Self::update_credit_account_saldo($credit_account_id);
+            $pago_helper = new CurrentAcountPagoHelper($credit_account_id, $model_name, $model_id, $nota_credito);
             $pago_helper->init();
         }
 
@@ -319,8 +380,21 @@ class CurrentAcountHelper {
         return $pagandose;
     }
 
-    static function checkSaldos($model_name, $model_id, $from_current_acount = null, $mayor_o_igual = false) {
-        $current_acounts = CurrentAcount::orderBy('created_at', 'ASC');
+    static function check_saldos_y_pagos($credit_account_id) {
+        Self::checkSaldos($credit_account_id);
+        Self::checkPagos($credit_account_id);
+    }
+
+    static function checkSaldos($credit_account_id, $from_current_acount = null, $mayor_o_igual = false) {
+
+        Log::info('checkSaldos para credit_account id '.$credit_account_id);
+
+        $credit_account = CreditAccount::find($credit_account_id);
+
+        $current_acounts = CurrentAcount::where('credit_account_id', $credit_account->id)
+                                        ->where('is_provisorio', 0)
+                                        ->orderBy('created_at', 'ASC');
+
         if (!is_null($from_current_acount)) {
             
             if ($mayor_o_igual) {
@@ -331,87 +405,105 @@ class CurrentAcountHelper {
             
             $current_acounts = $current_acounts->where('created_at', $operador, $from_current_acount->created_at);
         }
-        if ($model_name == 'client') {
-            $current_acounts = $current_acounts->where('client_id', $model_id);
-        } else {
-            $current_acounts = $current_acounts->where('provider_id', $model_id);
-        }
+
         $current_acounts = $current_acounts->get();
 
+        Log::info(count($current_acounts).' movimientos');
+
         foreach ($current_acounts as $current_acount) {
-            $saldo = Self::getSaldo($model_name, $model_id, $current_acount);
+
+            $saldo = Self::getSaldo($credit_account->id, $current_acount);
+
             if (!is_null($current_acount->debe)) {
-                Log::info('sumando '.Numbers::price($current_acount->debe));
-                Log::info('Saldo anterior: '.Numbers::price($saldo));
                 $current_acount->saldo = Numbers::redondear($saldo + $current_acount->debe);
+
             } else if (!is_null($current_acount->haber)) {
-                Log::info('restando '.Numbers::price($current_acount->haber));
-                Log::info('Saldo anterior: '.Numbers::price($saldo));
+
                 $current_acount->saldo = Numbers::redondear($saldo - $current_acount->haber);
             }
+
             $current_acount->save();
-            Log::info('Quedo en '.Numbers::price($current_acount->saldo));
-            Log::info('');
         }
-        $app_model_name = GeneralHelper::getModelName($model_name);
-        $model = $app_model_name::find($model_id);
+
         if (count($current_acounts) >= 1) {
-            $model->saldo = $current_acounts[count($current_acounts)-1]->saldo;
+            $credit_account->saldo = $current_acounts[count($current_acounts)-1]->saldo;
         } else {
-            $model->saldo = 0;
+            $credit_account->saldo = 0;
         }
-        $model->save();
-        Log::info('se actualizo saldo del modelo '.$model->name.' a '.$model->saldo);
-        return $model;
+
+        $credit_account->save();
+
+        $model_name = GeneralHelper::getModelName($credit_account->model_name);
+
+        $model = $model_name::find($credit_account->model_id);
+
+        if ($credit_account->moneda_id == 1) {
+            
+            $model->saldo_peso = $credit_account->saldo;
+
+        } else if ($credit_account->moneda_id == 2) {
+
+            $model->saldo_dolar = $credit_account->saldo;
+        }
+
+        $model->save;
+
+        Log::info('Seteando saldo de credit_account id '.$credit_account_id.' con '.$credit_account->saldo);
+
+        return null;
     }
 
 
-    static function checkPagos($model_name, $model_id, $si_o_si = false) {
+    static function checkPagos($credit_account_id) {
 
         Log::info('checkPagos');
 
-        $model = GeneralHelper::getModelName($model_name)::find($model_id);
-        if (!$model->pagos_checkeados || $si_o_si) {
-            // echo('Entro a checkPagos para '.$model->name.' </br>');
+        $credit_account = CreditAccount::find($credit_account_id);
             
-            $debitos = CurrentAcount::orderBy('created_at', 'ASC')
-                                    ->whereNotNull('debe');
-            if ($model_name == 'client') {
-                $debitos = $debitos->where('client_id', $model_id);
-            } else {
-                $debitos = $debitos->where('provider_id', $model_id);
-            }
-            $debitos = $debitos->get();
+        $debitos = CurrentAcount::orderBy('created_at', 'ASC')
+                                ->where('credit_account_id', $credit_account_id)
+                                ->whereNotNull('debe')
+                                ->where($credit_account->model_name.'_id', $credit_account->model_id)
+                                ->get();
 
-            foreach ($debitos as $debito) {
-                $debito->pagado_por()->detach();
-                $debito->pagandose = 0;
-                $debito->status = 'sin_pagar';
-                $debito->save();
-                // echo 'Se puso sin pagar debito de '.$debito->debe.' </br>';
-            }
+        // if ($model_name == 'client') {
+        //     $debitos = $debitos->where('client_id', $model_id);
+        // } else {
+        //     $debitos = $debitos->where('provider_id', $model_id);
+        // }
+        // $debitos = $debitos->get();
 
-            $pagos = CurrentAcount::orderBy('created_at', 'ASC')
-                                        ->whereNotNull('haber');
-            if ($model_name == 'client') {
-                $pagos = $pagos->where('client_id', $model_id);
-            } else {
-                $pagos = $pagos->where('provider_id', $model_id);
-            }
-            $pagos = $pagos->get();
-
-            foreach ($pagos as $pago) {
-                $pago->pagando_a()->detach();
-                $pago_helper = new CurrentAcountPagoHelper($model_name, $model_id, $pago);
-                $pago_helper->init();
-                // echo 'Se llampo a pago_helper para '.$model_id;
-            }
-            $model->pagos_checkeados = 1;
-            $model->save();
-            // echo('Se checo los pagos de '.$model->name.' </br>');
-        } else {
-            // echo('No se chequearon pagos de '.$model->name.' </br>');
+        foreach ($debitos as $debito) {
+            $debito->pagado_por()->detach();
+            $debito->pagandose = 0;
+            $debito->status = 'sin_pagar';
+            $debito->save();
+            // echo 'Se puso sin pagar debito de '.$debito->debe.' </br>';
         }
+
+        $pagos = CurrentAcount::orderBy('created_at', 'ASC')
+                                    ->where('is_provisorio', 0)
+                                    ->whereNotNull('haber')
+                                    ->where('credit_account_id', $credit_account_id)
+                                    ->where($credit_account->model_name.'_id', $credit_account->model_id)
+                                    ->get();
+
+        // if ($model_name == 'client') {
+        //     $pagos = $pagos->where('client_id', $model_id);
+        // } else {
+        //     $pagos = $pagos->where('provider_id', $model_id);
+        // }
+        // $pagos = $pagos->get();
+
+        foreach ($pagos as $pago) {
+            $pago->pagando_a()->detach();
+            $pago_helper = new CurrentAcountPagoHelper($credit_account_id, $credit_account->model_name, $credit_account->model_id, $pago);
+            $pago_helper->init();
+        }
+
+        // $model->pagos_checkeados = 1;
+        // $model->save();
+        
     }
 
     static function checkSaldoInicial($client_id) {

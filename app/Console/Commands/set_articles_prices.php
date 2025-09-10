@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Models\Article;
+use App\Models\PriceType;
 use App\Models\User;
 use Illuminate\Console\Command;
 
@@ -45,9 +46,14 @@ class set_articles_prices extends Command
         $articles = Article::where('user_id', $this->argument('user_id'))
                             ->get();
 
+        $price_types = PriceType::where('user_id', $this->argument('user_id'))
+                                    ->orderBy('position', 'ASC')
+                                    ->get();
+
         $this->info(count($articles).' articulos');
         foreach ($articles as $article) {
-            ArticleHelper::setFinalPrice($article, $user->id, $user, $user->id);
+            ArticleHelper::setFinalPrice($article, $user->id, $user, $user->id, false, $price_types);
+            $this->info($article->name.' listo');
         }
         $this->info('Termino');
         return 0;

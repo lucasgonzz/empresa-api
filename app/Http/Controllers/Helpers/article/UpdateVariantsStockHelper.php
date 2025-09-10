@@ -37,14 +37,17 @@ class UpdateVariantsStockHelper {
                     $this->attach_address();
                     
                     $variant_address = $this->get_variant_address();
+                
+                } else {
+                    $this->update_address();
                 }
 
-                Log::info('diferencia de '.$variant_address->street);
-                Log::info('Antes habia '.$variant_address->pivot->amount);
-                Log::info('Y ahora llego '.$address['amount']);
+                // Log::info('diferencia de '.$variant_address->street);
+                // Log::info('Antes habia '.$variant_address->pivot->amount);
+                // Log::info('Y ahora llego '.$address['amount']);
 
                 $diferencia = (float)$address['amount'] - $variant_address->pivot->amount;
-                Log::info('diferencia: '.$diferencia);
+                // Log::info('diferencia: '.$diferencia);
 
                 $this->guardar_stock_movement($diferencia, $segundos);
                 
@@ -114,7 +117,17 @@ class UpdateVariantsStockHelper {
         Log::info('No tenia stock en la direccion, se va a crear');
 
         $this->article_variant->addresses()->attach($this->address['id'], [
-            'amount'    => 0
+            'amount'        => 0,
+            'on_display'    => $this->address['on_display']
+        ]);
+
+        $this->article->load('article_variants');
+    }
+
+    function update_address() {
+
+        $this->article_variant->addresses()->updateExistingPivot($this->address['id'], [
+            'on_display'    => $this->address['on_display']
         ]);
 
         $this->article->load('article_variants');

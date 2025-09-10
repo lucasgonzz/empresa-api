@@ -34,7 +34,7 @@ class PriceTypeController extends Controller
             'user_id'               => $this->userId(),
         ]);
 
-        $this->agregar_a_articulos_existentes($model);
+        // $this->agregar_a_articulos_existentes($model);
 
         $this->sendAddModelNotification('price_type', $model->id);
 

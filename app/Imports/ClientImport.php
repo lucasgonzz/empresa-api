@@ -153,6 +153,9 @@ class ClientImport implements ToCollection {
             $data['user_id'] = $this->ct->userId();
             $data['created_at'] = Carbon::now()->subSeconds($this->finish_row - $this->num_row);
             $client = Client::create($data);
+            
+            CreditAccountHelper::crear_credit_accounts('client', $client->id);
+
             Log::info('creando cliente '.$client->name);
         }
         LocalImportHelper::setSaldoInicial($row, $this->columns, 'client', $client);

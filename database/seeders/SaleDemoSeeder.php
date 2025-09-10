@@ -36,6 +36,7 @@ class SaleDemoSeeder extends Seeder
                 $sale = [
                     'num'               => $num,
                     'employee_id'       => null,
+                    'moneda_id'         => 1,
                     'user_id'           => env('USER_ID'),
                     'terminada'         => 1,
                     'confirmed'         => 1,

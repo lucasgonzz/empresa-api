@@ -53,11 +53,11 @@ class corregir_stock extends Command
         sleep(3);
 
         // Articulos cuyo stock actual no coincide con el stock resultante del ultimo movimiento
-        $articles = $this->get_articles_mal();
+        // $articles = $this->get_articles_mal();
 
-        // $articles = Article::where('num', 29599)
-        //                     ->where('user_id', 2)
-        //                     ->get();
+        $articles = Article::where('user_id', $this->argument('user_id'))
+                            ->where('num', 7999)
+                            ->get();
 
 
 
@@ -71,18 +71,29 @@ class corregir_stock extends Command
 
             foreach ($movimientos as $movimiento) {
 
-                if ($movimiento->concepto_movement->name == 'Reseteo de Stock') {
-                    $stock = 0;
+                if (is_null($movimiento->concepto_movement)) {
+                    $this->info('No hay concepto para '.$article->name);
                 } else {
-                    $stock += (float)$movimiento->amount;
+
+                    if ($movimiento->concepto_movement->name == 'Reseteo de Stock') {
+                        $stock = 0;
+                    } else if (
+                        $movimiento->concepto_movement->name == 'Mov entre depositos'
+                        || $movimiento->concepto_movement->name == 'Mov manual entre depositos'
+                    ) {
+                        $this->info('No se toca stock por movimiento entre depositos para '.$article->name.'. Stock = '.$stock);
+                    } else {
+                        $stock += (float)$movimiento->amount;
+                    }
+
+
+                    if (!$this->solo_informar) {
+
+                        $movimiento->stock_resultante = $stock;
+                        $movimiento->save();
+                    }
                 }
 
-
-                if (!$this->solo_informar) {
-
-                    $movimiento->stock_resultante = $stock;
-                    $movimiento->save();
-                }
 
             }
 
