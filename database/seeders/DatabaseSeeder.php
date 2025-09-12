@@ -242,6 +242,7 @@ class DatabaseSeeder extends Seeder
 
     function common_seeders() {
         $this->call(MonedaSeeder::class);
+        $this->call(ProvinciaSeeder::class);
         $this->call(PaisExportacionSeeder::class);
         $this->call(CheckStatusSeeder::class);
         $this->call(OnlineTemplateSeeder::class);

@@ -12,6 +12,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Support\Facades\Log;
+use Maatwebsite\Excel\Excel as ExcelFormat;
 
 class ProcessArticleChunk implements ShouldQueue
 {
@@ -43,6 +44,18 @@ class ProcessArticleChunk implements ShouldQueue
     {
         try {
 
+            $extension = pathinfo($this->archivo_excel_path, PATHINFO_EXTENSION);
+
+            $ext = strtolower($extension);
+
+            if ($ext == 'xls') {
+                $reader_type = ExcelFormat::XLS;
+            } else if ($ext == 'xlsx') {
+                $reader_type = ExcelFormat::XLSX; 
+            } else {
+                $reader_type = ExcelFormat::XLSX; // fallback
+            }
+
             Excel::import(new ArticleImport(
                 $this->import_uuid,
                 $this->columns, $this->create_and_edit,
@@ -51,7 +64,7 @@ class ProcessArticleChunk implements ShouldQueue
                 $this->provider_id, $this->import_history_id,
                 $this->pre_import_id, $this->user,
                 $this->auth_user_id, $this->archivo_excel_path
-            ), $this->archivo_excel_path);
+            ), $this->archivo_excel_path, null, $reader_type);
 
         } catch (\Throwable $e) {
 

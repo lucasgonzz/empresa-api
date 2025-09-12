@@ -58,6 +58,46 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function corregir_stock_ferretotal() {
+        $articles = Article::where('user_id', env('USER_ID'))
+                            ->whereNotNull('stock')
+                            ->get();
+
+        $fecha_limite = Carbon::parse('2025-09-09 00:00:00');
+
+        foreach ($articles as $article) {
+            
+            $stock_movements = StockMovement::where('article_id', $article->id)
+                                            ->orderBy('id', 'ASC')
+                                            ->get();
+
+            $primer_detectado = false;
+            $stock = 0;
+
+            foreach ($stock_movements as $stock_movement) {
+                
+                if ($stock_movement->created_at < $fecha_limite) {
+                    $stock_movement->delete();
+                } else if (!$primer_detectado) {
+
+                    $stock_movement->stock_resultante = $stock_movement->amount;
+                    $stock_movement->save();
+                    $primer_detectado = true;
+                    $stock = $stock_movement->amount;
+                } else {
+                    
+                    $stock += $stock_movement->amount;
+
+                    $stock_movement->stock_resultante = $stock;
+                    $stock_movement->save();
+                }
+            }
+
+            echo 'Corregido '.$article->name.' <br>';
+        }
+        echo 'Listo';
+    }
+
     function check_ventas_stock_movements() {
         $user = User::whereNull('owner_id')->first();
 

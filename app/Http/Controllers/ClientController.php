@@ -40,6 +40,7 @@ class ClientController extends Controller
             'iva_condition_id'          => $request->iva_condition_id,
             'price_type_id'             => $request->price_type_id,
             'location_id'               => $request->location_id,
+            'provincia_id'              => $request->provincia_id,
             'description'               => $request->description,
             'saldo'                     => $request->saldo,
             'moneda_id'                 => $request->moneda_id,
@@ -75,6 +76,7 @@ class ClientController extends Controller
         $model->iva_condition_id            = $request->iva_condition_id;
         $model->price_type_id               = $request->price_type_id;
         $model->location_id                 = $request->location_id;
+        $model->provincia_id                = $request->provincia_id;
         $model->description                 = $request->description;
         $model->saldo                       = $request->saldo;
         $model->moneda_id                   = $request->moneda_id;

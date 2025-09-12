@@ -109,7 +109,11 @@ class ProcessArticleImport implements ShouldQueue
 
     public function failed(Throwable $exception)
     {
-        Log::info('Hubo un error con la importacion');
-        ArticleImportHelper::error_notification($this->user);
+        Log::info('Hubo un error con la importacion, entro en el failed del job:');
+        Log::info($exception->getTraceAsString());
+        Log::info('Error previo:');
+        Log::info($exception->getPrevious());
+        
+        ArticleImportHelper::error_notification($this->user, $exception->getLine(), $exception->getMessage());
     }
 }

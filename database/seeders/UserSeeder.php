@@ -153,6 +153,8 @@ class UserSeeder extends Seeder
 
             $models[0]['name'] = 'Rafa';
             $models[0]['company_name'] = 'Racing carts';
+
+            $models[0]['cotizar_precios_en_dolares'] = 0;
             $models[0]['iva_included'] = 0;
             $models[0]['iva_condition_id'] = 1;
             $models[0]['doc_number'] = '1234';
@@ -173,8 +175,8 @@ class UserSeeder extends Seeder
                 'ventas_en_dolares',
                 'pagos_provisorios',
                 'ventas_en_dolares',
-                'articulo_margen_de_ganancia_segun_lista_de_precios',
-                'cambiar_price_type_en_vender',
+                // 'articulo_margen_de_ganancia_segun_lista_de_precios',
+                // 'cambiar_price_type_en_vender',
             ];
 
         } else if ($this->for_user == 'demo') {
@@ -564,6 +566,7 @@ class UserSeeder extends Seeder
                 'use_archivos_de_intercambio'                  => isset($model['use_archivos_de_intercambio']) ? $model['use_archivos_de_intercambio'] : null,  
                 'company_name'                  => isset($model['company_name']) ? $model['company_name'] : null,  
                 'iva_included'                  => isset($model['iva_included']) ? $model['iva_included'] : 0, 
+                'cotizar_precios_en_dolares'    => isset($model['cotizar_precios_en_dolares']) ? $model['cotizar_precios_en_dolares'] : 1, 
                 'comision_funcion'                  => isset($model['comision_funcion']) ? $model['comision_funcion'] : null, 
                 'venta_terminada_comision_funcion'                  => isset($model['venta_terminada_comision_funcion']) ? $model['venta_terminada_comision_funcion'] : null, 
                 'impresora'                     => isset($model['impresora']) ? $model['impresora'] : null, 

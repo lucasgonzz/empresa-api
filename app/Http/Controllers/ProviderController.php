@@ -35,6 +35,7 @@ class ProviderController extends Controller
             'cuit'                  => $request->cuit,  
             'observations'          => $request->observations,  
             'location_id'           => $request->location_id,   
+            'provincia_id'          => $request->provincia_id,   
             'iva_condition_id'      => $request->iva_condition_id,  
             'percentage_gain'       => $request->percentage_gain,   
             'porcentaje_comision_negro'       => $request->porcentaje_comision_negro,   
@@ -66,6 +67,7 @@ class ProviderController extends Controller
         $model->cuit                = $request->cuit;  
         $model->observations        = $request->observations;  
         $model->location_id         = $request->location_id;   
+        $model->provincia_id        = $request->provincia_id;   
         $model->iva_condition_id    = $request->iva_condition_id;  
         $model->percentage_gain     = $request->percentage_gain;   
         $model->dolar               = $request->dolar; 

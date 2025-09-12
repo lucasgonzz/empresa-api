@@ -84,19 +84,26 @@ class ProcessRow {
             'brand_id'             => $brand_id,
             'user_id'              => $this->user->id,
 
-
-            // autopartes
-            'espesor'               => ImportHelper::getColumnValue($row, 'espesor', $this->columns),
-            'modelo'                => ImportHelper::getColumnValue($row, 'modelo', $this->columns),
-            'pastilla'              => ImportHelper::getColumnValue($row, 'pastilla', $this->columns),
-            'diametro'              => ImportHelper::getColumnValue($row, 'diametro', $this->columns),
-            'litros'                => ImportHelper::getColumnValue($row, 'litros', $this->columns),
-            'descripcion'           => ImportHelper::getColumnValue($row, 'descripcion', $this->columns),
-            'contenido'             => ImportHelper::getColumnValue($row, 'contenido', $this->columns),
-            'cm3'                   => ImportHelper::getColumnValue($row, 'cm3', $this->columns),
-            'calipers'              => ImportHelper::getColumnValue($row, 'calipers', $this->columns),
-            'juego'                 => ImportHelper::getColumnValue($row, 'juego', $this->columns),
         ];
+
+        if (UserHelper::hasExtencion('autopartes', $this->user)) {
+            $data_autopartes = [
+                'espesor'               => ImportHelper::getColumnValue($row, 'espesor', $this->columns),
+                'modelo'                => ImportHelper::getColumnValue($row, 'modelo', $this->columns),
+                'pastilla'              => ImportHelper::getColumnValue($row, 'pastilla', $this->columns),
+                'diametro'              => ImportHelper::getColumnValue($row, 'diametro', $this->columns),
+                'litros'                => ImportHelper::getColumnValue($row, 'litros', $this->columns),
+                'descripcion'           => ImportHelper::getColumnValue($row, 'descripcion', $this->columns),
+                'contenido'             => ImportHelper::getColumnValue($row, 'contenido', $this->columns),
+                'cm3'                   => ImportHelper::getColumnValue($row, 'cm3', $this->columns),
+                'calipers'              => ImportHelper::getColumnValue($row, 'calipers', $this->columns),
+                'juego'                 => ImportHelper::getColumnValue($row, 'juego', $this->columns),
+            ];
+
+            $data = array_merge($data, $data_autopartes);
+        }
+
+
 
 
         /* 

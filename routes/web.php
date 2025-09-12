@@ -1,6 +1,52 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Http;
+
+// Paso 1: Redirige al usuario a Mercado Libre para autorizar la app
+Route::get('/mercadolibre/auth', function () {
+    $query = http_build_query([
+        'response_type' => 'code',
+        'client_id' => env('MERCADO_LIBRE_CLIENT_ID'),
+        'redirect_uri' => env('MERCADO_LIBRE_REDIRECT_URI'),
+    ]);
+
+    return redirect("https://auth.mercadolibre.com.ar/authorization?$query");
+});
+
+// Paso 2: Callback de Mercado Libre, recibe el code y solicita el access token
+Route::get('/mercadolibre/callback', function (\Illuminate\Http\Request $request) {
+    $code = $request->query('code');
+
+    if (!$code) {
+        return response()->json(['error' => 'No se recibió el parámetro code'], 400);
+    }
+
+    $response = Http::asForm()->post('https://api.mercadolibre.com/oauth/token', [
+        'grant_type' => 'authorization_code',
+        'client_id' => env('MERCADO_LIBRE_CLIENT_ID'),
+        'client_secret' => env('MERCADO_LIBRE_CLIENT_SECRET'),
+        'code' => $code,
+        'redirect_uri' => env('MERCADO_LIBRE_REDIRECT_URI'),
+    ]);
+
+    if (!$response->successful()) {
+        return response()->json([
+            'error' => 'No se pudo obtener el access token',
+            'details' => $response->json()
+        ], 400);
+    }
+
+    $data = $response->json();
+
+    // Mostrar los tokens y datos del usuario de ML
+    return response()->json([
+        'access_token' => $data['access_token'],
+        'refresh_token' => $data['refresh_token'],
+        'expires_in' => $data['expires_in'],
+        'user_id' => $data['user_id'],
+    ]);
+});
 
 
 Route::post('login', 'CommonLaravel\AuthController@login');
@@ -181,7 +227,7 @@ Route::get('article/pdf-personalizado', 'ArticleController@pdfPersonalizado');
 
 Route::get('articles-stock-minimo/excel', 'InventoryPerformanceController@stock_minimo_excel');
 
-Route::get('budget/pdf/{id}/{with_prices}', 'BudgetController@pdf');
+Route::get('budget/pdf/{id}/{with_prices}/{with_images}', 'BudgetController@pdf');
 Route::get('order-production/pdf/{id}/{with_prices}', 'OrderProductionController@pdf');
 Route::get('order-production/articles-pdf/{id}', 'OrderProductionController@articlesPdf');
 

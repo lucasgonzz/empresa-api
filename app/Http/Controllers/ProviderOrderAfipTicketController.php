@@ -23,6 +23,7 @@ class ProviderOrderAfipTicketController extends Controller
             'code'                  => $request->code,
             'issued_at'             => $request->issued_at,
             'total_iva'             => $request->total_iva,
+            'retenciones'           => $request->retenciones,
             'total'                 => $request->total,
             'provider_order_id'     => $request->model_id,
             'temporal_id'           => $this->getTemporalId($request),
@@ -42,6 +43,7 @@ class ProviderOrderAfipTicketController extends Controller
         $model->code                  = $request->code; 
         $model->issued_at             = $request->issued_at;
         $model->total_iva             = $request->total_iva;
+        $model->retenciones           = $request->retenciones;
         $model->total                 = $request->total;
         $model->provider_order_id     = $this->get_model_id($request, 'provider_order_id');
         $model->save();

@@ -116,8 +116,8 @@ class BudgetController extends Controller
         return response(null);
     }
 
-    function pdf($id, $with_prices) {
+    function pdf($id, $with_prices, $with_images) {
         $budget = Budget::find($id);
-        $pdf = new BudgetPdf($budget, $with_prices);
+        $pdf = new BudgetPdf($budget, $with_prices, $with_images);
     }
 }

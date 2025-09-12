@@ -468,7 +468,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('pais-exportacion', 'PaisExportacionController@index');
 
-    Route::resource('current-acount-payment-method-discount', 'CurrentAcountPaymentMethodDiscountController');
+    // Route::resource('current-acount-payment-method-discount', 'CurrentAcountPaymentMethodDiscountController');
+
+    Route::resource('provincia', 'ProvinciaController');
 
 });
 

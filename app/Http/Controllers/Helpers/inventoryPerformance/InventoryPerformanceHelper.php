@@ -133,6 +133,10 @@ class InventoryPerformanceHelper {
 						$cost *= $article->presentacion;
 					}
 
+					if (!is_null($article->unidades_individuales)) {
+						$cost /= $article->unidades_individuales;
+					}
+
 					$total_article_cost = $cost * $article->stock;
 
 					$this->valor_inventario_en_costos += $total_article_cost;

@@ -68,7 +68,7 @@ class VenderController extends Controller
                                   ->orWhere('provider_code', 'LIKE', "%$keyword%");
                 } else {
                     foreach ($keywords as $keyword) {
-                        $query_builder->orWhere('name', 'LIKE', "%$keyword%");
+                        $query_builder->where('name', 'LIKE', "%$keyword%");
                     }
                 }
             })

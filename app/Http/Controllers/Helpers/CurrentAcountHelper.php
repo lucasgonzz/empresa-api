@@ -433,24 +433,34 @@ class CurrentAcountHelper {
 
         $credit_account->save();
 
-        $model_name = GeneralHelper::getModelName($credit_account->model_name);
-
-        $model = $model_name::find($credit_account->model_id);
-
-        if ($credit_account->moneda_id == 1) {
-            
-            $model->saldo_peso = $credit_account->saldo;
-
-        } else if ($credit_account->moneda_id == 2) {
-
-            $model->saldo_dolar = $credit_account->saldo;
-        }
-
-        $model->save;
+        Self::set_model_saldo($credit_account);
 
         Log::info('Seteando saldo de credit_account id '.$credit_account_id.' con '.$credit_account->saldo);
 
         return null;
+    }
+
+    static function set_model_saldo($credit_account) {
+
+        $model_name = GeneralHelper::getModelName($credit_account->model_name);
+
+        $model = $model_name::find($credit_account->model_id);
+
+        Log::info('Se actualizo saldo de '.$model->name);
+
+        if ($credit_account->moneda_id == 1) {
+            
+            $model->saldo_pesos = $credit_account->saldo;
+            Log::info('saldo_pesos: '.$credit_account->saldo);
+
+        } else if ($credit_account->moneda_id == 2) {
+
+            $model->saldo_dolares = $credit_account->saldo;
+            Log::info('saldo_dolares: '.$credit_account->saldo);
+        }
+
+        $model->save();
+
     }
 
 

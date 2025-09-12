@@ -131,12 +131,16 @@ class ArticleHelper {
 
                 $final_price = ArticlePricesHelper::aplicar_recargos($article, $final_price);
 
+                $final_price = ArticlePricesHelper::aplicar_iva($article, $final_price, $user);
+
                 $article->costo_real = $final_price;
                 
-                // Log::info('Aplicando recargos antes del margen de ganancia, final_price va en '.$final_price);
             }  
 
-            if ($article->cost_in_dollars) {
+            if (
+                $article->cost_in_dollars
+                && $user->cotizar_precios_en_dolares
+            ) {
                 if (!is_null($article->provider) && !is_null($article->provider->dolar) && (float)$article->provider->dolar > 0) {
                     $final_price = $final_price * $article->provider->dolar;
                 } else if ($article->cost_in_dollars > 0) {
@@ -202,11 +206,7 @@ class ArticleHelper {
             $final_price = $article->price;
         }
 
-        // if (!$user->aplicar_iva_antes_del_margen_de_ganancia) {
-        //     $final_price = ArticlePricesHelper::aplicar_iva($article, $final_price, $user);
-        // }
-        $final_price = ArticlePricesHelper::aplicar_iva($article, $final_price, $user);
-
+        // $final_price = ArticlePricesHelper::aplicar_iva($article, $final_price, $user);
 
         $final_price = ArticlePricesHelper::aplicar_recargos($article, $final_price, true);
         

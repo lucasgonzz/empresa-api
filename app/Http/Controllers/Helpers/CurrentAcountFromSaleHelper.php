@@ -71,6 +71,8 @@ class CurrentAcountFromSaleHelper extends Controller {
             $this->credit_account->saldo = $this->current_acount->saldo;
             $this->credit_account->save();
 
+            CurrentAcountHelper::set_model_saldo($this->credit_account);
+
             /* 
                 Si tiene saldo negativo (a favor del cliente)
                 Se ejecuta checkPagos para que se marque esta venta como pagandose

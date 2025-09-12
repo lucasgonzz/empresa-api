@@ -13,7 +13,7 @@ require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class BudgetPdf extends fpdf {
 
-	function __construct($budget, $with_prices) {
+	function __construct($budget, $with_prices, $with_images) {
 		parent::__construct();
 		$this->SetAutoPageBreak(true, 1);
 		$this->b = 0;
@@ -25,6 +25,7 @@ class BudgetPdf extends fpdf {
 							
 		$this->budget = $budget;
 		$this->with_prices = $with_prices;
+		$this->with_images = $with_images;
 
 		$this->total_original = 0;
 
@@ -36,15 +37,24 @@ class BudgetPdf extends fpdf {
 
 	function getFields() {
 		if ($this->with_prices) {
-			return [
-				'Imagen'	=> 40,
-				// 'Codigo' 	=> 30,
-				'Producto' 	=> 70,
-				'Precio' 	=> 30,
-				'Cant' 		=> 15,
-				'Bonif' 	=> 15,
-				'Importe' 	=> 30,
-			];
+			if ($this->with_images) {
+				return [
+					'Imagen'	=> 40,
+					'Producto' 	=> 70,
+					'Precio' 	=> 30,
+					'Cant' 		=> 15,
+					'Bonif' 	=> 15,
+					'Importe' 	=> 30,
+				];
+			} else {
+				return [
+					'Producto' 	=> 100,
+					'Precio' 	=> 30,
+					'Cant' 		=> 15,
+					'Bonif' 	=> 15,
+					'Importe' 	=> 40,
+				];
+			}
 		} else {
 			return [
 				'Codigo' 	=> 30,
@@ -200,7 +210,11 @@ class BudgetPdf extends fpdf {
 
 		$image_height = 0;
 
-		if (isset($article->images) && count($article->images) >= 1) {
+		if (
+			$this->with_images
+			&& isset($article->images) 
+			&& count($article->images) >= 1
+		) {
 
             $url = $article->images[0]['hosting_url'];
 
@@ -237,7 +251,7 @@ class BudgetPdf extends fpdf {
 			$total_article = BudgetHelper::totalArticle($article);
 			$this->total_original += BudgetHelper::totalArticle($article, false);
 
-			$this->Cell($this->getFields()['Importe'], $this->line_height, '$'.Numbers::price($total_article), $this->b, 0, 'L');
+			$this->Cell($this->getFields()['Importe'], $this->line_height, '$'.Numbers::price($total_article), $this->b, 0, 'R');
 		}
 		$this->y = $y_2;
 
@@ -280,7 +294,7 @@ class BudgetPdf extends fpdf {
 
 	function getBonus($article) {
 		if (!is_null($article->pivot->bonus)) {
-			return $article->pivot->bonus.'%';
+			return Numbers::price($article->pivot->bonus).'%';
 		}
 		return '';
 	}
@@ -326,7 +340,7 @@ class BudgetPdf extends fpdf {
 		if ($this->with_prices) {
 		    $this->x = 5;
 		    $this->SetFont('Arial', 'B', 14);
-			$this->Cell(100, 10, 'Total: $'. Numbers::price($this->budget->total), 0, 1, 'R');
+			$this->Cell(200, 10, 'Total: $'. Numbers::price($this->budget->total), 0, 1, 'R');
 			// $this->Cell(100, 10, 'Total: $'. Numbers::price(BudgetHelper::getTotal($this->budget)), 0, 1, 'L');
 		}
 	}

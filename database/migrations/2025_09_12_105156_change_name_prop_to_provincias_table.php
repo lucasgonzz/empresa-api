@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class CreateProvinciasTable extends Migration
+class ChangeNamePropToProvinciasTable extends Migration
 {
     /**
      * Run the migrations.
@@ -13,11 +13,9 @@ class CreateProvinciasTable extends Migration
      */
     public function up()
     {
-        Schema::create('provincias', function (Blueprint $table) {
-            $table->id();
-            $table->string('nombre');
-            $table->integer('user_id');
-            $table->timestamps();
+        Schema::table('provincias', function (Blueprint $table) {
+            $table->string('name')->nullable();
+            $table->dropColumn('nombre')->nullable();
         });
     }
 
@@ -28,6 +26,8 @@ class CreateProvinciasTable extends Migration
      */
     public function down()
     {
-        Schema::dropIfExists('provincias');
+        Schema::table('provincias', function (Blueprint $table) {
+            //
+        });
     }
 }
