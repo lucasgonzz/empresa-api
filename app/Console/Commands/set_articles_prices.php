@@ -15,7 +15,7 @@ class set_articles_prices extends Command
      *
      * @var string
      */
-    protected $signature = 'set_articles_prices {user_id}';
+    protected $signature = 'set_articles_prices {user_id?}';
 
     /**
      * The console command description.
@@ -41,18 +41,23 @@ class set_articles_prices extends Command
      */
     public function handle()
     {
-        $user = User::find($this->argument('user_id'));
+        $user_id = env('USER_ID');
+        if ($this->argument('user_id')) {
+            $user_id = $this->argument('user_id');
+        }
 
-        $articles = Article::where('user_id', $this->argument('user_id'))
+        $user = User::find($user_id);
+
+        $articles = Article::where('user_id', $user_id)
                             ->get();
 
-        $price_types = PriceType::where('user_id', $this->argument('user_id'))
+        $price_types = PriceType::where('user_id', $user_id)
                                     ->orderBy('position', 'ASC')
                                     ->get();
 
         $this->info(count($articles).' articulos');
         foreach ($articles as $article) {
-            ArticleHelper::setFinalPrice($article, $user->id, $user, $user->id, false, $price_types);
+            ArticleHelper::setFinalPrice($article, $user->id, $user, $user->id, true, $price_types);
             $this->info($article->name.' listo');
         }
         $this->info('Termino');

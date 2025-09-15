@@ -11,6 +11,7 @@ use App\Models\Provider;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Maatwebsite\Excel\Facades\Excel;
+use Illuminate\Support\Facades\Log;
 
 class ProviderController extends Controller
 {
@@ -46,7 +47,10 @@ class ProviderController extends Controller
 
         CreditAccountHelper::crear_credit_accounts('provider', $model->id);
 
-        $this->updateRelationsCreated('Provider', $model->id, $request->childrens);
+        $this->updateRelationsCreated('provider', $model->id, $request->childrens);
+
+        // $this->updateRelationsCreated('Provider', $model->id, $request->childrens);
+
         $this->sendAddModelNotification('Provider', $model->id);
         return response()->json(['model' => $this->fullModel('Provider', $model->id)], 201);
     }  
@@ -86,6 +90,8 @@ class ProviderController extends Controller
             $should_update_prices = true;
         }
 
+        $should_update_prices = $this->hubo_cambios_en_provider_discounts($model);
+
         if ($should_update_prices) {
             GeneralHelper::checkNewValuesForArticlesPrices($this, 0, 1, 'provider_id', $model->id);
         }
@@ -109,5 +115,21 @@ class ProviderController extends Controller
 
     function export() {
         return Excel::download(new ProviderExport, 'comerciocity-proveedores '.date_format(Carbon::now(), 'd-m-y H:m').'.xlsx');
+    }
+
+    function hubo_cambios_en_provider_discounts($provider) {
+
+        $hubo_cambios = false;
+
+        foreach ($provider->provider_discounts as $provider_discount) {
+            
+            if ($provider_discount->updated_at > Carbon::now()->subMinutes(2)) {
+
+                $hubo_cambios = true;
+                Log::info('Cambios en provider_discounts');
+            }
+        }
+
+        return $hubo_cambios;
     }
 }

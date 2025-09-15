@@ -49,7 +49,7 @@ class UserSetupController extends Controller
             'home_position'                 => 1,
             'download_articles'             => 0,
             'online'                        => null,
-            'payment_expired_at'            => Carbon::now()->addDays(12),
+            'payment_expired_at'            => Carbon::now()->addDays(20),
             'total_a_pagar'                 => $request->total_a_pagar,
             'plan_id'                       => null,
             'plan_discount'                 => null,

@@ -131,8 +131,12 @@ class ArticleHelper {
 
                 $final_price = ArticlePricesHelper::aplicar_recargos($article, $final_price);
 
+                $final_price = ArticlePricesHelper::aplicar_provider_discounts($article, $final_price);
+
+                Log::info('costo antes de iva: '.$final_price);
                 $final_price = ArticlePricesHelper::aplicar_iva($article, $final_price, $user);
 
+                Log::info('costo_real luego de iva: '.$final_price);
                 $article->costo_real = $final_price;
                 
             }  

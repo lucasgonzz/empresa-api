@@ -133,7 +133,10 @@ class InventoryPerformanceHelper {
 						$cost *= $article->presentacion;
 					}
 
-					if (!is_null($article->unidades_individuales)) {
+					if (
+						!is_null($article->unidades_individuales)
+						&& $article->unidades_individuales > 0
+					) {
 						$cost /= $article->unidades_individuales;
 					}
 

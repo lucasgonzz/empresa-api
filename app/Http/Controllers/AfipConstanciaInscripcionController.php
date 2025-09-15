@@ -86,8 +86,11 @@ class AfipConstanciaInscripcionController extends Controller
             }
 
             $data['cuit']          = $result->personaReturn->datosGenerales->idPersona;
-            $data['localidad']     = property_exists($result->personaReturn->datosGenerales->domicilioFiscal, 'localidad') ? $result->personaReturn->datosGenerales->domicilioFiscal->localidad : 'S/A';
+
+            $data['localidad']     = property_exists($result->personaReturn->datosGenerales->domicilioFiscal, 'localidad') ? $result->personaReturn->datosGenerales->domicilioFiscal->localidad : '';
+
             $data['direccion']     = property_exists($result->personaReturn->datosGenerales->domicilioFiscal, 'direccion') ? $result->personaReturn->datosGenerales->domicilioFiscal->direccion : null;
+
             $data['condicion_iva'] = $this->obtener_condicion_iva($result->personaReturn);
 
             return [

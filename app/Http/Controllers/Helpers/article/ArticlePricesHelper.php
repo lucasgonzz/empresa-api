@@ -260,6 +260,17 @@ class ArticlePricesHelper {
         return $final_price;
     }
 
+    static function aplicar_provider_discounts($article, $final_price) {
+
+        if (!is_null($article->provider)) {
+
+            foreach ($article->provider->provider_discounts as $discount) {
+                $final_price -= $final_price * $discount->percentage / 100;
+            }
+        }
+        return $final_price;
+    }
+
     static function aplicar_recargos($article, $final_price, $luego_del_precio_final = false) {
 
         if (count($article->article_surchages) >= 1) {

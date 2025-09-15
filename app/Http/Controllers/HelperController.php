@@ -58,6 +58,27 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function check_saldos() {
+        $clients = Client::where('user_id', env('USER_ID'))
+                            ->get();
+
+        foreach ($clients as $client) {
+            foreach ($client->credit_accounts as $credit_account) {
+                CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
+            }
+        }
+
+
+
+        $providers = Provider::where('user_id', env('USER_ID'))
+                            ->get();
+        foreach ($providers as $provider) {
+            foreach ($provider->credit_accounts as $credit_account) {
+                CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
+            }
+        }
+    }
+
     function corregir_stock_ferretotal() {
         $articles = Article::where('user_id', env('USER_ID'))
                             ->whereNotNull('stock')

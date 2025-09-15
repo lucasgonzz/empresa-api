@@ -472,6 +472,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('provincia', 'ProvinciaController');
 
+    Route::resource('provider-discount', 'ProviderDiscountController');
+
 });
 
 

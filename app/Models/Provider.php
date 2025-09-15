@@ -14,13 +14,17 @@ class Provider extends Model
     protected $guarded = [];
 
     function scopeWithAll($query) {
-        $query->with('iva_condition', 'comercio_city_user', 'provider_price_lists', 'location', 'credit_accounts.moneda');
+        $query->with('iva_condition', 'comercio_city_user', 'provider_price_lists', 'location', 'credit_accounts.moneda', 'provider_discounts');
         // $query->with('iva_condition', 'comercio_city_user', 'provider_price_lists', 'location')->withCount('current_acounts');
     }
 
     public function credit_accounts() {
         return $this->hasMany(CreditAccount::class, 'model_id')
                             ->where('model_name', 'provider');
+    }
+
+    function provider_discounts() {
+        return $this->hasMany(ProviderDiscount::class);
     }
 
     function provider_price_lists() {

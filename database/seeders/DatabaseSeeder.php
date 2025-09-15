@@ -213,6 +213,7 @@ class DatabaseSeeder extends Seeder
             // Por alguna rezon, a estos los llamaba despues de los seeders de cada negocio
 
             $this->call(ProviderSeeder::class);
+            $this->call(ProviderDiscountSeeder::class);
             $this->call(ProviderPriceListSeeder::class);
             $this->call(ColorSeeder::class);
             $this->call(DepositSeeder::class);

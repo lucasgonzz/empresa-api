@@ -17,6 +17,10 @@ class Sale extends Model
         return $this->belongsToMany(CurrentAcountPaymentMethod::class)->withPivot('amount', 'discount_percentage', 'discount_amount', 'caja_id');
     }
 
+    function moneda() {
+        return $this->belongsTo(Moneda::class);
+    }
+
     function stock_movements() {
         return $this->hasMany(StockMovement::class);
     }

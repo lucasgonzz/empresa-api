@@ -342,10 +342,10 @@ class PerformanceHelper
         $deuda_clientes_usd = 0;
 
         // Log::info('set_deuda_clientes');
-        Log::info('Deuda clientes');
+        // Log::info('Deuda clientes');
 
         foreach ($credit_accounts_clients as $credit_account) {
-            Log::info($credit_account->saldo);
+            // Log::info($credit_account->saldo);
 
             if ($credit_account->moneda_id == 2) {
 
@@ -357,8 +357,8 @@ class PerformanceHelper
         }
 
 
-        Log::info('deuda_clientes: '.$deuda_clientes);
-        Log::info('deuda_clientes_usd: '.$deuda_clientes_usd);
+        // Log::info('deuda_clientes: '.$deuda_clientes);
+        // Log::info('deuda_clientes_usd: '.$deuda_clientes_usd);
         
         $this->company_performance->deuda_clientes = $deuda_clientes;
         $this->company_performance->deuda_clientes_usd = $deuda_clientes_usd;
@@ -373,10 +373,10 @@ class PerformanceHelper
         $deuda_proveedores = 0;
         $deuda_proveedores_usd = 0;
 
-        Log::info('Deuda proveedores');
+        // Log::info('Deuda proveedores');
         foreach ($credit_accounts_providers as $credit_account) {
 
-            Log::info($credit_account->saldo);
+            // Log::info($credit_account->saldo);
 
             if ($credit_account->moneda_id == 2) {
 
@@ -388,8 +388,8 @@ class PerformanceHelper
         }
 
 
-        Log::info('deuda_proveedores: '.$deuda_proveedores);
-        Log::info('deuda_proveedores_usd: '.$deuda_proveedores_usd);
+        // Log::info('deuda_proveedores: '.$deuda_proveedores);
+        // Log::info('deuda_proveedores_usd: '.$deuda_proveedores_usd);
 
         $this->company_performance->deuda_proveedores = $deuda_proveedores;
         $this->company_performance->deuda_proveedores_usd = $deuda_proveedores_usd;

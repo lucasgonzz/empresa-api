@@ -18,6 +18,10 @@ class Client extends Model
         // $query->with('iva_condition', 'price_type', 'location', 'comercio_city_user', 'buyer')->withCount('current_acounts');
     }
 
+    public function provincia() {
+        return $this->belongsTo(Provincia::class);
+    }
+
     public function credit_accounts() {
         return $this->hasMany(CreditAccount::class, 'model_id')
                             ->where('model_name', 'client');

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exports\SalesFullExport;
 use App\Http\Controllers\AfipWsController;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\CurrentAcountController;
@@ -32,6 +33,7 @@ use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Maatwebsite\Excel\Facades\Excel;
 
 class SaleController extends Controller
 {
@@ -487,6 +489,27 @@ class SaleController extends Controller
         $sale->timestamps = false;
         $sale->save();
         return response(null, 200);
+
+    }
+
+    function excel_export($from_date, $until_date = null) {
+
+        $models = Sale::where('user_id', $this->userId())
+                        ->orderBy('created_at', 'DESC');
+
+        if (!is_null($from_date)) {
+
+            if (!is_null($until_date)) {
+                $models = $models->whereDate('created_at', '>=', $from_date)
+                                ->whereDate('created_at', '<=', $until_date);
+            } else {
+                $models = $models->whereDate('created_at', $from_date);
+            }
+
+        } 
+        $models = $models->get();
+
+        return Excel::download(new SalesFullExport($models), 'ventas_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
 
     }
 }

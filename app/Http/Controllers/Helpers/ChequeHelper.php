@@ -13,12 +13,12 @@ class ChequeHelper {
         
         Cheque::create([
 
-            'numero'                    => $payment_method['numero'],
-            'banco'                     => $payment_method['banco'],
-            'amount'                    => $payment_method['amount'],
-            'fecha_emision'             => $payment_method['fecha_emision'],
-            'fecha_pago'                => $payment_method['fecha_pago'],
-            'es_echeq'                  => $payment_method['es_echeq'],
+            'numero'                    => $payment_method['numero'] ?? null,
+            'banco'                     => $payment_method['banco'] ?? null,
+            'amount'                    => $payment_method['amount'] ?? null,
+            'fecha_emision'             => $payment_method['fecha_emision'] ?? null,
+            'fecha_pago'                => $payment_method['fecha_pago'] ?? null,
+            'es_echeq'                  => $payment_method['es_echeq'] ?? 0,
 
             // Tipo de cheque: recibido (de cliente) o emitido (a proveedor)
             'tipo'                      => !is_null($pago->client_id) ? 'recibido' : 'emitido',

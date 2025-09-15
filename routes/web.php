@@ -247,6 +247,11 @@ Route::get('apertura-caja/excel/export/{id}', 'AperturaCajaController@export');
 Route::get('/provider-orders/export/{id}', function ($id) {
     return Maatwebsite\Excel\Facades\Excel::download(new App\Exports\ProviderOrderExport($id), 'pedido_proveedor_'.$id.'.xlsx');
 });
+
+Route::get('sales/excel/export/{from_date}/{until_date?}', 'SaleController@excel_export');
+
+
+
 // Registrar Pago de usuario
 Route::get('user/register-payment/{company_name}', 'CommonLaravel\UserController@registerPayment');
 Route::get('caja', 'SaleController@caja');
