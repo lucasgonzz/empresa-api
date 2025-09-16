@@ -18,7 +18,7 @@ class iniciar_credit_accounts extends Command
      *
      * @var string
      */
-    protected $signature = 'iniciar_credit_accounts {user_id}';
+    protected $signature = 'iniciar_credit_accounts {user_id?}';
 
     /**
      * The console command description.
@@ -61,6 +61,8 @@ class iniciar_credit_accounts extends Command
 
         $this->set_sales_moneda_id();
 
+        $this->info('Listo');
+
         return 0;
     }
 
@@ -75,6 +77,7 @@ class iniciar_credit_accounts extends Command
                 $sale->save();
             }
         }
+        $this->info('Ventas ok');
 
     }
 

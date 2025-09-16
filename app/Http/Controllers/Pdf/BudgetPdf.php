@@ -229,9 +229,10 @@ class BudgetPdf extends fpdf {
 	        $this->Image($img_url, 5, $this->y+1, 40, 40);
 
 	        $image_height = 35;
+	    	
+	    	$this->x += 40;
 		}
 	    
-	    $this->x += 40;
 
 		// $this->Cell($this->getFields()['Codigo'], $this->line_height, $article->bar_code, $this->b, 0, 'L');
 		$y_1 = $this->y;

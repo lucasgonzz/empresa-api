@@ -168,7 +168,7 @@ class SaleTicketPdf extends fpdf {
 		if ($address) {
 
 			$this->x = $image_width;	
-			$this->Cell($image_width, 7, $address, $this->b, 1, 'L');
+			$this->MultiCell($image_width, 7, $address, $this->b, 'L', 0);
 		}
 
 		$this->x = $image_width;	
