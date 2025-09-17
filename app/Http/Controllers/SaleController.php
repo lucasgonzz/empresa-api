@@ -240,7 +240,7 @@ class SaleController extends Controller
 
         $model->fecha_entrega                       = $request->fecha_entrega;
 
-        $model->valor_dolar                         = $request->valor_dolar;
+        // $model->valor_dolar                         = $request->valor_dolar;
         
         $model->employee_id                         = SaleHelper::getEmployeeId($request);
         

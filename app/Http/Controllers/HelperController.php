@@ -58,6 +58,25 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function check_total_facturado() {
+        $sales = Sale::where('user_id', env('USER_ID'))
+                        ->orderBy('id', 'ASC')
+                        ->get();
+
+        foreach ($sales as $sale) {
+            
+            if (
+                $sale->total_a_facturar
+                && abs($sale->total_a_facturar) != abs($sale->total)
+            ) {
+                echo 'Venta N° '.$sale->num.'. Total: '.Numbers::price($sale->total).'. Facturado: '.Numbers::price($sale->total_a_facturar).' <br>';
+            }
+        }
+
+        echo 'Listo';
+
+    }
+
     function check_saldos() {
         $clients = Client::where('user_id', env('USER_ID'))
                             ->get();

@@ -654,7 +654,7 @@ class SaleHelper extends Controller {
 
         $sale->articles()->attach($article['id'], [
             'amount'                => Self::getAmount($sale, $article),
-            'cost'                  => Self::getCost($article),
+            'cost'                  => Self::getCost($sale, $article),
             'price'                 => $article['price_vender'],
             'returned_amount'       => Self::getReturnedAmount($article),
             'delivered_amount'      => $delivered_amount,
@@ -833,7 +833,17 @@ class SaleHelper extends Controller {
         return null;
     }
 
-    static function getCost($item) {
+    static function getCost($sale, $item) {
+
+        Log::info('getCost');
+
+        if (
+            isset($item['pivot'])
+            && isset($item['pivot']['cost'])
+        ) {
+            return $item['pivot']['cost'];
+        }
+
         if (isset($item['presentacion'])) {
 
             $item_cost = (float)$item['cost'];
@@ -844,13 +854,42 @@ class SaleHelper extends Controller {
             $cost =  $item_cost * (float)$item['presentacion'];
             return $cost;
         }
+
+        $cost = 0;
         if (isset($item['costo_real'])) {
-            return $item['costo_real'];
+            $cost = (float)$item['costo_real'];
         }
         if (isset($item['cost'])) {
-            return $item['cost'];
+            $cost = (float)$item['cost'];
         }
-        return null;
+
+        Log::info('cost: '.$cost);
+
+        if ($cost > 0) {
+
+            
+            if ($sale->moneda_id == 1) {
+                Log::info('pesos');
+                // Pesos
+                if (isset($item['cost_in_dollars']) && $item['cost_in_dollars'] == 1) {
+                    $cost *= (float)$sale->valor_dolar;
+                    Log::info('cotizado a peso: '.$cost);
+                }
+
+            } else if ($sale->moneda_id == 2) {
+
+                if (
+                    $item['cost_in_dollars'] == 0
+                    || $item['cost_in_dollars'] == '0'
+                    || is_null($item['cost_in_dollars'])
+                ) {
+                    $cost /= (float)$sale->valor_dolar;
+                    Log::info('cotizado a dolar: '.$cost);
+                }
+            } 
+        }
+
+        return $cost;
     }
 
     static function getDolar($article, $dolar_blue) {

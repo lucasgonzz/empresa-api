@@ -45,6 +45,7 @@ class BudgetController extends Controller
             'surchages_in_services'     => $request->surchages_in_services,
             'discounts_in_services'     => $request->discounts_in_services,
             'moneda_id'                 => $request->moneda_id,
+            'valor_dolar'               => $request->valor_dolar,
             'employee_id'               => $this->userId(false),
             'user_id'                   => $this->userId(),
         ]);
@@ -88,7 +89,7 @@ class BudgetController extends Controller
         
         $previus_articles = $model->articles;
 
-        BudgetHelper::attachArticles($model, $request->articles);
+        BudgetHelper::attachArticles($model, $request->articles, true);
         BudgetHelper::attachServices($model, $request->services);
         BudgetHelper::attachPromocionVinotecas($model, $request->promocion_vinotecas);
 

@@ -18,15 +18,24 @@ class CreditAccountHelper {
 
 		foreach ($monedas_id as $moneda_id) {
 
-			CreditAccount::create([
-				'moneda_id'		=> $moneda_id,
-				'model_name'	=> $model_name,
-				'model_id'		=> $model_id,
-				'saldo'			=> 0,
-				'user_id'		=> $user_id,
-			]);
+			$model = CreditAccount::where('model_name', $model_name)
+									->where('model_id', $model_id)
+									->where('moneda_id', $moneda_id)
+									->first();
 
-			Log::info('Se creo credit_account para '.$model_name.' id: '.$model_id);
+			if (!$model) {
+				CreditAccount::create([
+					'moneda_id'		=> $moneda_id,
+					'model_name'	=> $model_name,
+					'model_id'		=> $model_id,
+					'saldo'			=> 0,
+					'user_id'		=> $user_id,
+				]);
+				Log::info('Se creo credit_account para '.$model_name.' id: '.$model_id);
+			} else {
+				Log::info('Ya habia credit_account');
+			}
+
 		}
 	}
 

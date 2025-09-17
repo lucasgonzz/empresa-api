@@ -48,7 +48,7 @@ class ArticleController extends Controller
 {
     function index(Request $request) {
         $models = Article::where('user_id', $this->userId())
-                            ->where('id', 0)
+                            // ->where('id', 0)
                             ->where('status', 'active');
 
         $updated_after = $request->input('updated_after');

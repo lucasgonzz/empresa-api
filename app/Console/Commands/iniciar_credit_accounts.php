@@ -61,7 +61,9 @@ class iniciar_credit_accounts extends Command
 
         $this->set_sales_moneda_id();
 
-        $this->info('Listo');
+        $this->info('*******************');
+        $this->info('LISTO');
+        $this->info('*******************');
 
         return 0;
     }
@@ -75,9 +77,12 @@ class iniciar_credit_accounts extends Command
 
                 $sale->moneda_id = 1;
                 $sale->save();
+                $this->comment('Ventas num '.$sale->num.' ok');
             }
         }
+        $this->info('*******************');
         $this->info('Ventas ok');
+        $this->info('*******************');
 
     }
 
@@ -92,6 +97,7 @@ class iniciar_credit_accounts extends Command
             
             $this->vincular_current_acounts('provider', $provider, 1);            
 
+            $this->comment('Proveedor '.$provider->name.' ok');
             // if (
             //     is_null($provider->moneda_id)
             //     || $provider->moneda_id == 1
@@ -112,6 +118,9 @@ class iniciar_credit_accounts extends Command
             //     // $this->vincular_current_acounts('provider', $client_original, 2);            
             // }
         }
+        $this->info('*******************');
+        $this->info('Proveedores ok');
+        $this->info('*******************');
     }
 
     function iniciar_clientes() {
@@ -137,7 +146,13 @@ class iniciar_credit_accounts extends Command
 
                 $this->vincular_current_acounts('client', $client_original, 2);            
             }
+
+            $this->comment('Cliente '.$client->name.' ok');
+
         }
+        $this->info('*******************');
+        $this->info('Proveedores ok');
+        $this->info('*******************');
     }
 
     function vincular_current_acounts($model_name, $model, $moneda_id) {

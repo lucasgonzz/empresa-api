@@ -101,8 +101,14 @@ class BudgetHelper {
 	}
 
 	static function attachSaleArticles($sale, $budget, $previus_articles) {
+		
 		$has_extencion_check_sales = UserHelper::hasExtencion('check_sales');
+		
 		foreach($budget->articles as $article) {
+			Log::info('Adjuntando '.$article->name.' a la nueva venta');
+			Log::info('amount: '.$article->pivot->amount);
+			Log::info('cost: '.$article->pivot->cost);
+			Log::info('price: '.$article->pivot->price);
 			$sale->articles()->attach($article->id, [
 				'amount'			=> $article->pivot->amount,
 				'checked_amount'	=> Self::get_checked_amount($has_extencion_check_sales, $article),
@@ -111,6 +117,9 @@ class BudgetHelper {
 				'price_type_personalizado_id'	    		=> $article->pivot->price_type_personalizado_id,
 				'discount'			=> $article->pivot->bonus,
 			]);
+
+			Log::info('sale articles:');
+			Log::info($sale->articles);
 
 			if (!$has_extencion_check_sales) {
 
@@ -238,18 +247,36 @@ class BudgetHelper {
 		return $total;
 	}
 
-	static function attachArticles($budget, $articles) {
+	static function attachArticles($budget, $articles, $from_update = false) {
 		$budget->articles()->detach();
 		foreach ($articles as $article) {
 			$id = (int)$article['id'];
-			$amount = $article['pivot']['amount'];
-			$bonus = $article['pivot']['bonus'];
-			$location = $article['pivot']['location'];
-			$price = $article['pivot']['price'];
-			
-			$cost = Self::getCost($article);
 
-			$price_type_personalizado_id = isset($article['pivot']['price_type_personalizado_id']) ? $article['pivot']['price_type_personalizado_id'] : null;
+			// $amount = array_key_exists('amount', $article) ? $article['amount'] : $article['pivot']['amount'];
+			// $bonus = array_key_exists('bonus', $article) ? $article['bonus'] : $article['pivot']['bonus'];
+			// $location = array_key_exists('location', $article) ? $article['location'] : $article['pivot']['location'];
+			// $price = array_key_exists('price', $article) ? $article['price'] : $article['pivot']['price'];
+
+			if (
+				isset($article['pivot'])
+				&& is_array($article['pivot'])
+			) {
+
+				$amount = $article['pivot']['amount'];
+				$bonus = $article['pivot']['bonus'];
+				$location = $article['pivot']['location'];
+				$price = $article['pivot']['price'];
+			} else {
+
+				$amount = $article['amount'];
+				$bonus = $article['bonus'];
+				$location = $article['location'];
+				$price = $article['price'];
+			}
+			
+			$cost = SaleHelper::getCost($budget, $article);
+
+			$price_type_personalizado_id = isset($article['pivot']) && isset($article['pivot']['price_type_personalizado_id']) ? $article['pivot']['price_type_personalizado_id'] : null;
 			
 			if ($article['status'] == 'inactive' && $id > 0) {
 				$art = Article::find($article['id']);

@@ -58,7 +58,6 @@ class VenderController extends Controller
         $current_page = LengthAwarePaginator::resolveCurrentPage();
 
         $results = collect();
-
         // 1. Buscar todos los artículos cuyo name o provider_code coincidan con alguna palabra
         $articles = Article::where('status', 'active')
             ->where(function ($query_builder) use ($keywords) {

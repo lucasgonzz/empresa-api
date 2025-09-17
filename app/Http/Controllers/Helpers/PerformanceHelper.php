@@ -770,6 +770,7 @@ class PerformanceHelper
         $this->company_performance->total_vendido_costos_usd = $this->total_vendido_costos_usd;
 
         $this->company_performance->ingresos_netos = $this->total_vendido - $this->total_vendido_costos;
+        $this->company_performance->ingresos_netos_usd = $this->total_vendido_usd - $this->total_vendido_costos_usd;
         
         $this->company_performance->rentabilidad = $this->total_vendido - $this->total_vendido_costos - $this->total_gastos;
 

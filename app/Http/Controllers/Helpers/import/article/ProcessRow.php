@@ -158,6 +158,8 @@ class ProcessRow {
                 $cambios['id'] = $articulo_ya_creado->id;
                 $cambios['variants_data'] = [];
 
+                unset($cambios['provider_id']);
+
                 $this->articulosParaActualizar[] = $cambios;
             }
 

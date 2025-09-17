@@ -4,6 +4,7 @@ namespace Database\Seeders;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\Seeders\ArticleSeederHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
 use App\Models\ArticleDiscount;
@@ -76,61 +77,15 @@ class ArticleSeeder extends Seeder
         $num = 1;
         $days = count($articles) * $this->repetir_articlulos;
 
+        $helper = new ArticleSeederHelper();
+
         for ($vuelta_article=1; $vuelta_article <= $this->repetir_articlulos ; $vuelta_article++) { 
 
             foreach ($articles as $article) {
 
-                $art = Article::create([
-                    'num'                   => $num,
-                    // 'bar_code'              => $article['name'].rand(99999, 9999999),
-                    'bar_code'              => $article['bar_code'],
-                    'provider_code'         => 'p/'.$num,
-                    'name'                  => $article['name'].' '.$vuelta_article,
-                    'slug'                  => ArticleHelper::slug($article['name'], env('USER_ID')),
-                    'cost'                  => $article['cost'],
-                    // 'cost'                  => 100 * $num,
-                    'price'                 => isset($article['price']) ? $article['price'] : null,
-                    'costo_mano_de_obra'    => isset($article['costo_mano_de_obra']) ? $article['costo_mano_de_obra'] : null,
-                    'status'                => isset($article['status']) ? $article['status'] : 'active',
-                    'featured'              => isset($article['featured']) ? $article['featured'] : null,
-                    'provider_id'           => isset($article['provider_id']) ? $article['provider_id'] : null,
-                    'percentage_gain'       => 100,
-                    'iva_id'                => isset($article['iva_id']) ? $article['iva_id'] : 2,
-                    'featured'              => isset($article['featured']) ? $article['featured'] : null,
-                    
-                    'presentacion'          => isset($article['presentacion']) ? $article['presentacion'] : null,
-                    
-                    'apply_provider_percentage_gain'    => 0,
-                    'default_in_vender'     => isset($article['default_in_vender']) && $this->for_user == 'hipermax' ? $article['default_in_vender'] : null,
-                    'category_id'           => $this->getCategoryId($user, $article),
-                    'sub_category_id'       => $this->getSubcategoryId($user, $article),
-                    'created_at'            => Carbon::now()->subDays($days),
-                    'updated_at'            => Carbon::now()->subDays($days),
-                    'user_id'               => env('USER_ID'),
-                ]);    
-                $art->timestamps = false;
+                $art = $helper->crear_article($article, $days);
+
                 $days--;
-                $num++;
-                Log::info('Se creo '.$art->name.' num '.$num.' el '.date_format(Carbon::now()->subDays($days), 'd/m/Y'));
-                // $id+;
-                if (isset($article['images'])) {
-                    foreach ($article['images'] as $image) { 
-                        // $image['url']   = 'https://api-prueba.comerciocity.com/public/storage/171837091695431.webp';
-                        Image::create([
-                            'imageable_type'                            => 'article',
-                            'imageable_id'                              => $art->id,
-                            env('IMAGE_URL_PROP_NAME', 'image_url')     => $image['url'],
-                            // env('IMAGE_URL_PROP_NAME', 'image_url')     => env('APP_URL').'/storage/'.$image['url'],
-                            'color_id'                                  => isset($image['color_id']) ? $image['color_id'] : null,
-                        ]);
-                    }    
-                }
-                if (isset($article['provider_id'])) {
-                    $art->providers()->attach($article['provider_id'], [
-                                                'cost'  => $article['cost'],
-                                                'amount' => $article['stock'],
-                                            ]);
-                }
 
                 $this->set_props_vinoteca($art, $article);
 
@@ -282,40 +237,6 @@ class ArticleSeeder extends Seeder
                 ]);
             }
         }
-    }
-
-    function getCategoryId($user, $article) {
-        if (isset($article['category_name'])) {
-            $category = Category::where('user_id', env('USER_ID'))
-                                    ->where('name', $article['category_name'])
-                                    ->first();
-            if (!is_null($category)) {
-                return $category->id;
-            }
-        }
-        if (isset($article['sub_category_name'])) {
-            $sub_category = SubCategory::where('user_id', env('USER_ID'))
-                                        ->where('name', $article['sub_category_name'])
-                                        ->first();
-            if (!is_null($sub_category)) {
-                return $sub_category->category_id;
-            }
-        }
-        return null;
-    }
-
-    function getSubcategoryId($user, $article) {
-        if (isset($article['sub_category_name'])) {
-            $sub_category = SubCategory::where('user_id', env('USER_ID'))
-                                        ->where('name', $article['sub_category_name'])
-                                        ->first();
-
-            if ($sub_category) {
-
-                return $sub_category->id;
-            }
-        }
-        return null;
     }
 
     function getColorId($article) {

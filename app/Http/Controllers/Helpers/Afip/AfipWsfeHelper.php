@@ -315,10 +315,12 @@ class AfipWsfeHelper extends Controller
                 }
             } else {
                 foreach ($observations as $observation) {
-                    // Log::info('observation:');
-                    // Log::info($observation);
                     $observation = (array)$observation;
-                    if ($observations['Code'] != 10245) {
+                    Log::info('observation:');
+                    Log::info($observation);
+                    if (
+                        $observations['Code'] != 10245
+                    ) {
                         AfipObservation::create([
                             'message'   => $observation['Msg'],
                             'code'      => $observation['Code'],
