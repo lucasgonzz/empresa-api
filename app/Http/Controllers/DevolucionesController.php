@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\Afip\AfipNotaCreditoHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Devoluciones\RegresarStockHelper;
 use App\Http\Controllers\Helpers\Devoluciones\UpdateSaleHelper;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
 use Illuminate\Http\Request;
@@ -25,14 +26,23 @@ class DevolucionesController extends Controller
     function store(Request $request) {
 
         $model_id = null;
+        $credit_account_id = null;
+
         if (
             $request->generar_current_acount
             && !is_null($request->client_id)
         ) {
             $model_id = $request->client_id;
+            $credit_account_id = CreditAccount::where('model_name', 'client')
+                                                ->where('model_id', $model_id)
+                                                ->where('moneda_id', 1)
+                                                ->first()
+                                                ->id;
         }
 
+
         $nota_credito = CurrentAcountHelper::notaCredito(
+            $credit_account_id,
             $request->total_devolucion, 
             $request->observaciones, 
             'client', 
