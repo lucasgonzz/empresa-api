@@ -98,10 +98,13 @@ class HelperController extends Controller
         }
     }
 
-    function corregir_stock_ferretotal() {
-        $articles = Article::where('user_id', env('USER_ID'))
-                            ->whereNotNull('stock')
-                            ->get();
+    function corregir_stock_ferretotal($article_id = null) {
+        $articles = Article::where('user_id', env('USER_ID'));
+
+        if (!is_null($article_id)) {
+            $articles->where('id', $article_id);
+        }
+        $articles = $articles->get();
 
         $fecha_limite = Carbon::parse('2025-09-09 00:00:00');
 

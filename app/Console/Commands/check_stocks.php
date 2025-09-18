@@ -16,7 +16,7 @@ class check_stocks extends Command
      *
      * @var string
      */
-    protected $signature = 'check_stocks {user_id}';
+    protected $signature = 'check_stocks {user_id?}';
 
     /**
      * The console command description.
@@ -57,12 +57,13 @@ class check_stocks extends Command
             if ($last_stock_movement) {
                 $stock_resultante = $last_stock_movement->stock_resultante;
                 if ($article->stock != $stock_resultante) {
-                    $articulos_mal[] = 'Articulo num: '.$article->num.'. Nombre: '.$article->name;
+                    $articulos_mal[] = 'Articulo num: '.$article->id.'. Nombre: '.$article->name;
+                    $this->comment('Articulo num: '.$article->id.'. Nombre: '.$article->name);
                 }
             }
         }
 
-        $this->enviar_mail($articulos_mal);
+        // $this->enviar_mail($articulos_mal);
         $this->info('Termino');      
         return 0;
     }

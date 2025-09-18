@@ -13,7 +13,7 @@ class corregir_stock extends Command
      *
      * @var string
      */
-    protected $signature = 'corregir_stock {user_id} {--solo_informar}';
+    protected $signature = 'corregir_stock {article_id?} {--solo_informar}';
 
     /**
      * The console command description.
@@ -53,11 +53,11 @@ class corregir_stock extends Command
         sleep(3);
 
         // Articulos cuyo stock actual no coincide con el stock resultante del ultimo movimiento
-        // $articles = $this->get_articles_mal();
+        $articles = $this->get_articles_mal();
 
-        $articles = Article::where('user_id', $this->argument('user_id'))
-                            ->where('num', 7999)
-                            ->get();
+        // $articles = Article::where('user_id', $this->argument('user_id'))
+        //                     ->where('num', 7999)
+        //                     ->get();
 
 
 
@@ -122,8 +122,14 @@ class corregir_stock extends Command
     function get_articles_mal() {
 
         $articulos_mal = [];
-        $articles = Article::where('user_id', $this->argument('user_id'))
-                            ->get();
+        $articles = Article::where('user_id', env('USER_ID'));
+
+        $article_id = $this->argument('article_id');
+
+        if ($article_id) {
+            $articles->where('id', $article_id);
+        }
+        $articles = $articles->get();
 
         $this->info(count($articles).' articulos');      
 
