@@ -521,6 +521,7 @@ class ArticleController extends Controller
 
         $helper = new UpdateAddressesStockHelper($request->article_id, $request->addresses);
         $helper->update_addresses();
+        $helper->set_stock_min_max();
 
         return response()->json(['model' => $this->fullModel('Article', $request->article_id)], 200);
 

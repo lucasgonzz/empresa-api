@@ -15,4 +15,18 @@ class CurrentAcountPaymentMethodController extends Controller
                                         ->get();
         return response()->json(['models' => $models], 200);
     }
+
+    function store(Request $request) {
+        $model = CurrentAcountPaymentMethod::create([
+            'name'  => $request->name,
+        ]);
+        return response()->json(['model' => $model], 201);
+    }
+
+    public function update(Request $request, $id) {
+        $model = CurrentAcountPaymentMethod::find($id);
+        $model->name                = $request->name;
+        $model->save();
+        return response()->json(['model' => $model], 200);
+    }
 }

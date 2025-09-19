@@ -148,6 +148,8 @@ class ExportHelper {
 		if (count($addresses) >= 1) {
 			foreach ($addresses as $address) {
 				$map[] = $article->{$address->street};
+				$map[] = $article->{'stock_min_'.$address->street};
+				$map[] = $article->{'stock_max_'.$address->street};
 			}
 		}
 		return $map;
@@ -159,16 +161,28 @@ class ExportHelper {
 		if (count($price_types) >= 1) {
 
 			if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
-
+				Log::info('articulo_margen_de_ganancia_segun_lista_de_precios');
+				
 				// Caso Pack descartables
 				foreach ($price_types as $price_type) {
 
 					$article_price_type = $article->price_types()->find($price_type->id);
 
 					if ($article_price_type) {
+
+						$setear = $article_price_type->pivot->setear_precio_final;
+
+						if (
+							$setear == 1
+							|| $setear == true
+						) {
+							$setear = 'Si';
+						} else {
+							$setear = 'No';
+						}
 						
+						$map[] = $setear;
 						$map[] = $article_price_type->pivot->percentage;
-						$map[] = $article_price_type->pivot->price;
 						$map[] = $article_price_type->pivot->final_price;
 					}
 
@@ -265,6 +279,8 @@ class ExportHelper {
 		if (count($addresses) >= 1) {
 			foreach ($addresses as $address) {
 				$headings[] = $address->street;
+				$headings[] = 'Min '.$address->street;
+				$headings[] = 'Max '.$address->street;
 			}
 		}
 		return $headings;
@@ -288,8 +304,9 @@ class ExportHelper {
 
 				if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
 
+					// $headings[] = '% '.$price_type->name;
+					$headings[] = 'Setear precio final '.$price_type->name;
 					$headings[] = '% '.$price_type->name;
-					$headings[] = '$ '.$price_type->name;
 					$headings[] = '$ Final '.$price_type->name;
 				} else {
 
@@ -325,13 +342,22 @@ class ExportHelper {
 		if (count($addresses) >= 1) {
 			foreach ($articles as $article) {
 				foreach ($addresses as $address) {
+					
 					$stock_address = null;
+					$stock_min = null;
+					$stock_max = null;
+					
 					foreach ($article->addresses as $article_address) {
 						if ($article_address->id == $address->id) {
 							$stock_address = $article_address->pivot->amount;
+							$stock_min = $article_address->pivot->stock_min;
+							$stock_max = $article_address->pivot->stock_max;
 						}
 					}
+					
 					$article->{$address->street} = $stock_address;
+					$article->{'stock_min_'.$address->street} = $stock_min;
+					$article->{'stock_max_'.$address->street} = $stock_max;
 				}
 			}
 		}

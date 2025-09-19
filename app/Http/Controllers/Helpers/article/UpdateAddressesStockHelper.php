@@ -47,6 +47,35 @@ class UpdateAddressesStockHelper {
         }
     }
 
+    function set_stock_min_max() {
+        foreach ($this->addresses as $address_data) {
+
+            $address_id = $address_data['id'];
+            $stock_min = isset($address_data['pivot']['stock_min']) ? $address_data['pivot']['stock_min'] : null;
+            $stock_max = isset($address_data['pivot']['stock_max']) ? $address_data['pivot']['stock_max'] : null;
+
+            if (
+                is_null($stock_min)
+                && is_null($stock_max)
+            ) {
+                continue; // si no se pasa valor, no hace nada
+            }
+
+            if ($this->article->addresses()->where('address_id', $address_id)->exists()) {
+                $this->article->addresses()->updateExistingPivot($address_id, [
+                    'stock_min' => $stock_min,
+                    'stock_max' => $stock_max,
+                ]);
+            } else {
+                $this->article->addresses()->attach($address_id, [
+                    'stock_min' => $stock_min,
+                    'stock_max' => $stock_max,
+                    // 'amount' => 0, // por si es requerido por la DB
+                ]);
+            }
+        }
+    }
+
     function guardar_stock_movement($amount, $segundos) {
 
         $ct_stock_movement = new StockMovementController();

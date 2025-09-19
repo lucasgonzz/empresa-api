@@ -89,7 +89,7 @@ class Article extends Model
     }
 
     function addresses() {
-        return $this->belongsToMany(Address::class)->withPivot('amount');
+        return $this->belongsToMany(Address::class)->withPivot('amount', 'stock_min', 'stock_max');
     }
 
     function article_properties() {

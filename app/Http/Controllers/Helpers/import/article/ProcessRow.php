@@ -139,8 +139,8 @@ class ProcessRow {
             // Aca entra para actualizar todas las coincidencias del producto en base al codigo de proveedor, caso SAN BLAS
 
             $articulos = ArticleIndexCache::find_all_by_provider_code($data['provider_code'], $this->user->id);
-            Log::info('find_all_by_provider_code:');
-            Log::info($articulos);
+            // Log::info('find_all_by_provider_code:');
+            // Log::info($articulos);
 
             foreach ($articulos as $articulo_ya_creado) {
 
@@ -200,24 +200,24 @@ class ProcessRow {
                 }
 
                 if (count($discounts_data_percentage) > 0) {
-                    Log::info('Agregando los discounts_data_percentage para el article id: '.$articulo_ya_creado->id);
-                    Log::info($discounts_data_percentage);
+                    // Log::info('Agregando los discounts_data_percentage para el article id: '.$articulo_ya_creado->id);
+                    // Log::info($discounts_data_percentage);
                     $cambios['discounts_data_percentage'] = $discounts_data_percentage;
                 }
                 if (count($discounts_data_amount) > 0) {
-                    Log::info('Agregando los discounts_data_amount para el article id: '.$articulo_ya_creado->id);
-                    Log::info($discounts_data_amount);
+                    // Log::info('Agregando los discounts_data_amount para el article id: '.$articulo_ya_creado->id);
+                    // Log::info($discounts_data_amount);
                     $cambios['discounts_data_amount'] = $discounts_data_amount;
                 }
 
                 if (count($surchages_data_percentage) > 0) {
-                    Log::info('Agregando los surchages_data_percentage para el article id: '.$articulo_ya_creado->id);
-                    Log::info($surchages_data_percentage);
+                    // Log::info('Agregando los surchages_data_percentage para el article id: '.$articulo_ya_creado->id);
+                    // Log::info($surchages_data_percentage);
                     $cambios['surchages_data_percentage'] = $surchages_data_percentage;
                 }
                 if (count($surchages_data_amount) > 0) {
-                    Log::info('Agregando los surchages_data_amount para el article id: '.$articulo_ya_creado->id);
-                    Log::info($surchages_data_amount);
+                    // Log::info('Agregando los surchages_data_amount para el article id: '.$articulo_ya_creado->id);
+                    // Log::info($surchages_data_amount);
                     $cambios['surchages_data_amount'] = $surchages_data_amount;
                 }
 
@@ -543,13 +543,33 @@ class ProcessRow {
         $stock_addresses = [];
 
         foreach ($this->addresses as $address) {
-            $nombre_columna = str_replace(' ', '_', strtolower($address->street));
 
-            $address_excel = ImportHelper::getColumnValue($row, $nombre_columna, $this->columns);
+            $column_amount = str_replace(' ', '_', strtolower($address->street));
+            $amount_excel = ImportHelper::getColumnValue($row, $column_amount, $this->columns);
 
-            if (!is_null($address_excel)) {
+            $column_min = 'min_'.str_replace(' ', '_', strtolower($address->street));
+            $min_excel = ImportHelper::getColumnValue($row, $column_min, $this->columns);
+
+            $column_max = 'max_'.str_replace(' ', '_', strtolower($address->street));
+            $max_excel = ImportHelper::getColumnValue($row, $column_max, $this->columns);
+
+            if (
+                !is_null($amount_excel)
+                || !is_null($min_excel)
+                || !is_null($max_excel)
+            ) {
 
                 // Log::info('Hay info en la columna '.$nombre_columna);
+
+                $address_article = [
+                    'address_id'    => $address->id,
+                    'min'           => $min_excel,
+                    'max'           => $max_excel,
+                    'amount'        => null,
+                ];
+
+                // Log::info($address->street.' min: '.$min_excel);
+                // Log::info($address->street.' max: '.$max_excel);
 
                 if (!is_null($articulo_ya_creado)) {
 
@@ -564,17 +584,21 @@ class ProcessRow {
                     $stock_actual_en_address = 0;
                 }
 
-                $address_excel = (float)$address_excel;
+                $amount_excel = (float)$amount_excel;
 
-                $diferencia = $address_excel - $stock_actual_en_address;
+                $diferencia = $amount_excel - $stock_actual_en_address;
 
                 if ($diferencia != 0) {
                     Log::info('Hay una diferencia de '.$diferencia);
-                    $stock_addresses[] = [
-                        'address_id'    => $address->id,
-                        'amount'        => $diferencia,
-                    ];
+                    // $stock_addresses[] = [
+                    //     'address_id'    => $address->id,
+                    //     'amount'        => $diferencia,
+                    // ];
+
+                    $address_article['amount'] = $diferencia;
                 }
+
+                $stock_addresses[] = $address_article;
             }
         }
 
@@ -689,11 +713,34 @@ class ProcessRow {
 
 
     private function obtener_price_types($row, $articulo_ya_creado = null) {
+        Log::info('obtener_price_types: '.UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $this->user));
         $price_types_data = [];
 
         if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $this->user)) {
 
             foreach ($this->price_types as $price_type) {
+            
+                $row_setear_name = 'setear_precio_final_' . str_replace(' ', '_', strtolower($price_type->name));
+                Log::info('row_setear_name: '.$row_setear_name);
+                $setear = ImportHelper::getColumnValue($row, $row_setear_name, $this->columns);
+                Log::info('setear: '.$setear);
+
+                if (
+                    !is_null($setear)
+                    && (
+                        $setear == 'Si'
+                        || $setear == 'si'
+                        || $setear == 'SI'
+                        || $setear == 'S'
+                        || $setear == 's'
+                    )
+                ) {
+
+                    $setear = 1;
+
+                } else {
+                    $setear = 0;
+                }
             
                 $row_percentage_name = '%_' . str_replace(' ', '_', strtolower($price_type->name));
                 $percentage = ImportHelper::getColumnValue($row, $row_percentage_name, $this->columns);
@@ -701,6 +748,8 @@ class ProcessRow {
                 $row_final_price_name = '$_final_' . str_replace(' ', '_', strtolower($price_type->name));
                 $final_price = ImportHelper::getColumnValue($row, $row_final_price_name, $this->columns);
 
+                Log::info('setear: '.$setear);
+                Log::info('percentage: '.$percentage);
                 Log::info('final_price: '.$final_price);
 
 
@@ -729,18 +778,18 @@ class ProcessRow {
                         
                         if (
                             $price_type_ya_relacionado->pivot->percentage != $percentage
-                            && !$price_type_ya_relacionado->pivot->setear_precio_final
+                            && !$setear
                         ) {
                             Log::info('Entro con percentage');    
-                            $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $percentage);
+                            $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage);
 
                         } else if (
                             $price_type_ya_relacionado->pivot->final_price != $final_price
-                            && $price_type_ya_relacionado->pivot->setear_precio_final
+                            && $setear
                         ) {
 
                             Log::info('Entro con final_price');    
-                            $price_types_data = $this->add_price_type_data($price_types_data, $price_type, null, $final_price);
+                            $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, null, $final_price);
 
                         } else {
 
@@ -751,13 +800,13 @@ class ProcessRow {
 
                         Log::info('No estaba relacionado con price_type');
 
-                        $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $percentage, $final_price);
+                        $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price);
 
                     }
 
                 } else {
 
-                    $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $percentage, $final_price);
+                    $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price);
                 }
 
             }
@@ -766,13 +815,14 @@ class ProcessRow {
         return $price_types_data;
     }
 
-    function add_price_type_data($price_types_data, $price_type, $percentage, $final_price = null) {
+    function add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price = null) {
 
         $price_types_data[] = [
             'id'            => $price_type->id,
             'pivot'         => [
-                'percentage'    => !is_null($percentage) ? $percentage : null,
-                'final_price'   => !is_null($final_price) ? $final_price : null,
+                'setear_precio_final'   => !is_null($setear) ? $setear : 0,
+                'percentage'            => !is_null($percentage) ? $percentage : null,
+                'final_price'           => !is_null($final_price) ? $final_price : null,
             ]
         ];
         return $price_types_data;

@@ -158,15 +158,37 @@ class InventoryPerformanceHelper {
 
 					$this->sin_stock++;
 				
-				} else if (
-					!is_null($article->stock_min)
-					&& !is_null($article->stock)
-					&& $article->stock < $article->stock_min
-				) {
+				} else {
 
-					$this->stock_minimo++;
+					if (
+						count($article->addresses) == 0
+						&& !is_null($article->stock_min)
+						&& !is_null($article->stock)
+						&& $article->stock < $article->stock_min
+					) {
 
-					$this->articles_stock_minimo[] = $article;
+						$this->stock_minimo++;
+
+						$this->articles_stock_minimo[] = $article;
+					
+					} else if (
+						count($article->addresses) > 0
+					) {
+
+						foreach ($article->addresses as $address) {
+							
+							if (
+								!is_null($address->pivot->stock_min)
+								&& $address->pivot->stock_min >= $address->pivot->amount 
+							) {
+
+								$this->stock_minimo++;
+
+								$this->articles_stock_minimo[] = $article;
+							}
+						}
+					}
+
 				}
 
 			}

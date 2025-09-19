@@ -541,10 +541,10 @@ class ActualizarBBDD {
                 if (!$article_model) continue;
 
                 if (!empty($article_cache['stock_global'])) {
-                    Log::info('Act stock global de '.$article_model->name);
+                    // Log::info('Act stock global de '.$article_model->name);
                     $this->guardar_stock_movement_global($article_model, $article_cache['stock_global']);
                 } else {
-                    Log::info('Act stock por direcciones de '.$article_model->name);
+                    // Log::info('Act stock por direcciones de '.$article_model->name);
                     $this->guardar_stock_movement_addresses($article_model, $article_cache['stock_addresses']);
                 }
 
@@ -611,9 +611,36 @@ class ActualizarBBDD {
         $data['model_id'] = $article->id;
 
         foreach ($addresses as $address) {
-            $data['to_address_id'] = $address['address_id'];
-            $data['amount'] = $address['amount'];
-            $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id);
+
+            if (!is_null($address['amount'])) {
+                $data['to_address_id'] = $address['address_id'];
+                $data['amount'] = $address['amount'];
+                $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id);
+            }
+
+
+            if (
+                !is_null($address['min'])
+                || !is_null($address['max'])
+            ) {
+
+
+                if ($article->addresses()->where('address_id', $address['address_id'])->exists()) {
+                    // Log::info('actualizando pivot min '.$address['min']);
+                    // Log::info('actualizando pivot max '.$address['max']);
+                    $article->addresses()->updateExistingPivot($address['address_id'], [
+                        'stock_min' => $address['min'],
+                        'stock_max' => $address['max'],
+                    ]);
+                } else {
+                    // Log::info('creando pivot min '.$address['min']);
+                    // Log::info('creando pivot max '.$address['max']);
+                    $article->addresses()->attach($address['address_id'], [
+                        'stock_min' => $address['min'],
+                        'stock_max' => $address['max'],
+                    ]);
+                }
+            }
         }
 
     }
@@ -813,6 +840,13 @@ class ActualizarBBDD {
 
 
     function get_setear_precio_final($price_type) {
+
+        Log::info('get_setear_precio_final:');
+        Log::info($price_type);
+
+        if ($price_type['pivot']['setear_precio_final']) {
+            return $price_type['pivot']['setear_precio_final'];
+        }
 
         $price_type_model = $this->get_price_type($price_type['id']);
 

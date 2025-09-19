@@ -20,7 +20,7 @@ class CreateArticlesTable extends Migration
             $table->string('bar_code', 128)->nullable();
             $table->string('provider_code', 128)->nullable();
             $table->text('name')->nullable();
-            $table->string('slug')->nullable();
+            $table->text('slug')->nullable();
             $table->decimal('cost', 16, 2)->nullable();
             $table->decimal('costo_real', 16, 2)->nullable();
             $table->decimal('costo_mano_de_obra', 16, 2)->nullable();

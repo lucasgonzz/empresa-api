@@ -91,6 +91,9 @@ Route::post('/demo-setup', 'DemoSetupController@setup')->name('demo.setup');
 Route::get('/user-setup', 'UserSetupController@form')->name('user.form');
 Route::post('/user-setup', 'UserSetupController@setup')->name('user.setup');
 
+Route::get('/user/extencions/edit/{user_id?}', 'UserExtencionController@edit')->name('users.extencions.edit');
+Route::post('/users/{user_id}/extencions', 'UserExtencionController@update')->name('users.extencions.update');
+
 
 
 // ------------------------------------------------------------------------------
