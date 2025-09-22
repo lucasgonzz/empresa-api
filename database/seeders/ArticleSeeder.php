@@ -83,6 +83,10 @@ class ArticleSeeder extends Seeder
 
             foreach ($articles as $article) {
 
+                $article['bar_code'] = $num;
+
+                $num++;
+
                 $art = $helper->crear_article($article, $days);
 
                 $days--;

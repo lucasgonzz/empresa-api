@@ -446,20 +446,24 @@ class CurrentAcountHelper {
 
         $model = $model_name::find($credit_account->model_id);
 
-        Log::info('Se actualizo saldo de '.$model->name);
-
-        if ($credit_account->moneda_id == 1) {
+        if ($model) {
             
-            $model->saldo_pesos = $credit_account->saldo;
-            Log::info('saldo_pesos: '.$credit_account->saldo);
+            Log::info('Se actualizo saldo de '.$model->name);
 
-        } else if ($credit_account->moneda_id == 2) {
+            if ($credit_account->moneda_id == 1) {
+                
+                $model->saldo_pesos = $credit_account->saldo;
+                Log::info('saldo_pesos: '.$credit_account->saldo);
 
-            $model->saldo_dolares = $credit_account->saldo;
-            Log::info('saldo_dolares: '.$credit_account->saldo);
+            } else if ($credit_account->moneda_id == 2) {
+
+                $model->saldo_dolares = $credit_account->saldo;
+                Log::info('saldo_dolares: '.$credit_account->saldo);
+            }
+
+            $model->save();
         }
 
-        $model->save();
 
     }
 

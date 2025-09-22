@@ -169,7 +169,7 @@ class UserSetupController extends Controller
         }
 
         if ($request->use_price_lists) {
-            $seeders[] = 'PriceTypeSeeder';
+            // $seeders[] = 'PriceTypeSeeder';
             $extencions[] = 'articulo_margen_de_ganancia_segun_lista_de_precios';
         }
 

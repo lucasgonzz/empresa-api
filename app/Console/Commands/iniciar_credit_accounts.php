@@ -89,6 +89,7 @@ class iniciar_credit_accounts extends Command
     function iniciar_providers() {
 
         $providers = Provider::where('user_id', $this->user_id)
+                            ->withTrashed()
                             ->get();
 
         foreach ($providers as $provider) {
@@ -125,6 +126,7 @@ class iniciar_credit_accounts extends Command
 
     function iniciar_clientes() {
         $clients = Client::where('user_id', $this->user_id)
+                            ->withTrashed()
                             ->get();
 
         foreach ($clients as $client) {

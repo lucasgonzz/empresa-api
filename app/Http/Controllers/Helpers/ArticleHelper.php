@@ -155,6 +155,7 @@ class ArticleHelper {
 
             if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)) {
 
+                Log::info('articulo_margen_de_ganancia_segun_lista_de_precios');
                 
                 // ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $final_price, $user, $price_types);
 

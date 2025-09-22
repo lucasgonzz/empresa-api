@@ -287,13 +287,16 @@ class ExportHelper {
 	}
 
 	static function setPropertyTypesHeadings($headings) {
-		$models = Self::getPropertyTypes();
-		if (count($models) >= 1) {
-			foreach ($models as $property_type) {
-				$headings[] = $property_type->name;
+
+		if (UserHelper::hasExtencion('article_variants')) {
+			$models = Self::getPropertyTypes();
+			if (count($models) >= 1) {
+				foreach ($models as $property_type) {
+					$headings[] = $property_type->name;
+				}
 			}
+			return $headings;
 		}
-		return $headings;
 	}
 
 	static function setPriceTypesHeadings($headings) {

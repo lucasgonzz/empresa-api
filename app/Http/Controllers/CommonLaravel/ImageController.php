@@ -58,7 +58,9 @@ class ImageController extends Controller
                 $model->save();
 
                 // Aca meto tiendanube
-                dispatch(new ProcessSyncArticleImageToTiendaNube($model, $image));
+                if (env('USA_TIENDA_NUBE', false)) {
+                    dispatch(new ProcessSyncArticleImageToTiendaNube($model, $image));
+                }
             }
 
         } else {

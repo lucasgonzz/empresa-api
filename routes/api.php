@@ -474,6 +474,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('provider-discount', 'ProviderDiscountController');
 
+    Route::resource('client-reputation', 'ClientReputationController');
+
 });
 
 

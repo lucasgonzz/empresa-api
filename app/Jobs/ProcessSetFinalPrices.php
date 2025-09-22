@@ -47,7 +47,7 @@ class ProcessSetFinalPrices implements ShouldQueue
                 $articles_query = Article::where('user_id', $this->user->id)->select('id');
             }
 
-            $articles_query->chunk(500, function ($articles_chunk) {
+            $articles_query->chunk(2000, function ($articles_chunk) {
                 $ids = $articles_chunk->pluck('id')->toArray();
                 dispatch(new ProcessChunkSetFinalPrices($ids, $this->user));
             });

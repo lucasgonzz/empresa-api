@@ -82,15 +82,20 @@ class ProviderController extends Controller
 
         $should_update_prices = false;
 
+        Log::info('dolar antes: '.$last_dolar);
+        Log::info('dolar ahora: '.$model->dolar);
+
         if ($last_percentage_gain != $model->percentage_gain) {
             $should_update_prices = true;
+            Log::info('Cambios en el dolar');
         }
 
         if ($last_dolar != $model->dolar) {
             $should_update_prices = true;
         }
 
-        $should_update_prices = $this->hubo_cambios_en_provider_discounts($model);
+
+        $should_update_prices = $this->hubo_cambios_en_provider_discounts($model, $should_update_prices);
 
         if ($should_update_prices) {
             GeneralHelper::checkNewValuesForArticlesPrices($this, 0, 1, 'provider_id', $model->id);
@@ -117,19 +122,17 @@ class ProviderController extends Controller
         return Excel::download(new ProviderExport, 'comerciocity-proveedores '.date_format(Carbon::now(), 'd-m-y H:m').'.xlsx');
     }
 
-    function hubo_cambios_en_provider_discounts($provider) {
-
-        $hubo_cambios = false;
+    function hubo_cambios_en_provider_discounts($provider, $should_update_prices) {
 
         foreach ($provider->provider_discounts as $provider_discount) {
             
             if ($provider_discount->updated_at > Carbon::now()->subMinutes(2)) {
 
-                $hubo_cambios = true;
+                $should_update_prices = true;
                 Log::info('Cambios en provider_discounts');
             }
         }
 
-        return $hubo_cambios;
+        return $should_update_prices;
     }
 }

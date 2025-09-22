@@ -188,7 +188,7 @@ class ArticlePricesHelper {
                 'monto_ganancia'  => $res['monto_ganancia'],
             ]);
 
-            // Log::info('Seteando price_type '.$price_type->name.' para article num: '.$article->id.' con percentage '.$percentage.'% y final_price de '.$final_price);
+            Log::info('Seteando price_type '.$price_type->name.' para article num: '.$article->id.' con percentage '.$percentage.'% y final_price de '.$final_price);
 
         }
     }

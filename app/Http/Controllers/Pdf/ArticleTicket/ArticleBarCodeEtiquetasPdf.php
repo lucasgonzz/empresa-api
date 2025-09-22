@@ -29,7 +29,7 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 		$this->etiqueta_height  = 50;  
 
 		// Nombre
-		$this->alto_nombre = 20;
+		$this->alto_nombre = 5;
 		$this->size_nombre = 12; 
 
 		// Precio
@@ -67,21 +67,34 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 
 	function print_info($article) {
 		
+		$this->y += 1;
+		
 		$this->nombre($article);
 
 		if ($article->bar_code) {
+			$this->y += 3;
 			$this->print_bar_code($article->bar_code);
 		}
 		
 		// $this->precio($article);
 		
-		$this->nombre_negocio();
+		// $this->nombre_negocio();
 
 	}
 
 	function nombre($article) {
 		$this->SetFont('Arial', '', $this->size_nombre);
-		$this->Cell($this->etiqueta_width, $this->alto_nombre, $article->name, $this->b, 1, 'C');
+
+	    $this->MultiCell( 
+			$this->etiqueta_width,
+			$this->alto_nombre, 
+			$article->name, 
+	    	$this->b, 
+	    	'C',
+	    	false,
+	    );
+
+		// $this->Cell($this->etiqueta_width, $this->alto_nombre, $article->name, $this->b, 1, 'C');
 	}
 
 	function precio($article) {

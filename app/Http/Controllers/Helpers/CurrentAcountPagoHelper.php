@@ -75,8 +75,10 @@ class CurrentAcountPagoHelper {
 
     function setModelPagosCheckeados() {
         $model = GeneralHelper::getModelName($this->model_name)::find($this->model_id);
-        $model->pagos_checkeados = 0;
-        $model->save();
+        if ($model) {
+            $model->pagos_checkeados = 0;
+            $model->save();
+        }
     }
 
     function procesarPago() {

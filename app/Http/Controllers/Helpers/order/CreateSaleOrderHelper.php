@@ -94,6 +94,7 @@ class CreateSaleOrderHelper {
             'address_id'            => $order->address_id,
             'fecha_entrega'         => $order->fecha_entrega,
             'seller_id'             => $order->seller_id,
+            'moneda_id'             => 1,
             'employee_id'           => SaleHelper::getEmployeeId(),
         ]);
 

@@ -32,12 +32,26 @@ class ArticleIndexCache
             // if ($article->provider_code) {
             //     $index['provider_codes'][$article->provider_code] = $article->id;
             // }
-            if ($article->provider_code) {
-                if (!isset($index['provider_codes'][$article->provider_code])) {
-                    $index['provider_codes'][$article->provider_code] = [];
-                }
+            // if ($article->provider_code) {
+            //     if (!isset($index['provider_codes'][$article->provider_code])) {
+            //         $index['provider_codes'][$article->provider_code] = [];
+            //     }
 
-                $index['provider_codes'][$article->provider_code][] = $article->id;
+            //     $index['provider_codes'][$article->provider_code][] = $article->id;
+            // }
+
+            if ($article->provider_code) {
+                if (env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false)) {
+                    if (!isset($index['provider_codes'][$article->provider_code])) {
+                        $index['provider_codes'][$article->provider_code] = [];
+                    }
+                    $index['provider_codes'][$article->provider_code][] = $article->id;
+                } else {
+                    // Solo guardar un artículo por código de proveedor
+                    if (!isset($index['provider_codes'][$article->provider_code])) {
+                        $index['provider_codes'][$article->provider_code] = $article->id;
+                    }
+                }
             }
 
             if ($article->name) {
@@ -143,9 +157,21 @@ class ArticleIndexCache
         if ($article->bar_code) {
             $index['bar_codes'][$article->bar_code] = $article->id;
         }
+
+        // if ($article->provider_code) {
+        //     $index['provider_codes'][$article->provider_code] = $article->id;
+        // }
         if ($article->provider_code) {
-            $index['provider_codes'][$article->provider_code] = $article->id;
+            if (env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false)) {
+                if (!isset($index['provider_codes'][$article->provider_code])) {
+                    $index['provider_codes'][$article->provider_code] = [];
+                }
+                $index['provider_codes'][$article->provider_code][] = $article->id;
+            } else {
+                $index['provider_codes'][$article->provider_code] = $article->id;
+            }
         }
+        
         if ($article->name) {
             $index['names'][strtolower(trim($article->name))] = $article->id;
         }
