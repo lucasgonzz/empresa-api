@@ -476,6 +476,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('client-reputation', 'ClientReputationController');
 
+    Route::resource('expense-category', 'ExpenseCategoryController');
+
 });
 
 

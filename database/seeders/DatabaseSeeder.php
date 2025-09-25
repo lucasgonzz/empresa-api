@@ -233,6 +233,7 @@ class DatabaseSeeder extends Seeder
             
             $this->call(MessageSeeder::class);
 
+            $this->call(ExpenseCategorySeeder::class);
             $this->call(ExpenseConceptSeeder::class);
             $this->call(ExpenseSeeder::class);
             $this->call(PendingSeeder::class);

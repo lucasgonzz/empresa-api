@@ -48,6 +48,21 @@ class ProcessRow {
 
         $this->nombres_proveedores = $nombres_proveedores;
 
+        $props_to_add = [
+            [
+                'excel_column'  => 'precio',
+                'prop_key'      => 'price',
+            ],
+            [
+                'excel_column'  => 'u_individuales',
+                'prop_key'      => 'unidades_individuales',
+            ],
+            [
+                'excel_column'  => 'u_individuales',
+                'prop_key'      => 'unidades_individuales',
+            ],
+        ];
+
         $res = $this->get_category_id($row);
 
         $category_id = $res['category_id'];
@@ -56,12 +71,12 @@ class ProcessRow {
         $provider_id = $this->get_provider_id($row);
 
         $iva_id = $this->get_iva_id($row);
-        $aplicar_iva = $this->get_aplicar_iva($row);
+        // $aplicar_iva = $this->get_aplicar_iva($row);
 
-        $brand_id = $this->get_brand_id($row);
+        // $brand_id = $this->get_brand_id($row);
 
         $cost = Self::get_number(ImportHelper::getColumnValue($row, 'costo', $this->columns));
-        $price = Self::get_number(ImportHelper::getColumnValue($row, 'precio', $this->columns));
+        // $price = Self::get_number(ImportHelper::getColumnValue($row, 'precio', $this->columns));
         $percentage_gain = Self::get_number(ImportHelper::getColumnValue($row, 'margen_de_ganancia', $this->columns), 2);
 
         // Construir array de datos del artículo usando los valores extraídos del Excel
@@ -73,18 +88,50 @@ class ProcessRow {
             'stock_min'            => ImportHelper::getColumnValue($row, 'stock_minimo', $this->columns),
             'cost'                 => $cost,
             'percentage_gain'      => $percentage_gain,
-            'price'                => $price,
-            'unidades_individuales'=> ImportHelper::getColumnValue($row, 'u_individuales', $this->columns),
-            'cost_in_dollars'      => $this->get_cost_in_dollars($row),
-            'category_id'          => $category_id,
-            'sub_category_id'      => $sub_category_id,
+            // 'price'                => $price,
+            // 'unidades_individuales'=> ImportHelper::getColumnValue($row, 'u_individuales', $this->columns),
+            // 'cost_in_dollars'      => $this->get_cost_in_dollars($row),
+            // 'category_id'          => $category_id,
+            // 'sub_category_id'      => $sub_category_id,
             'provider_id'          => $provider_id,
             'iva_id'               => $iva_id,
-            'aplicar_iva'          => $aplicar_iva,
-            'brand_id'             => $brand_id,
+            // 'aplicar_iva'          => $aplicar_iva,
+            // 'brand_id'             => $brand_id,
             'user_id'              => $this->user->id,
-
         ];
+
+
+        foreach ($props_to_add as $prop_to_add) {
+
+            $prop = ImportHelper::getColumnValue($row, $prop_to_add['excel_column'], $this->columns);
+
+            if ($prop) {
+                $data[$prop_to_add['prop_key']] = $prop;
+            }
+        }
+
+        $cost_in_dollars = ImportHelper::getColumnValue($row, 'moneda', $this->columns);
+        if ($cost_in_dollars) {
+            $data['cost_in_dollars'] = $this->get_cost_in_dollars($row);
+        }
+
+        if ($category_id) {
+            $data['category_id'] = $category_id;
+        }
+        if ($sub_category_id) {
+            $data['sub_category_id'] = $sub_category_id;
+        }
+
+        $aplicar_iva = ImportHelper::getColumnValue($row, 'aplicar_iva', $this->columns);
+        if ($aplicar_iva) {
+            $data['aplicar_iva'] = $this->get_aplicar_iva($row);
+        }
+
+        $brand_id = ImportHelper::getColumnValue($row, 'marca', $this->columns);
+        if ($brand_id) {
+            $data['brand_id'] = $this->get_brand_id($row);
+        }
+
 
         if (UserHelper::hasExtencion('autopartes', $this->user)) {
             $data_autopartes = [
@@ -133,37 +180,51 @@ class ProcessRow {
 
 
         $codigos_repetidos = filter_var(env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false), FILTER_VALIDATE_BOOLEAN);
-        if ($codigos_repetidos && !empty($data['provider_code'])) {
 
+        $articulo_para_crear = false;
+        
+        if ($codigos_repetidos && !empty($data['provider_code'])) {
 
             // Aca entra para actualizar todas las coincidencias del producto en base al codigo de proveedor, caso SAN BLAS
 
             $articulos = ArticleIndexCache::find_all_by_provider_code($data['provider_code'], $this->user->id);
-            // Log::info('find_all_by_provider_code:');
-            // Log::info($articulos);
 
-            foreach ($articulos as $articulo_ya_creado) {
+            if (count($articulos) >= 1) {
 
-                if (
-                    !is_null($articulo_ya_creado->provider_id)
-                    && !is_null($provider_id)
-                    && $this->no_actualizar_articulos_de_otro_proveedor
-                    && $articulo_ya_creado->provider_id != $provider_id
-                ) {
-                    Log::info('El articulo '.$articulo_ya_creado->name.' ya pertenecia al proveedor id '.$articulo_ya_creado->provider_id);
-                    continue;
+                foreach ($articulos as $articulo_ya_creado) {
+
+                    if (
+                        !is_null($articulo_ya_creado->provider_id)
+                        && !is_null($provider_id)
+                        && $this->no_actualizar_articulos_de_otro_proveedor
+                        && $articulo_ya_creado->provider_id != $provider_id
+                    ) {
+                        Log::info('El articulo '.$articulo_ya_creado->name.' ya pertenecia al proveedor id '.$articulo_ya_creado->provider_id);
+                        continue;
+                    }
+
+                    $cambios = $this->getModifiedFields($articulo_ya_creado, $data);
+                    $cambios['id'] = $articulo_ya_creado->id;
+                    $cambios['variants_data'] = [];
+
+                    unset($cambios['provider_id']);
+
+                    $this->articulosParaActualizar[] = $cambios;
                 }
 
-                $cambios = $this->getModifiedFields($articulo_ya_creado, $data);
-                $cambios['id'] = $articulo_ya_creado->id;
-                $cambios['variants_data'] = [];
-
-                unset($cambios['provider_id']);
-
-                $this->articulosParaActualizar[] = $cambios;
+            } else {
+                $articulo_para_crear = true;
             }
 
-        } else {
+        } 
+
+        if (
+            !$codigos_repetidos
+            || (
+                $codigos_repetidos
+                && $articulo_para_crear
+            )
+        ) {
 
             $articulo_ya_creado = ArticleIndexCache::find($data, $this->user->id);
 

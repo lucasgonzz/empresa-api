@@ -63,7 +63,7 @@ class check_stocks extends Command
             }
         }
 
-        // $this->enviar_mail($articulos_mal);
+        $this->enviar_mail($articulos_mal);
         $this->info('Termino');      
         return 0;
     }

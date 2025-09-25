@@ -18,15 +18,27 @@ class ExpenseConceptSeeder extends Seeder
         $models = [
             [
                 'name'  => 'Combustible',
+                'expense_category_id'   => null,
             ],
             [
-                'name'  => 'Impuestos',
+                'name'  => 'Impuestos provinciales',
+                'expense_category_id'   => 1,
+            ],
+            [
+                'name'  => 'Impuestos Nacionales',
+                'expense_category_id'   => 1,
             ],
             [
                 'name'  => 'Sueldos',
+                'expense_category_id'   => null,
             ],
             [
-                'name'  => 'Gastos Bancarios',
+                'name'  => 'Mantenimiento de cuenta',
+                'expense_category_id'   => 2,
+            ],
+            [
+                'name'  => 'Comisiones bancarias',
+                'expense_category_id'   => 2,
             ],
         ];
 

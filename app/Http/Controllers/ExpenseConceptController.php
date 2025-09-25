@@ -21,6 +21,7 @@ class ExpenseConceptController extends Controller
         $model = ExpenseConcept::create([
             'num'                   => $this->num('expense_concepts'),
             'name'                  => $request->name,
+            'expense_category_id'   => $request->expense_category_id,
             'user_id'               => $this->userId(),
         ]);
         $this->sendAddModelNotification('ExpenseConcept', $model->id);
@@ -33,7 +34,8 @@ class ExpenseConceptController extends Controller
 
     public function update(Request $request, $id) {
         $model = ExpenseConcept::find($id);
-        $model->name                = $request->name;
+        $model->name                    = $request->name;
+        $model->expense_category_id     = $request->expense_category_id;
         $model->save();
         $this->sendAddModelNotification('ExpenseConcept', $model->id);
         return response()->json(['model' => $this->fullModel('ExpenseConcept', $model->id)], 200);

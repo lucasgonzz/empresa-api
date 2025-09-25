@@ -26,8 +26,8 @@ class ActualizarBBDD {
         Log::info('********* ActualizarBBDD ************');
         Log::info('');
 
-        // Log::info('articulos_para_crear_CACHE:');
-        // Log::info($articulos_para_crear_CACHE);
+        Log::info('articulos_para_crear_CACHE:');
+        Log::info(count($articulos_para_crear_CACHE));
 
         // Log::info('articulos_para_actualizar_CACHE:');
         // Log::info($articulos_para_actualizar_CACHE);
@@ -58,6 +58,23 @@ class ActualizarBBDD {
             
             Log::info('Se van a crear ' . count($this->articulos_para_crear_CACHE) . ' articulos');
             // if (app()->environment('local')) { Log::info($this->articulos_para_crear_CACHE); }
+
+            Log::info('sql:');
+            Log::info(array_map(function ($art) {
+                return collect($art)->except([
+                    'price_types_data',
+                    'discounts_data_percentage',
+                    'discounts_data_amount',
+                    'surchages_data_percentage',
+                    'surchages_data_amount',
+                    'stock_global',
+                    'stock_addresses',
+                    'variants_data',
+                ])->merge([
+                    'created_at' => $this->now,
+                    'updated_at' => $this->now,
+                ])->toArray();
+            }, $this->articulos_para_crear_CACHE));
             
             Article::insert(array_map(function ($art) {
                 return collect($art)->except([

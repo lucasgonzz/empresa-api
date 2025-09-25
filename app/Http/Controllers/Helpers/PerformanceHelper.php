@@ -247,6 +247,7 @@ class PerformanceHelper
                 $this->total_iva_comprado += $afip_ticket->total_iva;
             }
         }
+
     }
 
     function set_pagos_a_proveedores() {
@@ -1006,6 +1007,11 @@ class PerformanceHelper
                 $this->expense_concepts[$expense->expense_concept_id]['total'] += $expense->amount;
 
                 $this->payment_methods_gastos[$payment_method_id]['total'] += $expense->amount;
+            }
+
+            if (!is_null($expense->importe_iva)) {
+                
+                $this->total_iva_comprado += $expense->importe_iva;
             }
 
         }

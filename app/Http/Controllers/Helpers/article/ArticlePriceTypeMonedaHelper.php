@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\article;
 
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use Illuminate\Support\Facades\Log;
 
@@ -11,22 +12,73 @@ class ArticlePriceTypeMonedaHelper {
     static function attach_price_type_monedas($article, $price_type_monedas) {
 
         if (empty($price_type_monedas)) return;
+
+        $user = UserHelper::user();
+
+        $cost = $article->cost;
+
+        $cost = ArticlePricesHelper::aplicar_iva($article, $cost, $user);
+
         // price_type_monedas: array de {price_type_id, moneda_id, pivot: {percentage, final_price, setear_precio_final, incluir_en_excel}}
+        
         foreach ($price_type_monedas as $ptm) {
+
+            $moneda_id = $ptm['moneda_id'];
+            
+            $setear_precio_final = 0;
+
+            if (
+                isset($ptm['setear_precio_final'])
+                && (
+                    $ptm['setear_precio_final'] == 1
+                    || $ptm['setear_precio_final'] == '1'
+                )
+            ) {
+
+                $setear_precio_final = 1;
+            }
+
+            $percentage = (float)$ptm['percentage'];
+            $final_price = (float)$ptm['final_price'];
+
+            // Log::info('moneda_id: '.$moneda_id);
+            // Log::info('percentage: '.$percentage);
+            // Log::info('final_price: '.$final_price);
+
+            if ($setear_precio_final) {
+
+                $percentage = ($final_price - $cost) / $cost * 100;
+
+            } else {
+
+                $final_price = $cost + ($cost * (float)$percentage / 100);
+
+            }
+
+            if (
+                $article->cost_in_dollars
+                && $setear_precio_final == 0
+            ) {
+                if ($moneda_id == 1) {
+                    $final_price *= $user->dollar;
+                }
+            }
+
             $article->price_type_monedas()->updateOrCreate(
                 [
                     'price_type_id' => $ptm['price_type_id'],
-                    'moneda_id'     => $ptm['moneda_id']
+                    'moneda_id'     => $moneda_id,
                 ],
                 [
-                    'percentage'                     => $ptm['percentage'] ?? null,
-                    'final_price'                    => $ptm['final_price'] ?? null,
-                    'setear_precio_final'            => isset($ptm['setear_precio_final']) ? $ptm['setear_precio_final'] : 0,
+                    'percentage'                     => $percentage,
+                    'final_price'                    => $final_price,
+                    'setear_precio_final'            => $setear_precio_final,
                 ]
             );
         }
     }
-    
+        
+
     public static function aplicar_precios_por_price_type_y_moneda($article, $user)
     {
         $entries = $article->price_type_monedas;

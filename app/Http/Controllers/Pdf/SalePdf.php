@@ -188,11 +188,61 @@ class SalePdf extends fpdf {
 				$this->commissions();
 			}
 			$this->totalFinal();
+
+
 		} else {
 
 			// $this->total_final();
 		}
 		// PdfHelper::comerciocityInfo($this, $this->y);
+	}
+
+	function firma_entrega_en_pdf_ventas() {
+		if (UserHelper::hasExtencion('firma_entrega_en_pdf_ventas', $this->user)) {
+
+			$this->SetFont('Arial', '', 11);
+
+			$this->x = 5;
+
+			$this->Cell(
+				200, 
+				10, 
+				'Nombre y apellido: _______________________________________________________________', 
+				$this->b, 
+				1, 
+				'L'
+			);
+
+			$this->x = 5;
+			$this->Cell(
+				200, 
+				10, 
+				'DNI: __________________________________________________________________________', 
+				$this->b, 
+				1, 
+				'L'
+			);
+
+			$this->x = 5;
+			$this->Cell(
+				200, 
+				10, 
+				'Firma: _________________________________________________________________________', 
+				$this->b, 
+				1, 
+				'L'
+			);
+
+			$this->x = 5;
+			$this->Cell(
+				200, 
+				10, 
+				'Fecha de entrega: ________________________________________________________________', 
+				$this->b, 
+				1, 
+				'L'
+			);
+		}
 	}
 
 	function print_numero_orden_de_compra() {

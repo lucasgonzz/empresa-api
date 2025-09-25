@@ -19,8 +19,10 @@ class SaleTicketPdf extends fpdf {
 		$this->user = UserHelper::getFullModel();
 		$this->sale = $sale;
 
+		$this->x_incial = 4;
+
 		$this->ancho = $this->user->sale_ticket_width;
-		$this->cell_ancho = $this->ancho - 4;
+		$this->cell_ancho = $this->ancho - 8;
 
 		parent::__construct('P', 'mm', [$this->ancho, $this->getPdfHeight()]);
 		$this->SetAutoPageBreak(false);
@@ -47,22 +49,22 @@ class SaleTicketPdf extends fpdf {
 
 		if (!is_null($afip_information)) {
 			$this->SetFont('Arial', '', 10);
-			$this->x = 2;
+			$this->x = $this->x_incial;
 			$this->Cell($this->cell_ancho, 5, 'IVA: '.$afip_information->iva_condition->name, $this->b, 1, 'L');
-			$this->x = 2;
+			$this->x = $this->x_incial;
 			$this->Cell($this->cell_ancho, 5, 'Cuit: '.$afip_information->cuit, $this->b, 1, 'L');
 
-			$this->x = 2;
+			$this->x = $this->x_incial;
 			$this->Cell($this->cell_ancho, 5, 'Razon social: '.$afip_information->razon_social, $this->b, 1, 'L');
 			
 			$this->SetFont('Arial', 'B', 10);
-			$this->x = 2;
+			$this->x = $this->x_incial;
 			$this->Cell($this->cell_ancho, 5, 'Punto de venta: '.$afip_information->punto_venta, $this->b, 1, 'L');
-			$this->x = 2;
+			$this->x = $this->x_incial;
 			$this->Cell($this->cell_ancho, 5, 'N° comprobante: '.$this->sale->afip_ticket->cbte_numero, $this->b, 1, 'L');
-			$this->x = 2;
+			$this->x = $this->x_incial;
 			$this->Cell($this->cell_ancho, 5, 'CAE: '.$this->sale->afip_ticket->cae, $this->b, 1, 'L');
-			$this->x = 2;
+			$this->x = $this->x_incial;
 			$this->Cell($this->cell_ancho, 5, 'Vto cae: '.$this->getCaeExpiredAt(), $this->b, 1, 'L');
 
 			$this->tipo_de_comprobante();
@@ -76,20 +78,20 @@ class SaleTicketPdf extends fpdf {
 		$this->SetTextColor(255,255,255);
 		$this->SetFont('Arial', '', 10);
 
-		$this->x = 2;
+		$this->x = $this->x_incial;
 		$this->Cell($this->cell_ancho, 6, 'Tipo comprobante: '.$this->sale->afip_ticket->cbte_letra, $this->b, 1, 'C', 1);
 
 		$this->SetTextColor(0,0,0);
 	}
 
 	function clientInfo() {
-		$this->x = 2;
+		$this->x = $this->x_incial;
 		$this->SetFont('Arial', '', 10);
 		if ($this->sale->client) {
 			$this->Cell($this->cell_ancho, 5, 'Cliente: '.$this->sale->client->name, $this->b, 1, 'L');
 
 			if (!is_null($this->sale->client->address)) {
-				$this->x = 2;
+				$this->x = $this->x_incial;
 				$this->Cell($this->cell_ancho, 5, 'Direccion: '.$this->sale->client->address, $this->b, 1, 'L');
 			}
 
@@ -97,7 +99,7 @@ class SaleTicketPdf extends fpdf {
 				$this->sale->afip_ticket
 				&& $this->sale->afip_ticket->iva_cliente != ''
 			) {
-				$this->x = 2;
+				$this->x = $this->x_incial;
 				$this->Cell($this->cell_ancho, 5, 'IVA '.$this->sale->afip_ticket->iva_cliente, $this->b, 1, 'L');
 			} 
 
@@ -136,21 +138,27 @@ class SaleTicketPdf extends fpdf {
 	function logo() {
         // Logo
         $image_width = $this->ancho / 2;
+
+        // $image_width -= 4;
+
         if (!is_null($this->user->image_url)) {
         	if (env('APP_ENV') == 'local') {
         		$this->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', 0, 0, $image_width, $image_width);
         	} else {
-	        	$this->Image($this->user->image_url, 0, 0, $image_width, $image_width);
+	        	$this->Image($this->user->image_url, $this->x_incial, $this->x_incial, $image_width, $image_width);
         	}
         }
 		
         // Company name
-		$this->SetFont('Arial', 'B', 14);
-		$image_width += 2;
-		$this->x = $image_width;	
+		$this->SetFont('Arial', 'B', 12);
+
+		$ancho_cell = $image_width - ($this->x_incial * 2);
+		$x_incial_logo = $image_width + $this->x_incial;
+		
+		$this->x = $x_incial_logo;	
 		$this->y = 5;
 
-		$this->MultiCell($image_width, 7, $this->user->company_name, $this->b, 'L', 0);
+		$this->MultiCell($ancho_cell, 7, $this->user->company_name, $this->b, 'L', 0);
 
 		$address = null;
 		if (!is_null($this->sale->afip_information)) {
@@ -167,20 +175,20 @@ class SaleTicketPdf extends fpdf {
 		$this->SetFont('Arial', '', 10);
 		if ($address) {
 
-			$this->x = $image_width;	
-			$this->MultiCell($image_width, 7, $address, $this->b, 'L', 0);
+			$this->x = $x_incial_logo;	
+			$this->MultiCell($ancho_cell, 7, $address, $this->b, 'L', 0);
 		}
 
-		$this->x = $image_width;	
-		$this->Cell($image_width, 7, 'Tel: '.$this->user->phone, $this->b, 1, 'L');
+		$this->x = $x_incial_logo;	
+		$this->Cell($ancho_cell, 7, 'Tel: '.$this->user->phone, $this->b, 1, 'L');
 
 
-		$this->y = $image_width;
-		$this->y += 5;
+		$this->y = $ancho_cell;
+		$this->y += 15;
 	}
 
 	function items() {
-		$this->x = 2;
+		$this->x = $this->x_incial;
 		$this->y += 2;
 
 		$ancho_description = 50 * $this->cell_ancho / 100; 
@@ -209,7 +217,7 @@ class SaleTicketPdf extends fpdf {
 			$this->y = $y_2;
 			
 			$this->comboArticles($combo);
-			$this->x = 2;
+			$this->x = $this->x_incial;
 		}
 
 		foreach ($this->sale->articles as $article) {
@@ -230,7 +238,7 @@ class SaleTicketPdf extends fpdf {
 
 			$this->Cell($ancho_price, $y_2 - $y_1, $this->totalItem($article), 'BT', 0, 'R');
 			
-			$this->x = 2;
+			$this->x = $this->x_incial;
 			$this->y = $y_2;
 		}
 
@@ -252,7 +260,7 @@ class SaleTicketPdf extends fpdf {
 
 			$this->Cell($ancho_price, $y_2 - $y_1, $this->totalItem($promo), 'BT', 0, 'R');
 			
-			$this->x = 2;
+			$this->x = $this->x_incial;
 			$this->y = $y_2;
 		}
 
@@ -274,7 +282,7 @@ class SaleTicketPdf extends fpdf {
 
 			$this->Cell($ancho_price, $y_2 - $y_1, $this->totalItem($service), 'BT', 0, 'R');
 			
-			$this->x = 2;
+			$this->x = $this->x_incial;
 			$this->y = $y_2;
 		}
 	}
@@ -300,7 +308,7 @@ class SaleTicketPdf extends fpdf {
 
 	function total_sin_des_rec() {
 		if (count($this->sale->discounts) >= 1 || count($this->sale->surchages) >= 1) {
-		    $this->x = 2;
+		    $this->x = $this->x_incial;
 		    $this->SetFont('Arial', 'B', 10);
 			$this->Cell($this->cell_ancho, 7, 'Total $'.Numbers::price($this->total_sale), 'B', 1, 'R');
 		}
@@ -309,7 +317,7 @@ class SaleTicketPdf extends fpdf {
 	function discounts() {
 	    $this->SetFont('Arial', 'B', 10);
 	    foreach ($this->sale->discounts as $discount) {
-	    	$this->x = 2;
+	    	$this->x = $this->x_incial;
 	    	$this->total_sale -= $this->total_sale * (float)$discount->pivot->percentage / 100;
 			$this->Cell($this->cell_ancho / 2, 7, 'Desc '. $discount->pivot->percentage.'%', 'B', 0, 'L');
 			$this->Cell($this->cell_ancho / 2, 7, '$'.Numbers::price($this->total_sale), 'B', 1, 'R');
@@ -320,7 +328,7 @@ class SaleTicketPdf extends fpdf {
 	    $this->SetFont('Arial', 'B', 10);
 	    foreach ($this->sale->current_acount_payment_methods as $payment_method) {
 	    	if (!is_null($payment_method->pivot->discount_amount)) {
-		    	$this->x = 2;
+		    	$this->x = $this->x_incial;
 		    	$this->total_sale -= (float)$payment_method->pivot->discount_amount;
 				$this->Cell($this->cell_ancho / 2, 7, 'Desc $'. Numbers::price($payment_method->pivot->discount_amount).' '.substr($payment_method->name, 0, 3), 'B', 0, 'L');
 				$this->Cell($this->cell_ancho / 2, 7, '$'.Numbers::price($this->total_sale), 'B', 1, 'R');
@@ -333,7 +341,7 @@ class SaleTicketPdf extends fpdf {
 	    foreach ($this->sale->surchages as $surchage) {
 	    	$this->total_sale += $this->total_sale * (float)$surchage->pivot->percentage / 100;
 	    	
-	    	$this->x = 2;
+	    	$this->x = $this->x_incial;
 			$this->Cell($this->cell_ancho / 2, 7, 'Rec '. $surchage->pivot->percentage.'%', 'B', 0, 'L');
 			$this->Cell($this->cell_ancho / 2, 7, '$'.Numbers::price($this->total_sale), 'B', 1, 'R');
 	    }
@@ -350,7 +358,7 @@ class SaleTicketPdf extends fpdf {
 		if (!is_null($this->sale->total) && (int)$this->sale->total != (int)$this->total_sale) {
 
 			$this->SetFont('Arial', 'B', 10);
-		    $this->x = 2;
+		    $this->x = $this->x_incial;
 			$this->Cell($this->cell_ancho, 10, 'Total sin descuentos: $'. Numbers::price($this->total_sale), 0, 0, 'L');
 			$this->y += 10;
 		}
@@ -359,7 +367,7 @@ class SaleTicketPdf extends fpdf {
 
 
 		$this->SetFont('Arial', 'B', 14);
-	    $this->x = 2;
+	    $this->x = $this->x_incial;
 	    $this->y += 2;
 		$this->Cell($this->cell_ancho, 10, 'Total: $'. Numbers::price($total_sale), 0, 0, 'C');
 		$this->y += 10;
@@ -377,12 +385,12 @@ class SaleTicketPdf extends fpdf {
 
 			$importes = $afip_helper->getImportes();
 
-		    $this->x = 2;
+		    $this->x = $this->x_incial;
 			$this->Cell(60, 5, 'Imp Neto Gravado: $'.Numbers::price($importes['gravado']), 0, 1, 'L');
 
 			foreach ($importes['ivas'] as $iva => $importe) {
 				if ($importe['Importe'] > 0) {
-		    		$this->x = 2;
+		    		$this->x = $this->x_incial;
 					$this->Cell(40, 5, 'IVA '.$iva.'%: $'.Numbers::price($importe['Importe']), 0, 1, 'L');
 				}
 			}
@@ -400,7 +408,7 @@ class SaleTicketPdf extends fpdf {
 	function ticket_description() {
 
 		if (!is_null($this->user->sale_ticket_description)) {
-		    $this->x = 2;
+		    $this->x = $this->x_incial;
 		    $this->y += 2;
 		    $this->SetFont('Arial', '', 10);
 
@@ -410,7 +418,7 @@ class SaleTicketPdf extends fpdf {
 
 	function num() {
 		if (is_null($this->sale->afip_ticket)) {
-		    $this->x = 2;
+		    $this->x = $this->x_incial;
 		    $this->SetFont('Arial', '', 9);
 			$this->Cell($this->cell_ancho, 5, 'Venta N° '.$this->sale->num, $this->b, 0, 'L');
 			$this->y += 5;
@@ -419,7 +427,7 @@ class SaleTicketPdf extends fpdf {
 
 	function date() {
 		$date = date_format($this->sale->created_at, 'd/m/Y H:i');
-	    $this->x = 2;
+	    $this->x = $this->x_incial;
 	    $this->SetFont('Arial', '', 9);
 		$this->Cell($this->cell_ancho, 5, $date, $this->b, 0, 'L');
 		$this->y += 5;
@@ -428,7 +436,7 @@ class SaleTicketPdf extends fpdf {
 	function address() {
 		if (!is_null($this->sale->address)) {
 			$address = $this->sale->address->street.' '.$this->sale->address->street_number;
-		    $this->x = 2;
+		    $this->x = $this->x_incial;
 		    $this->SetFont('Arial', '', 9);
 			$this->Cell($this->cell_ancho, 5, $address, $this->b, 1, 'L');
 		}

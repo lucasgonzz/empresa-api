@@ -33,6 +33,7 @@ class ExpenseController extends Controller
             'expense_concept_id'                    => $request->expense_concept_id,
             'amount'                                => $request->amount,
             'current_acount_payment_method_id'      => $request->current_acount_payment_method_id,
+            'importe_iva'                           => $request->importe_iva,
             'observations'                          => $request->observations,
             'caja_id'                               => $request->caja_id,
             'created_at'                            => $request->created_at,
@@ -53,6 +54,7 @@ class ExpenseController extends Controller
         $model->expense_concept_id                    = $request->expense_concept_id;
         $model->amount                                = $request->amount;
         $model->current_acount_payment_method_id      = $request->current_acount_payment_method_id;
+        $model->importe_iva                           = $request->importe_iva;
         $model->observations                          = $request->observations;
         $model->caja_id                               = $request->caja_id;
         $model->created_at                            = $request->created_at;

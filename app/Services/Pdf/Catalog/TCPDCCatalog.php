@@ -124,23 +124,23 @@ class TCPDCCatalog extends TCPDF
             $this->SetFont('helvetica', 'B', 14);
             $this->SetXY($x + 50, $y + 8);
 
-            $this->MultiCell(0, 8, $article->name, 0, 1, 'L');
+            $this->MultiCell(0, 8, $article->name, 0, 'L', false);
             
-            $this->MultiCell( 
-                200, 
-                5, 
-                $this->sale->observations, 
-                $this->b, 
-                'L', 
-                false
-            );
 
             $this->SetFont('helvetica', '', 12);
             $py = $this->GetY();
-            foreach ($article->price_types as $price_type) {
+
+            if (count($article->price_types) >= 1) {
+
+                foreach ($article->price_types as $price_type) {
+                    $this->SetX($x + 50);
+                    $price = Numbers::price($price_type->pivot->final_price);
+                    $this->Cell(0, 6, $price_type->name.': $'.$price, 0, 1, 'L');
+                }
+            } else {
+
                 $this->SetX($x + 50);
-                $price = Numbers::price($price_type->pivot->final_price);
-                $this->Cell(0, 6, $price_type->name.': $'.$price, 0, 1, 'L');
+                $this->Cell(0, 6, '$'.Numbers::price($article->final_price), 0, 1, 'L');
             }
 
             $product_index++;

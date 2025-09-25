@@ -162,7 +162,11 @@ class HelperController extends Controller
 
                         echo $article->name.' venta id '.$sale->id.' <br>';
                         echo 'Se vendieron '.$article->pivot->amount.' y se registraron '.$stock_movement->amount.' <br>';
+                        echo '<br>';
                     }
+                } else {
+                    echo 'No hay stock movement';
+                    echo '<br>';
                 }
             }
         }

@@ -150,30 +150,25 @@ class ArticlePricesHelper {
 
             /*
                 Si esta seteado el precio final, calculo el procentaje que deberia de tener para 
-                llegar a ese precio final, al costo ya con el IVA.
+                llegar a ese precio final
 
                 Sino, calculo el precio final en base al porcentaje
             */
 
-            $price = null;
-            
-            $costo_con_iva = Self::aplicar_iva($article, $cost, $user);
 
             if (!is_null($final_price)) {
 
-                // $costo_con_iva = Self::aplicar_iva($article, $cost, $user);
 
-                $percentage = ($final_price - $costo_con_iva) / $costo_con_iva * 100;
+                $percentage = ($final_price - $cost) / $cost * 100;
 
             } else {
 
-                $price = $cost + ($cost * (float)$percentage / 100);
+                $final_price = $cost + ($cost * (float)$percentage / 100);
 
-                $final_price = Self::aplicar_iva($article, $price, $user);
             }
 
 
-            $res = Self::aplicar_price_type_surchages($price_type, $final_price, $costo_con_iva);
+            $res = Self::aplicar_price_type_surchages($price_type, $final_price, $cost);
 
 
 
@@ -181,7 +176,7 @@ class ArticlePricesHelper {
 
             $article->price_types()->updateExistingPivot($price_type->id, [
                 'percentage'            => $percentage,
-                'price'                 => $price,
+                // 'price'                 => $price,
                 'final_price'           => $final_price,
                 'previus_final_price'   => $previus_final_price,
                 'precio_luego_de_recargos'  => $res['precio_luego_de_recargos'],

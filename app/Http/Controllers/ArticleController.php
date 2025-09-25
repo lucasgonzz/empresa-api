@@ -481,10 +481,17 @@ class ArticleController extends Controller
     }
 
     function pdf($ids) {
-        $user = $this->user();            
+        $user = $this->user();     
+
+        if (env('APP_ENV') == 'production') {
+            $image = $user->image_url;
+        } else {
+            $image = 'https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png';
+        }
+
         $pdf = new TCPDCCatalog();
         $pdf->generate(
-            $user->image_url,
+            $image,
             $user->company_name,
             [
                 'Telefono' => $user->phone,

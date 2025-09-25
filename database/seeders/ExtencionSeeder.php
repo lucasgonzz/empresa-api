@@ -347,6 +347,11 @@ class ExtencionSeeder extends Seeder
                 'name' => 'pagos_provisorios',
                 'slug' => 'pagos_provisorios',
             ],
+            [
+                // 64
+                'name' => 'firma_entrega_en_pdf_ventas',
+                'slug' => 'firma_entrega_en_pdf_ventas',
+            ],
 
 
         ];
