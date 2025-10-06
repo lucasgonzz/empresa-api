@@ -212,23 +212,28 @@ class BudgetPdf extends fpdf {
 
 		if (
 			$this->with_images
-			&& isset($article->images) 
-			&& count($article->images) >= 1
 		) {
 
-            $url = $article->images[0]['hosting_url'];
+			if (
+				isset($article->images) 
+				&& count($article->images) >= 1
+			) {
 
-            if (env('APP_ENV') == 'local') {
+	            $url = $article->images[0]['hosting_url'];
 
-                $url = 'https://api-colman-prueba.comerciocity.com/public/storage/171699179550596.webp';
-            }
+	            if (env('APP_ENV') == 'local') {
+
+	                $url = 'https://api-colman-prueba.comerciocity.com/public/storage/171699179550596.webp';
+	            }
 
 
-            $img_url = GeneralHelper::getJpgImage($url);
+	            $img_url = GeneralHelper::getJpgImage($url);
 
-	        $this->Image($img_url, 5, $this->y+1, 40, 40);
+		        $this->Image($img_url, 5, $this->y+1, 40, 40);
 
-	        $image_height = 35;
+		        $image_height = 35;
+			}
+
 	    	
 	    	$this->x += 40;
 		}

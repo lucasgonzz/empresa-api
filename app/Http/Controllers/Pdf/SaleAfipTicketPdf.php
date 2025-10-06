@@ -31,8 +31,8 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->client = $this->sale->client;
 		$this->borders = 'B';
         $this->printing_duplicate = false;
-        $this->user = UserHelper::getFullModel();
-        $this->afip_helper = new AfipHelper($this->sale);
+        $this->user = $this->sale->user;
+        $this->afip_helper = new AfipHelper($this->sale, null, null, $this->user);
 
 		$widths = [];
 		$widths['codigo'] = 23;
@@ -170,6 +170,8 @@ class SaleAfipTicketPdf extends fpdf {
 
 	function printPieDePagina() {
         // $this->printOtrosTibutos();
+        $this->print_observations();
+
         $this->printDiscounts();
         $this->printPaymentMethodDiscounts();
         $this->printImportes();
@@ -177,6 +179,37 @@ class SaleAfipTicketPdf extends fpdf {
         // $this->printPhone();
         $this->printQR();
         $this->printAfipData();
+	}
+
+	function print_observations() {
+		
+		if (!is_null($this->sale->observations)) {
+			$this->SetFont('Arial', '', 14);
+		    $this->y += 5;
+		    $this->x = 5;
+
+			$this->Cell(
+				200, 
+				7, 
+				'Observaciones', 
+				0, 
+				1, 
+				'L'
+			);
+
+		    $this->y += 2;
+			$this->SetFont('Arial', '', 10);
+		    $this->x = 5;
+		    $this->MultiCell( 
+				200, 
+				5, 
+				$this->sale->observations, 
+		    	0, 
+		    	'L', 
+		    	false
+		    );
+		    $this->y += 2;
+		}
 	}
 
 	function printPaymentMethodDiscounts() {
@@ -646,8 +679,8 @@ class SaleAfipTicketPdf extends fpdf {
     	$codigo = $article->bar_code;
 
 		if (
-			UserHelper::hasExtencion('no_usar_codigos_de_barra')
-			|| UserHelper::hasExtencion('codigo_proveedor_en_vender')
+			UserHelper::hasExtencion('no_usar_codigos_de_barra', $this->user)
+			|| UserHelper::hasExtencion('codigo_proveedor_en_vender', $this->user)
 		) {
 			$codigo = $article->provider_code;
 		}

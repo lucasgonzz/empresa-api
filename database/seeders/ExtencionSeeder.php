@@ -22,7 +22,7 @@ class ExtencionSeeder extends Seeder
             ],
             [
                 // 2
-                'name' => 'Ordenes de Produccion',
+                'name' => 'Produccion',
                 'slug' => 'production',
             ],
             [
@@ -351,6 +351,16 @@ class ExtencionSeeder extends Seeder
                 // 64
                 'name' => 'firma_entrega_en_pdf_ventas',
                 'slug' => 'firma_entrega_en_pdf_ventas',
+            ],
+            [
+                // 65
+                'name' => 'Usa Mercado Libre',
+                'slug' => 'usa_mercado_libre',
+            ],
+            [
+                // 66
+                'name' => 'Buscar por categoria en vender',
+                'slug' => 'buscar_por_categoria_en_vender',
             ],
 
 

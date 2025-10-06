@@ -20,4 +20,9 @@ class CreditAccount extends Model
     function moneda() {
         return $this->belongsTo(Moneda::class);
     }
+    
+    public function model()
+    {
+        return $this->morphTo(__FUNCTION__, 'model_name', 'model_id');
+    }
 }

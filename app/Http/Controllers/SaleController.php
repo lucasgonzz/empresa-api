@@ -19,6 +19,7 @@ use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Helpers\sale\SaleNotaCreditoAfipHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
+use App\Http\Controllers\Pdf\EtiquetaEnvioPdf;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
 use App\Http\Controllers\Pdf\SaleDeliveredArticlesPdf;
 use App\Http\Controllers\Pdf\SalePdf;
@@ -153,6 +154,7 @@ class SaleController extends Controller
             'fecha_entrega'                     => $request->fecha_entrega,
             'moneda_id'                         => $request->moneda_id,
             'valor_dolar'                       => $request->valor_dolar,
+            'incoterms'                         => $request->incoterms,
             'descuento'                         => round($request->descuento, 2, PHP_ROUND_HALF_UP),
             'user_id'                           => $this->userId(),
         ]);
@@ -511,5 +513,10 @@ class SaleController extends Controller
 
         return Excel::download(new SalesFullExport($models), 'ventas_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
 
+    }
+
+    function etiqueta_envio($sale_id) {
+        $sale = Sale::find($sale_id);
+        new EtiquetaEnvioPdf($sale);
     }
 }

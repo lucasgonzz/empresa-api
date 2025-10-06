@@ -60,11 +60,16 @@ class MovimientoCajaController extends Controller
 
         // $apertura_caja_id = $model->apertura_caja_id;
         $caja_id = $model->caja_id;
+        $apertura_caja_id = $model->apertura_caja_id;
 
         ImageController::deleteModelImages($model);
         $model->delete();
 
         MovimientoCajaHelper::recalcular_saldos(null, $caja_id);
+        MovimientoCajaHelper::set_apertura_caja_ingresos_egresos($apertura_caja_id);
+
+
+       // set_apertura_caja_ingresos_egresos()
 
         Log::info('Se elimnio momiento de caja');
         

@@ -25,31 +25,40 @@ class ProcessSetFinalPrices implements ShouldQueue
      * @return void
      */
 
-    public $user, $from_model_id, $model_id;
+    public $user_id, $from_model_id, $model_id, $from_dolar;
 
-    public function __construct($user, $from_model_id = null, $model_id = null)
+    public function __construct($user_id, $from_model_id = null, $model_id = null, $from_dolar = false)
     {
 
-        $this->user = $user;
+        $this->user_id = $user_id;
         $this->from_model_id = $from_model_id;
         $this->model_id = $model_id;
+        $this->from_dolar = $from_dolar;
         
     }
 
 
     public function handle()
     {
+        Log::info('ProcessSetFinalPrices');
+
         try {
 
             if (!is_null($this->from_model_id)) {
                 $articles_query = Article::where($this->from_model_id, $this->model_id)->select('id');
+                Log::info('Obteniendo articulos from_model_id');
+            } else if (!is_null($this->from_dolar)) {
+                $articles_query = Article::where('user_id', $this->user_id)
+                                        ->where('cost_in_dollars', 1)
+                                        ->select('id');
+                Log::info('Obteniendo articulos en con costos en dolares');
             } else {
-                $articles_query = Article::where('user_id', $this->user->id)->select('id');
+                $articles_query = Article::where('user_id', $this->user_id)->select('id');
             }
 
             $articles_query->chunk(2000, function ($articles_chunk) {
                 $ids = $articles_chunk->pluck('id')->toArray();
-                dispatch(new ProcessChunkSetFinalPrices($ids, $this->user));
+                dispatch(new ProcessChunkSetFinalPrices($ids, $this->user_id));
             });
 
             $this->notificacion();
@@ -96,7 +105,7 @@ class ProcessSetFinalPrices implements ShouldQueue
 
         $info_to_show = [];
 
-        $user = User::find($this->user->id);
+        $user = User::find($this->user_id);
 
         $user->notify(new GlobalNotification([
             'message_text'              => 'Precios actualizados',
@@ -120,7 +129,7 @@ class ProcessSetFinalPrices implements ShouldQueue
 
         $info_to_show = [];
 
-        $user = User::find($this->user->id);
+        $user = User::find($this->user_id);
 
         $user->notify(new GlobalNotification([
             'message_text'              => 'Error al actualizar Precios',

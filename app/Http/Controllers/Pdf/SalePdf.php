@@ -604,26 +604,28 @@ class SalePdf extends fpdf {
 	function discounts() {
 		if (count($this->sale->discounts) >= 1) {
 		    $this->SetFont('Arial', 'B', 11);
-		    // $total_articles = $this->total_articles;
-		    // $total_services = $this->total_services;
-		    // $total_combos = $this->total_combos;
+
+		    $total_descuento = 0;
+
 		    foreach ($this->sale->discounts as $discount) {
 		    	$this->x = $this->start_x;
 		    	$text = '-'.$discount->pivot->percentage.'% '.$discount->name;
 		    	
-		    	$this->total_articles -= $this->total_articles * floatval($discount->pivot->percentage) / 100;
+		    	$total_descuento += $this->total_articles * floatval($discount->pivot->percentage) / 100;
 
-		    	$this->total_combos -= $this->total_combos * floatval($discount->pivot->percentage) / 100;
+		    	$total_descuento += $this->total_combos * floatval($discount->pivot->percentage) / 100;
 
-		    	$this->total_promocion_vinotecas -= $this->total_promocion_vinotecas * floatval($discount->pivot->percentage) / 100;
+		    	$total_descuento += $this->total_promocion_vinotecas * floatval($discount->pivot->percentage) / 100;
 
 		    	if ($this->sale->discounts_in_services) {
-		    		$this->total_services -= $this->total_services * floatval($discount->pivot->percentage) / 100;
-		    	
+		    		
+		    		$total_descuento += $this->total_services * floatval($discount->pivot->percentage) / 100;
 		    	}
-		    	$total_with_discounts = $this->total_articles + $this->total_services + $this->total_combos + $this->total_promocion_vinotecas;
 
-		    	$text .= ' = $'.Numbers::price($total_with_discounts);
+		    	// $total_with_discounts = $this->total_articles + $this->total_services + $this->total_combos + $this->total_promocion_vinotecas;
+
+		    	$text .= ' = $'.Numbers::price($total_descuento);
+
 				$this->Cell(
 					50, 
 					5, 

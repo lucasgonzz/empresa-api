@@ -54,25 +54,41 @@ class VenderController extends Controller
     function search_nombre(Request $request) {
 
         $keywords = explode(' ', trim($request->query_value));
+
+        $category_id = $request->category_id;
+
         $per_page = 50;
         $current_page = LengthAwarePaginator::resolveCurrentPage();
 
         $results = collect();
         // 1. Buscar todos los artículos cuyo name o provider_code coincidan con alguna palabra
         $articles = Article::where('status', 'active')
-            ->where(function ($query_builder) use ($keywords) {
-                if (count($keywords) === 1) {
-                    $keyword = $keywords[0];
-                    $query_builder->where('name', 'LIKE', "%$keyword%")
-                                  ->orWhere('provider_code', 'LIKE', "%$keyword%");
-                } else {
-                    foreach ($keywords as $keyword) {
-                        $query_builder->where('name', 'LIKE', "%$keyword%");
-                    }
-                }
-            })
-            ->with(['article_variants', 'images', 'price_types', 'addresses', 'price_type_monedas'])
-            ->get();
+                        ->where(function ($query_builder) use ($keywords) {
+                            if (count($keywords) === 1) {
+                                $keyword = $keywords[0];
+                                $query_builder->where(function ($q) use ($keyword) {
+                                    Log::info($keyword);
+                                    $q->where('name', 'LIKE', "%$keyword%")
+                                      ->orWhere('provider_code', 'LIKE', "%$keyword%");
+                                      // ->orWhere('descripcion', 'LIKE', "%$keyword%");
+                                });
+                            } else {
+                                foreach ($keywords as $keyword) {
+                                    $query_builder->where(function ($q) use ($keyword) {
+                                        $q->where('name', 'LIKE', "%$keyword%");
+                                          // ->orWhere('descripcion', 'LIKE', "%$keyword%");
+                                    });
+                                }
+                            }
+                        })
+                    ->with(['article_variants', 'images', 'price_types', 'addresses', 'price_type_monedas']);
+
+        if ($category_id) {
+            Log::info('category_id');
+            $articles->where('category_id', $category_id);
+        }
+
+        $articles = $articles->get();
 
         // Log::info('articles:');
         // Log::info($articles);

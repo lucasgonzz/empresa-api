@@ -478,6 +478,16 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('expense-category', 'ExpenseCategoryController');
 
+    Route::resource('meli-category', 'MeliCategoryController');
+    Route::get('meli-category-predictor/{article_name}', 'MeliCategoryController@category_predictor');
+
+
+    Route::resource('article-meli-attribute', 'ArticleMeliAttributeController');
+
+    Route::get('meli-listing-type', 'MeliListingTypeController@index');
+    Route::get('meli-buying-mode', 'MeliBuyingModeController@index');
+    Route::get('meli-item-condition', 'MeliItemConditionController@index');
+
 });
 
 

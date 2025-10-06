@@ -72,7 +72,9 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             // Si no es variante, rellenar con valores vacíos en esas columnas
             $map = ExportHelper::mapAddresses($map, $article);
 
-            $map = ExportHelper::map_property_types_vacios($map);
+            if (UserHelper::hasExtencion('article_variants')) {
+                $map = ExportHelper::map_property_types_vacios($map);
+            }
         }
 
 

@@ -120,6 +120,32 @@ class UserSeeder extends Seeder
                 // 'online',
             ];
 
+        } else if ($this->for_user == 'leudinox') {
+
+            $models[0]['name'] = 'Ariel';
+            $models[0]['company_name'] = 'Leudinox';
+            $models[0]['iva_included'] = 0;
+            $models[0]['iva_condition_id'] = 1;
+            $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
+            
+            $models[0]['default_version'] = null;
+
+            $models[0]['extencions'] = [
+
+                'comerciocity_interno',
+                'budgets',
+                'ask_save_current_acount',
+                'imagenes',
+                'cajas',
+                'ventas_con_fecha_de_entrega',
+                'road_map_detalle_por_articulos_y_no_por_venta',
+                'online',
+                'usa_mercado_libre',
+
+                'articulo_margen_de_ganancia_segun_lista_de_precios',
+                'cambiar_price_type_en_vender',
+            ];
+
         } else if ($this->for_user == 'san_blas') {
 
             $models[0]['name'] = 'Fabian';

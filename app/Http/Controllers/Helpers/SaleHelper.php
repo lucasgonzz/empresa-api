@@ -652,10 +652,17 @@ class SaleHelper extends Controller {
         
         $delivered_amount = Self::getDeliveredAmount($article);
 
+        $amount = Self::getAmount($sale, $article);
+        $cost = Self::getCost($sale, $article);
+        $price = $article['price_vender'];
+
+        $ganancia = (float)$price - (float)$cost;
+
         $sale->articles()->attach($article['id'], [
-            'amount'                => Self::getAmount($sale, $article),
-            'cost'                  => Self::getCost($sale, $article),
-            'price'                 => $article['price_vender'],
+            'amount'                => $amount,
+            'ganancia'              => $ganancia * $amount,
+            'cost'                  => $cost,
+            'price'                 => $price,
             'returned_amount'       => Self::getReturnedAmount($article),
             'delivered_amount'      => $delivered_amount,
             'discount'              => Self::getDiscount($article),

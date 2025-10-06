@@ -20,7 +20,7 @@ class ExpenseCajaHelper {
                 'concepto_movimiento_caja_id'   => 2,
                 'ingreso'                       => null,
                 'egreso'                        => $expense->amount,
-                'notas'                         => $expense->expense_concept->name,
+                'notas'                         => !is_null($expense->expense_concept) ? $expense->expense_concept->name : null,
                 'caja_id'                       => $expense->caja_id,
                 'expense_id'					=> $expense->id,
             ];

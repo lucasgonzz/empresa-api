@@ -163,6 +163,13 @@ class DatabaseSeeder extends Seeder
                 $this->call(ArticleSeeder::class);
                 // $this->call(ArticleDolarSeeder::class);
 
+            } else if ($for_user == 'leudinox') {
+
+                $this->call(PriceTypeSeeder::class);
+                $this->call(MercadoLibreTokenSeeder::class);
+                $this->call(AddressSeeder::class);
+                $this->call(MeliArticleSeeder::class);
+
             } else {
 
                 if (
@@ -246,6 +253,9 @@ class DatabaseSeeder extends Seeder
 
     function common_seeders() {
         $this->call(MonedaSeeder::class);
+        $this->call(MeliListingTypeSeeder::class);
+        $this->call(MeliBuyingModeSeeder::class);
+        $this->call(MeliItemConditionSeeder::class);
         $this->call(ProvinciaSeeder::class);
         $this->call(PaisExportacionSeeder::class);
         $this->call(CheckStatusSeeder::class);

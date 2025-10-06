@@ -1,7 +1,10 @@
 <?php
 
-use Illuminate\Support\Facades\Route;
+use App\Models\Article;
+use App\Services\MercadoLibre\CategoryService;
+use App\Services\MercadoLibre\SetearCategoryNameService;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Route;
 
 // Paso 1: Redirige al usuario a Mercado Libre para autorizar la app
 Route::get('/mercadolibre/auth', function () {
@@ -17,6 +20,9 @@ Route::get('/mercadolibre/auth', function () {
 // Paso 2: Callback de Mercado Libre, recibe el code y solicita el access token
 Route::get('/mercadolibre/callback', function (\Illuminate\Http\Request $request) {
     $code = $request->query('code');
+
+    echo 'Vinculacion exitosa. Codigo de autorizacion: '.$code;
+    return;
 
     if (!$code) {
         return response()->json(['error' => 'No se recibió el parámetro code'], 400);
@@ -47,6 +53,30 @@ Route::get('/mercadolibre/callback', function (\Illuminate\Http\Request $request
         'user_id' => $data['user_id'],
     ]);
 });
+
+// Para recibir notificaciones desde MercadoLibre
+Route::get('/mercadolibre/webhook', function (\Illuminate\Http\Request $request) {
+   
+});
+
+Route::get('/mercadolibre/category_for_article/{article_id}', function ($article_id) {
+   
+    $category_service = new CategoryService(env('USER_ID'));
+
+    $article = Article::find($article_id);
+
+    $meli_category_id = $category_service->resolve_meli_category_for_article($article);
+});
+
+
+Route::get('/mercadolibre/setear-categorias/{article_id}', function ($article_id) {
+   
+    $category_service = new SetearCategoryNameService(env('USER_ID'));
+
+    $category_service->setear_category_name($article_id);
+});
+
+
 
 
 Route::post('login', 'CommonLaravel\AuthController@login');
@@ -208,6 +238,7 @@ Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
 Route::get('sale/ticket-raw/{id}', 'SaleController@ticketRaw');
 Route::get('sale/afip-ticket-pdf/{id}', 'SaleController@afipTicketPdf');
 Route::get('sale/delivered-articles-pdf/{id}', 'SaleController@deliveredArticlesPdf');
+Route::get('sale/etiqueta-envio/pdf/{sale_id}', 'SaleController@etiqueta_envio');
 
 
 Route::get('client/pdf', 'ClientController@pdf');
@@ -220,7 +251,7 @@ Route::get('deposit-movement/pdf/{id}', 'DepositMovementController@pdf');
 
 
 // Article
-Route::get('article/pdf/{ids}', 'ArticleController@pdf');
+Route::get('article/pdf/{ids}/{moneda_id?}', 'ArticleController@pdf');
 Route::get('article/tickets-pdf/{ids}', 'ArticleController@ticketsPdf');
 Route::get('article/bar-codes-pdf/{ids}', 'ArticleController@barCodePdf');
 Route::get('article/bar-codes-etiquetas-pdf/{ids}', 'ArticleController@barCodeEtiquetasPdf');

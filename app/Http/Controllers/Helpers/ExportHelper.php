@@ -23,7 +23,7 @@ class ExportHelper {
 
 	static function getAddresses() {
 		return Address::where('user_id', UserHelper::userId())
-						->orderBy('created_at', 'DESC')
+						->orderBy('created_at', 'ASC')
 						->get();
 	}
 
@@ -295,8 +295,8 @@ class ExportHelper {
 					$headings[] = $property_type->name;
 				}
 			}
-			return $headings;
 		}
+		return $headings;
 	}
 
 	static function setPriceTypesHeadings($headings) {

@@ -160,6 +160,13 @@ class ArticleController extends Controller
         $model->omitir_en_lista_pdf                = $request->omitir_en_lista_pdf;
 
 
+        // Mercado Libre
+        $model->mercado_libre                       = $request->mercado_libre;
+        $model->meli_listing_type_id                = $request->meli_listing_type_id;
+        $model->meli_buying_mode_id                 = $request->meli_buying_mode_id;
+        $model->meli_item_condition_id                 = $request->meli_item_condition_id;
+
+
         $model->user_id                           = $this->userId();
         if (isset($request->status)) {
             $model->status = $request->status;
@@ -247,6 +254,12 @@ class ArticleController extends Controller
         $model->unidad_medida_id                    = $request->unidad_medida_id;
         $model->omitir_en_lista_pdf                 = $request->omitir_en_lista_pdf;
 
+
+        $model->mercado_libre                       = $request->mercado_libre;
+        $model->meli_listing_type_id                = $request->meli_listing_type_id;
+        $model->meli_buying_mode_id                 = $request->meli_buying_mode_id;
+        $model->meli_item_condition_id                 = $request->meli_item_condition_id;
+
         $model->needs_sync_with_tn                  = true;
 
 
@@ -302,9 +315,11 @@ class ArticleController extends Controller
     }
 
     function check_mercado_libre($article) {
-
-        if (env('USA_MERCADO_LIBRE', false)) {
-            dispatch(new SyncProductToMercadoLibre($article));
+        if (
+            env('USA_MERCADO_LIBRE', false)
+            && $article->mercado_libre
+        ) {
+            dispatch(new SyncProductToMercadoLibre($article->id));
         }
     }
 
@@ -480,7 +495,7 @@ class ArticleController extends Controller
         new ArticleTicketPdf($ids);
     }
 
-    function pdf($ids) {
+    function pdf($ids, $moneda_id = null) {
         $user = $this->user();     
 
         if (env('APP_ENV') == 'production') {
@@ -499,8 +514,8 @@ class ArticleController extends Controller
                 'Email' => $user->email,
             ],
             $ids,
+            $moneda_id,
         );
-        // new ArticlePdf($ids);
     }
 
     function listPdf($ids) {

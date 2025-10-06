@@ -30,10 +30,79 @@ class PriceTypeSeeder extends Seeder
             $this->mza_group();
         } else if ($for_user == 'bad_girls') {
             $this->bad_girls();
+        } else if ($for_user == 'leudinox') {
+            $this->leudinox();
         } else {
             $this->golo_norte();
         }
 
+    }
+
+
+    function leudinox() {
+
+        $models = [
+            [
+                'num'           => 1,
+                'name'          => 'Mercado Libre',
+                'position'      => 1,
+                'percentage'    => 15,
+                'setear_precio_final'   => 1,
+                'se_usa_en_ml' => 1,
+                'price_type_surchages'  => [
+                    [
+                        'name'  => 'Comision Meli',
+                        'percentage'  => 0.2,
+                        'position'    => 2,
+                    ],
+                    [
+                        'name'  => 'Costo impositivo',
+                        'percentage'  => 0.3,
+                        'position'    => 3,
+                    ],
+                ],
+            ],
+            [
+                'num'           => 3,
+                'name'          => 'Venta comun',
+                'position'      => 3,
+                'percentage'    => 70,
+                'se_usa_en_ml' => 0,
+                'setear_precio_final'   => 0,
+            ],
+            
+        ];
+
+
+        foreach ($models as $model) {
+
+            $price_type = PriceType::create([
+                'num'                           => $model['num'],
+                'name'                          => $model['name'],
+                'position'                      => $model['position'],
+                'percentage'                    => $model['percentage'],
+                'setear_precio_final'           => $model['setear_precio_final'],
+                'se_usa_en_ml'         => $model['se_usa_en_ml'],
+                'user_id'                       => env('USER_ID'),
+            ]);
+
+
+
+            if (isset($model['price_type_surchages'])) {
+
+                foreach ($model['price_type_surchages'] as $price_type_surchage) {
+
+                    PriceTypeSurchage::create([
+                        'name'                   => $price_type_surchage['name'],
+                        'percentage'            => isset($price_type_surchage['percentage']) ? $price_type_surchage['percentage'] : null,
+                        'amount'                => isset($price_type_surchage['amount']) ? $price_type_surchage['amount'] : null,
+                        'position'              => $price_type_surchage['position'],
+                        'price_type_id'         => $price_type->id,
+                    ]);
+
+                }
+            }
+        }
     }
 
     function mza_group() {

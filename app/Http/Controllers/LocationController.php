@@ -26,6 +26,8 @@ class LocationController extends Controller
         $model = Location::create([
             'num'                   => $this->num('locations'),
             'name'                  => $request->name,
+            'provincia_id'                  => $request->provincia_id,
+            'codigo_postal'                  => $request->codigo_postal,
             'user_id'               => $this->userId(),
         ]);
         $this->sendAddModelNotification('Location', $model->id);
@@ -39,6 +41,8 @@ class LocationController extends Controller
     public function update(Request $request, $id) {
         $model = Location::find($id);
         $model->name                = $request->name;
+        $model->provincia_id                = $request->provincia_id;
+        $model->codigo_postal                = $request->codigo_postal;
         $model->save();
         $this->sendAddModelNotification('Location', $model->id);
         return response()->json(['model' => $this->fullModel('Location', $model->id)], 200);

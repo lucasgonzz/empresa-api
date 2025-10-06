@@ -88,6 +88,7 @@ class UserController extends Controller
         $model->text_omitir_cc                  = $request->text_omitir_cc;
         $model->percentage_gain                  = $request->percentage_gain;
         $model->scroll_en_tablas                  = $request->scroll_en_tablas;
+        $model->cotizar_precios_en_dolares        = $request->cotizar_precios_en_dolares;
 
         $model->save();
 
@@ -136,9 +137,13 @@ class UserController extends Controller
             Log::info($model->percentage_gain.' | '.$current_percentage_gain);
             Log::info('Hubo cambios en propiedades de user');
 
-            $user = User::find(UserHelper::userId());
-            
-            ProcessSetFinalPrices::dispatch($user);
+            $from_dolar = false;
+
+            if ($model->dollar != $current_dolar) {
+                $from_dolar = true;
+            }
+
+            ProcessSetFinalPrices::dispatch(UserHelper::userId(), null, null, $from_dolar);
         }
     }
 

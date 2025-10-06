@@ -92,9 +92,15 @@ class InventoryPerformanceHelper {
 
 				'user_id'							=> UserHelper::userId(),
 			]);
+			
+			// Agrupar artículos por provider_id
+			$grouped_articles = collect($this->articles_stock_minimo)->groupBy('provider_id');
 
-			foreach ($this->articles_stock_minimo as $article) {
-				$this->inventory_performance->articles_stock_minimo()->attach($article->id);
+			// Iterar por cada grupo y adjuntar artículos
+			foreach ($grouped_articles as $provider_id => $articles_group) {
+				foreach ($articles_group as $article) {
+					$this->inventory_performance->articles_stock_minimo()->attach($article->id);
+				}
 			}
 		}
 

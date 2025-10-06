@@ -37,8 +37,8 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 		$this->size_precio = 40;
 
 		// Codigo de barras
-		$this->code_width = 42;
-		$this->code_height = 7; // Alto del la imagen del codigo
+		$this->code_width = 75;
+		$this->code_height = 12; // Alto del la imagen del codigo
 
 
 		$this->print();
@@ -69,21 +69,26 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 		
 		$this->y += 1;
 		
-		$this->nombre($article);
 
 		if ($article->bar_code) {
 			$this->y += 3;
 			$this->print_bar_code($article->bar_code);
 		}
+
+		$this->nombre_negocio();
+		
+		$this->nombre($article);
 		
 		// $this->precio($article);
 		
-		// $this->nombre_negocio();
 
 	}
 
 	function nombre($article) {
 		$this->SetFont('Arial', '', $this->size_nombre);
+
+		$this->x = 0;
+		$this->y += 3;
 
 	    $this->MultiCell( 
 			$this->etiqueta_width,
@@ -118,7 +123,6 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 
 	function print_bar_code($code) {
 		$this->x = 0;
-		$this->y += 0;
 		$barcode = $this->barcodeGenerator->getBarcodePNG($code, 'C128');
 		$imgData = base64_decode($barcode);
 		$file = 'temp_barcode'.$code.'.png';
@@ -126,7 +130,7 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 
 		$img_width = $this->code_width - 10;
 		$start_x = ($this->code_width - $img_width) / 2;
-		$start_x += 29;
+		$start_x += 13;
 
 		$this->Image($file, $start_x, $this->y, $img_width, $this->code_height);
 		unlink($file);

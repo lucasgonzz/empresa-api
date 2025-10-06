@@ -123,42 +123,53 @@ class CurrentAcountHelper {
         $credit_account->saldo = Self::getSaldo($credit_account_id);
         $credit_account->save();
 
+        $moneda = 'pesos';
+        if ($credit_account->moneda_id == 2) {
+            $moneda = 'dolares';
+        }
+
+        $model = $credit_account->model;
+
+        $model->{'saldo_'.$moneda} = $credit_account->saldo;
+        $model->save();
+
+        Log::info('se actualizo saldo del model '.$model->name.' a '.$credit_account->saldo);
+
+
         // Log::info('se seteo saldo de '.$model->name.' a '.$model->saldo);
     } 
 
 
     static function getSaldo($credit_account_id, $until_current_acount = null) {
         $query = CurrentAcount::query();
-
-        // if ($model_name === 'client') {
-        //     $query->where('client_id', $model_id);
-        // } else {
-        //     $query->where('provider_id', $model_id);
-        // }
-
-        $query->where('credit_account_id', $credit_account_id);
+        
+        Log::info('getSaldo credit_account_id ' . $credit_account_id);
+        
+        $query->where('is_provisorio', 0);
 
         if (!is_null($until_current_acount)) {
-
-            $query->where(function ($q) use ($until_current_acount) {
-            
-                $q->where('created_at', '<', $until_current_acount->created_at)
-                  ->orWhere(function ($q2) use ($until_current_acount) {
-                      $q2->where('created_at', $until_current_acount->created_at)
-                         ->where('id', '<', $until_current_acount->id);
+            $query->where(function ($q) use ($credit_account_id, $until_current_acount) {
+                $q->where('credit_account_id', $credit_account_id)
+                  ->where(function ($q2) use ($until_current_acount) {
+                      $q2->where('created_at', '<', $until_current_acount->created_at)
+                         ->orWhere(function ($q3) use ($until_current_acount) {
+                             $q3->where('created_at', $until_current_acount->created_at)
+                                ->where('id', '<', $until_current_acount->id);
+                         });
                   });
             });
+        } else {
+            $query->where('credit_account_id', $credit_account_id);
         }
 
-        $last = $query->where('is_provisorio', 0)
-                        ->orderBy('created_at', 'desc')
-                        ->orderBy('id', 'desc')
-                        ->first();
+        $last = $query->orderBy('created_at', 'desc')
+                      ->orderBy('id', 'desc')
+                      ->first();
 
         if (is_null($last)) {
             return 0;
         } else {
-            Log::info('Se retorna el saldo de current_acount_id ' . $last->id);
+            Log::info('Se retorna el saldo de current_acount_id ' . $last->id.' con saldo de '.$last->saldo);
             return $last->saldo;
         }
     }
@@ -221,9 +232,9 @@ class CurrentAcountHelper {
         Self::attachNotaCreditoServices($nota_credito, $items);
 
         if (!is_null($model_name) && !is_null($model_id)) {
-            Self::update_credit_account_saldo($credit_account_id);
             $pago_helper = new CurrentAcountPagoHelper($credit_account_id, $model_name, $model_id, $nota_credito);
             $pago_helper->init();
+            Self::update_credit_account_saldo($credit_account_id);
         }
 
         return $nota_credito;

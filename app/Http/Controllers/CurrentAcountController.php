@@ -45,7 +45,7 @@ class CurrentAcountController extends Controller
                         ->with('pagado_por')
                         ->with('cheques')
                         ->with('sale.afip_ticket')
-                        ->orderBy('created_at', 'ASC')
+                        ->orderBy('created_at', 'DESC')
                         ->get();
         // $models = CurrentAcountHelper::format($models);
         return response()->json(['models' => $models], 200);

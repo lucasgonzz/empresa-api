@@ -14,4 +14,8 @@ class Location extends Model
     function scopeWithAll($q) {
         
     }
+
+    function provincia() {
+        return $this->belongsTo(Provincia::class);
+    }
 }

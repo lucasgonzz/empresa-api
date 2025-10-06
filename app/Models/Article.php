@@ -17,7 +17,32 @@ class Article extends Model
     // protected $appends = ['costo_real'];
 
     function scopeWithAll($query) {
-        $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'article_variants.addresses', 'addresses', 'price_types', 'article_discounts_blanco', 'article_surchages', 'article_surchages_blanco', 'price_type_monedas');
+        $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'article_variants.addresses', 'addresses', 'price_types', 'article_discounts_blanco', 'article_surchages', 'article_surchages_blanco', 'price_type_monedas', 'meli_category',);
+    }
+
+    public function meli_listing_type()
+    {
+        return $this->belongsTo(MeliListingType::class);
+    }
+
+    public function meli_buying_mode()
+    {
+        return $this->belongsTo(MeliBuyingMode::class);
+    }
+
+    public function meli_item_condition()
+    {
+        return $this->belongsTo(MeliItemCondition::class);
+    }
+
+    public function meli_attributes()
+    {
+        return $this->belongsToMany(MeliAttribute::class)->withPivot('value_id', 'value_name', 'meli_attribute_id');
+    }
+
+    public function meli_category()
+    {
+        return $this->belongsTo(MeliCategory::class);
     }
 
     public function price_type_monedas()

@@ -13,7 +13,7 @@ class CreditAccountController extends Controller
         $models = CurrentAcount::where('credit_account_id', $credit_account_id)
                             // ->where('model_name', $model_name)
                             // ->where('model_id', $model_id)
-                            ->orderBy('created_at', 'ASC')
+                            ->orderBy('created_at', 'DESC')
                             ->take($cantidad_movimientos)
                             ->with('current_acount_payment_methods')
                             ->with('pagado_por')

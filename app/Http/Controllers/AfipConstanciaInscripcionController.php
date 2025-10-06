@@ -47,12 +47,17 @@ class AfipConstanciaInscripcionController extends Controller
 
     function get_constancia_inscripcion($cuit) {
 
+        Log::info('get_constancia_inscripcion');
+
         $testing = false;
 
-        $afip_wsaa = new AfipWSAAHelper($testing, 'wsci');
+        $afip_wsaa = new AfipWSAAHelper($testing, 'ws_sr_constancia_inscripcion');
+        $afip_wsaa->checkWsaa();
         
-        $afip_wsaa->checkWsaa('ws_sr_constancia_inscripcion');
+        // $afip_wsaa = new AfipWSAAHelper($testing, 'wsci');
+        // $afip_wsaa->checkWsaa('ws_sr_constancia_inscripcion');
 
+        Log::info('WSSRConstanciaInscripcion');
 
         $ws = new WSSRConstanciaInscripcion(['testing'=> $testing, 'cuit_representada' => '20423548984']);
         $ws->setXmlTa(file_get_contents(TA_file));

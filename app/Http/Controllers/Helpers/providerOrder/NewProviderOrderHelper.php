@@ -495,7 +495,14 @@ class NewProviderOrderHelper {
 
             $article->cost = $cost;
             
-            $article->cost_in_dollars = $new_article['pivot']['cost_in_dollars'];
+            if (
+                isset($new_article['pivot'])
+                && isset($new_article['pivot']['cost_in_dollars'])
+            ) {
+
+                $article->cost_in_dollars = $new_article['pivot']['cost_in_dollars'];
+            }
+
 
             $article->save();
 

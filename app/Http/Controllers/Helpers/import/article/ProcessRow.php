@@ -110,15 +110,15 @@ class ProcessRow {
             }
         }
 
-        $cost_in_dollars = ImportHelper::getColumnValue($row, 'moneda', $this->columns);
-        if ($cost_in_dollars) {
+        if (ImportHelper::isIgnoredColumn('moneda', $this->columns)) {
+            // $cost_in_dollars = ImportHelper::getColumnValue($row, 'moneda', $this->columns);
             $data['cost_in_dollars'] = $this->get_cost_in_dollars($row);
         }
 
-        if ($category_id) {
+        if (ImportHelper::isIgnoredColumn('categoria', $this->columns)) {
             $data['category_id'] = $category_id;
         }
-        if ($sub_category_id) {
+        if (ImportHelper::isIgnoredColumn('sub_categoria', $this->columns)) {
             $data['sub_category_id'] = $sub_category_id;
         }
 
@@ -127,8 +127,8 @@ class ProcessRow {
             $data['aplicar_iva'] = $this->get_aplicar_iva($row);
         }
 
-        $brand_id = ImportHelper::getColumnValue($row, 'marca', $this->columns);
-        if ($brand_id) {
+        if (ImportHelper::isIgnoredColumn('marca', $this->columns)) {
+            $brand_id = ImportHelper::getColumnValue($row, 'marca', $this->columns);
             $data['brand_id'] = $this->get_brand_id($row);
         }
 

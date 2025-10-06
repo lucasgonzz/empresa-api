@@ -129,21 +129,19 @@ class ActualizarBBDD {
                             || $column === 'stock_global'
                             || $column === 'stock_addresses'
                             || $column === 'variants_data'
+
+                            || is_null($value)
+                            || $value === ''
                         ) continue;
 
-                        if (
-                            !is_null($value)
-                            && $value != ''
-                        ) {
                             
-                            $quotedValue = DB::getPdo()->quote($value);
+                        $quotedValue = DB::getPdo()->quote($value);
 
-                            if (!isset($casesByColumn[$column])) {
-                                $casesByColumn[$column] = "`$column` = CASE `id`";
-                            }
-
-                            $casesByColumn[$column] .= " WHEN $id THEN $quotedValue";
+                        if (!isset($casesByColumn[$column])) {
+                            $casesByColumn[$column] = "`$column` = CASE `id`";
                         }
+
+                        $casesByColumn[$column] .= " WHEN $id THEN $quotedValue";
 
                     }
 
@@ -695,6 +693,11 @@ class ActualizarBBDD {
                 $incluir = $this->get_incluir_en_excel_para_clientes($price_type);
 
                 $setear_precio_final = $this->get_setear_precio_final($price_type);
+
+                $percentage = ($percentage === '' || is_null($percentage)) ? 'NULL' : $percentage;
+                $final_price = ($final_price === '' || is_null($final_price)) ? 'NULL' : $final_price;
+                $incluir = $incluir ? 1 : 0;
+                $setear_precio_final = $setear_precio_final ? 1 : 0;
 
                 // Almacenamos los valores para construir el SQL
                 $rows_create[] = "({$article_id}, {$price_type['id']}, {$percentage}, {$final_price}, {$incluir}, {$setear_precio_final})";

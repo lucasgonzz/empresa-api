@@ -27,13 +27,16 @@ use App\Models\Budget;
 use App\Models\Buyer;
 use App\Models\Category;
 use App\Models\Client;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\CurrentAcountCurrentAcountPaymentMethod;
 use App\Models\Image;
 use App\Models\InventoryLinkage;
+use App\Models\MercadoLibreToken;
 use App\Models\OnlineConfiguration;
 use App\Models\Order;
 use App\Models\OrderProduction;
+use App\Models\PriceType;
 use App\Models\Provider;
 use App\Models\ProviderOrder;
 use App\Models\Recipe;
@@ -43,6 +46,7 @@ use App\Models\StockMovement;
 use App\Models\SubCategory;
 use App\Models\User;
 use App\Models\UserConfiguration;
+use App\Services\MercadoLibre\ProductoDownloaderService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Config;
@@ -56,6 +60,64 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null) {
         $this->{$method}($param);
+    }
+
+    function add_price_types_to_articles() {
+        $articles = Article::where('user_id', env('USER_ID'))->get();
+
+        $price_types = PriceType::all();
+
+        foreach ($articles as $article) {
+            
+            foreach ($price_types as $price_type) {
+                
+                $article_price_type = $article->price_types()->find($price_type->id);
+
+                if (!$article_price_type) {
+                    $article->price_types()->attach($price_type->id);
+
+                    echo $article->name.' se le agrego '.$price_type->name.' <br>';
+                    echo '----- <br>';
+                }
+            }
+        }
+
+        echo 'Listo';
+
+    }
+
+    function importar_productos_ml() {
+        $service = new ProductoDownloaderService(env('USER_ID'));
+
+        $token = MercadoLibreToken::where('user_id', env('USER_ID'))->first();
+
+        $service->importar_productos($token->meli_user_id);
+    }
+
+    function check_saldos() {
+        $user = User::find(env('USER_ID'));
+
+        $credit_accounts = CreditAccount::where('user_id', $user->id) 
+                                        ->get();
+
+        foreach ($credit_accounts as $credit_account) {
+            CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
+            if ($credit_account->model) {
+
+                echo 'Listo '.$credit_account->model->name.' <br>';
+            }
+        }
+        echo 'Termino';
+
+    }
+
+    function examinar_sale($id) {
+        $sale = Sale::where('id', $id)
+                    ->withAll()
+                    ->first();
+
+        var_dump($sale);
+
     }
 
     function check_total_facturado() {
@@ -77,26 +139,26 @@ class HelperController extends Controller
 
     }
 
-    function check_saldos() {
-        $clients = Client::where('user_id', env('USER_ID'))
-                            ->get();
+    // function check_saldos() {
+    //     $clients = Client::where('user_id', env('USER_ID'))
+    //                         ->get();
 
-        foreach ($clients as $client) {
-            foreach ($client->credit_accounts as $credit_account) {
-                CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
-            }
-        }
+    //     foreach ($clients as $client) {
+    //         foreach ($client->credit_accounts as $credit_account) {
+    //             CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
+    //         }
+    //     }
 
 
 
-        $providers = Provider::where('user_id', env('USER_ID'))
-                            ->get();
-        foreach ($providers as $provider) {
-            foreach ($provider->credit_accounts as $credit_account) {
-                CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
-            }
-        }
-    }
+    //     $providers = Provider::where('user_id', env('USER_ID'))
+    //                         ->get();
+    //     foreach ($providers as $provider) {
+    //         foreach ($provider->credit_accounts as $credit_account) {
+    //             CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
+    //         }
+    //     }
+    // }
 
     function corregir_stock_ferretotal($article_id = null) {
         $articles = Article::where('user_id', env('USER_ID'));

@@ -7,5 +7,9 @@ use Illuminate\Database\Eloquent\Model;
 
 class MeLiBuyer extends Model
 {
-    use HasFactory;
+    protected $guarded = [];
+
+    function scopeWithAll($q) {
+        
+    }
 }

@@ -37,7 +37,7 @@ class AfipFexHelper
         $moneda_cotiz = $this->sale->valor_dolar;
 
         $fex_request = [
-            // 'Cmp'   => [
+            'Cmp'   => [
                 'Id' => 1,
                 'Fecha_cbte' => date('Ymd'),
                 'Cbte_Tipo' => 19,
@@ -71,7 +71,7 @@ class AfipFexHelper
                         ]
                     ]
                 ]
-            // ]
+            ]
         ];
 
 

@@ -38,7 +38,7 @@ class MovimientoCajaHelper {
 
 		$this->set_saldos();
 
-		$this->set_apertura_caja_ingresos_egresos();
+		Self::set_apertura_caja_ingresos_egresos($this->movimiento_caja->apertura_caja_id);
 
 		return $this->movimiento_caja;
 
@@ -89,9 +89,9 @@ class MovimientoCajaHelper {
 		$this->movimiento_caja->caja->save();
 	}
 
-	function set_apertura_caja_ingresos_egresos() {
+	function set_apertura_caja_ingresos_egresos($apertura_caja_id) {
 
-		$apertura_caja = $this->movimiento_caja->apertura_caja;
+		$apertura_caja = AperturaCaja::find($apertura_caja_id);
 
 		$total_ingresos = 0;
 		$total_egresos = 0;
@@ -101,7 +101,6 @@ class MovimientoCajaHelper {
 			if (!is_null($movimiento->ingreso)) {
 
 				$total_ingresos += (float)$movimiento->ingreso;
-			
 			} else if (!is_null($movimiento->egreso)) {
 
 				$total_egresos += (float)$movimiento->egreso;
@@ -159,6 +158,9 @@ class MovimientoCajaHelper {
 
 
 
+		$total_ingresos = 0;
+		$total_egresos = 0;
+
     	foreach ($movimientos_caja_para_actualizar as $movimiento_caja) {
     		
 			if (!is_null($movimiento_caja->ingreso)) {
@@ -176,6 +178,12 @@ class MovimientoCajaHelper {
 
     		$saldo_anterior = $movimiento_caja->saldo;
     	}
+
+
+
+		$apertura_caja->total_ingresos = $total_ingresos;
+		$apertura_caja->total_egresos = $total_egresos;
+		$apertura_caja->save();
 
     	$caja->saldo = $saldo_anterior;
     	$caja->save();

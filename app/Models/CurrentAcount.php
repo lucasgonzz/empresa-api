@@ -8,8 +8,16 @@ class CurrentAcount extends Model
 {
     protected $guarded = [];
 
+    protected $appends = ['moneda_id'];
+
     function user() {
         return $this->belongsTo(User::class);
+    }
+
+    // Accesor para obtener el moneda_id desde la relación credit_account
+    public function getMonedaIdAttribute()
+    {
+        return $this->credit_account ? $this->credit_account->moneda_id : null;
     }
 
     function credit_account() {

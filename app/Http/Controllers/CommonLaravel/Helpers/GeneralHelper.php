@@ -91,15 +91,13 @@ class GeneralHelper {
         Log::info('new_value: '.$new_value);
         if ($current_value != $new_value) {
 
-            $user = User::find(UserHelper::userId());
-
             if (!is_null($from_model_id)) {
                 
-                ProcessSetFinalPrices::dispatch($user, $from_model_id, $model_id);
+                ProcessSetFinalPrices::dispatch(UserHelper::userId(), $from_model_id, $model_id);
 
             } else {
                 
-                ProcessSetFinalPrices::dispatch($user);
+                ProcessSetFinalPrices::dispatch(UserHelper::userId());
             }
             
             Log::info('entro a checkNewValuesForArticlesPrices');

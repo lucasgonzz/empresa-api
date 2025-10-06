@@ -178,6 +178,11 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'Vender',
                 'en'            => 'vender.article_discount',
             ],
+            [
+                'singular'      => 'Cambiar la sucursal/deposito en Vender',
+                'plural'        => 'Vender',
+                'en'            => 'vender.cambiar_address_id',
+            ],
 
             [
                 'singular'      => 'Utilizar modulo ABM',
@@ -324,6 +329,11 @@ class PermissionSeeder extends Seeder
                 'singular'      => 'Ver costos de los articulos',
                 'plural'        => 'articulos',
                 'en'            => 'article.cost',
+            ],
+            [
+                'singular'      => 'Modificar stock',
+                'plural'        => 'articulos',
+                'en'            => 'article.edit_stock',
             ],
 
 
