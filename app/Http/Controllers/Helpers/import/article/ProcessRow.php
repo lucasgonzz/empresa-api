@@ -110,26 +110,28 @@ class ProcessRow {
             }
         }
 
-        if (ImportHelper::isIgnoredColumn('moneda', $this->columns)) {
-            // $cost_in_dollars = ImportHelper::getColumnValue($row, 'moneda', $this->columns);
+        if (!ImportHelper::isIgnoredColumn('moneda', $this->columns)) {
             $data['cost_in_dollars'] = $this->get_cost_in_dollars($row);
         }
 
-        if (ImportHelper::isIgnoredColumn('categoria', $this->columns)) {
+        if (!ImportHelper::isIgnoredColumn('categoria', $this->columns)) {
             $data['category_id'] = $category_id;
         }
-        if (ImportHelper::isIgnoredColumn('sub_categoria', $this->columns)) {
+        if (!ImportHelper::isIgnoredColumn('sub_categoria', $this->columns)) {
             $data['sub_category_id'] = $sub_category_id;
         }
 
-        $aplicar_iva = ImportHelper::getColumnValue($row, 'aplicar_iva', $this->columns);
-        if ($aplicar_iva) {
+        if (!ImportHelper::isIgnoredColumn('aplicar_iva', $this->columns)) {
             $data['aplicar_iva'] = $this->get_aplicar_iva($row);
         }
 
-        if (ImportHelper::isIgnoredColumn('marca', $this->columns)) {
+        if (!ImportHelper::isIgnoredColumn('marca', $this->columns)) {
             $brand_id = ImportHelper::getColumnValue($row, 'marca', $this->columns);
             $data['brand_id'] = $this->get_brand_id($row);
+        }
+
+        if (!ImportHelper::isIgnoredColumn('descripcion', $this->columns)) {
+            $data['descripcion'] = ImportHelper::getColumnValue($row, 'descripcion', $this->columns);
         }
 
 
@@ -140,7 +142,6 @@ class ProcessRow {
                 'pastilla'              => ImportHelper::getColumnValue($row, 'pastilla', $this->columns),
                 'diametro'              => ImportHelper::getColumnValue($row, 'diametro', $this->columns),
                 'litros'                => ImportHelper::getColumnValue($row, 'litros', $this->columns),
-                'descripcion'           => ImportHelper::getColumnValue($row, 'descripcion', $this->columns),
                 'contenido'             => ImportHelper::getColumnValue($row, 'contenido', $this->columns),
                 'cm3'                   => ImportHelper::getColumnValue($row, 'cm3', $this->columns),
                 'calipers'              => ImportHelper::getColumnValue($row, 'calipers', $this->columns),
@@ -183,38 +184,44 @@ class ProcessRow {
 
         $articulo_para_crear = false;
         
-        if ($codigos_repetidos && !empty($data['provider_code'])) {
+        if ($codigos_repetidos) {
 
-            // Aca entra para actualizar todas las coincidencias del producto en base al codigo de proveedor, caso SAN BLAS
+            if (!empty($data['provider_code'])) {
 
-            $articulos = ArticleIndexCache::find_all_by_provider_code($data['provider_code'], $this->user->id);
+                // Aca entra para actualizar todas las coincidencias del producto en base al codigo de proveedor, caso SAN BLAS
 
-            if (count($articulos) >= 1) {
+                $articulos = ArticleIndexCache::find_all_by_provider_code($data['provider_code'], $this->user->id);
 
-                foreach ($articulos as $articulo_ya_creado) {
+                if (count($articulos) >= 1) {
 
-                    if (
-                        !is_null($articulo_ya_creado->provider_id)
-                        && !is_null($provider_id)
-                        && $this->no_actualizar_articulos_de_otro_proveedor
-                        && $articulo_ya_creado->provider_id != $provider_id
-                    ) {
-                        Log::info('El articulo '.$articulo_ya_creado->name.' ya pertenecia al proveedor id '.$articulo_ya_creado->provider_id);
-                        continue;
+                    foreach ($articulos as $articulo_ya_creado) {
+
+                        if (
+                            !is_null($articulo_ya_creado->provider_id)
+                            && !is_null($provider_id)
+                            && $this->no_actualizar_articulos_de_otro_proveedor
+                            && $articulo_ya_creado->provider_id != $provider_id
+                        ) {
+                            Log::info('El articulo '.$articulo_ya_creado->name.' ya pertenecia al proveedor id '.$articulo_ya_creado->provider_id);
+                            continue;
+                        }
+
+                        $cambios = $this->getModifiedFields($articulo_ya_creado, $data);
+                        $cambios['id'] = $articulo_ya_creado->id;
+                        $cambios['variants_data'] = [];
+
+                        unset($cambios['provider_id']);
+
+                        $this->articulosParaActualizar[] = $cambios;
                     }
 
-                    $cambios = $this->getModifiedFields($articulo_ya_creado, $data);
-                    $cambios['id'] = $articulo_ya_creado->id;
-                    $cambios['variants_data'] = [];
-
-                    unset($cambios['provider_id']);
-
-                    $this->articulosParaActualizar[] = $cambios;
+                } else {
+                    $articulo_para_crear = true;
                 }
-
             } else {
                 $articulo_para_crear = true;
             }
+
 
         } 
 

@@ -77,9 +77,10 @@ class SearchController extends Controller
 
                     // Log::info('en_blanco para '.$filter['key']);
 
-                } else {
+                } else if (isset($filter['key'])) {
 
                     $key = $filter['key'];
+
                     if ($key == 'num' && $model_name_param == 'article') {
                         $key = 'id';
                     }

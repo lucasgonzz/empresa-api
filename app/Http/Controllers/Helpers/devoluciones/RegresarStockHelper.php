@@ -9,7 +9,7 @@ use App\Models\Sale;
 class RegresarStockHelper {
 	
 	static function regresar_stock($request) {
-
+		// 
 		foreach ($request->items as $item) {
 			
 			if (isset($item['is_article'])) {

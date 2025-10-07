@@ -848,6 +848,7 @@ class SaleHelper extends Controller {
             isset($item['pivot'])
             && isset($item['pivot']['cost'])
         ) {
+            Log::info('retornando del pivot: '.$item['pivot']['cost']);
             return $item['pivot']['cost'];
         }
 
@@ -865,8 +866,7 @@ class SaleHelper extends Controller {
         $cost = 0;
         if (isset($item['costo_real'])) {
             $cost = (float)$item['costo_real'];
-        }
-        if (isset($item['cost'])) {
+        } else if (isset($item['cost'])) {
             $cost = (float)$item['cost'];
         }
 

@@ -332,10 +332,10 @@ class SaleController extends Controller
             }
 
             if (
-                isset($request->afip_information_id)
-                && $request->afip_information_id != 0
+                isset($request->ventas_afip_information_id)
+                && $request->ventas_afip_information_id != 0
             ) {
-                $sale->afip_information_id = $request->afip_information_id;
+                $sale->afip_information_id = $request->ventas_afip_information_id;
             }
 
             if (

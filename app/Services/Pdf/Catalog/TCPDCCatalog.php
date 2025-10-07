@@ -50,7 +50,7 @@ class TCPDCCatalog extends TCPDF
 
     }
 
-    public function generate(string $logoPath, string $businessName, array $infoHeader, string $articles_ids, Boolean $moneda_id)
+    public function generate(string $logoPath, string $businessName, array $infoHeader, string $articles_ids)
     {
 
         $this->set_items($articles_ids);

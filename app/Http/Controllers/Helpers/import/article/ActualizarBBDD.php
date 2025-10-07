@@ -747,6 +747,11 @@ class ActualizarBBDD {
 
                 $setear_precio_final = $this->get_setear_precio_final($price_type);
 
+                $percentage = ($percentage === '' || is_null($percentage)) ? 'NULL' : $percentage;
+                $final_price = ($final_price === '' || is_null($final_price)) ? 'NULL' : $final_price;
+                $incluir = $incluir ? 1 : 0;
+                $setear_precio_final = $setear_precio_final ? 1 : 0;
+
                 // Almacenamos los valores para construir el SQL
                 $updates[] = [
                     'article_id'    => $article_id,
@@ -764,46 +769,37 @@ class ActualizarBBDD {
             Log::info('Se van a setear masivamente price_types de '.count($updates).' articulos');
             if (app()->environment('local')) { Log::info(''); }
 
-            // Construir la consulta SQL
-            // $sql = "UPDATE article_price_type
-            //         SET percentage = CASE
-            //             " . implode("\n", array_map(function($update) {
-            //                 return "WHEN article_id = {$update['article_id']} AND price_type_id = {$update['price_type_id']} THEN {$update['percentage']}";
-            //             }, $updates)) . "
-            //         END,
-            //         incluir_en_excel_para_clientes = CASE
-            //             " . implode("\n", array_map(function($update) {
-            //                 return "WHEN article_id = {$update['article_id']} AND price_type_id = {$update['price_type_id']} THEN {$update['incluir_en_excel_para_clientes']}";
-            //             }, $updates)) . "
-            //         END
-            //         WHERE (article_id, price_type_id) IN (" . implode(',', array_map(function($update) {
-            //             return "({$update['article_id']}, {$update['price_type_id']})";
-            //         }, $updates)) . ")";
 
-            $sql = "UPDATE article_price_type
-                    SET percentage = CASE
-                        " . implode("\n", array_map(function($update) {
-                            return "WHEN article_id = {$update['article_id']} AND price_type_id = {$update['price_type_id']} THEN {$update['percentage']}";
-                        }, $updates)) . "
-                    END,
-                    incluir_en_excel_para_clientes = CASE
-                        " . implode("\n", array_map(function($update) {
-                            return "WHEN article_id = {$update['article_id']} AND price_type_id = {$update['price_type_id']} THEN {$update['incluir_en_excel_para_clientes']}";
-                        }, $updates)) . "
-                    END,
-                    final_price = CASE
-                        " . implode("\n", array_map(function($update) {
-                            return "WHEN article_id = {$update['article_id']} AND price_type_id = {$update['price_type_id']} THEN {$update['final_price']}";
-                        }, $updates)) . "
-                    END,
-                    setear_precio_final = CASE
-                        " . implode("\n", array_map(function($update) {
-                            return "WHEN article_id = {$update['article_id']} AND price_type_id = {$update['price_type_id']} THEN {$update['setear_precio_final']}";
-                        }, $updates)) . "
-                    END
-                    WHERE (article_id, price_type_id) IN (" . implode(',', array_map(function($update) {
-                        return "({$update['article_id']}, {$update['price_type_id']})";
-                    }, $updates)) . ")";
+            // Construir la consulta SQL
+
+           $sql = "UPDATE article_price_type
+                SET percentage = CASE
+                    " . implode("\n", array_map(function($update) {
+                        Log::info('percentage: '.$update['percentage']);
+                        return "WHEN article_id = {$update['article_id']} AND price_type_id = {$update['price_type_id']} THEN " . 
+                               ($update['percentage'] === 'NULL' ? "NULL" : floatval($update['percentage']));
+                    }, $updates)) . "
+                END,
+                incluir_en_excel_para_clientes = CASE
+                    " . implode("\n", array_map(function($update) {
+                        return "WHEN article_id = {$update['article_id']} AND price_type_id = {$update['price_type_id']} THEN {$update['incluir_en_excel_para_clientes']}";
+                    }, $updates)) . "
+                END,
+                final_price = CASE
+                    " . implode("\n", array_map(function($update) {
+                        return "WHEN article_id = {$update['article_id']} AND price_type_id = {$update['price_type_id']} THEN " . 
+                               ($update['final_price'] === 'NULL' ? "NULL" : floatval($update['final_price']));
+                    }, $updates)) . "
+                END,
+                setear_precio_final = CASE
+                    " . implode("\n", array_map(function($update) {
+                        return "WHEN article_id = {$update['article_id']} AND price_type_id = {$update['price_type_id']} THEN {$update['setear_precio_final']}";
+                    }, $updates)) . "
+                END
+                WHERE (article_id, price_type_id) IN (" . implode(',', array_map(function($update) {
+                    return "({$update['article_id']}, {$update['price_type_id']})";
+                }, $updates)) . ")";
+
 
             // Ejecutar la consulta SQL
             if (app()->environment('local')) { Log::info(''); }

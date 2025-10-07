@@ -24,7 +24,10 @@ class ImportHelper {
 	static function isIgnoredColumn($key, $columns) {
 		if (
 			!isset($columns[$key])
-			&& $columns[$key] != -1
+			|| (
+				isset($columns[$key])
+				&& $columns[$key] == -1
+			)
 		) {
 			return true;
 		} else {

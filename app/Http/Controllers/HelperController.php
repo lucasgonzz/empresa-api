@@ -250,7 +250,12 @@ class HelperController extends Controller
         echo 'Listo';
     }
 
-    function provider_code_repetidos($user_id) {
+    function provider_code_repetidos($user_id = null) {
+
+        if (!$user_id) {
+            $user_id = env('USER_ID');
+        }
+        
         $articles = Article::where('user_id', $user_id)
                             // ->whereNull('bar_code')
                             ->get();

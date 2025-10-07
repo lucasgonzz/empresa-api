@@ -34,7 +34,13 @@ class AfipWsController extends Controller
 
     function __construct($sale) {
         
-        Log::info('AfipWsController __construct sale:');
+        if ($sale) {
+
+            Log::info('AfipWsController __construct sale num: '.$sale->num);
+        } else {
+
+            Log::info('AfipWsController vino sale NULL');
+        }
 
         $this->sale = $sale;
         

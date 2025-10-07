@@ -514,7 +514,7 @@ class ArticleController extends Controller
                 'Email' => $user->email,
             ],
             $ids,
-            $moneda_id,
+            // $moneda_id,
         );
     }
 

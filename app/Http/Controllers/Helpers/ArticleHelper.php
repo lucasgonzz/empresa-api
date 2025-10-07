@@ -87,6 +87,16 @@ class ArticleHelper {
     static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null) {
 
         Log::info('setFinalPrice para '.$article->name.' con costo de '.$article->cost.' y precio de '.$article->price);
+
+        if (
+            is_null($article->cost)
+            && is_null($article->price)
+        ) {
+            return [
+                'final_price'           => null,
+                'current_final_price'   => null,
+            ];
+        }
         
         if (is_null($user)) {
             if (is_null($user_id)) {
