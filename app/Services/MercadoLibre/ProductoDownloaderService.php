@@ -50,7 +50,7 @@ class ProductoDownloaderService extends MercadoLibreService
     public function importar_productos(string $ml_user_id)
     {
         $productos_importados = [];
-        $limit = 1;
+        $limit = 50;
         $offset = 0;
         $total = null;
 
@@ -92,7 +92,7 @@ class ProductoDownloaderService extends MercadoLibreService
                             'name'                      => $item_data['title'],
                             'price'                     => $item_data['price'],
                             'stock'                     => $item_data['available_quantity'],
-                            'meli_category_id'          => $item_data['category_id'] ?? null,
+                            // 'meli_category_id'          => $item_data['category_id'] ?? null,
                             'user_id'                   => $this->user_id,
                             'meli_listing_type_id'      => $this->get_listing_type_id($item_data),
                             'meli_buying_mode_id'       => $this->get_buying_mode_id($item_data),
@@ -149,8 +149,8 @@ class ProductoDownloaderService extends MercadoLibreService
                 Log::info('total: '.$total);
                 Log::info('offset: '.$offset);
 
-            // } while ($offset < $total);
-            } while (false);
+            } while ($offset < $total);
+            // } while (false);
 
             Log::info('Termino');
 

@@ -3,14 +3,14 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
-use App\Models\MeLiOrder;
+use App\Models\MeliOrder;
 use Illuminate\Http\Request;
 
 class MeLiOrderController extends Controller
 {
 
     public function index($from_date = null, $until_date = null) {
-        $models = MeLiOrder::where('user_id', $this->userId())
+        $models = MeliOrder::where('user_id', $this->userId())
                         ->orderBy('created_at', 'DESC')
                         ->withAll();
         if (!is_null($from_date)) {
@@ -27,32 +27,32 @@ class MeLiOrderController extends Controller
     }
 
     public function store(Request $request) {
-        $model = MeLiOrder::create([
-            'num'                   => $this->num('MeLiOrder'),
+        $model = MeliOrder::create([
+            'num'                   => $this->num('MeliOrder'),
             'name'                  => $request->name,
             'user_id'               => $this->userId(),
         ]);
-        $this->sendAddModelNotification('MeLiOrder', $model->id);
-        return response()->json(['model' => $this->fullModel('MeLiOrder', $model->id)], 201);
+        $this->sendAddModelNotification('MeliOrder', $model->id);
+        return response()->json(['model' => $this->fullModel('MeliOrder', $model->id)], 201);
     }  
 
     public function show($id) {
-        return response()->json(['model' => $this->fullModel('MeLiOrder', $id)], 200);
+        return response()->json(['model' => $this->fullModel('MeliOrder', $id)], 200);
     }
 
     public function update(Request $request, $id) {
-        $model = MeLiOrder::find($id);
+        $model = MeliOrder::find($id);
         $model->name                = $request->name;
         $model->save();
-        $this->sendAddModelNotification('MeLiOrder', $model->id);
-        return response()->json(['model' => $this->fullModel('MeLiOrder', $model->id)], 200);
+        $this->sendAddModelNotification('MeliOrder', $model->id);
+        return response()->json(['model' => $this->fullModel('MeliOrder', $model->id)], 200);
     }
 
     public function destroy($id) {
-        $model = MeLiOrder::find($id);
+        $model = MeliOrder::find($id);
         ImageController::deleteModelImages($model);
         $model->delete();
-        $this->sendDeleteModelNotification('MeLiOrder', $model->id);
+        $this->sendDeleteModelNotification('MeliOrder', $model->id);
         return response(null);
     }
 }

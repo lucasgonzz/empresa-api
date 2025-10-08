@@ -46,6 +46,7 @@ use App\Models\StockMovement;
 use App\Models\SubCategory;
 use App\Models\User;
 use App\Models\UserConfiguration;
+use App\Services\MercadoLibre\OrderDownloaderService;
 use App\Services\MercadoLibre\ProductoDownloaderService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -92,6 +93,14 @@ class HelperController extends Controller
         $token = MercadoLibreToken::where('user_id', env('USER_ID'))->first();
 
         $service->importar_productos($token->meli_user_id);
+    }
+
+    function importar_orders_ml() {
+        $service = new OrderDownloaderService(env('USER_ID'));
+
+        // $token = MercadoLibreToken::where('user_id', env('USER_ID'))->first();
+
+        $service->get_all_orders();
     }
 
     function check_saldos() {

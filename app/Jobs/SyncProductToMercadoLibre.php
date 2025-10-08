@@ -25,11 +25,6 @@ class SyncProductToMercadoLibre implements ShouldQueue
     {
         $article = Article::with(['images', 'sub_category'])->find($this->article_id);
 
-        if (!$article) {
-            \Log::error("Artículo no encontrado para sincronizar con Mercado Libre: ID {$this->article_id}");
-            return;
-        }
-
         $service = new ProductService();
         $service->sync_article($article);
     }

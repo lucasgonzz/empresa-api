@@ -10,16 +10,37 @@ use Illuminate\Support\Facades\Log;
 
 class ProductService extends MercadoLibreService
 {
+
+    // Si el articulo tiene la info necesaria, se marca para sync a meli
+    static function add_article_to_sync($article) {
+
+
+        if (!$article->mercado_libre) {
+            \Log::error("Artículo Mercado Libre: ID {$article->id}");
+            return;
+        }
+
+        if (!$article->meli_category_id) {
+            \Log::error("Artículo sin categoria de Mercado Libre: ID {$article->id}");
+            return;
+        }
+
+        if (is_null($article->stock)) {
+            \Log::error("Artículo sin stock para Mercado Libre: ID {$article->id}");
+            return;
+        }
+
+        if (count($article->images) == 0) {
+            \Log::error("Artículo sin imagenes para Mercado Libre: ID {$article->id}");
+            return;
+        }
+
+        $article->sync_meli = 1;
+        $article->save();
+    }
+
     public function sync_article(Article $article)
     {
-
-        // if (count($article->meli_attributes) == 0) {
-        //     Log::info('No se mando a meli por falta de atributos');
-        //     return;
-        // }
-
-        $category_service = new CategoryService();
-        $article = $category_service->resolve_meli_category_for_article($article);
 
         $article->load('meli_category');
 
@@ -41,13 +62,9 @@ class ProductService extends MercadoLibreService
 
         $meli_payload = $this->add_attributes($meli_payload, $article);
 
-        // $meli_payload = $this->add_seller_address($meli_payload, $article);
-
-
         $me_li_id = $article->me_li_id;
 
         if ($me_li_id) {
-            Log::info('asdasdsad');
             unset($meli_payload['listing_type_id']);
             $this->make_request('put', "items/{$me_li_id}", $meli_payload);
         } else {
@@ -60,7 +77,7 @@ class ProductService extends MercadoLibreService
     }
 
     function set_description($article) {
-        if ($article->descripcion) {
+        if ($article->meli_descripcion) {
             
             $meli_payload = [
                 'plain_text'    => $article->descripcion,

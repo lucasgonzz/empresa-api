@@ -82,6 +82,11 @@ class corregir_stock extends Command
                         || $movimiento->concepto_movement->name == 'Mov manual entre depositos'
                     ) {
                         $this->info('No se toca stock por movimiento entre depositos para '.$article->name.'. Stock = '.$stock);
+                    } else if (
+                        $movimiento->concepto_movement->name == 'Creacion de deposito'
+                    ) {
+                        $stock = (float)$movimiento->amount;
+                        $this->info('Creacion de deposito para '.$article->name.'. Stock = '.$stock);
                     } else {
                         $stock += (float)$movimiento->amount;
                     }

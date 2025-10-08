@@ -15,8 +15,8 @@ class MercadoLibreTokenSeeder extends Seeder
     public function run()
     {
 
-        $this->personal();
-        // $this->leudinox();
+        // $this->personal();
+        $this->leudinox();
     }
 
     function personal() {
@@ -24,9 +24,9 @@ class MercadoLibreTokenSeeder extends Seeder
         MercadoLibreToken::create([
             'user_id'           => env('USER_ID'),
             'meli_user_id'      => '163250661',
-            'access_token'      => 'APP_USR-6355072095226922-100616-c9640bd1db6b0b68f537306528c0f4d2-163250661',
-            'refresh_token'     => 'TG-68e421ab1540d10001d3e908-163250661',
-            'expires_at'        => '2025-10-06 23:08:11',
+            'access_token'      => 'APP_USR-6355072095226922-100808-bbbc8667dc3a7ad5b3f46d59dcb41840-163250661',
+            'refresh_token'     => 'TG-68e65bc4e8377c0001fbe915-163250661',
+            'expires_at'        => '2025-10-08 15:40:38',
         ]);
 
     }
@@ -36,9 +36,9 @@ class MercadoLibreTokenSeeder extends Seeder
         MercadoLibreToken::create([
             'user_id'           => env('USER_ID'),
             'meli_user_id'      => '41181056',
-            'access_token'      => 'APP_USR-6355072095226922-100616-6e9e4f77a92469ccacd27c559a7cc00d-41181056',
-            'refresh_token'     => 'TG-68e41fd103af2300015943ec-41181056',
-            'expires_at'        => '2025-10-03 18:18:50',
+            'access_token'      => 'APP_USR-6355072095226922-100811-eefc234429d163b11a3c55ebc9d3aef4-41181056',
+            'refresh_token'     => 'TG-68e683c53b3f250001ad6813-41181056',
+            'expires_at'        => '2025-10-08 18:31:18',
         ]);
 
     }

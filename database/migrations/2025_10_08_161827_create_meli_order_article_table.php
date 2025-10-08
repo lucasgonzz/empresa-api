@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class CreateMeLiBuyersTable extends Migration
+class CreateMeliOrderArticleTable extends Migration
 {
     /**
      * Run the migrations.
@@ -13,11 +13,14 @@ class CreateMeLiBuyersTable extends Migration
      */
     public function up()
     {
-        Schema::create('me_li_buyers', function (Blueprint $table) {
+        Schema::create('meli_order_article', function (Blueprint $table) {
             $table->id();
-            $table->string('me_li_buyer_id')->nullable();
-            $table->string('name')->nullable();
-            $table->string('last_name')->nullable();
+
+            $table->integer('meli_order_id');
+            $table->integer('article_id');
+            $table->integer('amount')->nullable();
+            $table->decimal('price', 12, 2)->default(0);
+
             $table->timestamps();
         });
     }
@@ -29,6 +32,6 @@ class CreateMeLiBuyersTable extends Migration
      */
     public function down()
     {
-        Schema::dropIfExists('me_li_buyers');
+        Schema::dropIfExists('meli_order_article');
     }
 }

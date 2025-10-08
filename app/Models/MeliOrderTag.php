@@ -5,7 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
-class MeliBuyer extends Model
+class MeliOrderTag extends Model
 {
     protected $guarded = [];
 
@@ -13,8 +13,8 @@ class MeliBuyer extends Model
         
     }
 
-    public function orders()
+    public function order()
     {
-        return $this->hasMany(MeliOrder::class, 'buyer_id');
+        return $this->belongsTo(MeliOrder::class, 'meli_order_id');
     }
 }

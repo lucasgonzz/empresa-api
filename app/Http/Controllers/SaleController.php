@@ -15,6 +15,7 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\SaleProviderOrderHelper;
 use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComisionesHelper;
+use App\Http\Controllers\Helpers\sale\AcopioHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Helpers\sale\SaleNotaCreditoAfipHelper;
@@ -518,5 +519,13 @@ class SaleController extends Controller
     function etiqueta_envio($sale_id) {
         $sale = Sale::find($sale_id);
         new EtiquetaEnvioPdf($sale);
+    }
+
+    function unidades_entregadas(Request $request, $sale_id) {
+        $sale = Sale::find($sale_id);
+
+        AcopioHelper::set_delivered_amount($sale, $request->articles);
+
+        return response()->json(['model' => $this->fullModel('Sale', $sale_id)], 200);
     }
 }

@@ -35,6 +35,7 @@ use App\Jobs\ProcessSyncArticleToTiendaNube;
 use App\Jobs\SyncProductToMercadoLibre;
 use App\Models\Article;
 use App\Models\User;
+use App\Services\MercadoLibre\ProductService;
 use App\Services\Pdf\Catalog\CatalogClassic;
 use App\Services\Pdf\Catalog\TCPDCCatalog;
 use Carbon\Carbon;
@@ -165,6 +166,7 @@ class ArticleController extends Controller
         $model->meli_listing_type_id                = $request->meli_listing_type_id;
         $model->meli_buying_mode_id                 = $request->meli_buying_mode_id;
         $model->meli_item_condition_id                 = $request->meli_item_condition_id;
+        $model->meli_descripcion                 = $request->meli_descripcion;
 
 
         $model->user_id                           = $this->userId();
@@ -258,7 +260,8 @@ class ArticleController extends Controller
         $model->mercado_libre                       = $request->mercado_libre;
         $model->meli_listing_type_id                = $request->meli_listing_type_id;
         $model->meli_buying_mode_id                 = $request->meli_buying_mode_id;
-        $model->meli_item_condition_id                 = $request->meli_item_condition_id;
+        $model->meli_item_condition_id              = $request->meli_item_condition_id;
+        $model->meli_descripcion                    = $request->meli_descripcion;
 
         $model->needs_sync_with_tn                  = true;
 
@@ -317,9 +320,8 @@ class ArticleController extends Controller
     function check_mercado_libre($article) {
         if (
             env('USA_MERCADO_LIBRE', false)
-            && $article->mercado_libre
         ) {
-            dispatch(new SyncProductToMercadoLibre($article->id));
+            ProductService::add_article_to_sync($article);
         }
     }
 

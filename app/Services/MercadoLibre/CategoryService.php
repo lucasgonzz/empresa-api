@@ -18,6 +18,44 @@ class CategoryService extends MercadoLibreService
     }
 
     /**
+     * Determina la categoría ML del artículo.
+     * Prioriza:
+     * - meli_category_id del artículo
+     * - predictor automático si no está seteado
+     */
+    public function resolve_meli_category_for_article(Article $article)
+    {
+        $mercado_libre_category_id = null;
+
+        if ($article->meli_category) {
+            $mercado_libre_category_id = $article->meli_category->meli_category_id; 
+        }
+
+        if (!$mercado_libre_category_id) {
+            
+            $suggestions = $this->fetch_meli_categories($article->name);
+
+            Log::info('resolve_meli_category_for_article:');
+            Log::info($suggestions);
+
+            if (count($suggestions) > 0) {
+                $mercado_libre_category_id = $suggestions[0]['category_id'];
+            } else {
+                // throw new \Exception("No se pudo determinar la categoría de Mercado Libre para el artículo ID {$article->name}");
+            }
+
+        }
+
+        if ($mercado_libre_category_id) {
+
+            $article = $this->assign_to_article($article, $mercado_libre_category_id);
+        }
+
+        return $article;
+
+    }
+
+    /**
      * Llama al predictor de Mercado Libre basado en el nombre del artículo.
      */
     public function fetch_meli_categories(string $query)
@@ -27,8 +65,8 @@ class CategoryService extends MercadoLibreService
             'q' => $query,
         ]);
 
-        Log::info('response categories:');
-        Log::info($response);
+        // Log::info('response categories:');
+        // Log::info($response);
 
         return json_decode($response, true);
     }
@@ -55,44 +93,6 @@ class CategoryService extends MercadoLibreService
         return $article;
     }
 
-    /**
-     * Determina la categoría ML del artículo.
-     * Prioriza:
-     * - meli_category_id del artículo
-     * - predictor automático si no está seteado
-     */
-    public function resolve_meli_category_for_article(Article $article)
-    {
-        $mercado_libre_category_id = null;
-
-        if ($article->meli_category) {
-            $mercado_libre_category_id = $article->meli_category->meli_category_id; 
-        }
-
-        if (!$mercado_libre_category_id) {
-            
-            $suggestions = $this->fetch_meli_categories($article->name);
-
-            Log::info('resolve_meli_category_for_article:');
-            Log::info($suggestions);
-
-            if (count($suggestions) > 0) {
-                $mercado_libre_category_id = $suggestions[0]['category_id'];
-            } else {
-                throw new \Exception("No se pudo determinar la categoría de Mercado Libre para el artículo ID {$article->id}");
-            }
-
-        }
-
-        if ($mercado_libre_category_id) {
-
-            $article = $this->assign_to_article($article, $mercado_libre_category_id);
-        }
-
-        return $article;
-
-    }
-
     function create_meli_category_y_asignar_attributes($meli_category_id) {
 
         $response = $this->make_request('get', "categories/{$meli_category_id}");
@@ -115,6 +115,8 @@ class CategoryService extends MercadoLibreService
         $attributes = $this->make_request('get', "categories/{$meli_category->meli_category_id}/attributes");
 
         foreach ($attributes as $attribute) {
+
+            Log::info('meli_category id: '.$meli_category->id);
 
             $meli_attribute = MeliAttribute::create([
 

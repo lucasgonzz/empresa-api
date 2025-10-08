@@ -204,6 +204,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('sale-set-terminada/{sale_id}', 'SaleController@set_terminada');
     Route::put('sale-clear-actualizandose-por/{sale_id}', 'SaleController@clear_actualizandose_por');
     Route::get('sale/por-entregar/{from}/{to}', 'SaleController@por_entregar');
+    Route::put('sale/unidades-entregadas/{sale_id}', 'SaleController@unidades_entregadas');
 
     // Hacer Nota de credito AFIP
     Route::post('sale/nota-credito-afip/{sale_id}', 'SaleController@nota_credito_afip');
@@ -295,7 +296,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('order/update-status/{order_id}', 'OrderController@updateStatus');
     Route::put('order/cancel/{order_id}', 'OrderController@cancel');
 
-    Route::get('me-li-order/from-date/{from_date?}/{until_date?}', 'MeLiOrderController@index');
+    Route::get('meli-order/from-date/{from_date?}/{until_date?}', 'MeLiOrderController@index');
 
     Route::resource('order-status', 'OrderStatusController');
     Route::resource('buyer', 'BuyerController');
@@ -480,6 +481,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('meli-category', 'MeliCategoryController');
     Route::get('meli-category-predictor/{article_name}', 'MeliCategoryController@category_predictor');
+    Route::get('meli-category-predictor/asignar-meli-category/{article_id}/{mercado_libre_category_id}', 'MeliCategoryController@asignar_meli_category');
+
 
 
     Route::resource('article-meli-attribute', 'ArticleMeliAttributeController');

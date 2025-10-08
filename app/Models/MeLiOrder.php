@@ -5,23 +5,34 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
-class MeLiOrder extends Model
+class MeliOrder extends Model
 {
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        $q->with('articles.images', 'me_li_payments', 'me_li_buyer');
+        $q->with('meli_buyer', 'articles.images', 'tags', 'cancel_detail');
     }
 
-    function articles() {
-        return $this->belongsToMany(Article::class)->withPivot('amount', 'price');
+
+    public function meli_buyer()
+    {
+        return $this->belongsTo(MeliBuyer::class);
     }
 
-    function me_li_payments() {
-        return $this->hasMany(MeLiPayment::class);
+    public function articles()
+    {
+        return $this->belongsToMany(Article::class, 'meli_order_article')
+                    ->withPivot(['amount', 'price'])
+                    ->withTimestamps();
     }
 
-    function me_li_buyer() {
-        return $this->belongsTo(MeLiBuyer::class);
+    public function tags()
+    {
+        return $this->hasMany(MeliOrderTag::class, 'meli_order_id');
+    }
+
+    public function cancel_detail()
+    {
+        return $this->hasOne(MeliOrderCancelDetail::class, 'meli_order_id');
     }
 }

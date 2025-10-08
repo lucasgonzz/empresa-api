@@ -17,6 +17,8 @@ Route::get('/mercadolibre/auth', function () {
     return redirect("https://auth.mercadolibre.com.ar/authorization?$query");
 });
 
+
+
 // Paso 2: Callback de Mercado Libre, recibe el code y solicita el access token
 Route::get('/mercadolibre/callback', function (\Illuminate\Http\Request $request) {
     $code = $request->query('code');
@@ -75,6 +77,43 @@ Route::get('/mercadolibre/setear-categorias/{article_id}', function ($article_id
 
     $category_service->setear_category_name($article_id);
 });
+
+Route::get('/mercadolibre/metodos-envio', function () {
+   
+    $response = Http::get("https://api.mercadolibre.com/sites/MLA/shipping_methods");
+
+    $metodos = $response->json(); // decodifica automáticamente a array
+
+    echo '<h1>Métodos de Envío de MercadoLibre</h1>';
+    echo '<ul>';
+    foreach ($metodos as $metodo) {
+        foreach ($metodos as $metodo) {
+        echo '<li><ul>';
+        foreach ($metodo as $clave => $valor) {
+            echo '<li>';
+            echo '<strong>' . ucfirst($clave) . ':</strong> ';
+            
+            // Mostrar arrays como lista separada
+            if (is_array($valor)) {
+                echo implode(', ', $valor);
+            } elseif (is_null($valor)) {
+                echo 'N/A';
+            } else {
+                echo $valor;
+            }
+
+            echo '</li>';
+        }
+        echo '</ul><hr></li>';
+    }
+    }
+    echo '</ul>';
+
+    return;
+});
+
+
+        
 
 
 
