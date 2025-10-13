@@ -5,6 +5,7 @@ namespace Database\Seeders;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\Seeders\ArticleSeederHelper;
+use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
 use App\Models\ArticleDiscount;
@@ -103,6 +104,8 @@ class ArticleSeeder extends Seeder
                 ArticleHelper::setFinalPrice($art, env('USER_ID'));
                 $this->setStockMovement($art, $article);
                 // ArticleHelper::setArticleStockFromAddresses($art);
+
+                ArticleUbicationsHelper::init_ubications($art);
             }
         }
     }

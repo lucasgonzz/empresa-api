@@ -15,9 +15,9 @@ class PermissionArticleEditStockSeeder extends Seeder
     public function run()
     {
         PermissionEmpresa::create([
-            'singular'      => 'Modificar stock',
-            'plural'        => 'articulos',
-            'en'            => 'article.edit_stock',
+            'name'          => 'Modificar stock',
+            'model_name'    => 'articulos',
+            'slug'          => 'article.edit_stock',
         ]);
     }
 }

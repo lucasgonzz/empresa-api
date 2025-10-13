@@ -159,6 +159,8 @@ class DatabaseSeeder extends Seeder
             } else if ($for_user == 'racing_carts') {
 
                 $this->call(AddressSeeder::class);
+                $this->call(ArticleUbicationSeeder::class);
+
                 // $this->call(PriceTypeSeeder::class);
                 $this->call(ArticleSeeder::class);
                 // $this->call(ArticleDolarSeeder::class);
@@ -270,7 +272,6 @@ class DatabaseSeeder extends Seeder
         $this->call(ProviderOrderStatusSeeder::class);
         $this->call(OnlinePriceTypeSeeder::class);
         $this->call(DepositMovementStatusSeeder::class);
-        $this->call(ArticleUbicationSeeder::class);
 
 
         // Estos estaban a lo ultimo

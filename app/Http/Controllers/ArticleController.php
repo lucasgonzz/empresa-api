@@ -199,6 +199,8 @@ class ArticleController extends Controller
 
         ArticleVariantHelper::set_default_properties($model);
 
+        ArticleUbicationsHelper::init_ubications($model);
+
         $this->check_tienda_nube($model);
         ProductService::add_article_to_sync($model);
 
