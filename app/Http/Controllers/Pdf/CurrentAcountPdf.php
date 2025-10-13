@@ -19,6 +19,9 @@ class CurrentAcountPdf extends fpdf {
 
 		$this->AddPage();
 		$this->print();
+
+		$this->saldo_actual();
+
         $this->Output();
         exit;
 	}
@@ -68,6 +71,17 @@ class CurrentAcountPdf extends fpdf {
 		// PdfHelper::comerciocityInfo($this, $this->y);
 	}
 
+	function saldo_actual() {
+		$this->y = 32;
+		$this->x = 105;
+		$this->SetFont('Arial', 'B', 18);
+
+		$saldo = $this->models[count($this->models)-1]->saldo;
+		$saldo = '$'.Numbers::price($saldo);
+
+		$this->Cell(100, 15, 'Saldo actual: '.$saldo, 1, 0, 'C');
+	}
+
 	function print() {
 		$this->SetFont('Arial', '', 10);
 		foreach ($this->models as $model) {
@@ -84,15 +98,35 @@ class CurrentAcountPdf extends fpdf {
 		$this->x = 5;
 		$this->Cell($this->getFields()['Fecha'], $this->line_height, date_format($model->created_at, 'd/m/y'), $this->b, 0, 'L');
 		
+		$detalle = $model->detalle;
+
+		if (!is_null($model->debe)) {
+
+			if ($model->status != 'pagado') {
+
+				if (
+					$model->pagandose > 0
+				) {
+					$pagandose = '$'.Numbers::price($model->pagandose);
+					$detalle .= " ($pagandose)";
+				} else {
+					$detalle .= ' (Sin pagar)';
+				}
+			}
+		}
+
 		$y_1 = $this->y;
-		$this->MultiCell($this->getFields()['Detalle'], $this->line_height, $model->detalle, $this->b, 'L', false);
+		$this->MultiCell($this->getFields()['Detalle'], $this->line_height, $detalle, $this->b, 'L', false);
 		$y_2 = $this->y;
 		$this->y = $y_1;
 
 		$this->x = PdfHelper::getWidthUntil('Detalle', $this->getFields());
 
-		$this->Cell($this->getFields()['Debe'], $this->line_height, '$'.Numbers::price($model->debe), $this->b, 0, 'L');
-		$this->Cell($this->getFields()['Haber'], $this->line_height, '$'.Numbers::price($model->haber), $this->b, 0, 'L');
+		$debe = $model->debe ? '$'.Numbers::price($model->debe) : '';
+		$haber = $model->haber ? '$'.Numbers::price($model->haber) : '';
+
+		$this->Cell($this->getFields()['Debe'], $this->line_height, $debe, $this->b, 0, 'L');
+		$this->Cell($this->getFields()['Haber'], $this->line_height, $haber, $this->b, 0, 'L');
 		$this->Cell($this->getFields()['Saldo'], $this->line_height, '$'.Numbers::price($model->saldo), $this->b, 0, 'L');
 
 		$this->MultiCell($this->getFields()['Descripcion'], $this->line_height, $model->description, $this->b, 'L', false);

@@ -10,26 +10,27 @@ use Carbon\Carbon;
 
 class CreateSaleOrderHelper {
 
-    static function save_sale($order, $instance, $from_tienda_nube = false) {
+    static function save_sale($order, $instance, $from_tienda_nube = false, $from_meli = false, $user = null) {
         if (
             $from_tienda_nube
-        	|| (
+            || $from_meli
+            || (
                 $order->order_status->name == 'Confirmado' 
-        	   && Self::saveSaleAfterFinishOrder() 
+               && Self::saveSaleAfterFinishOrder() 
             )
         ) {
 
-            $to_check = UserHelper::hasExtencion('check_sales');
+            $to_check = UserHelper::hasExtencion('check_sales', $user);
             
-            $sale = Self::createSale($order, $instance, $to_check, $from_tienda_nube);
+            $sale = Self::createSale($order, $instance, $to_check, $from_tienda_nube, $from_meli, $user);
 
-            Self::attach_sale_properties($order, $sale, $from_tienda_nube);
+            Self::attach_sale_properties($order, $sale, $from_tienda_nube, $from_meli);
 
             Log::info('se guardo venta para el pedido online, sale_id: '.$sale->id);
         }
     }
 
-    static function attach_sale_properties($order, $sale, $from_tienda_nube) {
+    static function attach_sale_properties($order, $sale, $from_tienda_nube, $from_meli) {
 
         $request = new \Illuminate\Http\Request();
 
@@ -46,7 +47,16 @@ class CreateSaleOrderHelper {
             ];
         }
 
-        if (!$from_tienda_nube) {
+
+        if ($from_meli) {
+            $request->employee_id = null;
+        }
+
+
+        if (
+            !$from_tienda_nube
+            && !$from_meli
+        ) {
 
             foreach ($order->promocion_vinotecas as $promo) {
                 $request->items[] = [
@@ -65,13 +75,21 @@ class CreateSaleOrderHelper {
 
         SaleHelper::attachProperies($sale, $request);
     }
-	
+    
 
-    static function createSale($order, $instance, $to_check = false, $from_tienda_nube) {
+    static function createSale($order, $instance, $to_check = false, $from_tienda_nube, $from_meli, $user) {
         $client_id = null;
+
+
+        if ($user) {
+            $num = $instance->num('sales', $user->id, 'user_id', $user->id);
+        } else {
+            $num = $instance->num('sales');
+        }
         
         if (
             !$from_tienda_nube
+            && !$from_meli
             && !is_null($order->buyer->comercio_city_client)
         ) {
             $client_id = $order->buyer->comercio_city_client_id;
@@ -80,26 +98,28 @@ class CreateSaleOrderHelper {
         $terminada = Self::is_terminada($order, $to_check);
 
         $sale = Sale::create([
-            'user_id'               => $instance->userId(),
+            'user_id'               => $order->user_id,
             'buyer_id'              => $order->buyer_id,
             'client_id'             => $client_id,
             'to_check'              => $to_check,
             'terminada'             => $terminada,
             'terminada_at'          => $terminada ? Carbon::now() : null,
-            'num'                   => $instance->num('sales'),
+            'num'                   => $num,
             'save_current_acount'   => 1,
-            'order_id'              => $from_tienda_nube ? null : $order->id,
+            'order_id'              => ($from_tienda_nube || $from_meli) ? null : $order->id,
             'tienda_nube_order_id'  => $from_tienda_nube ? $order->id : null,
+            'meli_order_id'         => $from_meli ? $order->id : null,
             'total'                 => $order->total,
             'address_id'            => $order->address_id,
             'fecha_entrega'         => $order->fecha_entrega,
             'seller_id'             => $order->seller_id,
             'moneda_id'             => 1,
-            'employee_id'           => SaleHelper::getEmployeeId(),
+            'employee_id'           => $from_meli ? null : SaleHelper::getEmployeeId(),
+            'created_at'            => $from_meli ? $order->created_at : Carbon::now(),
         ]);
 
         if (
-        	!is_null($sale->client)
+            !is_null($sale->client)
             && !is_null($sale->client->price_type_id)
         ) {
 

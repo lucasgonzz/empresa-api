@@ -662,19 +662,28 @@ class SalePdf extends fpdf {
 		    // $total_combos = $this->total_combos;
 		    // dd($total_combos);
 
+		    $total_recargo = 0;
+
 		    foreach ($this->sale->surchages as $surchage) {
 		    	$this->x = $this->start_x;
 		    	$text = '+'.$surchage->pivot->percentage.'% '.$surchage->name;
-		    	$this->total_articles += $this->total_articles * floatval($surchage->pivot->percentage) / 100;
-		    	$this->total_combos += $this->total_combos * floatval($surchage->pivot->percentage) / 100;
-		    	
-		    	$this->total_promocion_vinotecas += $this->total_promocion_vinotecas * floatval($surchage->pivot->percentage) / 100;
 
-		    	if ($this->sale->surchages_in_services) {
-		    		$this->total_services += $this->total_services * floatval($surchage->pivot->percentage) / 100;
+		    	
+		    	$total_recargo += $this->total_articles * floatval($surchage->pivot->percentage) / 100;
+
+		    	$total_recargo += $this->total_combos * floatval($surchage->pivot->percentage) / 100;
+
+		    	$total_recargo += $this->total_promocion_vinotecas * floatval($surchage->pivot->percentage) / 100;
+
+		    	if ($this->sale->discounts_in_services) {
+		    		
+		    		$total_recargo += $this->total_services * floatval($surchage->pivot->percentage) / 100;
 		    	}
-		    	$total_with_surchages = $this->total_articles + $this->total_services + $this->total_combos + $this->total_promocion_vinotecas;
-		    	$text .= ' = $'.Numbers::price($total_with_surchages);
+
+		    	// $total_with_discounts = $this->total_articles + $this->total_services + $this->total_combos + $this->total_promocion_vinotecas;
+
+		    	$text .= ' = $'.Numbers::price($total_recargo);
+
 				$this->Cell(
 					50, 
 					5, 
@@ -683,6 +692,7 @@ class SalePdf extends fpdf {
 					1, 
 					'L'
 				);
+
 		    }
 		    if (count($this->sale->services) > 0) {
 		    	$this->x = $this->start_x;

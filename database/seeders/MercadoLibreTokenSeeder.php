@@ -15,8 +15,8 @@ class MercadoLibreTokenSeeder extends Seeder
     public function run()
     {
 
-        // $this->personal();
-        $this->leudinox();
+        $this->personal();
+        // $this->leudinox();
     }
 
     function personal() {

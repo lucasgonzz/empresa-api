@@ -297,6 +297,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('order/cancel/{order_id}', 'OrderController@cancel');
 
     Route::get('meli-order/from-date/{from_date?}/{until_date?}', 'MeLiOrderController@index');
+    Route::post('meli-order/create-sale/{id}', 'MeLiOrderController@create_sale');
+
 
     Route::resource('order-status', 'OrderStatusController');
     Route::resource('buyer', 'BuyerController');
@@ -490,6 +492,16 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('meli-listing-type', 'MeliListingTypeController@index');
     Route::get('meli-buying-mode', 'MeliBuyingModeController@index');
     Route::get('meli-item-condition', 'MeliItemConditionController@index');
+
+    Route::get('sync-to-meli-article/from-date/{from_date?}/{until_date?}', 'SyncToMeliArticleController@index');
+    
+    Route::get('sync-from-meli-article/from-date/{from_date?}/{until_date?}', 'SyncFromMeliArticleController@index');
+    Route::post('sync-from-meli-article', 'SyncFromMeliArticleController@store');
+    
+    Route::get('sync-from-meli-order/from-date/{from_date?}/{until_date?}', 'SyncFromMeliOrderController@index');
+    Route::post('sync-from-meli-order', 'SyncFromMeliOrderController@store');
+
+    Route::get('sale-channel', 'SaleChannelController@index');
 
 });
 

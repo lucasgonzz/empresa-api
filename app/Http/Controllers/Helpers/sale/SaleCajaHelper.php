@@ -15,12 +15,15 @@ class SaleCajaHelper {
 		if (count($sale->current_acount_payment_methods) >= 1
 			&&
 			(
-				!is_null($sale->caja_id)
-				&& $sale->caja_id != 0
-				&&
-				(
-					is_null($sale->client_id)
-					|| $sale->omitir_en_cuenta_corriente
+				count($sale->current_acount_payment_methods) >= 2
+				|| (
+					!is_null($sale->caja_id)
+					&& $sale->caja_id != 0
+					&&
+					(
+						is_null($sale->client_id)
+						|| $sale->omitir_en_cuenta_corriente
+					)
 				)
 			)
 		) {

@@ -96,6 +96,8 @@ class ProcessArticleImport implements ShouldQueue
             $start = $end + 1;
         }
 
+        Log::info("Terminaron chunck. Se va a llamar a FinalizeArticleImport");
+
         FinalizeArticleImport::dispatch(
             $this->import_uuid,
             'article',

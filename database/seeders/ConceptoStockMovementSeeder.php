@@ -97,6 +97,9 @@ class ConceptoStockMovementSeeder extends Seeder
             [
                 'name'  => 'Eliminacion de Promocion',
             ],
+            [
+                'name'  => 'Mercado Libre',
+            ],
 
         ];
 

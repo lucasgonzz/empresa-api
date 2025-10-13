@@ -43,12 +43,51 @@ class VenderController extends Controller
         } else {
 
             $article = $article->where('bar_code', $code);
+
+            
         }
 
         $article = $article->withAll()
                         ->first();
 
+
+        if (
+            !$article
+            && UserHelper::hasExtencion('balanza_bar_code') 
+        ) {
+            $res = $this->check_balanza($code);
+            return response()->json(['from_balanza' => true, 'article' => $res['article'], 'price_vender' => $res['price_vender']], 200);
+        }
+
         return response()->json(['article' => $article, 'variant_id' => $variant_id, 'variant' => $variant], 200);
+    }
+
+    function check_balanza($barcode) {
+
+        $prefix = substr($barcode, 0, 2);
+
+        $article = null;
+        $price_vender = null;
+
+        // Esto lo guardaria en bbdd, ahora lo harckodeo para panchito
+        // $default_article_id = 51;
+        $default_article_id = 6346;
+
+        if ($prefix == '22') {
+
+            $last_6_digits = substr($barcode, -6);
+            $amount_str = substr($last_6_digits, 0, 5);
+
+            $price_vender = intval($amount_str);
+
+            $article = Article::find($default_article_id);
+        }
+
+        return [
+            'article'           => $article,
+            'price_vender'      => $price_vender,
+        ];
+
     }
 
     function search_nombre(Request $request) {

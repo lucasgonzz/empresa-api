@@ -212,6 +212,8 @@ class ProcessRow {
 
                         unset($cambios['provider_id']);
 
+                        Log::info('Agregando para actualizar');
+
                         $this->articulosParaActualizar[] = $cambios;
                     }
 

@@ -58,11 +58,17 @@ class MercadoLibreService
             $response = Http::withToken($this->token->access_token)->{$method}($url, $data);
         }
 
+        // ⚠️ Si Mercado Libre devuelve 404 (por ejemplo, descripción no encontrada)
+        if ($response->status() === 404) {
+            Log::warning("Mercado Libre devolvió 404 para {$url}");
+            return null; // 👈 devolvemos null en lugar de lanzar excepción
+        }
+
         if (!$response->successful()) {
             ErrorHandler::send_notification($response);
             throw new \Exception("Mercado Libre API error: " . $response->body());
         }
-
+        
         return $response->json();
     }
 

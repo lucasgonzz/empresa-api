@@ -4,6 +4,7 @@ namespace App\Services\MercadoLibre;
 
 use App\Models\Article;
 use App\Models\MeliAttribute;
+use App\Models\SyncToMeliArticle;
 use App\Services\MercadoLibre\CategoryService;
 use App\Services\MercadoLibre\MercadoLibreService;
 use Illuminate\Support\Facades\Log;
@@ -15,76 +16,160 @@ class ProductService extends MercadoLibreService
     static function add_article_to_sync($article) {
 
 
-        if (!$article->mercado_libre) {
-            \Log::error("Artículo Mercado Libre: ID {$article->id}");
-            return;
-        }
+        if (
+            env('USA_MERCADO_LIBRE', false)
+        ) {
 
-        if (!$article->meli_category_id) {
-            \Log::error("Artículo sin categoria de Mercado Libre: ID {$article->id}");
-            return;
-        }
+            Log::info('add_article_to_sync');
 
-        if (is_null($article->stock)) {
-            \Log::error("Artículo sin stock para Mercado Libre: ID {$article->id}");
-            return;
-        }
+            if (!$article->mercado_libre) {
+                \Log::error("Artículo Mercado Libre: ID {$article->id}");
+                return;
+            }
 
-        if (count($article->images) == 0) {
-            \Log::error("Artículo sin imagenes para Mercado Libre: ID {$article->id}");
-            return;
-        }
+            if (!$article->meli_category_id) {
+                \Log::error("Artículo sin categoria de Mercado Libre: ID {$article->id}");
+                return;
+            }
 
-        $article->sync_meli = 1;
-        $article->save();
-    }
+            if (is_null($article->stock)) {
+                \Log::error("Artículo sin stock para Mercado Libre: ID {$article->id}");
+                return;
+            }
 
-    public function sync_article(Article $article)
-    {
+            if (count($article->images) == 0) {
+                \Log::error("Artículo sin imagenes para Mercado Libre: ID {$article->id}");
+                return;
+            }
 
-        $article->load('meli_category');
 
-        $meli_payload = [
-            'title'                 => $article->name,
-            'price'                 => (float)$this->get_price($article),
-            'currency_id'           => 'ARS',
-            'listing_type_id'       => $article->listing_type_id,
-            // 'available_quantity'    => 1,
-            'available_quantity'    => (int)$article->stock,
-            'category_id'           => $article->meli_category->meli_category_id, 
-            'buying_mode'           => $article->meli_buying_mode->meli_id,
-            'condition'             => $article->meli_item_condition->meli_id,
-            'listing_type_id'       => $article->meli_listing_type->meli_id,
-            'pictures'              => array_map(function ($image) {
-                return ['source' => $image['hosting_url']];
-            }, $article->images->toArray()),
-        ];
+            $already_exists = SyncToMeliArticle::where('article_id', $article->id)
+                                    ->where('user_id', $article->user_id)
+                                    ->where('status', 'pendiente')
+                                    ->exists();
 
-        $meli_payload = $this->add_attributes($meli_payload, $article);
-
-        $me_li_id = $article->me_li_id;
-
-        if ($me_li_id) {
-            unset($meli_payload['listing_type_id']);
-            $this->make_request('put', "items/{$me_li_id}", $meli_payload);
-        } else {
-            $response = $this->make_request('post', 'items', $meli_payload);
-            $article->me_li_id = $response['id'];
-            $article->save();
-        }
-
-        $this->set_description($article);
-    }
-
-    function set_description($article) {
-        if ($article->meli_descripcion) {
+            if (!$already_exists) {
+                SyncToMeliArticle::create([
+                    'article_id' => $article->id,
+                    'user_id' => $article->user_id,
+                    'status'    => 'pendiente',
+                ]);
+            }
             
+        }
+        
+    }
+
+    public function sync_article(SyncToMeliArticle $sync)
+    {
+        $sync->status = 'en_progreso';
+        $sync->attempted_at = now();
+        $sync->save();
+
+        try {
+            $article = $sync->article;
+            $article->load('meli_category');
+
             $meli_payload = [
-                'plain_text'    => $article->descripcion,
+                // 'title'                 => $article->name,
+                'price'                 => (float)$this->get_price($article),
+                // 'currency_id'           => 'ARS',
+                // 'listing_type_id'       => $article->listing_type_id,
+                'available_quantity'    => (int)$article->stock,
+                // 'category_id'           => $article->meli_category->meli_category_id,
+                // 'buying_mode'           => $article->meli_buying_mode->meli_id,
+                // 'condition'             => $article->meli_item_condition->meli_id,
+                // 'listing_type_id'       => $article->meli_listing_type->meli_id,
+                // 'pictures'              => array_map(function ($image) {
+                //     return ['source' => $image['hosting_url']];
+                // }, $article->images->toArray()),
             ];
 
-            $response = $this->make_request('post', "items/{$article->me_li_id}/description", $meli_payload);
+            if ($meli_payload['available_quantity'] <= 0) {
+                unset($meli_payload['available_quantity']);
 
+                $meli_payload['status'] = 'paused';
+            }
+
+            // $meli_payload = $this->add_attributes($meli_payload, $article);
+
+            $me_li_id = $article->me_li_id;
+
+            if ($me_li_id) {
+                unset($meli_payload['listing_type_id']);
+                $this->make_request('put', "items/{$me_li_id}", $meli_payload);
+            } else {
+                $response = $this->make_request('post', 'items', $meli_payload);
+                $article->me_li_id = $response['id'];
+                $article->save();
+            }
+
+            $this->set_description($article);
+
+            $sync->status = 'exitosa';
+            $sync->synced_at = now();
+            $sync->error_message = null;
+            $sync->save();
+
+        } catch (\Exception $e) {
+
+
+            \Log::error('Error al sincronizar artículo con MercadoLibre: ' . $e->getMessage());
+            
+            $error_message = $e->getMessage();
+
+            // Si el mensaje tiene un JSON de respuesta de ML, intentamos extraerlo
+            if (str_contains($error_message, 'Mercado Libre API error:')) {
+                $json_part = trim(str_replace('Mercado Libre API error:', '', $error_message));
+
+                $parsed_error = json_decode($json_part, true);
+
+                if (json_last_error() === JSON_ERROR_NONE && isset($parsed_error['cause'])) {
+
+                    if (is_array($parsed_error['cause'])) {
+                        $causes = array_map(function ($c) {
+                            return "- {$c['message']} (Código: {$c['code']})";
+                        }, $parsed_error['cause']);
+                    }
+
+                    $error_message = "Errores al sincronizar con MercadoLibre:\n" . implode("\n", $causes);
+                }
+            }
+
+            $sync->status = 'error';
+            $sync->error_message = $error_message;
+            $sync->error_message_crudo = $e->getMessage();
+            Log::info('Se marco como fallido');
+            $sync->save();
+
+        }
+    }
+
+    function set_description($article)
+    {
+        if (!$article->meli_descripcion || !$article->me_li_id) {
+            return;
+        }
+
+        $meli_payload = [
+            'plain_text' => $article->meli_descripcion,
+        ];
+
+        try {
+            // Intentamos obtener la descripción actual
+            $this->make_request('get', "items/{$article->me_li_id}/description");
+
+            // Si no lanza excepción, existe -> actualizamos (PUT)
+            $this->make_request('put', "items/{$article->me_li_id}/description", $meli_payload);
+
+        } catch (\Exception $e) {
+            if (str_contains($e->getMessage(), '404')) {
+                // Si no existe, la creamos (POST)
+                $this->make_request('post', "items/{$article->me_li_id}/description", $meli_payload);
+            } else {
+                // Otro error → lo registramos
+                \Log::error("Error al setear descripción para artículo ID {$article->id}: " . $e->getMessage());
+            }
         }
     }
 

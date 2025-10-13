@@ -16,6 +16,7 @@ class ArticlePurchaseController extends Controller
         $category_id = $request->category_id;
         $cantidad_resultados = $request->cantidad_resultados;
         $orden = $request->orden;
+        $sale_channel_id = $request->sale_channel_id;
 
         $mes_inicio = $request->mes_inicio;
         $mes_inicio = Carbon::createFromFormat('Y-m', $mes_inicio)->startOfMonth();
@@ -42,6 +43,13 @@ class ArticlePurchaseController extends Controller
 
         if (!is_null($category_id)) {
             $purchases = $purchases->where('category_id', $category_id);
+        }
+
+        if (
+            !is_null($sale_channel_id)
+            && $sale_channel_id !== 0
+        ) {
+            $purchases = $purchases->where('sale_channel_id', $sale_channel_id);
         }
 
         $purchases = $purchases->get();

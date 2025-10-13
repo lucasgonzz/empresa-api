@@ -10,9 +10,14 @@ class MeliOrder extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        $q->with('meli_buyer', 'articles.images', 'tags', 'cancel_detail');
+        $q->with('meli_buyer', 'articles.images', 'tags', 'cancel_detail', 'sale');
     }
 
+
+    public function sale()
+    {
+        return $this->hasOne(Sale::class);
+    }
 
     public function meli_buyer()
     {

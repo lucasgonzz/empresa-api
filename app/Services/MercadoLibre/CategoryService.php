@@ -117,6 +117,8 @@ class CategoryService extends MercadoLibreService
         foreach ($attributes as $attribute) {
 
             Log::info('meli_category id: '.$meli_category->id);
+            Log::info('attribute: ');
+            Log::info($attribute);
 
             $meli_attribute = MeliAttribute::create([
 
@@ -163,10 +165,11 @@ class CategoryService extends MercadoLibreService
                 && is_array($attribute['tags'])
             ) {
 
-                foreach ($attribute['tags'] as $value) {
+                foreach ($attribute['tags'] as $key => $value) {
 
                     MeliAttributeTag::create([
-                        'slug'                  => $value,
+                        'key'                   => $key,
+                        'value'                 => $value,
                         'meli_attribute_id'     => $meli_attribute->id,
                     ]);
                 }

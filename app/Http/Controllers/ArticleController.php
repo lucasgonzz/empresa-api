@@ -200,7 +200,8 @@ class ArticleController extends Controller
         ArticleVariantHelper::set_default_properties($model);
 
         $this->check_tienda_nube($model);
-        $this->check_mercado_libre($model);
+        ProductService::add_article_to_sync($model);
+
 
 
         $inventory_linkage_helper = new InventoryLinkageHelper();
@@ -302,7 +303,8 @@ class ArticleController extends Controller
         // $this->sendAddModelNotification('article', $model->id);
 
         $this->check_tienda_nube($model);
-        $this->check_mercado_libre($model);
+        ProductService::add_article_to_sync($model);
+
         
         $inventory_linkage_helper = new InventoryLinkageHelper();
         $inventory_linkage_helper->checkArticle($model);
@@ -314,14 +316,6 @@ class ArticleController extends Controller
 
         if (env('USA_TIENDA_NUBE', false)) {
             dispatch(new ProcessSyncArticleToTiendaNube($article));
-        }
-    }
-
-    function check_mercado_libre($article) {
-        if (
-            env('USA_MERCADO_LIBRE', false)
-        ) {
-            ProductService::add_article_to_sync($article);
         }
     }
 

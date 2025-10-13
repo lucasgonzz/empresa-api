@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartArticleAmountInsificienteHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
+use App\Http\Controllers\Helpers\Order\CreateSaleOrderHelper;
 use App\Http\Controllers\Helpers\RecalculateCurrentAcountsHelper;
 use App\Http\Controllers\Helpers\RecipeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
@@ -32,6 +33,7 @@ use App\Models\CurrentAcount;
 use App\Models\CurrentAcountCurrentAcountPaymentMethod;
 use App\Models\Image;
 use App\Models\InventoryLinkage;
+use App\Models\MeliOrder;
 use App\Models\MercadoLibreToken;
 use App\Models\OnlineConfiguration;
 use App\Models\Order;
@@ -61,6 +63,18 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null) {
         $this->{$method}($param);
+    }
+
+    function set_sales() {
+        
+        $meli_orders = MeliOrder::all();
+
+        $user = User::find(env('USER_ID'));
+
+        foreach ($meli_orders as $meli_order) {
+            CreateSaleOrderHelper::save_sale($meli_order, $this, false, true, $user);
+        }
+
     }
 
     function add_price_types_to_articles() {
@@ -256,6 +270,27 @@ class HelperController extends Controller
             echo 'Venta N° '.$sale->num.' liberada </br>';
         }
 
+        echo 'Listo';
+    }
+
+    function bar_code_repetidos($user_id = null) {
+
+        if (!$user_id) {
+            $user_id = env('USER_ID');
+        }
+        
+        $articles = Article::where('user_id', $user_id)
+                            ->get();
+
+        $repetidos = $articles->groupBy('bar_code')
+                        ->filter(function ($items) {
+                            return $items->count() > 1 && !is_null($items->first()->bar_code);
+                        })
+                        ->flatten();
+
+        foreach ($repetidos as $article) {
+            echo $article->name.' | bar_code: '.$article->bar_code.' repetido <br>';
+        }
         echo 'Listo';
     }
 

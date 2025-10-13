@@ -29,8 +29,8 @@ class ActualizarBBDD {
         Log::info('articulos_para_crear_CACHE:');
         Log::info(count($articulos_para_crear_CACHE));
 
-        // Log::info('articulos_para_actualizar_CACHE:');
-        // Log::info($articulos_para_actualizar_CACHE);
+        Log::info('articulos_para_actualizar_CACHE:');
+        Log::info(count($articulos_para_actualizar_CACHE));
 
         $this->user                                 = $user;
         $this->auth_user_id                         = $auth_user_id;

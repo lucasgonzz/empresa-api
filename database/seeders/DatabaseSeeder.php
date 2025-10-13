@@ -168,7 +168,7 @@ class DatabaseSeeder extends Seeder
                 $this->call(PriceTypeSeeder::class);
                 $this->call(MercadoLibreTokenSeeder::class);
                 $this->call(AddressSeeder::class);
-                $this->call(MeliArticleSeeder::class);
+                // $this->call(MeliArticleSeeder::class);
 
             } else {
 
@@ -252,6 +252,7 @@ class DatabaseSeeder extends Seeder
     }
 
     function common_seeders() {
+        $this->call(SaleChannelSeeder::class);
         $this->call(MonedaSeeder::class);
         $this->call(MeliListingTypeSeeder::class);
         $this->call(MeliBuyingModeSeeder::class);
@@ -269,6 +270,7 @@ class DatabaseSeeder extends Seeder
         $this->call(ProviderOrderStatusSeeder::class);
         $this->call(OnlinePriceTypeSeeder::class);
         $this->call(DepositMovementStatusSeeder::class);
+        $this->call(ArticleUbicationSeeder::class);
 
 
         // Estos estaban a lo ultimo

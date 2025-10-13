@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Models\SyncToMeliArticle;
 use App\Services\MercadoLibre\ProductService;
 use Illuminate\Console\Command;
 
@@ -12,7 +13,7 @@ class sync_mercado_libre extends Command
      *
      * @var string
      */
-    protected $signature = 'sync_mercado_libre';
+    protected $signature = 'sync_to_meli_articles';
 
     /**
      * The console command description.
@@ -39,17 +40,16 @@ class sync_mercado_libre extends Command
     public function handle()
     {
 
-        $articles = Article::where('user_id', env('USER_ID'))
-                            ->where('need_sync_to_meli', 1)
+        $sync_articles = SyncToMeliArticle::where('user_id', env('USER_ID'))
+                            ->where('status', 'pendiente')
                             ->get();
+
+        $this->info(count($sync_articles).' sincronizaciones');
 
         $service = new ProductService();
 
-        foreach ($articles as $article) {
-            $service->sync_article($article);
-
-            $article->need_sync_to_meli = 0;
-            $article->save();
+        foreach ($sync_articles as $sync) {
+            $service->sync_article($sync);
         }
 
         return 0;

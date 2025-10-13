@@ -19,10 +19,6 @@ class LocationController extends Controller
 
     public function store(Request $request) {
 
-        // if (is_null($request->name)) {
-        //     return response(null, 200);
-        // }
-        
         $model = Location::create([
             'num'                   => $this->num('locations'),
             'name'                  => $request->name,
@@ -30,8 +26,9 @@ class LocationController extends Controller
             'codigo_postal'                  => $request->codigo_postal,
             'user_id'               => $this->userId(),
         ]);
-        $this->sendAddModelNotification('Location', $model->id);
+
         return response()->json(['model' => $this->fullModel('Location', $model->id)], 201);
+        
     }  
 
     public function show($id) {

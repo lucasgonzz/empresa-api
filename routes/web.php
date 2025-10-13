@@ -57,9 +57,7 @@ Route::get('/mercadolibre/callback', function (\Illuminate\Http\Request $request
 });
 
 // Para recibir notificaciones desde MercadoLibre
-Route::get('/mercadolibre/webhook', function (\Illuminate\Http\Request $request) {
-   
-});
+Route::post('/mercadolibre/webhook', 'MercadoPagoController@webhook');
 
 Route::get('/mercadolibre/category_for_article/{article_id}', function ($article_id) {
    

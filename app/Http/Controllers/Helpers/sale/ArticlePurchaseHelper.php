@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\sale;
 
 use App\Models\ArticlePurchase;
+use App\Models\SaleChannel;
 
 class ArticlePurchaseHelper {
 	
@@ -23,6 +24,7 @@ class ArticlePurchaseHelper {
 					'price'			=> $article->pivot->price,
 					'amount'		=> $article->pivot->amount,
 					'created_at'	=> $sale->created_at,
+					'sale_channel_id'	=> Self::get_sale_channel_id($sale),
 				]);
 					
 			}
@@ -30,6 +32,19 @@ class ArticlePurchaseHelper {
 			Self::combos($sale);
 		}
 
+	}
+
+	static function get_sale_channel_id($sale) {
+		if ($sale->meli_order_id) {
+			return SaleChannel::where('slug', 'mercado_libre')->first()->id;
+		}
+		if ($sale->order_id) {
+			return SaleChannel::where('slug', 'ecommerce')->first()->id;
+		}
+		if ($sale->tienda_nube_order_id) {
+			return SaleChannel::where('slug', 'tienda_nube')->first()->id;
+		}
+		return SaleChannel::where('slug', 'sistema')->first()->id;
 	}
 
 	static function combos($sale) {

@@ -43,7 +43,10 @@ class set_costo_ventas extends Command
 
         foreach ($sales as $sale) {
 
-            if ($sale->total < $sale->total_cost) {
+            // if (
+            //     $sale->total <= $sale->total_cost
+            //     || (float)$sale->total_cost <= 0
+            // ) {
                 
                 foreach ($sale->articles as $article) {
                     
@@ -54,8 +57,34 @@ class set_costo_ventas extends Command
                     if ($article->costo_real) {
 
                         $cost = (float)$article->costo_real;
+
+
+                        if ($sale->valor_dolar) {
+                            
+                            if ($sale->moneda_id == 1) {
+
+                                // Pesos
+                                if ($article->cost_in_dollars == 1) {
+                                    $cost *= (float)$sale->valor_dolar;
+                                }
+
+                            } else if ($sale->moneda_id == 2) {
+
+                                if (
+                                    $article->cost_in_dollars == 0
+                                    || is_null($article->cost_in_dollars)
+                                ) {
+                                    $cost /= (float)$sale->valor_dolar;
+                                }
+                            } 
+                        }
+
+
                         $price = $article->pivot->price;
                         $amount = $article->pivot->amount;
+
+                        $cost *= $amount;
+                        $price *= $amount;
 
                         $ganancia = $price - $cost;
 
@@ -78,7 +107,7 @@ class set_costo_ventas extends Command
 
                 }
                 $this->comment('Listo venta '.$sale->id);
-            }
+            // }
         }
         $this->info('Termino');
         return 0;

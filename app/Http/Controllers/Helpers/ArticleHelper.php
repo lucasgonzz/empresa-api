@@ -25,6 +25,7 @@ use App\Models\Recipe;
 use App\Models\Sale;
 use App\Models\SpecialPrice;
 use App\Models\User;
+use App\Services\MercadoLibre\ProductService;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
@@ -160,6 +161,7 @@ class ArticleHelper {
                 } else if ($article->cost_in_dollars > 0) {
                     $final_price = $final_price * $user->dollar;
                 }
+                Log::info('Costo cotizado: '.$final_price);
             }
 
 
@@ -262,6 +264,8 @@ class ArticleHelper {
             $article = ArticlePricesHelper::set_precios_en_blanco($article);
         }
 
+        ProductService::add_article_to_sync($article);
+        
         if ($guardar_cambios) {
             $article->timestamps = false;
             $article->save();

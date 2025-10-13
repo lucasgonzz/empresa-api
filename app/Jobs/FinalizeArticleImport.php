@@ -51,6 +51,7 @@ class FinalizeArticleImport implements ShouldQueue
 
         foreach ($results as $result) {
             Log::Info('Sumando '.$result->created_count.' creados');
+            Log::Info('Sumando '.$result->updated_count.' actualizados');
             $articulos_creados += $result->created_count;
             $articulos_actualizados += $result->updated_count;
         }

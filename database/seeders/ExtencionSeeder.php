@@ -363,7 +363,10 @@ class ExtencionSeeder extends Seeder
                 'slug' => 'buscar_por_categoria_en_vender',
             ],
 
-
+            [
+                'name' => 'Codigos de barra de balanzas',
+                'slug' => 'balanza_bar_code',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

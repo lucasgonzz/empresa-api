@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Jobs\ProcessSyncArticleImageToTiendaNube;
 use App\Models\Image;
+use App\Services\MercadoLibre\ProductService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -61,6 +62,8 @@ class ImageController extends Controller
                 if (env('USA_TIENDA_NUBE', false)) {
                     dispatch(new ProcessSyncArticleImageToTiendaNube($model, $image));
                 }
+
+                ProductService::add_article_to_sync($model);
             }
 
         } else {
@@ -102,6 +105,11 @@ class ImageController extends Controller
 
         Storage::disk('public')->delete($image_name);
         $image->delete();
+
+        if ($model_name == 'article') {
+            ProductService::add_article_to_sync($model);
+        }
+
         return response()->json(['model' => $this->fullModel($model_name, $model_id)], 200);
     }
 

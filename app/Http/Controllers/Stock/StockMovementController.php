@@ -18,6 +18,7 @@ use App\Models\Article;
 use App\Models\ArticleVariant;
 use App\Models\ConceptoStockMovement;
 use App\Models\StockMovement;
+use App\Services\MercadoLibre\ProductService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -116,6 +117,7 @@ class StockMovementController extends Controller
         SetStockUpdatedAt::set_stock_updated_at($stock_movement, $article);
 
         $this->check_tienda_nube($article);
+        ProductService::add_article_to_sync($article);
 
         return $stock_movement;
     }

@@ -170,6 +170,7 @@ class SaleHelper extends Controller {
         if (!is_null($request) && $request->employee_id != 0) {
             return $request->employee_id;
         }
+
         $user = Auth()->user();
         if (!is_null($user->owner_id)) {
             return $user->id;
@@ -213,8 +214,11 @@ class SaleHelper extends Controller {
 
     static function attachProperies($model, $request, $from_store = true, $previus_articles = null, $previus_combos = null, $previus_promos = null, $sale_modification = null, $se_esta_confirmando_por_primera_vez = false) {
 
+        Log::info('attachProperies');
+
         Self::attachArticles($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
         
+        Log::info('1');
 
         Self::attachPromocionVinotecas($model, $request->items, $previus_promos);
         Self::attachCombos($model, $request->items, $previus_combos);
@@ -225,6 +229,7 @@ class SaleHelper extends Controller {
 
         Self::attachSelectedPaymentMethods($model, $request);
         
+        Log::info('2');
         if (!$from_store) {
             SaleModificationsHelper::attach_articulos_despues_de_actualizar($model, $sale_modification);
             
@@ -240,6 +245,7 @@ class SaleHelper extends Controller {
             }
         }
 
+        Log::info('3');
         /*
             * Si se esta confirmando, el total que llega de vender esta mal
                 porque no tiene en cuenta las unidades chequedas, las cuales ahora
@@ -251,6 +257,7 @@ class SaleHelper extends Controller {
         }
 
 
+        Log::info('4');
         if ($from_store && !$model->to_check && !$model->checked) {
             
             Self::create_current_acount($model);
@@ -264,6 +271,7 @@ class SaleHelper extends Controller {
             Self::checkNotaCredito($model, $request);
         }
 
+        Log::info('5');
         ArticlePurchaseHelper::set_article_purcase($model);
 
         SaleTotalesHelper::set_total_cost($model);
@@ -876,11 +884,9 @@ class SaleHelper extends Controller {
 
             
             if ($sale->moneda_id == 1) {
-                Log::info('pesos');
                 // Pesos
                 if (isset($item['cost_in_dollars']) && $item['cost_in_dollars'] == 1) {
                     $cost *= (float)$sale->valor_dolar;
-                    Log::info('cotizado a peso: '.$cost);
                 }
 
             } else if ($sale->moneda_id == 2) {
@@ -891,7 +897,6 @@ class SaleHelper extends Controller {
                     || is_null($item['cost_in_dollars'])
                 ) {
                     $cost /= (float)$sale->valor_dolar;
-                    Log::info('cotizado a dolar: '.$cost);
                 }
             } 
         }

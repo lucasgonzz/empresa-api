@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\Order\CreateSaleOrderHelper;
 use App\Models\MeliOrder;
 use Illuminate\Http\Request;
 
@@ -54,5 +55,15 @@ class MeLiOrderController extends Controller
         $model->delete();
         $this->sendDeleteModelNotification('MeliOrder', $model->id);
         return response(null);
+    }
+
+    function create_sale($id) {
+        
+        $meli_order = MeliOrder::find($id);
+
+        CreateSaleOrderHelper::save_sale($meli_order, $this, false, true);
+
+        return response()->json(['model' => $this->fullModel('MeliOrder', $id)], 200);
+
     }
 }
