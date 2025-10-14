@@ -148,6 +148,7 @@ class ChequeController extends Controller
                 'fecha_emision'             => $cheque->fecha_emision,
                 'fecha_pago'                => $cheque->fecha_pago,
                 'es_echeq'                  => $cheque->es_echeq,
+                'endosado_desde_client_id'  => $cheque->client_id,
             ],
         ];
 
@@ -164,7 +165,7 @@ class ChequeController extends Controller
             'detalle'                           => 'Pago N°'.$num_receipt,
             'provider_id'                       => $cheque->endosado_a_provider_id,
             'created_at'                        => Carbon::now(),
-            'credit_account'                    => $credit_account->id,
+            'credit_account_id'                    => $credit_account->id,
         ]);
 
         CurrentAcountPagoHelper::attachPaymentMethods($pago, $payment_methods);

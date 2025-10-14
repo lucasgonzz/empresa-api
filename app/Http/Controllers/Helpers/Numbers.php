@@ -14,21 +14,30 @@ class Numbers {
         return round($num, 2, PHP_ROUND_HALF_UP);
     }
 
-	static function price($price) {
+	static function price($price, $con_signo = false, $moneda_id = null) {
 		$pos = strpos($price, '.');
 		if ($pos != false) {
 			$centavos = explode('.', $price)[1];
 			$new_price = explode('.', $price)[0];
 			if ($centavos != '00') {
 				$new_price += ".$centavos";
-				$resutl = number_format($price, 2, ',', '.');
+				$result = number_format($price, 2, ',', '.');
 			} else {
-				$resutl = number_format($new_price, 0, '', '.');			
+				$result = number_format($new_price, 0, '', '.');			
 			}
 		} else {
-			$resutl = number_format($price, 0, '', '.');
+			$result = number_format($price, 0, '', '.');
 		}
-		return $resutl;
+
+        if ($moneda_id) {
+            if ($moneda_id == 1) {
+                return '$'.$result;
+            } else if ($moneda_id == 2) {
+                return 'USD '.$result;
+            }
+        }
+
+		return $result;
 	}
 
 	

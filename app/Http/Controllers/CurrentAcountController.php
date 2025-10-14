@@ -22,6 +22,7 @@ use App\Http\Controllers\Pdf\NotaCreditoPdf;
 use App\Http\Controllers\Pdf\PagoPdf;
 use App\Imports\CurrentAcountsImport;
 use App\Models\Commissioner;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
 use App\Models\Seller;
@@ -46,7 +47,10 @@ class CurrentAcountController extends Controller
                         ->with('cheques')
                         ->with('sale.afip_ticket')
                         ->orderBy('created_at', 'DESC')
-                        ->get();
+                        // ->get();
+                        ->get()
+                        ->reverse() // <- Este es el truco
+                        ->values(); // <- Esto resetea los índices del array
         // $models = CurrentAcountHelper::format($models);
         return response()->json(['models' => $models], 200);
     }
@@ -206,18 +210,14 @@ class CurrentAcountController extends Controller
         // $this->sendAddModelNotification($model_name, $model_id, false);
     }
 
-    function pdfFromModel($model_name, $model_id, $months_ago) {
-        $months_ago = Carbon::now()->subMonths($months_ago);
-        $models = CurrentAcount::whereDate('created_at', '>=', $months_ago)
-                                ->orderBy('created_at', 'ASC');
+    function pdfFromModel($credit_account_id, $cantidad_movimientos) {
+        $credit_account = CreditAccount::find($credit_account_id);
+        $models = CurrentAcount::where('credit_account_id', $credit_account_id)
+                                ->orderBy('created_at', 'ASC')
+                                ->take($cantidad_movimientos)
+                                ->get();
                                 
-        if ($model_name == 'client') {
-            $models = $models->where('client_id', $model_id);
-        } else if ($model_name == 'provider') {
-            $models = $models->where('provider_id', $model_id);
-        }
-        $models = $models->get();
-        new CurrentAcountPdf($models);
+        new CurrentAcountPdf($credit_account, $models);
     }
 
     function pdf($ids, $model_name) {

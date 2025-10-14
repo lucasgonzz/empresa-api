@@ -9,12 +9,13 @@ require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class CurrentAcountPdf extends fpdf {
 
-	function __construct($models) {
+	function __construct($credit_account, $models) {
 		parent::__construct();
 		$this->SetAutoPageBreak(true, 1);
 		$this->b = 0;
 		$this->line_height = 7;
 		
+		$this->credit_account = $credit_account;
 		$this->models = $models;
 
 		$this->AddPage();
@@ -74,10 +75,10 @@ class CurrentAcountPdf extends fpdf {
 	function saldo_actual() {
 		$this->y = 32;
 		$this->x = 105;
-		$this->SetFont('Arial', 'B', 18);
+		$this->SetFont('Arial', 'B', 16);
 
 		$saldo = $this->models[count($this->models)-1]->saldo;
-		$saldo = '$'.Numbers::price($saldo);
+		$saldo = Numbers::price($saldo, true, $this->credit_account->moneda_id);
 
 		$this->Cell(100, 15, 'Saldo actual: '.$saldo, 1, 0, 'C');
 	}
@@ -107,7 +108,7 @@ class CurrentAcountPdf extends fpdf {
 				if (
 					$model->pagandose > 0
 				) {
-					$pagandose = '$'.Numbers::price($model->pagandose);
+					$pagandose = Numbers::price($model->pagandose, true, $this->credit_account->moneda_id);
 					$detalle .= " ($pagandose)";
 				} else {
 					$detalle .= ' (Sin pagar)';
@@ -122,12 +123,12 @@ class CurrentAcountPdf extends fpdf {
 
 		$this->x = PdfHelper::getWidthUntil('Detalle', $this->getFields());
 
-		$debe = $model->debe ? '$'.Numbers::price($model->debe) : '';
-		$haber = $model->haber ? '$'.Numbers::price($model->haber) : '';
+		$debe = $model->debe ? Numbers::price($model->debe, true, $this->credit_account->moneda_id) : '';
+		$haber = $model->haber ? Numbers::price($model->haber, true, $this->credit_account->moneda_id) : '';
 
 		$this->Cell($this->getFields()['Debe'], $this->line_height, $debe, $this->b, 0, 'L');
 		$this->Cell($this->getFields()['Haber'], $this->line_height, $haber, $this->b, 0, 'L');
-		$this->Cell($this->getFields()['Saldo'], $this->line_height, '$'.Numbers::price($model->saldo), $this->b, 0, 'L');
+		$this->Cell($this->getFields()['Saldo'], $this->line_height, Numbers::price($model->saldo, true, $this->credit_account->moneda_id), $this->b, 0, 'L');
 
 		$this->MultiCell($this->getFields()['Descripcion'], $this->line_height, $model->description, $this->b, 'L', false);
 		$y_3 = $this->y;

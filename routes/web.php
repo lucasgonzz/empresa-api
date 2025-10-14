@@ -302,7 +302,7 @@ Route::get('budget/pdf/{id}/{with_prices}/{with_images}', 'BudgetController@pdf'
 Route::get('order-production/pdf/{id}/{with_prices}', 'OrderProductionController@pdf');
 Route::get('order-production/articles-pdf/{id}', 'OrderProductionController@articlesPdf');
 
-Route::get('/current-acount/pdf/{model_name}/{model_id}/{months_ago}', 'CurrentAcountController@pdfFromModel');
+Route::get('/current-acount/pdf/{credit_account_id}/{months_ago}', 'CurrentAcountController@pdfFromModel');
 Route::get('/current-acount/pdf/{ids}/{model_name}', 'CurrentAcountController@pdf');
 
 Route::get('order/pdf/{id}/', 'OrderController@pdf');
@@ -327,5 +327,10 @@ Route::get('sales/excel/export/{from_date}/{until_date?}', 'SaleController@excel
 Route::get('user/register-payment/{company_name}', 'CommonLaravel\UserController@registerPayment');
 Route::get('caja', 'SaleController@caja');
 Route::get('sale/charts/{from}/{to}', 'SaleController@charts');
+
+
+
+Route::get('afip-txt/{mes_inicio}/{mes_fin}', 'AfipController@exportVentas');
+Route::get('afip-txt-alicuotas/{mes_inicio}/{mes_fin}', 'AfipController@exportAlicuotasTxt');
 
 

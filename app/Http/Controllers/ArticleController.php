@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeMonedaHelper;
+use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
 use App\Http\Controllers\Helpers\article\ArticleVariantHelper;
 use App\Http\Controllers\Helpers\article\BarCodeAutomaticoHelper;
 use App\Http\Controllers\Helpers\article\ResetStockHelper;

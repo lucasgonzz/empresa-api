@@ -8,9 +8,13 @@ use Illuminate\Support\Facades\Log;
 
 class ArticleUbicationsHelper {
 
-    static function init_ubications($article) {
-        $ubications = ArticleUbication::where('user_id', UserHelper::userId())
-                                        ->get();
+    static function init_ubications($article, $ubications = null) {
+
+        if (!$ubications) {
+            
+            $ubications = ArticleUbication::where('user_id', UserHelper::userId())
+                                            ->get();
+        }
 
             
         foreach ($ubications as $ubication) {

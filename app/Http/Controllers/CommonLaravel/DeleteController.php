@@ -35,7 +35,7 @@ class DeleteController extends Controller
             $send_notification = false;
         }
         foreach ($models as $model) {
-            $controller_name = 'App\\Http\\Controllers\\'.ucfirst($model_name).'Controller';
+            $controller_name = 'App\\Http\\Controllers\\'.explode('\\', $formated_model_name)[2].'Controller';
             $controller = new $controller_name();
 
             Log::info(Auth()->user()->name.' va a eliminar '.$model_name.' id: '.$model->id);

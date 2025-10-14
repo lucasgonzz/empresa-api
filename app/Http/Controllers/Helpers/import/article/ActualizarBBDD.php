@@ -5,12 +5,14 @@ namespace App\Http\Controllers\Helpers\import\article;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
+use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Jobs\ProcessSyncArticleToTiendaNube;
 use App\Models\Article;
 use App\Models\ArticleProperty;
 use App\Models\ArticlePropertyType;
 use App\Models\ArticlePropertyValue;
+use App\Models\ArticleUbication;
 use App\Models\ArticleVariant;
 use App\Models\PriceType;
 use Carbon\Carbon;
@@ -206,12 +208,26 @@ class ActualizarBBDD {
         $this->set_precios_finales();
 
 
+        $this->set_article_ubications();
+
+
 
         $this->guardar_variantes_desde_cache_simple();
 
 
 
         $this->actualizar_tienda_nube();
+    }
+
+    function set_article_ubications() {
+
+        $ubications = ArticleUbication::where('user_id', $this->user->id)
+                                        ->get();
+
+        foreach ($this->articulos_creados_models as $article) {
+            ArticleUbicationsHelper::init_ubications($article, $ubications);
+        }
+
     }
 
     function actualizar_tienda_nube() {

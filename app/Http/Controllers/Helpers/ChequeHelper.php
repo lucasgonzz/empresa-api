@@ -28,6 +28,7 @@ class ChequeHelper {
 
             // Proveedor al que se le emitió el cheque (si tipo = emitido)
             'provider_id'               => $pago->provider_id,
+            'endosado_desde_client_id'               => isset($payment_method['endosado_desde_client_id']) ? $payment_method['endosado_desde_client_id'] : null,
 
             // Cuenta corriente relacionada
             'current_acount_id'         => $pago->id,

@@ -89,6 +89,7 @@ class UserController extends Controller
         $model->percentage_gain                  = $request->percentage_gain;
         $model->scroll_en_tablas                  = $request->scroll_en_tablas;
         $model->cotizar_precios_en_dolares        = $request->cotizar_precios_en_dolares;
+        $model->cc_ultimas_arriba        = $request->cc_ultimas_arriba;
 
         $model->save();
 

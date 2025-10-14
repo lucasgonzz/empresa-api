@@ -317,7 +317,7 @@ class SaleAfipTicketPdf extends fpdf {
 
 		foreach ($importes['ivas'] as $iva => $importe) {
 			if ($importe['Importe'] > 0) {
-				$this->Cell(40, 5, 'IVA '.$iva.'%: $'.Numbers::price($importe['Importe']), 1, 0, 'L');
+				$this->Cell(40, 5, 'IVA '.$iva.'%: $'.Numbers::price($importe['Importe']), 1, 1, 'L');
 			}
 		}
 		

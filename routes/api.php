@@ -503,6 +503,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('sale-channel', 'SaleChannelController@index');
 
+    Route::resource('article-ubication', 'ArticleUbicationController');
+    Route::put('article-ubication/article/{article_id}', 'ArticleUbicationController@update_article');
+
 });
 
 

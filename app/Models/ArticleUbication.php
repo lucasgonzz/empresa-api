@@ -7,5 +7,9 @@ use Illuminate\Database\Eloquent\Model;
 
 class ArticleUbication extends Model
 {
-    use HasFactory;
+    protected $guarded = [];
+
+    function scopeWithAll($q) {
+        
+    }
 }

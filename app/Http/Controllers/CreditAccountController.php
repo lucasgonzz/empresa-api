@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use Illuminate\Http\Request;
@@ -19,7 +20,13 @@ class CreditAccountController extends Controller
                             ->with('pagado_por')
                             ->with('cheques')
                             ->with('sale.afip_ticket')
+                            // ->get();
                             ->get();
+
+        if (!UserHelper::user()->cc_ultimas_arriba) {
+            $models = $models->reverse()->values();
+        }
+                            
         return response()->json(['models' => $models], 200);
     }
 

@@ -70,8 +70,8 @@ class VenderController extends Controller
         $price_vender = null;
 
         // Esto lo guardaria en bbdd, ahora lo harckodeo para panchito
-        // $default_article_id = 51;
-        $default_article_id = 6346;
+        $default_article_id = 52;
+        // $default_article_id = 6346;
 
         if ($prefix == '22') {
 
