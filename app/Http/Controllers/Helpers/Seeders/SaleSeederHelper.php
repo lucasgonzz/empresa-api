@@ -21,6 +21,7 @@ class SaleSeederHelper {
                 'employee_id'       => $sale['employee_id'],
                 'client_id'         => $sale['client_id'],
                 'created_at'        => $sale['created_at'],
+                'moneda_id'         => 1,
                 'fecha_entrega'     => RequestHelper::isset_array($sale, 'fecha_entrega'),
                 'terminada'     	=> RequestHelper::isset_array($sale, 'terminada', 1),
                 'confirmed'     	=> RequestHelper::isset_array($sale, 'confirmed', 1),

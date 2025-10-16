@@ -110,13 +110,13 @@ class DatabaseSeeder extends Seeder
             } else if ($for_user == 'golo_norte') {
 
                 $this->call(ArticleSeeder::class);
-                $this->call(ComboSeeder::class);
+                // $this->call(ComboSeeder::class);
                 $this->call(CategoryPriceTypeRangeSeeder::class);
                 $this->call(ArticlePriceTypeGroupSeeder::class);
 
-                $this->call(SaleRoadMapSeeder::class);
+                // $this->call(SaleRoadMapSeeder::class);
 
-                $this->call(RoadMapSeeder::class);
+                // $this->call(RoadMapSeeder::class);
 
             } else if ($for_user == 'ferretodo') {
 
@@ -161,9 +161,13 @@ class DatabaseSeeder extends Seeder
                 $this->call(AddressSeeder::class);
                 $this->call(ArticleUbicationSeeder::class);
 
-                // $this->call(PriceTypeSeeder::class);
+                $this->call(PriceTypeSeeder::class);
                 $this->call(ArticleSeeder::class);
                 // $this->call(ArticleDolarSeeder::class);
+
+                
+                $this->call(SaleReporteSeeder::class);
+                $this->call(SaleReporteArticuloSeeder::class);
 
             } else if ($for_user == 'leudinox') {
 

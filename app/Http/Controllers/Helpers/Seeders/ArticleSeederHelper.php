@@ -85,13 +85,13 @@ class ArticleSeederHelper {
             'status'                => isset($article['status']) ? $article['status'] : 'active',
             'featured'              => isset($article['featured']) ? $article['featured'] : null,
             'provider_id'           => isset($article['provider_id']) ? $article['provider_id'] : null,
-            'percentage_gain'       => 100,
+            'percentage_gain'       => isset($article['percentage_gain']) ? $article['percentage_gain'] : 100,
             'iva_id'                => isset($article['iva_id']) ? $article['iva_id'] : 2,
             'featured'              => isset($article['featured']) ? $article['featured'] : null,
             
             'presentacion'          => isset($article['presentacion']) ? $article['presentacion'] : null,
             
-            'apply_provider_percentage_gain'    => 0,
+            'apply_provider_percentage_gain'    => isset($article['apply_provider_percentage_gain']) ? $article['apply_provider_percentage_gain'] : 0,
             'default_in_vender'     => isset($article['default_in_vender']) && env('FOR_USER') == 'hipermax' ? $article['default_in_vender'] : null,
             'category_id'           => $this->getCategoryId($article),
             'sub_category_id'       => $this->getSubcategoryId($article),

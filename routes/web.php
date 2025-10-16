@@ -303,7 +303,7 @@ Route::get('order-production/pdf/{id}/{with_prices}', 'OrderProductionController
 Route::get('order-production/articles-pdf/{id}', 'OrderProductionController@articlesPdf');
 
 Route::get('/current-acount/pdf/{credit_account_id}/{months_ago}', 'CurrentAcountController@pdfFromModel');
-Route::get('/current-acount/pdf/{ids}/{model_name}', 'CurrentAcountController@pdf');
+Route::get('/current-acount/pdf/{ids}', 'CurrentAcountController@pdf');
 
 Route::get('order/pdf/{id}/', 'OrderController@pdf');
 

@@ -301,11 +301,16 @@ class ExportHelper {
 
 	static function setPriceTypesHeadings($headings) {
 		$price_types = Self::getPriceTypes();
+		Log::info('price_types: ');
+		Log::info($price_types);
 		if (count($price_types) >= 1) {
+
+			Log::info('setPriceTypesHeadings');
 
 			foreach ($price_types as $price_type) {
 
 				if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
+					Log::info('agregando');
 
 					// $headings[] = '% '.$price_type->name;
 					$headings[] = 'Setear precio final '.$price_type->name;

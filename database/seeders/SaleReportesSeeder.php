@@ -56,6 +56,7 @@ class SaleReportesSeeder extends Seeder
                     'employee_id'       => $employee_id,
                     'address_id'        => $address_id,
                     'client_id'         => $address_id < 3 ? 1 : null,
+                    'moneda_id'         => 1,
                     'articles'          => [
                         [
                             'id'            => 1,
@@ -138,6 +139,7 @@ class SaleReportesSeeder extends Seeder
                     'employee_id'       => 504,
                     'address_id'        => 2,
                     'client_id'         => null,
+                    'moneda_id'         => 1,
                     'articles'          => [
                         [
                             'id'            => 1,

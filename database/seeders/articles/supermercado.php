@@ -25,7 +25,7 @@ $articles = [
         'featured'          => null,
         'bar_code'          => '002',
         'provider_code'     => 'p-002',
-        'iva_id'            => 3,
+        'iva_id'            => 2,
         'name'              => 'Mate Torpedo',
         'stock'             => null,
         'cost'              => 1000,
@@ -74,12 +74,15 @@ $articles = [
         'featured'          => null,
         'bar_code'          => '003',
         'provider_code'     => 'p-003',
-        'iva_id'            => 3,
+        'iva_id'            => 2,
         'name'              => 'Fanta',
         'stock'             => null,
-        'cost'              => 1000,
+        'cost'              => 1.5,
         'sub_category_name' => 'Cocacola',
+        'percentage_gain'   => null,
+        'apply_provider_percentage_gain'    => 1,
         'provider_id'       => 1,
+        'cost_in_dollars'   => 1,
         'images'            => [
             [
                 'url'       => get_image('storage/supermercado/fanta.webp'),
@@ -99,17 +102,20 @@ $articles = [
 
     [
         'featured'          => null,
-        'bar_code'          => '003',
+        'bar_code'          => '5449000054227',
         'provider_code'     => 'p-003',
-        'iva_id'            => 3,
-        'name'              => 'Lima limon',
+        'iva_id'            => 2,
+        'name'              => 'Coca Cola 2L',
         'stock'             => null,
-        'cost'              => 1000,
+        'cost'              => 1.5,
         'sub_category_name' => 'Manaos',
+        'percentage_gain'   => null,
+        'apply_provider_percentage_gain'    => 1,
+        'cost_in_dollars'   => 1,
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => get_image('storage/supermercado/limalimon.webp'),
+                'url'       => get_image('storage/supermercado/cocacola.webp'),
             ],
         ],
         'addresses'     => [
@@ -129,16 +135,16 @@ $articles = [
         'featured'          => null,
         'bar_code'          => '7622201735364',
         'provider_code'     => 'p-221132',
-        'iva_id'            => 3,
+        'iva_id'            => 2,
         'name'              => 'Jugo tang',
         'stock'             => null,
         'cost'              => 100,
         'sub_category_name' => 'Manaos',
         'provider_id'       => 1,
         'images'            => [
-            // [
-            //     'url'       => get_image('storage/supermercado/limalimon.webp'),
-            // ],
+            [
+                'url'       => get_image('storage/supermercado/tang.jpg'),
+            ],
         ],
         'addresses'     => [
             [

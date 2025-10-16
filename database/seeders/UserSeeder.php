@@ -67,7 +67,12 @@ class UserSeeder extends Seeder
                     'pausar_tienda_online'          => 0,
                 ],
                 'base_de_datos'                     => 'empresa_prueba_1',
-                'google_custom_search_api_key'      => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
+
+                // San blas
+                'google_custom_search_api_key'      => 'AIzaSyCgzE6haVi8uZnenfAvYJO5hn7m7Cl09Gw',
+                
+                // Comun para todos
+                // 'google_custom_search_api_key'      => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
                 'info_afip_del_primer_punto_de_venta'   => 0,
             ],
         ];
@@ -180,7 +185,7 @@ class UserSeeder extends Seeder
             $models[0]['name'] = 'Rafa';
             $models[0]['company_name'] = 'Racing carts';
 
-            $models[0]['cotizar_precios_en_dolares'] = 0;
+            // $models[0]['cotizar_precios_en_dolares'] = 0;
             $models[0]['iva_included'] = 0;
             $models[0]['iva_condition_id'] = 1;
             $models[0]['doc_number'] = '1234';
@@ -200,10 +205,10 @@ class UserSeeder extends Seeder
                 'autopartes',
                 'pagos_provisorios',
 
-                // 'articulo_margen_de_ganancia_segun_lista_de_precios',
-                // 'cambiar_price_type_en_vender',
+                'articulo_margen_de_ganancia_segun_lista_de_precios',
+                'cambiar_price_type_en_vender',
 
-                'ventas_en_dolares',
+                // 'ventas_en_dolares',
             ];
 
         } else if ($this->for_user == 'demo') {

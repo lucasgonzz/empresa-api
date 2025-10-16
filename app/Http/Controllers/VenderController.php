@@ -56,7 +56,11 @@ class VenderController extends Controller
             && UserHelper::hasExtencion('balanza_bar_code') 
         ) {
             $res = $this->check_balanza($code);
-            return response()->json(['from_balanza' => true, 'article' => $res['article'], 'price_vender' => $res['price_vender']], 200);
+
+            // if (!is_null($res['article'])) {
+
+                return response()->json(['from_balanza' => true, 'article' => $res['article'], 'price_vender' => $res['price_vender']], 200);
+            // }
         }
 
         return response()->json(['article' => $article, 'variant_id' => $variant_id, 'variant' => $variant], 200);

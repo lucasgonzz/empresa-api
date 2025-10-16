@@ -47,6 +47,8 @@ class FinalizeArticleImport implements ShouldQueue
         $articulos_creados = 0;
         $articulos_actualizados = 0;
 
+        Log::info('');
+        Log::info('FinalizeArticleImport');
         Log::info('Creando import_history con '.count($results).' results y import_uuid: '.$this->import_uuid);
 
         foreach ($results as $result) {
@@ -63,6 +65,7 @@ class FinalizeArticleImport implements ShouldQueue
 
         ArticleImportHelper::enviar_notificacion($this->user, $articulos_creados, $articulos_actualizados);
 
+        Log::info('Se envio notificacion');
 
         Artisan::call('set_article_address_stock_from_variants', [
             'user_id' => $this->user->id

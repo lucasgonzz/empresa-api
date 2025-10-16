@@ -18,6 +18,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCuotaHelper;
 use App\Http\Controllers\Pdf\AfipTicketPdf;
 use App\Http\Controllers\Pdf\CurrentAcountPdf;
+use App\Http\Controllers\Pdf\CurrentAcount\NewPagoPdf;
 use App\Http\Controllers\Pdf\NotaCreditoPdf;
 use App\Http\Controllers\Pdf\PagoPdf;
 use App\Imports\CurrentAcountsImport;
@@ -220,10 +221,13 @@ class CurrentAcountController extends Controller
         new CurrentAcountPdf($credit_account, $models);
     }
 
-    function pdf($ids, $model_name) {
+    function pdf($ids) {
+        // dd('asd');
         $ids = explode('-', $ids);
+
         if (count($ids) == 1) {
             $model = CurrentAcount::find($ids[0]);
+        
             if ($model->status == 'pago_from_client') {
                 if (!is_null($model->client_id)) {
                     $model_name = 'client';
@@ -231,7 +235,8 @@ class CurrentAcountController extends Controller
                     $model_name = 'provider';
                 }
                 $pdf = new PagoPdf($model, $model_name);
-                $pdf->printCurrentAcounts();
+                $pdf->printPago();
+                // $pdf = new NewPagoPdf($model, $model_name);
             } else if ($model->status == 'nota_credito') {
                 if (!is_null($model->afip_ticket)) {
                     $pdf = new AfipTicketPdf(null, $model);

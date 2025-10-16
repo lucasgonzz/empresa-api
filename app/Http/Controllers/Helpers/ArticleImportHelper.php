@@ -49,6 +49,8 @@ class ArticleImportHelper {
         	])
     	);
 
+        Log::info('Se ejecuto ArticleImportHelper enviar_notificacion');
+
 	}
 
 	static function error_notification($user, $linea_error, $detalle_error) {
@@ -150,6 +152,8 @@ class ArticleImportHelper {
     static function create_import_history($user, $auth_user_id, $provider_id, $columns, $archivo_excel_path, $error_message = null, $articulos_creados, $articulos_actualizados) {
 
     	Log::info('create_import_history, columns:');
+
+    	$columns = Self::convertirPosicionesAColumnas($columns);
     	Log::info($columns);
     	
         $import_history = ImportHistory::create([
@@ -170,6 +174,35 @@ class ArticleImportHelper {
 
         Log::info('Se creo ImportHistory con '.$articulos_creados.' creados y '.$articulos_actualizados.' actualizados con provider_id: '.$provider_id);
     }
+
+    static function convertirPosicionesAColumnas(array $posiciones)
+	{
+	    $resultado = [];
+
+	    foreach ($posiciones as $campo => $posicion) {
+	        if ($posicion < 0) {
+	            $resultado[$campo] = null; // Por si alguna posición no está definida
+	        } else {
+	            $resultado[$campo] = Self::numeroAColumnaExcel($posicion);
+	        }
+	    }
+
+	    return $resultado;
+	}
+
+	static function numeroAColumnaExcel(int $num)
+	{
+	    $columna = '';
+	    $num++; // porque A es la posición 0
+
+	    while ($num > 0) {
+	        $resto = ($num - 1) % 26;
+	        $columna = chr(65 + $resto) . $columna;
+	        $num = intval(($num - 1) / 26);
+	    }
+
+	    return $columna;
+	}
 
     static function guardar_proveedor($columns, $row, $ct, $user) {
 
@@ -203,7 +236,7 @@ class ArticleImportHelper {
     static function get_observations($columns) {
         $observations = 'Columnas para importar: ';
         foreach ($columns as $nombre_columna => $key) {
-            $observations .= $nombre_columna . ' ' . ' en la posicion '. $key . '. ';
+            $observations .= $nombre_columna . ' ' . ' => '. $key . '. ';
         }
         return $observations;
     }

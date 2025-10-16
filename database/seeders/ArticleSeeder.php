@@ -80,11 +80,20 @@ class ArticleSeeder extends Seeder
 
         $helper = new ArticleSeederHelper();
 
+        $num_article = 1;
+        
         for ($vuelta_article=1; $vuelta_article <= $this->repetir_articlulos ; $vuelta_article++) { 
 
             foreach ($articles as $article) {
 
-                $article['bar_code'] = $num;
+                if (
+                    !isset($article['bar_code'])
+                    || strlen($article['bar_code']) < 4
+                ) {
+                    $article['bar_code'] = $num;
+                } 
+
+                $article['name'] .= ' '.$num_article;
 
                 $num++;
 
@@ -107,6 +116,7 @@ class ArticleSeeder extends Seeder
 
                 ArticleUbicationsHelper::init_ubications($art);
             }
+            $num_article++;
         }
     }
 

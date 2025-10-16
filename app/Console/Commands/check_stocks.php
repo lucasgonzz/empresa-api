@@ -78,6 +78,7 @@ class check_stocks extends Command
                 'asunto'    => 'Stocks Mal | '.$owner->company_name . ' | user_id: '.env('USER_ID'),
                 'mensajes'  => $articulos_mal,
             ]));      
+            
             $this->comment('Se envio mail');      
         }
     }
