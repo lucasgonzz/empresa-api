@@ -50,7 +50,7 @@ class TCPDCCatalog extends TCPDF
 
     }
 
-    public function generate(string $logoPath, string $businessName, array $infoHeader, string $articles_ids)
+    public function generate(string $logoPath, string $businessName, array $infoHeader, string $articles_ids, $moneda_id)
     {
 
         $this->set_items($articles_ids);
@@ -130,13 +130,34 @@ class TCPDCCatalog extends TCPDF
             $this->SetFont('helvetica', '', 12);
             $py = $this->GetY();
 
-            if (count($article->price_types) >= 1) {
+            if (count($article->price_type_monedas) >= 1) {
+
+
+                foreach ($article->price_type_monedas as $price_type_moneda) {
+                    
+                    if ($price_type_moneda->moneda_id == $moneda_id) {
+
+                        $this->SetX($x + 50);
+                    
+                        $price = Numbers::price($price_type_moneda->final_price, true, $moneda_id);
+                    
+                        $this->Cell(0, 6, $price_type_moneda->price_type->name.': '.$price, 0, 1, 'L');
+                    }
+
+                }
+
+            } else if (count($article->price_types) >= 1) {
 
                 foreach ($article->price_types as $price_type) {
+                    
+
                     $this->SetX($x + 50);
+                
                     $price = Numbers::price($price_type->pivot->final_price);
+                
                     $this->Cell(0, 6, $price_type->name.': $'.$price, 0, 1, 'L');
                 }
+
             } else {
 
                 $this->SetX($x + 50);

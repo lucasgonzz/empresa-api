@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Jobs\AttachArticleUbicationChunk;
 use App\Models\Article;
 use App\Models\ArticleUbication;
 use Illuminate\Bus\Queueable;
@@ -37,9 +38,8 @@ class AttachArticleUbications implements ShouldQueue
 
         Article::where('user_id', $article_ubication->user_id)
             ->chunk(1000, function ($articles) use ($article_ubication) {
-                foreach ($articles as $article) {
-                    $article->article_ubications()->attach($article_ubication->id);
-                }
+                $article_ids = $articles->pluck('id')->toArray();
+                AttachArticleUbicationChunk::dispatch($article_ids, $article_ubication->id);
             });
     }
 }

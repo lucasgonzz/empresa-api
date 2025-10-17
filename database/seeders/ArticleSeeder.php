@@ -5,6 +5,7 @@ namespace Database\Seeders;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\Seeders\ArticleSeederHelper;
+use App\Http\Controllers\Helpers\article\ArticlePriceTypeMonedaHelper;
 use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
@@ -17,6 +18,7 @@ use App\Models\Category;
 use App\Models\Cepa;
 use App\Models\Description;
 use App\Models\Image;
+use App\Models\PriceType;
 use App\Models\Provider;
 use App\Models\SubCategory;
 use App\Models\User;
@@ -56,7 +58,9 @@ class ArticleSeeder extends Seeder
 
     function lucas() {
         
-        $user = User::find(env('USER_ID'));
+        $this->user = User::find(env('USER_ID'));
+
+        $this->price_types = PriceType::all();
 
         $bsas = Provider::where('user_id', env('USER_ID'))
                             ->where('name', 'Buenos Aires')
@@ -110,7 +114,11 @@ class ArticleSeeder extends Seeder
                 $this->createDescriptions($art, $article); 
                 $this->setColors($art, $article); 
                 // $this->setAddresses($art, $article); 
+
                 ArticleHelper::setFinalPrice($art, env('USER_ID'));
+
+                $this->crear_price_type_monedas($art);
+                
                 $this->setStockMovement($art, $article);
                 // ArticleHelper::setArticleStockFromAddresses($art);
 
@@ -118,6 +126,27 @@ class ArticleSeeder extends Seeder
             }
             $num_article++;
         }
+    }
+
+    function crear_price_type_monedas($art) {
+
+        $price_type_monedas = [];
+
+        for ($moneda_id=1; $moneda_id <3 ; $moneda_id++) { 
+
+            foreach ($this->price_types as $price_type) {
+                $price_type_monedas[] = [
+                    'price_type_id' => $price_type->id,
+                    'moneda_id' => $moneda_id,
+                    'setear_precio_final'   => 0,
+                    'final_price'   => null,
+                    'percentage'    => $price_type->id * 20,
+                ];    
+            }
+        }
+        
+        ArticlePriceTypeMonedaHelper::attach_price_type_monedas($art, $price_type_monedas, $this->user);
+
     }
 
     function set_props_vinoteca($created_article, $article) {

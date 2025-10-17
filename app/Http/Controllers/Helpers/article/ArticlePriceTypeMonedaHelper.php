@@ -9,11 +9,13 @@ use Illuminate\Support\Facades\Log;
 class ArticlePriceTypeMonedaHelper {
 
 
-    static function attach_price_type_monedas($article, $price_type_monedas) {
+    static function attach_price_type_monedas($article, $price_type_monedas, $user = null) {
 
         if (empty($price_type_monedas)) return;
 
-        $user = UserHelper::user();
+        if (!$user) {
+            $user = UserHelper::user();
+        }
 
         $cost = $article->cost;
 

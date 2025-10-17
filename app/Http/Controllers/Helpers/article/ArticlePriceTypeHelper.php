@@ -11,7 +11,9 @@ use Illuminate\Support\Facades\Log;
 class ArticlePriceTypeHelper {
 
     static function attach_price_types($article, $price_types) {
-        
+
+        // if (UserHelper::hasExtencion('ventas_en_dolares')) return; 
+
         foreach ($price_types as $price_type) {
 
             $article->price_types()->syncWithoutDetaching($price_type['id']);
