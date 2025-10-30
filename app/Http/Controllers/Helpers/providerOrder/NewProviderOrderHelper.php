@@ -209,7 +209,17 @@ class NewProviderOrderHelper {
                 $current_acount = $this->crear_current_acount();
             } else {
 
-                $current_acount = $this->actualizar_current_acount($current_acount);
+                $cambio_moneda = $this->check_cambio_moneda();
+
+                if ($cambio_moneda) {
+
+                    $current_acount = $this->crear_current_acount();
+                    
+                } else {
+
+                    $current_acount = $this->actualizar_current_acount($current_acount);
+                }
+
             }
 
             CurrentAcountHelper::check_saldos_y_pagos($this->credit_account->id);
@@ -218,6 +228,7 @@ class NewProviderOrderHelper {
     }
 
     function actualizar_current_acount($current_acount) {
+
         
         $current_acount->debe = $this->provider_order->total;
 
@@ -228,6 +239,36 @@ class NewProviderOrderHelper {
         $current_acount->save();
 
         return $current_acount;
+    }
+
+
+    /*
+        Si en este punto, filtrando ademas por credit_account_id, 
+        no encuentra current_acount, es porque el current_acount que se encontro
+        antes pertenece a otra credit_account.
+
+        Entonces busco current_acount sin filtrar por credit_account y la elimino 
+    */
+    function check_cambio_moneda() {
+            
+        $current_acount = CurrentAcount::where('provider_order_id', $this->provider_order->id)
+                                        ->where('credit_account_id', $this->credit_account->id)
+                                        ->first();
+
+        if (!$current_acount) {
+
+            $current_acount = CurrentAcount::where('provider_order_id', $this->provider_order->id)
+                                            ->first();
+
+            $credit_account_id = $current_acount->credit_account_id;
+            $current_acount->delete();
+
+            CurrentAcountHelper::check_saldos_y_pagos($credit_account_id);
+
+            return true;
+        }
+
+        return false;
     }
 
     function crear_current_acount() {

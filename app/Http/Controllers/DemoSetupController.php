@@ -80,6 +80,8 @@ class DemoSetupController extends Controller
         // Asignar extensiones según configuración
         $extencions = ['comerciocity_interno', 'ask_save_current_acount', 'online', 'costo_en_dolares', 'budgets', 'acopios'];
         $seeders = [
+            'MonedaSeeder',
+            'SaleChannelSeeder',
             'CheckStatusSeeder',
             'OnlineTemplateSeeder',
             'ConceptoStockMovementSeeder',

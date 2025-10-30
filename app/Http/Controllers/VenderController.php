@@ -13,6 +13,10 @@ use Illuminate\Support\Facades\Log;
 class VenderController extends Controller
 {
     function search_bar_code($code) {
+        
+        $inicio = microtime(true);
+        Log::info('Incia search_bar_code con codigo: '.$code);
+
 
         $article = Article::where('user_id', $this->userId());
         
@@ -57,13 +61,29 @@ class VenderController extends Controller
         ) {
             $res = $this->check_balanza($code);
 
-            // if (!is_null($res['article'])) {
+            if (!is_null($res['article'])) {
 
+                $this->fin($code, $inicio, $res['article']);
                 return response()->json(['from_balanza' => true, 'article' => $res['article'], 'price_vender' => $res['price_vender']], 200);
-            // }
+            }
         }
 
+        $this->fin($code, $inicio, $article);
+
         return response()->json(['article' => $article, 'variant_id' => $variant_id, 'variant' => $variant], 200);
+    }
+
+    function fin($code, $inicio, $article) {
+
+        $fin = microtime(true);
+        $duracion = $fin - $inicio;
+
+        Log::info('Duración total para '.$code.': ' . number_format($duracion, 3) . ' segundos');
+        if ($article) {
+            Log::info('Articulo encontrado para el codigo '.$code.': '.$article->name.'. id: '.$article->id);
+        } else {
+            Log::info('NO se encontro Articulo para el codigo '.$code);
+        }
     }
 
     function check_balanza($barcode) {
@@ -74,8 +94,11 @@ class VenderController extends Controller
         $price_vender = null;
 
         // Esto lo guardaria en bbdd, ahora lo harckodeo para panchito
-        $default_article_id = 52;
-        // $default_article_id = 6346;
+        if (env('APP_ENV') == 'local') {
+            $default_article_id = 60;
+        } else {
+            $default_article_id = 6346;
+        }
 
         if ($prefix == '22') {
 
@@ -133,8 +156,8 @@ class VenderController extends Controller
 
         $articles = $articles->get();
 
-        // Log::info('articles:');
-        // Log::info($articles);
+        Log::info('articles:');
+        Log::info($articles);
 
         foreach ($articles as $article) {
 
@@ -158,6 +181,8 @@ class VenderController extends Controller
 
             // Si el artículo tiene variantes
             if ($article->article_variants->count() > 0) {
+
+                Log::info('Buscando variantes');
 
                 // Filtrar variantes que coincidan con todas las palabras restantes
                 $matching_variants = $article->article_variants->filter(function ($variant) use ($remaining_keywords) {

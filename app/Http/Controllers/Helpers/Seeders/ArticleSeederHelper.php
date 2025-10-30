@@ -74,7 +74,7 @@ class ArticleSeederHelper {
             // 'num'                   => $num,
             // 'bar_code'              => $article['name'].rand(99999, 9999999),
             'bar_code'              => $article['bar_code'],
-            'provider_code'         => 'p/'.$article['bar_code'],
+            'provider_code'         => $article['provider_code'],
             'name'                  => $article['name'],
             'slug'                  => ArticleHelper::slug($article['name'], env('USER_ID')),
             'cost'                  => $article['cost'],

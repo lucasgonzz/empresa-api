@@ -139,14 +139,62 @@ class ArticleImportHelper {
     }
 
     static function create_article_import_result($import_uuid, $articulos_creados, $articulos_actualizados) {
-    	
-        $import_history = ArticleImportResult::create([
+        
+        $import_result = ArticleImportResult::create([
 		    'import_uuid'    => $import_uuid,
-		    'created_count'  => $articulos_creados,
-		    'updated_count'  => $articulos_actualizados,
+		    'created_count'  => count($articulos_creados),
+		    'updated_count'  => count($articulos_actualizados),
         ]);
 
-        Log::info('Se creo ArticleImportResult con '.$articulos_creados.' creados y '.$articulos_actualizados.' actualizados con import_uuid: '.$import_uuid);
+
+        Log::info('create_article_import_result, articulos_creados:');
+        Log::info($articulos_creados);
+
+        
+		// 2) Adjuntar articulos_creados (IDs únicos)
+		$created_ids = [];
+		foreach ($articulos_creados as $article) {
+		    if (!empty($article['id'])) {
+		        $created_ids[] = (int)$article['id'];
+		    }
+		}
+		$created_ids = array_values(array_unique($created_ids));
+
+		if (!empty($created_ids)) {
+		    $import_result->articulos_creados()->attach($created_ids);
+		}
+
+		// 3) Adjuntar articulos_actualizados con updated_props en pivot
+		foreach ($articulos_actualizados as $article) {
+		    if (empty($article['id'])) {
+		        continue;
+		    }
+		    $article_id = (int)$article['id'];
+
+		    // Clonamos y removemos la clave 'id' para guardar sólo props y diffs
+		    $props = $article;
+		    unset($props['id']);
+
+		    // Guardamos JSON (tal cual viene, con __diff__ incluidos)
+		    $import_result->articulos_actualizados()->attach($article_id, [
+		        'updated_props' => json_encode($props, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION),
+		    ]);
+		}
+
+        Log::info('Se creo ArticleImportResult con '.count($articulos_creados).' creados y '.count($articulos_actualizados).' actualizados con import_uuid: '.$import_uuid);
+
+        // Log::info('create_article_import_result:');
+        // Log::info('');
+        // Log::info('');
+        
+        // Log::info('articulos_creados:');
+        // Log::info($articulos_creados);
+        
+        // Log::info('');
+        // Log::info('');
+        // Log::info('articulos_actualizados:');
+        // Log::info($articulos_actualizados);
+    	
     }
 
     static function create_import_history($user, $auth_user_id, $provider_id, $columns, $archivo_excel_path, $error_message = null, $articulos_creados, $articulos_actualizados) {
@@ -234,6 +282,9 @@ class ArticleImportHelper {
     }
 
     static function get_observations($columns) {
+    	
+    	$columns = Self::convertirPosicionesAColumnas($columns);
+
         $observations = 'Columnas para importar: ';
         foreach ($columns as $nombre_columna => $key) {
             $observations .= $nombre_columna . ' ' . ' => '. $key . '. ';

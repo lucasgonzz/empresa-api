@@ -263,7 +263,17 @@ class PdfHelper {
 
 		    	$index++;
 				
-				$instance->Cell(100, 5, $prop['text'].': '.Self::getPropValue($data['model_info'], $prop), $instance->b, 1, 'L');
+				$text = $prop['text'].': '.Self::getPropValue($data['model_info'], $prop);
+				
+			    $instance->MultiCell(
+					100, 
+					5, 
+					$text, 
+			    	$instance->b, 
+			    	'L', 
+			    	false
+			    );
+
 
 				if ($index < 6) {
 

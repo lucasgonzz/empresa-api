@@ -37,6 +37,10 @@ class Numbers {
             }
         }
 
+        if ($con_signo) {
+            return '$'.$result;
+        }
+
 		return $result;
 	}
 

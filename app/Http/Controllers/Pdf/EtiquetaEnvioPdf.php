@@ -44,6 +44,24 @@ class EtiquetaEnvioPdf extends fpdf {
 		}
 
         $this->Image($logo, 10, 5, 70, 70);
+
+
+		$this->SetFont('Arial', '', 12);
+
+        $this->y = 20;
+
+        $this->x = 105;
+		$this->Cell(100, $this->line_height, 'Mail: 2r.racing.p@gmail.com', $this->b, 1, 'L');
+		
+        $this->x = 105;
+		$this->Cell(100, $this->line_height, 'Cuit: 33716718919', $this->b, 1, 'L');
+		
+        $this->x = 105;
+		$this->Cell(100, $this->line_height, 'Codigo Postal: 1846', $this->b, 1, 'L');
+		
+        $this->x = 105;
+		$this->Cell(100, $this->line_height, 'Localidad: Adrogue', $this->b, 1, 'L');
+		
 		
 
 
@@ -52,7 +70,7 @@ class EtiquetaEnvioPdf extends fpdf {
 		// Izquierda
 		$this->SetFont('Arial', 'B', 12);
 
-		$this->y += 70;
+		$this->y = 80;
 		$this->x = 5;
 
 		$this->Cell(100, $this->line_height, 'Nombre: '.explode(' ', $this->sale->client->name)[0], $this->b, 1, 'L');

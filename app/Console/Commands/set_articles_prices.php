@@ -46,9 +46,11 @@ class set_articles_prices extends Command
             $user_id = $this->argument('user_id');
         }
 
+
         $user = User::find($user_id);
 
         $articles = Article::where('user_id', $user_id)
+                            // ->where('id', 18233)
                             ->get();
 
         $price_types = PriceType::where('user_id', $user_id)
@@ -60,7 +62,7 @@ class set_articles_prices extends Command
             ArticleHelper::setFinalPrice($article, $user->id, $user, $user->id, true, $price_types);
             $this->info($article->name.' listo');
         }
-        $this->info('Termino');
+        $this->info('Termino. '.count($articles).' articulos');
         return 0;
     }
 }

@@ -24,9 +24,11 @@ use App\Jobs\ProcessRecalculateCurrentAcounts;
 use App\Jobs\ProcessSetStockResultante;
 use App\Jobs\SetSalesTerminadaAtJob;
 use App\Models\Article;
+use App\Models\ArticlePriceTypeMoneda;
 use App\Models\Budget;
 use App\Models\Buyer;
 use App\Models\Category;
+use App\Models\Cheque;
 use App\Models\Client;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
@@ -63,6 +65,47 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null) {
         $this->{$method}($param);
+    }
+
+    function articulos_redondeados() {
+        $articles = Article::whereRaw('MOD(final_price, 10) = 0')->get();
+
+        foreach ($articles as $article) {
+
+            if ($article->final_price > 0) {
+                
+                echo $article->id. ' <br>';
+                ArticleHelper::setFinalPrice($article, env('USER_ID'));
+            }
+        }
+    }
+
+    function set_precios_golden() {
+        $articles = Article::all();
+
+        $price_types = PriceType::all();
+
+        foreach ($articles as $article) {
+            if (count($article->price_type_monedas) == 0) {
+
+
+                echo '<strong>'.$article->id.' no tiene </strong> <br>';
+                
+                foreach ($price_types as $price_type) {
+                    for ($moneda_id=1; $moneda_id < 3; $moneda_id++) { 
+                        ArticlePriceTypeMoneda::create([
+                            'article_id'     => $article->id,
+                            'moneda_id'     => $moneda_id,
+                            'price_type_id'     => $price_type->id,
+                        ]);
+                    }
+                }
+                
+            } else {
+                echo $article->id.' SI tiene <br>';
+            }
+        }
+        echo 'Listo';
     }
 
     function set_sales() {
@@ -291,6 +334,34 @@ class HelperController extends Controller
         foreach ($repetidos as $article) {
             echo $article->name.' | bar_code: '.$article->bar_code.' repetido <br>';
         }
+        echo 'Listo';
+    }
+
+    function cheques_repetidos($user_id = null) {
+
+        if (!$user_id) {
+            $user_id = env('USER_ID');
+        }
+        
+        $cheques = Cheque::where('user_id', $user_id)
+                            ->get();
+
+        $repetidos = $cheques->groupBy('numero')
+                        ->filter(function ($items) {
+                            return $items->count() > 1 && !is_null($items->first()->numero);
+                        })
+                        ->flatten();
+
+        $index = 0;
+
+        foreach ($repetidos as $cheque) {
+            if ($index > 0) {
+                $cheque->delete();
+            }
+            $index++;
+            echo $cheque->numero.' | numero: '.$cheque->numero.' repetido <br>';
+        }
+
         echo 'Listo';
     }
 

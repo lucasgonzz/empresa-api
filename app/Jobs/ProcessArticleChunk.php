@@ -19,12 +19,11 @@ class ProcessArticleChunk implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     protected $import_uuid, $archivo_excel_path, $columns, $create_and_edit, $start_row, $finish_row,
-              $provider_id, $import_history_id, $pre_import_id,
-              $user, $auth_user_id, $no_actualizar_articulos_de_otro_proveedor;
+              $provider_id, $user, $auth_user_id, $no_actualizar_articulos_de_otro_proveedor;
 
     public $timeout = 1200; // 20 minutos por chunk, ajustable
 
-    public function __construct($import_uuid, $archivo_excel_path, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id)
+    public function __construct($import_uuid, $archivo_excel_path, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id)
     {
         $this->import_uuid = $import_uuid;
         $this->archivo_excel_path = $archivo_excel_path;
@@ -34,8 +33,6 @@ class ProcessArticleChunk implements ShouldQueue
         $this->start_row = $start_row;
         $this->finish_row = $finish_row;
         $this->provider_id = $provider_id;
-        $this->import_history_id = $import_history_id;
-        $this->pre_import_id = $pre_import_id;
         $this->user = $user;
         $this->auth_user_id = $auth_user_id;
     }
@@ -61,8 +58,7 @@ class ProcessArticleChunk implements ShouldQueue
                 $this->columns, $this->create_and_edit,
                 $this->no_actualizar_articulos_de_otro_proveedor,
                 $this->start_row, $this->finish_row,
-                $this->provider_id, $this->import_history_id,
-                $this->pre_import_id, $this->user,
+                $this->provider_id, $this->user,
                 $this->auth_user_id, $this->archivo_excel_path
             ), $this->archivo_excel_path, null, $reader_type);
 

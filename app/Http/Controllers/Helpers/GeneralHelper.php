@@ -158,11 +158,28 @@ class GeneralHelper {
             }
 
             // Si la imagen ya es JPG, simplemente devuelve la URL
-            if ($this->isJpg($image_url)) {
+            if (Self::isJpg($image_url)) {
                 return $image_url;
             }
         }
         return $image_url;
+    }
+
+    function isJpg($file) {
+        // Verifica que el archivo exista
+        if (!file_exists($file)) {
+            return false;
+        }
+        
+        // Obtiene información sobre la imagen
+        $imageInfo = getimagesize($file);
+        
+        // Verifica si el tipo MIME es 'image/jpeg'
+        if ($imageInfo && $imageInfo['mime'] == 'image/jpeg') {
+            return true;
+        }
+        
+        return false;
     }
 
 }

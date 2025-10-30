@@ -38,6 +38,6 @@ class PaymentPlanController extends Controller
             $sale
         );
 
-        return response()->json($plan, 201);
+        return response()->json(['model'    => $plan], 201);
     }
 }

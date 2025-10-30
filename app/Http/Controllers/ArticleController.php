@@ -387,7 +387,7 @@ class ArticleController extends Controller
 
         $owner = User::find($this->userId());
         
-        ProcessArticleImport::dispatch($import_uuid, $archivo_excel, $columns, $request->create_and_edit, $request->no_actualizar_articulos_de_otro_proveedor, $request->start_row, $request->finish_row, $request->provider_id, $request->import_history_id, $request->pre_import_id, $owner, Auth()->user()->id, $archivo_excel_path);
+        ProcessArticleImport::dispatch($import_uuid, $archivo_excel, $columns, $request->create_and_edit, $request->no_actualizar_articulos_de_otro_proveedor, $request->start_row, $request->finish_row, $request->provider_id, $owner, Auth()->user()->id, $archivo_excel_path);
 
         return response(null, 200);
     }
@@ -496,6 +496,10 @@ class ArticleController extends Controller
 
     function pdf($ids, $moneda_id = null) {
         $user = $this->user();     
+
+        if ($moneda_id == 'undefined') {
+            $moneda_id = null;
+        }
 
         if (env('APP_ENV') == 'production') {
             $image = $user->image_url;

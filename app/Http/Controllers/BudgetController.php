@@ -28,6 +28,7 @@ class BudgetController extends Controller
         }
 
         $models = $models->get();
+        
         return response()->json(['models' => $models], 200);
     }
 

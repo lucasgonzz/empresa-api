@@ -98,6 +98,7 @@ class ProviderOrderController extends Controller
         $model->update_prices                               = $request->update_prices;
         $model->generate_current_acount                     = $request->generate_current_acount;
         $model->numero_comprobante                          = $request->numero_comprobante;        
+        $model->moneda_id                                   = $request->moneda_id;        
         $model->save();
 
         $helper = new NewProviderOrderHelper($model, $request->articles, $ya_se_actualizo_stock);

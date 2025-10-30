@@ -405,7 +405,7 @@ class UserSeeder extends Seeder
                 'article_variants',
             ];
 
-        }  else if ($this->for_user == 'bad_girls') {
+        } else if ($this->for_user == 'bad_girls') {
 
             $models[0]['name'] = 'Angeles';
 
@@ -426,6 +426,27 @@ class UserSeeder extends Seeder
                 'cajas',
                 'article_variants',
                 'articulos_en_exhibicion',
+            ];
+
+        } else if ($this->for_user == 'trama') {
+
+            $models[0]['name'] = 'Luis';
+
+            $models[0]['iva_included'] = 0;
+
+            $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
+
+            $models[0]['extencions'] = [
+
+                'budgets',
+                'bar_code_scanner',
+                'comerciocity_interno',
+                'articulo_margen_de_ganancia_segun_lista_de_precios',
+                'cambiar_price_type_en_vender',
+                'online',
+                'article.costo_real',
+                'setear_precio_final_en_listas_de_precio',
+                'cajas',
             ];
 
         } else if ($this->for_user == 'truvari') {

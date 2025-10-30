@@ -90,12 +90,15 @@ class ArticleSeeder extends Seeder
 
             foreach ($articles as $article) {
 
-                if (
-                    !isset($article['bar_code'])
-                    || strlen($article['bar_code']) < 4
-                ) {
-                    $article['bar_code'] = $num;
-                } 
+                // if (
+                //     !isset($article['bar_code'])
+                //     || strlen($article['bar_code']) < 4
+                // ) {
+                //     $article['bar_code'] = $num;
+                // } 
+                $article['bar_code'] .= $num;
+
+                $article['provider_code'] = $num.'/'.$article['provider_code'];
 
                 $article['name'] .= ' '.$num_article;
 
@@ -245,6 +248,19 @@ class ArticleSeeder extends Seeder
                 $ct->crear($data, false, null, null, $segundos);
                 $segundos += 5;
             }
+
+            foreach ($article['addresses'] as $address) {
+
+                if (isset($address['min'])) {
+                    $created_article->addresses()->updateExistingPivot($address['id'], [
+                        'stock_min'   => $address['min'],
+                        'stock_max'   => $address['max'],
+                    ]);
+                }
+            }
+
+
+
         } else if (
             isset($article['stock'])
             && !is_null($article['stock'])

@@ -146,6 +146,9 @@ class ExportHelper {
 	static function mapAddresses($map, $article) {
 		$addresses = Self::getAddresses();
 		if (count($addresses) >= 1) {
+			
+			// unset($map[7]);
+
 			foreach ($addresses as $address) {
 				$map[] = $article->{$address->street};
 				$map[] = $article->{'stock_min_'.$address->street};
@@ -163,6 +166,10 @@ class ExportHelper {
 			if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
 				Log::info('articulo_margen_de_ganancia_segun_lista_de_precios');
 				
+				unset($map[13]);
+				unset($map[18]);
+				unset($map[22]);
+
 				// Caso Pack descartables
 				foreach ($price_types as $price_type) {
 
@@ -277,6 +284,9 @@ class ExportHelper {
 	static function setAddressesHeadings($headings) {
 		$addresses = Self::getAddresses();
 		if (count($addresses) >= 1) {
+
+			// unset($headings[7]);
+
 			foreach ($addresses as $address) {
 				$headings[] = $address->street;
 				$headings[] = 'Min '.$address->street;
@@ -301,11 +311,13 @@ class ExportHelper {
 
 	static function setPriceTypesHeadings($headings) {
 		$price_types = Self::getPriceTypes();
-		Log::info('price_types: ');
-		Log::info($price_types);
 		if (count($price_types) >= 1) {
 
 			Log::info('setPriceTypesHeadings');
+
+			unset($headings[13]);
+			unset($headings[18]);
+			unset($headings[22]);
 
 			foreach ($price_types as $price_type) {
 
@@ -348,7 +360,10 @@ class ExportHelper {
 	static function setAddresses($articles) {
 		$addresses = Self::getAddresses();
 		if (count($addresses) >= 1) {
+			
+
 			foreach ($articles as $article) {
+	
 				foreach ($addresses as $address) {
 					
 					$stock_address = null;

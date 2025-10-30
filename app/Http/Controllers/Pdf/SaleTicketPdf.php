@@ -427,6 +427,11 @@ class SaleTicketPdf extends fpdf {
 
 	function date() {
 		$date = date_format($this->sale->created_at, 'd/m/Y H:i');
+
+		if ($this->sale->afip_ticket) {
+			$date = date_format($this->sale->afip_ticket->created_at, 'd/m/Y H:i');
+		}
+
 	    $this->x = $this->x_incial;
 	    $this->SetFont('Arial', '', 9);
 		$this->Cell($this->cell_ancho, 5, $date, $this->b, 0, 'L');

@@ -57,6 +57,10 @@ class CurrentAcount extends Model
         return $this->hasOne('App\Models\AfipTicket', 'nota_credito_id');
     }
 
+    public function to_pay() {
+        return $this->belongsTo(CurrentAcount::class, 'to_pay_id');
+    }
+
     public function articles() {
         return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'price', 'discount');
     }

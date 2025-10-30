@@ -76,6 +76,7 @@ class UserSetupController extends Controller
         $extencions = ['comerciocity_interno', 'ask_save_current_acount'];
         
         $seeders = [
+            'SaleChannelSeeder',
             'CheckStatusSeeder',
             'OnlineTemplateSeeder',
             'ConceptoStockMovementSeeder',

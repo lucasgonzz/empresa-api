@@ -87,13 +87,16 @@ class ArticleHelper {
 
     static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null) {
 
-        Log::info('setFinalPrice para '.$article->name.' con costo de '.$article->cost.' y precio de '.$article->price);
+        Log::info('setFinalPrice para '.$article->name.' ,id: '.$article->id.' con costo de '.$article->cost.' y precio de '.$article->price);
+
+        $costo_real = null;
 
         if (
             is_null($article->cost)
             && is_null($article->price)
         ) {
             return [
+                'costo_real'            => $costo_real,
                 'final_price'           => null,
                 'current_final_price'   => null,
             ];
@@ -106,6 +109,7 @@ class ArticleHelper {
                 $user = User::find($user_id);
             }
         }
+
 
         $current_final_price = $article->final_price;
 
@@ -149,6 +153,7 @@ class ArticleHelper {
 
                 Log::info('costo_real luego de iva: '.$final_price);
                 $article->costo_real = $final_price;
+                $costo_real = $final_price;
                 
             }  
 
@@ -271,6 +276,7 @@ class ArticleHelper {
             $article->save();
         } else {
             return [
+                'costo_real'            => $costo_real,
                 'final_price'           => $final_price,
                 'current_final_price'   => $current_final_price,
             ];

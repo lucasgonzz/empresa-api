@@ -41,7 +41,7 @@ class PromocionVinotecaSeeder extends Seeder
                         ],
                     ],
                 ],
-                'image' => env('APP_IMAGES_URL').'/storage/vinoteca/promo.webp',
+                'image' => env('APP_IMAGES_URL').'storage/vinoteca/promo.webp',
             ],
             [
                 'name'  => 'Promo 2',
@@ -66,7 +66,7 @@ class PromocionVinotecaSeeder extends Seeder
                         ],
                     ],
                 ],
-                'image' => env('APP_IMAGES_URL').'/storage/vinoteca/promo2.webp',
+                'image' => env('APP_IMAGES_URL').'storage/vinoteca/promo2.webp',
             ],
             [
                 'name'  => 'Promo 3',
@@ -91,7 +91,7 @@ class PromocionVinotecaSeeder extends Seeder
                         ],
                     ],
                 ],
-                'image' => env('APP_IMAGES_URL').'/storage/vinoteca/promo3.webp',
+                'image' => env('APP_IMAGES_URL').'storage/vinoteca/promo3.webp',
             ],
             [
                 'name'  => 'Promo 4',
@@ -116,7 +116,7 @@ class PromocionVinotecaSeeder extends Seeder
                         ],
                     ],
                 ],
-                'image' => env('APP_IMAGES_URL').'/storage/vinoteca/promo.webp',
+                'image' => env('APP_IMAGES_URL').'storage/vinoteca/promo.webp',
             ],
             [
                 'name'  => 'Promo 5',
@@ -141,7 +141,7 @@ class PromocionVinotecaSeeder extends Seeder
                         ],
                     ],
                 ],
-                'image' => env('APP_IMAGES_URL').'/storage/vinoteca/promo2.webp',
+                'image' => env('APP_IMAGES_URL').'storage/vinoteca/promo2.webp',
             ],
             [
                 'name'  => 'Promo 6',
@@ -166,7 +166,7 @@ class PromocionVinotecaSeeder extends Seeder
                         ],
                     ],
                 ],
-                'image' => env('APP_IMAGES_URL').'/storage/vinoteca/promo3.webp',
+                'image' => env('APP_IMAGES_URL').'storage/vinoteca/promo3.webp',
             ],
         ];
 
@@ -196,7 +196,7 @@ class PromocionVinotecaSeeder extends Seeder
             Image::create([
                 'imageable_type'                            => 'promocion_vinoteca',
                 'imageable_id'                              => $promo->id,
-                env('IMAGE_URL_PROP_NAME', 'image_url')     => env('APP_IMAGES_URL').'/storage/vinoteca/trumpeter.webp',
+                env('IMAGE_URL_PROP_NAME', 'image_url')     => env('APP_IMAGES_URL').'storage/vinoteca/trumpeter.webp',
             ]);
         }
     }

@@ -9,6 +9,11 @@ class Cheque extends Model
 {
     protected $guarded = [];
 
+    public $dates = [
+        'fecha_emision',
+        'fecha_pago',
+    ];
+
     function scopeWithAll($q) {
         $q->with('client', 'provider', 'cobrado_por', 'rechazado_por');
     }

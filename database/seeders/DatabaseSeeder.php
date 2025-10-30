@@ -149,6 +149,13 @@ class DatabaseSeeder extends Seeder
                 $this->article_variants();
                 
 
+            } else if ($for_user == 'trama') {
+
+                $this->call(PriceTypeSeeder::class);
+                $this->call(AddressSeeder::class);
+                $this->call(ArticleSeeder::class);
+                
+
             } else if ($for_user == 'electro_lacarra') {
 
                 $this->call(PriceTypeSeeder::class);
@@ -175,6 +182,11 @@ class DatabaseSeeder extends Seeder
                 $this->call(MercadoLibreTokenSeeder::class);
                 $this->call(AddressSeeder::class);
                 // $this->call(MeliArticleSeeder::class);
+
+            } else if ($for_user == 'san_blas') {
+
+                $this->call(AddressSeeder::class);
+                $this->call(ArticleSeeder::class);
 
             } else {
 
@@ -271,6 +283,7 @@ class DatabaseSeeder extends Seeder
         $this->call(ConceptoStockMovementSeeder::class);
         $this->call(UnidadMedidaSeeder::class);
         $this->call(PermissionSeeder::class);
+        $this->call(NuevosPermisosListadoSeeder::class);
         $this->call(OrderStatusSeeder::class);
         $this->call(TiendaNubeOrderStatusSeeder::class);
         $this->call(ProviderOrderStatusSeeder::class);

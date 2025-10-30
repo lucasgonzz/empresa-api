@@ -25,6 +25,8 @@ class TCPDCCatalog extends TCPDF
 
                     $_article->price_types = $article->price_types;
                     $_article->name = $article->name . ' ' . $variant->variant_description;
+                    $_article->price_type_monedas = $article->price_type_monedas;
+                    $_article->final_price = $article->final_price;
 
                     if ($variant->image_url) {
                         $_article->images = [
@@ -135,10 +137,13 @@ class TCPDCCatalog extends TCPDF
 
                 foreach ($article->price_type_monedas as $price_type_moneda) {
                     
-                    if ($price_type_moneda->moneda_id == $moneda_id) {
-
+                    if (
+                        $price_type_moneda->moneda_id == $moneda_id
+                        && $price_type_moneda->final_price > 0
+                    ) {
                         $this->SetX($x + 50);
-                    
+                        // $price = $price_type_moneda->final_price;
+                        
                         $price = Numbers::price($price_type_moneda->final_price, true, $moneda_id);
                     
                         $this->Cell(0, 6, $price_type_moneda->price_type->name.': '.$price, 0, 1, 'L');

@@ -16,6 +16,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Facades\Excel;
+use Illuminate\Support\Facades\Bus;
 use Throwable;
 
 class ProcessArticleImport implements ShouldQueue
@@ -30,15 +31,13 @@ class ProcessArticleImport implements ShouldQueue
     protected $start_row;
     protected $finish_row;
     protected $provider_id;
-    protected $import_history_id;
-    protected $pre_import_id;
     protected $user;
     protected $auth_user_id;
     protected $archivo_excel_path;
 
     public $timeout = 3600;
 
-    public function __construct($import_uuid, $archivo_excel, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id, $archivo_excel_path) {
+    public function __construct($import_uuid, $archivo_excel, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $archivo_excel_path) {
         $this->import_uuid = $import_uuid;
         $this->archivo_excel = $archivo_excel;
         $this->columns = $columns;
@@ -47,8 +46,6 @@ class ProcessArticleImport implements ShouldQueue
         $this->start_row = $start_row;
         $this->finish_row = $finish_row;
         $this->provider_id = $provider_id;
-        $this->import_history_id = $import_history_id;
-        $this->pre_import_id = $pre_import_id;
         $this->user = $user;
         $this->auth_user_id = $auth_user_id;
         $this->archivo_excel_path = $archivo_excel_path;
@@ -62,23 +59,23 @@ class ProcessArticleImport implements ShouldQueue
      */
     public function handle()
     {
-        
-        // Log::info('cacheando articulos');
-        // ArticleIndexCache::build($this->user->id);
-        // Log::info('articulos cacheados');
 
-        $chunkSize = 5000;
+        $chunkSize = env('ARTICLE_EXCEL_CHUNK_SIZE', 3500);
+
         if (env('APP_ENV') == 'local') {
             $chunkSize = 100;
         } 
-        $start = $this->start_row; // por ejemplo, 2
+        
+        $start = $this->start_row;
+
+        $chain = [];
 
         while ($start <= $this->finish_row) {
             $end = min($start + $chunkSize - 1, $this->finish_row);
 
             Log::info("Se mandó chunk desde $start hasta $end");
 
-            ProcessArticleChunk::dispatch(
+            $chain[] = new ProcessArticleChunk(
                 $this->import_uuid,
                 $this->archivo_excel_path,
                 $this->columns,
@@ -87,8 +84,6 @@ class ProcessArticleImport implements ShouldQueue
                 $start,
                 $end,
                 $this->provider_id,
-                $this->import_history_id,
-                $this->pre_import_id,
                 $this->user,
                 $this->auth_user_id
             );
@@ -98,7 +93,7 @@ class ProcessArticleImport implements ShouldQueue
 
         Log::info("Terminaron chunck. Se va a llamar a FinalizeArticleImport");
 
-        FinalizeArticleImport::dispatch(
+        $chain[] = new FinalizeArticleImport(
             $this->import_uuid,
             'article',
             $this->columns,
@@ -107,6 +102,8 @@ class ProcessArticleImport implements ShouldQueue
             $this->provider_id,
             $this->archivo_excel_path,
         );
+
+        Bus::chain($chain)->dispatch();
     }
 
     public function failed(Throwable $exception)
@@ -115,6 +112,10 @@ class ProcessArticleImport implements ShouldQueue
         Log::info($exception->getTraceAsString());
         Log::info('Error previo:');
         Log::info($exception->getPrevious());
+        Log::error('Mensaje: ' . $exception->getMessage());
+        Log::error('Archivo: ' . $exception->getFile());
+        Log::error('Línea: ' . $exception->getLine());
+        Log::error('Trace: ' . $exception->getTraceAsString());
         
         ArticleImportHelper::error_notification($this->user, $exception->getLine(), $exception->getMessage());
     }

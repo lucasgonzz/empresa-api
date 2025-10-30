@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Models\Cheque;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\CurrentAcountCurrentAcountPaymentMethod;
 use Carbon\Carbon;
@@ -154,29 +155,41 @@ class ChequeController extends Controller
 
         $num_receipt = CurrentAcountHelper::getNumReceipt();
 
-        $credit_account = $cheque->current_acount->credit_account;
+        $credit_account = $this->get_provider_credit_account($cheque);
 
-        $pago = CurrentAcount::create([
-            'haber'                             => $cheque->amount,
-            'description'                       => null,
-            'status'                            => 'pago_from_client',
-            'user_id'                           => $this->userId(),
-            'num_receipt'                       => $num_receipt,
-            'detalle'                           => 'Pago N°'.$num_receipt,
-            'provider_id'                       => $cheque->endosado_a_provider_id,
-            'created_at'                        => Carbon::now(),
-            'credit_account_id'                    => $credit_account->id,
-        ]);
+        if ($credit_account) {
+            
+            $pago = CurrentAcount::create([
+                'haber'                             => $cheque->amount,
+                'description'                       => null,
+                'status'                            => 'pago_from_client',
+                'user_id'                           => $this->userId(),
+                'num_receipt'                       => $num_receipt,
+                'detalle'                           => 'Pago N°'.$num_receipt,
+                'provider_id'                       => $cheque->endosado_a_provider_id,
+                'created_at'                        => Carbon::now(),
+                'credit_account_id'                    => $credit_account->id,
+            ]);
 
-        CurrentAcountPagoHelper::attachPaymentMethods($pago, $payment_methods);
-        $pago->saldo = CurrentAcountHelper::getSaldo($credit_account->id, $pago) - $pago->haber;
-        $pago->save();
+            CurrentAcountPagoHelper::attachPaymentMethods($pago, $payment_methods);
+            $pago->saldo = CurrentAcountHelper::getSaldo($credit_account->id, $pago) - $pago->haber;
+            $pago->save();
 
-        $pago_helper = new CurrentAcountPagoHelper($credit_account->id, 'provider', $pago->provider_id, $pago);
-        $pago_helper->init();
+            $pago_helper = new CurrentAcountPagoHelper($credit_account->id, 'provider', $pago->provider_id, $pago);
+            $pago_helper->init();
 
-        $credit_account->saldo = $pago->saldo;
+            $credit_account->saldo = $pago->saldo;
+        }
+
         // CurrentAcountHelper::updateModelSaldo($pago, 'provider', $pago->provider_id);
+    }
+
+    function get_provider_credit_account($cheque) {
+        $credit_account = CreditAccount::where('model_name', 'provider')
+                                        ->where('model_id', $cheque->endosado_a_provider_id)
+                                        ->where('moneda_id', $cheque->current_acount->credit_account->moneda_id)
+                                        ->first();
+        return $credit_account;
     }
 }
  

@@ -11,4 +11,8 @@ class Address extends Model
     function scopeWithAll($q) {
         
     }
+
+    function articles() {
+        return $this->belongsToMany(Article::class)->withPivot('amount');
+    }
 }

@@ -391,6 +391,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     Route::get('/import-history/{model_name}', 'ImportHistoryController@index');
+    Route::get('/import-history/updated-models/{id}', 'ImportHistoryController@updated_models');
+    Route::get('/import-history/created-models/{id}', 'ImportHistoryController@created_models');
 
     Route::get('/online-price-type', 'OnlinePriceTypeController@index');
 
@@ -505,6 +507,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('article-ubication', 'ArticleUbicationController');
     Route::put('article-ubication/article/{article_id}', 'ArticleUbicationController@update_article');
+
+    Route::resource('stock-suggestion', 'StockSuggestionController');
+    Route::post('stock-suggestion-article', 'StockSuggestionArticleController@ver_por_deposito');
 
 });
 

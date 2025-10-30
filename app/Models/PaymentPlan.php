@@ -10,16 +10,14 @@ class PaymentPlan extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        
+        // $q->with('sale.current_acount.credit_account');
     }
 
     public function sale()
     {
-        // Ajustá si tu modelo de venta es distinto
         return $this->belongsTo(Sale::class);
     }
 
-    // Renombramos la relación a "cuotas" (más claro en español)
     public function cuotas()
     {
         return $this->hasMany(PaymentPlanCuota::class);

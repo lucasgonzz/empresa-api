@@ -35,7 +35,7 @@ class ArticleImport implements ToCollection
 {
 
     
-    public function __construct($import_uuid, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $import_history_id, $pre_import_id, $user, $auth_user_id, $archivo_excel_path) {
+    public function __construct($import_uuid, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $archivo_excel_path) {
         set_time_limit(9999999999);
 
         Log::info('Se creo ArticleImport con import_uuid: '.$import_uuid);
@@ -52,8 +52,6 @@ class ArticleImport implements ToCollection
         $this->finish_row = $finish_row;
         $this->ct = new Controller();
         $this->provider_id = $provider_id;
-        $this->import_history_id = $import_history_id;
-        $this->pre_import_id = $pre_import_id;
         $this->provider = null;
         
 
@@ -108,7 +106,13 @@ class ArticleImport implements ToCollection
 
         
         Log::info('cacheando articulos');
-        ArticleIndexCache::build($this->user->id);
+        
+        ArticleIndexCache::build(
+            $this->user->id,
+            $this->provider_id ?? null,
+            (bool)$this->no_actualizar_articulos_de_otro_proveedor
+        );
+
         Log::info('articulos cacheados');
 
         $this->num_row = 1;
@@ -123,6 +127,8 @@ class ArticleImport implements ToCollection
 
             if ($this->esta_en_el_rango_de_filas()) {
     
+                Log::info('');
+                Log::info('');
                 Log::info('');
                 Log::info('Va por fila '.$this->num_row);
 
@@ -169,16 +175,13 @@ class ArticleImport implements ToCollection
 
         if (!$this->trabajo_terminado) {
 
-            $this->guardar_articulos();
+            $articulos_creados = $this->guardar_articulos();
 
-            $articulos_creados = count($this->process_row->getArticulosParaCrear());
-            $articulos_actualizados = count($this->process_row->getArticulosParaActualizar());
+            // $articulos_creados = $this->process_row->getArticulosParaCrear();
+            $articulos_actualizados = $this->process_row->getArticulosParaActualizar();
 
             ArticleImportHelper::create_article_import_result($this->import_uuid, $articulos_creados, $articulos_actualizados);
             
-            // ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, null, $articulos_creados, $articulos_actualizados, $this->updated_props);
-
-            // ArticleImportHelper::enviar_notificacion($this->user, $articulos_creados, $articulos_actualizados);
             
             $this->trabajo_terminado = true;
         }
@@ -194,22 +197,22 @@ class ArticleImport implements ToCollection
 
         try {
 
-            new ActualizarBBDD($articulosParaCrear, $articulosParaActualizar, $this->user, $this->auth_user_id);
-
+            $actualizar_bbdd = new ActualizarBBDD($articulosParaCrear, $articulosParaActualizar, $this->user, $this->auth_user_id);
+            return $actualizar_bbdd->get_articulos_creados_models();
 
         } catch (\Throwable $e) {
 
             $error_message = 'Error al guardar cambios';
 
-            Log::error('Error al importar, se capturó una excepción.');
+            Log::error('Error al importar, se capturó una excepción. Intentando llamar a ActualizarBBDD');
             Log::error('Mensaje: ' . $e->getMessage());
             Log::error('Archivo: ' . $e->getFile());
             Log::error('Línea: ' . $e->getLine());
-            // Log::error('Trace: ' . $e->getTraceAsString());
+            Log::error('Trace: ' . $e->getTraceAsString());
 
 
             // Registra el progreso y errores en Import History
-            ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, $error_message, $this->articulos_creados, $this->articulos_actualizados, $this->updated_props);
+            ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->columns, $this->archivo_excel_path, $error_message, $this->created_models, $this->updated_models);
 
             ArticleImportHelper::error_notification($this->user, null, $e->getMessage());
         } 

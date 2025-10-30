@@ -12,4 +12,14 @@ class ArticleImportResult extends Model
     function scopeWithAll($q) {
         
     }
+
+    function articulos_creados() {
+        return $this->belongsToMany(Article::class, 'article_creados_article_import_result');
+    }
+
+    function articulos_actualizados() {
+        return $this->belongsToMany(Article::class, 'article_actualizados_article_import_result')
+                    ->using(ArticleActualizadosImportHistory::class)
+                    ->withPivot('updated_props');
+    }
 }

@@ -211,15 +211,36 @@ class CurrentAcountController extends Controller
         // $this->sendAddModelNotification($model_name, $model_id, false);
     }
 
-    function pdfFromModel($credit_account_id, $cantidad_movimientos) {
-        $credit_account = CreditAccount::find($credit_account_id);
-        $models = CurrentAcount::where('credit_account_id', $credit_account_id)
-                                ->orderBy('created_at', 'ASC')
-                                ->take($cantidad_movimientos)
-                                ->get();
+    function pdfFromModel($current_acount_id, $cantidad_movimientos = 0) {
+
+        // Si es > 0 son todos los movimientos de una credit_accounts
+        if ($cantidad_movimientos > 0) {
+
+            $models = CurrentAcount::where('credit_account_id', $current_acount_id)
+                                    ->orderBy('created_at', 'ASC')
+                                    ->take($cantidad_movimientos)
+                                    ->get();
+        } else {
+
+            $models = CurrentAcount::where('id', $current_acount_id)
+                                    ->orderBy('created_at', 'ASC')
+                                    ->get();
+        }
+
+        $credit_account = CreditAccount::find($models[0]->credit_account_id);
                                 
         new CurrentAcountPdf($credit_account, $models);
     }
+
+    // function pdfFromModel($credit_account_id, $cantidad_movimientos) {
+    //     $credit_account = CreditAccount::find($credit_account_id);
+    //     $models = CurrentAcount::where('credit_account_id', $credit_account_id)
+    //                             ->orderBy('created_at', 'ASC')
+    //                             ->take($cantidad_movimientos)
+    //                             ->get();
+                                
+    //     new CurrentAcountPdf($credit_account, $models);
+    // }
 
     function pdf($ids) {
         // dd('asd');
@@ -234,9 +255,9 @@ class CurrentAcountController extends Controller
                 } else {
                     $model_name = 'provider';
                 }
-                $pdf = new PagoPdf($model, $model_name);
-                $pdf->printPago();
-                // $pdf = new NewPagoPdf($model, $model_name);
+                // $pdf = new PagoPdf($model, $model_name);
+                // $pdf->printPago();
+                $pdf = new NewPagoPdf($model, $model_name);
             } else if ($model->status == 'nota_credito') {
                 if (!is_null($model->afip_ticket)) {
                     $pdf = new AfipTicketPdf(null, $model);

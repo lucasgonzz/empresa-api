@@ -99,6 +99,49 @@ class PagoPdf extends fpdf {
 				$this->x = 5;
 				$this->SetFont('Arial', '', 11);
 				$this->Cell(200, 7, 'Pago con '.$payment_method->name.' $'.Numbers::price($payment_method->pivot->amount), $this->b, 1, 'L');
+
+				if (count($this->model->cheques) >= 1) {
+					
+					$this->SetFont('Arial', 'B', 12);
+					
+					$this->y += 10;
+					$this->x = 5;
+					
+					$this->Cell(200, 7, 'Informacion del cheque:', $this->b, 1, 'L');
+
+					$this->SetFont('Arial', '', 11);
+					foreach ($this->model->cheques as $cheque) {
+						
+						$this->x = 5;
+						
+						if ($cheque->numero) {
+
+							$this->Cell(200, 7, 'Numero: '. $cheque->numero, $this->b, 1, 'L');
+							$this->x = 5;
+						}
+						if ($cheque->banco) {
+
+							$this->Cell(200, 7, 'Banco: '. $cheque->banco, $this->b, 1, 'L');
+							$this->x = 5;
+						}
+						if ($cheque->amount) {
+
+							$this->Cell(200, 7, 'Monto: '. $cheque->amount, $this->b, 1, 'L');
+							$this->x = 5;
+						}
+						if ($cheque->fecha_emision) {
+
+							$this->Cell(200, 7, 'Fecha de emision: '. date_format($cheque->fecha_emision, 'd/m/Y'), $this->b, 1, 'L');
+							$this->x = 5;
+						}
+						if ($cheque->fecha_pago) {
+
+							$this->Cell(200, 7, 'Fecha de pago: '. date_format($cheque->fecha_pago, 'd/m/Y'), $this->b, 1, 'L');
+							$this->x = 5;
+						}
+					}
+					$this->y += 10;
+				}
 			}
 		}
 	}

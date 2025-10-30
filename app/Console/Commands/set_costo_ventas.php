@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\Sale;
+use App\Models\User;
 use Illuminate\Console\Command;
 
 class set_costo_ventas extends Command
@@ -41,6 +42,8 @@ class set_costo_ventas extends Command
         $sales = Sale::orderBy('id', 'ASC')
                             ->get();
 
+        $user = User::find($sales[0]->user_id);
+
         foreach ($sales as $sale) {
 
             // if (
@@ -58,46 +61,53 @@ class set_costo_ventas extends Command
 
                         $cost = (float)$article->costo_real;
 
-
-                        if ($sale->valor_dolar) {
-                            
-                            if ($sale->moneda_id == 1) {
-
-                                // Pesos
-                                if ($article->cost_in_dollars == 1) {
-                                    $cost *= (float)$sale->valor_dolar;
-                                }
-
-                            } else if ($sale->moneda_id == 2) {
-
-                                if (
-                                    $article->cost_in_dollars == 0
-                                    || is_null($article->cost_in_dollars)
-                                ) {
-                                    $cost /= (float)$sale->valor_dolar;
-                                }
-                            } 
-                        }
-
-
-                        $price = $article->pivot->price;
-                        $amount = $article->pivot->amount;
-
-                        $cost *= $amount;
-                        $price *= $amount;
-
-                        $ganancia = $price - $cost;
-
-                        $sale->articles()->updateExistingPivot($article->id, [
-                            'cost'  => $cost,
-                            'ganancia'  => $ganancia,
-                        ]);
-
                     }
+
+                    if (!$sale->valor_dolar) {
+                        $sale->valor_dolar = $user->dollar;
+                    }
+
+
+                    if ($sale->valor_dolar) {
+                        
+                        if ($sale->moneda_id == 1) {
+
+                            // Pesos
+                            if ($article->cost_in_dollars == 1) {
+                                $cost *= (float)$sale->valor_dolar;
+                            }
+
+                        } else if ($sale->moneda_id == 2) {
+
+                            if (
+                                $article->cost_in_dollars == 0
+                                || is_null($article->cost_in_dollars)
+                            ) {
+                                $cost /= (float)$sale->valor_dolar;
+                            }
+                        } 
+                    }
+
+
+                    $price = $article->pivot->price;
+                    $amount = $article->pivot->amount;
+
+                    $cost *= $amount;
+                    $price *= $amount;
+
+                    $ganancia = $price - $cost;
+
+                    $sale->articles()->updateExistingPivot($article->id, [
+                        'cost'  => $cost,
+                        'ganancia'  => $ganancia,
+                    ]);
+
 
                     $total_cost += $cost;
 
                 }
+
+                $this->info('Total_cost: '.$total_cost);
 
                 if ($total_cost > 0) {
                     

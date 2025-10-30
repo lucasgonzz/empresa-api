@@ -20,7 +20,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => _get_image_url('/storage/vinoteca/elementos.webp'),
+                'url'       => _get_image_url('storage/vinoteca/elementos.webp'),
             ],
         ],
         'addresses'     => [
@@ -49,7 +49,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => _get_image_url('/storage/vinoteca/elementos.webp'),
+                'url'       => _get_image_url('storage/vinoteca/elementos.webp'),
             ],
         ],
     ],
@@ -70,7 +70,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => _get_image_url('/storage/vinoteca/cafayate.webp'),
+                'url'       => _get_image_url('storage/vinoteca/cafayate.webp'),
             ],
         ],
     ],
@@ -89,7 +89,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => _get_image_url('/storage/vinoteca/cafayate.webp'),
+                'url'       => _get_image_url('storage/vinoteca/cafayate.webp'),
             ],
         ],
     ],
@@ -109,7 +109,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => _get_image_url('/storage/vinoteca/trumpeter.webp'),
+                'url'       => _get_image_url('storage/vinoteca/trumpeter.webp'),
             ],
         ],
         'addresses'     => [
@@ -138,7 +138,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => _get_image_url('/storage/vinoteca/trumpeter.webp'),
+                'url'       => _get_image_url('storage/vinoteca/trumpeter.webp'),
             ],
         ],
     ],
@@ -158,7 +158,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => _get_image_url('/storage/vinoteca/Champagne_perrier.webp'),
+                'url'       => _get_image_url('storage/vinoteca/Champagne_perrier.webp'),
             ],
         ],
     ],
@@ -176,7 +176,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => _get_image_url('/storage/vinoteca/Champagne_rutini.webp'),
+                'url'       => _get_image_url('storage/vinoteca/Champagne_rutini.webp'),
             ],
         ],
     ],
@@ -195,7 +195,7 @@ $articles = [
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => _get_image_url('/storage/vinoteca/jack_daniels.webp'),
+                'url'       => _get_image_url('storage/vinoteca/jack_daniels.webp'),
             ],
         ],
     ],

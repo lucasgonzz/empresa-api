@@ -151,7 +151,7 @@ class Article extends Model
     }
 
     function article_discounts() {
-        return $this->hasMany('App\Models\ArticleDiscount');
+        return $this->hasMany('App\Models\ArticleDiscount')->orderBy('id', 'ASC');;
     }
 
     function article_discounts_blanco() {
@@ -159,7 +159,7 @@ class Article extends Model
     }
 
     function article_surchages() {
-        return $this->hasMany('App\Models\ArticleSurchage');
+        return $this->hasMany('App\Models\ArticleSurchage')->orderBy('id', 'ASC');;
     }
 
     function article_surchages_blanco() {

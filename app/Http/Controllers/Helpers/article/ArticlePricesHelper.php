@@ -156,16 +156,19 @@ class ArticlePricesHelper {
             */
 
 
-            if (!is_null($final_price)) {
+            if ($cost !== 0) {
+                
+                if (!is_null($final_price)) {
 
 
-                $percentage = ($final_price - $cost) / $cost * 100;
+                    $percentage = ($final_price - $cost) / $cost * 100;
 
-            } else {
+                } else {
 
-                $final_price = $cost + ($cost * (float)$percentage / 100);
+                    $final_price = $cost + ($cost * (float)$percentage / 100);
 
-            }
+                }
+            } 
 
 
             $res = Self::aplicar_price_type_surchages($price_type, $final_price, $cost);

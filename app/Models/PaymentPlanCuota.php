@@ -10,8 +10,13 @@ class PaymentPlanCuota extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        $q->with('client');
+        $q->with('client', 'sale.current_acount.credit_account');
     }
+
+    function sale() {
+        return $this->belongsTo(Sale::class);
+    }
+
 
     function client() {
         return $this->belongsTo(Client::class);

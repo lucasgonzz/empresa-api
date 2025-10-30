@@ -2,14 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\ClientHome;
 use App\Models\User;
 use Illuminate\Http\Request;
 
 class HomeController extends Controller
 {
     function clients() {
-        $models = User::whereNotNull('home_position')
-                        ->orderBy('home_position', 'ASC')
+        $models = ClientHome::orderBy('home_position', 'ASC')
                         ->get();
         return response()->json(['models' => $models], 200);
     }
