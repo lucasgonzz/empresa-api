@@ -141,6 +141,7 @@ class ArticleController extends Controller
         // Vinoteca
         $model->bodega_id                           = $request->bodega_id;
         $model->cepa_id                             = $request->cepa_id;
+        $model->origen                              = $request->origen;
         $model->presentacion                        = $request->presentacion;
 
 
@@ -253,6 +254,7 @@ class ArticleController extends Controller
         // Vinoteca
         $model->bodega_id                           = $request->bodega_id;
         $model->cepa_id                             = $request->cepa_id;
+        $model->origen                              = $request->origen;
         $model->presentacion                        = $request->presentacion;
 
 

@@ -30,6 +30,7 @@ class CategoryController extends Controller
             'name'                  => $request->name,
             'image_url'             => $request->image_url,
             'percentage_gain'       => $request->percentage_gain,
+            'show_in_pdf_personalizado'       => $request->show_in_pdf_personalizado,
             'user_id'               => $this->userId(),
         ]);
 
@@ -56,6 +57,8 @@ class CategoryController extends Controller
         $model->name                = $request->name;
         $model->image_url           = $request->image_url;
         $model->percentage_gain     = $request->percentage_gain;
+        $model->show_in_pdf_personalizado     = $request->show_in_pdf_personalizado;
+        
         $model->save();
         GeneralHelper::attachModels($model, 'price_types', $request->price_types, ['percentage']);
 

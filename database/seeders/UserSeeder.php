@@ -334,6 +334,7 @@ class UserSeeder extends Seeder
                 'ask_save_current_acount',
                 'articles_default_in_vender',
                 'fecha_impresion_en_article_tickets',
+                'balanza_bar_code',
             ];
 
         } else if ($this->for_user == 'fenix') {
