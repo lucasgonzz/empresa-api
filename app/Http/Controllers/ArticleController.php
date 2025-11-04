@@ -489,6 +489,8 @@ class ArticleController extends Controller
     }
 
     function barCodeEtiquetasPdf($ids) {
+        // $user = $this->user();
+        // if ($user->)
         new ArticleBarCodeEtiquetasPdf($ids);
     }
 

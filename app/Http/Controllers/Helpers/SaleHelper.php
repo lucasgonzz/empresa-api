@@ -572,7 +572,7 @@ class SaleHelper extends Controller {
             }
         }
 
-        return null;
+        return 0;
     }
 
     static function create_current_acount($sale) {

@@ -367,6 +367,12 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Codigos de barra de balanzas',
                 'slug' => 'balanza_bar_code',
             ],
+
+            // Para La Martina
+            [
+                'name' => 'Articulos con rangos de precio segun cantidad vendida',
+                'slug' => 'article_price_range',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

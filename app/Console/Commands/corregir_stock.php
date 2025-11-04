@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Models\Address;
 use App\Models\Article;
 use App\Models\StockMovement;
 use Illuminate\Console\Command;
@@ -63,9 +64,13 @@ class corregir_stock extends Command
 
         foreach ($articles as $article) {
 
+            $this->comment('entro en '.$article->id);
+
             $movimientos = StockMovement::where('article_id', $article->id)
                                         ->orderBy('id', 'ASC')
                                         ->get();
+
+            $addresses = $this->get_addresses($article, $movimientos);
 
             $stock = 0;
 
@@ -77,6 +82,8 @@ class corregir_stock extends Command
 
                     if ($movimiento->concepto_movement->name == 'Reseteo de Stock') {
                         $stock = 0;
+                        // Aca tendira que resetar tambien $addresses
+
                     } else if (
                         $movimiento->concepto_movement->name == 'Mov entre depositos'
                         || $movimiento->concepto_movement->name == 'Mov manual entre depositos'
@@ -89,6 +96,35 @@ class corregir_stock extends Command
                         $this->info('Creacion de deposito para '.$article->name.'. Stock = '.$stock);
                     } else {
                         $stock += (float)$movimiento->amount;
+                        
+                        if (
+                            count($addresses) >= 1
+                        ) {
+
+                            if (
+                                $movimiento->to_address_id
+                                && $addresses[$movimiento->to_address_id]['movimiento_inicial_id'] != $movimiento->id
+                            ) {
+
+                                $addresses[$movimiento->to_address_id]['amount'] += $movimiento->amount;
+
+                                $this->comment('Sumando '.$movimiento->amount.' a to_address_id '.$addresses[$movimiento->to_address_id]['address']->street.' en concepto de '.$movimiento->concepto_movement->name);
+
+                                $this->comment('Quedo en '.$addresses[$movimiento->to_address_id]['amount']);
+
+
+                            } else if (
+                                $movimiento->from_address_id
+                                && $addresses[$movimiento->from_address_id]['movimiento_inicial_id'] != $movimiento->id
+                            ) {
+                                
+                                $addresses[$movimiento->from_address_id]['amount'] += $movimiento->amount;
+
+                                $this->comment('Sumando '.$movimiento->amount.' a from_address_id '.$addresses[$movimiento->from_address_id]['address']->street.' en concepto de '.$movimiento->concepto_movement->name);
+
+                                $this->comment('Quedo en '.$addresses[$movimiento->from_address_id]['amount']);
+                            }
+                        }
                     }
 
 
@@ -100,6 +136,25 @@ class corregir_stock extends Command
                 }
 
 
+
+            }
+
+            if (
+                count($addresses) >= 1
+            ) {
+                foreach ($addresses as $address_id => $info) {
+
+                    $this->info('en '. $info['address']->street .' deberia haber '.$info['amount']);
+
+                    if (!$this->solo_informar) {
+                        
+                        $article->addresses()->updateExistingPivot($address_id, [
+                            'amount'    => $info['amount'],
+                        ]);
+                    }
+                }
+            } else {
+                $this->info('No tenia addresses');
             }
 
             if ($this->solo_informar) {
@@ -122,6 +177,49 @@ class corregir_stock extends Command
         $this->comment('Listo');
         
         return 0;
+    }
+
+    function get_addresses($article, $movimientos) {
+
+        $addresses = [];
+
+        if (count($article->addresses) >= 1) {
+            
+            foreach ($movimientos as $movimiento) {
+                
+                if (!is_null($movimiento->to_address_id)) {
+
+                    if (!isset($addresses[$movimiento->to_address_id])) {
+                        $addresses[$movimiento->to_address_id] = [
+
+                            'address'    => Address::find($movimiento->to_address_id),
+                            'amount'    => $movimiento->amount,
+                            'movimiento_inicial_id' => $movimiento->id,
+                        ];
+                    }
+                } else if (!is_null($movimiento->from_address_id)) {
+
+                    if (!isset($addresses[$movimiento->from_address_id])) {
+                        $addresses[$movimiento->from_address_id] = [
+
+                            'address'    => Address::find($movimiento->from_address_id),
+                            'amount'    => $movimiento->amount,
+                            'movimiento_inicial_id' => $movimiento->id,
+                        ];
+                    }
+
+                }
+            }
+
+            $this->info('Inicia addresses con:');
+            foreach ($addresses as $id => $value) {
+                $this->info($value['amount'].' en '. $value['address']->street);
+            }
+        } else {
+            $this->info('No hay addresses');
+        }
+
+        return $addresses;
     }
 
     function get_articles_mal() {

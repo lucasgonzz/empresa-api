@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\comisiones;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\comisiones\DistriCreoComision;
 use App\Http\Controllers\Helpers\comisiones\FenixComision;
 use App\Http\Controllers\Helpers\comisiones\GolonorteComision;
 use App\Http\Controllers\Helpers\comisiones\RosMarComision;
@@ -22,7 +23,10 @@ class ComisionesHelper {
 
 	function crear_comision() {
 
-		if (!is_null($this->sale->seller_id)) {
+		if (
+            !is_null($this->sale->seller_id)
+            && $this->sale->seller_id !== 0
+        ) {
 
 			Log::info('entro en crear_comision');
 			
@@ -57,6 +61,14 @@ class ComisionesHelper {
                 $comision = new TruvariComision($this->sale);
 
                 $comision->crear_comision();
+
+            } else if ($comision_function == 'distri_creo') {
+
+                Log::info('Creando comision para distri_creo');
+
+                $comision = new DistriCreoComision();
+
+                $comision->crear_comision($this->sale);
 
             }
 		}

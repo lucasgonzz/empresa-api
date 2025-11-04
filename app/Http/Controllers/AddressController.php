@@ -49,6 +49,9 @@ class AddressController extends Controller
 
     public function destroy($id) {
         $model = Address::find($id);
+
+        $model->articles()->detach();
+
         $model->delete();
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('Address', $model->id);

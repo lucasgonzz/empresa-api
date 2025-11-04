@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\GeocoderCounter;
 use Illuminate\Http\Request;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
 
 class GoogleController extends Controller
 {
@@ -13,7 +14,13 @@ class GoogleController extends Controller
         $counter = $this->get_current_acounter();
         $counter->counter += 1;
         $counter->save();
-        return response(null, 200);
+        Log::info('Aumentando busqueda a '.$counter->counter);
+        return response()->json(['model'    => $counter]);
+    }
+
+    function get_current() {
+        $counter = $this->get_current_acounter();
+        return response()->json(['model'    => $counter]);
     }
 
     function get_current_acounter() {

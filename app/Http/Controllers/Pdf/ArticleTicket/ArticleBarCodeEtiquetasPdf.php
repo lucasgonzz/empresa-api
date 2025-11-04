@@ -125,7 +125,7 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 		$this->x = 0;
 		$barcode = $this->barcodeGenerator->getBarcodePNG($code, 'C128');
 		$imgData = base64_decode($barcode);
-		$file = 'temp_barcode'.$code.'.png';
+		$file = 'temp_barcode'.str_replace('/', '_', $code).'.png';
 		file_put_contents($file, $imgData);
 
 		$img_width = $this->code_width - 10;

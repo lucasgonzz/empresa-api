@@ -108,7 +108,7 @@ class FinalizeArticleImport implements ShouldQueue
 
             // 3) Crear ImportHistory definitivo (ajustá campos a tu migración real)
             $import_history = ImportHistory::create([
-                'created_models'  => $result->created_count,
+                'created_models'  => count($created_ids),
                 // 'created_models'  => count($created_ids),
                 'updated_models'  => count($updated_props_by_article),
                 'user_id'         => $this->user ? $this->user->id : null,

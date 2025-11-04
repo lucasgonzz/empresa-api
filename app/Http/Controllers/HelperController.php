@@ -342,24 +342,30 @@ class HelperController extends Controller
         if (!$user_id) {
             $user_id = env('USER_ID');
         }
-        
-        $cheques = Cheque::where('user_id', $user_id)
-                            ->get();
 
-        $repetidos = $cheques->groupBy('numero')
-                        ->filter(function ($items) {
-                            return $items->count() > 1 && !is_null($items->first()->numero);
-                        })
-                        ->flatten();
+        $cheques = Cheque::where('user_id', $user_id)->get();
 
-        $index = 0;
+        // Agrupar por combinación de número y tipo
+        $repetidos = $cheques->groupBy(function ($item) {
+                                return $item->numero . '|' . $item->tipo;
+                            })
+                            ->filter(function ($items) {
+                                return $items->count() > 1 && !is_null($items->first()->numero);
+                            })
+                            ->flatten();
 
+        // Borramos duplicados manteniendo el primero
+        $agrupados = [];
         foreach ($repetidos as $cheque) {
-            if ($index > 0) {
-                $cheque->delete();
+            $key = $cheque->numero . '|' . $cheque->tipo;
+
+            if (!isset($agrupados[$key])) {
+                $agrupados[$key] = true; // mantenemos el primero
+                echo $cheque->numero.' | tipo: '.$cheque->tipo.' -> OK<br>';
+            } else {
+                // $cheque->delete(); // eliminamos los repetidos
+                echo $cheque->numero.' | tipo: '.$cheque->tipo.' -> ELIMINADO<br>';
             }
-            $index++;
-            echo $cheque->numero.' | numero: '.$cheque->numero.' repetido <br>';
         }
 
         echo 'Listo';

@@ -296,7 +296,11 @@ class NewPagoPdf extends fpdf {
 
         foreach ($this->current_acount->current_acount_payment_methods as $payment_method) {
             $this->x = 10;
-            $this->Cell(150,6, $payment_method->name, 1, 0);
+
+            $payment_method_text = $payment_method->name;
+
+            $this->Cell(150,6, $payment_method_text, 1, 0);
+
             $this->Cell(40,6, Numbers::price($payment_method->pivot->amount, true, $this->credit_account->moneda_id), 1, 1);
         }
 
@@ -305,6 +309,29 @@ class NewPagoPdf extends fpdf {
         $this->SetFont('Arial','B',10);
         $this->Cell(40,6, 'TOTAL', 'LTB', 0, 'R');
         $this->Cell(40,6, $datos['monto'], 'RTB', 1, 'R');
+
+
+
+        // Cheques
+        if (count($this->current_acount->cheques) >= 1) {
+            
+            $this->x = 10;
+            $this->y += 5;
+            $this->Cell(190,6, 'Cheques asociados', 1, 1, 1);
+
+            $this->SetFont('Arial','',10);
+
+            foreach ($this->current_acount->cheques as $cheque) {
+                $cheque_text = "Cheque N° {$cheque->numero} | Monto: ".Numbers::price($cheque->amount, true)." | Banco: {$cheque->banco}";
+
+                if ($cheque->fecha_pago) {
+                    $cheque_text .= " | Fecha Pago: ".$cheque->fecha_pago->format('d/m/y');
+                }
+
+                $this->x = 10;
+                $this->Cell(190,6, $cheque_text, 1, 1);
+            }
+        }
     }
 
     function comprobantes_imputados($datos) {

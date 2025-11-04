@@ -16,8 +16,8 @@ class CreateStockSuggestionArticlesTable extends Migration
         Schema::create('stock_suggestion_articles', function (Blueprint $table) {
             $table->id();
             
-            $table->foreignId('stock_suggestion_id')->constrained()->onDelete('cascade');
-            $table->foreignId('article_id')->constrained()->onDelete('cascade');
+            $table->foreignId('stock_suggestion_id');
+            $table->foreignId('article_id');
             $table->integer('from_address_id')->nullable();
             $table->integer('to_address_id')->nullable();
             $table->integer('suggested_amount')->nullable();

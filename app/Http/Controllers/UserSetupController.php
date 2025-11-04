@@ -58,7 +58,7 @@ class UserSetupController extends Controller
             'iva_included'                  => $request->iva_included ? 1 : 0,
             'ask_amount_in_vender'          => $request->ask_amount_in_vender ? 1 : 0,
             'redondear_centenas_en_vender'          => $request->redondear_centenas_en_vender ? 1 : 0,
-            'siempre_omitir_en_cuenta_corriente'    => $request->usan_cuentas_corrientes ? 0 : 1,
+            'siempre_omitir_en_cuenta_corriente'    => $request->omitir_cuentas_corrientes ? 1 : 0,
             // 'online_configuration'          => [
             //     'online_price_type_id'          => 3,
             //     'register_to_buy'               => 1,
@@ -172,35 +172,30 @@ class UserSetupController extends Controller
         if ($request->use_price_lists) {
             // $seeders[] = 'PriceTypeSeeder';
             $extencions[] = 'articulo_margen_de_ganancia_segun_lista_de_precios';
-        }
-
-        if ($request->cambiar_price_type_en_vender) {
             $extencions[] = 'cambiar_price_type_en_vender';
-        }
-
-        if ($request->cambiar_price_type_en_vender_item_por_item) {
             $extencions[] = 'cambiar_price_type_en_vender_item_por_item';
         }
 
-        if (!$request->usar_codigos_de_barra) {
-            $extencions[] = 'no_usar_codigos_de_barra';
-        }
 
-        if ($request->budgets) {
+        // if (!$request->usar_codigos_de_barra) {
+        //     $extencions[] = 'no_usar_codigos_de_barra';
+        // }
+
+        // if ($request->budgets) {
             $extencions[] = 'budgets';
-        }
+        // }
 
-        if ($request->cajas) {
+        // if ($request->cajas) {
             $extencions[] = 'cajas';
-        }
+        // }
 
         if ($request->consultora_de_precios) {
             $extencions[] = 'consultora_de_precios';
         }
 
-        if ($request->imagenes) {
+        // if ($request->imagenes) {
             $extencions[] = 'imagenes';
-        }
+        // }
 
 
 

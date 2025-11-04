@@ -87,14 +87,10 @@ class ProcessRow {
                 'excel_column'  => 'precio',
                 'prop_key'      => 'price',
             ],
-            [
-                'excel_column'  => 'u_individuales',
-                'prop_key'      => 'unidades_individuales',
-            ],
-            [
-                'excel_column'  => 'u_individuales',
-                'prop_key'      => 'unidades_individuales',
-            ],
+            // [
+            //     'excel_column'  => 'u_individuales',
+            //     'prop_key'      => 'unidades_individuales',
+            // ],
         ];
 
         $res = $this->get_category_id($row);
@@ -124,6 +120,10 @@ class ProcessRow {
             'user_id'              => $this->user->id,
         ];
 
+        // Log::info('data[cost]: '.$cost);
+        // Log::info('cost type: '.gettype($cost));
+        // Log::info('data[cost] type: '.gettype($data['cost']));
+
 
         foreach ($props_to_add as $prop_to_add) {
 
@@ -132,6 +132,15 @@ class ProcessRow {
             if ($prop) {
                 $data[$prop_to_add['prop_key']] = $prop;
             }
+        }
+
+        if (!ImportHelper::isIgnoredColumn('u_individuales', $this->columns)) {
+            $data['unidades_individuales'] = ImportHelper::getColumnValue($row, 'u_individuales', $this->columns);
+        }
+
+        if (!ImportHelper::isIgnoredColumn('precio', $this->columns)) {
+            $price = ImportHelper::getColumnValue($row, 'precio', $this->columns);
+            $data['price'] = Self::get_number($price);
         }
 
         if (!ImportHelper::isIgnoredColumn('moneda', $this->columns)) {
@@ -397,6 +406,19 @@ class ProcessRow {
                 }
 
                 $data['variants_data'] = []; // 👈 espacio para variantes
+                
+                $campos = collect($data)->except([
+                    'price_types_data',
+                    'discounts',
+                    'surchages',
+                    'stock_global',
+                    'stock_addresses',
+                    'variants_data',
+                ])->toArray();
+
+                Log::info('Cantidad campos: '.count($campos));
+
+
                 $this->articulosParaCrear[] = $data;
 
                 // Lo agregamos al índice para evitar procesarlo duplicado en siguientes filas
@@ -691,20 +713,23 @@ class ProcessRow {
     }
 
     static function get_number($number, $decimales = 2) {
-
-        if (is_null($number) || $number == '') {
+        // 1. Si es null o solo espacios vacíos, retorna null
+        if (is_null($number) || (is_string($number) && trim($number) === '')) {
+            \Log::info('get_number Retornando null');
             return null;
         }
 
-        $original = $number;
+        // 2. Reemplazar coma por punto y limpiar espacios
+        $normalized = str_replace(',', '.', trim($number));
 
-        // 1. Reemplazar la coma por punto
-        $normalized = str_replace(',', '.', $original);
+        // 3. Si no es numérico, retornar null
+        if (!is_numeric($normalized)) {
+            \Log::info("get_number Valor no numérico: '$number'");
+            return null;
+        }
 
-        // 2. Convertir a float y limitar a 4 decimales
-        $limited = number_format((float)$normalized, $decimales, '.', '');
-
-        return $limited;
+        // 4. Formatear número a la cantidad de decimales solicitada
+        return number_format((float) $normalized, $decimales, '.', '');
     }
 
 

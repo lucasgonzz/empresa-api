@@ -73,14 +73,17 @@ class CurrentAcountPdf extends fpdf {
 	}
 
 	function saldo_actual() {
-		$this->y = 32;
-		$this->x = 105;
-		$this->SetFont('Arial', 'B', 16);
+		if ($this->credit_account) {
 
-		$saldo = $this->models[count($this->models)-1]->saldo;
-		$saldo = Numbers::price($saldo, true, $this->credit_account->moneda_id);
+			$this->y = 32;
+			$this->x = 105;
+			$this->SetFont('Arial', 'B', 16);
 
-		$this->Cell(100, 15, 'Saldo actual: '.$saldo, 1, 0, 'C');
+			$saldo = $this->models[count($this->models)-1]->saldo;
+			$saldo = Numbers::price($saldo, true, $this->credit_account->moneda_id);
+
+			$this->Cell(100, 15, 'Saldo actual: '.$saldo, 1, 0, 'C');
+		}
 	}
 
 	function print() {
@@ -123,12 +126,18 @@ class CurrentAcountPdf extends fpdf {
 
 		$this->x = PdfHelper::getWidthUntil('Detalle', $this->getFields());
 
-		$debe = $model->debe ? Numbers::price($model->debe, true, $this->credit_account->moneda_id) : '';
-		$haber = $model->haber ? Numbers::price($model->haber, true, $this->credit_account->moneda_id) : '';
+		$moneda_id = null;
+
+		if ($this->credit_account) {
+			$moneda_id = $this->credit_account->moneda_id;
+		}
+
+		$debe = $model->debe ? Numbers::price($model->debe, true, $moneda_id) : '';
+		$haber = $model->haber ? Numbers::price($model->haber, true, $moneda_id) : '';
 
 		$this->Cell($this->getFields()['Debe'], $this->line_height, $debe, $this->b, 0, 'L');
 		$this->Cell($this->getFields()['Haber'], $this->line_height, $haber, $this->b, 0, 'L');
-		$this->Cell($this->getFields()['Saldo'], $this->line_height, Numbers::price($model->saldo, true, $this->credit_account->moneda_id), $this->b, 0, 'L');
+		$this->Cell($this->getFields()['Saldo'], $this->line_height, Numbers::price($model->saldo, true, $moneda_id), $this->b, 0, 'L');
 
 		$this->MultiCell($this->getFields()['Descripcion'], $this->line_height, $model->description, $this->b, 'L', false);
 		$y_3 = $this->y;

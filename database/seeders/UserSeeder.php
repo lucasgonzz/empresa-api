@@ -74,6 +74,7 @@ class UserSeeder extends Seeder
                 // Comun para todos
                 // 'google_custom_search_api_key'      => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
                 'info_afip_del_primer_punto_de_venta'   => 0,
+                'comision_funcion' => 'distri_creo',
             ],
         ];
 
@@ -159,6 +160,7 @@ class UserSeeder extends Seeder
             $models[0]['iva_condition_id'] = 1;
             $models[0]['doc_number'] = '1234';
             $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
+
             
             // $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
             $models[0]['default_version'] = null;
@@ -177,6 +179,7 @@ class UserSeeder extends Seeder
                 'acopios',
                 'articulos_unidades_individuales',
                 'check_article_stock_en_vender',
+                'article_price_range',
                 // 'warn_article_stock_en_vender',
             ];
 

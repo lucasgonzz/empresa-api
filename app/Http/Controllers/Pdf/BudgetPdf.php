@@ -319,7 +319,7 @@ class BudgetPdf extends fpdf {
 
 		    	$diferencia = $this->total_original - $this->budget->total;
 
-		    	$text .= ' (Ahorro $' . Numbers::price($diferencia) . ')';
+		    	// $text .= ' (Ahorro $' . Numbers::price($diferencia) . ')';
 
 				$this->Cell(100, 7, $text, 0, 1, 'L');
 		    }

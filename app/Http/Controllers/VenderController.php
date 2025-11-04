@@ -147,7 +147,7 @@ class VenderController extends Controller
                                 }
                             }
                         })
-                    ->with(['article_variants', 'images', 'price_types', 'addresses', 'price_type_monedas']);
+                    ->with(['article_variants', 'images', 'price_types', 'addresses', 'price_type_monedas', 'article_price_ranges']);
 
         if ($category_id) {
             Log::info('category_id');
@@ -156,8 +156,6 @@ class VenderController extends Controller
 
         $articles = $articles->get();
 
-        Log::info('articles:');
-        Log::info($articles);
 
         foreach ($articles as $article) {
 

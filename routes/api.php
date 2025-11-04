@@ -206,6 +206,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('sale/por-entregar/{from}/{to}', 'SaleController@por_entregar');
     Route::put('sale/unidades-entregadas/{sale_id}', 'SaleController@unidades_entregadas');
 
+
+    // 
+    Route::get('acopio-article-delivery/{sale_id}', 'AcopioArticleDeliveryController@from_sale');
+
     // Hacer Nota de credito AFIP
     Route::post('sale/nota-credito-afip/{sale_id}', 'SaleController@nota_credito_afip');
 
@@ -456,6 +460,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('price-type-surchage', 'PriceTypeSurchageController');
 
     Route::get('google/custom-search/aumentar-contador', 'GoogleController@aumentar_contador_custom_search');
+    Route::get('google/get-current', 'GoogleController@get_current');
 
 
     Route::post('payment-plan', 'PaymentPlanController@store');
@@ -510,6 +515,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('stock-suggestion', 'StockSuggestionController');
     Route::post('stock-suggestion-article', 'StockSuggestionArticleController@ver_por_deposito');
+
+
+
+    Route::resource('article-price-range', 'ArticlePriceRangeController');
 
 });
 
