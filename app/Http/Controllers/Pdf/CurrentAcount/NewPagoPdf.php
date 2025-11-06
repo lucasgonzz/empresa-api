@@ -297,11 +297,39 @@ class NewPagoPdf extends fpdf {
         foreach ($this->current_acount->current_acount_payment_methods as $payment_method) {
             $this->x = 10;
 
-            $payment_method_text = $payment_method->name;
+            // 1 es cheque
+            if ($payment_method->id != 1) {
 
-            $this->Cell(150,6, $payment_method_text, 1, 0);
+                $this->Cell(150,6, $payment_method->name, 1, 0);
 
-            $this->Cell(40,6, Numbers::price($payment_method->pivot->amount, true, $this->credit_account->moneda_id), 1, 1);
+                $this->Cell(40,6, Numbers::price($payment_method->pivot->amount, true, $this->credit_account->moneda_id), 1, 1);
+            }
+
+
+
+        }
+
+        // Cheques
+        foreach ($this->current_acount->cheques as $cheque) {
+            $cheque_text = "Cheque N° {$cheque->numero}";
+
+            if ($cheque->fecha_pago) {
+                $cheque_text .= " | Fecha Pago: ".$cheque->fecha_pago->format('d/m/y');
+            }
+            
+            if ($cheque->banco) {
+                $cheque_text .= " | Banco: ".$cheque->banco;
+            }
+
+            if ($cheque->es_echeq) {
+                $cheque_text .= " | (e-cheq) ";
+            }
+
+            $this->x = 10;
+            $this->Cell(150,6, $cheque_text, 1, 0);
+
+
+            $this->Cell(40,6, Numbers::price($cheque->amount, true, $this->credit_account->moneda_id), 1, 1);
         }
 
         $this->SetFont('Arial','B',10);
@@ -312,26 +340,6 @@ class NewPagoPdf extends fpdf {
 
 
 
-        // Cheques
-        if (count($this->current_acount->cheques) >= 1) {
-            
-            $this->x = 10;
-            $this->y += 5;
-            $this->Cell(190,6, 'Cheques asociados', 1, 1, 1);
-
-            $this->SetFont('Arial','',10);
-
-            foreach ($this->current_acount->cheques as $cheque) {
-                $cheque_text = "Cheque N° {$cheque->numero} | Monto: ".Numbers::price($cheque->amount, true)." | Banco: {$cheque->banco}";
-
-                if ($cheque->fecha_pago) {
-                    $cheque_text .= " | Fecha Pago: ".$cheque->fecha_pago->format('d/m/y');
-                }
-
-                $this->x = 10;
-                $this->Cell(190,6, $cheque_text, 1, 1);
-            }
-        }
     }
 
     function comprobantes_imputados($datos) {
@@ -351,7 +359,7 @@ class NewPagoPdf extends fpdf {
         foreach ($this->current_acount->pagando_a as $pagando_a) {
             
             if ($pagando_a->sale && $pagando_a->sale->afip_ticket) {
-                $cbte_imputado = 'Factura N° '.$pagando_a->sale->afip_ticket->cbte_numero;
+                $cbte_imputado = 'Factura '.$pagando_a->sale->afip_ticket->cbte_letra.' N° '.$pagando_a->sale->afip_ticket->cbte_numero;
             } else if ($pagando_a->sale) {
                 $cbte_imputado = 'Venta N° '.$pagando_a->sale->num;
             } else {

@@ -373,6 +373,12 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Articulos con rangos de precio segun cantidad vendida',
                 'slug' => 'article_price_range',
             ],
+
+            // Para Arfren
+            [
+                'name' => 'Articulo con multiple proveedores',
+                'slug' => 'articulo_multi_proveedor',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

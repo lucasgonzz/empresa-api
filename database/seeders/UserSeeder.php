@@ -183,6 +183,37 @@ class UserSeeder extends Seeder
                 // 'warn_article_stock_en_vender',
             ];
 
+        } else if ($this->for_user == 'arfren') {
+
+            $models[0]['name'] = 'Alejandro';
+            $models[0]['company_name'] = 'San blas';
+            $models[0]['iva_included'] = 0;
+            $models[0]['iva_condition_id'] = 1;
+            $models[0]['doc_number'] = '1234';
+            $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
+
+            
+            // $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
+            $models[0]['default_version'] = null;
+
+            $models[0]['extencions'] = [
+
+                'comerciocity_interno',
+                'budgets',
+                // 'bar_code_scanner',
+                'ask_save_current_acount',
+                'imagenes',
+                // 'forzar_total',
+                'cajas',
+                // 'ventas_con_fecha_de_entrega',
+                // 'road_map_detalle_por_articulos_y_no_por_venta',
+                'acopios',
+                'articulos_unidades_individuales',
+                'check_article_stock_en_vender',
+                'article_price_range',
+                // 'warn_article_stock_en_vender',
+            ];
+
         }  else if ($this->for_user == 'racing_carts') {
 
             $models[0]['name'] = 'Rafa';

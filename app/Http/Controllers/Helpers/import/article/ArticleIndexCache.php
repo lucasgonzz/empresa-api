@@ -95,29 +95,45 @@ class ArticleIndexCache
         $article_id = null;
 
         // 0) id
-        if (!empty($data['id']) && isset($index['ids'][$data['id']])) {
+        if (!empty($data['id'])) {
+
             Log::info('Buscando por id: '.$data['id']);
-            $article_id = $index['ids'][$data['id']];
+            if (isset($index['ids'][$data['id']])) {
+                $article_id = $index['ids'][$data['id']];
+            } else {
+                $article_id = null;
+            }
         }
 
         // 1) bar_code
-        if (!empty($data['bar_code']) && isset($index['bar_codes'][$data['bar_code']])) {
+        if (!empty($data['bar_code'])) {
             Log::info('Buscando por bar_code: '.$data['bar_code']);
-            $article_id = $index['bar_codes'][$data['bar_code']];
-        }
+            
+            if (isset($index['bar_codes'][$data['bar_code']])) {
+                $article_id = $index['bar_codes'][$data['bar_code']];
+            } else {
+                $article_id = null;
+            }
 
-        // 2) provider_code
-        elseif (!empty($data['provider_code']) && isset($index['provider_codes'][$data['provider_code']])) {
-            $id_or_ids = $index['provider_codes'][$data['provider_code']];
-            $article_id = is_array($id_or_ids) ? reset($id_or_ids) : $id_or_ids;
+        } else if (!empty($data['provider_code'])) {
+
             Log::info('Buscando por provider_code: '.$data['provider_code']);
-        }
-        // 3) name
-        elseif (!empty($data['name'])) {
+            if (isset($index['provider_codes'][$data['provider_code']])) {
+
+                $id_or_ids = $index['provider_codes'][$data['provider_code']];
+                $article_id = is_array($id_or_ids) ? reset($id_or_ids) : $id_or_ids;
+            } else {
+                $article_id = null;
+            }
+
+        } else if (!empty($data['name'])) {
+
+            Log::info('Buscando por name: '.$data['name']);
             $lookup = strtolower(trim($data['name']));
             if (isset($index['names'][$lookup])) {
                 $article_id = $index['names'][$lookup];
-            Log::info('Buscando por name: '.$data['name']);
+            } else {
+                $article_id = null;
             }
         }
         

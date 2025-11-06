@@ -269,11 +269,14 @@ class HelperController extends Controller
         echo 'Listo';
     }
 
+    /*
+        Controla que se haya descontado el stock correspondiente de las ventas
+    */
     function check_ventas_stock_movements() {
         $user = User::whereNull('owner_id')->first();
 
         $sales = Sale::where('user_id', $user->id)
-                        ->orderBy('created_at', 'ASC')
+                        ->orderBy('id', 'DESC')
                         ->get();
 
         foreach ($sales as $sale) {
@@ -292,9 +295,18 @@ class HelperController extends Controller
                         echo 'Se vendieron '.$article->pivot->amount.' y se registraron '.$stock_movement->amount.' <br>';
                         echo '<br>';
                     }
-                } else {
-                    echo 'No hay stock movement';
-                    echo '<br>';
+                } else if (!is_null($article->stock)) {
+
+
+                    $primer_mov = StockMovement::where('article_id', $article->id)
+                                                    ->orderBy('id', 'ASC')
+                                                    ->first();
+
+                    if ($primer_mov->created_at->gt($sale->created_at)) {
+
+                        echo 'No hay stock movement para sale num '.$sale->num.' article id '.$article->id;
+                        echo '<br>';
+                    }
                 }
             }
         }

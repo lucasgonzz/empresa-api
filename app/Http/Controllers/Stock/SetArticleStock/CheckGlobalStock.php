@@ -21,7 +21,7 @@ class CheckGlobalStock {
             && count($article->article_variants) == 0
         ) {
 
-            Log::info('Se va a sumar global stock');
+            Log::info('Se va a sumar global stock: '.$stock_movement->amount);
 
             /*
                 Se aumenta el stock del articulo con la amount del stock_movement

@@ -188,6 +188,10 @@ class DatabaseSeeder extends Seeder
                 $this->call(AddressSeeder::class);
                 $this->call(ArticleSeeder::class);
 
+            } else if ($for_user == 'arfren') {
+
+                $this->call(ArticleSeeder::class);
+
             } else {
 
                 if (

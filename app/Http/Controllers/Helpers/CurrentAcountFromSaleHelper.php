@@ -21,10 +21,16 @@ class CurrentAcountFromSaleHelper extends Controller {
     function __construct($sale, $index = null) {
         $this->sale = $sale;
 
+        $moneda_id = $this->sale->moneda_id;
+
+        if (!$moneda_id) {
+            $moneda_id = 1;
+        }
+
 
         $this->credit_account = CreditAccount::where('model_name', 'client')
                                             ->where('model_id', $this->sale->client_id)
-                                            ->where('moneda_id', $this->sale->moneda_id)
+                                            ->where('moneda_id', $moneda_id)
                                             ->first();
 
 
