@@ -28,6 +28,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
         $map = [
             $article->id,
             $article->bar_code,
+            $article->sku,
             $article->provider_code,
             $article->name,
             !is_null($article->category) ? $article->category->name : '',
@@ -153,6 +154,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
         $headings = [
             'Numero',
             'Codigo de barras',
+            'Sku',
             'Codigo de proveedor',
             'Nombre',
             'Categoria',

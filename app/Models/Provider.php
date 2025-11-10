@@ -46,4 +46,10 @@ class Provider extends Model
     public function location() {
         return $this->belongsTo('App\Models\Location');
     }
+
+    public function articles() {
+        return $this->belongsToMany('App\Models\Article')
+                    ->withPivot('amount', 'cost', 'price', 'provider_code')
+                    ->withTimestamps();
+    }
 }

@@ -70,7 +70,10 @@ class set_costo_ventas extends Command
 
                     if ($sale->valor_dolar) {
                         
-                        if ($sale->moneda_id == 1) {
+                        if (
+                            $sale->moneda_id == 1
+                            && $user->cotizar_precios_en_dolares == 0
+                        ) {
 
                             // Pesos
                             if ($article->cost_in_dollars == 1) {

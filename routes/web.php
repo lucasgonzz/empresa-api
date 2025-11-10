@@ -338,4 +338,7 @@ Route::get('afip-txt-alicuotas/{mes_inicio}/{mes_fin}', 'AfipController@exportAl
 Route::get('acopio-article-delivery/{id}', 'AcopioArticleDeliveryController@pdf');
 
 
+Route::get('resumen-caja/pdf/{id}', 'ResumenCajaController@pdf');
+
+
 

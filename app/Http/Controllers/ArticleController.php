@@ -112,6 +112,7 @@ class ArticleController extends Controller
         $model = new Article();
         // $model->num                               = $this->num('articles');
         $model->bar_code                          = $request->bar_code;
+        $model->sku                               = $request->sku;
         $model->provider_code                     = $request->provider_code;
         $model->provider_id                       = $request->provider_id;
         $model->category_id                       = $request->category_id;
@@ -227,6 +228,7 @@ class ArticleController extends Controller
         $model->provider_id                       = $request->provider_id;
         $model->featured                          = $request->featured;
         $model->bar_code                          = $request->bar_code;
+        $model->sku                               = $request->sku;
         $model->provider_code                     = $request->provider_code;
         $model->provider_id                       = $request->provider_id;
         $model->category_id                       = $request->category_id;
@@ -463,7 +465,7 @@ class ArticleController extends Controller
 
         $this->check_delete_tienda_nube($model);
         
-        ImageController::deleteModelImages($model);
+        // ImageController::deleteModelImages($model);
         $model->delete();
         ArticleHelper::check_recipes_despues_de_eliminar_articulo($recipes_donde_esta_este_articulo, $this);
 

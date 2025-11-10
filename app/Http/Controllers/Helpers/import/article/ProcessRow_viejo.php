@@ -14,7 +14,7 @@ use App\Models\PriceType;
 use App\Models\UnidadMedida;
 use Illuminate\Support\Facades\Log;
 
-class ProcessRow {
+class ProcessRow_viejo {
 
     protected $columns;
     protected $user;
@@ -84,108 +84,74 @@ class ProcessRow {
 
         $props_to_add = [
             [
-                'excel_column'  => 'numero',
-                'prop_key'      => 'id',
-            ],
-            [
-                'excel_column'  => 'codigo_de_barras',
-                'prop_key'      => 'bar_code',
-            ],
-            [
-                'excel_column'  => 'sku',
-                'prop_key'      => 'sku',
-            ],
-            [
-                'excel_column'  => 'codigo_de_proveedor',
-                'prop_key'      => 'provider_code',
-            ],
-            [
-                'excel_column'  => 'nombre',
-                'prop_key'      => 'name',
-            ],
-            [
-                'excel_column'  => 'stock_minimo',
-                'prop_key'      => 'stock_min',
-                'is_number'     => true,
-            ],
-            [
-                'excel_column'  => 'costo',
-                'prop_key'      => 'cost',
-                'is_number'     => true,
-            ],
-            [
-                'excel_column'  => 'margen_de_ganancia',
-                'prop_key'      => 'percentage_gain',
-                'is_number'     => true,
-            ],
-            [
                 'excel_column'  => 'precio',
                 'prop_key'      => 'price',
-                'is_number'     => true,
             ],
-            [
-                'excel_column'  => 'u_individuales',
-                'prop_key'      => 'unidades_individuales',
-            ],
-            [
-                'excel_column'  => 'descripcion',
-                'prop_key'      => 'descripcion',
-            ],
-            [
-                'excel_column'  => 'descripcion',
-                'prop_key'      => 'descripcion',
-            ],
-        ];
-        
-        $provider_id = $this->get_provider_id($row);
-
-        // Construir array de datos del artículo usando los valores extraídos del Excel
-        $data = [
-            'provider_id'          => $provider_id,
-            'user_id'              => $this->user->id,
+            // [
+            //     'excel_column'  => 'u_individuales',
+            //     'prop_key'      => 'unidades_individuales',
+            // ],
         ];
 
-
-        foreach ($props_to_add as $prop_to_add) {
-
-            if (!ImportHelper::isIgnoredColumn($prop_to_add['excel_column'], $this->columns)) {
-
-                $excel_value = ImportHelper::getColumnValue($row, $prop_to_add['excel_column'], $this->columns);
-
-                if (isset($prop_to_add['is_number'])) {
-                    $excel_value = Self::get_number($excel_value);
-                }
-
-                $data[$prop_to_add['prop_key']] = $excel_value;
-            }
-
-        }
-
-
-        $iva_id = $this->get_iva_id($row);
-        $data['iva_id'] = $iva_id;
-
-
-
-        // Categoria y Sub categoria
         $res = $this->get_category_id($row);
 
         $category_id = $res['category_id'];
         $sub_category_id = $res['sub_category_id'];
+        
+        $provider_id = $this->get_provider_id($row);
+
+        $iva_id = $this->get_iva_id($row);
+
+        $cost = Self::get_number(ImportHelper::getColumnValue($row, 'costo', $this->columns));
+
+        $percentage_gain = Self::get_number(ImportHelper::getColumnValue($row, 'margen_de_ganancia', $this->columns), 2);
+
+        // Construir array de datos del artículo usando los valores extraídos del Excel
+        $data = [
+            'id'                   => ImportHelper::getColumnValue($row, 'numero', $this->columns),
+            'bar_code'             => ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns),
+            'provider_code'        => ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns),
+            'name'                 => ImportHelper::getColumnValue($row, 'nombre', $this->columns),
+            'stock_min'            => ImportHelper::getColumnValue($row, 'stock_minimo', $this->columns),
+            'cost'                 => $cost,
+            'percentage_gain'      => $percentage_gain,
+            'provider_id'          => $provider_id,
+            'iva_id'               => $iva_id,
+            'user_id'              => $this->user->id,
+        ];
+
+        // Log::info('data[cost]: '.$cost);
+        // Log::info('cost type: '.gettype($cost));
+        // Log::info('data[cost] type: '.gettype($data['cost']));
+
+
+        foreach ($props_to_add as $prop_to_add) {
+
+            $prop = ImportHelper::getColumnValue($row, $prop_to_add['excel_column'], $this->columns);
+
+            if ($prop) {
+                $data[$prop_to_add['prop_key']] = $prop;
+            }
+        }
+
+        if (!ImportHelper::isIgnoredColumn('u_individuales', $this->columns)) {
+            $data['unidades_individuales'] = ImportHelper::getColumnValue($row, 'u_individuales', $this->columns);
+        }
+
+        if (!ImportHelper::isIgnoredColumn('precio', $this->columns)) {
+            $price = ImportHelper::getColumnValue($row, 'precio', $this->columns);
+            $data['price'] = Self::get_number($price);
+        }
+
+        if (!ImportHelper::isIgnoredColumn('moneda', $this->columns)) {
+            $data['cost_in_dollars'] = $this->get_cost_in_dollars($row);
+        }
 
         if (!ImportHelper::isIgnoredColumn('categoria', $this->columns)) {
             $data['category_id'] = $category_id;
         }
         if (!ImportHelper::isIgnoredColumn('sub_categoria', $this->columns)) {
             $data['sub_category_id'] = $sub_category_id;
-        }
-
-
-
-
-
-        if (!ImportHelper::isIgnoredColumn('moneda', $this->columns)) {
-            $data['cost_in_dollars'] = $this->get_cost_in_dollars($row);
         }
 
         if (!ImportHelper::isIgnoredColumn('aplicar_iva', $this->columns)) {
@@ -195,6 +161,10 @@ class ProcessRow {
         if (!ImportHelper::isIgnoredColumn('marca', $this->columns)) {
             $brand_id = ImportHelper::getColumnValue($row, 'marca', $this->columns);
             $data['brand_id'] = $this->get_brand_id($row);
+        }
+
+        if (!ImportHelper::isIgnoredColumn('descripcion', $this->columns)) {
+            $data['descripcion'] = ImportHelper::getColumnValue($row, 'descripcion', $this->columns);
         }
 
         if (!ImportHelper::isIgnoredColumn('unidad_medida', $this->columns)) {
@@ -247,135 +217,224 @@ class ProcessRow {
 
 
 
+        $codigos_repetidos = filter_var(env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false), FILTER_VALIDATE_BOOLEAN);
+
+        $articulo_para_crear = false;
         
+        if ($codigos_repetidos) {
 
+            if (!empty($data['provider_code'])) {
 
-        $articulo_ya_creado = ArticleIndexCache::find($data, $this->user->id, $provider_id, $this->no_actualizar_articulos_de_otro_proveedor);
+                // Aca entra para actualizar todas las coincidencias del producto en base al codigo de proveedor, caso SAN BLAS
 
-        if (
-            !is_null($articulo_ya_creado)
-            || is_array($articulo_ya_creado)
-        ) {
+                $articulos = ArticleIndexCache::find_all_by_provider_code($data['provider_code'], $this->user->id, $provider_id, $this->no_actualizar_articulos_de_otro_proveedor);
 
-            Log::info('Articulo ya creado');
+                Log::info('find_all_by_provider_code:');
+                Log::info($articulos);
 
-            $this->attach_provider($articulo_ya_creado, $data, $provider_id);
+                if (count($articulos) >= 1) {
 
-            if (
-                !is_null($articulo_ya_creado->provider_id)
-                && !is_null($provider_id)
-                && $this->no_actualizar_articulos_de_otro_proveedor
-                && $articulo_ya_creado->provider_id != $provider_id
-            ) {
-                Log::info('El articulo '.$articulo_ya_creado->name.' ya pertenecia al proveedor id '.$articulo_ya_creado->provider_id);
+                    foreach ($articulos as $articulo_ya_creado) {
 
-                return;
-            }
+                        if (
+                            !is_null($articulo_ya_creado->provider_id)
+                            && !is_null($provider_id)
+                            && $this->no_actualizar_articulos_de_otro_proveedor
+                            && $articulo_ya_creado->provider_id != $provider_id
+                        ) {
+                            Log::info('El articulo '.$articulo_ya_creado->name.' ya pertenecia al proveedor id '.$articulo_ya_creado->provider_id);
+                            continue;
+                        }
 
+                        $this->procesar_articulo_ya_creado($articulo_ya_creado, $data, $row);
 
-            if (is_array($articulo_ya_creado)) {
+                        // $cambios = $this->get_modified_fields($articulo_ya_creado, $data);
+                        // $cambios['id'] = $articulo_ya_creado->id;
+                        // $cambios['variants_data'] = [];
 
-                foreach ($articulo_ya_creado as $_articulo_ya_creado) {
+                        // unset($cambios['provider_id']);
 
-                    Log::info('procesando articulo con provider_code repetido:');
-                    Log::info($_articulo_ya_creado->toArray());
+                        // Log::info('Agregando para actualizar');
 
-                    $this->procesar_articulo_ya_creado($_articulo_ya_creado, $data, $row);
+                        // $this->articulosParaActualizar[] = $cambios;
+                    }
+
+                } else {
+                    $articulo_para_crear = true;
                 }
             } else {
-
-                $this->procesar_articulo_ya_creado($articulo_ya_creado, $data, $row);
+                $articulo_para_crear = true;
             }
 
 
-
-        } else if ($this->create_and_edit) {
-
-            Log::info('El articulo NO existia');
-            // Si no existe, lo agregamos a los artículos para crear
-            
-            /* 
-                * Agrego siempre price_types_data, porque si el articulo no esta creado le agrego todos
-                    los price_types.
-                * Cuando termino de procesar el Excel y actualizo la bbdd, 
-                    le adjunto todos estos price_types,
-                * Y desde el ArticleHelper veo si le pongo el % que viene en el excel o 
-                    el % por defecto del price_type 
-            */
-            $price_types_data = $this->obtener_price_types($row);
-            $data['price_types_data'] = $price_types_data;
-
-            
-            $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
-            if (!empty($discounts_diff)) {
-                $data['discounts'] = $discounts_diff;
-            } 
-
-            $surchages_diff = $this->get_surchages_diff($articulo_ya_creado, $row);
-            if (!empty($surchages_diff)) {
-                $data['surchages'] = $surchages_diff;
-            }
-
-
-            $stock = $this->obtener_stock($row);
-
-            if (!is_null($stock['stock_global'])) {
-                $data['stock_global'] = $stock['stock_global'];
-            } else if (count($stock['stock_addresses']) > 0) {
-                $data['stock_addresses'] = $stock['stock_addresses'];
-            }
-
-            $data['variants_data'] = []; // 👈 espacio para variantes
-
-
-            $this->articulosParaCrear[] = $data;
-
-            // Lo agregamos al índice para evitar procesarlo duplicado en siguientes filas
-            $fakeArticle = new \App\Models\Article($data);
-            // $num = $this->ct->num('articles', $this->user->id);
-            $fakeArticle->id = 'fake_' . uniqid(); // ID temporal único
-
-            ArticleIndexCache::add($fakeArticle);
-        }
-
-    }
-
-    function attach_provider($articulo_ya_creado, $data, $provider_id) {
-
-        Log::info('attach_provider');
+        } 
 
         if (
-            !$provider_id
-            || is_array($articulo_ya_creado)
+            !$codigos_repetidos
+            || (
+                $codigos_repetidos
+                && $articulo_para_crear
+            )
         ) {
-            return;
-        }
 
-        Log::info('articulo_ya_creado: ');
-        Log::info($articulo_ya_creado);
+            $articulo_ya_creado = ArticleIndexCache::find($data, $this->user->id, $provider_id, $this->no_actualizar_articulos_de_otro_proveedor);
 
-        $pivot_data = [
-            'provider_code' => $data['provider_code'] ?? null,
-            'cost'          => (float)$data['cost'] ?? null,
-        ];
+            if ($articulo_ya_creado) {
 
-        $existe_relacion = $articulo_ya_creado->providers()
-                                ->where('providers.id', $provider_id)
-                                ->exists();
+                Log::info('Articulo ya creado');
 
-        if ($existe_relacion) {
+                if (
+                    !is_null($articulo_ya_creado->provider_id)
+                    && !is_null($provider_id)
+                    && $this->no_actualizar_articulos_de_otro_proveedor
+                    && $articulo_ya_creado->provider_id != $provider_id
+                ) {
+                    Log::info('El articulo '.$articulo_ya_creado->name.' ya pertenecia al proveedor id '.$articulo_ya_creado->provider_id);
+                    return;
+                }
 
-            Log::info('Ya estaba relacionado con el provider id '.$provider_id);
-            // ✅ Actualizar pivot existente
-            $articulo_ya_creado->providers()->updateExistingPivot($provider_id, $pivot_data);
-        } else {
-            // ✅ Crear pivot nuevo
-            $articulo_ya_creado->providers()->attach($provider_id, $pivot_data);
+                // $articulo_ya_creado->loadMissing(['price_types', 'addresses']);
+
+                // // Comparar propiedades y obtener las que cambiaron
+                // $cambios = $this->get_modified_fields($articulo_ya_creado, $data);
+
+                // $price_types_data = $this->obtener_price_types($row, $articulo_ya_creado);
+                // $price_types_data = $this->filter_only_changed_price_types($articulo_ya_creado, $price_types_data);
+                // if (!empty($price_types_data)) {
+                //     $cambios['price_types_data'] = $price_types_data;
+                // }
+
+                
+                // $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
+                // if (!empty($discounts_diff)) {
+                //     $cambios['discounts'] = $discounts_diff;
+                // } 
+
+                // $surchages_diff = $this->get_surchages_diff($articulo_ya_creado, $row);
+                // if (!empty($surchages_diff)) {
+                //     $cambios['surchages'] = $surchages_diff;
+                // }
+                
+
+                // // if (count($price_types_data) > 0) {
+                // //     $cambios['price_types_data'] = $price_types_data;
+                // // }
+
+                // $stock_data = $this->obtener_stock($row, $articulo_ya_creado);
+
+                // // 🔎 Chequeamos si vino stock global y si cambió realmente
+                // if (isset($stock_data['stock_global'])) {
+                //     $excel_stock = (float)$this->normalize_scalar($stock_data['stock_global']);
+                //     $actual_stock = (float)$this->normalize_scalar($articulo_ya_creado->stock ?? 0);
+
+                //     if ($excel_stock !== $actual_stock) {
+                //         $cambios['stock_global'] = [
+                //             '__diff__stock' => [
+                //                 'old' => $actual_stock,
+                //                 'new' => $excel_stock,
+                //             ],
+                //         ];
+                //     }
+                // }
+
+                // // 🏬 Si vino stock por direcciones, limpiamos las diferencias cero
+                // if (isset($stock_data['stock_addresses']) && is_array($stock_data['stock_addresses'])) {
+                //     $stock_changes = $this->purge_zero_stock_diffs($stock_data['stock_addresses'], $articulo_ya_creado);
+
+                //     if (!empty($stock_changes)) {
+                //         $cambios['stock_addresses'] = $stock_changes;
+                //     }
+                // }
+
+                $this->procesar_articulo_ya_creado($articulo_ya_creado, $data, $row);
+
+                // Log::info('Cambios:');
+                // Log::info($cambios);
+
+                // if (!empty($cambios)) {
+
+                //     Log::info('SI Hubo Cambios');
+
+                //     $cambios['id'] = $articulo_ya_creado->id;
+
+                //     // $cambios['variants_data'] = []; // 👈
+
+                //     $this->articulosParaActualizar[] = $cambios;
+
+                //     // if (!empty($cambios) && $this->import_history_id && isset($articulo_ya_creado->id)) {
+                //     //     ImportChangeRecorder::logUpdated($this->import_history_id, $articulo_ya_creado->id, $cambios);
+                //     // }
+                // }  else {
+                //     Log::info('');
+                //     Log::info('NO HUBO CAMBIOS');
+                // }
+
+            } else if ($this->create_and_edit) {
+
+                Log::info('El articulo NO existia');
+                // Si no existe, lo agregamos a los artículos para crear
+                
+                /* 
+                    * Agrego siempre price_types_data, porque si el articulo no esta creado le agrego todos
+                        los price_types.
+                    * Cuando termino de procesar el Excel y actualizo la bbdd, 
+                        le adjunto todos estos price_types,
+                    * Y desde el ArticleHelper veo si le pongo el % que viene en el excel o 
+                        el % por defecto del price_type 
+                */
+                $price_types_data = $this->obtener_price_types($row);
+                $data['price_types_data'] = $price_types_data;
+
+                
+                $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
+                if (!empty($discounts_diff)) {
+                    $data['discounts'] = $discounts_diff;
+                } 
+
+                $surchages_diff = $this->get_surchages_diff($articulo_ya_creado, $row);
+                if (!empty($surchages_diff)) {
+                    $data['surchages'] = $surchages_diff;
+                }
+
+
+                $stock = $this->obtener_stock($row);
+
+                if (!is_null($stock['stock_global'])) {
+                    $data['stock_global'] = $stock['stock_global'];
+                } else if (count($stock['stock_addresses']) > 0) {
+                    $data['stock_addresses'] = $stock['stock_addresses'];
+                }
+
+                $data['variants_data'] = []; // 👈 espacio para variantes
+                
+                $campos = collect($data)->except([
+                    'price_types_data',
+                    'discounts',
+                    'surchages',
+                    'stock_global',
+                    'stock_addresses',
+                    'variants_data',
+                ])->toArray();
+
+                Log::info('Cantidad campos: '.count($campos));
+
+
+                $this->articulosParaCrear[] = $data;
+
+                // Lo agregamos al índice para evitar procesarlo duplicado en siguientes filas
+                $fakeArticle = new \App\Models\Article($data);
+                // $num = $this->ct->num('articles', $this->user->id);
+                $fakeArticle->id = 'fake_' . uniqid(); // ID temporal único
+
+                ArticleIndexCache::add($fakeArticle);
+
+                // if ($this->import_history_id && isset($articulo_creado->id)) {
+                //     ImportChangeRecorder::logCreated($this->import_history_id, $articulo_creado->id);
+                // }
+            }
         }
 
     }
-
-    
 
     function procesar_articulo_ya_creado($articulo_ya_creado, $data, $row) {
         $articulo_ya_creado->loadMissing(['price_types', 'addresses']);
@@ -656,7 +715,7 @@ class ProcessRow {
     static function get_number($number, $decimales = 2) {
         // 1. Si es null o solo espacios vacíos, retorna null
         if (is_null($number) || (is_string($number) && trim($number) === '')) {
-            // \Log::info('get_number Retornando null');
+            \Log::info('get_number Retornando null');
             return null;
         }
 
@@ -665,7 +724,7 @@ class ProcessRow {
 
         // 3. Si no es numérico, retornar null
         if (!is_numeric($normalized)) {
-            // \Log::info("get_number Valor no numérico: '$number'");
+            \Log::info("get_number Valor no numérico: '$number'");
             return null;
         }
 

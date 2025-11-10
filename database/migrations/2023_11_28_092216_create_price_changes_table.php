@@ -16,9 +16,9 @@ class CreatePriceChangesTable extends Migration
         Schema::create('price_changes', function (Blueprint $table) {
             $table->id();
             $table->integer('article_id')->nullable();
-            $table->decimal('cost', 12,2)->nullable();
-            $table->decimal('price', 12,2)->nullable();
-            $table->decimal('final_price', 12,2)->nullable();
+            $table->decimal('cost', 22,2)->nullable();
+            $table->decimal('price', 22,2)->nullable();
+            $table->decimal('final_price', 22,2)->nullable();
             $table->integer('employee_id')->nullable();
             $table->timestamps();
         });

@@ -849,7 +849,7 @@ class SaleHelper extends Controller {
     }
 
     static function getCost($sale, $item) {
-
+        $user = $sale->user;
         Log::info('getCost');
 
         if (
@@ -885,7 +885,11 @@ class SaleHelper extends Controller {
             
             if ($sale->moneda_id == 1) {
                 // Pesos
-                if (isset($item['cost_in_dollars']) && $item['cost_in_dollars'] == 1) {
+                if (
+                    isset($item['cost_in_dollars']) 
+                    && $item['cost_in_dollars'] == 1
+                    && $user->cotizar_precios_en_dolares == 0
+                ) {
                     $cost *= (float)$sale->valor_dolar;
                 }
 

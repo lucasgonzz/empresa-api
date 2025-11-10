@@ -384,6 +384,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('/cheque/pagar', 'ChequeController@pagar');
     Route::put('/cheque/rechazar', 'ChequeController@rechazar');
     Route::put('/cheque/endosar', 'ChequeController@endosar');
+    Route::delete('/cheque/{id}', 'ChequeController@destroy');
 
 
 
@@ -519,6 +520,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     Route::resource('article-price-range', 'ArticlePriceRangeController');
+
+    Route::resource('turno-caja', 'TurnoCajaController');
+
+    Route::resource('resumen-caja', 'ResumenCajaController');
+    Route::get('resumen-caja/from-date/{from_date?}/{until_date?}', 'ResumenCajaController@index');
 
 });
 

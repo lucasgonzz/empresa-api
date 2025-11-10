@@ -206,6 +206,7 @@ class DatabaseSeeder extends Seeder
             $this->call(BudgetSeeder::class);
             $this->call(ChequeSeeder::class);
             $this->call(CajaSeeder::class);
+            $this->call(TurnoCajaSeeder::class);
 
 
             if ($for_user == 'demo') {

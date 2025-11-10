@@ -28,6 +28,7 @@ class SellerCommissionController extends Controller
     function saldoInicial(Request $request) {
         $seller_commission = SellerCommission::create([
             'num'           => $this->num('seller_commissions'),
+            'status'        => 'active',
             'seller_id'     => $request->seller_id,
             'description'   => SellerCommissionHelper::getDescription(),
             'debe'          => !is_null($request->debe) ? $request->debe : null,

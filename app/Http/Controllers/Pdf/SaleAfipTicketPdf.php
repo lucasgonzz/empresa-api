@@ -153,13 +153,18 @@ class SaleAfipTicketPdf extends fpdf {
         $this->num_page++;
 		$this->printPieDePagina();
         $this->reset();
-        if (!$this->printing_duplicate) {
-        	$this->printing_duplicate = true;
-        	$this->printSales();
-        } else {
-	        $this->Output();
-	        exit;
-        }
+		
+        // if (!$this->printing_duplicate) {
+        // 	$this->printing_duplicate = true;
+        // 	$this->printSales();
+        // } else {
+	    //     $this->Output();
+	    //     exit;
+        // }
+
+
+        $this->Output();
+        exit;
 	}
 
 	function addArticle($article) {

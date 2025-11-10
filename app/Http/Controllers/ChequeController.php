@@ -191,5 +191,11 @@ class ChequeController extends Controller
                                         ->first();
         return $credit_account;
     }
+
+    function destroy($id) {
+        $model = Cheque::find($id);
+        $model->delete();
+        return response(null, 200);
+    }
 }
  

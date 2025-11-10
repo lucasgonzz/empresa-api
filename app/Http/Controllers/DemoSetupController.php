@@ -70,7 +70,8 @@ class DemoSetupController extends Controller
             //     'pausar_tienda_online'          => 0,
             // ],
             'base_de_datos'                     => 'empresa_prueba_1',
-            'google_custom_search_api_key'      => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
+            'google_custom_search_api_key'      => 'AIzaSyCgzE6haVi8uZnenfAvYJO5hn7m7Cl09Gw',
+            'google_cuota'                      => 100,
         ]);
 
         $this->puntos_de_venta_afip($user);
@@ -78,7 +79,7 @@ class DemoSetupController extends Controller
 
 
         // Asignar extensiones según configuración
-        $extencions = ['comerciocity_interno', 'ask_save_current_acount', 'online', 'costo_en_dolares', 'budgets', 'acopios'];
+        $extencions = ['comerciocity_interno', 'ask_save_current_acount', 'online', 'costo_en_dolares', 'budgets', 'acopios', 'bar_code_scanner'];
         $seeders = [
             'MonedaSeeder',
             'SaleChannelSeeder',

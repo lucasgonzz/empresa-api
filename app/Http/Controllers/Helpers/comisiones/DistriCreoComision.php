@@ -15,18 +15,24 @@ class DistriCreoComision {
 
     function crear_comision($sale) {
 
-        $porcentaje_comision = 0.1;
+        $seller = $sale->seller;
+
+        $porcentaje_comision = 10;
+
+        if ($seller->percentage_commission) {
+
+            $porcentaje_comision = $seller->percentage_commission;
+        }
 
         $ct = new Controller();
 
-        $seller = $sale->seller;
 
         $seller_commission = SellerCommission::create([
             'num'           => $ct->num('seller_commissions'),
             'seller_id'     => $sale->seller_id,
-            'percentage'    => 10,
+            'percentage'    => $porcentaje_comision,
             'sale_id'       => $sale->id,
-            'debe'          => $sale->total * $porcentaje_comision,
+            'debe'          => $sale->total * ($porcentaje_comision / 100),
             'status'        => Helper::get_status($sale),
             'user_id'       => $ct->userId(),
         ]);

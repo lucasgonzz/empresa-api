@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\caja\CajaAperturaHelper;
 use App\Models\Address;
 use App\Models\Caja;
 use App\Models\DefaultPaymentMethodCaja;
+use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Log;
 
@@ -49,16 +50,54 @@ class CajaSeeder extends Seeder
         $this->addresses = Address::where('user_id', env('USER_ID'))
                                 ->get();
 
+        $employees = User::where('owner_id', env('USER_ID'))
+                                    ->get();
+
         foreach ($this->addresses as $address) {
+
+            foreach ($employees as $employee) {
+
+                $models[] = [
+                    // 'name'      => $address->street.' efectivo',
+                    'name'      => 'Efectivo',
+                    'employee_id'   => $employee->id,
+                    'address_id'    => $address->id,
+                    'user_id'   => env('USER_ID'),
+                    'saldo'     => 10000,
+                    'default_payment_method_caja' => [
+                        'payment_method_id'     => 3,
+                        'address_id'            => $address->id,
+                    ],
+                ];
+                
+                $models[] = [
+                    // 'name'      => $address->street.' debito',
+                    'employee_id'   => $employee->id,
+                    'name'      => 'Debitos',
+                    'address_id'    => $address->id,
+                    'user_id'   => env('USER_ID'),
+                    'saldo'     => 10000,
+                ];
+                
+                $models[] = [
+                    // 'name'      => $address->street.' credito',
+                    'employee_id'   => $employee->id,
+                    'name'      => 'Tarjetas',
+                    'address_id'    => $address->id,
+                    'user_id'   => env('USER_ID'),
+                    'saldo'     => 10000,
+                ];
+                
+                $models[] = [
+                    // 'name'      => $address->street.' credito',
+                    'employee_id'   => $employee->id,
+                    'name'      => 'Transferencias',
+                    'address_id'    => $address->id,
+                    'user_id'   => env('USER_ID'),
+                    'saldo'     => 10000,
+                ];
+            }
             
-            $models[] = [
-                'name'      => $address->street.' efectivo',
-                'user_id'   => env('USER_ID'),
-                'default_payment_method_caja' => [
-                    'payment_method_id'     => 3,
-                    'address_id'            => $address->id,
-                ],
-            ];
         }
 
         $num = 1;
@@ -68,11 +107,17 @@ class CajaSeeder extends Seeder
             $model_to_create = [];
             $model_to_create['num'] = $num;
             $model_to_create['name'] = $model['name'];
+            $model_to_create['address_id'] = $model['address_id'] ?? null;
             $model_to_create['user_id'] = $model['user_id'];
 
             if(isset($model['saldo'])) {
 
                 $model_to_create['saldo'] = $model['saldo'];
+            } 
+            
+            if(isset($model['employee_id'])) {
+
+                $model_to_create['employee_id'] = $model['employee_id'];
             } 
             
             $caja = Caja::create($model_to_create);

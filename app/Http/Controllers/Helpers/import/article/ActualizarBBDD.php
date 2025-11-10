@@ -199,11 +199,34 @@ class ActualizarBBDD {
 
 
 
+        // Relaciono los articulos credos con el proveedor, el provider_code y el precio de este proveedor
+        $this->set_articles_providers();
+
+
+
         $this->guardar_variantes_desde_cache_simple();
 
 
 
         $this->actualizar_tienda_nube();
+    }
+
+    function set_articles_providers() {
+
+
+        foreach ($this->articulos_creados_models as $article) {
+
+            if (!$article->provider_id) {
+                continue;
+            }
+
+            $pivot_data = [
+                'provider_code' => $article->provider_code,
+                'cost'          => $article->cost,
+            ];
+
+            $article->providers()->attach($article->provider_id, $pivot_data);
+        }
     }
 
     function set_article_ubications() {

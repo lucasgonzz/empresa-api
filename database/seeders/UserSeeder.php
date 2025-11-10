@@ -191,6 +191,7 @@ class UserSeeder extends Seeder
             $models[0]['iva_condition_id'] = 1;
             $models[0]['doc_number'] = '1234';
             $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
+            $models[0]['comparar_precios_de_proveedores_en_excel'] = 1;
 
             
             // $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
@@ -482,6 +483,7 @@ class UserSeeder extends Seeder
                 'article.costo_real',
                 'setear_precio_final_en_listas_de_precio',
                 'cajas',
+                'resumen_caja',
             ];
 
         } else if ($this->for_user == 'truvari') {
@@ -657,6 +659,7 @@ class UserSeeder extends Seeder
                 'cotizar_precios_en_dolares'    => isset($model['cotizar_precios_en_dolares']) ? $model['cotizar_precios_en_dolares'] : 1, 
                 'comision_funcion'                  => isset($model['comision_funcion']) ? $model['comision_funcion'] : null, 
                 'venta_terminada_comision_funcion'                  => isset($model['venta_terminada_comision_funcion']) ? $model['venta_terminada_comision_funcion'] : null, 
+                'comparar_precios_de_proveedores_en_excel'                  => isset($model['comparar_precios_de_proveedores_en_excel']) ? $model['comparar_precios_de_proveedores_en_excel'] : null, 
                 'impresora'                     => isset($model['impresora']) ? $model['impresora'] : null, 
                 'doc_number'                    => $model['doc_number'], 
                 'info_afip_del_primer_punto_de_venta'                    => $model['info_afip_del_primer_punto_de_venta'],                 

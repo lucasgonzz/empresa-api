@@ -379,6 +379,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Articulo con multiple proveedores',
                 'slug' => 'articulo_multi_proveedor',
             ],
+            [
+                'name' => 'Resumen caja',
+                'slug' => 'resumen_caja',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

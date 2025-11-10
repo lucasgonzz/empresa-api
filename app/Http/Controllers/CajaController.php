@@ -26,11 +26,13 @@ class CajaController extends Controller
             'num'                   => $this->num('cajas'),
             'name'                  => $request->name,
             'moneda_id'             => $request->moneda_id,
+            'address_id'            => $request->address_id,
+            'employee_id'            => $request->employee_id,
             'notas'                 => $request->notas,
             'user_id'               => $this->userId(),
         ]);
 
-        GeneralHelper::attachModels($model, 'current_acount_payment_methods', $request->current_acount_payment_methods);
+        // GeneralHelper::attachModels($model, 'current_acount_payment_methods', $request->current_acount_payment_methods);
 
         GeneralHelper::attachModels($model, 'users', $request->users);
         
@@ -47,6 +49,8 @@ class CajaController extends Controller
         $model->name                = $request->name;
         $model->notas               = $request->notas;
         $model->moneda_id           = $request->moneda_id;
+        $model->address_id          = $request->address_id;
+        $model->employee_id          = $request->employee_id;
         $model->save();
 
         GeneralHelper::attachModels($model, 'current_acount_payment_methods', $request->current_acount_payment_methods);
