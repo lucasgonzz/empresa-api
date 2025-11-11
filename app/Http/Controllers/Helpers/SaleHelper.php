@@ -888,7 +888,10 @@ class SaleHelper extends Controller {
                 if (
                     isset($item['cost_in_dollars']) 
                     && $item['cost_in_dollars'] == 1
-                    && $user->cotizar_precios_en_dolares == 0
+                    && (
+                        $user
+                        && $user->cotizar_precios_en_dolares == 0
+                    )
                 ) {
                     $cost *= (float)$sale->valor_dolar;
                 }

@@ -496,11 +496,14 @@ class ArticleHelper {
         $article = new \stdClass();
         $article->id = $id;
 
+        Log::info('discountStock');
+
         $res = Self::get_amount_for_stock_movement($sale, $article, $amount, $previus_articles, $se_esta_confirmando_por_primera_vez);
         
         $concepto = $res['concepto'];
         $amount = $res['amount'];
 
+        Log::info('amount: '.$amount);
         if ($amount != 0) {
             Self::storeStockMovement($article, $sale->id, $amount, $sale->address_id, null, $concepto, $article_variant_id);
         }

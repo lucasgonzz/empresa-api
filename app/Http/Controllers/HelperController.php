@@ -27,12 +27,15 @@ use App\Models\Article;
 use App\Models\ArticlePriceTypeMoneda;
 use App\Models\Budget;
 use App\Models\Buyer;
+use App\Models\Caja;
 use App\Models\Category;
 use App\Models\Cheque;
 use App\Models\Client;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\CurrentAcountCurrentAcountPaymentMethod;
+use App\Models\CurrentAcountPaymentMethod;
+use App\Models\DefaultPaymentMethodCaja;
 use App\Models\Image;
 use App\Models\InventoryLinkage;
 use App\Models\MeliOrder;
@@ -65,6 +68,45 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null) {
         $this->{$method}($param);
+    }
+
+    function set_cajas() {
+        $payment_methods = CurrentAcountPaymentMethod::get();
+
+        $employees = User::where('owner_id', env('USER_ID'))
+                        ->get();
+
+        $num = 1;
+        foreach ($payment_methods as $payment_method) {
+            
+            foreach ($employees as $employee) {
+                
+                $model = [
+                    'num'           => $num,
+                    'name'          => $payment_method->name,
+                    'employee_id'   => $employee->id,
+                    'address_id'    => $employee->address_id,
+                    'user_id'       => env('USER_ID'),
+                    'saldo'         => 0,
+                ];
+
+                $num++;
+
+
+                $caja = Caja::create($model);
+
+                $default = DefaultPaymentMethodCaja::create([
+                    'caja_id'                           => $caja->id,
+                    'current_acount_payment_method_id'  => $payment_method->id,
+                    'address_id'                        => $caja->address_id,
+                    'employee_id'                       => $employee->id,
+                    'user_id'                           => env('USER_ID'),
+                ]);
+
+                echo 'Se creo caja '.$caja->name.' para '.$employee->name;
+                echo '<br>';
+            }
+        }
     }
 
     function articulos_redondeados() {

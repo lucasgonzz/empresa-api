@@ -171,6 +171,7 @@ class ArticleController extends Controller
         $model->meli_item_condition_id                 = $request->meli_item_condition_id;
         $model->meli_descripcion                 = $request->meli_descripcion;
 
+        $model->plu                 = $request->plu;
 
         $model->user_id                           = $this->userId();
         if (isset($request->status)) {
@@ -287,6 +288,9 @@ class ArticleController extends Controller
         $model->cm3                             = $request->cm3;
         $model->calipers                        = $request->calipers;
         $model->juego                           = $request->juego;
+
+
+        $model->plu                           = $request->plu;
 
         
         $model->name = ucfirst($request->name);

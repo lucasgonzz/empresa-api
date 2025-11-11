@@ -22,6 +22,7 @@ class DefaultPaymentMethodCajaController extends Controller
             'caja_id'                           => $request->caja_id,
             'current_acount_payment_method_id'  => $request->current_acount_payment_method_id,
             'address_id'                        => $request->address_id,
+            'employee_id'                        => $request->employee_id,
             'user_id'                           => $this->userId(),
         ]);
         $this->sendAddModelNotification('DefaultPaymentMethodCaja', $model->id);
@@ -37,6 +38,7 @@ class DefaultPaymentMethodCajaController extends Controller
         $model->caja_id                           = $request->caja_id;
         $model->current_acount_payment_method_id  = $request->current_acount_payment_method_id;
         $model->address_id                        = $request->address_id;
+        $model->employee_id                        = $request->employee_id;
         $model->save();
         $this->sendAddModelNotification('DefaultPaymentMethodCaja', $model->id);
         return response()->json(['model' => $this->fullModel('DefaultPaymentMethodCaja', $model->id)], 200);

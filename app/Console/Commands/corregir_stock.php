@@ -64,87 +64,33 @@ class corregir_stock extends Command
 
         foreach ($articles as $article) {
 
-            $this->comment('entro en '.$article->id);
+            $res = $this->procesar_articulo($article);
 
-            $movimientos = StockMovement::where('article_id', $article->id)
-                                        ->orderBy('id', 'ASC')
-                                        ->get();
+            $se_elimino_movimiento = $res['se_elimino_movimiento'];
+            $addresses = $res['addresses'];
+            $stock = $res['stock'];
 
-            $addresses = $this->get_addresses($article, $movimientos);
-
-            $stock = 0;
-
-            foreach ($movimientos as $movimiento) {
-
-                if (is_null($movimiento->concepto_movement)) {
-                    $this->info('No hay concepto para '.$article->name);
-                } else {
-
-                    if ($movimiento->concepto_movement->name == 'Reseteo de Stock') {
-                        $stock = 0;
-                        // Aca tendira que resetar tambien $addresses
-
-                    } else if (
-                        $movimiento->concepto_movement->name == 'Mov entre depositos'
-                        || $movimiento->concepto_movement->name == 'Mov manual entre depositos'
-                    ) {
-                        $this->info('No se toca stock por movimiento entre depositos para '.$article->name.'. Stock = '.$stock);
-                    } else if (
-                        $movimiento->concepto_movement->name == 'Creacion de deposito'
-                    ) {
-                        $stock = (float)$movimiento->amount;
-                        $this->info('Creacion de deposito para '.$article->name.'. Stock = '.$stock);
-                    } else {
-                        $stock += (float)$movimiento->amount;
-                        
-                        if (
-                            count($addresses) >= 1
-                        ) {
-
-                            if (
-                                $movimiento->to_address_id
-                                && $addresses[$movimiento->to_address_id]['movimiento_inicial_id'] != $movimiento->id
-                            ) {
-
-                                $addresses[$movimiento->to_address_id]['amount'] += $movimiento->amount;
-
-                                $this->comment('Sumando '.$movimiento->amount.' a to_address_id '.$addresses[$movimiento->to_address_id]['address']->street.' en concepto de '.$movimiento->concepto_movement->name);
-
-                                $this->comment('Quedo en '.$addresses[$movimiento->to_address_id]['amount']);
-
-
-                            } else if (
-                                $movimiento->from_address_id
-                                && $addresses[$movimiento->from_address_id]['movimiento_inicial_id'] != $movimiento->id
-                            ) {
-                                
-                                $addresses[$movimiento->from_address_id]['amount'] += $movimiento->amount;
-
-                                $this->comment('Sumando '.$movimiento->amount.' a from_address_id '.$addresses[$movimiento->from_address_id]['address']->street.' en concepto de '.$movimiento->concepto_movement->name);
-
-                                $this->comment('Quedo en '.$addresses[$movimiento->from_address_id]['amount']);
-                            }
-                        }
-                    }
-
-
-                    if (!$this->solo_informar) {
-
-                        $movimiento->stock_resultante = $stock;
-                        $movimiento->save();
-                    }
-                }
-
-
-
+            if ($se_elimino_movimiento) {
+                $this->info('');
+                $this->info('');
+                $this->info('SE VA A VOLVER A PROCESAR ARTICULO');
+                $this->info('');
+                $this->procesar_articulo($article);
             }
 
             if (
                 count($addresses) >= 1
             ) {
+
+                $this->info('');
+                $this->info('***************************');
+                $this->info('');
+                $this->info('Resumen de depositos:');
+
                 foreach ($addresses as $address_id => $info) {
 
-                    $this->info('en '. $info['address']->street .' deberia haber '.$info['amount']);
+
+                    $this->info('-> En '. $info['address']->street .' deberia haber '.$info['amount']);
 
                     if (!$this->solo_informar) {
                         
@@ -156,6 +102,10 @@ class corregir_stock extends Command
             } else {
                 $this->info('No tenia addresses');
             }
+
+            $this->info('');
+            $this->info('***************************');
+            $this->info('');
 
             if ($this->solo_informar) {
 
@@ -177,6 +127,114 @@ class corregir_stock extends Command
         $this->comment('Listo');
         
         return 0;
+    }
+
+
+    /*
+        Chequeo todos los movimientos
+        Calculo cuanto stock deberia haber en cada deposito
+        Si el articulo tiene stock por depositos, y un movimiento no tiene indicado el deposito, lo elimino y retorno $movimiento_eliminado = true para volver a calcular stock
+    */
+    function procesar_articulo($article) {
+
+        $this->comment('entro en '.$article->id);
+
+        $movimientos = StockMovement::where('article_id', $article->id)
+                                    ->orderBy('id', 'ASC')
+                                    ->get();
+
+        $this->comment(count($movimientos).' movimientos');
+
+        $addresses = $this->get_addresses($article, $movimientos);
+
+        $stock = 0;
+        
+        $se_elimino_movimiento = false;
+
+        foreach ($movimientos as $movimiento) {
+
+            if (is_null($movimiento->concepto_movement)) {
+                $this->info('No hay concepto para '.$article->name);
+            } else {
+
+                if ($movimiento->concepto_movement->name == 'Reseteo de Stock') {
+                    $stock = 0;
+                    // Aca tendira que resetar tambien $addresses
+
+                } else if (
+                    $movimiento->concepto_movement->name == 'Mov entre depositos'
+                    || $movimiento->concepto_movement->name == 'Mov manual entre depositos'
+                ) {
+                    $this->info('No se toca stock por movimiento entre depositos para '.$article->name.'. Stock = '.$stock);
+                } else if (
+                    $movimiento->concepto_movement->name == 'Creacion de deposito'
+                ) {
+                    $stock = (float)$movimiento->amount;
+                    $this->info('Creacion de deposito para '.$article->name.'. Stock = '.$stock);
+                } else {
+                    $stock += (float)$movimiento->amount;
+                    
+                    if (
+                        count($addresses) >= 1
+                    ) {
+
+                        if (
+                            $movimiento->to_address_id
+                            && $addresses[$movimiento->to_address_id]['movimiento_inicial_id'] != $movimiento->id
+                        ) {
+
+                            $addresses[$movimiento->to_address_id]['amount'] += $movimiento->amount;
+
+                            $this->comment('Sumando '.$movimiento->amount.' a to_address_id '.$addresses[$movimiento->to_address_id]['address']->street.' en concepto de '.$movimiento->concepto_movement->name);
+
+                            $this->comment('Quedo en '.$addresses[$movimiento->to_address_id]['amount']);
+
+
+                        } else if (
+                            $movimiento->from_address_id
+                            && $addresses[$movimiento->from_address_id]['movimiento_inicial_id'] != $movimiento->id
+                        ) {
+                            
+                            $addresses[$movimiento->from_address_id]['amount'] += $movimiento->amount;
+
+                            $this->comment('Sumando '.$movimiento->amount.' a from_address_id '.$addresses[$movimiento->from_address_id]['address']->street.' en concepto de '.$movimiento->concepto_movement->name);
+
+                            $this->comment('Quedo en '.$addresses[$movimiento->from_address_id]['amount']);
+                        
+                        } else if (
+                            !$movimiento->from_address_id
+                            && !$movimiento->to_address_id
+                        ) {
+
+                            $this->comment('DEPOSITO SIN INDICAR');
+
+                            if (!$this->solo_informar) {
+
+                                $movimiento->delete();
+                                $se_elimino_movimiento = true;
+                                $this->comment('Eliminando movimiento');
+
+                                return $this->procesar_articulo($article);
+                            }
+                        }
+                    }
+                }
+
+
+                if (!$this->solo_informar) {
+
+                    $movimiento->stock_resultante = $stock;
+                    $movimiento->save();
+                }
+            }
+
+        }
+
+        return [
+            'se_elimino_movimiento' => $se_elimino_movimiento,
+            'addresses' => $addresses,
+            'stock' => $stock,
+        ];
     }
 
     function get_addresses($article, $movimientos) {
@@ -218,6 +276,9 @@ class corregir_stock extends Command
         } else {
             $this->info('No hay addresses');
         }
+        $this->info('');
+        $this->info('*************************');
+        $this->info('');
 
         return $addresses;
     }
