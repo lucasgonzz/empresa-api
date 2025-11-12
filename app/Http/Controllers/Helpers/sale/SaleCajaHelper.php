@@ -26,6 +26,10 @@ class SaleCajaHelper {
 					)
 				)
 			)
+			&& (
+				!is_null($sale->caja_id)
+				&& $sale->caja_id !== 0
+			)
 		) {
 
 			Self::crear_movimiento_caja($sale);

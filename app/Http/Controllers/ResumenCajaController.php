@@ -52,9 +52,12 @@ class ResumenCajaController extends Controller
         Log::info('fecha:');
         Log::info($fecha);
 
-        // ejemplo: fecha=2025-11-07, Mañana 08:00-12:00 => [2025-11-07 08:00:00, 2025-11-07 12:00:00)
-        $desde = Carbon::parse($fecha .' '.$turno->hora_inicio)->clone()->utc();
-        $hasta = Carbon::parse($fecha .' '.$turno->hora_fin)->clone()->utc();
+
+        $desde = Carbon::parse($fecha .' '.$turno->hora_inicio);
+        $hasta = Carbon::parse($fecha .' '.$turno->hora_fin);
+
+        Log::info('desde: '.$desde->format('d/m/Y H:i:s'));
+        Log::info('hasta: '.$hasta->format('d/m/Y H:i:s'));
 
         // Política: NO obligamos cierre de cajas.
         // Tomamos snapshot de saldo actual de cada caja al momento de generar el resumen.
@@ -71,6 +74,9 @@ class ResumenCajaController extends Controller
                         ->whereHas('current_acount')
                         ->where('address_id', $request->address_id)
                         ->get();
+
+        Log::info('cajas: ');
+        Log::info($cajas);
 
         // if ($cajas->count() === 0) {
         //     return response()->json(['message' => 'No hay cajas para la dirección indicada'], 422);
@@ -102,6 +108,9 @@ class ResumenCajaController extends Controller
                                     ->where('cerrada_at', '<=' ,$hasta)
                                     ->orderBy('id', 'DESC')
                                     ->first();
+
+                Log::info('apertura de '.$caja->name.' : ');
+                Log::info($apertura->toArray());
 
                 if (!$apertura) continue;
 

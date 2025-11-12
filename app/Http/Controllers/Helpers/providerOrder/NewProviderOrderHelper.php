@@ -102,6 +102,16 @@ class NewProviderOrderHelper {
 
                 $total_article = $cost * (float)($article->pivot->amount);
 
+                if (
+                    (
+                        $total_article == 0
+                        || is_null($total_article)
+                    )
+                    && $article->pivot->price
+                ) {
+                    $total_article = (float)$article->pivot->price * (float)($article->pivot->amount);
+                }
+
                 if (!is_null($article->presentacion)) {
                     $total_article *= $article->presentacion;
                 }

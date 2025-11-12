@@ -137,6 +137,7 @@ class ArticleController extends Controller
         $model->online                            = $request->online;
         $model->in_offer                          = $request->in_offer;
         $model->default_in_vender                 = $request->default_in_vender;
+        $model->personalizar_price_en_vender                 = $request->personalizar_price_en_vender;
 
 
         // Vinoteca
@@ -252,6 +253,8 @@ class ArticleController extends Controller
         $model->online                            = $request->online;
         $model->in_offer                          = $request->in_offer;
         $model->default_in_vender                 = $request->default_in_vender;
+        $model->personalizar_price_en_vender                 = $request->personalizar_price_en_vender;
+        
 
 
         // Vinoteca
