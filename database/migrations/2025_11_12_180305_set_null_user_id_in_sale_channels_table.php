@@ -14,7 +14,7 @@ class SetNullUserIdInSaleChannelsTable extends Migration
     public function up()
     {
         Schema::table('sale_channels', function (Blueprint $table) {
-            $table->integer('user_id')->nullable()->change();
+            $table->dropColumn('user_id');
         });
     }
 

@@ -70,6 +70,36 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function iniciar_demo() {
+
+        
+        $sales = Sale::orderBy('id', 'DESC')
+                        ->take(30)
+                        ->get();
+
+        echo(count($sales).' ventas <br>');
+
+        $index = count($sales);
+
+        foreach ($sales as $sale) {
+            
+            $sale->timestamps = false;
+        
+            $sale->created_at = Carbon::now();
+
+            $sale->save();
+            
+            if ($sale->client_id) {
+
+                SaleHelper::updateCurrentAcountsAndCommissions($sale);
+            }
+            echo('Venta N° '.$sale->num.' ok <br>');
+
+        }
+
+        echo 'Termino';
+    }
+
     function set_cajas() {
         $payment_methods = CurrentAcountPaymentMethod::get();
 

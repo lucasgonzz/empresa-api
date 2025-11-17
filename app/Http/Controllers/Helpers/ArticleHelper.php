@@ -113,7 +113,11 @@ class ArticleHelper {
 
         $current_final_price = $article->final_price;
 
-        if (!is_null($article->percentage_gain) 
+        if (
+            (
+                !is_null($article->percentage_gain)
+                && $article->percentage_gain > 0
+            ) 
             || (
                     !is_null($article->cost) 
                     && $article->apply_provider_percentage_gain 

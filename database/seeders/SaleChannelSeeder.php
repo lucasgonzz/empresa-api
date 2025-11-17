@@ -35,8 +35,6 @@ class SaleChannelSeeder extends Seeder
 
         foreach ($models as $model) {
             
-            $model['user_id'] = env('USER_ID');
-
             SaleChannel::create($model);
         }
     }

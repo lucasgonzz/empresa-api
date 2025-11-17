@@ -17,7 +17,6 @@ class VenderController extends Controller
         $inicio = microtime(true);
         Log::info('Incia search_bar_code con codigo: '.$code);
 
-
         $article = Article::where('user_id', $this->userId());
         
         $variant_id = null; 

@@ -242,33 +242,28 @@ class CurrentAcountController extends Controller
     //     new CurrentAcountPdf($credit_account, $models);
     // }
 
-    function pdf($ids) {
-        // dd('asd');
-        $ids = explode('-', $ids);
 
-        if (count($ids) == 1) {
-            $model = CurrentAcount::find($ids[0]);
-        
-            if ($model->status == 'pago_from_client') {
-                if (!is_null($model->client_id)) {
-                    $model_name = 'client';
-                } else {
-                    $model_name = 'provider';
-                }
-                // $pdf = new PagoPdf($model, $model_name);
-                // $pdf->printPago();
-                $pdf = new NewPagoPdf($model, $model_name);
-            } else if ($model->status == 'nota_credito') {
-                if (!is_null($model->afip_ticket)) {
-                    $pdf = new AfipTicketPdf(null, $model);
-                } else {
-                    $pdf = new NotaCreditoPdf($model);
-                    $pdf->printCurrentAcounts();
-                }
+    // Se usa para un pago o nota de credito
+    function pdf($id) {
+
+        $model = CurrentAcount::find($id);
+    
+        if ($model->status == 'pago_from_client') {
+            if (!is_null($model->client_id)) {
+                $model_name = 'client';
+            } else {
+                $model_name = 'provider';
             }
-        } else {
-            $pdf = new PdfPrintCurrentAcounts($ids, $model_name);
-            $pdf->printCurrentAcounts();
+            $pdf = new NewPagoPdf($model, $model_name);
+
+        } else if ($model->status == 'nota_credito') {
+           
+            if (!is_null($model->afip_ticket)) {
+                $pdf = new AfipTicketPdf(null, $model);
+            } else {
+                $pdf = new NotaCreditoPdf($model);
+                $pdf->printCurrentAcounts();
+            }
         }
     }
 }

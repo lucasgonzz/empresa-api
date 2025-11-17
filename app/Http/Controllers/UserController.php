@@ -91,6 +91,10 @@ class UserController extends Controller
         $model->cotizar_precios_en_dolares        = $request->cotizar_precios_en_dolares;
         $model->cc_ultimas_arriba        = $request->cc_ultimas_arriba;
 
+        
+        $model->show_stock_min_al_iniciar        = $request->show_stock_min_al_iniciar;
+        $model->show_afip_errors_al_iniciar        = $request->show_afip_errors_al_iniciar;
+
         $model->save();
 
         UserHelper::set_sessions($model);
