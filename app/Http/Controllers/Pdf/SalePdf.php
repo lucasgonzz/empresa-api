@@ -154,6 +154,16 @@ class SalePdf extends fpdf {
 		}
 
 
+		if (
+			UserHelper::hasExtencion('vendedor_en_sale_pdf')
+			&& $this->sale->employee
+		) {
+			
+			$data['extra_info'] = [
+				'Vendedor'	=> $this->sale->employee->name
+			];
+		}
+
 		PdfHelper::header($this, $data);
 		return;
 	}

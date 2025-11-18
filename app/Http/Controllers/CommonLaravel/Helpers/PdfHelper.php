@@ -21,14 +21,16 @@ class PdfHelper {
 		
 		Self::commerceInfoLine($instance);
 
-		$y_final = Self::modelInfo($instance, $data);
+		Self::extra_info($instance, $data);
+
+		$res = Self::modelInfo($instance, $data);
 
 		if (isset($data['current_acount'])) {
-			Self::currentAcountInfo($instance, $data['current_acount'], $data['client_id'], $data['compra_actual']);
+			Self::currentAcountInfo($instance, $data['current_acount'], $data['client_id'], $data['compra_actual'], $res['y_inicio']);
 		}
 
 		if (isset($data['right_info'])) {
-			Self::right_info($instance, $data, $y_final);
+			Self::right_info($instance, $data, $res['y_final']);
 		}
 
 		if (isset($data['client_description'])) {
@@ -37,6 +39,26 @@ class PdfHelper {
 
 		if (isset($data['fields'])) {
 			Self::tableHeader($instance, $data['fields']);
+		}
+	}
+
+	static function extra_info($instance, $data) {
+		if (isset($data['extra_info'])) {
+
+			$height = 5;
+
+			foreach ($data['extra_info'] as $text => $value) {
+
+				$instance->x = 5;
+
+				$instance->SetFont('Arial', 'B', 10);
+				$instance->Cell(20, $height, $text.':', $instance->b, 0, 'L');
+				
+				$instance->SetFont('Arial', '', 10);
+				$instance->Cell(30, $height, $value, $instance->b, 1, 'L');
+			}
+
+			$instance->y += 2;
 		}
 	}
 
@@ -246,6 +268,7 @@ class PdfHelper {
 	}
 
 	static function modelInfo($instance, $data) {
+		$y_inicio = $instance->y;
 		$y_final = null;
 
 		if (isset($data['model_info']) && !is_null($data['model_info'])) {
@@ -296,7 +319,10 @@ class PdfHelper {
 		    $instance->Line(5, $y_final, 5, $start_y);
 		}
 
-		return $y_final;
+		return [
+			'y_inicio'	=> $y_inicio,
+			'y_final'	=> $y_final,
+		];
 	}
 
 	static function getPropValue($model, $prop) {

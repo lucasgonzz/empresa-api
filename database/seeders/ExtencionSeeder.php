@@ -383,6 +383,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Resumen caja',
                 'slug' => 'resumen_caja',
             ],
+            [
+                'name' => 'vendedor_en_sale_pdf',
+                'slug' => 'vendedor_en_sale_pdf',
+            ]
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([
