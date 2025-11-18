@@ -63,4 +63,8 @@ class Budget extends Model
         return $this->belongsTo(Address::class);
     }
 
+    function employee() {
+        return $this->belongsTo(User::class, 'employee_id');
+    }
+
 }

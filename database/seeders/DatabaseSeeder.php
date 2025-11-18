@@ -168,7 +168,7 @@ class DatabaseSeeder extends Seeder
                 $this->call(AddressSeeder::class);
                 $this->call(ArticleUbicationSeeder::class);
 
-                $this->call(PriceTypeSeeder::class);
+                // $this->call(PriceTypeSeeder::class);
                 $this->call(ArticleSeeder::class);
                 // $this->call(ArticleDolarSeeder::class);
 

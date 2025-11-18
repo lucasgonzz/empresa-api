@@ -140,6 +140,17 @@ Route::get('/storage/{path}', function ($path) {
     return response()->file($full_path);
 })->where('path', '.*');
 
+Route::get('/imported-files/{path}', function ($path) {
+    $full_path = storage_path('app/imported_files/' . $path);
+
+    Log::info($full_path);
+    if (!file_exists($full_path)) {
+        abort(404);
+    }
+
+    return response()->file($full_path);
+})->where('path', '.*');
+
 
 
 Route::get('/afip-get-data', function () {

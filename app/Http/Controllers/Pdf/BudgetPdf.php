@@ -92,6 +92,17 @@ class BudgetPdf extends fpdf {
 			'model_props' 		=> $this->getModelProps(),
 			'fields' 			=> $this->getFields(),
 		];
+
+		if ($this->budget->employee) {
+
+			$data['right_info'] = [
+				[
+					'text'	=> 'Vendedor',
+					'value'	=> $this->budget->employee->name,
+				],
+			];
+		}
+
 		PdfHelper::header($this, $data);
 	}
 
