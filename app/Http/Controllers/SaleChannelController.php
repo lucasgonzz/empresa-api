@@ -11,8 +11,7 @@ class SaleChannelController extends Controller
 
     public function index() {
         
-        $models = SaleChannel::where('user_id', $this->userId())
-                            ->orderBy('created_at', 'DESC')
+        $models = SaleChannel::orderBy('created_at', 'DESC')
                             ->withAll()
                             ->get();
 

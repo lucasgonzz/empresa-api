@@ -69,6 +69,8 @@ class ArticleTicketPdf extends fpdf {
 
 		$this->start_y = 0;
 
+
+
 		foreach ($this->articles as $article) {
 			
 			if ($this->x == $this->margen) {
@@ -79,6 +81,7 @@ class ArticleTicketPdf extends fpdf {
 
 				$this->start_x = $this->ticket_w + $this->margen;
 				$this->start_y = $this->y - $this->ticket_h;
+
 
 			} else if ($this->x ==$this->margen +  $this->ticket_w*2) {
 
@@ -117,16 +120,17 @@ class ArticleTicketPdf extends fpdf {
 
 	function printArticle($article) {
 
+		$this->x = $this->start_x;
+		$this->y = $this->start_y;
+
 		if ($this->y >= 280) {
 			$this->AddPage();
 			$this->start_y = $this->margen;
 			$this->start_x = $this->margen;
+			
 		}
 
 		if (!is_null($article)) {
-
-			$this->x = $this->start_x;
-			$this->y = $this->start_y;
 
 
 			// Precio
@@ -186,6 +190,8 @@ class ArticleTicketPdf extends fpdf {
 	}
 
 	function price($article) {
+
+		$this->x = $this->start_x;
 
 		$border = 0;
 

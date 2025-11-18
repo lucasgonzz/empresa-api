@@ -21,9 +21,14 @@ class PdfHelper {
 		
 		Self::commerceInfoLine($instance);
 
-		Self::modelInfo($instance, $data);
+		$y_final = Self::modelInfo($instance, $data);
+
 		if (isset($data['current_acount'])) {
 			Self::currentAcountInfo($instance, $data['current_acount'], $data['client_id'], $data['compra_actual']);
+		}
+
+		if (isset($data['right_info'])) {
+			Self::right_info($instance, $data, $y_final);
 		}
 
 		if (isset($data['client_description'])) {
@@ -241,6 +246,8 @@ class PdfHelper {
 	}
 
 	static function modelInfo($instance, $data) {
+		$y_final = null;
+
 		if (isset($data['model_info']) && !is_null($data['model_info'])) {
 		    $instance->x = 5;
 		    $start_y = $instance->y;
@@ -288,6 +295,8 @@ class PdfHelper {
 		    $instance->Line(105, $y_final, 5, $y_final);
 		    $instance->Line(5, $y_final, 5, $start_y);
 		}
+
+		return $y_final;
 	}
 
 	static function getPropValue($model, $prop) {
@@ -443,6 +452,32 @@ class PdfHelper {
 		$instance->Cell(30, 5, 'Vendedor:', $instance->b, 0, 'L');
 		$instance->SetFont('Arial', '', 10);
 		$instance->Cell(30, 5, $vendedor, $instance->b, 1, 'L');
+
+		$instance->Line(105, $start_y, 205, $start_y);
+		$instance->Line(205, $start_y, 205, $instance->y);
+		$instance->Line(205, $instance->y, 105, $instance->y);
+	}
+
+	/*
+		y_final_model_info es el valor final de y luego de mostrar todas las model_props,
+		uso el mismo valor para que las lineas de la caja de right_info sea del mismo tamaño
+	*/
+	static function right_info($instance, $data, $y_final_model_info, $start_y = 32){
+
+		$instance->y = $start_y;
+		$instance->SetFont('Arial', 'B', 10);
+
+		$height = 5;
+		$num_filas = 3;
+
+		foreach ($data['right_info'] as $info) {
+			$instance->x = 105;
+			$instance->Cell(20, $height, $info['text'].':', $instance->b, 0, 'L');
+			$instance->SetFont('Arial', '', 10);
+			$instance->Cell(30, $height, $info['value'], $instance->b, 1, 'L');
+		}
+
+		$instance->y = $y_final_model_info;
 
 		$instance->Line(105, $start_y, 205, $start_y);
 		$instance->Line(205, $start_y, 205, $instance->y);
