@@ -6,12 +6,14 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 class UpdateController extends Controller
 {
     function update(Request $request, $model_name) {
+
         $models = [];
         $formated_model_name = GeneralHelper::getModelName($model_name);
         if ($request->from_filter) {
@@ -24,6 +26,7 @@ class UpdateController extends Controller
         }
 
         $models_response = [];
+        // if (count($models) < 2) {
         if (count($models) < 3000) {
 
             foreach ($models as $model) {
@@ -60,12 +63,14 @@ class UpdateController extends Controller
                 }
                 if ($model_name == 'article') {
                     ArticleHelper::setFinalPrice($model);
+                    TiendaNubeSyncArticleService::add_article_to_sync($model);
                 }
                 $models_response[] = $this->fullModel($model_name, $model->id);
             }
             Log::info('se actualizaron '.count($models).' '.$model_name.' desde updateController');
         } else {
             Log::info('NO se permitio actualizar los '.count($models).' '.$model_name);
+            return response()->json(['message' => 'No se permitio actualizar '.count($models).' registros'], 422);
         }
         return response()->json(['models' => $models_response], 200);
     }

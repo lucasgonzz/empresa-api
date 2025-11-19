@@ -519,6 +519,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
 
+    Route::get('sync-to-tn-article/from-date/{from_date?}/{until_date?}', 'SyncToTNArticleController@index');
+
+
     Route::resource('article-price-range', 'ArticlePriceRangeController');
 
     Route::resource('turno-caja', 'TurnoCajaController');
