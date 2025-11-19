@@ -19,6 +19,7 @@ use App\Models\ArticleVariant;
 use App\Models\ConceptoStockMovement;
 use App\Models\StockMovement;
 use App\Services\MercadoLibre\ProductService;
+use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -116,8 +117,8 @@ class StockMovementController extends Controller
 
         SetStockUpdatedAt::set_stock_updated_at($stock_movement, $article);
 
-        $this->check_tienda_nube($article);
         ProductService::add_article_to_sync($article);
+        TiendaNubeSyncArticleService::add_article_to_sync($article);
 
         return $stock_movement;
     }
@@ -142,16 +143,6 @@ class StockMovementController extends Controller
         }
 
         return $amount;
-    }
-
-    function check_tienda_nube($article) {
-
-        if (env('USA_TIENDA_NUBE', false) && $this->update_tienda_nube) {
-            Log::info('Se llamo ProcessSyncArticleToTiendaNube desde StockMovementController');
-            dispatch(new ProcessSyncArticleToTiendaNube($article));
-        } else {
-            Log::info('No se va a llamar a tienda nube');
-        }
     }
 
     function get_provider_id($data) {

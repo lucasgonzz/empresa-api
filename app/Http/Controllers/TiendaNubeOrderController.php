@@ -55,6 +55,9 @@ class TiendaNubeOrderController extends Controller
         
         $model->save();
 
+        // No se pueden actualizar cantidades porque ya fue cobrado
+        // $this->update_articles($model);
+
         $this->confirmar_pedido($model, $previus_status);
 
         return response()->json(['model' => $this->fullModel('TiendaNubeOrder', $model->id)], 200);
@@ -77,6 +80,14 @@ class TiendaNubeOrderController extends Controller
             CreateSaleOrderHelper::save_sale($order, $this, true);
         }
     }
+
+    // function update_articles($order) {
+    //     foreach ($request->articles as $article) {
+    //         $order->articles()->attach($article['id'], [
+    //             'amount'    => $article['pivot']['amount'],
+    //         ]);
+    //     }
+    // }
 
 
 }

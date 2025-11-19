@@ -154,6 +154,16 @@ class SalePdf extends fpdf {
 		}
 
 
+		if (
+			UserHelper::hasExtencion('vendedor_en_sale_pdf')
+			&& $this->sale->employee
+		) {
+			
+			$data['extra_info'] = [
+				'Vendedor'	=> $this->sale->employee->name
+			];
+		}
+
 		PdfHelper::header($this, $data);
 		return;
 	}
@@ -624,7 +634,7 @@ class SalePdf extends fpdf {
 
 		    	// $total_with_discounts = $this->total_articles + $this->total_services + $this->total_combos + $this->total_promocion_vinotecas;
 
-		    	$text .= ' = $'.Numbers::price($total_descuento);
+		    	$text .= ' = '.Numbers::price($total_descuento, true, $this->sale->moneda_id);
 
 				$this->Cell(
 					50, 
@@ -748,7 +758,7 @@ class SalePdf extends fpdf {
 		    $this->Cell(
 				50, 
 				5, 
-				'Total final: $'.Numbers::price(SaleHelper::getTotalSale($this->sale, true, true, false)), 
+				'Total final: $'.Numbers::price(SaleHelper::getTotalSale($this->sale, true, true, false), true, $this->sale->moneda_id), 
 				$this->b, 
 				1, 
 				'L'

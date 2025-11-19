@@ -39,6 +39,7 @@ use App\Models\User;
 use App\Services\MercadoLibre\ProductService;
 use App\Services\Pdf\Catalog\CatalogClassic;
 use App\Services\Pdf\Catalog\TCPDCCatalog;
+use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -165,14 +166,25 @@ class ArticleController extends Controller
         $model->omitir_en_lista_pdf                = $request->omitir_en_lista_pdf;
 
 
+        // Tienda nube
+        $model->peso                                = $request->peso;
+        $model->profundidad                         = $request->profundidad;
+        $model->ancho                               = $request->ancho;
+        $model->alto                                = $request->alto;
+        $model->disponible_tienda_nube              = $request->disponible_tienda_nube;
+        $model->precio_promocional                  = $request->precio_promocional;
+
+        $model->needs_sync_with_tn                  = 1;
+
+
         // Mercado Libre
         $model->mercado_libre                       = $request->mercado_libre;
         $model->meli_listing_type_id                = $request->meli_listing_type_id;
         $model->meli_buying_mode_id                 = $request->meli_buying_mode_id;
-        $model->meli_item_condition_id                 = $request->meli_item_condition_id;
-        $model->meli_descripcion                 = $request->meli_descripcion;
+        $model->meli_item_condition_id              = $request->meli_item_condition_id;
+        $model->meli_descripcion                    = $request->meli_descripcion;
 
-        $model->plu                 = $request->plu;
+        $model->plu                                 = $request->plu;
 
         $model->user_id                           = $this->userId();
         if (isset($request->status)) {
@@ -206,8 +218,8 @@ class ArticleController extends Controller
 
         ArticleUbicationsHelper::init_ubications($model);
 
-        $this->check_tienda_nube($model);
         ProductService::add_article_to_sync($model);
+        TiendaNubeSyncArticleService::add_article_to_sync($model);
 
 
 
@@ -275,7 +287,6 @@ class ArticleController extends Controller
         $model->meli_item_condition_id              = $request->meli_item_condition_id;
         $model->meli_descripcion                    = $request->meli_descripcion;
 
-        $model->needs_sync_with_tn                  = true;
 
 
 
@@ -293,7 +304,19 @@ class ArticleController extends Controller
         $model->juego                           = $request->juego;
 
 
-        $model->plu                           = $request->plu;
+
+
+        // Tienda nube
+        $model->peso                                = $request->peso;
+        $model->profundidad                         = $request->profundidad;
+        $model->ancho                               = $request->ancho;
+        $model->alto                                = $request->alto;
+        $model->disponible_tienda_nube              = $request->disponible_tienda_nube;
+        $model->precio_promocional                  = $request->precio_promocional;
+        $model->needs_sync_with_tn                  = 1;
+
+
+        $model->plu                                 = $request->plu;
 
         
         $model->name = ucfirst($request->name);
@@ -316,8 +339,8 @@ class ArticleController extends Controller
 
         // $this->sendAddModelNotification('article', $model->id);
 
-        $this->check_tienda_nube($model);
         ProductService::add_article_to_sync($model);
+        TiendaNubeSyncArticleService::add_article_to_sync($model);
 
         
         $inventory_linkage_helper = new InventoryLinkageHelper();
@@ -326,12 +349,12 @@ class ArticleController extends Controller
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 200);
     }
 
-    function check_tienda_nube($article) {
+    // function check_tienda_nube($article) {
 
-        if (env('USA_TIENDA_NUBE', false)) {
-            dispatch(new ProcessSyncArticleToTiendaNube($article));
-        }
-    }
+    //     if (env('USA_TIENDA_NUBE', false)) {
+    //         dispatch(new ProcessSyncArticleToTiendaNube($article));
+    //     }
+    // }
 
     function check_delete_tienda_nube($article) {
 

@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Jobs\ProcessSyncArticleImageToTiendaNube;
 use App\Models\Image;
 use App\Services\MercadoLibre\ProductService;
+use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -58,12 +59,9 @@ class ImageController extends Controller
                 $model->timestamps = false;
                 $model->save();
 
-                // Aca meto tiendanube
-                if (env('USA_TIENDA_NUBE', false)) {
-                    dispatch(new ProcessSyncArticleImageToTiendaNube($model, $image));
-                }
-
                 ProductService::add_article_to_sync($model);
+                TiendaNubeSyncArticleService::add_article_to_sync($model);
+                
             }
 
         } else {

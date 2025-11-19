@@ -56,8 +56,8 @@ class ResumenCajaController extends Controller
         $desde = Carbon::parse($fecha .' '.$turno->hora_inicio);
         $hasta = Carbon::parse($fecha .' '.$turno->hora_fin);
 
-        Log::info('desde: '.$desde->format('d/m/Y H:i:s'));
-        Log::info('hasta: '.$hasta->format('d/m/Y H:i:s'));
+        Log::info('desde: '.$desde->format('Y-m-d H:i:s'));
+        Log::info('hasta: '.$hasta->format('Y-m-d H:i:s'));
 
         // Política: NO obligamos cierre de cajas.
         // Tomamos snapshot de saldo actual de cada caja al momento de generar el resumen.
@@ -78,9 +78,9 @@ class ResumenCajaController extends Controller
         Log::info('cajas: ');
         Log::info($cajas);
 
-        // if ($cajas->count() === 0) {
-        //     return response()->json(['message' => 'No hay cajas para la dirección indicada'], 422);
-        // }
+        if ($cajas->count() === 0) {
+            return response()->json(['message' => 'No hay cajas para la dirección indicada'], 422);
+        }
 
         return DB::transaction(function () use ($request, $turno, $cajas, $desde, $hasta, $sales_cc, $fecha) {
 
@@ -109,8 +109,14 @@ class ResumenCajaController extends Controller
                                     ->orderBy('id', 'DESC')
                                     ->first();
 
-                Log::info('apertura de '.$caja->name.' : ');
-                Log::info($apertura->toArray());
+                Log::info('apertura de '.$caja->name.' caja_id: '.$caja->id.' employee_id: '.$request->employee_id);
+                
+                if ($apertura) {
+                    Log::info($apertura->toArray());
+                } else {
+                    Log::info('No hay apertura');
+                    // return response()->json(['message' => 'No hay apertura para la caja '.$caja->name.' para el turno '.$turno->name], 422);
+                }
 
                 if (!$apertura) continue;
 

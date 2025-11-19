@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\PriceType;
 use App\Services\TiendaNube\BaseTiendaNubeService;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Responsabilidad: Crear/actualizar productos y variantes en Tienda Nube.
@@ -45,7 +46,9 @@ class TiendaNubeProductService extends BaseTiendaNubeService
             'name'     => ['es' => $article->name],
             'variants' => [[
                 'price'   => $this->get_price($article),
+                'sku'     => $article->id,
                 'barcode' => $article->bar_code,
+                // Agregar medidas
             ]],
         ];
 
@@ -103,8 +106,18 @@ class TiendaNubeProductService extends BaseTiendaNubeService
 
             if (is_null($article->stock)) {
                 $variantPayload['stock_management'] = false;
+                Log::info('Sin stock - stock_management: false', [
+                    'article_id' => $article->id,
+                    'stock' => $article->stock,
+                ]);
             } else {
+                $variantPayload['stock_management'] = true;
                 $variantPayload['stock'] = (int) $article->stock;
+                Log::info('Con stock - actualizando Tienda Nube', [
+                    'article_id' => $article->id,
+                    'stock' => $article->stock,
+                    'payload' => $variantPayload,
+                ]);
             }
 
             $vEndpoint = "/{$this->store_id}/products/{$article->tiendanube_product_id}/variants/{$article->tiendanube_variant_id}";
