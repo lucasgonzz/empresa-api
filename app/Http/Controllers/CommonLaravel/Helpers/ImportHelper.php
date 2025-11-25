@@ -9,8 +9,8 @@ class ImportHelper {
 		if (
 			isset($columns[$key]) 
 			&& isset($row[$columns[$key]])
-			&& $row[$columns[$key]] != ''
-			&& $row[$columns[$key]] != -1
+			&& $row[$columns[$key]] !== ''
+			&& $row[$columns[$key]] !== -1
 		) {
 			return trim($row[$columns[$key]]);
 		}
@@ -22,11 +22,16 @@ class ImportHelper {
 	}
 
 	static function isIgnoredColumn($key, $columns) {
+		// Log::info('isIgnoredColumn para '.$key.': ' .$columns[$key]);
 		if (
 			!isset($columns[$key])
 			|| (
 				isset($columns[$key])
 				&& $columns[$key] == -1
+			)
+			|| (
+				isset($columns[$key])
+				&& $columns[$key] === ''
 			)
 		) {
 			return true;

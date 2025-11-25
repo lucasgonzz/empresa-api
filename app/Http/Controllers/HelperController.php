@@ -456,6 +456,43 @@ class HelperController extends Controller
     }
 
     function provider_code_repetidos($user_id = null) {
+        if (!$user_id) {
+            $user_id = env('USER_ID');
+        }
+
+        $articles = Article::where('user_id', $user_id)->get();
+
+        $agrupados = $articles->groupBy('provider_code')
+            ->filter(function ($items, $provider_code) {
+                return $items->count() > 1 && !is_null($provider_code);
+            });
+
+        foreach ($agrupados as $provider_code => $articulos) {
+
+            echo "provider_code: $provider_code repetido en los siguientes artículos:<br>";
+
+            foreach ($articulos as $article) {
+                echo "- {$article->name} (ID: {$article->id}), updated_at: {$article->updated_at->format('d/m/y')} <br>";
+            }
+
+            $mas_reciente = $articulos->sortByDesc('updated_at')->first();
+            $a_eliminar = $articulos->filter(function ($articulo) use ($mas_reciente) {
+                return $articulo->id !== $mas_reciente->id;
+            });
+
+            foreach ($a_eliminar as $articulo) {
+                echo "Eliminando artículo ID {$articulo->id} con updated_at: {$article->updated_at->format('d/m/y')}<br>";
+                $articulo->delete();
+            }
+
+            echo "Se conservó el artículo ID {$mas_reciente->id} actualizado el {$mas_reciente->updated_at}<br><br>";
+        }
+
+        echo "Listo. Se eliminaron los duplicados.";
+    }
+
+    // ELimina los mas viejos, deja el mas nuevo
+    function eliminar_provider_code_repetidos($user_id = null) {
 
         if (!$user_id) {
             $user_id = env('USER_ID');

@@ -10,7 +10,7 @@ class Caja extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        $q->with('current_acount_payment_methods', 'users');
+        $q->with('current_acount_payment_methods', 'users', 'employee');
     }
 
     function current_acount_payment_methods() {
@@ -19,5 +19,9 @@ class Caja extends Model
 
     function users() {
         return $this->belongsToMany(User::class);
+    }
+
+    function employee() {
+        return $this->belongsTo(User::class, 'employee_id');
     }
 }
