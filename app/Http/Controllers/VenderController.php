@@ -96,13 +96,15 @@ class VenderController extends Controller
         if (env('APP_ENV') == 'local') {
             $default_article_id = 60;
         } else {
+
+            // Id de la carniceria
             $default_article_id = 6346;
         }
 
         if ($prefix == '22') {
 
-            $last_6_digits = substr($barcode, -6);
-            $amount_str = substr($last_6_digits, 0, 5);
+            $last_6_digits = substr($barcode, -8);
+            $amount_str = substr($last_6_digits, 0, 7);
 
             $price_vender = intval($amount_str);
 

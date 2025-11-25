@@ -75,6 +75,7 @@ class UserSeeder extends Seeder
                 // 'google_custom_search_api_key'      => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
                 'info_afip_del_primer_punto_de_venta'   => 0,
                 'comision_funcion' => 'distri_creo',
+                'google_cuota' => 100,
             ],
         ];
 
@@ -694,6 +695,7 @@ class UserSeeder extends Seeder
                 'default_version'               => null,
                 // 'default_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8080' : $model['default_version'],
                 'estable_version'               => null,
+                'google_cuota'                 => isset($model['google_cuota']) ? $model['google_cuota'] : null,
                 // 'estable_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8081' : $model['estable_version'],
             ]);
 

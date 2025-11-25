@@ -116,7 +116,7 @@ class ArticleHelper {
         if (
             (
                 !is_null($article->percentage_gain)
-                && $article->percentage_gain > 0
+                && (float)$article->percentage_gain > 0
             ) 
             || (
                     !is_null($article->cost) 
@@ -128,6 +128,7 @@ class ArticleHelper {
 
             $article->price = null;
             $article->save();
+            Log::info('Se puso null el price');
         }
 
         if (is_null($article->price) || $article->price == '') {
@@ -278,6 +279,7 @@ class ArticleHelper {
         if ($guardar_cambios) {
             $article->timestamps = false;
             $article->save();
+            return $article;
         } else {
             return [
                 'costo_real'            => $costo_real,
@@ -384,8 +386,8 @@ class ArticleHelper {
                             ->whereHas('articles', function(Builder $query) use ($id) {
                                 $query->where('article_id', $id);
                             })
-                            ->whereDate('terminada_at', '>=', $from_date)
-                            ->whereDate('terminada_at', '<=', $until_date)
+                            // ->whereDate('terminada_at', '>=', $from_date)
+                            // ->whereDate('terminada_at', '<=', $until_date)
                             ->where('terminada', 1)
                             ->orderBy('created_at', 'DESC')
                             ->withAll()

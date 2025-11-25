@@ -67,8 +67,11 @@ class ArticleIndexCache
             }
 
             foreach ($article->providers as $provider) {
+
                 if (!empty($provider->pivot->provider_code)) {
+                
                     $prov_id = $provider->id;
+                
                     $prov_code = $provider->pivot->provider_code;
 
                     if (!isset($index['provider_codes'][$prov_id][$prov_code])) {
@@ -90,6 +93,9 @@ class ArticleIndexCache
             Log::info(Self::get($user_id));
             Log::info('');
             Log::info('');
+        } else {
+            Log::info('cache en memoria:');
+            Log::info(count(Self::get($user_id)['ids']).' articulos del provider_id '.$provider_id);
         }
     }
 
@@ -119,10 +125,15 @@ class ArticleIndexCache
             $index = Cache::get($key);
         }
 
+        Log::info('find, data:');
+        Log::info($data);
+
         $article_id = null;
 
         // 1) Buscar por ID
         if (!empty($data['id'])) {
+
+            Log::info('Buscando por id');
 
             if (isset($index['ids'][$data['id']])) {
 
@@ -133,6 +144,7 @@ class ArticleIndexCache
         // 2) Buscar por bar_code
         elseif (!empty($data['bar_code'])) {
 
+            Log::info('Buscando por bar_code');
             if (isset($index['bar_codes'][$data['bar_code']])) {
 
                 $article_id = $index['bar_codes'][$data['bar_code']];
@@ -153,6 +165,7 @@ class ArticleIndexCache
         // 4) Buscar por provider_code 
         elseif (!empty($data['provider_code'])) {
 
+            Log::info('Buscando por provider_code');
             $provider_code = $data['provider_code'];
 
             $article_ids = [];
@@ -168,23 +181,6 @@ class ArticleIndexCache
             elseif ($provider_id && !$no_actualizar_otro_proveedor) {
 
 
-                /*
-                    Esto de abajo me dio el chat, pero lo modifico porque si viene definidio el $provider_id,
-                    no me busca match dentro de otros providers
-                */
-                // if (isset($index['provider_codes'][$provider_id][$provider_code])) {
-                //     $article_ids = $index['provider_codes'][$provider_id][$provider_code];
-                // } else {
-                //     // Buscar también en todos los demás providers
-                //     foreach ($index['provider_codes'] as $prov_id => $codes) {
-                //         if (isset($codes[$provider_code])) {
-                //             $article_ids = array_merge($article_ids, $codes[$provider_code]);
-                //         }
-                //     }
-                // }
-
-
-                
                 // Buscar también en todos los demás providers
                 foreach ($index['provider_codes'] as $prov_id => $codes) {
                     if (isset($codes[$provider_code])) {
@@ -219,11 +215,14 @@ class ArticleIndexCache
         
         // 5) Buscar por nombre (último recurso)
         elseif (!empty($data['name'])) {
+            Log::info('Buscando por name');
             $key_name = strtolower(trim($data['name']));
             if (isset($index['names'][$key_name])) {
                 $article_id = $index['names'][$key_name];
             }
         }
+
+        Log::info('artice_id: '.$article_id);
 
         return $article_id ? Article::find($article_id) : null;
     }

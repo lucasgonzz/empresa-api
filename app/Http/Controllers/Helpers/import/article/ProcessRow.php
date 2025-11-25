@@ -157,6 +157,9 @@ class ProcessRow {
                 }
 
                 $data[$prop_to_add['prop_key']] = $excel_value;
+            
+            } else {
+                // Log::info('Columna ignorada '.$prop_to_add['excel_column']);
             }
 
         }
@@ -355,12 +358,12 @@ class ProcessRow {
         Log::info($articulo_ya_creado);
 
         $pivot_data = [
-            'provider_code' => $data['provider_code'] ?? null,
-            'cost'          => (float)$data['cost'] ?? null,
+            'provider_code' => isset($data['provider_code']) ? $data['provider_code']: null,
+            'cost'          => isset($data['cost']) ? $data['cost'] : null,
         ];
 
         $existe_relacion = $articulo_ya_creado->providers()
-                                ->where('providers.id', $provider_id)
+                                ->where('provider_id', $provider_id)
                                 ->exists();
 
         if ($existe_relacion) {

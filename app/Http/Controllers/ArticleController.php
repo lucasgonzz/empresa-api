@@ -207,7 +207,10 @@ class ArticleController extends Controller
 
         $this->updateRelationsCreated('article', $model->id, $request->childrens);
 
-        ArticleHelper::setFinalPrice($model);
+        $model = ArticleHelper::setFinalPrice($model);
+
+        // Relacionar proveedor y codigo de proveedor
+        $this->attach_provider($model);
         // ArticleHelper::attachProvider($request, $model);
 
         // ArticleHelper::setStockFromStockMovement($model);
@@ -229,6 +232,35 @@ class ArticleController extends Controller
         Log::info('se guardo article con id: '.$model->id);
 
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 201);
+    }
+
+    function attach_provider($article) {
+        if (
+            $article->provider_id
+        ) {
+
+            $exist = $article->providers()->where('provider_id', $article->provider_id)->first();
+
+            if ($exist) {
+                
+                $article->providers()->updateExistingPivot($article->provider_id, [
+                    'cost'                      => $article->cost,
+                    'price'                     => $article->final_price,
+                    'provider_code'             => $article->provider_code,
+                ]);
+
+            } else {
+
+                $article->providers()->attach($article->provider_id, [
+                    'cost'                      => $article->cost,
+                    'price'                     => $article->final_price,
+                    'provider_code'             => $article->provider_code,
+                ]);
+
+            }
+
+
+        }
     }
 
     function update(Request $request) {
@@ -330,10 +362,13 @@ class ArticleController extends Controller
         
         ArticlePriceTypeHelper::attach_price_types($model, $request->price_types);
 
-        ArticleHelper::setFinalPrice($model);
+        $model = ArticleHelper::setFinalPrice($model);
+
+        $this->attach_provider($model);
+
         ArticleHelper::setDeposits($model, $request);
         // ArticleHelper::checkAdvises($model);
-        ArticleHelper::attachProvider($request, $model, $actual_provider_id, $actual_stock);
+        $this->attach_provider($model);
 
         ArticleHelper::checkRecipesForSetPirces($model, $this);
 
