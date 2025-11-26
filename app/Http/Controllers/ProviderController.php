@@ -12,6 +12,7 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Support\Facades\Log;
+use App\Http\Controllers\AfipConstanciaInscripcionController;
 
 class ProviderController extends Controller
 {
@@ -23,6 +24,28 @@ class ProviderController extends Controller
                             ->where('status', 'active')
                             ->paginate(100);
         return response()->json(['models' => $models], 200);
+    }
+
+    public function get_afip_information_by_cuit($cuit) {
+        $ct = new AfipConstanciaInscripcionController();
+        
+        $data = $ct->get_constancia_inscripcion($cuit);
+
+        if (isset($data['hubo_un_error']) && $data['hubo_un_error']) {
+            return response()->json([
+                'hubo_un_error'     => true,
+                'error'             => $data['error'],
+            ]);
+        } else {
+            $model = Provider::where('user_id', $this->userId())
+                                    ->where('cuit', $cuit)
+                                    ->withAll()
+                                    ->first();
+            return response()->json([
+                'model'  => $model,
+                'afip_data'     => $data['afip_data'],
+            ]);
+        }
     }
 
     public function store(Request $request) {
