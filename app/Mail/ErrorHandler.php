@@ -30,8 +30,7 @@ class ErrorHandler extends Mailable
      */
     public function build()
     {
-        return $this->from('contacto@comerciocity.com', 'comerciocity.com')
-                    ->subject('Error '.$this->owner_user->company_name)
+        return $this->subject('Error '.$this->owner_user->company_name)
                     ->markdown('emails.errors.handler', [
                         'owner_user'        => $this->owner_user,
                         'auth_user'         => $this->auth_user,

@@ -45,6 +45,10 @@ class CompanyPerformance extends Model
         return $this->belongsToMany(ExpenseConcept::class)->withPivot('amount');
     }
 
+    function expense_concepts_usd() {
+        return $this->belongsToMany(ExpenseConcept::class, 'company_performance_expense_concept_usd')->withPivot('amount');
+    }
+
     // Aca tiene en cuenta lo que ingreso por mostrador y por cuenta corriente
     function ingresos_totales() {
         return $this->belongsToMany(CurrentAcountPaymentMethod::class, 'company_performance_ingresos_total')->withPivot('amount');

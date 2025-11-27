@@ -450,6 +450,12 @@ class PerformanceHelper
                 'amount'    => $expense_concept['total'],
             ]);
         }
+
+        foreach ($this->expense_concepts_usd as $expense_concept) {
+            $this->company_performance->expense_concepts_usd()->attach($expense_concept['id'], [
+                'amount'    => $expense_concept['total'],
+            ]);
+        }
     }
 
     function attach_gastos_metodos_de_pago() {
@@ -459,6 +465,12 @@ class PerformanceHelper
                 'amount'    => $payment_method['total'],
             ]);
         }
+
+        // foreach ($this->payment_methods_gastos as $payment_method) {
+        //     $this->company_performance->gastos()->attach($payment_method['id'], [
+        //         'amount'    => $payment_method['total'],
+        //     ]);
+        // }
     }
 
     function attach_ingresos_mostrador() {
@@ -774,6 +786,7 @@ class PerformanceHelper
         $this->company_performance->ingresos_netos_usd = $this->total_vendido_usd - $this->total_vendido_costos_usd;
         
         $this->company_performance->rentabilidad = $this->total_vendido - $this->total_vendido_costos - $this->total_gastos;
+        $this->company_performance->rentabilidad_usd = $this->total_vendido_usd - $this->total_vendido_costos_usd - $this->total_gastos_usd;
 
         $this->company_performance->total_pagado_mostrador = $this->total_pagado_mostrador;
         $this->company_performance->total_pagado_mostrador_usd = $this->total_pagado_mostrador_usd;
@@ -792,6 +805,7 @@ class PerformanceHelper
 
 
         $this->company_performance->total_gastos = $this->total_gastos;
+        $this->company_performance->total_gastos_usd = $this->total_gastos_usd;
 
         $this->company_performance->cantidad_ventas = $this->cantidad_ventas;
 
@@ -963,14 +977,24 @@ class PerformanceHelper
 
             if (
                 !is_null($nota_de_credito->credit_account)
-                && $nota_de_credito->credit_account->moneda_id == 2
+            ) {
+
+                if ($nota_de_credito->credit_account->moneda_id == 2) {
+                    $this->total_devolucion_usd += $nota_de_credito->haber;
+                }
+
+
+            } else if (
+                $nota_de_credito->moneda_id
+                && $nota_de_credito->moneda_id == 2
             ) {
 
                 $this->total_devolucion_usd += $nota_de_credito->haber;
             } else {
-
+                
                 $this->total_devolucion += $nota_de_credito->haber;
             }
+
         }
 
     }
@@ -982,10 +1006,13 @@ class PerformanceHelper
                             ->get();
 
         $this->total_gastos = 0;
-        
+        $this->total_gastos_usd = 0;
+
         $this->expense_concepts = $this->get_expense_concepts();
+        $this->expense_concepts_usd = $this->get_expense_concepts();
 
         $this->payment_methods_gastos = $this->get_payment_methods();
+        // $this->payment_methods_gastos_usd = $this->get_payment_methods();
 
         // Log::info('Hay '.count($expenses).' Gastos el mes '.$this->mes_inicio);
 
@@ -1001,12 +1028,27 @@ class PerformanceHelper
                 if (is_null($payment_method_id) || $payment_method_id == 0) {
                     $payment_method_id = 3;
                 }
+
+                if (
+                    is_null($expense->moneda_id)
+                    || $expense->moneda_id == 1
+                ) {
+
+                    $this->total_gastos += $expense->amount;
+                    
+                    $this->expense_concepts[$expense->expense_concept_id]['total'] += $expense->amount;
+
+                    $this->payment_methods_gastos[$payment_method_id]['total'] += $expense->amount;
+                } else {
+
+                    $this->total_gastos_usd += $expense->amount;
+                    
+                    $this->expense_concepts_usd[$expense->expense_concept_id]['total'] += $expense->amount;
+
+                    // $this->payment_methods_gastos_usd[$payment_method_id]['total'] += $expense->amount;
+                }
                 
-                $this->total_gastos += $expense->amount;
 
-                $this->expense_concepts[$expense->expense_concept_id]['total'] += $expense->amount;
-
-                $this->payment_methods_gastos[$payment_method_id]['total'] += $expense->amount;
             }
 
             if (!is_null($expense->importe_iva)) {

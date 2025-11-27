@@ -424,7 +424,7 @@ class SalePdf extends fpdf {
 			$this->Cell(
 				$this->getFields()['Precio'], 
 				$this->line_height, 
-				'$'.Numbers::price($this->get_price($item)), 
+				Numbers::price($this->get_price($item), true, $this->sale->moneda_id), 
 				$this->b, 
 				0, 
 				'C'
@@ -457,7 +457,7 @@ class SalePdf extends fpdf {
 			$this->Cell(
 				$this->getFields()['Sub total'], 
 				$this->line_height, 
-				'$'.Numbers::price($this->sub_total($item)),
+				Numbers::price($this->sub_total($item), true, $this->sale->moneda_id),
 				$this->b, 
 				0, 
 				'C'
@@ -692,7 +692,7 @@ class SalePdf extends fpdf {
 
 		    	// $total_with_discounts = $this->total_articles + $this->total_services + $this->total_combos + $this->total_promocion_vinotecas;
 
-		    	$text .= ' = $'.Numbers::price($total_recargo);
+		    	$text .= ' = '.Numbers::price($total_recargo, true, $this->sale->moneda_id);
 
 				$this->Cell(
 					50, 
@@ -758,7 +758,7 @@ class SalePdf extends fpdf {
 		    $this->Cell(
 				50, 
 				5, 
-				'Total final: $'.Numbers::price(SaleHelper::getTotalSale($this->sale, true, true, false), true, $this->sale->moneda_id), 
+				'Total final: '.Numbers::price(SaleHelper::getTotalSale($this->sale, true, true, false), true, $this->sale->moneda_id), 
 				$this->b, 
 				1, 
 				'L'

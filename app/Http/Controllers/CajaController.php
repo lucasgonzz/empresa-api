@@ -20,7 +20,6 @@ class CajaController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
-
     public function store(Request $request) {
         $model = Caja::create([
             'num'                   => $this->num('cajas'),

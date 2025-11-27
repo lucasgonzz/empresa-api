@@ -26,7 +26,7 @@ class ArticlesTiendaNubeSeeder extends Seeder
                 'cost'              => 1,
                 'sub_category_name' => 'Yerbas',
                 'provider_id'       => 2,
-                'tiendanube_product_id'       => 290274661,
+                // 'tiendanube_product_id'       => 290274661,
                 // 'images'            => [
                 //     [
                 //         'url'       => get_image('/storage/supermercado/yerba.webp'),

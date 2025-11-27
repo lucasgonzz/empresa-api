@@ -15,8 +15,11 @@ class TiendaNubeProductDescriptionService extends BaseTiendaNubeService
      * @param array $descriptions_html // Ej: ['es' => '<p>...</p>']
      * @return array
      */
-    public function update_descriptions($article): array
+    public function update_descriptions($article)
     {
+
+        if (count($article->descriptions) == 0) return;
+        
         $payload = [
             'description' => ['es' => $article->descriptions[0]->content],
         ];
