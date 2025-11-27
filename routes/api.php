@@ -273,6 +273,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('condition', 'ConditionController');
     Route::resource('iva', 'IvaController');
     Route::resource('provider', 'ProviderController');
+    Route::get('provider/get-afip-information-by-cuit/{cuit}', 'ProviderController@get_afip_information_by_cuit');
     Route::post('/provider/excel/import', 'ProviderController@import');
 
     Route::resource('provider-price-list', 'ProviderPriceListController');
