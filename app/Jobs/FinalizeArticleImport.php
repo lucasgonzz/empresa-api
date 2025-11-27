@@ -19,14 +19,14 @@ class FinalizeArticleImport implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    protected $import_uuid, $model_name, $columns, $user, $auth_user_id, $provider_id, $archivo_excel_path;
+    protected $import_uuid, $model_name, $columns, $user, $auth_user_id, $provider_id, $archivo_excel_path, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor;
 
     /**
      * Create a new job instance.
      *
      * @return void
      */
-    public function __construct($import_uuid, $model_name, $columns, $user, $auth_user_id, $provider_id, $archivo_excel_path)
+    public function __construct($import_uuid, $model_name, $columns, $user, $auth_user_id, $provider_id, $archivo_excel_path, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor)
     {
         $this->import_uuid = $import_uuid;
         $this->model_name = $model_name;
@@ -35,6 +35,8 @@ class FinalizeArticleImport implements ShouldQueue
         $this->auth_user_id = $auth_user_id;
         $this->provider_id = $provider_id;
         $this->archivo_excel_path = $archivo_excel_path;
+        $this->create_and_edit = $create_and_edit;
+        $this->no_actualizar_articulos_de_otro_proveedor = $no_actualizar_articulos_de_otro_proveedor;
     }
 
 
@@ -109,13 +111,15 @@ class FinalizeArticleImport implements ShouldQueue
             // 3) Crear ImportHistory definitivo (ajustá campos a tu migración real)
             $import_history = ImportHistory::create([
                 'created_models'  => count($created_ids),
-                // 'created_models'  => count($created_ids),
+                'operacion_a_realizar'  => $this->create_and_edit ? 'Crear y actualizar' : 'Solo actualizar',
+                'no_actualizar_otro_proveedor' => $this->no_actualizar_articulos_de_otro_proveedor,
                 'updated_models'  => count($updated_props_by_article),
                 'user_id'         => $this->user ? $this->user->id : null,
                 'employee_id'     => $this->auth_user_id,
                 'model_name'      => 'article',
                 'provider_id'     => $this->provider_id,
-                'observations'    => ArticleImportHelper::get_observations($this->columns ?? []),
+                'columnas'        => json_encode(ArticleImportHelper::convertirPosicionesAColumnas($this->columns), JSON_PRETTY_PRINT),
+                // 'observations'    => ArticleImportHelper::get_observations($this->columns ?? []),
                 'excel_url'       => $this->archivo_excel_path,
             ]);
 

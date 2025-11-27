@@ -20,6 +20,7 @@ use App\Http\Controllers\Helpers\article\BarCodeAutomaticoHelper;
 use App\Http\Controllers\Helpers\article\ResetStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateAddressesStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateVariantsStockHelper;
+use App\Http\Controllers\Helpers\import\article\InitExcelImport;
 use App\Http\Controllers\Pdf\ArticleBarCodePdf;
 use App\Http\Controllers\Pdf\ArticleListPdf;
 use App\Http\Controllers\Pdf\ArticlePdf;
@@ -475,7 +476,9 @@ class ArticleController extends Controller
 
         $owner = User::find($this->userId());
         
-        ProcessArticleImport::dispatch($import_uuid, $archivo_excel, $columns, $request->create_and_edit, $request->no_actualizar_articulos_de_otro_proveedor, $request->start_row, $request->finish_row, $request->provider_id, $owner, Auth()->user()->id, $archivo_excel_path);
+        InitExcelImport::importar($import_uuid, $archivo_excel, $columns, $request->create_and_edit, $request->no_actualizar_articulos_de_otro_proveedor, $request->start_row, $request->finish_row, $request->provider_id, $owner, Auth()->user()->id, $archivo_excel_path);
+        
+        // ProcessArticleImport::dispatch($import_uuid, $archivo_excel, $columns, $request->create_and_edit, $request->no_actualizar_articulos_de_otro_proveedor, $request->start_row, $request->finish_row, $request->provider_id, $owner, Auth()->user()->id, $archivo_excel_path);
 
         return response(null, 200);
     }

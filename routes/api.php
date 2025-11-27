@@ -531,6 +531,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('resumen-caja/from-date/{from_date?}/{until_date?}', 'ResumenCajaController@index');
 
     Route::resource('tag', 'TagController');
+
+    Route::get('import-status', 'ImportStatusController@index');
 });
 
 
