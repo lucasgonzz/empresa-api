@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\PriceType;
 use App\Services\TiendaNube\BaseTiendaNubeService;
+use App\Services\TiendaNube\TiendaNubeProductDescriptionService;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -32,9 +33,14 @@ class TiendaNubeProductService extends BaseTiendaNubeService
     public function crearOActualizarProducto(Article $article)
     {
         if ($article->tiendanube_product_id) {
-            return $this->actualizar($article);
+            $article = $this->actualizar($article);
+        } else {
+            $article = $this->crear($article);
         }
-        return $this->crear($article);
+
+        $service = new TiendaNubeProductDescriptionService();
+        $service->update_descriptions($article);
+
     }
 
     /** Crear producto en Tienda Nube */
@@ -42,25 +48,22 @@ class TiendaNubeProductService extends BaseTiendaNubeService
     {
         $tnCategoryId = $this->categoryService->resolveTNCategoryIdForArticle($article);
 
-        $payload = [
-            'name'     => ['es' => $article->name],
-            'variants' => [[
-                'price'   => $this->get_price($article),
-                'sku'     => $article->id,
-                'barcode' => $article->bar_code,
-                // Agregar medidas
-            ]],
-        ];
+
+        $payload = $this->get_article_data($article);
+        $payload['variants'] = [];
+
 
         if ($tnCategoryId) {
             $payload['categories'] = [(int) $tnCategoryId];
         }
 
-        if (is_null($article->stock)) {
-            $payload['variants'][0]['stock_management'] = false;
-        } else {
-            $payload['variants'][0]['stock'] = (int) $article->stock;
-        }
+
+        // Creamos la info de la variante
+        $variantPayload = $this->get_variant_data($article);
+        $payload['variants'][0] = $variantPayload;
+
+        Log::info('TiendaNube payload:');
+        Log::info($payload);
 
         $endpoint = "/{$this->store_id}/products";
         $response = $this->http()->post($endpoint, $payload);
@@ -69,6 +72,8 @@ class TiendaNubeProductService extends BaseTiendaNubeService
             $data = $response->json();
 
             $article->tiendanube_product_id = $data['id'] ?? null;
+            $article->handle = isset($data['handle']) ? $data['handle']['es'] : null;
+
             $article->needs_sync_with_tn    = false;
 
             if (!empty($data['variants'][0]['id'])) {
@@ -77,15 +82,15 @@ class TiendaNubeProductService extends BaseTiendaNubeService
             $article->save();
         }
 
-        return $response;
+        return $article;
     }
 
     /** Actualizar producto + variante en Tienda Nube */
     public function actualizar(Article $article)
     {
-        $payload = [
-            'name' => ['es' => $article->name],
-        ];
+
+        $payload = $this->get_article_data($article);
+
 
         // Si hay categoría/subcategoría en tu artículo, la enviamos.
         // Si no hay ninguna, NO enviamos "categories" (para no borrar lo existente).
@@ -95,30 +100,28 @@ class TiendaNubeProductService extends BaseTiendaNubeService
         }
 
         $endpoint = "/{$this->store_id}/products/{$article->tiendanube_product_id}";
+
+
+        Log::info('TiendaNube product payload:');
+        Log::info($payload);
+
         $response = $this->http()->put($endpoint, $payload);
+
+        if ($response->successful()) {
+            $data = $response->json();
+
+            $article->handle = isset($data['handle']) ? $data['handle']['es'] : null;
+            $article->save();
+        }
 
         // Actualizar variante si la tenemos
         if ($article->tiendanube_variant_id) {
-            $variantPayload = [
-                'price'   => $this->get_price($article),
-                'barcode' => $article->bar_code,
-            ];
+            
+            // Creamos la info de la variante
+            $variantPayload = $this->get_variant_data($article);
 
-            if (is_null($article->stock)) {
-                $variantPayload['stock_management'] = false;
-                Log::info('Sin stock - stock_management: false', [
-                    'article_id' => $article->id,
-                    'stock' => $article->stock,
-                ]);
-            } else {
-                $variantPayload['stock_management'] = true;
-                $variantPayload['stock'] = (int) $article->stock;
-                Log::info('Con stock - actualizando Tienda Nube', [
-                    'article_id' => $article->id,
-                    'stock' => $article->stock,
-                    'payload' => $variantPayload,
-                ]);
-            }
+            Log::info('TiendaNube variant payload:');
+            Log::info($variantPayload);
 
             $vEndpoint = "/{$this->store_id}/products/{$article->tiendanube_product_id}/variants/{$article->tiendanube_variant_id}";
             $response  = $this->http()->put($vEndpoint, $variantPayload);
@@ -129,7 +132,64 @@ class TiendaNubeProductService extends BaseTiendaNubeService
             $article->save();
         }
 
-        return $response;
+        return $article;
+    }
+
+    function get_variant_data($article) {
+
+        $variantPayload = [
+            'price'     => $this->get_price($article),
+            'sku'       => $article->id,
+            'barcode'   => $article->bar_code,
+            'weight'    => $article->peso,
+            'depth'     => $article->profundidad,
+            'width'     => $article->ancho,
+            'height'    => $article->alto,
+        ];
+
+        if (
+            !is_null($article->precio_promocional)
+            && $article->precio_promocional > 0
+        ) {
+           $variantPayload['promotional_price'] = $article->precio_promocional;
+        }
+
+        if (is_null($article->stock)) {
+            $variantPayload['stock_management'] = false;
+        } else {
+            $variantPayload['stock_management'] = true;
+            $variantPayload['stock'] = (int) $article->stock;
+        }
+
+        return $variantPayload;
+    }
+
+    function get_article_data($article) {
+        $article_data = [
+            'name'                      => ['es' => $article->name],
+            'seo_title'                 => $article->seo_title,
+            'seo_description'           => $article->seo_description,
+            'video_url'                 => $article->video_url,
+            'published'                 => $article->disponible_tienda_nube ? true : false,
+            'free_shipping'             => $article->free_shipping ? true : false,
+            'requires_shipping'         => $article->requires_shipping ? true : false,
+            'requires_shipping'         => $article->requires_shipping ? true : false,
+        ];
+
+        // Agrego TAGS
+        $tags = '';
+        foreach ($article->tags as $tag) {
+            $tags .= $tag->name.',';
+        }
+
+        if ($tags != '') {
+
+            $tags = substr($tags, 0, -1);
+
+            $article_data['tags'] = $tags;
+        }
+
+        return $article_data;
     }
 
     /** Estrategia de precio: usa lista especial de TN si existe, si no el final_price del artículo */

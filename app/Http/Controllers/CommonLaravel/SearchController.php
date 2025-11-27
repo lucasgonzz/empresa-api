@@ -215,7 +215,7 @@ class SearchController extends Controller
         } else {
             $model_name_plural = $_model_name.'s';
         }
-        $data['num'] = $this->num($model_name_plural);
+        // $data['num'] = $this->num($model_name_plural);
         $data['user_id'] = $this->userId();
         $data[$property] = $query;
         foreach ($request->properties_to_set as $property_to_set) {

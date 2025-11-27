@@ -1,0 +1,79 @@
+<?php
+
+namespace App\Http\Controllers\Helpers\import\article;
+
+use App\Http\Controllers\Helpers\UserHelper;
+use App\Jobs\FinalizeArticleImport;
+use App\Jobs\ProcessArticleChunk;
+use App\Models\ColumnPosition;
+use App\Models\ImportStatus;
+use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Log;
+
+class InitExcelImport {
+	
+	static function importar($import_uuid, $archivo_excel, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $archivo_excel_path) {
+
+        $chunkSize = env('ARTICLE_EXCEL_CHUNK_SIZE', 3500);
+
+        if (env('APP_ENV') == 'local') {
+            $chunkSize = 1;
+        } 
+        
+        $start = $start_row;
+
+        $chain = [];
+
+
+		$total_rows = $finish_row - $start_row + 1;
+		$total_chunks = (int) ceil($total_rows / $chunkSize);
+
+
+        $import_status = ImportStatus::create([
+		    'user_id' 			=> $user->id,
+		    'total_chunks' 		=> $total_chunks,
+		    'processed_chunks' 	=> 0,
+		    'status' 			=> 'pendiente',
+		]);
+
+        while ($start <= $finish_row) {
+
+            $end = min($start + $chunkSize - 1, $finish_row);
+
+            Log::info("Se mandó chunk desde $start hasta $end");
+
+            $chain[] = new ProcessArticleChunk(
+                $import_uuid,
+                $archivo_excel_path,
+                $columns,
+                $create_and_edit,
+                $no_actualizar_articulos_de_otro_proveedor,
+                $start,
+                $end,
+                $provider_id,
+                $user,
+                $auth_user_id, 
+                $import_status->id,
+            );
+
+            $start = $end + 1;
+        }
+
+        Log::info("Terminaron chunck. Se va a agregar a FinalizeArticleImport");
+
+        $chain[] = new FinalizeArticleImport(
+            $import_uuid,
+            'article',
+            $columns,
+            $user,
+            $auth_user_id,
+            $provider_id,
+            $archivo_excel_path,
+            $create_and_edit,
+            $no_actualizar_articulos_de_otro_proveedor,
+        );
+
+        Bus::chain($chain)->dispatch();
+	}
+
+}

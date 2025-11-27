@@ -95,6 +95,10 @@ class ArticleHelper {
             is_null($article->cost)
             && is_null($article->price)
         ) {
+
+            if ($guardar_cambios) {
+                return $article;
+            } 
             return [
                 'costo_real'            => $costo_real,
                 'final_price'           => null,

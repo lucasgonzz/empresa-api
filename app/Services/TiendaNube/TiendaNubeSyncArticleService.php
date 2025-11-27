@@ -19,7 +19,10 @@ class TiendaNubeSyncArticleService
         ) {
 
 
-            if (!$article->disponible_tienda_nube) {
+            if (
+                !$article->tiendanube_product_id
+                && !$article->disponible_tienda_nube
+            ) {
                 return;
             }
 
@@ -49,8 +52,6 @@ class TiendaNubeSyncArticleService
 
         try {
             $article = $sync->article;
-            $article->load('meli_category');
-
             
             $service = new TiendaNubeProductService();
             $service->crearOActualizarProducto($article);
@@ -64,27 +65,11 @@ class TiendaNubeSyncArticleService
         } catch (\Exception $e) {
 
 
-            \Log::error('Error al sincronizar artículo con MercadoLibre: ' . $e->getMessage());
+            Log::error('Error al sincronizar artículo con Tienda Nube: ');
+            Log::error($e->getMessage());
+            Log::error('Trace: ' . $e->getTraceAsString());
             
             $error_message = $e->getMessage();
-
-            // Si el mensaje tiene un JSON de respuesta de ML, intentamos extraerlo
-            if (str_contains($error_message, 'Mercado Libre API error:')) {
-                $json_part = trim(str_replace('Mercado Libre API error:', '', $error_message));
-
-                $parsed_error = json_decode($json_part, true);
-
-                if (json_last_error() === JSON_ERROR_NONE && isset($parsed_error['cause'])) {
-
-                    if (is_array($parsed_error['cause'])) {
-                        $causes = array_map(function ($c) {
-                            return "- {$c['message']} (Código: {$c['code']})";
-                        }, $parsed_error['cause']);
-                    }
-
-                    $error_message = "Errores al sincronizar con MercadoLibre:\n" . implode("\n", $causes);
-                }
-            }
 
             $sync->status = 'error';
             $sync->error_message = $error_message;

@@ -12,7 +12,7 @@ class set_article_provider_codes extends Command
      *
      * @var string
      */
-    protected $signature = 'set_article_provider_codes {article_id}';
+    protected $signature = 'set_article_provider_codes {user_id} {article_id?}';
 
     /**
      * The console command description.
@@ -38,9 +38,14 @@ class set_article_provider_codes extends Command
      */
     public function handle()
     {
-        $articles = Article::orderBy('id', 'DESC')
-                            ->where('id', '<', $this->argument('article_id'))
-                            ->get();
+        $articles = Article::where('user_id', $this->argument('user_id'))
+                            ->orderBy('id', 'DESC');
+
+        if (!is_null($this->argument('article_id'))) {
+
+            $articles->where('id', '<', $this->argument('article_id'));
+        }
+        $articles = $articles->get();
 
         $this->info(count($articles).' articulos');
 

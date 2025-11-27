@@ -25,4 +25,10 @@ class PaymentPlanCuotaController extends Controller
         $models = $models->get();
         return response()->json(['models' => $models], 200);
     }
+
+    function destroy($id) {
+        $model = PaymentPlanCuota::find($id);
+        $model->delete();
+        return response(null, 200);
+    }
 }

@@ -386,7 +386,11 @@ class ExtencionSeeder extends Seeder
             [
                 'name' => 'vendedor_en_sale_pdf',
                 'slug' => 'vendedor_en_sale_pdf',
-            ]
+            ],
+            [
+                'name' => 'PLU Balanza codigos de barra',
+                'slug' => 'plu_balanza_bar_code',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

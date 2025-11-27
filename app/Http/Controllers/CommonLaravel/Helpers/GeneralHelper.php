@@ -141,7 +141,7 @@ class GeneralHelper {
         foreach ($request->all() as $key => $value) {
             if (str_contains($key, 'prop_')) {
                 Log::info($key.': '.$value);
-                if ($value != '' && $value != -1) {
+                if ($value != '' && $value != -1 && $value != '-1') {
                     $props[strtolower(substr($key, strpos($key, '_')+1))] = (int)$value-1;
                 } 
             }

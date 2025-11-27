@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class ChangeNamePropToProvinciasTable extends Migration
+class AddProviderIdToColumnPositionsTable extends Migration
 {
     /**
      * Run the migrations.
@@ -13,8 +13,12 @@ class ChangeNamePropToProvinciasTable extends Migration
      */
     public function up()
     {
-        Schema::table('provincias', function (Blueprint $table) {
-            $table->string('name')->nullable();
+        Schema::table('column_positions', function (Blueprint $table) {
+
+            $table->integer('provider_id')->nullable();
+            $table->boolean('create_and_edit')->nullable();
+            $table->boolean('no_actualizar_otro_proveedor')->nullable();
+
         });
     }
 
@@ -25,7 +29,7 @@ class ChangeNamePropToProvinciasTable extends Migration
      */
     public function down()
     {
-        Schema::table('provincias', function (Blueprint $table) {
+        Schema::table('column_positions', function (Blueprint $table) {
             //
         });
     }

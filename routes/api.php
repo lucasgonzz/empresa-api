@@ -273,6 +273,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('condition', 'ConditionController');
     Route::resource('iva', 'IvaController');
     Route::resource('provider', 'ProviderController');
+    Route::get('provider/get-afip-information-by-cuit/{cuit}', 'ProviderController@get_afip_information_by_cuit');
     Route::post('/provider/excel/import', 'ProviderController@import');
 
     Route::resource('provider-price-list', 'ProviderPriceListController');
@@ -529,6 +530,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('resumen-caja', 'ResumenCajaController');
     Route::get('resumen-caja/from-date/{from_date?}/{until_date?}', 'ResumenCajaController@index');
 
+    Route::resource('tag', 'TagController');
+
+    Route::get('import-status', 'ImportStatusController@index');
 });
 
 

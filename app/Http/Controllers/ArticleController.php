@@ -20,6 +20,7 @@ use App\Http\Controllers\Helpers\article\BarCodeAutomaticoHelper;
 use App\Http\Controllers\Helpers\article\ResetStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateAddressesStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateVariantsStockHelper;
+use App\Http\Controllers\Helpers\import\article\InitExcelImport;
 use App\Http\Controllers\Pdf\ArticleBarCodePdf;
 use App\Http\Controllers\Pdf\ArticleListPdf;
 use App\Http\Controllers\Pdf\ArticlePdf;
@@ -174,6 +175,12 @@ class ArticleController extends Controller
         $model->disponible_tienda_nube              = $request->disponible_tienda_nube;
         $model->precio_promocional                  = $request->precio_promocional;
 
+        $model->seo_title                           = $request->seo_title;
+        $model->seo_description                     = $request->seo_description;
+        $model->requires_shipping                   = $request->requires_shipping;
+        $model->free_shipping                       = $request->free_shipping;
+        $model->video_url                           = $request->video_url;
+
         $model->needs_sync_with_tn                  = 1;
 
 
@@ -206,6 +213,8 @@ class ArticleController extends Controller
         ArticleHelper::setDeposits($model, $request);
 
         $this->updateRelationsCreated('article', $model->id, $request->childrens);
+
+        GeneralHelper::attachModels($model, 'tags', $request->tags);
 
         $model = ArticleHelper::setFinalPrice($model);
 
@@ -345,6 +354,13 @@ class ArticleController extends Controller
         $model->alto                                = $request->alto;
         $model->disponible_tienda_nube              = $request->disponible_tienda_nube;
         $model->precio_promocional                  = $request->precio_promocional;
+
+        $model->seo_title                           = $request->seo_title;
+        $model->seo_description                     = $request->seo_description;
+        $model->requires_shipping                   = $request->requires_shipping;
+        $model->free_shipping                       = $request->free_shipping;
+        $model->video_url                           = $request->video_url;
+        
         $model->needs_sync_with_tn                  = 1;
 
 
@@ -368,9 +384,10 @@ class ArticleController extends Controller
 
         ArticleHelper::setDeposits($model, $request);
         // ArticleHelper::checkAdvises($model);
-        $this->attach_provider($model);
 
         ArticleHelper::checkRecipesForSetPirces($model, $this);
+        
+        GeneralHelper::attachModels($model, 'tags', $request->tags);
 
         // $this->sendAddModelNotification('article', $model->id);
 
@@ -393,7 +410,10 @@ class ArticleController extends Controller
 
     function check_delete_tienda_nube($article) {
 
-        if (env('USA_TIENDA_NUBE', false)) {
+        if (
+            env('USA_TIENDA_NUBE', false)
+            && $article->tiendanube_product_id
+        ) {
             dispatch(new ProcessDeleteArticleFromTiendaNube($article));
         }
     }
@@ -456,7 +476,9 @@ class ArticleController extends Controller
 
         $owner = User::find($this->userId());
         
-        ProcessArticleImport::dispatch($import_uuid, $archivo_excel, $columns, $request->create_and_edit, $request->no_actualizar_articulos_de_otro_proveedor, $request->start_row, $request->finish_row, $request->provider_id, $owner, Auth()->user()->id, $archivo_excel_path);
+        InitExcelImport::importar($import_uuid, $archivo_excel, $columns, $request->create_and_edit, $request->no_actualizar_articulos_de_otro_proveedor, $request->start_row, $request->finish_row, $request->provider_id, $owner, Auth()->user()->id, $archivo_excel_path);
+        
+        // ProcessArticleImport::dispatch($import_uuid, $archivo_excel, $columns, $request->create_and_edit, $request->no_actualizar_articulos_de_otro_proveedor, $request->start_row, $request->finish_row, $request->provider_id, $owner, Auth()->user()->id, $archivo_excel_path);
 
         return response(null, 200);
     }
