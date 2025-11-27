@@ -67,6 +67,22 @@ class VenderController extends Controller
             }
         }
 
+        if (
+            !$article
+            && UserHelper::hasExtencion('plu_balanza_bar_code') 
+        ) {
+            $res = $this->check_balanza_plu($code);
+
+            if (!is_null($res['article'])) {
+
+                $this->fin($code, $inicio, $res['article']);
+                return response()->json(['from_balanza_plu' => true, 'article' => $res['article'], 'amount' => $res['amount']], 200);
+            }
+        }
+
+
+
+
         $this->fin($code, $inicio, $article);
 
         return response()->json(['article' => $article, 'variant_id' => $variant_id, 'variant' => $variant], 200);
@@ -115,7 +131,38 @@ class VenderController extends Controller
             'article'           => $article,
             'price_vender'      => $price_vender,
         ];
+    }
 
+    function check_balanza_plu($barcode) {
+
+        $prefix = substr($barcode, 0, 2);
+
+        $article = null;
+        $amount = null;
+
+        // Esto lo guardaria en bbdd, ahora lo harckodeo para panchito
+        if (env('APP_ENV') == 'local') {
+            $default_article_id = 60;
+        } else {
+
+            // Id de la carniceria
+            $default_article_id = 6346;
+        }
+
+        if ($prefix == '22') {
+
+            $last_6_digits = substr($barcode, -8);
+            $amount_str = substr($last_6_digits, 0, 7);
+
+            $amount = intval($amount_str);
+
+            $article = Article::find($default_article_id);
+        }
+
+        return [
+            'article'           => $article,
+            'amount'      => $amount,
+        ];
     }
 
     function search_nombre(Request $request) {
@@ -130,6 +177,7 @@ class VenderController extends Controller
         $results = collect();
         // 1. Buscar todos los artículos cuyo name o provider_code coincidan con alguna palabra
         $articles = Article::where('status', 'active')
+                        ->where('user_id', $this->userId())
                         ->where(function ($query_builder) use ($keywords) {
                             if (count($keywords) === 1) {
                                 $keyword = $keywords[0];

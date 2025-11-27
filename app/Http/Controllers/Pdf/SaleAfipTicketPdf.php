@@ -314,19 +314,24 @@ class SaleAfipTicketPdf extends fpdf {
 
 	function printImportes() {
 		$importes = $this->afip_helper->getImportes();
-		$this->setX(5);
+		$this->x = 5;
 		$this->y += 5;
 		$this->SetFont('Arial', 'B', 9);
 
-		$this->Cell(60, 5, 'Importe Neto Gravado: $'.Numbers::price($importes['gravado']), 1, 0, 'L');
+		$this->Cell(40, 5, 'Importe Neto Gravado: ', 1, 0, 'L');
+		$this->Cell(40, 5, '$'.Numbers::price($importes['gravado']), 1, 1, 'L');
 
 		foreach ($importes['ivas'] as $iva => $importe) {
 			if ($importe['Importe'] > 0) {
-				$this->Cell(40, 5, 'IVA '.$iva.'%: $'.Numbers::price($importe['Importe']), 1, 1, 'L');
+				$this->x = 5;
+				$this->Cell(40, 5, 'IVA '.$iva.'%: ', 1, 0, 'L');
+				$this->Cell(40, 5, '$'.Numbers::price($importe['Importe']), 1, 1, 'L');
 			}
 		}
 		
-		$this->Cell(50, 5, 'Importe Total: $'.Numbers::price($importes['total']), 1, 0, 'L');
+		$this->x = 5;
+		$this->Cell(40, 5, 'Importe Total: ', 1, 0, 'L');
+		$this->Cell(40, 5, '$'.Numbers::price($importes['total']), 1, 0, 'L');
 	}
 
 	function printLine() {

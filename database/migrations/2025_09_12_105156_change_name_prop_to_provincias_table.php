@@ -15,7 +15,6 @@ class ChangeNamePropToProvinciasTable extends Migration
     {
         Schema::table('provincias', function (Blueprint $table) {
             $table->string('name')->nullable();
-            $table->dropColumn('nombre')->nullable();
         });
     }
 

@@ -32,6 +32,7 @@ class ExpenseController extends Controller
             'num'                                   => $this->num('expenses'),
             'expense_concept_id'                    => $request->expense_concept_id,
             'amount'                                => $request->amount,
+            'moneda_id'                             => $request->moneda_id,
             'current_acount_payment_method_id'      => $request->current_acount_payment_method_id,
             'importe_iva'                           => $request->importe_iva,
             'observations'                          => $request->observations,

@@ -529,6 +529,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('resumen-caja', 'ResumenCajaController');
     Route::get('resumen-caja/from-date/{from_date?}/{until_date?}', 'ResumenCajaController@index');
 
+    Route::resource('tag', 'TagController');
 });
 
 

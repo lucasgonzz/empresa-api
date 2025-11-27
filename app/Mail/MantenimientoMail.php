@@ -30,8 +30,7 @@ class MantenimientoMail extends Mailable
      */
     public function build()
     {
-        return $this->from('contacto@comerciocity.com', 'comerciocity.com')
-                    ->subject('Mantenimiento '.$this->user->company_name)
+        return $this->subject('Mantenimiento '.$this->user->company_name)
                     ->markdown('emails.message-send', [
                         'messages'  => $this->mensajes
                     ]);

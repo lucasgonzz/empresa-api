@@ -8,6 +8,10 @@ class Tag extends Model
 {
     protected $guarded = [];
     
+    function scopeWithAll($q) {
+        
+    }
+    
     function articles() {
         return $this->belongsToMany('App\Models\Article')->withTrashed();
     }
