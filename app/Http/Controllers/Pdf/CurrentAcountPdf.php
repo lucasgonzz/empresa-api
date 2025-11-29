@@ -148,26 +148,57 @@ class CurrentAcountPdf extends fpdf {
 
             if (count($articles_to_show) > 0) {
 				$this->SetX($detalle_col_x);
-                $this->Cell($this->getFields()['Detalle'], $this->line_height_sub_title, '  Articulos:', $this->b, 1, 'L');
+                $this->Cell($this->getFields()['Detalle'], 5, '  Articulos:', $this->b, 1, 'L');
 
                 foreach ($articles_to_show as $article) {
 					// reseteo la posicion x para mantener los articulos alineados
 					$this->SetX($detalle_col_x);
                     
-                    $this->Cell($this->getFields()['Detalle'], $this->line_height_sub_items, '    - '.$article->name, $this->b, 0, 'L');
-                    $this->Cell($this->getFields()['Debe'], $this->line_height_sub_items, $article->pivot->amount, $this->b, 0, 'L');
+                    $this->Cell($this->getFields()['Detalle'], 3, '    - '.$article->name, $this->b, 0, 'L');
+                    $this->Cell($this->getFields()['Debe'], 3, $article->pivot->amount, $this->b, 0, 'L');
 
                     $unit_price = $article->pivot->price ? Numbers::price($article->pivot->price, true, $moneda_id) : '';
-                    $this->Cell($this->getFields()['Haber'], $this->line_height_sub_items, $unit_price, $this->b, 0, 'L');
+                    $this->Cell($this->getFields()['Haber'], 3, $unit_price, $this->b, 0, 'L');
 
                     $total_price = '';
                     if ($article->pivot->price && !is_null($article->pivot->amount)) {
                         $total_price = Numbers::price($article->pivot->price * $article->pivot->amount, true, $moneda_id);
                     }
-                    $this->Cell($this->getFields()['Saldo'], $this->line_height_sub_items, $total_price, $this->b, 1, 'L');
+                    $this->Cell($this->getFields()['Saldo'], 3, $total_price, $this->b, 1, 'L');
                 }
                 // linea vacia para dejar espacio entre el ultimo articulo y la linea 
-                $this->Cell($this->getFields()['Detalle'], $this->line_height_empty, '', $this->b, 1, 'L');
+                $this->Cell($this->getFields()['Detalle'], 2, '', $this->b, 1, 'L');
+            }
+
+            $services_to_show = [];
+            if ($model->sale && $model->sale->services->count() > 0) {
+                $services_to_show = $model->sale->services;
+            } else if ($model->services->count() > 0) {
+                $services_to_show = $model->services;
+            }
+
+            if (count($services_to_show) > 0) {
+				$this->SetX($detalle_col_x);
+                $this->Cell($this->getFields()['Detalle'], 5, '  Servicios:', $this->b, 1, 'L');
+
+                foreach ($services_to_show as $service) {
+					// reseteo la posicion x para mantener los articulos alineados
+					$this->SetX($detalle_col_x);
+                    
+                    $this->Cell($this->getFields()['Detalle'], 3, '    - '.$service->name, $this->b, 0, 'L');
+                    $this->Cell($this->getFields()['Debe'], 3, $service->pivot->amount, $this->b, 0, 'L');
+
+                    $unit_price = $service->pivot->price ? Numbers::price($service->pivot->price, true, $moneda_id) : '';
+                    $this->Cell($this->getFields()['Haber'], 3, $unit_price, $this->b, 0, 'L');
+
+                    $total_price = '';
+                    if ($service->pivot->price && !is_null($service->pivot->amount)) {
+                        $total_price = Numbers::price($service->pivot->price * $service->pivot->amount, true, $moneda_id);
+                    }
+                    $this->Cell($this->getFields()['Saldo'], 3, $total_price, $this->b, 1, 'L');
+                }
+                // linea vacia para dejar espacio entre el ultimo servicio y la linea 
+                $this->Cell($this->getFields()['Detalle'], 2, '', $this->b, 1, 'L');
             }
         }
 		
