@@ -27,6 +27,7 @@ use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
 use App\Models\Seller;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -217,33 +218,31 @@ class CurrentAcountController extends Controller
         if ($cantidad_movimientos > 0) {
             $models = CurrentAcount::where('credit_account_id', $current_acount_id)
                                     ->orderBy('created_at', 'DESC')
-                                    ->take($cantidad_movimientos)
-                                    ->get();
+                                    ->take($cantidad_movimientos);
         } else {
             $models = CurrentAcount::where('id', $current_acount_id)
-                                    ->orderBy('created_at', 'DESC')
-                                    ->get();
+                                    ->orderBy('created_at', 'DESC');
         }
+
         if ($type == 'details') {
             $models = $models->with('articles', 'sale.articles');
         }
+
         $models = $models->get();
-        /*
-        foreach ($models as $model) {
-            $articles = $model->articles;
-            if ($model->sale && $model->sale->articles->count() > 0) {
-                $articles = $model->sale->articles;
+
+        $user_id = null;
+        if (count($models) >= 1) {
+            $user_id = $models[0]->user_id;
+            
+            if ($user_id) {
+                
+                $user = User::find($user_id);
+
+                if ($user->cc_ultimas_arriba) {
+                    $models = $models->reverse()->values();
+                }
             }
 
-            foreach ($articles as $article) {
-                dump($article);
-            }
-        }
-        die();
-        */
-
-        if (!UserHelper::user()->cc_ultimas_arriba) {
-            $models = $models->reverse()->values();
         }
 
         $credit_account = CreditAccount::find($models[0]->credit_account_id);
