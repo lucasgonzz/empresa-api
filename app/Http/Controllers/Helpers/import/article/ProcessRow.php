@@ -330,13 +330,19 @@ class ProcessRow {
 
             $data['variants_data'] = []; // 👈 espacio para variantes
 
+            $data['fake_id'] = 'fake_' . uniqid(); // ID temporal único
+
+            Log::info('data[id]: ');
+            Log::info($data['id']);
 
             $this->articulosParaCrear[] = $data;
 
             // Lo agregamos al índice para evitar procesarlo duplicado en siguientes filas
             $fakeArticle = new \App\Models\Article($data);
             // $num = $this->ct->num('articles', $this->user->id);
-            $fakeArticle->id = 'fake_' . uniqid(); // ID temporal único
+
+
+            // $fakeArticle->fake_id = $data['id'];
 
             ArticleIndexCache::add($fakeArticle);
         }

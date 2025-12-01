@@ -9,9 +9,13 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Pdf\Reportes\ClientesPdf;
 use App\Http\Controllers\Pdf\Reportes\InventarioPdf;
 use App\Models\Address;
+use App\Models\AfipInformation;
+use App\Models\AfipTicket;
+use App\Models\AfipTipoComprobante;
 use App\Models\ArticlePerformance;
 use App\Models\Client;
 use App\Models\CompanyPerformance;
+use App\Models\CompanyPerformanceInfoFacturacion;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\CurrentAcountPaymentMethod;
@@ -134,6 +138,8 @@ class PerformanceHelper
 
         $this->procesar_sales();
 
+        $this->procesar_facturas();
+
         $this->procesar_pagos();
 
         $this->procesar_devoluciones();
@@ -166,6 +172,8 @@ class PerformanceHelper
         $this->attach_gastos_por_conceptos();
 
         $this->attach_gastos_metodos_de_pago();
+
+        $this->attach_info_facturacion();
 
         return $this->company_performance;
     }
@@ -473,6 +481,27 @@ class PerformanceHelper
         // }
     }
 
+    function attach_info_facturacion() {
+        foreach ($this->afip_informations as $afip_information_id => $tipo_comprobantes) {
+
+            foreach ($tipo_comprobantes as $tipo_comprobantes_id => $info) {
+
+                if ($info['total_facturado'] > 0) {
+                    
+                    CompanyPerformanceInfoFacturacion::create([
+                        'company_performance_id'    => $this->company_performance->id,
+                        'afip_information_id'       => $afip_information_id,
+                        'afip_tipo_comprobante_id'  => $tipo_comprobantes_id,
+                        'total_facturado'           => $info['total_facturado'],
+                        'total_iva'                 => $info['total_iva'],
+                    ]);
+                }
+
+            }
+            
+        }
+    }
+
     function attach_ingresos_mostrador() {
 
         foreach ($this->ingresos_mostrador as $metodos_de_pago) {
@@ -518,8 +547,6 @@ class PerformanceHelper
         $this->total_vendido_costos = 0;
         $this->total_vendido_costos_usd = 0;
 
-        $this->total_facturado = 0;
-
         $this->total_pagado_mostrador = 0;
         $this->total_pagado_mostrador_usd = 0;
 
@@ -561,14 +588,22 @@ class PerformanceHelper
                 $this->total_vendido_costos += $sale->total_cost;
             }
 
+            // if (!is_null($sale->afip_information_id) 
+            //     && $sale->afip_information_id != 0 
+            //     && count($sale->afip_tickets) >= 1
+            // ) {
 
-            if (!is_null($sale->afip_information_id) 
-                && $sale->afip_information_id != 0 
-                && !is_null($sale->afip_ticket)
-                && $sale->afip_ticket->resultado == 'A') {
+            //     foreach ($sale->afip_tickets as $afip_ticket) {
+                    
+            //         if ($afip_ticket->resultado == 'A') {
 
-                $this->total_facturado += $sale->afip_ticket->importe_iva;
-            } 
+            //             $this->total_facturado += $sale->afip_ticket->importe_iva;
+
+            //             $this->afip_informations[$sale->afip_information_id][$sale->afip_tipo_comprobante_id]['total_facturado'] += $sale->afip_ticket->importe_total;
+            //             $this->afip_informations[$sale->afip_information_id][$sale->afip_tipo_comprobante_id]['total_iva'] += $sale->afip_ticket->importe_iva;
+            //         }
+            //     }
+            // } 
 
 
             if (is_null($sale->client_id) || $sale->omitir_en_cuenta_corriente) {
@@ -636,6 +671,57 @@ class PerformanceHelper
 
         }
 
+    }
+
+    function procesar_facturas() {
+
+        $this->total_facturado = 0;
+
+        $this->set_afip_informations();
+
+        $user_id = $this->user_id;
+
+        $afip_tickets = AfipTicket::whereHas('sale', function ($query) use ($user_id) {
+                                    $query->where('user_id', $user_id);
+                                })
+                                ->whereDate('created_at', '>=', $this->mes_inicio)
+                                ->whereDate('created_at', '<=', $this->mes_fin)
+                                ->get();
+
+        foreach ($afip_tickets as $afip_ticket) {
+            
+            if ($afip_ticket->resultado == 'A') {
+
+                $this->total_facturado += $afip_ticket->importe_iva;
+
+                $this->afip_informations[$afip_ticket->afip_information_id][$afip_ticket->afip_tipo_comprobante_id]['total_facturado'] += $afip_ticket->importe_total;
+
+                $this->afip_informations[$afip_ticket->afip_information_id][$afip_ticket->afip_tipo_comprobante_id]['total_iva'] += $afip_ticket->importe_iva;
+            }
+        }
+    }
+
+    function set_afip_informations() {
+
+        $this->afip_informations = [];
+
+        $afip_informations = AfipInformation::where('user_id', $this->user_id)
+                                            ->get();
+
+        $afip_tipo_comprobantes = AfipTipoComprobante::all();
+
+        foreach ($afip_informations as $afip_information) {
+            
+            $this->afip_informations[$afip_information->id] = [];
+
+            foreach ($afip_tipo_comprobantes as $afip_tipo_comprobante) {
+
+                $this->afip_informations[$afip_information->id][$afip_tipo_comprobante->id] = [
+                    'total_facturado'   => 0,
+                    'total_iva'   => 0,
+                ];
+            }
+        }
     }
 
     function add_ingresos_brutos_price_type() {
@@ -782,8 +868,8 @@ class PerformanceHelper
         $this->company_performance->total_vendido_costos = $this->total_vendido_costos;
         $this->company_performance->total_vendido_costos_usd = $this->total_vendido_costos_usd;
 
-        $this->company_performance->ingresos_netos = $this->total_vendido - $this->total_vendido_costos;
-        $this->company_performance->ingresos_netos_usd = $this->total_vendido_usd - $this->total_vendido_costos_usd;
+        $this->company_performance->ingresos_netos = $this->total_vendido - $this->total_devolucion - $this->total_vendido_costos;
+        $this->company_performance->ingresos_netos_usd = $this->total_vendido_usd - $this->total_devolucion_usd - $this->total_vendido_costos_usd;
         
         $this->company_performance->rentabilidad = $this->total_vendido - $this->total_vendido_costos - $this->total_gastos;
         $this->company_performance->rentabilidad_usd = $this->total_vendido_usd - $this->total_vendido_costos_usd - $this->total_gastos_usd;
@@ -975,24 +1061,52 @@ class PerformanceHelper
 
         foreach ($notas_de_credito as $nota_de_credito) {
 
+            $moneda_id = 1;
+
             if (
                 !is_null($nota_de_credito->credit_account)
             ) {
 
                 if ($nota_de_credito->credit_account->moneda_id == 2) {
-                    $this->total_devolucion_usd += $nota_de_credito->haber;
+                    $moneda_id = $nota_de_credito->credit_account->moneda_id;
                 }
 
 
             } else if (
-                $nota_de_credito->moneda_id
-                && $nota_de_credito->moneda_id == 2
+                !is_null($nota_de_credito->moneda_id)
             ) {
 
-                $this->total_devolucion_usd += $nota_de_credito->haber;
-            } else {
-                
+                $moneda_id = $nota_de_credito->moneda_id;
+            } 
+
+            if ($moneda_id == 1) {
                 $this->total_devolucion += $nota_de_credito->haber;
+
+            } else if ($moneda_id == 2) {
+                $this->total_devolucion_usd += $nota_de_credito->haber;
+            }
+
+
+            /* 
+                Si estra, es porque la nota de credito se creo desde el modulo de devoluciones
+                entonces se descuentan los costos de esos articulos devueltos para calcular bien la utilidad
+            */
+            if (count($nota_de_credito->articles) >= 1) {
+
+                foreach ($nota_de_credito->articles as $article) {
+
+                    if ($article->pivot->cost) {
+
+                        if ($moneda_id == 1) {
+
+                            $this->total_vendido_costos -= (float)$article->pivot->cost * (float)$article->pivot->amount;
+
+                        } else if ($moneda_id == 2) {
+                            $this->total_vendido_costos_usd -= (float)$article->pivot->cost * (float)$article->pivot->amount;
+                        }
+
+                    }
+                }
             }
 
         }

@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Models\ArticleImportResult;
 use App\Models\ImportHistory;
 use Illuminate\Bus\Queueable;
@@ -152,6 +153,9 @@ class FinalizeArticleImport implements ShouldQueue
             Artisan::call('set_article_address_stock_from_variants', [
                 'user_id' => $this->user->id
             ]);
+
+
+            ArticleIndexCache::limpiar_cache($this->user->id);
 
             
         } catch (\Throwable $th) {

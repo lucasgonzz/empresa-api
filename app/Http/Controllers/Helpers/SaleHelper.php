@@ -637,9 +637,9 @@ class SaleHelper extends Controller {
                         $article_variant_id = null;
                     }
                     
-                    if ($amount > 0) {
+                    // if ($amount > 0) {
                         ArticleHelper::discountStock($article['id'], $amount, $sale, $previus_articles, $se_esta_confirmando_por_primera_vez, $article_variant_id);
-                    }
+                    // }
                 }
 
                 Self::check_que_este_el_articulos($sale, $article);

@@ -70,6 +70,36 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function ventas_mal($user_id = null) {
+        
+        if (!$user_id) {
+
+            $user_id = env('USER_ID'); 
+        }
+
+        $sales = Sale::where('user_id', $user_id)
+                        ->orderBy('id', 'DESC')
+                        ->take(5000)
+                        ->get();
+
+
+        foreach ($sales as $sale) {
+            $total_1 = $sale->total;
+            $total_2 = SaleHelper::getTotalSale($sale);
+            // $total_1 = abs($sale->total);
+            // $total_2 = abs(SaleHelper::getTotalSale($sale));
+
+            if (abs($total_1 - $total_2) > 0.01) {
+                echo $sale->num. '<br>';
+                echo $total_1. '<br>';
+                echo $total_2. '<br>';
+
+                echo '<br>';
+            }
+        }
+        echo 'TERMINO';
+    }
+
     function iniciar_demo() {
 
         
