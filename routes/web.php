@@ -313,7 +313,8 @@ Route::get('budget/pdf/{id}/{with_prices}/{with_images}', 'BudgetController@pdf'
 Route::get('order-production/pdf/{id}/{with_prices}', 'OrderProductionController@pdf');
 Route::get('order-production/articles-pdf/{id}', 'OrderProductionController@articlesPdf');
 
-Route::get('/current-acount/pdf/{credit_account_id}/{months_ago}', 'CurrentAcountController@pdfFromModel');
+#Route::get('/current-acount/pdf/{credit_account_id}/{months_ago}', 'CurrentAcountController@pdfFromModel');
+Route::get('/current-acount/pdf/{credit_account_id}/{months_ago}/{type?}', 'CurrentAcountController@pdfFromModel');
 Route::get('/current-acount/pdf/{id}', 'CurrentAcountController@pdf');
 
 Route::get('order/pdf/{id}/', 'OrderController@pdf');
@@ -350,6 +351,3 @@ Route::get('acopio-article-delivery/{id}', 'AcopioArticleDeliveryController@pdf'
 
 
 Route::get('resumen-caja/pdf/{id}', 'ResumenCajaController@pdf');
-
-
-

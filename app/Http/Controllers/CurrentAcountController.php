@@ -211,22 +211,36 @@ class CurrentAcountController extends Controller
         // $this->sendAddModelNotification($model_name, $model_id, false);
     }
 
-    function pdfFromModel($current_acount_id, $cantidad_movimientos = 0) {
-
+    function pdfFromModel($current_acount_id, $cantidad_movimientos = 0, $type = 'simple') {
+        
         // Si es > 0 son todos los movimientos de una credit_accounts
         if ($cantidad_movimientos > 0) {
-
             $models = CurrentAcount::where('credit_account_id', $current_acount_id)
                                     ->orderBy('created_at', 'DESC')
                                     ->take($cantidad_movimientos)
                                     ->get();
         } else {
-
             $models = CurrentAcount::where('id', $current_acount_id)
                                     ->orderBy('created_at', 'DESC')
                                     ->get();
         }
+        if ($type == 'details') {
+            $models = $models->with('articles', 'sale.articles');
+        }
+        $models = $models->get();
+        /*
+        foreach ($models as $model) {
+            $articles = $model->articles;
+            if ($model->sale && $model->sale->articles->count() > 0) {
+                $articles = $model->sale->articles;
+            }
 
+            foreach ($articles as $article) {
+                dump($article);
+            }
+        }
+        die();
+        */
 
         if (!UserHelper::user()->cc_ultimas_arriba) {
             $models = $models->reverse()->values();
@@ -234,7 +248,7 @@ class CurrentAcountController extends Controller
 
         $credit_account = CreditAccount::find($models[0]->credit_account_id);
                                 
-        new CurrentAcountPdf($credit_account, $models);
+        new CurrentAcountPdf($credit_account, $models, $type);
     }
 
     // function pdfFromModel($credit_account_id, $cantidad_movimientos) {
