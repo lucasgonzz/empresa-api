@@ -35,7 +35,7 @@ class ArticleImport implements ToCollection
 {
 
     
-    public function __construct($import_uuid, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $archivo_excel_path) {
+    public function __construct($import_uuid, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $archivo_excel_path, $chunk_number) {
         set_time_limit(9999999999);
 
         Log::info('Se creo ArticleImport con import_uuid: '.$import_uuid);
@@ -44,6 +44,7 @@ class ArticleImport implements ToCollection
         $this->user = $user;
         $this->auth_user_id = $auth_user_id;
         $this->archivo_excel_path = $archivo_excel_path;
+        $this->chunk_number = $chunk_number;
 
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
@@ -107,11 +108,24 @@ class ArticleImport implements ToCollection
         
         Log::info('cacheando articulos');
         
-        ArticleIndexCache::build(
-            $this->user->id,
-            $this->provider_id ?? null,
-            (bool)$this->no_actualizar_articulos_de_otro_proveedor
-        );
+        if ($this->chunk_number == 1) {
+            
+            ArticleIndexCache::build(
+                $this->user->id,
+                $this->provider_id ?? null,
+                (bool)$this->no_actualizar_articulos_de_otro_proveedor
+            );
+        } else {
+
+            $index = ArticleIndexCache::get($this->user->id);
+            Log::info('Ya estaba cacheado, el cache esta asi:');
+            Log::info(count($index['ids']).' ids');
+            Log::info(count($index['bar_codes']).' bar_codes');
+            Log::info(count($index['skus']).' skus');
+            Log::info(count($index['provider_codes']).' provider_codes');
+            Log::info(count($index['names']).' names');
+            Log::info('');
+        }
 
         Log::info('articulos cacheados');
 
