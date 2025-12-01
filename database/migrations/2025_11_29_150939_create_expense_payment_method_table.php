@@ -16,9 +16,12 @@ class CreateExpensePaymentMethodTable extends Migration
         Schema::create('expense_current_acount_payment_method', function (Blueprint $table) {
             $table->id();
             $table->unsignedBigInteger('expense_id');
-            $table->foreign('expense_id')->references('id')->on('expenses')->onDelete('cascade');
+            //$table->foreign('expense_id')->references('id')->on('expenses')->onDelete('cascade');
             $table->unsignedBigInteger('current_acount_payment_method_id');
-            $table->foreign('current_acount_payment_method_id', 'ecapm_id_foreign')->references('id')->on('current_acount_payment_methods')->onDelete('cascade');
+            $table->decimal('amount', 20,2);
+            $table->unsignedBigInteger('caja_id');
+            //$table->foreign('caja_id')->references('id')->on('cajas')->onDelete('cascade');
+            //$table->foreign('current_acount_payment_method_id', 'ecapm_id_foreign')->references('id')->on('current_acount_payment_methods')->onDelete('cascade');
             $table->timestamps();
         });
     }

@@ -20,6 +20,6 @@ class Expense extends Model
     }
 
     function payment_methods() {
-        return $this->belongsToMany(CurrentAcountPaymentMethod::class, 'expense_current_acount_payment_method')->withTimestamps();
+        return $this->belongsToMany(CurrentAcountPaymentMethod::class, 'expense_current_acount_payment_method')->withPivot('amount', 'caja_id')->withTimestamps();
     }
 }

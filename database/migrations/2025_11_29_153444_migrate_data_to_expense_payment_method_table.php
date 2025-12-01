@@ -18,6 +18,8 @@ class MigrateDataToExpensePaymentMethodTable extends Migration
         foreach ($expenses as $expense) {
             DB::table('expense_current_acount_payment_method')->insert([
                 'expense_id' => $expense->id,
+                'amount' => $expense->amount,
+                'caja_id' => $expense->caja_id,
                 'current_acount_payment_method_id' => $expense->current_acount_payment_method_id,
                 'created_at' => $expense->created_at,
                 'updated_at' => $expense->updated_at,
