@@ -283,6 +283,7 @@ class CurrentAcountHelper {
                         $nota_credito->articles()->attach($item['id'], [
                                                             'amount'    => $item['unidades_devueltas'],
                                                             'price'     => $item['price_vender'],
+                                                            'cost'      => $item['costo_real'],
                                                             'discount'  => $item['discount'],
                                                         ]);
                     }

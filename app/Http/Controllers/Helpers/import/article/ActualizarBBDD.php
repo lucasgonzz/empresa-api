@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
+use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Jobs\ProcessSyncArticleToTiendaNube;
 use App\Models\Article;
@@ -30,11 +31,11 @@ class ActualizarBBDD {
 
         Log::info('articulos_para_crear_CACHE:');
         Log::info('Cantidad: '.count($articulos_para_crear_CACHE));
-        Log::info($articulos_para_crear_CACHE);
+        // Log::info($articulos_para_crear_CACHE);
 
         Log::info('articulos_para_actualizar_CACHE:');
         Log::info('Cantidad: '.count($articulos_para_actualizar_CACHE));
-        Log::info($articulos_para_actualizar_CACHE);
+        // Log::info($articulos_para_actualizar_CACHE);
 
         $this->user                                 = $user;
         $this->auth_user_id                         = $auth_user_id;
@@ -63,7 +64,7 @@ class ActualizarBBDD {
             Log::info('Se van a crear ' . count($this->articulos_para_crear_CACHE) . ' articulos');
             // if (app()->environment('local')) { Log::info($this->articulos_para_crear_CACHE); }
 
-            Log::info('sql:');
+            // Log::info('sql:');
             $sql = array_map(function ($art) {
                 return collect($art)->except([
                     'price_types_data',
@@ -72,13 +73,15 @@ class ActualizarBBDD {
                     'stock_global',
                     'stock_addresses',
                     'variants_data',
+                    'id',
+                    'fake_id',
                 ])->merge([
                     'created_at' => $this->now,
                     'updated_at' => $this->now,
                 ])->toArray();
             }, $this->articulos_para_crear_CACHE);
 
-            Log::info($sql);
+            // Log::info($sql);
             
             Article::insert($sql);
 
@@ -207,8 +210,10 @@ class ActualizarBBDD {
         $this->guardar_variantes_desde_cache_simple();
 
 
+        $this->actualizar_cache();
 
         $this->actualizar_tienda_nube();
+
     }
 
     function set_articles_providers() {
@@ -258,7 +263,7 @@ class ActualizarBBDD {
 
     function asignar_discounts_percentages() {
 
-        Log::info('asignar_discounts_percentages');
+        // Log::info('asignar_discounts_percentages');
 
         $insertData = [];
 
@@ -269,8 +274,8 @@ class ActualizarBBDD {
                 || empty($article_cache['discounts'])
             ) continue;
 
-            Log::info('Descuentos del articulo para crear:');
-            Log::info($article_cache['discounts']);
+            // Log::info('Descuentos del articulo para crear:');
+            // Log::info($article_cache['discounts']);
 
             $article_model = $this->get_article_model_from_cache($article_cache);
 
@@ -293,8 +298,8 @@ class ActualizarBBDD {
                 || empty($article_cache['discounts'])
             ) continue;
 
-            Log::info('Descuentos del articulo para actualizar id '.$article_cache['id'].':');
-            Log::info($article_cache['discounts']);
+            // Log::info('Descuentos del articulo para actualizar id '.$article_cache['id'].':');
+            // Log::info($article_cache['discounts']);
 
             $article_model = $this->articulos_actualizados_models[$article_cache['id']] ?? null;
 
@@ -314,7 +319,7 @@ class ActualizarBBDD {
             ->whereNotNull('percentage')
             ->delete();
 
-        Log::info('Se eliminaron descuentos con percentage de '.count($articles_id_para_eliminarles_descuentos).' articulos');
+        // Log::info('Se eliminaron descuentos con percentage de '.count($articles_id_para_eliminarles_descuentos).' articulos');
 
         if (!empty($insertData)) {
             DB::table('article_discounts')->insert($insertData);
@@ -371,7 +376,7 @@ class ActualizarBBDD {
             ->whereNotNull('amount')
             ->delete();
 
-        Log::info('Se eliminaron descuentos con amount de '.count($articles_id_para_eliminarles_descuentos).' articulos');
+        // Log::info('Se eliminaron descuentos con amount de '.count($articles_id_para_eliminarles_descuentos).' articulos');
 
         if (!empty($insertData)) {
             DB::table('article_discounts')->insert($insertData);
@@ -389,8 +394,8 @@ class ActualizarBBDD {
                 || empty($article_cache['surchages'])
             ) continue;
 
-            Log::info('Descuentos del articulo para crear:');
-            Log::info($article_cache['surchages']);
+            // Log::info('Descuentos del articulo para crear:');
+            // Log::info($article_cache['surchages']);
 
             $article_model = $this->get_article_model_from_cache($article_cache);
 
@@ -413,8 +418,8 @@ class ActualizarBBDD {
                 || empty($article_cache['surchages'])
             ) continue;
 
-            Log::info('Descuentos del articulo para actualizar id '.$article_cache['id'].':');
-            Log::info($article_cache['surchages']);
+            // Log::info('Descuentos del articulo para actualizar id '.$article_cache['id'].':');
+            // Log::info($article_cache['surchages']);
 
             $article_model = $this->articulos_actualizados_models[$article_cache['id']] ?? null;
 
@@ -434,7 +439,7 @@ class ActualizarBBDD {
             ->whereNotNull('percentage')
             ->delete();
 
-        Log::info('Se eliminaron recargos con percentage de '.count($articles_id_para_eliminarles_descuentos).' articulos');
+        // Log::info('Se eliminaron recargos con percentage de '.count($articles_id_para_eliminarles_descuentos).' articulos');
 
         if (!empty($insertData)) {
             DB::table('article_surchages')->insert($insertData);
@@ -491,7 +496,7 @@ class ActualizarBBDD {
             ->whereNotNull('amount')
             ->delete();
 
-        Log::info('Se eliminaron recargos con amount de '.count($articles_id_para_eliminarles_descuentos).' articulos');
+        // Log::info('Se eliminaron recargos con amount de '.count($articles_id_para_eliminarles_descuentos).' articulos');
 
         if (!empty($insertData)) {
             DB::table('article_surchages')->insert($insertData);
@@ -549,15 +554,15 @@ class ActualizarBBDD {
 
     function get_insert_data($article_id, $value, $key = 'percentage', $check_final_flag) {
 
-        Log::info('get_insert_data:');
-        Log::info('check_final_flag: '.$check_final_flag);
+        // Log::info('get_insert_data:');
+        // Log::info('check_final_flag: '.$check_final_flag);
 
         if ($check_final_flag) {
 
-            Log::info('value: ');
-            Log::info($value);
+            // Log::info('value: ');
+            // Log::info($value);
 
-            Log::info('is_array: '.is_array($value));
+            // Log::info('is_array: '.is_array($value));
 
             $final_flag = $value['final'];
             $value = trim($value['value']);
@@ -626,10 +631,10 @@ class ActualizarBBDD {
                 if (!$article) continue;
 
                 if (!empty($article_cache['stock_global'])) {
-                    Log::info('Act stock global de '.$article->name);
+                    // Log::info('Act stock global de '.$article->name);
                     $this->guardar_stock_movement_global($article, $article_cache['stock_global']);
                 } else {
-                    Log::info('Act stock por direcciones de '.$article->name);
+                    // Log::info('Act stock por direcciones de '.$article->name);
                     $this->guardar_stock_movement_addresses($article, $article_cache['stock_addresses']);
                 }
                 
@@ -647,7 +652,7 @@ class ActualizarBBDD {
         $data['amount'] = $variant->stock;
         $data['article_variant_id'] = $variant->id;
 
-        Log::info('Stock para variante '.$variant->variant_description.' de '.$variant->stock);
+        // Log::info('Stock para variante '.$variant->variant_description.' de '.$variant->stock);
 
         $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id);
     }
@@ -849,14 +854,14 @@ class ActualizarBBDD {
 
 
             // Ejecutar la consulta SQL
-            if (app()->environment('local')) { Log::info(''); }
-            if (app()->environment('local')) { Log::info('sql para setear price_types:'); }
-            if (app()->environment('local')) { Log::info($sql); }
-            if (app()->environment('local')) { Log::info(''); }
+            // if (app()->environment('local')) { Log::info(''); }
+            // if (app()->environment('local')) { Log::info('sql para setear price_types:'); }
+            // if (app()->environment('local')) { Log::info($sql); }
+            // if (app()->environment('local')) { Log::info(''); }
             DB::statement($sql);
-            if (app()->environment('local')) { Log::info(''); }
-            if (app()->environment('local')) { Log::info('Price_types actualizados'); }
-            if (app()->environment('local')) { Log::info(''); }
+            // if (app()->environment('local')) { Log::info(''); }
+            // if (app()->environment('local')) { Log::info('Price_types actualizados'); }
+            // if (app()->environment('local')) { Log::info(''); }
         }
 
 
@@ -904,8 +909,8 @@ class ActualizarBBDD {
 
     function get_setear_precio_final($price_type) {
 
-        Log::info('get_setear_precio_final:');
-        Log::info($price_type);
+        // Log::info('get_setear_precio_final:');
+        // Log::info($price_type);
 
         if ($price_type['pivot']['setear_precio_final']) {
             return $price_type['pivot']['setear_precio_final'];
@@ -959,7 +964,7 @@ class ActualizarBBDD {
                 'final_price_updated_at'    => $this->now,
             ];
 
-            Log::info('Se calculo precio de article id: '.$article->id);
+            // Log::info('Se calculo precio de article id: '.$article->id);
 
             $updates[] = $update;
         }
@@ -977,7 +982,7 @@ class ActualizarBBDD {
             ];
 
             $updates[] = $update;
-            Log::info('Se calculo precio de article id: '.$article->id);
+            // Log::info('Se calculo precio de article id: '.$article->id);
         }
 
         Log::info('Se van a setear precios finales de '.count($updates).' articulos');
@@ -1114,8 +1119,8 @@ class ActualizarBBDD {
         $this->articulos_actualizados_models = Article::whereIn('id', $ids)->get()->keyBy('id');
 
         Log::info('Se seteo articulos_actualizados_models con '.count($this->articulos_actualizados_models).' articulos');
-        Log::info('$ids:');
-        Log::info($ids);
+        // Log::info('$ids:');
+        // Log::info($ids);
     }
 
 
@@ -1333,7 +1338,7 @@ class ActualizarBBDD {
                     'amount'    => $stock,
                 ]
             ]);
-            Log::info('Se pusieron '.$stock.' en address_id: '.$address_id.' para variante '.$variant->variant_description);
+            // Log::info('Se pusieron '.$stock.' en address_id: '.$address_id.' para variante '.$variant->variant_description);
         }
 
 
@@ -1346,7 +1351,7 @@ class ActualizarBBDD {
                         'on_display'    => 1,
                     ]
                 ]);
-                Log::info('Se pusieron en exhibicion la variante '.$variant->variant_description.' en address_id: '.$address_id);
+                // Log::info('Se pusieron en exhibicion la variante '.$variant->variant_description.' en address_id: '.$address_id);
             }
 
         }
@@ -1534,6 +1539,36 @@ class ActualizarBBDD {
         if (isset($variant_payload['properties']) && is_array($variant_payload['properties'])) {
             return $variant_payload['properties'];
         }
+    }
+
+
+    function actualizar_cache() {
+
+        Log::info('');
+        Log::info('');
+        Log::info('actualizar_cache');
+        Log::info('');
+
+        $index = ArticleIndexCache::get($this->user->id);
+        Log::info('El cache esta asi:');
+        Log::info(count($index['ids']).' ids');
+        Log::info(count($index['bar_codes']).' bar_codes');
+        Log::info(count($index['skus']).' skus');
+        Log::info(count($index['provider_codes']).' provider_codes');
+        Log::info(count($index['names']).' names');
+        Log::info('');
+
+        foreach ($this->articulos_creados_models as $article) {
+            Log::info('Entro con '.$article->id);
+            ArticleIndexCache::update($article);
+        }
+
+        foreach ($this->articulos_actualizados_models as $article) {
+            ArticleIndexCache::update($article);
+        }
+        Log::info('');
+        Log::info('');
+        Log::info('');
     }
 
     

@@ -17,7 +17,7 @@ class InitExcelImport {
         $chunkSize = env('ARTICLE_EXCEL_CHUNK_SIZE', 3500);
 
         if (env('APP_ENV') == 'local') {
-            $chunkSize = 1;
+            $chunkSize = 2;
         } 
         
         $start = $start_row;
@@ -35,6 +35,9 @@ class InitExcelImport {
 		    'processed_chunks' 	=> 0,
 		    'status' 			=> 'pendiente',
 		]);
+
+
+        $chunk_number = 1;
 
         while ($start <= $finish_row) {
 
@@ -54,7 +57,10 @@ class InitExcelImport {
                 $user,
                 $auth_user_id, 
                 $import_status->id,
+                $chunk_number,
             );
+
+            $chunk_number++;
 
             $start = $end + 1;
         }

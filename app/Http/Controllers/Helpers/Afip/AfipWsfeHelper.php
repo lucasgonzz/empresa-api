@@ -348,6 +348,8 @@ class AfipWsfeHelper extends Controller
             'iva_negocio'       => $this->sale->afip_information->iva_condition->name,
             'iva_cliente'       => !is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) ? $this->sale->client->iva_condition->name : '',
             'sale_id'           => $this->sale->id,
+            'afip_information_id'        => $this->sale->afip_information_id,
+            'afip_tipo_comprobante_id'   => $this->sale->afip_tipo_comprobante_id,
         ]);
 
         $this->sale->load('afip_ticket');

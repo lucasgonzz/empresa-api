@@ -302,11 +302,11 @@ class SaleAfipTicketPdf extends fpdf {
 			$this->Cell(30, 5, 'Descuentos', 1, 0, 'L');
 			foreach ($this->sale->discounts as $discount) {
 				// $this->x += 20;
-				$this->Cell(30, 5, $discount->name.' '.$discount->pivot->percentage.'%', 1, 0, 'L');
+				$this->Cell(70, 5, $discount->name.' '.$discount->pivot->percentage.'%', 1, 0, 'L');
 			}
 
 			if ($this->sale->descuento > 0) {
-				$this->Cell(30, 5, $this->sale->descuento.'%', 1, 0, 'L');
+				$this->Cell(50, 5, $this->sale->descuento.'%', 1, 0, 'L');
 			}
 			$this->y += 5;
 		}
