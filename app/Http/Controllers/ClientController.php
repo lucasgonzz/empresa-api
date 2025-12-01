@@ -132,7 +132,7 @@ class ClientController extends Controller
                                     ->withAll()
                                     ->first();
             return response()->json([
-                'client_model'  => $client_model,
+                'model'  => $client_model,
                 'afip_data'     => $data['afip_data'],
             ]);
         }
