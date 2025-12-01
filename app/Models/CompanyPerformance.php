@@ -10,7 +10,11 @@ class CompanyPerformance extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        return $q->with('ingresos_mostrador', 'ingresos_cuenta_corriente', 'expense_concepts', 'gastos', 'users_payment_methods', 'ingresos_brutos_price_types');
+        return $q->with('ingresos_mostrador', 'ingresos_cuenta_corriente', 'expense_concepts', 'gastos', 'users_payment_methods', 'ingresos_brutos_price_types', 'company_performance_info_facturacion.afip_information', 'company_performance_info_facturacion.afip_tipo_comprobante');
+    }
+
+    function company_performance_info_facturacion() {
+        return $this->hasMany(CompanyPerformanceInfoFacturacion::class);
     }
 
     function ingresos_brutos_price_types() {
@@ -43,6 +47,10 @@ class CompanyPerformance extends Model
 
     function expense_concepts() {
         return $this->belongsToMany(ExpenseConcept::class)->withPivot('amount');
+    }
+
+    function expense_concepts_usd() {
+        return $this->belongsToMany(ExpenseConcept::class, 'company_performance_expense_concept_usd')->withPivot('amount');
     }
 
     // Aca tiene en cuenta lo que ingreso por mostrador y por cuenta corriente

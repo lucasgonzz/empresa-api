@@ -166,9 +166,9 @@ class ExportHelper {
 			if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
 				Log::info('articulo_margen_de_ganancia_segun_lista_de_precios');
 				
-				unset($map[13]);
-				unset($map[18]);
-				unset($map[22]);
+				unset($map[14]);
+				unset($map[19]);
+				unset($map[23]);
 
 				// Caso Pack descartables
 				foreach ($price_types as $price_type) {
@@ -315,9 +315,9 @@ class ExportHelper {
 
 			Log::info('setPriceTypesHeadings');
 
-			unset($headings[13]);
-			unset($headings[18]);
-			unset($headings[22]);
+			unset($headings[14]);
+			unset($headings[19]);
+			unset($headings[23]);
 
 			foreach ($price_types as $price_type) {
 

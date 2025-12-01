@@ -34,6 +34,7 @@ class AfipWsfeHelper extends Controller
         $this->sale = $sale;
         $this->testing = !$sale->afip_information->afip_ticket_production;
         $this->ya_se_obtuvo_cae_desde_consultar_comprobante = false;
+        $this->error_al_consultar_comprobante = false;
     }
 
     function procesar() {
@@ -48,7 +49,10 @@ class AfipWsfeHelper extends Controller
             $this->create_afip_ticket();
         }
 
-        if (!$this->ya_se_obtuvo_cae_desde_consultar_comprobante) {
+        if (
+            !$this->ya_se_obtuvo_cae_desde_consultar_comprobante
+            && !$this->error_al_consultar_comprobante
+        ) {
 
 
             $this->solicitar_cae();
@@ -126,10 +130,12 @@ class AfipWsfeHelper extends Controller
                     } else if (isset($result['FECompConsultarResult']->Errors)) {
                         Log::info('Entro en errors:');
                         Log::info((array)$result['FECompConsultarResult']->Errors);
+                        $this->error_al_consultar_comprobante = true;
                     }
                 } 
             } else {
                 Log::info('Hubo un error');
+                $this->error_al_consultar_comprobante = true;
             }
         } 
     }
@@ -342,6 +348,8 @@ class AfipWsfeHelper extends Controller
             'iva_negocio'       => $this->sale->afip_information->iva_condition->name,
             'iva_cliente'       => !is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) ? $this->sale->client->iva_condition->name : '',
             'sale_id'           => $this->sale->id,
+            'afip_information_id'        => $this->sale->afip_information_id,
+            'afip_tipo_comprobante_id'   => $this->sale->afip_tipo_comprobante_id,
         ]);
 
         $this->sale->load('afip_ticket');

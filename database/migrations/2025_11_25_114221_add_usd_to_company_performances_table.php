@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class SetNullUserIdInSaleChannelsTable extends Migration
+class AddUsdToCompanyPerformancesTable extends Migration
 {
     /**
      * Run the migrations.
@@ -13,8 +13,9 @@ class SetNullUserIdInSaleChannelsTable extends Migration
      */
     public function up()
     {
-        Schema::table('sale_channels', function (Blueprint $table) {
-            $table->dropColumn('user_id');
+        Schema::table('company_performances', function (Blueprint $table) {
+            $table->decimal('rentabilidad_usd', 22,2)->nullable();
+            $table->decimal('total_gastos_usd', 22,2)->nullable();
         });
     }
 
@@ -25,7 +26,7 @@ class SetNullUserIdInSaleChannelsTable extends Migration
      */
     public function down()
     {
-        Schema::table('sale_channels', function (Blueprint $table) {
+        Schema::table('company_performances', function (Blueprint $table) {
             //
         });
     }

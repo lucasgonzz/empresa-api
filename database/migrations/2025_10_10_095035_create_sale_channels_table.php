@@ -18,7 +18,6 @@ class CreateSaleChannelsTable extends Migration
 
             $table->string('name');
             $table->string('slug');
-            $table->integer('user_id');
 
             $table->timestamps();
         });

@@ -76,6 +76,8 @@ class UserSeeder extends Seeder
                 'info_afip_del_primer_punto_de_venta'   => 0,
                 'comision_funcion' => 'distri_creo',
                 'google_cuota' => 100,
+                'show_stock_min_al_iniciar'         => 0,
+                'tienda_nube_url'                   => 'https://demo317.mitiendanube.com',
             ],
         ];
 
@@ -696,6 +698,8 @@ class UserSeeder extends Seeder
                 // 'default_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8080' : $model['default_version'],
                 'estable_version'               => null,
                 'google_cuota'                 => isset($model['google_cuota']) ? $model['google_cuota'] : null,
+                'show_stock_min_al_iniciar'                 => isset($model['show_stock_min_al_iniciar']) ? $model['show_stock_min_al_iniciar'] : 1,
+                'tienda_nube_url'                 => isset($model['tienda_nube_url']) ? $model['tienda_nube_url'] : 1,
                 // 'estable_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8081' : $model['estable_version'],
             ]);
 
@@ -730,14 +734,14 @@ class UserSeeder extends Seeder
                     
                     AfipInformation::create([
                         'iva_condition_id'      => 1,
-                        'razon_social'          => 'RRII Ferretodo',
+                        'razon_social'          => 'RRII Kiosco Verde',
                         'domicilio_comercial'   => 'Pellegrini 1876',
-                        'cuit'                  => '20381712010',
+                        'cuit'                  => '20175018841',
                         // 20175018841 papa 
                         // 20167430490 felix
                         // 20381712010 Nico Ferretodo
                         'punto_venta'           => 4,
-                        'ingresos_brutos'       => '20381712010',
+                        'ingresos_brutos'       => '20175018841',
                         'inicio_actividades'    => Carbon::now()->subYears(5),
                         'user_id'               => env('USER_ID'),
                     ]);

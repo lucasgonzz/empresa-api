@@ -208,6 +208,10 @@ class CurrentAcountHelper {
 
     static function notaCredito($credit_account_id, $haber, $description, $model_name, $model_id, $sale_id = null, $items = null) {
 
+        $moneda_id = Self::get_moneda_id($credit_account_id, $sale_id);
+
+        Log::info('moneda_id para nota_credito: '.$moneda_id);
+
         $nota_credito = CurrentAcount::create([
             'description'       => $description,
             'haber'             => $haber,
@@ -219,6 +223,7 @@ class CurrentAcountHelper {
             'user_id'           => UserHelper::userId(),
             'employee_id'       => UserHelper::userId(false),
             'credit_account_id' => $credit_account_id,
+            'moneda_id'         => $moneda_id,
         ]); 
 
         if (!is_null($model_name) && !is_null($model_id)) {
@@ -240,6 +245,35 @@ class CurrentAcountHelper {
         return $nota_credito;
     }
 
+    static function get_moneda_id($credit_account_id, $sale_id) {
+
+        Log::info('get_moneda_id');
+
+        $moneda_id = null;
+
+        if ($credit_account_id) {
+            $credit_account = CreditAccount::find($credit_account_id);
+
+            if ($credit_account) {
+                $moneda_id = $credit_account->moneda_id;
+            }
+        }
+
+        if (!$moneda_id && $sale_id) {
+            $sale = Sale::find($sale_id);
+            if ($sale) {
+                $moneda_id = $sale->moneda_id;
+            }
+        }
+
+        if (!$moneda_id) {
+            Log::info('moneda_id null');
+            $moneda_id = 1;
+        }
+
+        return $moneda_id;
+    }
+
     static function attachNotaCreditoArticles($nota_credito, $items) {
         if (!is_null($items)) {
             $nota_credito->articles()->detach();
@@ -249,6 +283,7 @@ class CurrentAcountHelper {
                         $nota_credito->articles()->attach($item['id'], [
                                                             'amount'    => $item['unidades_devueltas'],
                                                             'price'     => $item['price_vender'],
+                                                            'cost'      => $item['costo_real'],
                                                             'discount'  => $item['discount'],
                                                         ]);
                     }

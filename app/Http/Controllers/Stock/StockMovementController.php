@@ -82,6 +82,8 @@ class StockMovementController extends Controller
 
         $article = Article::find($data['model_id']);
 
+        if (!$article) return;
+
         $concepto_id = SetConcepto::get_concepto($data);
         
         $amount = $this->check_unidades_individuales($article, (float)$data['amount'], $concepto_id);
@@ -127,7 +129,10 @@ class StockMovementController extends Controller
 
         $concepto = ConceptoStockMovement::find($concepto_id);
 
-        if (!is_null($article->unidades_individuales)) {
+        if (
+            $article
+            && !is_null($article->unidades_individuales)
+        ) {
 
             if (
                 // Ingreso manual

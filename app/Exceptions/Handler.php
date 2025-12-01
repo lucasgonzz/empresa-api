@@ -2,7 +2,7 @@
 
 namespace App\Exceptions;
 
-use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Mail\ErrorHandler;
 use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
 use Illuminate\Support\Facades\Log;
@@ -39,12 +39,12 @@ class Handler extends ExceptionHandler
     public function register()
     {
         $this->reportable(function (Throwable $e) {
-            // Log::error('Excepción no atrapada', ['error' => $e]);
-            // if (env('APP_ENV') == 'production' && env('SEND_MAILS', false)) {
-            //     $owner_user = UserHelper::getFullModel();
-            //     $auth_user = UserHelper::getFullModel(false);
-            //     Mail::to('lucasgonzalez5500@gmail.com')->send(new ErrorHandler($owner_user, $auth_user, $e));
-            // }
+            Log::error('Error: ', ['error' => $e]);
+            if (env('APP_ENV') == 'production' && env('SEND_MAILS', false)) {
+                $owner_user = UserHelper::getFullModel();
+                $auth_user = UserHelper::getFullModel(false);
+                Mail::to('lucasgonzalez5500@gmail.com')->send(new ErrorHandler($owner_user, $auth_user, $e));
+            }
         });
     }
 }

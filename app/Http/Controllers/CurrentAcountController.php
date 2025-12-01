@@ -216,13 +216,13 @@ class CurrentAcountController extends Controller
         // Si es > 0 son todos los movimientos de una credit_accounts
         if ($cantidad_movimientos > 0) {
             $models = CurrentAcount::where('credit_account_id', $current_acount_id)
-                ->orderBy('created_at', 'ASC')
-                ->take($cantidad_movimientos)
-            ;
+                                    ->orderBy('created_at', 'DESC')
+                                    ->take($cantidad_movimientos)
+                                    ->get();
         } else {
             $models = CurrentAcount::where('id', $current_acount_id)
-                ->orderBy('created_at', 'ASC')
-            ;                        
+                                    ->orderBy('created_at', 'DESC')
+                                    ->get();
         }
         if ($type == 'details') {
             $models = $models->with('articles', 'sale.articles');
@@ -241,6 +241,11 @@ class CurrentAcountController extends Controller
         }
         die();
         */
+
+        if (!UserHelper::user()->cc_ultimas_arriba) {
+            $models = $models->reverse()->values();
+        }
+
         $credit_account = CreditAccount::find($models[0]->credit_account_id);
                                 
         new CurrentAcountPdf($credit_account, $models, $type);
