@@ -297,7 +297,12 @@ class SaleAfipTicketPdf extends fpdf {
 			$aclaracion = 'En la columna subtotal de cada articulo, se estan aplicando los descuentos de la venta';
 			$this->Cell(200, 7, $aclaracion, 1, 1, 'C');
 			$this->y += 2;
-			$this->setX(5);
+			
+			$this->x = 5;
+			$this->SetFont('Arial', 'B', 12);
+			$this->Cell(100, 5, 'Total Original: '.SaleHelper::getTotalSale($this->sale, false, false), 1, 1, 'L');
+			
+			$this->x = 5;
 			$this->SetFont('Arial', 'B', 9);
 			$this->Cell(30, 5, 'Descuentos', 1, 0, 'L');
 			foreach ($this->sale->discounts as $discount) {
@@ -308,6 +313,11 @@ class SaleAfipTicketPdf extends fpdf {
 			if ($this->sale->descuento > 0) {
 				$this->Cell(50, 5, $this->sale->descuento.'%', 1, 0, 'L');
 			}
+			
+			$this->x = 5;
+			$this->SetFont('Arial', 'B', 12);
+			$this->Cell(100, 5, 'Total final: '.$this->sale->total, 1, 0, 'L');
+
 			$this->y += 5;
 		}
 	}

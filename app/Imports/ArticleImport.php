@@ -119,11 +119,11 @@ class ArticleImport implements ToCollection
 
             $index = ArticleIndexCache::get($this->user->id);
             Log::info('Ya estaba cacheado, el cache esta asi:');
-            Log::info(count($index['ids']).' ids');
-            Log::info(count($index['bar_codes']).' bar_codes');
-            Log::info(count($index['skus']).' skus');
-            Log::info(count($index['provider_codes']).' provider_codes');
-            Log::info(count($index['names']).' names');
+            // Log::info(count($index['ids']).' ids');
+            // Log::info(count($index['bar_codes']).' bar_codes');
+            // Log::info(count($index['skus']).' skus');
+            // Log::info(count($index['provider_codes']).' provider_codes');
+            // Log::info(count($index['names']).' names');
             Log::info('');
         }
 
@@ -171,7 +171,7 @@ class ArticleImport implements ToCollection
                         ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, $error_message, $this->articulos_creados, $this->articulos_actualizados, $this->updated_props);
 
                         ArticleImportHelper::error_notification($this->user, $this->num_row, $e->getMessage());
-                        return;
+                        return $e;
 
                     } 
 

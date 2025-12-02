@@ -264,7 +264,7 @@ class ArticleIndexCache
 
 
         Log::info('Llego a add: ');
-        Log::info($article->id);
+        // Log::info($article->id);
 
         $article_id = $article->fake_id;
 

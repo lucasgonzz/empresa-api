@@ -208,6 +208,9 @@ class CompanyPerformanceHelper {
             $this->sumar_payment_methods_relation($company_performance, 'users_payment_methods_formated', 'user');
             $this->sumar_payment_methods_relation($company_performance, 'addresses_payment_methods_formated', 'address');
 
+
+            // $this->sumar_info_facturacion($company_performance);
+
         }
 
         $this->format_ingresos('ingresos_mostrador');
@@ -221,6 +224,14 @@ class CompanyPerformanceHelper {
         $this->format_payment_methods('addresses_payment_methods_formated');
 
     }
+
+    // function sumar_info_facturacion($company_performance) {
+    //     foreach ($company_performance->company_performance_info_facturacion as $info_facturacion) {
+            
+    //         $this->suma_company_performances['info_facturacion'][]      += $company_performance->total_gastos;
+    //     }
+
+    // }
 
     function format_ingresos($ingresos_name) {
         $ingresos = [];

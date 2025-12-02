@@ -688,6 +688,7 @@ class PerformanceHelper
                                 ->whereDate('created_at', '<=', $this->mes_fin)
                                 ->get();
 
+
         foreach ($afip_tickets as $afip_ticket) {
             
             if ($afip_ticket->resultado == 'A') {

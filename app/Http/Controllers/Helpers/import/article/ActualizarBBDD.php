@@ -1550,12 +1550,12 @@ class ActualizarBBDD {
         Log::info('');
 
         $index = ArticleIndexCache::get($this->user->id);
-        Log::info('El cache esta asi:');
-        Log::info(count($index['ids']).' ids');
-        Log::info(count($index['bar_codes']).' bar_codes');
-        Log::info(count($index['skus']).' skus');
-        Log::info(count($index['provider_codes']).' provider_codes');
-        Log::info(count($index['names']).' names');
+        // Log::info('El cache esta asi:');
+        // Log::info(count($index['ids']).' ids');
+        // Log::info(count($index['bar_codes']).' bar_codes');
+        // Log::info(count($index['skus']).' skus');
+        // Log::info(count($index['provider_codes']).' provider_codes');
+        // Log::info(count($index['names']).' names');
         Log::info('');
 
         foreach ($this->articulos_creados_models as $article) {

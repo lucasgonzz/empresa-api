@@ -27,18 +27,30 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 
 		$this->etiqueta_width  = 100;
 		$this->etiqueta_height  = 50;  
+		$this->cant_article_x_etiqueta  = 1;  
+
+		if ($this->user->article_etiqueta_width) {
+			$this->etiqueta_width  = $this->user->article_etiqueta_width;
+		}
+		if ($this->user->article_etiqueta_height) {
+			$this->etiqueta_height  = $this->user->article_etiqueta_height;
+		}
+		if ($this->user->cant_article_x_etiqueta) {
+			$this->cant_article_x_etiqueta  = $this->user->cant_article_x_etiqueta;
+		}
+
 
 		// Nombre
-		$this->alto_nombre = 5;
-		$this->size_nombre = 12; 
+		$this->height_nombre = 5;
+		$this->width_nombre = 12; 
 
 		// Precio
-		$this->alto_precio = 23;
-		$this->size_precio = 40;
+		$this->height_precio = 23;
+		$this->width_precio = 40;
 
 		// Codigo de barras
+		$this->code_height = 10; // Alto del la imagen del codigo
 		$this->code_width = 75;
-		$this->code_height = 12; // Alto del la imagen del codigo
 
 
 		$this->print();
@@ -55,20 +67,33 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 
 	function print() {
 
-		foreach ($this->articles as $article) {
-			$this->AddPage('L', [$this->etiqueta_width, $this->etiqueta_height]);
+		$prints_disponibles = $this->cant_article_x_etiqueta;
+		$this->AddPage('L', [$this->etiqueta_width, $this->etiqueta_height]);
+		$this->y = 0;
 
-			$this->y = 0;
+
+		foreach ($this->articles as $article) {
+
+			if ($prints_disponibles == 0) {
+
+				$this->AddPage('L', [$this->etiqueta_width, $this->etiqueta_height]);
+				$prints_disponibles = $this->cant_article_x_etiqueta;
+				$this->y = 0;
+				
+			} 
+
+			$prints_disponibles--;
+
 			$this->x = 0;
 
 			$this->print_info($article);
+
 		}
 	}
 
 	function print_info($article) {
 		
 		$this->y += 1;
-		
 
 		if ($article->bar_code) {
 			$this->y += 3;
@@ -85,29 +110,29 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 	}
 
 	function nombre($article) {
-		$this->SetFont('Arial', '', $this->size_nombre);
+		$this->SetFont('Arial', '', $this->width_nombre);
 
 		$this->x = 0;
 		$this->y += 3;
 
 	    $this->MultiCell( 
 			$this->etiqueta_width,
-			$this->alto_nombre, 
+			$this->height_nombre, 
 			$article->name, 
 	    	$this->b, 
 	    	'C',
 	    	false,
 	    );
 
-		// $this->Cell($this->etiqueta_width, $this->alto_nombre, $article->name, $this->b, 1, 'C');
+		// $this->Cell($this->etiqueta_width, $this->height_nombre, $article->name, $this->b, 1, 'C');
 	}
 
 	function precio($article) {
 		$this->x = 0;
 		$this->y += $this->code_height;
 		$this->y += 2;
-		$this->SetFont('Arial', '', $this->size_precio);
-		$this->Cell($this->etiqueta_width, $this->alto_precio, '$'.Numbers::price($article->final_price), $this->b, 1, 'C');
+		$this->SetFont('Arial', '', $this->width_precio);
+		$this->Cell($this->etiqueta_width, $this->height_precio, '$'.Numbers::price($article->final_price), $this->b, 1, 'C');
 	}
 
 	function nombre_negocio() {
@@ -129,8 +154,11 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 		file_put_contents($file, $imgData);
 
 		$img_width = $this->code_width - 10;
-		$start_x = ($this->code_width - $img_width) / 2;
-		$start_x += 13;
+
+		$start_x = ($this->etiqueta_width / 2) - ($img_width / 2);
+		
+		// $start_x = ($this->code_width - $img_width) / 2;
+		// $start_x += 13;
 
 		$this->Image($file, $start_x, $this->y, $img_width, $this->code_height);
 		unlink($file);

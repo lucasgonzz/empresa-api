@@ -14,6 +14,7 @@ class ArticlePurchaseController extends Controller
         $client_id = $request->client_id;
         $provider_id = $request->provider_id;
         $category_id = $request->category_id;
+        $address_id = $request->address_id;
         $cantidad_resultados = $request->cantidad_resultados;
         $orden = $request->orden;
         $sale_channel_id = $request->sale_channel_id;
@@ -43,6 +44,10 @@ class ArticlePurchaseController extends Controller
 
         if (!is_null($category_id)) {
             $purchases = $purchases->where('category_id', $category_id);
+        }
+
+        if (!is_null($address_id)) {
+            $purchases = $purchases->where('address_id', $address_id);
         }
 
         if (

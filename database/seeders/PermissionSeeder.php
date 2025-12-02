@@ -183,6 +183,11 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'Vender',
                 'en'            => 'vender.cambiar_address_id',
             ],
+            [
+                'singular'      => 'Usar boton de limpiar venta',
+                'plural'        => 'Vender',
+                'en'            => 'vender.limpiar_venta',
+            ],
 
             [
                 'singular'      => 'Utilizar modulo ABM',
@@ -287,6 +292,11 @@ class PermissionSeeder extends Seeder
                 'singular'      => 'Ver solo sus ventas',
                 'plural'        => 'Reportes',
                 'en'            => 'reportes.empleados.index.only_your',
+            ],
+            [
+                'singular'          => 'Ver informacion de facturacion',
+                'plural'        => 'Reportes',
+                'en'          => 'reportes.info_facturacion',
             ],
 
             // Gastos

@@ -186,7 +186,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Vender
     // Esta ruta se usa en VENDER - LISTADO - CONSULTORA DE PRECIOS
     Route::get('/vender/buscar-articulo-por-codido/{code}', 'VenderController@search_bar_code');
-    Route::post('/vender/buscar-articulo-por-nombre', 'VenderController@search_nombre')->middleware('throttle:300,1');
+    Route::post('/vender/buscar-articulo-por-nombre/{from_provider_order?}', 'VenderController@search_nombre')->middleware('throttle:300,1');
 
 
 

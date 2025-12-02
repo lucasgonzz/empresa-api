@@ -332,8 +332,8 @@ class ProcessRow {
 
             $data['fake_id'] = 'fake_' . uniqid(); // ID temporal único
 
-            Log::info('data[id]: ');
-            Log::info($data['id']);
+            // Log::info('data[id]: ');
+            // Log::info($data['id']);
 
             $this->articulosParaCrear[] = $data;
 
