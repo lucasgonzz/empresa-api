@@ -86,7 +86,7 @@ class CurrentAcountPdf extends fpdf {
 			$this->x = 105;
 			$this->SetFont('Arial', 'B', 16);
 
-			$saldo = $this->models[count($this->models)-1]->saldo;
+			$saldo = $this->models[0]->saldo;
 			$saldo = Numbers::price($saldo, true, $this->credit_account->moneda_id);
 
 			$this->Cell(100, 15, 'Saldo actual: '.$saldo, 1, 0, 'C');
