@@ -25,6 +25,7 @@ class ArticlePurchaseHelper {
 					'amount'		=> $article->pivot->amount,
 					'created_at'	=> $sale->created_at,
 					'sale_channel_id'	=> Self::get_sale_channel_id($sale),
+					'address_id'	=> $sale->address_id,
 				]);
 					
 			}

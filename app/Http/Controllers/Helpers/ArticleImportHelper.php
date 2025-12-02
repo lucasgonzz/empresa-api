@@ -147,8 +147,8 @@ class ArticleImportHelper {
         ]);
 
 
-        Log::info('create_article_import_result, articulos_creados:');
-        Log::info($articulos_creados);
+        // Log::info('create_article_import_result, articulos_creados:');
+        // Log::info($articulos_creados);
 
         
 		// 2) Adjuntar articulos_creados (IDs únicos)

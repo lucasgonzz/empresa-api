@@ -22,4 +22,9 @@ class ArticlePurchase extends Model
     {
         return $this->belongsTo(Article::class)->withTrashed();
     }
+
+    public function sale()
+    {
+        return $this->belongsTo(Sale::class)->withTrashed();
+    }
 }

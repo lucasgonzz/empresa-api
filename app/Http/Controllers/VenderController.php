@@ -165,7 +165,7 @@ class VenderController extends Controller
         ];
     }
 
-    function search_nombre(Request $request) {
+    function search_nombre(Request $request, $from_provider_order = 0) {
 
         $keywords = explode(' ', trim($request->query_value));
 
@@ -178,14 +178,18 @@ class VenderController extends Controller
         // 1. Buscar todos los artículos cuyo name o provider_code coincidan con alguna palabra
         $articles = Article::where('status', 'active')
                         ->where('user_id', $this->userId())
-                        ->where(function ($query_builder) use ($keywords) {
+                        ->where(function ($query_builder) use ($keywords, $from_provider_order) {
                             if (count($keywords) === 1) {
                                 $keyword = $keywords[0];
-                                $query_builder->where(function ($q) use ($keyword) {
-                                    Log::info($keyword);
+
+                                $query_builder->where(function ($q) use ($keyword, $from_provider_order) {
                                     $q->where('name', 'LIKE', "%$keyword%")
                                       ->orWhere('provider_code', 'LIKE', "%$keyword%");
-                                      // ->orWhere('descripcion', 'LIKE', "%$keyword%");
+
+                                    if ($from_provider_order) {
+                                        Log::info('from_provider_order '.$keyword);
+                                        $q->orWhere('bar_code', $keyword); // sólo búsqueda exacta por código de barras
+                                    }
                                 });
                             } else {
                                 foreach ($keywords as $keyword) {
@@ -205,7 +209,6 @@ class VenderController extends Controller
 
         $articles = $articles->get();
 
-
         foreach ($articles as $article) {
 
             // Detectar qué palabras de la búsqueda coincidieron con el nombre o código del artículo
@@ -217,14 +220,15 @@ class VenderController extends Controller
                                str_contains(
                                    mb_strtolower($article->provider_code ?? '', 'UTF-8'),
                                    mb_strtolower($word, 'UTF-8')
+                               ) ||
+                               str_contains(
+                                   mb_strtolower($article->bar_code ?? '', 'UTF-8'),
+                                   mb_strtolower($word, 'UTF-8')
                                );
             })->values();
 
             // Palabras restantes para buscar dentro de variant_description
             $remaining_keywords = array_diff($keywords, $matched_keywords->toArray());
-
-            // Log::info('remaining_keywords:');
-            // Log::info($remaining_keywords);
 
             // Si el artículo tiene variantes
             if ($article->article_variants->count() > 0) {

@@ -15,8 +15,9 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Excel as ExcelFormat;
 use Maatwebsite\Excel\Facades\Excel;
+use Illuminate\Contracts\Queue\ShouldBeUniqueUntilProcessing;
 
-class ProcessArticleChunk implements ShouldQueue
+class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
@@ -24,7 +25,8 @@ class ProcessArticleChunk implements ShouldQueue
               $provider_id, $user, $auth_user_id, $no_actualizar_articulos_de_otro_proveedor, $import_status_id, $chunk_number;
 
     public $timeout = 1200; // 20 minutos por chunk, ajustable
-
+    public $tries = 1;
+    
     public function __construct($import_uuid, $archivo_excel_path, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $import_status_id, $chunk_number)
     {
         $this->import_uuid = $import_uuid;
@@ -43,6 +45,8 @@ class ProcessArticleChunk implements ShouldQueue
 
     public function handle()
     {
+        $inicio = microtime(true);
+
         try {
 
             $this->import_status = ImportStatus::find($this->import_status_id);
@@ -79,6 +83,11 @@ class ProcessArticleChunk implements ShouldQueue
 
             $this->update_import_status();
 
+            $fin = microtime(true);
+
+            $duracion = $fin - $inicio;
+            Log::info('Tardo en procesarce: '.number_format($duracion, 3).' segundos');
+
         } catch (\Throwable $e) {
 
 
@@ -89,12 +98,19 @@ class ProcessArticleChunk implements ShouldQueue
             Log::error('Trace: ' . $e->getTraceAsString());
 
 
+            $fin = microtime(true);
+
+            $duracion = $fin - $inicio;
+            Log::info('Tardo en procesarce: '.number_format($duracion, 3).' segundos');
+
             // Registra el progreso y errores en Import History
             // ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, $error_message, $this->articulos_creados, $this->articulos_actualizados, $this->updated_props);
 
             ArticleImportHelper::error_notification($this->user, null, $e->getMessage());
 
             $this->notificar_error_input_status($e->getMessage());
+
+            throw $e; // ✅ Esto detiene la chain
         }
     }
 
