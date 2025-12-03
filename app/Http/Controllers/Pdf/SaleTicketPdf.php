@@ -233,7 +233,14 @@ class SaleTicketPdf extends fpdf {
 
 			if ($this->ancho > 60) {
 
-				$this->Cell($ancho_price, $y_2 - $y_1, '$'.Numbers::Price($article->pivot->price), 'BT', 0, 'R');
+
+			$total_item = $article->pivot->price;
+
+			if ($article->pivot->discount) {
+				$total_item -= $total_item * (float)$article->pivot->discount / 100; 
+			}
+
+				$this->Cell($ancho_price, $y_2 - $y_1, '$'.Numbers::Price($total_item), 'BT', 0, 'R');
 			}
 
 			$this->Cell($ancho_price, $y_2 - $y_1, $this->totalItem($article), 'BT', 0, 'R');
@@ -290,8 +297,8 @@ class SaleTicketPdf extends fpdf {
 	function totalItem($item) {
 		$total = $item->pivot->price * $item->pivot->amount;
 
-		if ($item->discount) {
-			$total -= $total * (float)$item->discount / 100; 
+		if ($item->pivot->discount) {
+			$total -= $total * (float)$item->pivot->discount / 100; 
 		}
 
 		return '$'.Numbers::Price($total);

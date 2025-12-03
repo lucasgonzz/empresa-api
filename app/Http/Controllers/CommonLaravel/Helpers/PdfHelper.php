@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\Log;
 class PdfHelper {
 
 	static function header($instance, $data) {
-		Self::logo($instance);
+		Self::logo($instance, $data);
 		Self::title($instance, $data['title']);
 		Self::numeroFecha($instance, $data);
 		Self::commerceInfo($instance, $data);
@@ -26,7 +26,7 @@ class PdfHelper {
 		$res = Self::modelInfo($instance, $data);
 
 		if (isset($data['current_acount'])) {
-			Self::currentAcountInfo($instance, $data['current_acount'], $data['client_id'], $data['compra_actual'], $res['y_inicio']);
+			Self::currentAcountInfo($instance, $data['current_acount'], $data['client_id'], $data['compra_actual'], $res['y_inicio'], $data['user']);
 		}
 
 		if (isset($data['right_info'])) {
@@ -92,9 +92,11 @@ class PdfHelper {
 		Self::tableHeader($instance, $data['fields']);
 	}
 
-	static function logo($instance) {
+	static function logo($instance, $data) {
         // Logo
-        $logo_url = UserHelper::getFullModel()->image_url;
+
+        $user = $data['user'];
+        $logo_url = $user->image_url;
         if (!is_null($logo_url)) {
         	if (env('APP_ENV') == 'local') {
         		$instance->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', 5, 5, 40, 25);
@@ -105,7 +107,6 @@ class PdfHelper {
 		
 		$instance->SetFont('Arial', 'B', 9);
 
-		$user = UserHelper::getFullModel();
 		// Razon social
 		$instance->y = 5;
 		
@@ -222,7 +223,8 @@ class PdfHelper {
 	}
 
 	static function commerceInfo($instance, $data) {
-		$user = UserHelper::getFullModel();
+		$user = $data['user'];
+
 		$instance->y += 5;
 		$start_y = $instance->y;
 
@@ -447,7 +449,7 @@ class PdfHelper {
 		$instance->Line(205, $instance->y, 105, $instance->y);
 	}
 
-	static function currentAcountInfo($instance, $current_acount, $client_id, $compra_actual, $start_y = 32){
+	static function currentAcountInfo($instance, $current_acount, $client_id, $compra_actual, $start_y = 32, $user = null){
 		$saldo_anterior = CurrentAcountHelper::getSaldo($current_acount->credit_account_id, $current_acount);
 		$instance->y = $start_y;
 		$instance->x = 105;
@@ -471,7 +473,13 @@ class PdfHelper {
 		if (!is_null($instance->sale->employee)) {
 			$vendedor = $instance->sale->employee->name;
 		} else {
-			$vendedor = UserHelper::getFullModel()->name;
+			if ($user) {
+
+				$vendedor = $user->name;
+			} else {
+
+				$vendedor = UserHelper::getFullModel()->name;
+			}
 		}
 		$instance->x = 105;
 		$instance->SetFont('Arial', 'B', 10);

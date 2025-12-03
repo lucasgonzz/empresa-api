@@ -70,6 +70,36 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function articulos_eliminados() {
+        $grupos = Article::onlyTrashed()
+                    ->select(DB::raw('deleted_at, COUNT(*) as total'))
+                    ->whereDate('deleted_at', '>=', '2025-12-03')
+                    ->groupBy('deleted_at')
+                    ->get();
+
+        $restaurados_total = 0;
+
+        $total = 0;
+
+        foreach ($grupos as $grupo) {
+
+            $total += $grupo->total;
+            // if ($grupo->total > 300) {
+
+                echo("Restaurando {$grupo->total} productos eliminados en: {$grupo->deleted_at} <br>");
+            // }
+
+            // Paso 2: Restaurar productos con esa fecha exacta de deleted_at
+            // $restaurados = Producto::onlyTrashed()
+            //     ->where('deleted_at', $grupo->deleted_at)
+            //     ->update(['deleted_at' => null]);
+
+            // $restaurados_total += $restaurados;
+        }
+
+        echo 'Listo '.$total;
+    }
+
     function ventas_mal($user_id = null) {
         
         if (!$user_id) {

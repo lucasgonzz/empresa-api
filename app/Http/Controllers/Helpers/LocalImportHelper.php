@@ -196,6 +196,8 @@ class LocalImportHelper {
 
 	static function getIvaId($iva, $article = null) {
 		if (!is_null($iva)) {
+
+			$iva = str_replace('%', '', $iva);
 			if ($iva != '' || $iva == '0' || $iva == 0) {
 				$_iva = Iva::where('percentage', $iva)
 							->first();

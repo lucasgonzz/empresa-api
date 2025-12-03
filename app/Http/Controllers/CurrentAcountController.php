@@ -230,6 +230,8 @@ class CurrentAcountController extends Controller
 
         $models = $models->get();
 
+        $models = $models->reverse()->values();
+
         $user_id = null;
         if (count($models) >= 1) {
             $user_id = $models[0]->user_id;
