@@ -92,9 +92,11 @@ class UserController extends Controller
         $model->cc_ultimas_arriba        = $request->cc_ultimas_arriba;
 
         
-        $model->show_stock_min_al_iniciar        = $request->show_stock_min_al_iniciar;
-        $model->show_afip_errors_al_iniciar        = $request->show_afip_errors_al_iniciar;
-        $model->usar_articles_cache        = $request->usar_articles_cache;
+        $model->show_stock_min_al_iniciar       = $request->show_stock_min_al_iniciar;
+        $model->show_afip_errors_al_iniciar     = $request->show_afip_errors_al_iniciar;
+        $model->usar_articles_cache             = $request->usar_articles_cache;
+        $model->clave_eliminar_article          = $request->clave_eliminar_article;
+
 
         $model->save();
 

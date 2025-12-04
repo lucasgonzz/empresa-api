@@ -39,6 +39,11 @@ class set_article_provider_codes extends Command
     public function handle()
     {
         $articles = Article::where('user_id', $this->argument('user_id'))
+                            ->whereDoesntHave('providers')
+                            ->orWhereHas('providers', function ($query) {
+                                $query->whereNull('article_provider.provider_code')
+                                      ->orWhere('article_provider.provider_code', '');
+                            })
                             ->orderBy('id', 'DESC');
 
         if (!is_null($this->argument('article_id'))) {

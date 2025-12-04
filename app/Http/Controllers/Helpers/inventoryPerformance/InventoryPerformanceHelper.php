@@ -131,7 +131,11 @@ class InventoryPerformanceHelper {
 
 				$this->stockeados++;
 
-				if (!is_null($article->cost)) {
+				if (
+					!is_null($article->stock)
+					&& $article->stock > 0
+				) {
+					
 
 					$cost = $article->cost;
 
@@ -150,14 +154,14 @@ class InventoryPerformanceHelper {
 
 					$this->valor_inventario_en_costos += $total_article_cost;
 
-				}
 
-				if (!is_null($article->final_price)) {
+					if (!is_null($article->final_price)) {
 
-					$total_article_price = $article->final_price * $article->stock;
+						$total_article_price = $article->final_price * $article->stock;
 
-					$this->valor_inventario_en_precios += $total_article_price;
+						$this->valor_inventario_en_precios += $total_article_price;
 
+					}
 				}
 
 				if ($article->stock <= 0) {
