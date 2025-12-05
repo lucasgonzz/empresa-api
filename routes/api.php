@@ -352,7 +352,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('message/set-read/{buyer_id}', 'MessageController@setRead');
     Route::post('message', 'MessageController@store');
 
-    Route::resource('-', '-Controller');
+    //Route::resource('-', '-Controller');
 
     // CurrentAcounts
     
