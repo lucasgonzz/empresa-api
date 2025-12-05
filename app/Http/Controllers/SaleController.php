@@ -377,10 +377,15 @@ class SaleController extends Controller
                 $sale->facturar_importe_personalizado = null;
             }
 
+
             $sale->timestamps = false;
             $sale->save();
             
-            $ct = new AfipWsController($sale);
+            // REFACTORIZACION DE COMO SE ENVIAN LOS PARAMETROS PARA PODER PASAR EN EL FUTURO MAS PARAMETROS
+            $data['sale'] = $sale;
+            $data['afip_fecha_emision'] = $request->afip_fecha_emision;
+            
+            $ct = new AfipWsController($data);
             $result = $ct->init();
 
             return response()->json(['sale' => $this->fullModel('Sale', $request->sale_id)], 201);

@@ -192,7 +192,7 @@ class SaleHelper extends Controller {
 
     static function saveAfipTicket($sale) {
         if (!is_null($sale->afip_information_id) && $sale->afip_information_id != 0) {
-            $ct = new AfipWsController($sale, false);
+            $ct = new AfipWsController(['sale' => $sale]);
             $afip_ticket_result = $ct->init();
             return $afip_ticket_result;
         } 
@@ -1139,4 +1139,3 @@ class SaleHelper extends Controller {
     }
 
 }
-

@@ -2639,7 +2639,7 @@ class HelperController extends Controller
                 echo 'Importe: '.$sale->afip_ticket->importe_total .' </br>';
                 echo '-------------------------------- </br>';
 
-                $afip = new AfipWsController($sale);
+                $afip = new AfipWsController(['sale' => $sale]);
                 $afip_ticket = $afip->init();
 
                 // dd($afip_ticket);
