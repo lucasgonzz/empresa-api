@@ -25,30 +25,30 @@ use Illuminate\Support\Facades\Log;
 
 class AfipWsController extends Controller
 {
-
+    public $afip_fecha_emision;
     public $sale;
     public $errors;
     public $observations;
     public $monto_minimo_para_factura_de_credito = 1357480;
     // public $monto_minimo_para_factura_de_credito = 546737;
 
-    function __construct($sale) {
+    function __construct($data) {
         
-        if ($sale) {
-
-            Log::info('AfipWsController __construct sale num: '.$sale->num);
+        if ($data['sale']) {
+            Log::info('AfipWsController __construct sale num: '.$data['sale']->num);
         } else {
-
-            Log::info('AfipWsController vino sale NULL');
+            Log::info('AfipWsController sale NULL');
         }
 
-        $this->sale = $sale;
+        $this->sale = $data['sale'];
         
         $this->testing = !$this->sale->afip_information->afip_ticket_production;
 
         $this->ya_se_obtuvo_cae_desde_consultar_comprobante = false;
 
-        Log::info('AfipWsController sale id: '.$sale->id.' testing: '.$this->testing);
+        $this->afip_fecha_emision = $data['afip_fecha_emision'] ?? date('Y-m-d');
+
+        Log::info('AfipWsController sale id: '.$this->sale->id.' testing: '.$this->testing);
     }
 
     function init() {
@@ -71,7 +71,7 @@ class AfipWsController extends Controller
             $afip_wsaa = new AfipWSAAHelper($this->testing, 'wsfe');
             $afip_wsaa->checkWsaa();
 
-            $helper = new AfipWsfeHelper($this->sale);
+            $helper = new AfipWsfeHelper(['sale' => $this->sale, 'afip_fecha_emision' => $this->afip_fecha_emision]);
         }
 
         $helper->procesar();
