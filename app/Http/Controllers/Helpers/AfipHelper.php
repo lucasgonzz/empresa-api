@@ -196,6 +196,13 @@ class AfipHelper extends Controller {
 
             if (!is_null($this->sale->facturar_importe_personalizado)) {
                 $total_a_facturar = $this->sale->facturar_importe_personalizado;
+            } 
+
+            if (
+                $this->sale->moneda_id == 2
+                && !is_null($this->sale->valor_dolar)
+            ) {
+                $total_a_facturar *= (float)$this->sale->valor_dolar;
             }
             
             $total              = $total_a_facturar;
@@ -396,7 +403,9 @@ class AfipHelper extends Controller {
                 $this->sale->moneda_id == 2
                 && !is_null($this->sale->valor_dolar)
             ) {
+                Log::info('Venta en dolares, multiplicando '.$gravado.' * '.$this->sale->valor_dolar);
                 $gravado *= (float)$this->sale->valor_dolar;
+                Log::info('QUedo en '.$gravado);
             }
 
             return $gravado;

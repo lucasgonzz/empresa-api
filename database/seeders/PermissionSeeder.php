@@ -188,6 +188,11 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'Vender',
                 'en'            => 'vender.limpiar_venta',
             ],
+            [
+                'singular'      => 'Prohibir eliminar articulo de una venta sin autorizacion',
+                'plural'        => 'Vender',
+                'en'            => 'vender.prohibir_eliminar_articulos_de_venta',
+            ],
 
             [
                 'singular'      => 'Utilizar modulo ABM',

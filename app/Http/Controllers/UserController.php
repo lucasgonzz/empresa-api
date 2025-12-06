@@ -92,9 +92,11 @@ class UserController extends Controller
         $model->cc_ultimas_arriba        = $request->cc_ultimas_arriba;
 
         
-        $model->show_stock_min_al_iniciar        = $request->show_stock_min_al_iniciar;
-        $model->show_afip_errors_al_iniciar        = $request->show_afip_errors_al_iniciar;
-        $model->usar_articles_cache        = $request->usar_articles_cache;
+        $model->show_stock_min_al_iniciar       = $request->show_stock_min_al_iniciar;
+        $model->show_afip_errors_al_iniciar     = $request->show_afip_errors_al_iniciar;
+        $model->usar_articles_cache             = $request->usar_articles_cache;
+        $model->clave_eliminar_article          = $request->clave_eliminar_article;
+
 
         $model->save();
 
@@ -169,5 +171,12 @@ class UserController extends Controller
     function docNumberRegistered($doc_number) {
         $repeated_user = User::where('doc_number', $doc_number)->first();
         return !is_null($repeated_user);
+    }
+
+    function set_eliminar_articulos_offline($id, $value) {
+        $user = User::find($id);
+        $user->eliminar_articulos_offline = (int)$value;
+        $user->save();
+        return response(null, 200);
     }
 }

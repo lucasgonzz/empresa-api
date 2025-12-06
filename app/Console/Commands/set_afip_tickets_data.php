@@ -42,8 +42,10 @@ class set_afip_tickets_data extends Command
 
         $user_id = env('USER_ID');
         if (!$user_id) {
-            $user_id = $this->arguments('user_id');
+            $user_id = $this->argument('user_id');
         }
+
+        $this->info('user_id: '.$user_id);
 
 
         $sales = Sale::where('user_id', $user_id)

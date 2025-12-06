@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
@@ -327,6 +328,8 @@ class ProcessRow {
             } else if (count($stock['stock_addresses']) > 0) {
                 $data['stock_addresses'] = $stock['stock_addresses'];
             }
+
+            $data['slug'] = ArticleHelper::slug($data['name']);
 
             $data['variants_data'] = []; // 👈 espacio para variantes
 

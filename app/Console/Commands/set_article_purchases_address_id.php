@@ -41,7 +41,7 @@ class set_article_purchases_address_id extends Command
 
         $user_id = env('USER_ID');
         if (!$user_id) {
-            $user_id = $this->arguments('user_id');
+            $user_id = $this->argument('user_id');
         }
 
         $sales = Sale::where('user_id', $user_id)

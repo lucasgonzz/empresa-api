@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Pdf;
 use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\StringHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Models\User;
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
@@ -24,6 +25,8 @@ class CurrentAcountPdf extends fpdf {
 
 		$this->credit_account = $credit_account;
 		$this->models = $models;
+
+		$this->user = User::find($this->credit_account->user_id);
 
 		$this->AddPage();
 		$this->print();
@@ -72,6 +75,9 @@ class CurrentAcountPdf extends fpdf {
 			'model_props' 		=> $this->getModelProps(),
 			'fields' 			=> $this->getFields(),
 		];
+
+		$data['user'] = $this->user;
+
 		PdfHelper::header($this, $data);
 	}
 
@@ -87,6 +93,7 @@ class CurrentAcountPdf extends fpdf {
 			$this->SetFont('Arial', 'B', 16);
 
 			$saldo = $this->models[count($this->models)-1]->saldo;
+			// $saldo = $this->models[0]->saldo;
 			$saldo = Numbers::price($saldo, true, $this->credit_account->moneda_id);
 
 			$this->Cell(100, 15, 'Saldo actual: '.$saldo, 1, 0, 'C');

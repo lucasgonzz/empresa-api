@@ -155,7 +155,7 @@ class SalePdf extends fpdf {
 
 
 		if (
-			UserHelper::hasExtencion('vendedor_en_sale_pdf')
+			UserHelper::hasExtencion('vendedor_en_sale_pdf', $this->user)
 			&& $this->sale->employee
 		) {
 			
@@ -163,6 +163,8 @@ class SalePdf extends fpdf {
 				'Vendedor'	=> $this->sale->employee->name
 			];
 		}
+
+		$data['user'] = $this->user;
 
 		PdfHelper::header($this, $data);
 		return;

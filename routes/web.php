@@ -114,6 +114,28 @@ Route::get('/mercadolibre/metodos-envio', function () {
         
 
 
+// Tienda Nube
+Route::post('/tiendanube/webhook/store_redact', function () {
+    return response()->json(['status' => 'ok']);
+});
+
+Route::post('/tiendanube/webhook/customers_redact', function () {
+    return response()->json(['status' => 'ok']);
+});
+
+Route::post('/tiendanube/webhook/customers_data_request', function () {
+    return response()->json(['status' => 'ok']);
+});
+
+Route::get('/tiendanube/callback', function(\Illuminate\Http\Request $request) {
+    return response()->json([
+        'code' => $request->query('code'),
+        'state' => $request->query('state')
+    ]);
+});
+
+
+
 
 
 Route::post('login', 'CommonLaravel\AuthController@login');

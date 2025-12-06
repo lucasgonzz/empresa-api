@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\PriceType;
 use App\Services\TiendaNube\BaseTiendaNubeService;
+use App\Services\TiendaNube\TiendaNubeImageService;
 use App\Services\TiendaNube\TiendaNubeProductDescriptionService;
 use Illuminate\Support\Facades\Log;
 
@@ -40,6 +41,12 @@ class TiendaNubeProductService extends BaseTiendaNubeService
 
         $service = new TiendaNubeProductDescriptionService();
         $service->update_descriptions($article);
+
+        $service = new TiendaNubeImageService();
+
+        foreach ($article->images as $image) {
+            $service->subirImagenDeArticulo($article, $image);
+        }
 
     }
 
@@ -158,7 +165,13 @@ class TiendaNubeProductService extends BaseTiendaNubeService
             $variantPayload['stock_management'] = false;
         } else {
             $variantPayload['stock_management'] = true;
-            $variantPayload['stock'] = (int) $article->stock;
+            
+            $stock = (int)$article->stock;
+
+            if ($stock < 0) {
+                $stock = 0;
+            }
+            $variantPayload['stock'] = $stock;
         }
 
         return $variantPayload;

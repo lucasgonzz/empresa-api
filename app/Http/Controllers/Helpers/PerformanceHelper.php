@@ -695,9 +695,16 @@ class PerformanceHelper
 
                 $this->total_facturado += $afip_ticket->importe_iva;
 
-                $this->afip_informations[$afip_ticket->afip_information_id][$afip_ticket->afip_tipo_comprobante_id]['total_facturado'] += $afip_ticket->importe_total;
+                if (
+                    isset($this->afip_informations[$afip_ticket->afip_information_id])
+                    && isset($this->afip_informations[$afip_ticket->afip_information_id][$afip_ticket->afip_tipo_comprobante_id])
+                ) {
+                    
+                    $this->afip_informations[$afip_ticket->afip_information_id][$afip_ticket->afip_tipo_comprobante_id]['total_facturado'] += $afip_ticket->importe_total;
 
-                $this->afip_informations[$afip_ticket->afip_information_id][$afip_ticket->afip_tipo_comprobante_id]['total_iva'] += $afip_ticket->importe_iva;
+                    $this->afip_informations[$afip_ticket->afip_information_id][$afip_ticket->afip_tipo_comprobante_id]['total_iva'] += $afip_ticket->importe_iva;
+                }
+
             }
         }
     }
@@ -709,7 +716,13 @@ class PerformanceHelper
         $afip_informations = AfipInformation::where('user_id', $this->user_id)
                                             ->get();
 
+        Log::info('afip_informations:');
+        Log::info($afip_informations);
+
         $afip_tipo_comprobantes = AfipTipoComprobante::all();
+
+        Log::info('afip_tipo_comprobantes:');
+        Log::info($afip_tipo_comprobantes);
 
         foreach ($afip_informations as $afip_information) {
             

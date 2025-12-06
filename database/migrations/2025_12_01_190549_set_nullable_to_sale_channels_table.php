@@ -13,9 +13,11 @@ class SetNullableToSaleChannelsTable extends Migration
      */
     public function up()
     {
-        Schema::table('sale_channels', function (Blueprint $table) {
-            $table->text('user_id')->nullable()->change();
-        });
+        if (Schema::hasColumn('sale_channels', 'user_id')) {
+            Schema::table('sale_channels', function (Blueprint $table) {
+                $table->text('user_id')->nullable()->change();
+            });
+        }
     }
 
     /**
