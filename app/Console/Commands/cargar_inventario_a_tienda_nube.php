@@ -43,7 +43,7 @@ class cargar_inventario_a_tienda_nube extends Command
         $articles = Article::whereHas('images')
                             ->where('user_id', env('USER_ID'))
                             ->orderBy('id', 'DESC')
-                            ->take(10)
+                            ->take(30)
                             ->get();
 
         foreach ($articles as $article) {

@@ -172,4 +172,11 @@ class UserController extends Controller
         $repeated_user = User::where('doc_number', $doc_number)->first();
         return !is_null($repeated_user);
     }
+
+    function set_eliminar_articulos_offline($id, $value) {
+        $user = User::find($id);
+        $user->eliminar_articulos_offline = (int)$value;
+        $user->save();
+        return response(null, 200);
+    }
 }

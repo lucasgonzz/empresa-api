@@ -47,7 +47,10 @@ class ProcessSetFinalPrices implements ShouldQueue
             if (!is_null($this->from_model_id)) {
                 $articles_query = Article::where($this->from_model_id, $this->model_id)->select('id');
                 Log::info('Obteniendo articulos from_model_id');
-            } else if (!is_null($this->from_dolar)) {
+            } else if (
+                !is_null($this->from_dolar)
+                && $this->from_dolar
+            ) {
                 $articles_query = Article::where('user_id', $this->user_id)
                                         ->where('cost_in_dollars', 1)
                                         ->select('id');
@@ -56,7 +59,7 @@ class ProcessSetFinalPrices implements ShouldQueue
                 $articles_query = Article::where('user_id', $this->user_id)->select('id');
             }
 
-            $articles_query->chunk(2000, function ($articles_chunk) {
+            $articles_query->chunk(100, function ($articles_chunk) {
                 $ids = $articles_chunk->pluck('id')->toArray();
                 dispatch(new ProcessChunkSetFinalPrices($ids, $this->user_id));
             });

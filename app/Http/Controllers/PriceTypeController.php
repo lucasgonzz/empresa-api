@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
+use App\Jobs\ProcessSetFinalPrices;
 use App\Models\Article;
 use App\Models\PriceType;
 use Illuminate\Http\Request;
@@ -34,7 +35,7 @@ class PriceTypeController extends Controller
             'user_id'               => $this->userId(),
         ]);
 
-        // $this->agregar_a_articulos_existentes($model);
+        $this->agregar_a_articulos_existentes($model);
 
         $this->sendAddModelNotification('price_type', $model->id);
 
@@ -47,13 +48,8 @@ class PriceTypeController extends Controller
     }  
 
     function agregar_a_articulos_existentes($price_type) {
-        $articles = Article::where('user_id', $this->userId())
-                            ->get();
 
-
-        foreach ($articles as $article) {
-            ArticleHelper::setFinalPrice($article);
-        }
+        ProcessSetFinalPrices::dispatch($this->userId());
 
     }
 
@@ -84,6 +80,10 @@ class PriceTypeController extends Controller
 
     public function destroy($id) {
         $model = PriceType::find($id);
+
+        // Eliminar relaciones con artículos
+        $model->articles()->detach();
+        
         $model->delete();
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('PriceType', $model->id);

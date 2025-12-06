@@ -70,6 +70,23 @@ class HelperController extends Controller
         $this->{$method}($param);
     }
 
+    function set_articles_slug() {
+        $articles = Article::where('user_id', env('USER_ID'))
+                            ->whereNull('slug')
+                            ->get();
+
+        echo count($articles).' articulos <br>';
+
+        foreach ($articles as $article) {
+            
+            $article->slug = ArticleHelper::slug($article->name);
+            $article->timestamps = false;
+            $article->save();
+            echo 'article '.$article->id.' ok <br>';
+        }
+        echo 'Listo';
+    }
+
     function articulos_eliminados() {
         $grupos = Article::onlyTrashed()
                     ->select(DB::raw('deleted_at, COUNT(*) as total'))

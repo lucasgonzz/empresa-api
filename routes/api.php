@@ -32,6 +32,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('user/{id}', 'UserController@update');
     Route::put('user-password', 'CommonLaravel\UserController@updatePassword');
     Route::post('user/last-activity', 'CommonLaravel\UserController@setLastActivity');
+    Route::put('user/set_eliminar_articulos_offline/{user_id}/{value}', 'UserController@set_eliminar_articulos_offline');
+
 
     // Employee
     Route::resource('employee', 'CommonLaravel\EmployeeController');

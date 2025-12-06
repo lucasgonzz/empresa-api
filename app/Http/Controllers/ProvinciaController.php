@@ -23,7 +23,7 @@ class ProvinciaController extends Controller
             'name'                  => $request->name,
             'user_id'               => $this->userId(),
         ]);
-        $this->sendAddModelNotification('Provincia', $model->id);
+        // $this->sendAddModelNotification('Provincia', $model->id);
         return response()->json(['model' => $this->fullModel('Provincia', $model->id)], 201);
     }  
 
@@ -35,7 +35,7 @@ class ProvinciaController extends Controller
         $model = Provincia::find($id);
         $model->name                = $request->name;
         $model->save();
-        $this->sendAddModelNotification('Provincia', $model->id);
+        // $this->sendAddModelNotification('Provincia', $model->id);
         return response()->json(['model' => $this->fullModel('Provincia', $model->id)], 200);
     }
 
