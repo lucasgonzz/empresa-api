@@ -42,7 +42,11 @@ class AfipWsController extends Controller
 
         $this->sale = $data['sale'];
         
-        $this->testing = !$this->sale->afip_information->afip_ticket_production;
+        $this->testing = true;
+
+        if ($this->sale->afip_information->afip_ticket_production) {
+            $this->testing = false;
+        } 
 
         $this->ya_se_obtuvo_cae_desde_consultar_comprobante = false;
 

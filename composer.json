@@ -6,6 +6,7 @@
     "license": "MIT",
     "require": {
         "php": "^7.3|^8.0",
+        "afipsdk/afip.php": "^1.2",
         "decidir2/php-sdk": "^1.7",
         "doctrine/dbal": "^3.10",
         "fruitcake/laravel-cors": "^2.0",

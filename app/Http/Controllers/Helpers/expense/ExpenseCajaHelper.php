@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\Log;
 
 class ExpenseCajaHelper {
 
-	static function guardar_movimiento_caja($expense) {
+	static function guardar_movimiento_caja($expense, $data) {
 
         if (!is_null($expense->caja_id)
             && $expense->caja_id != 0) {
@@ -19,9 +19,9 @@ class ExpenseCajaHelper {
             $data = [
                 'concepto_movimiento_caja_id'   => 2,
                 'ingreso'                       => null,
-                'egreso'                        => $expense->amount,
+                'egreso'                        => $data['amount'],
                 'notas'                         => !is_null($expense->expense_concept) ? $expense->expense_concept->name : null,
-                'caja_id'                       => $expense->caja_id,
+                'caja_id'                       => $data['caja_id'],
                 'expense_id'					=> $expense->id,
             ];
 

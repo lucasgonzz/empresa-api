@@ -118,7 +118,7 @@ class FinalizeArticleImport implements ShouldQueue
                 'user_id'         => $this->user ? $this->user->id : null,
                 'employee_id'     => $this->auth_user_id,
                 'model_name'      => 'article',
-                'provider_id'     => $this->provider_id,
+                'provider_id'     => $this->provider_id && $this->provider_id !== 'null' ? (int)$this->provider_id : null,
                 'columnas'        => json_encode(ArticleImportHelper::convertirPosicionesAColumnas($this->columns), JSON_PRETTY_PRINT),
                 // 'observations'    => ArticleImportHelper::get_observations($this->columns ?? []),
                 'excel_url'       => $this->archivo_excel_path,

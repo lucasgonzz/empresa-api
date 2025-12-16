@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\Afip;
 
 use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Helpers\Afip\AfipFexHelper;
 use App\Http\Controllers\Helpers\Afip\AfipSolicitarCaeHelper;
 use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
 use App\Http\Controllers\Helpers\Afip\CondicionIvaReceptorHelper;
@@ -12,6 +13,7 @@ use App\Models\AfipError;
 use App\Models\AfipTicket;
 use App\Models\Afip\WSAA;
 use App\Models\Afip\WSFE;
+use App\Models\Afip\WSFEX;
 use App\Models\Afip\WSSRConstanciaInscripcion;
 use App\Models\Article;
 use App\Models\Sale;
@@ -28,14 +30,19 @@ class AfipNotaCreditoHelper
     function __construct($sale, $nota_credito) {
         $this->sale = $sale;
         $this->nota_credito = $nota_credito;
-        $this->testing = !$this->nota_credito->sale->afip_information->afip_ticket_production;
+        
+        $this->testing = true;
+
+        if ($this->nota_credito->sale->afip_information->afip_ticket_production) {
+
+            $this->testing = false;
+        }
     }
 
     function init() {
-        $afip_wsaa = new AfipWSAAHelper($this->testing);
-        $afip_wsaa->checkWsaa();
 
         $sale = $this->notaCredito();
+
         return response()->json(['model' => $sale], 201);
     }
 
@@ -51,6 +58,179 @@ class AfipNotaCreditoHelper
 
         $cbte_tipo = $this->getTipoCbte();
         Log::info('cbte_tipo para nota de credito: '.$cbte_tipo);
+
+        if ((int)$this->sale->afip_ticket->cbte_tipo == '19') {
+
+            Log::info('Exportacion');
+            $this->exportacion($punto_venta, $cuit_negocio, $doc_client, $doc_type, $cbte_tipo);
+
+        } else {
+
+            $this->interno($punto_venta, $cuit_negocio, $doc_client, $doc_type, $cbte_tipo);
+        }
+
+        
+    }
+
+    function exportacion($punto_venta, $cuit_negocio, $doc_client, $doc_type, $cbte_tipo) {
+
+        $afip_wsaa = new AfipWSAAHelper($this->testing, 'wsfex');
+        $afip_wsaa->checkWsaa();
+
+        $wsfex = new WSFEX([
+            'testing'           => $this->testing,
+            'cuit_representada' => $this->sale->afip_information->cuit,
+        ]);
+
+        $wsfex->setXmlTa(file_get_contents(TA_file));
+
+        $res = AfipFexHelper::set_numero_comprobante($wsfex, $punto_venta, $cbte_tipo);
+
+        if ($res['hubo_un_error']) {
+            Log::info('Stop, hubo error');
+            return;
+        }  
+
+        $cbte_nro = $res['numero_comprobante'];
+
+        $pais_destino = $this->sale->client->pais_exportacion->codigo_afip;
+        $idioma_cbte = 1;     // Español
+        $moneda = 'DOL';
+        $moneda_cotiz = $this->sale->valor_dolar;
+
+
+        $data = [
+            'Id'                    => $this->sale->id.rand(0,99999),
+            'Fecha_cbte'            => date('Ymd'),
+            'Cbte_Tipo'             => 21, // Nota de credito de Exportacion
+            'Punto_vta'             => $this->sale->afip_information->punto_venta,
+            'Cbte_nro'              => $cbte_nro,
+            'Tipo_expo'             => 1,
+            'pais_destino'          => $pais_destino,
+            'Cliente'               => mb_convert_encoding($this->sale->client->name ?? 'Consumidor Final', 'UTF-8'),
+            'Domicilio_cliente'     => mb_convert_encoding($this->sale->client->address ?? '', 'UTF-8'),
+            'Id_impositivo'         => $this->sale->client->cuit ?? 'CF',
+            'Moneda_Id'             => $moneda,
+            'Moneda_cotiz'          => $moneda_cotiz,
+            'Idioma_cbte'           => $idioma_cbte,
+            'Incoterms'             => $this->sale->incoterms && $this->sale->incoterms != 0 ? $this->sale->incoterms : 'FOB',
+            'cuit_emisor'           => $this->sale->afip_information->cuit,
+            'Permiso_existente'     => '',
+        ];
+
+        $importe_total = 0;
+
+        foreach ($this->nota_credito->articles as $article) {
+            
+            $amount = (float)$article->pivot->amount;
+            $price = (float)$article->pivot->price;
+
+            $total_item = $price * $amount;
+
+            $item = [];
+            $item['Pro_codigo']         = $article->id;
+            $item['Pro_ds']             = $article->name;
+            $item['Pro_qty']            = $amount;
+            $item['Pro_umed']           = 1; // FEXGetPARAM_UMed 
+            $item['Pro_precio_uni']     = $price;
+            $item['Pro_bonificacion']   = 0;
+            $item['Pro_total_item']     = $total_item;
+
+            $importe_total += $total_item;
+
+            $data['items'][] = $item;
+        }
+
+        $data['Imp_total'] = $importe_total;
+
+        $data['CbtesAsoc'] = [
+            [
+                'Tipo'      => 19,
+                'PtoVta'    => $this->sale->afip_information->punto_venta,
+                'Nro'       => $this->sale->afip_ticket->cbte_numero,
+            ],
+        ];
+
+        $params = AfipFexHelper::get_fex_params($data);
+
+        $result = $wsfex->FEXAuthorize($params);
+
+        Log::info('Result nota credito Exportacion:');
+        Log::info((array)$result);
+
+        if (!$result['hubo_un_error']) {
+
+            $result = $result['result'];
+
+            $this->checkObservations($result);
+
+            $this->checkErrors($result);
+
+          //   'result' => 
+          // (object) array(
+          //    'FEXAuthorizeResult' => 
+          //   (object) array(
+          //      'FEXResultAuth' => 
+          //     (object) array(
+          //        'Id' => 21418,
+          //        'Cuit' => 30716582899,
+          //        'Cbte_tipo' => 21,
+          //        'Punto_vta' => 4,
+          //        'Cbte_nro' => 18,
+          //        'Cae' => '75509574157500',
+          //        'Fch_venc_Cae' => '20251212',
+          //        'Fch_cbte' => '20251212',
+          //        'Resultado' => 'A',
+          //        'Reproceso' => 'N',
+          //        'Motivos_Obs' => '',
+          //     ),
+          //      'FEXErr' => 
+          //     (object) array(
+          //        'ErrCode' => 0,
+          //        'ErrMsg' => 'OK',
+          //     ),
+          //      'FEXEvents' => 
+          //     (object) array(
+          //        'EventCode' => 0,
+          //        'EventMsg' => 'Ok',
+          //     ),
+          //   ),
+
+
+            if (
+                isset($result->FEXAuthorizeResult) 
+                && isset($result->FEXAuthorizeResult->FEXResultAuth) 
+                && $result->FEXAuthorizeResult->FEXResultAuth->Resultado == 'A'
+            ) {
+
+                $data = [
+                    'cuit_negocio'      => $result->FEXAuthorizeResult->FEXResultAuth->Cuit,
+                    'cbte_nro'          => $result->FEXAuthorizeResult->FEXResultAuth->Cbte_nro,
+                    'cbte_letra'        => $this->getTipoLetra($result->FEXAuthorizeResult->FEXResultAuth->Cbte_tipo),
+                    'cbte_tipo'         => $result->FEXAuthorizeResult->FEXResultAuth->Cbte_tipo,
+                    'importe_total'     => $importe_total,
+                    'moneda_id'         => $moneda_id,
+                    'resultado'         => $result->FEXAuthorizeResult->FEXResultAuth->Resultado,
+                    'concepto'          => null,
+                    'cuit_cliente'      => $this->sale->client->cuit,
+                    'cae'               => $result->FEXAuthorizeResult->FEXResultAuth->CAE,
+                    'cae_expired_at'          => $result->FEXAuthorizeResult->FEXResultAuth->Fch_venc_Cae,
+                ];
+
+                $this->saveAfipTicket($data);
+            }
+            
+        } else {
+            Log::info('HUBO UN ERROR:');
+            $this->save_error($result);
+        }
+
+    }
+
+    function interno($punto_venta, $cuit_negocio, $doc_client, $doc_type, $cbte_tipo) {
+
+        $afip_wsaa = new AfipWSAAHelper($this->testing, 'wsfe');
+        $afip_wsaa->checkWsaa();
 
         $wsfe = new WSFE(['testing'=> $this->testing, 'cuit_representada' => $cuit_negocio]);
         $wsfe->setXmlTa(file_get_contents(TA_file));
@@ -144,7 +324,26 @@ class AfipNotaCreditoHelper
 
             $this->checkErrors($result);
 
-            $this->saveAfipTicket($result, $cbte_nro, $importes['total'], $moneda_id);
+
+            if (isset($result->FECAESolicitarResult->FeCabResp) && $result->FECAESolicitarResult->FeCabResp->Resultado == 'A') {
+
+                $data = [
+                    'cuit_negocio'      => $result->FECAESolicitarResult->FeCabResp->Cuit,
+                    'cbte_nro'          => $cbte_nro,
+                    'cbte_letra'          => $this->getTipoLetra($result->FECAESolicitarResult->FeCabResp->CbteTipo),
+                    'cbte_tipo'          => $result->FECAESolicitarResult->FeCabResp->CbteTipo,
+                    'importe_total'          => $importes['total'],
+                    'moneda_id'          => $moneda_id,
+                    'resultado'          => $result->FECAESolicitarResult->FeCabResp->Resultado,
+                    'concepto'          => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Concepto,
+                    'cuit_cliente'          => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->DocNro,
+                    'cae'          => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAE,
+                    'cae_expired_at'          => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAEFchVto,
+                ];
+
+                $this->saveAfipTicket($data);
+            }
+
         } else {
             Log::info('HUBO UN ERROR:');
             $this->save_error($result);
@@ -223,28 +422,27 @@ class AfipNotaCreditoHelper
         return preg_replace('/[^\x{0020}-\x{007E}\x{00A0}-\x{00FF}]/u', '', $value);
     }
 
-    function saveAfipTicket($result, $cbte_nro, $importe_total, $moneda_id) {
-        if (isset($result->FECAESolicitarResult->FeCabResp) && $result->FECAESolicitarResult->FeCabResp->Resultado == 'A') {
+
+    function saveAfipTicket($data) {
             
-            AfipTicket::create([
-                'cuit_negocio'      => $result->FECAESolicitarResult->FeCabResp->Cuit,
-                'iva_negocio'       => $this->sale->afip_information->iva_condition->name,
-                'punto_venta'       => $result->FECAESolicitarResult->FeCabResp->PtoVta,
-                'cbte_numero'       => $cbte_nro,
-                'cbte_letra'        => $this->getTipoLetra($result->FECAESolicitarResult->FeCabResp->CbteTipo),
-                'cbte_tipo'         => $result->FECAESolicitarResult->FeCabResp->CbteTipo,
-                'importe_total'     => $importe_total,
-                'moneda_id'         => $moneda_id,
-                'resultado'         => $result->FECAESolicitarResult->FeCabResp->Resultado,
-                'concepto'          => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Concepto,
-                'cuit_cliente'      => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->DocNro,
-                'iva_cliente'       => !is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) ? $this->sale->client->iva_condition->name : '',
-                'cae'               => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAE,
-                'cae_expired_at'    => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAEFchVto,
-                'nota_credito_id'   => $this->nota_credito->id,
-                'sale_nota_credito_id' => $this->sale->id,
-            ]);
-        }
+        AfipTicket::create([
+            'cuit_negocio'      => $data['cuit_negocio'],
+            'iva_negocio'       => $this->sale->afip_information->iva_condition->name,
+            'punto_venta'       => $this->sale->afip_information->punto_venta,
+            'cbte_numero'       => $data['cbte_nro'],
+            'cbte_letra'        => $data['cbte_letra'],
+            'cbte_tipo'         => $data['cbte_tipo'],
+            'importe_total'     => $data['importe_total'],
+            'moneda_id'         => $data['moneda_id'],
+            'resultado'         => $data['resultado'],
+            'concepto'          => $data['concepto'],
+            'cuit_cliente'      => $data['cuit_cliente'],
+            'iva_cliente'       => !is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) ? $this->sale->client->iva_condition->name : '',
+            'cae'               => $data['cae'],
+            'cae_expired_at'    => $data['cae_expired_at'],
+            'nota_credito_id'   => $this->nota_credito->id,
+            'sale_nota_credito_id' => $this->sale->id,
+        ]);
     }
 
     function FchVtoPago() {
@@ -274,33 +472,36 @@ class AfipNotaCreditoHelper
 
         $cbte_tipo = $this->sale->afip_ticket->cbte_tipo;
 
-        // if (SaleHelper::getTotalSale($this->sale) >= $this->monto_minimo_para_factura_de_credito) {
 
 
-            if ($cbte_tipo == '201') {
-                #A
-                return  203;
-            } else if ($cbte_tipo == '206') {
-                #B
-                return  208;
-            } else if ($cbte_tipo == '211') {
-                #C
-                return  213;
-            }
+        if ($cbte_tipo == '201') {
+            #A
+            return  203;
+        } else if ($cbte_tipo == '206') {
+            #B
+            return  208;
+        } else if ($cbte_tipo == '211') {
+            #C
+            return  213;
+        }
 
-        // } else {
 
-            if ($cbte_tipo == '1') {
-                #A
-                return  3;
-            } else if ($cbte_tipo == '6') {
-                #B
-                return  8;
-            } else if ($cbte_tipo == '11') {
-                #C
-                return  13;
-            }
-        // } 
+        if ($cbte_tipo == '1') {
+            #A
+            return  3;
+        } else if ($cbte_tipo == '6') {
+            #B
+            return  8;
+        } else if ($cbte_tipo == '11') {
+            #C
+            return  13;
+        }
+
+
+        if ($cbte_tipo == '19') {
+            #E
+            return  21;
+        } 
     }
 
     function getTipoLetra($cbte_tipo) {
@@ -313,6 +514,9 @@ class AfipNotaCreditoHelper
         }
         if ($cbte_tipo == 13 || $cbte_tipo == 213) {
             return 'C';
+        }
+        if ($cbte_tipo == 19) {
+            return 'E';
         }
     }
 

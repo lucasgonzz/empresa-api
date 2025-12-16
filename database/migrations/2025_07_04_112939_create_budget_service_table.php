@@ -14,6 +14,8 @@ class CreateBudgetServiceTable extends Migration
     public function up()
     {
         Schema::create('budget_service', function (Blueprint $table) {
+            $table->engine = 'InnoDB';
+            
             $table->id();
 
             $table->integer('budget_id')->unsigned();

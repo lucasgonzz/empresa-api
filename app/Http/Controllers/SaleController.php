@@ -37,6 +37,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Support\Facades\DB;
+use Exception;
 
 class SaleController extends Controller
 {
@@ -119,6 +120,9 @@ class SaleController extends Controller
     }
 
     public function store(Request $request) {
+
+        DB::beginTransaction();
+
         Log::info($this->user(false)->name.' va a crear venta');
 
         if ($this->venta_ya_cread($request)) {
@@ -128,76 +132,94 @@ class SaleController extends Controller
 
         try {
 
-            $response = DB::transaction(function() use ($request) {
+            $model = Sale::create([
+                'num'                               => $this->num('sales'),
+                'client_id'                         => $request->client_id,
+                'sale_type_id'                      => $request->sale_type_id,
+                'observations'                      => $request->observations,
+                'address_id'                        => $request->address_id,
+                'current_acount_payment_method_id'  => SaleHelper::getCurrentAcountPaymentMethodId($request),
+                'afip_information_id'               => $request->afip_information_id,
+                'save_current_acount'               => $request->save_current_acount,
+                'omitir_en_cuenta_corriente'        => $request->omitir_en_cuenta_corriente,
+                'price_type_id'                     => $request->price_type_id,
+                'discounts_in_services'             => $request->discounts_in_services,
+                'surchages_in_services'             => $request->surchages_in_services,
+                'employee_id'                       => SaleHelper::getEmployeeId($request),
+                'to_check'                          => $request->to_check,
+                'confirmed'                         => SaleHelper::get_confirmed($request->to_check),
+                'numero_orden_de_compra'            => $request->numero_orden_de_compra,
+                'sub_total'                         => $request->sub_total,
+                'total'                             => $request->total,
+                'terminada'                         => SaleHelper::get_terminada($request->to_check, $request->fecha_entrega),
+                'terminada_at'                      => SaleHelper::get_terminada_at($request->to_check, $request->fecha_entrega),
+                'seller_id'                         => SaleHelper::get_seller_id($request),
+                'cantidad_cuotas'                   => $request->cantidad_cuotas,
+                'cuota_descuento'                   => $request->cuota_descuento,
+                'cuota_recargo'                     => $request->cuota_recargo,
+                'caja_id'                           => $request->caja_id,
+                'afip_tipo_comprobante_id'          => $request->afip_tipo_comprobante_id,
+                'fecha_entrega'                     => $request->fecha_entrega,
+                'moneda_id'                         => !is_null($request->moneda_id) ? $request->moneda_id : 1,
+                'valor_dolar'                       => $request->valor_dolar,
+                'incoterms'                         => $request->incoterms,
+                'descuento'                         => round($request->descuento, 2, PHP_ROUND_HALF_UP),
+                'user_id'                           => $this->userId(),
+            ]);
 
-                $model = Sale::create([
-                    'num'                               => $this->num('sales'),
-                    'client_id'                         => $request->client_id,
-                    'sale_type_id'                      => $request->sale_type_id,
-                    'observations'                      => $request->observations,
-                    'address_id'                        => $request->address_id,
-                    'current_acount_payment_method_id'  => SaleHelper::getCurrentAcountPaymentMethodId($request),
-                    'afip_information_id'               => $request->afip_information_id,
-                    'save_current_acount'               => $request->save_current_acount,
-                    'omitir_en_cuenta_corriente'        => $request->omitir_en_cuenta_corriente,
-                    'price_type_id'                     => $request->price_type_id,
-                    'discounts_in_services'             => $request->discounts_in_services,
-                    'surchages_in_services'             => $request->surchages_in_services,
-                    'employee_id'                       => SaleHelper::getEmployeeId($request),
-                    'to_check'                          => $request->to_check,
-                    'confirmed'                         => SaleHelper::get_confirmed($request->to_check),
-                    'numero_orden_de_compra'            => $request->numero_orden_de_compra,
-                    'sub_total'                         => $request->sub_total,
-                    'total'                             => $request->total,
-                    'terminada'                         => SaleHelper::get_terminada($request->to_check, $request->fecha_entrega),
-                    'terminada_at'                      => SaleHelper::get_terminada_at($request->to_check, $request->fecha_entrega),
-                    'seller_id'                         => SaleHelper::get_seller_id($request),
-                    'cantidad_cuotas'                   => $request->cantidad_cuotas,
-                    'cuota_descuento'                   => $request->cuota_descuento,
-                    'cuota_recargo'                     => $request->cuota_recargo,
-                    'caja_id'                           => $request->caja_id,
-                    'afip_tipo_comprobante_id'          => $request->afip_tipo_comprobante_id,
-                    'fecha_entrega'                     => $request->fecha_entrega,
-                    'moneda_id'                         => !is_null($request->moneda_id) ? $request->moneda_id : 1,
-                    'valor_dolar'                       => $request->valor_dolar,
-                    'incoterms'                         => $request->incoterms,
-                    'descuento'                         => round($request->descuento, 2, PHP_ROUND_HALF_UP),
-                    'user_id'                           => $this->userId(),
-                ]);
-
-                if (is_null($model->price_type_id)) {
-                    if (!is_null($model->client) && !is_null($model->client->price_type_id)) {
-                        $model->price_type_id = $model->client->price_type_id;
-                        $model->save();
-                    }
+            if (is_null($model->price_type_id)) {
+                if (!is_null($model->client) && !is_null($model->client->price_type_id)) {
+                    $model->price_type_id = $model->client->price_type_id;
+                    $model->save();
                 }
+            }
 
-                SaleHelper::check_guardad_cuenta_corriente_despues_de_facturar($model, $this);
+            SaleHelper::check_guardad_cuenta_corriente_despues_de_facturar($model, $this);
 
-                SaleHelper::attachProperies($model, $request);
+            SaleHelper::attachProperies($model, $request);
 
-                SaleHelper::set_total_a_facturar($model, $request);
+            SaleHelper::set_total_a_facturar($model, $request);
 
-                SaleProviderOrderHelper::createProviderOrder($model, $this);
+            SaleProviderOrderHelper::createProviderOrder($model, $this);
 
-                // Por el error de Pack
-                // SaleHelper::check_que_esten_todos_los_articulos($model);
+            // Por el error de Pack
+            // SaleHelper::check_que_esten_todos_los_articulos($model);
 
-                $this->sendAddModelNotification('Sale', $model->id);
+            $this->sendAddModelNotification('Sale', $model->id);
 
-                SaleHelper::sendUpdateClient($this, $model);
+            SaleHelper::sendUpdateClient($this, $model);
 
-                Log::info('Se creo sale n°: '.$model->num.'. Total: '.$model->total);
+            Log::info('Se creo sale n°: '.$model->num.'. Total: '.$model->total);
 
-                return response()->json(['model' => $this->fullModel('Sale', $model->id)], 201);
-            });
 
-            return $response;
+
+            $total_helper = (int)SaleHelper::getTotalSale($model, true, true, false, true);
+            $total_sale = (int)$model->total;
+
+            // Calcula la diferencia absoluta
+            $diferencia = abs($total_helper - $total_sale);
+
+            if ($diferencia > 3) {
+                Log::info('Total mal para la venta '.$model->id);
+                Log::info('total_sale '.$total_sale);
+                Log::info('total_helper '.$total_helper);
+
+                $message = 'El total de la venta no corresponde con los productos ingresados';
+                
+                throw new Exception($message);
+            }
+
+            DB::commit();
+
+            return response()->json(['model' => $this->fullModel('Sale', $model->id)], 201);
+
         } catch(\Throwable $e) {
+
+            DB::rollBack();
 
             Log::info($e);
 
-            return response()->json(['error' => true], 500);
+            return response()->json(['error' => true, 'message' => $e->getMessage()], 500);
         }
 
 
@@ -205,98 +227,97 @@ class SaleController extends Controller
 
     function update(Request $request, $id) {
 
+        DB::beginTransaction();
+        
         try {
 
-            $response = DB::transaction(function() use ($request, $id) {
+            $model = Sale::where('id', $id)
+                            ->with('articles')
+                            ->first();
 
-                $model = Sale::where('id', $id)
-                                ->with('articles')
-                                ->first();
+            $previus_articles = $model->articles;
+            $previus_combos = $model->combos;
+            $previus_promos = $model->promocion_vinotecas;
 
-                $previus_articles = $model->articles;
-                $previus_combos = $model->combos;
-                $previus_promos = $model->promocion_vinotecas;
+            $request->items = array_reverse($request->items);
 
-                $request->items = array_reverse($request->items);
+            $sale_modification = SaleModificationsHelper::create($model, $this);
 
-                $sale_modification = SaleModificationsHelper::create($model, $this);
+            $se_esta_confirmando = SaleHelper::get_se_esta_confirmando($request, $model);
 
-                $se_esta_confirmando = SaleHelper::get_se_esta_confirmando($request, $model);
+            SaleHelper::detachItems($model, $sale_modification);
+            
+            $previus_client_id                          = $model->client_id;
+            
+            
+            $model->actualizandose_por_id               = null;
+           
+            $model->discounts_in_services               = $request->discounts_in_services;
+            
+            $model->surchages_in_services               = $request->surchages_in_services;
+            
+            $model->current_acount_payment_method_id    = $request->current_acount_payment_method_id;
+            
+            $model->afip_information_id                 = $request->afip_information_id;
+            
+            $model->address_id                          = $request->address_id;
+            
+            $model->sale_type_id                        = $request->sale_type_id;
+            
+            $model->observations                        = $request->observations;
+            
+            $model->to_check                            = $request->to_check;
+            
+            $model->checked                             = $request->checked;
+            
+            $model->confirmed                           = $request->confirmed;
+            
+            $model->client_id                           = $request->client_id;
+            
+            $model->omitir_en_cuenta_corriente          = $request->omitir_en_cuenta_corriente;
+            
+            $model->numero_orden_de_compra              = $request->numero_orden_de_compra;
+            
+            $model->seller_id                           = $request->seller_id;
 
-                SaleHelper::detachItems($model, $sale_modification);
-                
-                $previus_client_id                          = $model->client_id;
-                
-                
-                $model->actualizandose_por_id               = null;
-               
-                $model->discounts_in_services               = $request->discounts_in_services;
-                
-                $model->surchages_in_services               = $request->surchages_in_services;
-                
-                $model->current_acount_payment_method_id    = $request->current_acount_payment_method_id;
-                
-                $model->afip_information_id                 = $request->afip_information_id;
-                
-                $model->address_id                          = $request->address_id;
-                
-                $model->sale_type_id                        = $request->sale_type_id;
-                
-                $model->observations                        = $request->observations;
-                
-                $model->to_check                            = $request->to_check;
-                
-                $model->checked                             = $request->checked;
-                
-                $model->confirmed                           = $request->confirmed;
-                
-                $model->client_id                           = $request->client_id;
-                
-                $model->omitir_en_cuenta_corriente          = $request->omitir_en_cuenta_corriente;
-                
-                $model->numero_orden_de_compra              = $request->numero_orden_de_compra;
-                
-                $model->seller_id                           = $request->seller_id;
+            $model->sub_total                           = $request->sub_total;
+            
+            $model->total                               = $request->total;
 
-                $model->sub_total                           = $request->sub_total;
-                
-                $model->total                               = $request->total;
+            $model->fecha_entrega                       = $request->fecha_entrega;
 
-                $model->fecha_entrega                       = $request->fecha_entrega;
+            // $model->valor_dolar                         = $request->valor_dolar;
+            
+            $model->employee_id                         = SaleHelper::getEmployeeId($request);
+            
+            $model->updated_at                          = Carbon::now();
+            
+            $model->save();
 
-                // $model->valor_dolar                         = $request->valor_dolar;
-                
-                $model->employee_id                         = SaleHelper::getEmployeeId($request);
-                
-                $model->updated_at                          = Carbon::now();
-                
-                $model->save();
+            SaleHelper::attachProperies($model, $request, false, $previus_articles, $previus_combos, $previus_promos, $sale_modification, $se_esta_confirmando);
 
-                SaleHelper::attachProperies($model, $request, false, $previus_articles, $previus_combos, $previus_promos, $sale_modification, $se_esta_confirmando);
+            $model->updated_at = Carbon::now();
+            $model->save();
 
-                $model->updated_at = Carbon::now();
-                $model->save();
-
-                $model = Sale::find($model->id);
-                
-                if ($model->client_id && !$model->to_check && !$model->checked) {
-                    SaleHelper::updateCurrentAcountsAndCommissions($model);
-                }
+            $model = Sale::find($model->id);
+            
+            if ($model->client_id && !$model->to_check && !$model->checked) {
+                SaleHelper::updateCurrentAcountsAndCommissions($model);
+            }
 
 
-                $this->sendAddModelNotification('Sale', $model->id);
-                SaleHelper::sendUpdateClient($this, $model);
+            $this->sendAddModelNotification('Sale', $model->id);
+            SaleHelper::sendUpdateClient($this, $model);
 
 
-                $sale_modification->estado_despues_de_actualizar = SaleModificationsHelper::get_estado($model);
-                $sale_modification->save();
+            $sale_modification->estado_despues_de_actualizar = SaleModificationsHelper::get_estado($model);
+            $sale_modification->save();
 
-                return response()->json(['model' => $this->fullModel('Sale', $model->id)], 200);
-            });
-
-            return $response;
+            DB::commit();
+            return response()->json(['model' => $this->fullModel('Sale', $model->id)], 200);
         
         } catch(\Throwable $e) {
+            DB::rollBack();
             Log::info($e);
             return response()->json(['error' => true], 500);
         } 

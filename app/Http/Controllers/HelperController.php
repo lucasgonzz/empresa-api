@@ -66,8 +66,17 @@ use Maatwebsite\Excel\Facades\Excel;
 class HelperController extends Controller
 {
 
-    function callMethod($method, $param = null) {
-        $this->{$method}($param);
+    function callMethod($method, $param = null, $param_2 = null) {
+        $this->{$method}($param, $param_2);
+    }
+
+    function get_importe_iva($sale_id) {
+
+        $sale = Sale::find($sale_id);
+        $afip_helper = new AfipHelper($sale);
+        $importes = $afip_helper->getImportes();
+
+        dd($importes);
     }
 
     function set_articles_slug() {
@@ -532,40 +541,56 @@ class HelperController extends Controller
         echo 'Listo';
     }
 
-    function provider_code_repetidos($user_id = null) {
-        if (!$user_id) {
-            $user_id = env('USER_ID');
-        }
+    public function provider_code_repetidos($eliminar_repetidos = false, $filtrar_por_bar_code = false)
+    {
+        $user_id = env('USER_ID');
 
         $articles = Article::where('user_id', $user_id)->get();
 
+        // Agrupar por provider_code
         $agrupados = $articles->groupBy('provider_code')
-            ->filter(function ($items, $provider_code) {
-                return $items->count() > 1 && !is_null($provider_code);
+            ->filter(function ($items, $provider_code) use ($filtrar_por_bar_code) {
+                if (is_null($provider_code) || $items->count() <= 1) {
+                    return false;
+                }
+
+                if ($filtrar_por_bar_code) {
+
+                    // Verifica que todos tengan el mismo bar_code o que todos sean null
+                    $barcodes = $items->pluck('bar_code')->unique();
+
+                    return $barcodes->count() === 1;
+                } else {
+                    return true;
+                }
             });
 
         foreach ($agrupados as $provider_code => $articulos) {
-
             echo "provider_code: $provider_code repetido en los siguientes artículos:<br>";
 
             foreach ($articulos as $article) {
-                echo "- {$article->name} (ID: {$article->id}), updated_at: {$article->updated_at->format('d/m/y')} <br>";
+                echo "- {$article->name} (ID: {$article->id}), bar_code: {$article->bar_code}, updated_at: {$article->updated_at->format('d/m/y')} <br>";
             }
 
-            $mas_reciente = $articulos->sortByDesc('updated_at')->first();
-            $a_eliminar = $articulos->filter(function ($articulo) use ($mas_reciente) {
-                return $articulo->id !== $mas_reciente->id;
-            });
+            if ($eliminar_repetidos) {
+                $mas_reciente = $articulos->sortByDesc('updated_at')->first();
 
-            foreach ($a_eliminar as $articulo) {
-                echo "Eliminando artículo ID {$articulo->id} con updated_at: {$article->updated_at->format('d/m/y')}<br>";
-                $articulo->delete();
+                $a_eliminar = $articulos->filter(function ($articulo) use ($mas_reciente) {
+                    return $articulo->id !== $mas_reciente->id;
+                });
+
+                foreach ($a_eliminar as $articulo) {
+                    echo "Eliminando artículo ID {$articulo->id} con updated_at: {$articulo->updated_at->format('d/m/y')}<br>";
+                    $articulo->delete();
+                }
+
+                echo "Se conservó el artículo ID {$mas_reciente->id} actualizado el {$mas_reciente->updated_at}<br><br>";
             }
-
-            echo "Se conservó el artículo ID {$mas_reciente->id} actualizado el {$mas_reciente->updated_at}<br><br>";
         }
 
-        echo "Listo. Se eliminaron los duplicados.";
+        if ($eliminar_repetidos) {
+            echo "Listo. Se eliminaron los duplicados.";
+        }
     }
 
     // ELimina los mas viejos, deja el mas nuevo
@@ -1240,10 +1265,13 @@ class HelperController extends Controller
             
             if ($diferencia > 3) {
                 echo 'Venta N° '.$sale->num.' <br>';
-                echo 'Total: '.$sale->total.' <br>';
-                echo 'Total helper: '.$total_helper;
+                echo 'Total 1: '.Numbers::price($total_sale).' <br>';
+                echo 'Total 2: '.Numbers::price($total_helper);
+                echo '<br>';
+                echo 'Diff:    '.Numbers::price((float)$total_helper - (float)$total_sale);
                 echo '<br>';
                 echo 'Descuento: '.$sale->descuento;
+                echo '<br>';
                 echo '<br>';
                 echo '<br>';
                 echo '<br>';

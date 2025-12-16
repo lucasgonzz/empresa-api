@@ -14,6 +14,7 @@ class CreateArticleBudgetTable extends Migration
     public function up()
     {
         Schema::create('article_budget', function (Blueprint $table) {
+            $table->engine = 'InnoDB';
             $table->id();
             $table->decimal('amount', 10,2)->nullable();
             $table->decimal('price', 12,2)->nullable();

@@ -25,6 +25,7 @@ class CompanyPerformanceController extends Controller
             
             if (!is_null($fin)) {
 
+                // Si hay fecha fin, es el reporte de un rango de meses (puede ser un unico mes)
                 $result = $helper->get_company_performances_from_dates($inicio, $fin);
 
                 $meses_anteriores = $result['meses_anteriores'];
@@ -32,8 +33,10 @@ class CompanyPerformanceController extends Controller
                 $company_performance = $result['company_performance'];
 
                 return response()->json(['model' => $company_performance, 'meses_anteriores' => $meses_anteriores], 201);
+
             } else {
 
+                // Si hay fecha inio pero no fin, es el reporte de un dia en especifico
                 $helper->create_company_performance_from_date($inicio);
 
                 $company_performance = $this->get_company_performance_from_date($inicio);
@@ -48,6 +51,8 @@ class CompanyPerformanceController extends Controller
             }
 
         } else {
+
+            // Si no hay fecha, es el reporte del dia actual
 
             $this->check_tiempo_ultima_creada();
 

@@ -302,14 +302,36 @@ abstract class WSN extends WS
 
             if (
                 isset($arguments[1])
-                && $arguments[1] == true
+                && $arguments[1] === 'incrustar_en_auth'
             ) {
 
-                $datos['Auth'] += $arguments[0];
+                Log::info('Se va a incrustar_en_auth');
+
+                $params = new \stdClass();
+
+                $params->Auth = new \stdClass();
+                $params->Auth->Token = $this->ta_token;
+                $params->Auth->Sign = $this->ta_sign;
+                $params->Auth->Cuit = $this->ta_cuit;
+
+                $params->Auth->Pto_venta = $arguments[0]['Pto_venta'];
+                $params->Auth->Cbte_Tipo = $arguments[0]['Cbte_Tipo'];
+
+                return parent::__call($name, [$params]);
 
             } else if ($this->for_wsfex) {
 
-                $datos['FEXRequest'] = $arguments[0];
+                $params = $arguments[0];
+
+                // $params = new \stdClass();
+
+                $params->Auth = new \stdClass();
+                $params->Auth->Token = $this->ta_token;
+                $params->Auth->Sign = $this->ta_sign;
+                $params->Auth->Cuit = $this->ta_cuit;
+
+
+                return parent::__call($name, [$params]);
 
             } else if (isset($arguments[0])) {
 
@@ -321,5 +343,35 @@ abstract class WSN extends WS
 
         return parent::__call($name, $datos);
         // return parent::__call($name, array($datos));
+    }
+
+    function get_manual($datos, $arguments) {
+
+        $token = $datos['Auth']['Token'];
+        $sign = $datos['Auth']['Sign'];
+        $cuit = $datos['Auth']['Cuit'];
+
+        $manual = <<<XML
+        <?xml version="1.0" encoding="UTF-8"?>
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns="http://ar.gov.afip.dif.fexv1/">
+                <soap:Body>
+                    <ns1:FEXAuthorize>
+                        <ns1:Auth>
+                            <ns1:Token>{$token}</ns1:Token>
+                            <ns1:Sign>{$sign}</ns1:Sign>
+                            <ns1:Cuit>{$cuit}</ns1:Cuit>
+                        </ns1:Auth>
+        XML;
+
+        $manual .= $arguments;
+
+        $manual .= <<<XML
+                    </ns1:FEXAuthorize>
+                </soap:Body>
+            </soap:Envelope>
+        XML;
+
+
+        return $manual;
     }
 }

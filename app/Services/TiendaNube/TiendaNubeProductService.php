@@ -8,6 +8,7 @@ use App\Models\PriceType;
 use App\Services\TiendaNube\BaseTiendaNubeService;
 use App\Services\TiendaNube\TiendaNubeImageService;
 use App\Services\TiendaNube\TiendaNubeProductDescriptionService;
+use App\Services\TiendaNube\TiendaNubeProductImageService;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -44,8 +45,10 @@ class TiendaNubeProductService extends BaseTiendaNubeService
 
         $service = new TiendaNubeImageService();
 
-        foreach ($article->images as $image) {
-            $service->subirImagenDeArticulo($article, $image);
+        if (env('CARGAR_IMAGENES_DE_ARTICULOS_A_TIENDA_NUBE', false)) {
+            foreach ($article->images as $image) {
+                $service->subirImagenDeArticulo($article, $image);
+            }
         }
 
     }
@@ -139,7 +142,15 @@ class TiendaNubeProductService extends BaseTiendaNubeService
             $article->save();
         }
 
+        $this->update_images($article);
+        
         return $article;
+    }
+
+    function update_images() {
+
+        $tn_image = new TiendaNubeProductImageService();
+        $tn_image->sync_images_for_article($article);
     }
 
     function get_variant_data($article) {

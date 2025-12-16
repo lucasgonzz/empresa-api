@@ -52,9 +52,18 @@ class ExpenseController extends Controller
                     'amount'    => $amount,
                     'caja_id'   => $caja_id,
                 ]);
+
+                $data = [
+                    'amount'    => $amount,
+                    'caja_id'    => $caja_id,
+                ];  
+        
+                ExpenseCajaHelper::guardar_movimiento_caja($model, $data);
             }
         }
+
         $model->save();
+
         return response()->json(['model' => $this->fullModel('Expense', $model->id)], 201);
     }  
 

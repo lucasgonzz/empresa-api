@@ -2,9 +2,11 @@
 
 namespace App\Console\Commands;
 
+use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Models\Sale;
 use App\Models\User;
 use Illuminate\Console\Command;
+use Carbon\Carbon;
 
 class set_costo_ventas extends Command
 {
@@ -40,6 +42,7 @@ class set_costo_ventas extends Command
     public function handle()
     {
         $sales = Sale::orderBy('id', 'ASC')
+                            // ->where('created_at', '>', Carbon::today()->subMonths(1)->startOfMonth())
                             ->get();
 
         $user = User::find($sales[0]->user_id);
@@ -56,8 +59,19 @@ class set_costo_ventas extends Command
                     $total_cost = 0;
 
                     $cost = $article->pivot->cost;
+                    $price = $article->pivot->price;
 
-                    if ($article->costo_real) {
+                    // if (
+                    //     (
+                    //         is_null($cost)
+                    //         || $cost == 0
+                    //         || (float)$cost > (float)$price
+                    //     )
+                    //     && $article->costo_real
+                    // ) {
+                    if (
+                        $article->costo_real
+                    ) {
 
                         $cost = (float)$article->costo_real;
 
@@ -67,6 +81,14 @@ class set_costo_ventas extends Command
                         $sale->valor_dolar = $user->dollar;
                     }
 
+                    // $esta_mal = false;
+
+                    // if ($cost >= $price) {
+                    //     $this->info('ANTES de cotizar: Costo mal sale num '.$sale->num.' article: '.$article->name);
+                    //     $this->info('Cost: '.Numbers::price($cost));
+                    //     $this->info('Price: '.Numbers::price($price));
+                    //     $esta_mal = true;
+                    // }
 
                     if ($sale->valor_dolar) {
                         
@@ -91,8 +113,21 @@ class set_costo_ventas extends Command
                         } 
                     }
 
+                    // if ($cost >= $price) {
+                    //     $this->comment('DESPUES de cotizar: Costo mal sale num '.$sale->num.' article: '.$article->name);
+                    //     $this->comment('Cost: '.Numbers::price($cost));
+                    //     $this->comment('Price: '.Numbers::price($price));
+                    //     $this->comment('');
+                    //     $this->comment('');
+                    // } else if ($esta_mal) {
+                    //     $this->comment('AHORA ESTA EN');
+                    //     $this->comment('Cost: '.Numbers::price($cost));
+                    //     $this->comment('Price: '.Numbers::price($price));
+                    //     $this->comment('');
+                    //     $this->comment('');
+                    // }
 
-                    $price = $article->pivot->price;
+
                     $amount = $article->pivot->amount;
 
                     $cost *= $amount;
@@ -110,7 +145,7 @@ class set_costo_ventas extends Command
 
                 }
 
-                $this->info('Total_cost: '.$total_cost);
+                // $this->info('Total_cost: '.$total_cost);
 
                 if ($total_cost > 0) {
                     
@@ -119,7 +154,7 @@ class set_costo_ventas extends Command
                     $sale->save();
 
                 }
-                $this->comment('Listo venta '.$sale->id);
+                // $this->info('Listo venta '.$sale->num);
             // }
         }
         $this->info('Termino');

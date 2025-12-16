@@ -297,51 +297,59 @@ class SaleAfipTicketPdf extends fpdf {
 			$aclaracion = 'En la columna subtotal de cada articulo, se estan aplicando los descuentos de la venta';
 			$this->Cell(200, 7, $aclaracion, 1, 1, 'C');
 			$this->y += 2;
-			
+				
+			$total = Numbers::price(SaleHelper::getTotalSale($this->sale, false, false), true, $this->sale->moneda_id);
 			$this->x = 5;
 			$this->SetFont('Arial', 'B', 12);
-			$this->Cell(100, 5, 'Total Original: '.SaleHelper::getTotalSale($this->sale, false, false), 1, 1, 'L');
+			$this->Cell(40, 7, 'Total Original: ', 1, 0, 'L');
+			$this->Cell(60, 7, $total, 1, 1, 'L');
 			
 			$this->x = 5;
 			$this->SetFont('Arial', 'B', 9);
-			$this->Cell(30, 5, 'Descuentos', 1, 0, 'L');
+			$this->Cell(30, 7, 'Descuentos', 1, 0, 'L');
 			foreach ($this->sale->discounts as $discount) {
 				// $this->x += 20;
-				$this->Cell(70, 5, $discount->name.' '.$discount->pivot->percentage.'%', 1, 0, 'L');
+				$this->Cell(70, 7, $discount->name.' '.$discount->pivot->percentage.'%', 1, 1, 'L');
 			}
 
 			if ($this->sale->descuento > 0) {
-				$this->Cell(50, 5, $this->sale->descuento.'%', 1, 0, 'L');
+				$this->Cell(50, 7, $this->sale->descuento.'%', 1, 1, 'L');
 			}
 			
+			$total_final = Numbers::price($this->sale->total, true, $this->sale->moneda_id);
 			$this->x = 5;
 			$this->SetFont('Arial', 'B', 12);
-			$this->Cell(100, 5, 'Total final: '.$this->sale->total, 1, 0, 'L');
+			$this->Cell(40, 7, 'Total final: ', 1, 0, 'L');
+			$this->Cell(60, 7, $total_final, 1, 1, 'L');
 
 			$this->y += 5;
 		}
 	}
 
 	function printImportes() {
-		$importes = $this->afip_helper->getImportes();
-		$this->x = 5;
-		$this->y += 5;
-		$this->SetFont('Arial', 'B', 9);
 
-		$this->Cell(40, 5, 'Importe Neto Gravado: ', 1, 0, 'L');
-		$this->Cell(40, 5, '$'.Numbers::price($importes['gravado']), 1, 1, 'L');
+		if ($this->sale->afip_ticket->cbte_letra == 'A') {
 
-		foreach ($importes['ivas'] as $iva => $importe) {
-			if ($importe['Importe'] > 0) {
-				$this->x = 5;
-				$this->Cell(40, 5, 'IVA '.$iva.'%: ', 1, 0, 'L');
-				$this->Cell(40, 5, '$'.Numbers::price($importe['Importe']), 1, 1, 'L');
+			$importes = $this->afip_helper->getImportes();
+			$this->x = 5;
+			$this->y += 5;
+			$this->SetFont('Arial', 'B', 9);
+
+			$this->Cell(40, 5, 'Importe Neto Gravado: ', 1, 0, 'L');
+			$this->Cell(40, 5, '$'.Numbers::price($importes['gravado']), 1, 1, 'L');
+
+			foreach ($importes['ivas'] as $iva => $importe) {
+				if ($importe['Importe'] > 0) {
+					$this->x = 5;
+					$this->Cell(40, 5, 'IVA '.$iva.'%: ', 1, 0, 'L');
+					$this->Cell(40, 5, '$'.Numbers::price($importe['Importe']), 1, 1, 'L');
+				}
 			}
+			
+			$this->x = 5;
+			$this->Cell(40, 5, 'Importe Total: ', 1, 0, 'L');
+			$this->Cell(40, 5, '$'.Numbers::price($importes['total']), 1, 0, 'L');
 		}
-		
-		$this->x = 5;
-		$this->Cell(40, 5, 'Importe Total: ', 1, 0, 'L');
-		$this->Cell(40, 5, '$'.Numbers::price($importes['total']), 1, 0, 'L');
 	}
 
 	function printLine() {
@@ -706,7 +714,23 @@ class SaleAfipTicketPdf extends fpdf {
 		}
 
         $this->Cell($this->widths['codigo'], 6, StringHelper::short($codigo, 14), 0, 0, 'L');
-        $this->Cell($this->widths['producto'], 6, StringHelper::short(GH::article_name($article), 30), 0, 0, 'L');
+
+
+        $article_name = GH::article_name($article);
+		$y_1 = $this->y;
+	    $this->MultiCell( 
+			$this->widths['producto'], 
+			6, 
+			$article_name,
+	    	0, 
+	    	'L', 
+	    	false
+	    );
+	    $y_2 = $this->y;
+	    $this->y = $y_1;
+
+	    $this->x = 5 + $this->widths['codigo'] + $this->widths['producto'];
+
         $this->Cell($this->widths['cantidad'], 6, Numbers::price($article->pivot->amount), 0, 0, 'R');
         // $this->Cell($this->widths['unidad_medida'], 6, 'unidad', 0, 0, 'C');
         $this->Cell($this->widths['precio_unitario'], 6, Numbers::price($this->afip_helper->getArticlePrice($this->sale, $article)), 0, 0, 'R');
@@ -721,7 +745,8 @@ class SaleAfipTicketPdf extends fpdf {
         	$this->Cell($this->widths['iva'], 6, $this->getArticleIva($article), 0, 0, 'C');
         	$this->Cell($this->widths['subtotal_con_iva'], 6, $this->subtotalConIva($article), 0, 0, 'R');
 		// }
-        $this->y += 6;
+		$this->y = $y_2;
+        // $this->y += 6;
     }
 
     function tipo_factura() {
@@ -780,20 +805,24 @@ class SaleAfipTicketPdf extends fpdf {
 			$this->Cell(20, 5, $this->sale->client->cuit, 0, 1, 'C');
 		}
 
-		// Iva
-		$this->SetX(6);
-		$this->SetFont('Arial', 'B', 8);
-		$this->Cell(37, 5, 'Condición frente al IVA:', 0, 0, 'L');
-		$this->SetFont('Arial', '', 8);
-		
-		if (
-			!is_null($this->sale->client)
-			&& !is_null($this->sale->client->iva_condition)
-		) {
-			$this->Cell(50, 5, $this->sale->client->iva_condition->name, 0, 1, 'L');
-		} else {
-			$this->Cell(50, 5, 'IVA consumidor final', 0, 1, 'L');
+		if ($this->sale->afip_ticket->cbte_letra != 'E') {
+			
+			// Iva
+			$this->SetX(6);
+			$this->SetFont('Arial', 'B', 8);
+			$this->Cell(37, 5, 'Condición frente al IVA:', 0, 0, 'L');
+			$this->SetFont('Arial', '', 8);
+			
+			if (
+				!is_null($this->sale->client)
+				&& !is_null($this->sale->client->iva_condition)
+			) {
+				$this->Cell(50, 5, $this->sale->client->iva_condition->name, 0, 1, 'L');
+			} else {
+				$this->Cell(50, 5, 'IVA consumidor final', 0, 1, 'L');
+			}
 		}
+		
 		
 		// if ($this->sale->afip_ticket->iva_cliente != '') {
 		// 	$this->Cell(50, 5, 'IVA '.$this->sale->afip_ticket->iva_cliente, 0, 1, 'L');
@@ -815,7 +844,9 @@ class SaleAfipTicketPdf extends fpdf {
 			$this->Cell(47, 5, 'Apellido y Nombre / Razón Social:', 0, 0, 'L');
 			$this->SetFont('Arial', '', 8);
 			$this->Cell(60, 5, $this->sale->client->name, 0, 1, 'L');
+
 			$this->SetX(97);
+			$this->SetX(80);
 			$this->SetFont('Arial', 'B', 8);
 			$this->Cell(30, 5, 'Domicilio Comercial:', 0, 0, 'L');
 			$this->SetFont('Arial', '', 8);

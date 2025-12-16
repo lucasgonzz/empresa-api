@@ -216,6 +216,10 @@ class SaleHelper extends Controller {
 
         Log::info('attachProperies');
 
+        
+        Self::attachDiscounts($model, $request->discounts);
+        Self::attachSurchages($model, $request->surchages);
+
         Self::attachArticles($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
         
         Log::info('1');
@@ -223,9 +227,6 @@ class SaleHelper extends Controller {
         Self::attachPromocionVinotecas($model, $request->items, $previus_promos);
         Self::attachCombos($model, $request->items, $previus_combos);
         Self::attachServices($model, $request->items);
-        
-        Self::attachDiscounts($model, $request->discounts);
-        Self::attachSurchages($model, $request->surchages);
 
         Self::attachSelectedPaymentMethods($model, $request);
         
@@ -852,15 +853,22 @@ class SaleHelper extends Controller {
         $user = $sale->user;
         Log::info('getCost');
 
+        $cost = null;
+
         if (
             isset($item['pivot'])
             && isset($item['pivot']['cost'])
         ) {
             Log::info('retornando del pivot: '.$item['pivot']['cost']);
-            return $item['pivot']['cost'];
+            $cost = (float) $item['pivot']['cost'];
         }
 
-        if (isset($item['presentacion'])) {
+
+        // Solo truvari
+        if (
+            !$cost
+            && isset($item['presentacion'])
+        ) {
 
             $item_cost = (float)$item['cost'];
             if (isset($item['costo_real'])) {
@@ -868,14 +876,15 @@ class SaleHelper extends Controller {
             }
             
             $cost =  $item_cost * (float)$item['presentacion'];
-            return $cost;
         }
 
-        $cost = 0;
-        if (isset($item['costo_real'])) {
-            $cost = (float)$item['costo_real'];
-        } else if (isset($item['cost'])) {
-            $cost = (float)$item['cost'];
+
+        if (!$cost) {
+            if (isset($item['costo_real'])) {
+                $cost = (float)$item['costo_real'];
+            } else if (isset($item['cost'])) {
+                $cost = (float)$item['cost'];
+            }
         }
 
         Log::info('cost: '.$cost);
@@ -906,6 +915,14 @@ class SaleHelper extends Controller {
                     $cost /= (float)$sale->valor_dolar;
                 }
             } 
+        }
+
+
+        foreach ($sale->discounts as $discount) {
+            $cost -= $cost * $discount->pivot->percentage / 100;
+        }
+        foreach ($sale->surchages as $surchage) {
+            $cost += $cost * $surchage->pivot->percentage / 100;
         }
 
         return $cost;
@@ -962,14 +979,27 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function getTotalSale($sale, $with_discount = true, $with_surchages = true, $with_seller_commissions = false) {
+    static function getTotalSale($sale, $with_discount = true, $with_surchages = true, $with_seller_commissions = false, $load_info = false) {
         $total_articles = 0;
         $total_combos = 0;
         $total_services = 0;
         $total_promocion_vinotecas = 0;
+
+        if ($load_info) {
+            $sale->load('articles');
+            $sale->load('combos');
+            $sale->load('promocion_vinotecas');
+            $sale->load('services');
+            $sale->load('discounts');
+            $sale->load('surchages');
+        }
         
+        // Log::info('getTotalSale');
+        // Log::info(count($sale->articles).' articles');
+
         foreach ($sale->articles as $article) {
             $total_articles += Self::getTotalItem($article);
+            // Log::info('Sumando '.$total_articles.' de '.$article->name);
         }
         foreach ($sale->combos as $combo) {
             $total_combos += Self::getTotalItem($combo);

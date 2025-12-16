@@ -486,17 +486,20 @@ class ExportHelper {
             	
             	if (!is_null($surchage->percentage)) {
                 	
+                	$article->surchages_percentage_formated .= $surchage->percentage;
 	        		if ($surchage->luego_del_precio_final) {
 	            		$article->surchages_percentage_formated .= 'F';
 	        		} 
-                	$article->surchages_percentage_formated .= $surchage->percentage.'_';
+                	$article->surchages_percentage_formated .= '_';
+
 					Log::info('percentage: '.$surchage->percentage);            	
             	} else if (!is_null($surchage->amount)) {
 
+                	$article->surchages_amount_formated .= $surchage->amount;
 	        		if ($surchage->luego_del_precio_final) {
 	            		$article->surchages_amount_formated .= 'F';
 	        		} 
-                	$article->surchages_amount_formated .= $surchage->amount.'_';
+                	$article->surchages_amount_formated .= '_';
 					Log::info('amount: '.$surchage->amount);            	
             	}
             }

@@ -213,6 +213,9 @@ class ArticleIndexCache
                 
                 if (env('CODIGOS_DE_PROVEEDOR_REPETIDOS')) {
 
+                    Log::info('articulos id encontrados por el provider_code:');
+                    Log::info($article_ids);
+
                     return Article::whereIn('id', $article_ids)->get();
                 } else {
 

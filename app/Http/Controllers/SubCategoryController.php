@@ -7,6 +7,7 @@ use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\category\PriceTypeHelper;
 use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
 use App\Models\SubCategory;
+use App\Services\TiendaNube\TiendaNubeCategoryImageService;
 use Illuminate\Http\Request;
 
 class SubCategoryController extends Controller
@@ -25,6 +26,7 @@ class SubCategoryController extends Controller
             'num'                   => $this->num('sub_categories'),
             'name'                  => $request->name,
             'category_id'           => $request->category_id,
+            'image_url'             => $request->image_url,
             'show_in_vender'        => $request->show_in_vender,
             'user_id'               => $this->userId(),
         ]);
@@ -33,7 +35,8 @@ class SubCategoryController extends Controller
 
         GeneralHelper::attachModels($model, 'price_types', $request->price_types, ['percentage']);
 
-        $this->sendAddModelNotification('sub_category', $model->id);
+        $this->check_tienda_nube_image($model);
+        
         return response()->json(['model' => $this->fullModel('SubCategory', $model->id)], 201);
     }  
 
@@ -46,13 +49,14 @@ class SubCategoryController extends Controller
         $model->name                = $request->name;
         $model->category_id         = $request->category_id;
         $model->show_in_vender      = $request->show_in_vender;
+        $model->image_url           = $request->image_url;
         $model->save();
 
         GeneralHelper::attachModels($model, 'price_types', $request->price_types, ['percentage']);
 
         PriceTypeHelper::update_article_prices(null, $model);
 
-        $this->sendAddModelNotification('sub_category', $model->id);
+        $this->check_tienda_nube_image($model);
         return response()->json(['model' => $this->fullModel('SubCategory', $model->id)], 200);
     }
 
@@ -64,5 +68,15 @@ class SubCategoryController extends Controller
             $this->sendDeleteModelNotification('sub_category', $model->id);
         }
         return response(null);
+    }
+
+    function check_tienda_nube_image($model) {
+        if (
+            env('USA_TIENDA_NUBE', false)
+            && !is_null($model->image_url)
+        ) {
+            $tn = new TiendaNubeCategoryImageService();
+            $tn->upload_category_image($model);
+        }
     }
 }

@@ -6,8 +6,10 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Jobs\ProcessSyncArticleImageToTiendaNube;
+use App\Models\Article;
 use App\Models\Image;
 use App\Services\MercadoLibre\ProductService;
+use App\Services\TiendaNube\TiendaNubeProductImageService;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -61,7 +63,6 @@ class ImageController extends Controller
 
                 ProductService::add_article_to_sync($model);
                 TiendaNubeSyncArticleService::add_article_to_sync($model);
-                
             }
 
         } else {
@@ -95,18 +96,23 @@ class ImageController extends Controller
         $image_name = $image->{env('IMAGE_URL_PROP_NAME', 'image_url')};
         $array = explode('/', $image_name);
         $image_name = $array[count($array)-1];
-        Log::info('Eliminando imagen: '.$image_name);
 
 
+
+        if ($model_name == 'article') {
+            $model = Article::find($model_id);
+            ProductService::add_article_to_sync($model);
+
+            $tn = new TiendaNubeProductImageService();
+            $tn->delete_image_from_article($model, $image);
+        }
+
+        
         $helper = new InventoryLinkageHelper();
         $helper->delete_image($image);
 
         Storage::disk('public')->delete($image_name);
         $image->delete();
-
-        if ($model_name == 'article') {
-            ProductService::add_article_to_sync($model);
-        }
 
         return response()->json(['model' => $this->fullModel($model_name, $model_id)], 200);
     }

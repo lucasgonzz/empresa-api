@@ -6,6 +6,7 @@ use App\Models\Article;
 use App\Models\Category;
 use App\Models\SubCategory;
 use App\Services\TiendaNube\BaseTiendaNubeService;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Responsabilidad: CRUD y resolución de categorías en Tienda Nube.
@@ -26,6 +27,9 @@ class TiendaNubeCategoryService extends BaseTiendaNubeService
         $endpoint = "/{$this->store_id}/categories";
         $payload  = ['name' => ['es' => $cat->name]]; // raíz: sin parent
 
+        Log::info('Creando category en tienda nube:');
+        Log::info($payload);
+        
         $resp = $this->http()->post($endpoint, $payload);
         if ($resp->failed()) {
             throw new \RuntimeException('No se pudo crear Category en TN: '.$resp->body());
