@@ -27,8 +27,11 @@ class SaleCajaHelper {
 				)
 			)
 			&& (
-				!is_null($sale->caja_id)
-				&& $sale->caja_id !== 0
+				(
+					!is_null($sale->caja_id)
+					&& $sale->caja_id !== 0
+				)
+				|| count($sale->current_acount_payment_methods) >= 1
 			)
 		) {
 

@@ -33,33 +33,72 @@ class ExpenseController extends Controller
             'expense_concept_id'                    => $request->expense_concept_id,
             'amount'                                => $request->amount,
             'moneda_id'                             => $request->moneda_id,
-            'current_acount_payment_method_id'      => $request->current_acount_payment_method_id,
             'importe_iva'                           => $request->importe_iva,
             'observations'                          => $request->observations,
-            'caja_id'                               => $request->caja_id,
             'created_at'                            => $request->created_at,
             'user_id'                               => $this->userId(),
+            'caja_id'                               => 0,
         ]);
+        
+        foreach ($request->payment_methods as $payment_method) {
+            if (!is_null($payment_method['amount'])) {
+                $amount = $payment_method['amount'];
+                $caja_id = null;
+                if (isset($payment_method['caja_id']) && $payment_method['caja_id'] != 0) {
+                    $caja_id = $payment_method['caja_id'];
+                }
+                
+                $model->payment_methods()->attach($payment_method['id'],[
+                    'amount'    => $amount,
+                    'caja_id'   => $caja_id,
+                ]);
 
-        ExpenseCajaHelper::guardar_movimiento_caja($model);
+                $data = [
+                    'amount'    => $amount,
+                    'caja_id'    => $caja_id,
+                ];  
+        
+                ExpenseCajaHelper::guardar_movimiento_caja($model, $data);
+            }
+        }
+
+        $model->save();
 
         return response()->json(['model' => $this->fullModel('Expense', $model->id)], 201);
     }  
 
-    public function show($id) {
-        return response()->json(['model' => $this->fullModel('Expense', $id)], 200);
+    public function show($id) 
+    {
+        $model = Expense::where('id', $id)->with('payment_methods')->first();
+        return response()->json(['model' => $model], 200);
     }
 
     public function update(Request $request, $id) {
         $model = Expense::find($id);
         $model->expense_concept_id                    = $request->expense_concept_id;
         $model->amount                                = $request->amount;
-        $model->current_acount_payment_method_id      = $request->current_acount_payment_method_id;
         $model->importe_iva                           = $request->importe_iva;
         $model->observations                          = $request->observations;
-        $model->caja_id                               = $request->caja_id;
+        $model->caja_id                               = 0;
         $model->created_at                            = $request->created_at;
         $model->save();
+        
+        $model->payment_methods()->detach();
+        
+        foreach ($request->payment_methods as $payment_method) {
+            if (!is_null($payment_method['amount'])) {
+                $amount = $payment_method['amount'];
+                $caja_id = null;
+                if (isset($payment_method['caja_id']) && $payment_method['caja_id'] != 0) {
+                    $caja_id = $payment_method['caja_id'];
+                }
+                
+                $model->payment_methods()->attach($payment_method['id'],[
+                    'amount'    => $amount,
+                    'caja_id'   => $caja_id,
+                ]);
+            }
+        }
 
         ExpenseCajaHelper::editar_movimiento_caja($model);
 

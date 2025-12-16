@@ -103,6 +103,9 @@ class BudgetPdf extends fpdf {
 			];
 		}
 
+
+		$data['user'] = $this->user;
+		
 		PdfHelper::header($this, $data);
 	}
 
@@ -357,8 +360,8 @@ class BudgetPdf extends fpdf {
 		if ($this->with_prices) {
 		    $this->x = 5;
 		    $this->SetFont('Arial', 'B', 14);
-			$this->Cell(200, 10, 'Total: $'. Numbers::price($this->budget->total), 0, 1, 'R');
-			// $this->Cell(100, 10, 'Total: $'. Numbers::price(BudgetHelper::getTotal($this->budget)), 0, 1, 'L');
+			// $this->Cell(200, 10, 'Total: $'. Numbers::price($this->budget->total), 0, 1, 'R');
+			$this->Cell(100, 10, 'Total: $'. Numbers::price(BudgetHelper::getTotal($this->budget)), 0, 1, 'L');
 		}
 	}
 

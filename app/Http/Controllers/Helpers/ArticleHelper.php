@@ -115,8 +115,18 @@ class ArticleHelper {
         }
 
 
+        if ($article->cost) {
+
+            $costo_real = Self::aplicar_descuentos_e_iva($article, $article->cost, $user);
+            $article->costo_real = $costo_real;
+            $article->save();
+        }
+
+
         $current_final_price = $article->final_price;
 
+
+        // Pongo el precio en blanco si corresponde
         if (
             (
                 !is_null($article->percentage_gain)
@@ -132,12 +142,14 @@ class ArticleHelper {
 
             $article->price = null;
             $article->save();
-            Log::info('Se puso null el price');
+            // Log::info('Se puso null el price');
         }
+
+
 
         if (is_null($article->price) || $article->price == '') {
 
-            $cost = $article->cost;
+            $cost = $article->costo_real;
 
             if (!is_null($user->percentage_gain)) {
                 $cost += $cost * $user->percentage_gain / 100;
@@ -149,22 +161,6 @@ class ArticleHelper {
 
             $final_price = $cost;
 
-            if ($user->aplicar_descuentos_en_articulos_antes_del_margen_de_ganancia) {
-
-                $final_price = ArticlePricesHelper::aplicar_descuentos($article, $final_price);
-
-                $final_price = ArticlePricesHelper::aplicar_recargos($article, $final_price);
-
-                $final_price = ArticlePricesHelper::aplicar_provider_discounts($article, $final_price);
-
-                Log::info('costo antes de iva: '.$final_price);
-                $final_price = ArticlePricesHelper::aplicar_iva($article, $final_price, $user);
-
-                Log::info('costo_real luego de iva: '.$final_price);
-                $article->costo_real = $final_price;
-                $costo_real = $final_price;
-                
-            }  
 
             if (
                 $article->cost_in_dollars
@@ -292,6 +288,19 @@ class ArticleHelper {
             ];
         }
 
+    }
+
+    static function aplicar_descuentos_e_iva($article, $price, $user) {
+
+        $price = ArticlePricesHelper::aplicar_descuentos($article, $price);
+
+        $price = ArticlePricesHelper::aplicar_recargos($article, $price);
+
+        $price = ArticlePricesHelper::aplicar_provider_discounts($article, $price);
+
+        $price = ArticlePricesHelper::aplicar_iva($article, $price, $user);
+
+        return $price;
     }
 
     static function redondear($price, $user) {

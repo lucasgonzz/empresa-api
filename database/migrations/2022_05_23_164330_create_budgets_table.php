@@ -16,6 +16,8 @@ class CreateBudgetsTable extends Migration
         Schema::create('budgets', function (Blueprint $table) {
             $table->id();
 
+            $table->engine = 'InnoDB';
+            
             $table->integer('client_id')->unsigned();
             $table->integer('num')->nullable();
             $table->enum('status', ['unconfirmed', 'confirmed'])->default('unconfirmed');

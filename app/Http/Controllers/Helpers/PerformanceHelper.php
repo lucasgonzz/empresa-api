@@ -126,7 +126,7 @@ class PerformanceHelper
             Log::info(is_null($this->from_day));
             Log::info(!$this->from_day);
 
-            $this->set_article_performances();
+            // $this->set_article_performances();
         }
 
 

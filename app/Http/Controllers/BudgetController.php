@@ -10,6 +10,9 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Pdf\BudgetPdf;
 use App\Models\Budget;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Exception;
+use Illuminate\Support\Facades\Log;
 
 class BudgetController extends Controller
 {
@@ -33,37 +36,73 @@ class BudgetController extends Controller
     }
 
     public function store(Request $request) {
-        $model = Budget::create([
-            'num'                       => $this->num('budgets'),
-            'client_id'                 => $request->client_id,
-            'start_at'                  => $request->start_at,
-            'finish_at'                 => $request->finish_at,
-            'observations'              => $request->observations,
-            'price_type_id'             => $request->price_type_id,
-            'total'                     => $request->total,
-            'budget_status_id'          => $request->budget_status_id,
-            'address_id'                => $request->address_id,
-            'surchages_in_services'     => $request->surchages_in_services,
-            'discounts_in_services'     => $request->discounts_in_services,
-            'moneda_id'                 => $request->moneda_id,
-            'valor_dolar'               => $request->valor_dolar,
-            'employee_id'               => $this->userId(false),
-            'user_id'                   => $this->userId(),
-        ]);
-        GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
-        GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
 
-        $previus_articles = $model->articles;
+        DB::beginTransaction();
 
-        BudgetHelper::attachArticles($model, $request->articles);
+        try {
 
-        BudgetHelper::attachServices($model, $request->services);
-        BudgetHelper::attachPromocionVinotecas($model, $request->promocion_vinotecas);
+            $model = Budget::create([
+                'num'                       => $this->num('budgets'),
+                'client_id'                 => $request->client_id,
+                'start_at'                  => $request->start_at,
+                'finish_at'                 => $request->finish_at,
+                'observations'              => $request->observations,
+                'price_type_id'             => $request->price_type_id,
+                'total'                     => $request->total,
+                'budget_status_id'          => $request->budget_status_id,
+                'address_id'                => $request->address_id,
+                'surchages_in_services'     => $request->surchages_in_services,
+                'discounts_in_services'     => $request->discounts_in_services,
+                'moneda_id'                 => $request->moneda_id,
+                'valor_dolar'               => $request->valor_dolar,
+                'employee_id'               => $this->userId(false),
+                'user_id'                   => $this->userId(),
+            ]);
+            GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
+            GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
 
-        BudgetHelper::checkStatus($this->fullModel('Budget', $model->id), $previus_articles);
+            $previus_articles = $model->articles;
 
-        $this->sendAddModelNotification('Budget', $model->id);
-        return response()->json(['model' => $this->fullModel('Budget', $model->id)], 201);
+            BudgetHelper::attachArticles($model, $request->articles);
+
+            BudgetHelper::attachServices($model, $request->services);
+            BudgetHelper::attachPromocionVinotecas($model, $request->promocion_vinotecas);
+
+            BudgetHelper::checkStatus($this->fullModel('Budget', $model->id), $previus_articles);
+
+            $this->sendAddModelNotification('Budget', $model->id);
+
+
+
+            $total_helper = (int)BudgetHelper::getTotal($model);
+            $total_budget = (int)$model->total;
+            $total_budget = 1;
+
+            // Calcula la diferencia absoluta
+            $diferencia = abs($total_helper - $total_budget);
+
+            if ($diferencia > 3) {
+                Log::info('Total mal para presupuesto '.$model->id);
+                Log::info('total_helper: '.$total_helper);
+                Log::info('total_budget: '.$total_budget);
+
+                $message = 'El total del presupuesto no corresponde con los productos ingresados';
+                
+                throw new Exception($message);
+            }
+
+            DB::commit();
+
+            return response()->json(['model' => $this->fullModel('Budget', $model->id)], 201);
+
+        } catch(\Throwable $e) {
+
+            DB::rollBack();
+
+            Log::info($e);
+
+            return response()->json(['error' => true, 'message' => $e->getMessage()], 500);
+        }
     }  
 
     public function show($id) {

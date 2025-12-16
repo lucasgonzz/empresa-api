@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
 use App\Models\Article;
 use App\Models\Category;
 use App\Models\SubCategory;
+use App\Services\TiendaNube\TiendaNubeCategoryImageService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -40,8 +41,8 @@ class CategoryController extends Controller
 
         SetPriceTypesHelper::set_rangos($model);
 
+        $this->check_tienda_nube_image($model);
 
-        $this->sendAddModelNotification('Category', $model->id);
         return response()->json(['model' => $this->fullModel('Category', $model->id)], 201);
     }  
 
@@ -66,7 +67,8 @@ class CategoryController extends Controller
 
         $this->check_percetange_gain($model, $previus_percentage_gain);
         
-        $this->sendAddModelNotification('Category', $model->id);
+        $this->check_tienda_nube_image($model);
+        
         return response()->json(['model' => $this->fullModel('Category', $model->id)], 200);
     }
 
@@ -103,6 +105,18 @@ class CategoryController extends Controller
 
                 ArticleHelper::setFinalPrice($article);
             }
+        }
+    }
+
+    function check_tienda_nube_image($category) {
+        if (
+            env('USA_TIENDA_NUBE', false)
+            && !is_null($category->image_url)
+        ) {
+            Log::info('Category recien creada:');
+            Log::info($category->toArray());
+            $tn = new TiendaNubeCategoryImageService();
+            $tn->upload_category_image($category);
         }
     }
 }

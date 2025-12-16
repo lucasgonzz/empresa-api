@@ -2,7 +2,6 @@
 
 namespace App\Models\Afip;
 use Illuminate\Support\Facades\Log;
-use SoapVar;
 
 /**
  * WS (WebService).
@@ -161,23 +160,95 @@ abstract class WS
 
         try {
 
-            Log::info('Llego esto a WS para enviar:');
-            Log::info((array)$arguments);
 
-            $params = $arguments;
+            if (
+                $this->for_wsfex
+                && (
+                    isset($arguments['xml_manual'])
+                    && $arguments['xml_manual'] == true
+                )
+            ) {
 
-            if ($this->for_wsfex) {
-                $params = $arguments[0];
-                Log::info('Como es for_wsfex se van a enviar estos params:');
-                Log::info((array)$params);
+                $xml = $arguments['arguments'];
+
+                Log::info('WS for_wsfex arguments:');
+                Log::info($xml);
+
+                $headers = [
+                    'Content-Type: text/xml; charset=utf-8',
+                    'Content-Length: ' . strlen($xml),
+                    'SOAPAction: "http://ar.gov.afip.dif.fexv1/FEXAuthorize"',
+                ];
+
+                $ch = curl_init($this->ws_url);
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($ch, CURLOPT_POST, true);
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $xml);
+                curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+
+                $response = curl_exec($ch);
+
+
+
+
+                if (curl_errno($ch)) {
+                    $error_msg = curl_error($ch);
+                    curl_close($ch);
+                    Log::error("cURL Error: $error_msg");
+                    throw new \Exception("Error al enviar XML a AFIP: {$error_msg}");
+                }
+
+                $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+
+                Log::info("HTTP Response Code: $http_code");
+
+                if (!$response || $http_code !== 200) {
+                    Log::error("Respuesta vacía o HTTP $http_code");
+                    file_put_contents(public_path() . "/afip/ws/response-xml-manual.xml", $response);
+                    throw new \Exception("Respuesta vacía o incorrecta de AFIP.");
+                }
+
+                
+
+                file_put_contents(public_path() . "/afip/ws/request-xml-manual.xml", $xml);
+                file_put_contents(public_path() . "/afip/ws/response-xml-manual.xml", $response);
+
+                Log::info('Respuesta:');
+                Log::info($response);
+
+                $result = $response;
+
+                // Parsear XML manualmente para imitar resultado de SoapClient
+                $xml_obj = simplexml_load_string($response);
+
+                if ($xml_obj === false) {
+                    throw new \Exception("No se pudo parsear la respuesta XML");
+                }
+
+                $namespaces = $xml_obj->getNamespaces(true);
+                $body = $xml_obj->children($namespaces['soap'])->Body;
+
+                // Asumiendo que el nodo principal es FEXAuthorizeResponse
+                $fexResponse = $body->children($namespaces[''])->FEXAuthorizeResponse;
+
+                // Convertir a array/objeto PHP
+                $response_data = json_decode(json_encode($fexResponse), false);
+
+                $result = $response_data;
+
+
+            } else {
+
+                Log::info('Se va a enviar normal:');
+                Log::info($arguments);
+
+                $result = $this->soap_client->$name($arguments);
+
+                $last_request = $this->soap_client->__getLastRequest();
+
+                // Log::info("SOAP Request XML:\n" . $last_request);
             }
-
-
-            $result = $this->soap_client->$name($params);
-
-            $last_request = $this->soap_client->__getLastRequest();
-
-            // Log::info("SOAP Request XML:\n" . $last_request);
 
             
         } catch(\SoapFault $e) {

@@ -416,7 +416,7 @@ class SalePdf extends fpdf {
 			$this->Cell(
 				$this->getFields()['Costo'], 
 				$this->line_height, 
-				'$'.$item->pivot->cost, 
+				'$'.Numbers::price($item->pivot->cost), 
 				$this->b, 
 				0, 
 				'C'

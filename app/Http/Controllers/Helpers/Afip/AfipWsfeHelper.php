@@ -28,13 +28,15 @@ class AfipWsfeHelper extends Controller
     public $sale;
     public $errors;
     public $observations;
+    public $afip_fecha_emision;
     public $monto_minimo_para_factura_de_credito = 1357480;
 
-    public function __construct($sale) {
-        $this->sale = $sale;
-        $this->testing = !$sale->afip_information->afip_ticket_production;
+    public function __construct($data) {
+        $this->sale = $data['sale'];
+        $this->testing = !$this->sale->afip_information->afip_ticket_production;
         $this->ya_se_obtuvo_cae_desde_consultar_comprobante = false;
         $this->error_al_consultar_comprobante = false;
+        $this->afip_fecha_emision = $data['afip_fecha_emision'];
     }
 
     function procesar() {
@@ -171,6 +173,10 @@ class AfipWsfeHelper extends Controller
 
         $moneda_id = 'PES';
         $iva_receptor = CondicionIvaReceptorHelper::get_iva_receptor($this->sale);
+        $afip_fecha_emision = !is_null($this->sale->afip_ticket->afip_fecha_emision) ? Carbon::parse($this->sale->afip_ticket->afip_fecha_emision)->format('Ymd') : date('Ymd');
+        Log::info('afip_fecha_emision');
+        Log::info($afip_fecha_emision);
+
         $invoice = [
             'FeCAEReq' => [
                 'FeCabReq' => [
@@ -185,7 +191,7 @@ class AfipWsfeHelper extends Controller
                         'DocNro'       => $this->doc_client,
                         'CbteDesde'    => $this->comprobante_numero,
                         'CbteHasta'    => $this->comprobante_numero,
-                        'CbteFch'      => date('Ymd'),
+                        'CbteFch'      => $afip_fecha_emision,
                         'ImpTotal'     => $importes['total'],
                         'ImpTotConc'   => $importes['neto_no_gravado'],
                         'ImpNeto'      => $importes['gravado'],
@@ -350,6 +356,7 @@ class AfipWsfeHelper extends Controller
             'sale_id'           => $this->sale->id,
             'afip_information_id'        => $this->sale->afip_information_id,
             'afip_tipo_comprobante_id'   => $this->sale->afip_tipo_comprobante_id,
+            'afip_fecha_emision'             => $this->afip_fecha_emision,
         ]);
 
         $this->sale->load('afip_ticket');

@@ -227,8 +227,17 @@ class BudgetHelper {
 
 	static function getTotal($budget) {
 		$total = 0;
+		$budget->load('articles');
+		$budget->load('promocion_vinotecas');
+		$budget->load('services');
 		foreach ($budget->articles as $article) {
 			$total += Self::totalArticle($article);
+		}
+		foreach ($budget->promocion_vinotecas as $promo) {
+			$total += Self::totalArticle($promo);
+		}
+		foreach ($budget->services as $service) {
+			$total += Self::totalArticle($service);
 		}
 		foreach ($budget->discounts as $discount) {
 			$total -= $discount->pivot->percentage * $total / 100;
@@ -244,6 +253,7 @@ class BudgetHelper {
 		if (!is_null($article->pivot->bonus) && $con_descuentos) {
 			$total -= $total * (float)$article->pivot->bonus / 100;
 		}
+		Log::info('sumando '.$total. ' de '.$article->name);
 		return $total;
 	}
 

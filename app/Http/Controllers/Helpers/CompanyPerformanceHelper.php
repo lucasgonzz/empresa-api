@@ -89,38 +89,61 @@ class CompanyPerformanceHelper {
 
         while ($this->fecha_inicio->lte($this->fecha_fin)) {
 
-            if ($this->fecha_inicio->eq($mes_actual)) {
+            // if ($this->fecha_inicio->eq($mes_actual)) {
 
-                Log::info('Entro al mes corriente');
+            //     Log::info('Entro al mes corriente');
 
-                $this->crear_company_performance_del_mes_corriente();
+            //     $this->crear_company_performance_del_mes_corriente();
 
-            }
+            // }
 
 
             // Log::info('Buscando company_performance del mes: '.$this->fecha_inicio->month.' año: '.$this->fecha_inicio->year);
 
+            $year = $this->fecha_inicio->year;
+            $month = $this->fecha_inicio->month;
             $company_performance = CompanyPerformance::where('user_id', $this->user_id)
-                                ->where('year', $this->fecha_inicio->year)
-                                ->where('month', $this->fecha_inicio->month)
+                                ->where('year', $year)
+                                ->where('month', $month)
                                 ->withAll()
-                                ->first();
+                                ->first();  
 
-            if (!is_null($company_performance)) {
+            $inicio_del_mes = Carbon::createFromDate($year, $month, 1)->startOfDay();
+            $fin_del_mes = Carbon::createFromDate($year, $month, 1)->endOfMonth()->endOfDay();
 
-                $company_performance->fecha = Carbon::create($company_performance->year, $company_performance->month, 1)->isoFormat('MMMM').' '.$company_performance->year;
+            if (is_null($company_performance)) {
+
+                // Si no existe, se Crear
+
+                $performance_helper = new PerformanceHelper($month, $year, $this->user_id);
+
+                $company_performance = $performance_helper->create_company_performance();
+
+            } else if ($company_performance->created_at->between($inicio_del_mes, $fin_del_mes)) {
+
+                // Si existe pero se creo el mismo mes del cual es el reporte, significa que seguro pasaron cosas desde que se creo, entonces se Borrar y vuelve a crear
+
+                Log::info('Se elimino y se volvio a crear');
+
+                $company_performance->delete();
+
+                $performance_helper = new PerformanceHelper($month, $year, $this->user_id);
+
+                $company_performance = $performance_helper->create_company_performance();
 
 
-                $helper = new PaymentMethodsHelper($company_performance, $this->user_id);
+            } 
 
-                $helper->set_users_relation();
+            $company_performance->fecha = Carbon::create($company_performance->year, $company_performance->month, 1)->isoFormat('MMMM').' '.$company_performance->year;
 
-                $helper->set_addresses_relation();
 
-                $this->meses_anteriores[] = $company_performance;
-            } else {
-                Log::info('No habia para la fecha');
-            }
+            $helper = new PaymentMethodsHelper($company_performance, $this->user_id);
+
+            $helper->set_users_relation();
+
+            $helper->set_addresses_relation();
+            $this->meses_anteriores[] = $company_performance;
+
             $this->fecha_inicio->addMonth();
         }
 
@@ -137,20 +160,33 @@ class CompanyPerformanceHelper {
     function sumar_company_performances() {
         $this->suma_company_performances = [
             'total_vendido'                     => 0,
+            'total_vendido_usd'                     => 0,
             'total_facturado'                   => 0,
             'total_pagado_a_proveedores'        => 0,
+            'total_pagado_a_proveedores_usd'        => 0,
             'total_iva_comprado'                => 0,
             'total_vendido_costos'              => 0,
+            'total_vendido_costos_usd'              => 0,
             'total_pagado_mostrador'            => 0,
+            'total_pagado_mostrador_usd'            => 0,
             'total_vendido_a_cuenta_corriente'  => 0,
+            'total_vendido_a_cuenta_corriente_usd'  => 0,
             'total_pagado_a_cuenta_corriente'   => 0,
+            'total_pagado_a_cuenta_corriente_usd'   => 0,
             'total_devolucion'                  => 0,
+            'total_devolucion_usd'                  => 0,
             'total_ingresos'                    => 0,
+            'total_ingresos_usd'                    => 0,
             'cantidad_ventas'                   => 0,
             'total_gastos'                      => 0,
+            'total_gastos_usd'                      => 0,
             'total_comprado'                    => 0,
+            'total_comprado_usd'                    => 0,
             'ingresos_netos'                    => 0,
+            'ingresos_netos_usd'                    => 0,
             'rentabilidad'                      => 0,
+            'rentabilidad_usd'                      => 0,
+            'company_performance_info_facturacion'  => [],
         ];
 
         $this->set_payment_methods();
@@ -167,34 +203,46 @@ class CompanyPerformanceHelper {
         foreach ($this->meses_anteriores as $company_performance) {
 
             $this->suma_company_performances['total_vendido']     += $company_performance->total_vendido;
+            $this->suma_company_performances['total_vendido_usd']     += $company_performance->total_vendido_usd;
             
             $this->suma_company_performances['total_facturado']     += $company_performance->total_facturado;
 
             $this->suma_company_performances['total_pagado_a_proveedores']     += $company_performance->total_pagado_a_proveedores;
+            $this->suma_company_performances['total_pagado_a_proveedores_usd']     += $company_performance->total_pagado_a_proveedores_usd;
 
             $this->suma_company_performances['total_iva_comprado']     += $company_performance->total_iva_comprado;
             
             $this->suma_company_performances['total_vendido_costos']     += $company_performance->total_vendido_costos;
+            $this->suma_company_performances['total_vendido_costos_usd']     += $company_performance->total_vendido_costos_usd;
             
             $this->suma_company_performances['total_pagado_mostrador']    += $company_performance->total_pagado_mostrador;
+            $this->suma_company_performances['total_pagado_mostrador_usd']    += $company_performance->total_pagado_mostrador_usd;
             
             $this->suma_company_performances['total_vendido_a_cuenta_corriente']  += $company_performance->total_vendido_a_cuenta_corriente;
+            $this->suma_company_performances['total_vendido_a_cuenta_corriente_usd']  += $company_performance->total_vendido_a_cuenta_corriente_usd;
             
             $this->suma_company_performances['total_pagado_a_cuenta_corriente']   += $company_performance->total_pagado_a_cuenta_corriente;
+            $this->suma_company_performances['total_pagado_a_cuenta_corriente_usd']   += $company_performance->total_pagado_a_cuenta_corriente_usd;
             
             $this->suma_company_performances['total_devolucion']  += $company_performance->total_devolucion;
+            $this->suma_company_performances['total_devolucion_usd']  += $company_performance->total_devolucion_usd;
             
             $this->suma_company_performances['total_ingresos']    += $company_performance->total_ingresos;
+            $this->suma_company_performances['total_ingresos_usd']    += $company_performance->total_ingresos_usd;
             
             $this->suma_company_performances['cantidad_ventas']   += $company_performance->cantidad_ventas;
             
             $this->suma_company_performances['total_gastos']      += $company_performance->total_gastos;
+            $this->suma_company_performances['total_gastos_usd']      += $company_performance->total_gastos_usd;
             
             $this->suma_company_performances['total_comprado']    += $company_performance->total_comprado;
+            $this->suma_company_performances['total_comprado_usd']    += $company_performance->total_comprado_usd;
 
             $this->suma_company_performances['ingresos_netos']    += $company_performance->ingresos_netos;
+            $this->suma_company_performances['ingresos_netos_usd']    += $company_performance->ingresos_netos_usd;
 
             $this->suma_company_performances['rentabilidad']      += $company_performance->rentabilidad;
+            $this->suma_company_performances['rentabilidad_usd']      += $company_performance->rentabilidad_usd;
 
 
             $this->sumar_relation($company_performance, 'ingresos_mostrador');
