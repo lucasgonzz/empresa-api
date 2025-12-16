@@ -11,8 +11,13 @@ class ExpenseCajaHelper {
 
 	static function guardar_movimiento_caja($expense, $data) {
 
-        if (!is_null($expense->caja_id)
-            && $expense->caja_id != 0) {
+        // if (!is_null($expense->caja_id)
+        //     && $expense->caja_id != 0) {
+
+        if (
+            isset($data['caja_id']) 
+            && !is_null($data['caja_id'])
+        ) {
 
     		$helper = new MovimientoCajaHelper();
 
