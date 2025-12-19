@@ -16,6 +16,7 @@ use App\Http\Controllers\Helpers\Order\CreateSaleOrderHelper;
 use App\Http\Controllers\Helpers\RecalculateCurrentAcountsHelper;
 use App\Http\Controllers\Helpers\RecipeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\article\ResetStockHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Jobs\ProcessCheckInventoryLinkages;
@@ -68,6 +69,21 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null, $param_2 = null) {
         $this->{$method}($param, $param_2);
+    }
+
+    function poner_stocks_en_0() {
+        $articles = Article::whereNull('stock')
+                            ->get();
+
+        echo count($articles).' articulos <br>';
+
+        foreach ($articles as $article) {
+
+            $helper = new ResetStockHelper();
+            $helper->reset_stock($article->id);
+            echo $article->name.' ok <br>';
+        }
+        echo 'Listo';
     }
 
     function get_importe_iva($sale_id) {

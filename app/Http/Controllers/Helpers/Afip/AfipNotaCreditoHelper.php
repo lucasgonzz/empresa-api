@@ -209,7 +209,7 @@ class AfipNotaCreditoHelper
                     'cbte_letra'        => $this->getTipoLetra($result->FEXAuthorizeResult->FEXResultAuth->Cbte_tipo),
                     'cbte_tipo'         => $result->FEXAuthorizeResult->FEXResultAuth->Cbte_tipo,
                     'importe_total'     => $importe_total,
-                    'moneda_id'         => $moneda_id,
+                    'moneda_id'         => $moneda,
                     'resultado'         => $result->FEXAuthorizeResult->FEXResultAuth->Resultado,
                     'concepto'          => null,
                     'cuit_cliente'      => $this->sale->client->cuit,

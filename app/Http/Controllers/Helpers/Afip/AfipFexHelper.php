@@ -31,7 +31,14 @@ class AfipFexHelper
 
         $this->create_afip_ticket();
 
-        $this->numero_comprobante = Self::set_numero_comprobante($this->wsfex, $this->sale->afip_information->punto_venta, $this->sale->afip_tipo_comprobante->codigo);
+        $res_numero_comprobante = Self::set_numero_comprobante($this->wsfex, $this->sale->afip_information->punto_venta, $this->sale->afip_tipo_comprobante->codigo);
+
+        if (!$res_numero_comprobante['hubo_un_error']) {
+            $this->numero_comprobante = $res_numero_comprobante['numero_comprobante'];
+        } else {
+            return false;
+        }
+        
 
         $this->update_afip_ticket_numero_comprobante();
 
@@ -229,12 +236,16 @@ class AfipFexHelper
 
     static function get_fex_params($data) {
 
+        Log::info('get_fex_params data:');
+        Log::info($data);
+        $id = $data["Cbte_Tipo"] . $data["Punto_vta"] . $data["Cbte_nro"];
+        Log::info('id: '.$id);
 
         $params = new \stdClass();
 
         //Enbezado *********************************************
         $params->Cmp = new \stdClass();
-        $params->Cmp->Id = floatVal($data["Cbte_Tipo"] . $data["Punto_vta"] . $data["Cbte_nro"]);
+        $params->Cmp->Id = (float)$id;
         $params->Cmp->Fecha_cbte = $data["Fecha_cbte"]; // [N]
         $params->Cmp->Cbte_Tipo = $data["Cbte_Tipo"]; // FEXGetPARAM_Cbte_Tipo
         $params->Cmp->Punto_vta = $data["Punto_vta"];

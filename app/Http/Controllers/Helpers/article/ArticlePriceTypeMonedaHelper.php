@@ -47,14 +47,17 @@ class ArticlePriceTypeMonedaHelper {
             // Log::info('percentage: '.$percentage);
             // Log::info('final_price: '.$final_price);
 
-            if ($setear_precio_final) {
+            if ($cost && $cost > 0) {
+                
+                if ($setear_precio_final) {
 
-                $percentage = ($final_price - $cost) / $cost * 100;
+                    $percentage = ($final_price - $cost) / $cost * 100;
 
-            } else {
+                } else {
 
-                $final_price = $cost + ($cost * (float)$percentage / 100);
+                    $final_price = $cost + ($cost * (float)$percentage / 100);
 
+                }
             }
 
             if (

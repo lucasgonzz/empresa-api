@@ -119,7 +119,8 @@ class CompanyPerformanceHelper {
 
                 $company_performance = $performance_helper->create_company_performance();
 
-            } else if ($company_performance->created_at->between($inicio_del_mes, $fin_del_mes)) {
+            // } else if ($company_performance->created_at->between($inicio_del_mes, $fin_del_mes)) {
+            } else {
 
                 // Si existe pero se creo el mismo mes del cual es el reporte, significa que seguro pasaron cosas desde que se creo, entonces se Borrar y vuelve a crear
 

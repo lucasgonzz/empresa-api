@@ -328,10 +328,10 @@ class SaleAfipTicketPdf extends fpdf {
 
 	function printImportes() {
 
+		$importes = $this->afip_helper->getImportes();
 		if ($this->sale->afip_ticket->cbte_letra == 'A') {
 
-			$importes = $this->afip_helper->getImportes();
-			$this->x = 5;
+			$this->x = 110;
 			$this->y += 5;
 			$this->SetFont('Arial', 'B', 9);
 
@@ -340,16 +340,20 @@ class SaleAfipTicketPdf extends fpdf {
 
 			foreach ($importes['ivas'] as $iva => $importe) {
 				if ($importe['Importe'] > 0) {
-					$this->x = 5;
+					$this->x = 110;
 					$this->Cell(40, 5, 'IVA '.$iva.'%: ', 1, 0, 'L');
 					$this->Cell(40, 5, '$'.Numbers::price($importe['Importe']), 1, 1, 'L');
 				}
 			}
 			
-			$this->x = 5;
-			$this->Cell(40, 5, 'Importe Total: ', 1, 0, 'L');
-			$this->Cell(40, 5, '$'.Numbers::price($importes['total']), 1, 0, 'L');
+		} else {
+			$this->y += 5;
 		}
+
+		$this->SetFont('Arial', 'B', 12);
+		$this->x = 125;
+		$this->Cell(40, 7, 'Importe Total: ', 1, 0, 'L');
+		$this->Cell(40, 7, '$'.Numbers::price($importes['total']), 1, 0, 'R');
 	}
 
 	function printLine() {
@@ -409,6 +413,8 @@ class SaleAfipTicketPdf extends fpdf {
 	}
 
 	function printQR() {
+
+		if (env('APP_ENV') == 'local') return;
 
 		$pdf = new AfipQrPdf($this, $this->sale, false);
 		$pdf->printQr();
@@ -764,6 +770,9 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->SetXY(5, 5);
 		$this->printTicketCommerceInfo();
 		$this->printClientInfo();
+
+		$this->info_exportacion();
+
 		$this->printTableHeader();
 	}
 
@@ -787,6 +796,75 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->printCommerceInfo();
 		$this->printAfipTicketInfo();
 		$this->printCommerceLines();
+	}
+
+	function info_exportacion() {
+
+		if ($this->sale->afip_ticket->cbte_letra == 'E') {
+
+
+			$this->y += 7;
+			$divisa = 'USD - Dólar Estadounidense';
+			$this->par_de_valores([
+				'title'	=> 'Divisa:',
+				'value'	=> $divisa,
+				'title_w'	=> 15,
+			]);
+
+
+			$this->par_de_valores([
+				'title'	=> 'Destino del Comprobante:',
+				'value'	=> $this->sale->client->pais_exportacion->name,
+			]);
+
+
+			$this->par_de_valores([
+				'title'	=> 'Forma de Pago:',
+				'value'	=> "ANTICIPADO - Moneda Extranjera",
+				'title_w'	=> 25,
+			]);
+
+
+			$this->par_de_valores([
+				'title'	=> 'Incoterms:',
+				'value'	=> $this->sale->incoterms && $this->sale->incoterms != 0 ? $this->sale->incoterms : 'FOB',
+				'title_w'	=> 20,
+			]);
+
+
+			$this->print_lines_exportacion();
+
+			$this->y += 3;
+
+		}
+	}
+
+	function par_de_valores($data) {
+
+		$this->x = isset($data['x']) ? $data['x'] : 6;
+
+		$title_w = isset($data['title_w']) ? $data['title_w'] : 40;
+		$value_w = isset($data['value_w']) ? $data['value_w'] : 50;
+
+		$this->SetFont('Arial', 'B', 8);
+		$this->Cell($title_w, 5, $data['title'], 0, 0, 'L');
+		$this->SetFont('Arial', '', 8);
+		$this->Cell($value_w, 5, $data['value'], 0, 1, 'L');
+	}
+
+	function print_lines_exportacion() {
+		// $this->SetLineWidth(3);
+		$this->SetLineWidth(.3);
+
+		$y_inicial = $this->y - 20;
+		// Arriba
+		$this->Line(5, $y_inicial, 205, $y_inicial);
+		// Abajo
+		$this->Line(5, $this->y, 205, $this->y);
+		// Izquierda
+		$this->Line(5, $y_inicial , 5, $this->y);
+		// Derecha
+		$this->Line(205, $y_inicial, 205, $this->y);
 	}
 
 	function printClientInfo() {
@@ -821,20 +899,25 @@ class SaleAfipTicketPdf extends fpdf {
 			} else {
 				$this->Cell(50, 5, 'IVA consumidor final', 0, 1, 'L');
 			}
+
+			$this->SetX(6);
+			$this->SetFont('Arial', 'B', 8);
+			$this->Cell(32, 5, 'Condición de venta:', 0, 0, 'L');
+			$this->SetFont('Arial', '', 8);
+			$this->Cell(50, 5,  $this->getPaymentMethod(), 0, 1, 'L');
+		} else {
+
+			$this->SetX(6);
+			$this->SetFont('Arial', 'B', 8);
+			$this->Cell(32, 5, 'ID Impositivo:', 0, 0, 'L');
+			$this->SetFont('Arial', '', 8);
+			$this->Cell(50, 5,  $this->sale->client->cuit, 0, 1, 'L');
+
+			// CUIT País: 55000000042 (BOLIVIA - Persona Jurídica) 
 		}
 		
 		
-		// if ($this->sale->afip_ticket->iva_cliente != '') {
-		// 	$this->Cell(50, 5, 'IVA '.$this->sale->afip_ticket->iva_cliente, 0, 1, 'L');
-		// } else {
-		// 	$this->Cell(50, 5, 'IVA consumidor final', 0, 1, 'L');
-		// }
 
-		$this->SetX(6);
-		$this->SetFont('Arial', 'B', 8);
-		$this->Cell(32, 5, 'Condición de venta:', 0, 0, 'L');
-		$this->SetFont('Arial', '', 8);
-		$this->Cell(50, 5,  $this->getPaymentMethod(), 0, 1, 'L');
 
 		// Razon social
 		if (!is_null($this->sale->client)) {
@@ -980,7 +1063,7 @@ class SaleAfipTicketPdf extends fpdf {
 	}
 
 	function printTableHeader() {
-		$this->SetY(70);
+		// $this->SetY(70);
 		$this->SetX(5);
 		$this->SetFont('Arial', 'B', 9, 'L');
 		$this->Cell($this->widths['codigo'], 5, 'Código', 1, 0, 'L');

@@ -15,7 +15,7 @@ class set_costo_ventas extends Command
      *
      * @var string
      */
-    protected $signature = 'set_costo_ventas';
+    protected $signature = 'set_costo_ventas {--solo_ventas_de_hoy}';
 
     /**
      * The console command description.
@@ -41,9 +41,12 @@ class set_costo_ventas extends Command
      */
     public function handle()
     {
-        $sales = Sale::orderBy('id', 'ASC')
-                            // ->where('created_at', '>', Carbon::today()->subMonths(1)->startOfMonth())
-                            ->get();
+        $sales = Sale::orderBy('id', 'ASC');
+
+        if ($this->option('solo_ventas_de_hoy')) {
+            $sales->where('created_at', '>=', Carbon::today()->startOfDay());
+        }
+        $sales = $sales->get();
 
         $user = User::find($sales[0]->user_id);
 

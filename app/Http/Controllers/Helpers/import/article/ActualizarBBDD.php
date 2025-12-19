@@ -680,6 +680,7 @@ class ActualizarBBDD {
         foreach ($addresses as $address) {
 
             if (!is_null($address['amount'])) {
+                Log::info('Se van a agregar '.$address['amount'].' a address_id '.$address['address_id']);
                 $data['to_address_id'] = $address['address_id'];
                 $data['amount'] = $address['amount'];
                 $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id);
