@@ -999,7 +999,7 @@ class SaleHelper extends Controller {
 
         foreach ($sale->articles as $article) {
             $total_articles += Self::getTotalItem($article);
-            // Log::info('Sumando '.$total_articles.' de '.$article->name);
+            Log::info('Sumando '.$total_articles.' de '.$article->name);
         }
         foreach ($sale->combos as $combo) {
             $total_combos += Self::getTotalItem($combo);
@@ -1057,7 +1057,11 @@ class SaleHelper extends Controller {
         // if (!is_null($item->pivot->returned_amount)) {
         //     $amount -= $item->pivot->returned_amount;
         // }
+        Log::info('getTotalItem:');
+        Log::info('amount: '.$amount);
+        Log::info('price: '.$item->pivot->price);
         $total = $item->pivot->price * $amount;
+        Log::info('total: '.$total);
         if (!is_null($item->pivot->discount)) {
             $total -= $total * ($item->pivot->discount / 100);
         }

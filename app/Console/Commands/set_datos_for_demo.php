@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\Seeders\SaleSeederHelper;
 use App\Http\Controllers\Helpers\caja\CajaAperturaHelper;
 use App\Models\Address;
 use App\Models\Article;
@@ -23,7 +24,7 @@ class set_datos_for_demo extends Command
      *
      * @var string
      */
-    protected $signature = 'set_datos_for_demo';
+    protected $signature = 'set_datos_for_demo {primera_vez?}';
 
     /**
      * The console command description.
@@ -49,16 +50,75 @@ class set_datos_for_demo extends Command
      */
     public function handle()
     {
-        $this->crear_cajas();
-        
-        $this->set_article_prices();
 
-        $this->set_user_info();
+        if ($this->argument('primera_vez')) {
 
-        $this->set_sales_prices();
+            $this->crear_cajas();
+            
+            $this->set_article_prices();
+
+            $this->set_user_info();
+
+            $this->set_sales_prices();
+        }
+
+        $this->crear_sales();
 
 
         return 0;
+    }
+
+    function crear_sales() {
+
+        $employees = User::whereNotNull('owner_id')->get();
+
+        $num = 100000;
+
+        $ventas = [];
+
+        foreach ($employees as $employee) { 
+
+            $price_vender = rand(10000, 10000);
+            $address_id = rand(1, 2);
+
+            $amount = rand(1, 10);
+            $total = $price_vender * $amount;
+
+            $ventas[] = [
+                'num'               => $num,
+                'total'             => $total,
+                'employee_id'       => $employee->id,
+                'address_id'        => $address_id,
+                'client_id'         => $address_id < 3 ? 1 : null,
+                'articles'          => [
+                    [
+                        'id'            => 1,
+                        'price_vender'  => $price_vender,
+                        'cost'          => $price_vender / 2,
+                        'amount'        => $amount,
+                    ],
+                ],
+                'payment_methods'   => [
+                    [
+                        'id'        => rand(1,2),
+                        'amount'    => $total / 4,
+                    ],
+                    [
+                        'id'        => rand(3,5),
+                        'amount'    => ($total / 4) * 2,
+                    ],
+                    [
+                        'id'        => 5,
+                        'amount'    => $total / 4,
+                    ],
+                ],
+                'created_at'    => Carbon::now(),
+            ];
+            $num++;
+        }
+
+        SaleSeederHelper::create_sales($ventas);
+
     }
 
     function set_sales_prices() {
@@ -108,7 +168,6 @@ class set_datos_for_demo extends Command
 
         $this->info('Listo ventas');
 
-
     }
 
     function crear_cajas() {
@@ -140,8 +199,6 @@ class set_datos_for_demo extends Command
 
                 $helper = new CajaAperturaHelper($caja->id);
                 $helper->abrir_caja();
-
-
 
                 DefaultPaymentMethodCaja::create([
                     'current_acount_payment_method_id'  => $payment_method->id,

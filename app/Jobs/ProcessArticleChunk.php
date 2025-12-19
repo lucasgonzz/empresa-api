@@ -56,7 +56,7 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
             }
 
             if (env('APP_ENV') == 'local') {
-                sleep(2);
+                // sleep(2);
             }
 
             $extension = pathinfo($this->archivo_excel_path, PATHINFO_EXTENSION);

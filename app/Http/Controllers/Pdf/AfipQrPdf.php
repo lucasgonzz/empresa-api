@@ -23,7 +23,7 @@ class AfipQrPdf {
     	} else {
 
         	$this->afip_logo_width = 40;
-        	$this->afip_logo_height = 10;
+        	$this->afip_logo_height = 20;
 			$this->img_start_x = 5;
 			$this->afip_img_start_x = 60;
     	}
@@ -91,8 +91,10 @@ class AfipQrPdf {
 
 	function logo_afip() {
 
-    	$img_url = public_path().'/afip/logo.png';
+    	$img_url = public_path().'/afip/logo.jpg';
         
+	    $this->instance->y -= 10;
+
         $this->instance->Image($img_url, $this->afip_img_start_x, $this->instance->y, $this->afip_logo_width);
 
         $this->instance->y += $this->afip_logo_height;

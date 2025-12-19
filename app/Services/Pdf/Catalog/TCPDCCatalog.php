@@ -124,7 +124,7 @@ class TCPDCCatalog extends TCPDF
 
             // Nombre y precios
             $this->SetFont('helvetica', 'B', 14);
-            $this->SetXY($x + 50, $y + 8);
+            $this->SetXY($x + 50, $y + 2);
 
             $this->MultiCell(0, 8, $article->name, 0, 'L', false);
             

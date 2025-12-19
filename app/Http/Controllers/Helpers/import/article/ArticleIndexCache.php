@@ -105,6 +105,7 @@ class ArticleIndexCache
         } else {
             Log::info('cache en memoria:');
             Log::info(count(Self::get($user_id)['ids']).' articulos del provider_id '.$provider_id);
+            Log::info(Self::get($user_id));
         }
     }
 
@@ -134,8 +135,8 @@ class ArticleIndexCache
         //     $index = Cache::get($key);
         // }
 
-        // Log::info('find, data:');
-        // Log::info($data);
+        Log::info('find, data:');
+        Log::info($data);
 
         $article_id = null;
 
@@ -174,7 +175,7 @@ class ArticleIndexCache
         // 4) Buscar por provider_code 
         elseif (!empty($data['provider_code'])) {
 
-            // Log::info('Buscando por provider_code');
+            Log::info('Buscando por provider_code');
             $provider_code = $data['provider_code'];
 
             $article_ids = [];
@@ -219,6 +220,8 @@ class ArticleIndexCache
                     return Article::whereIn('id', $article_ids)->get();
                 } else {
 
+                    Log::info('Filtrando articles con ids: ');
+                    Log::info($article_ids);
                     return Article::whereIn('id', $article_ids)->first();
                 }
             }
@@ -440,7 +443,12 @@ class ArticleIndexCache
 
                 $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article->id;
             } else {
-                $index['provider_codes'][$article->provider_id][$article->provider_code] = $article->id;
+
+                if (!isset($index['provider_codes'][$article->provider_id][$article->provider_code])) {
+                    $index['provider_codes'][$article->provider_id][$article->provider_code] = [];
+                }
+
+                $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article->id;
             }
         }
 
