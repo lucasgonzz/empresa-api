@@ -24,21 +24,34 @@ class AfipController extends Controller
         //     ->orderBy('created_at', 'ASC')
         //     ->get();
 
-        $afip_tickets = AfipTicket::whereHas('sale', function($q) {
-                                        $q->where('user_id', $this->userId());
-                                    })
-                                    ->whereBetween('created_at', [$inicioCarbon, $finCarbon])
+        // $afip_tickets = AfipTicket::whereHas('sale', function($q) {
+        //                                 $q->where('user_id', $this->userId());
+        //                             })
+        //                             ->whereBetween('created_at', [$inicioCarbon, $finCarbon])
+        //                             ->orderBy('created_at', 'ASC')
+        //                             ->get();
+        
+        $afip_tickets = AfipTicket::whereBetween('created_at', [$inicioCarbon, $finCarbon])
                                     ->orderBy('created_at', 'ASC')
                                     ->get();
 
         $lines = [];
 
         foreach ($afip_tickets as $afip_ticket) {
-            $sale = $afip_ticket->sale;
-            $ticket = $afip_ticket;
-            $info = $afip_ticket->sale->afip_information;
 
+            $ticket = $afip_ticket;
             if (!$ticket || !$ticket->cae) continue;
+
+            $sale = $afip_ticket->sale;
+            if (is_null($sale)) {
+                $sale = Sale::find($afip_ticket->sale_nota_credito_id);
+            }
+
+            if (is_null($sale)) {
+                dd('No hay sale para afip_ticket '.$afip_ticket->id);
+            }
+
+
 
             $fecha = Carbon::parse($ticket->created_at)->format('Ymd');
             $tipo_comprobante = str_pad($ticket->cbte_tipo, 3, '0', STR_PAD_LEFT);
@@ -50,7 +63,12 @@ class AfipController extends Controller
 
             $res = AfipSolicitarCaeHelper::get_doc_client($sale);
             $codigo_doc = str_pad($res['doc_type'], 2, '0', STR_PAD_LEFT); // 96 = DNI
-            $nro_doc = str_pad($res['doc_client'], 20, '0', STR_PAD_LEFT);
+
+            $nro_doc = $res['doc_client'];
+            if ($nro_doc == 'NR') {
+                $nro_doc = 00;
+            }
+            $nro_doc = str_pad($nro_doc, 20, '0', STR_PAD_LEFT);
 
             $client_name = "SINNOMBRE";
             if ($sale->client) {
@@ -115,10 +133,7 @@ class AfipController extends Controller
         $finCarbon = Carbon::parse($fin)->endOfMonth();
 
 
-        $afip_tickets = AfipTicket::whereHas('sale', function($q) {
-                                        $q->where('user_id', $this->userId());
-                                    })
-                                    ->whereBetween('created_at', [$inicioCarbon, $finCarbon])
+        $afip_tickets = AfipTicket::whereBetween('created_at', [$inicioCarbon, $finCarbon])
                                     ->orderBy('created_at', 'ASC')
                                     ->get();
 
@@ -126,10 +141,20 @@ class AfipController extends Controller
 
         foreach ($afip_tickets as $afip_ticket) {
             $ticket = $afip_ticket;
-            if (!$ticket) continue; // seguridad
+
+            if (!$ticket->cae) continue; // seguridad
+
+            $sale = $afip_ticket->sale;
+            if (is_null($sale)) {
+                $sale = Sale::find($afip_ticket->sale_nota_credito_id);
+            }
+
+            if (is_null($sale)) {
+                dd('No hay sale para afip_ticket '.$afip_ticket->id);
+            }
 
             // Calculamos importes de IVA discriminados
-            $afip_helper = new AfipHelper($afip_ticket->sale);
+            $afip_helper = new AfipHelper($sale);
             $importes = $afip_helper->getImportes();
             $ivas = $importes['ivas'];
 

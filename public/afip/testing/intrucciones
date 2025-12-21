@@ -1,0 +1,14 @@
+Creo una firma: openssl genrsa -out afip_private.key 2048
+Creo el pedido del certificado y completo con los soguientes datos: openssl req -new -key afip_private.key -out afip.csr
+| Campo               | Qué poner            |
+| ------------------- | -------------------- |
+| Country Name        | AR                   |
+| State               | Buenos Aires         |
+| Locality            | CABA                 |
+| Organization        | Comerciocity         |
+| Organizational Unit | Sistemas             |
+| **Common Name**     | **CUIT 20423548984** |
+| Email               | el tuyo              |
+Entro a AFIP -> WSASS Autoservicio de Acceso a WebServices -> Nuevo certificado y pego el contenido del "pedido del certificado".
+Guardo lo que me devuelve en un nuevo archivo: certificado_afip.crt 
+Lo convierto a PEM: openssl x509 -in certificado_afip.crt -out afip_cert.pem

@@ -804,7 +804,13 @@ class SaleAfipTicketPdf extends fpdf {
 
 
 			$this->y += 7;
-			$divisa = 'USD - Dólar Estadounidense';
+			$divisa = "Peso Argentino";
+
+			if ($this->sale->moneda_id == 2) {
+
+				$divisa = 'USD - Dólar Estadounidense';
+			}
+			
 			$this->par_de_valores([
 				'title'	=> 'Divisa:',
 				'value'	=> $divisa,
@@ -818,11 +824,11 @@ class SaleAfipTicketPdf extends fpdf {
 			]);
 
 
-			$this->par_de_valores([
-				'title'	=> 'Forma de Pago:',
-				'value'	=> "ANTICIPADO - Moneda Extranjera",
-				'title_w'	=> 25,
-			]);
+			// $this->par_de_valores([
+			// 	'title'	=> 'Forma de Pago:',
+			// 	'value'	=> "ANTICIPADO - Moneda Extranjera",
+			// 	'title_w'	=> 25,
+			// ]);
 
 
 			$this->par_de_valores([
@@ -952,11 +958,13 @@ class SaleAfipTicketPdf extends fpdf {
 	function printCommerceInfo() {
 
 		// Razon social
-		$this->SetY(19);
-		$this->SetX(42);
+		$this->SetY(17);
+		$this->SetX(40);
 		// $this->SetFont('Arial', 'B', 9);
 		// $this->Cell(23,12,'Razón Social:',0,0,'L');
 		$this->SetFont('Arial', 'B', 12);
+
+		$start_y = $this->y;
 	    $this->MultiCell( 
 			55, 
 			6, 
@@ -965,30 +973,41 @@ class SaleAfipTicketPdf extends fpdf {
 	    	'L', 
 	    	false
 	    );
+		// $this->SetY(32);
 
-		$this->SetY(32);
 		// Domicilio
-		$this->SetX(42);
-		$this->SetFont('Arial', 'B', 9);
-		$this->Cell(20,5,'Domicilio:',0,0,'L');
+		$this->SetX(40);
+
+		// $this->SetFont('Arial', 'B', 9);
+		// $this->Cell(20,5,'Domicilio:',0,0,'L');
+
 		$this->SetFont('Arial', '', 9);
-		$this->Cell(50,5,$this->afip_information->domicilio_comercial,0,1,'L');
+
+		$start_y = $this->y;
+	    $this->MultiCell( 
+			55, 
+			5, 
+			$this->afip_information->domicilio_comercial, 
+	    	0, 
+	    	'L', 
+	    	false
+	    );
 
 		// Iva
-		$this->SetX(42);
+		$this->SetX(40);
 		$this->SetFont('Arial', 'B', 9);
 		$this->Cell(20,5,'IVA:',0,0,'L');
 		$this->SetFont('Arial', 'B', 9);
 		// $this->Cell(50,5,'IVA '.Auth()->user()->iva->name,0,0,'L');
 		$this->Cell(50,5,'IVA '.$this->afip_information->iva_condition->name,0,1,'L');
 
-		$this->SetX(42);
+		$this->SetX(40);
 		$this->Cell(20,4,'Telefono:',0,0,'L');
 		$this->Cell(50,4,$this->user->phone,0,1,'L');
 		
 		// Inicio actividades
 		if ($this->afip_information->inicio_actividades != '') {
-			$this->SetX(42);
+			$this->SetX(40);
 			$this->SetFont('Arial', 'B', 9);
 			$this->Cell(20,4,'Inicio Act:', 0, 0,'L');
 			$this->Cell(25,4,date_format($this->afip_information->inicio_actividades, 'd/m/Y'), 0, 1,'L');

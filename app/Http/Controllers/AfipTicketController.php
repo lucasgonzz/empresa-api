@@ -3,6 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
+use App\Http\Controllers\Helpers\Afip\AfipWsfeHelper;
+use App\Models\AfipTicket;
 use App\Models\Sale;
 use Illuminate\Http\Request;
 
@@ -101,4 +104,23 @@ class AfipTicketController extends Controller
 
         return response()->json(['models' => $errores_de_facturacion], 200);
     }       
+
+    function consultar_comprobante($afip_ticket_id) {
+
+        $afip_ticket = AfipTicket::find($afip_ticket_id);
+
+        if ($afip_ticket) {
+
+            $testing = !$afip_ticket->afip_information->afip_ticket_production;
+            
+            $afip_wsaa = new AfipWSAAHelper($testing, 'wsfe');
+            $afip_wsaa->checkWsaa();
+
+            $afip = new AfipWsfeHelper($afip_ticket, $testing);
+
+            $afip->consultar_comprobante();
+        }
+
+        return response()->json(['sale' => $this->fullModel('Sale', $afip_ticket->sale_id)], 200);
+    }
 }
