@@ -14,10 +14,11 @@ require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class SaleTicketPdf extends fpdf {
 
-	function __construct($sale) {
+	function __construct($afip_ticket) {
 		$this->line_height = 5;
 		$this->user = UserHelper::getFullModel();
-		$this->sale = $sale;
+		$this->afip_ticket = $afip_ticket;
+		$this->sale = $afip_ticket->sale;
 
 		$this->x_incial = 4;
 
@@ -45,7 +46,7 @@ class SaleTicketPdf extends fpdf {
 
 	function afipInformation() {
 
-		$afip_information = SalePdfHelper::get_afip_information($this->sale, $this->user);
+		$afip_information = $this->afip_ticket->afip_information;
 
 		if (!is_null($afip_information)) {
 			$this->SetFont('Arial', '', 10);
@@ -160,27 +161,35 @@ class SaleTicketPdf extends fpdf {
 
 		$this->MultiCell($ancho_cell, 7, $this->user->company_name, $this->b, 'L', 0);
 
-		$address = null;
-		if (!is_null($this->sale->afip_information)) {
-			$address = $this->sale->afip_information->domicilio_comercial;
+		$domicilio = null;
+		if (!is_null($this->afip_ticket->afip_information)) {
+			$domicilio = $this->afip_ticket->afip_information->domicilio_comercial;
 		} else {
 			$punto_venta = AfipInformation::where('user_id', $this->user->id)
 										->first();
 
 			if ($punto_venta) {
-				$address = $punto_venta->domicilio_comercial;
+				$domicilio = $punto_venta->domicilio_comercial;
 			}
 		}
 
 		$this->SetFont('Arial', '', 10);
-		if ($address) {
+		if ($domicilio) {
 
 			$this->x = $x_incial_logo;	
-			$this->MultiCell($ancho_cell, 7, $address, $this->b, 'L', 0);
+			$this->MultiCell($ancho_cell, 7, $domicilio, $this->b, 'L', 0);
+		}
+
+		$phone = $this->user->phone;
+		if (
+			$this->sale->address 
+			&& $this->sale->address->phone 
+		) {
+			$phone = $this->sale->address->phone;
 		}
 
 		$this->x = $x_incial_logo;	
-		$this->Cell($ancho_cell, 7, 'Tel: '.$this->user->phone, $this->b, 1, 'L');
+		$this->Cell($ancho_cell, 7, 'Tel: '.$phone, $this->b, 1, 'L');
 
 
 		$this->y = $ancho_cell;

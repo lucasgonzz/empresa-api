@@ -51,6 +51,8 @@ class BudgetHelper {
 	            'total' 				=> $budget->total,
 	            'address_id' 			=> $budget->address_id,
 	            'moneda_id' 			=> $budget->moneda_id,
+	            'discounts_in_services'	=> $budget->discounts_in_services,
+	            'surchages_in_services'	=> $budget->surchages_in_services,
             	'price_type_id'         => Self::get_price_type_id($budget),
             	'employee_id'           => SaleHelper::getEmployeeId(),
 	            'save_current_acount' 	=> Self::get_guardar_cuenta_corriente($budget),

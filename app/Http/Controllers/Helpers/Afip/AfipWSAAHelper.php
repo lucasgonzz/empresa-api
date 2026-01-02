@@ -28,8 +28,8 @@ class AfipWSAAHelper {
         }
 
         if ($this->testing) {
-            $this->cert = 'file://'.realpath(public_path().'/afip/testing/MiCertificado.pem');
-            $this->private_key = 'file://'.realpath(public_path().'/afip/testing/MiClavePrivada.key');
+            $this->cert = 'file://'.realpath(public_path().'/afip/testing/afip_cert.pem');
+            $this->private_key = 'file://'.realpath(public_path().'/afip/testing/afip_private.key');
             $this->url_wsaa = 'https://wsaahomo.afip.gov.ar/ws/services/LoginCms';
         } else {
             $this->cert = 'file://'.realpath(public_path().'/afip/production/comerciocity-alias_43833c08ea3711fd.crt');

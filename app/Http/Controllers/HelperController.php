@@ -8,6 +8,7 @@ use App\Http\Controllers\ArticlePerformanceController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartArticleAmountInsificienteHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
@@ -24,6 +25,7 @@ use App\Jobs\ProcessCheckSaldos;
 use App\Jobs\ProcessRecalculateCurrentAcounts;
 use App\Jobs\ProcessSetStockResultante;
 use App\Jobs\SetSalesTerminadaAtJob;
+use App\Models\Afip\WSFE;
 use App\Models\Article;
 use App\Models\ArticlePriceTypeMoneda;
 use App\Models\Budget;
@@ -69,6 +71,58 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null, $param_2 = null) {
         $this->{$method}($param, $param_2);
+    }
+
+    function cf_articles() {
+        $articles = Article::where('provider_id', 5)
+                            ->get();
+
+        foreach ($articles as $article) {
+            $article->name = $article->bar_code;
+            $article->bar_code = null;
+            $article->timestamps = false;
+            $article->save();
+        }
+
+        echo 'Listo';
+        
+    }
+
+    function consultar_afip() {
+
+        $data = [
+            // 'cuit'      => '30716582899',
+            'cuit'      => '20292700599',
+            'CbteTipo'  => 1,
+            'CbteNro'   => 94,
+            'PtoVta'    => 12,
+        ];
+
+
+        $afip_wsaa = new AfipWSAAHelper(false, 'wsfe');
+        $afip_wsaa->checkWsaa();
+
+        $wsfe = new WSFE([
+            'testing'=> false, 
+            'cuit_representada' => $data['cuit'] 
+        ]);
+
+        $wsfe->setXmlTa(file_get_contents(TA_file));
+
+        $invoice = [
+            'FeCompConsReq' => [
+                'CbteTipo' => $data['CbteTipo'],
+                'CbteNro' => $data['CbteNro'],
+                'PtoVta' => $data['PtoVta'],
+           ]
+        ];
+
+        $result = $wsfe->FECompConsultar($invoice);
+        
+        Log::info('consultar_comprobante:');
+
+        $result = (array)$result['result'];
+        Log::info($result);
     }
 
     function poner_stocks_en_0() {

@@ -24,6 +24,7 @@ class limpiar_tienda_nube extends Command
         $this->info("Eliminando productos...");
         $products = Http::withHeaders($headers)->get("$base_url/products")->json();
 
+        $this->info(count($products).' productos');
         foreach ($products as $product) {
             $this->line("Eliminando producto ID: {$product['id']}");
             Http::withHeaders($headers)->delete("$base_url/products/{$product['id']}");

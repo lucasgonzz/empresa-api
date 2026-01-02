@@ -79,6 +79,11 @@ class SearchController extends Controller
 
                 } else if (isset($filter['key'])) {
 
+                    // Log::info('Entro');
+                    // Log::info($filter['type'] == 'select');
+                    // Log::info(isset($filter['igual_que']));
+                    // Log::info($filter['igual_que'] !== 0); 
+
                     $key = $filter['key'];
 
                     if ($key == 'num' && $model_name_param == 'article') {
@@ -166,7 +171,7 @@ class SearchController extends Controller
 
                     } else if ($filter['type'] == 'select' 
                         && isset($filter['igual_que'])
-                        && $filter['igual_que'] != 0
+                        && $filter['igual_que'] !== 0
                     ) {
                         
                         $models = $models->where($filter['key'], $filter['igual_que']);

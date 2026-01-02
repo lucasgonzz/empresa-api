@@ -29,6 +29,7 @@ use App\Http\Controllers\Helpers\sale\UpdateHelper;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SellerCommissionController;
 use App\Http\Controllers\StockMovementController;
+use App\Models\AfipTicket;
 use App\Models\Article;
 use App\Models\ArticleVariant;
 use App\Models\Cart;
@@ -313,10 +314,20 @@ class SaleHelper extends Controller {
     // }
 
     static function set_total_a_facturar($sale, $request) {
-        if (!is_null($sale->afip_information_id) && $sale->afip_information_id != 0) {
+
+        if (
+            !is_null($request->afip_information_id) 
+            && $request->afip_information_id != 0
+        ) {
+
+            $afip_ticket = new AfipTicket();
+            $afip_ticket->afip_information_id = $request->afip_information_id;
+            $afip_ticket->afip_tipo_comprobante_id = $request->afip_tipo_comprobante_id;
+            $afip_ticket->facturar_importe_personalizado = null;
+            $afip_ticket->sale = $sale;
 
 
-            $afip_helper = new AfipHelper($sale);
+            $afip_helper = new AfipHelper($afip_ticket);
             $importes = $afip_helper->getImportes();
             Log::info('pidiendo total_a_facturar: '.$importes['total']);
 
@@ -774,6 +785,23 @@ class SaleHelper extends Controller {
                                         ->whereNull('haber')
                                         ->first();
         if (!is_null($current_acount)) {
+
+
+
+            /* 
+                Chequeo si habia un pago especifico (con tu_pay_id) para esta venta
+                Si lo habia, libero ese pago para que aporte a otras ventas
+            */
+            $pago = CurrentAcount::where('to_pay_id', $current_acount->id)
+                                ->first();
+
+            if ($pago) {
+                $pago->to_pay_id = null;
+                $pago->save();
+            }
+
+
+            // Elimino current_acount de la venta
             $current_acount->pagado_por()->detach();
             $current_acount->delete();
         }

@@ -57,7 +57,7 @@ class CurrentAcount extends Model
     }
 
     public function afip_ticket() {
-        return $this->hasOne('App\Models\AfipTicket', 'nota_credito_id');
+        return $this->hasOne(AfipTicket::class, 'nota_credito_id');
     }
 
     public function to_pay() {

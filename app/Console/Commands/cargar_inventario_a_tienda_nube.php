@@ -13,7 +13,7 @@ class cargar_inventario_a_tienda_nube extends Command
      *
      * @var string
      */
-    protected $signature = 'cargar_inventario_a_tienda_nube {cantidad} {omitir_los_primeros?}';
+    protected $signature = 'cargar_inventario_a_tienda_nube {cantidad?} {omitir_los_primeros?}';
 
     /**
      * The console command description.
@@ -42,9 +42,13 @@ class cargar_inventario_a_tienda_nube extends Command
 
         $articles = Article::whereHas('images')
                             ->where('user_id', env('USER_ID'))
-                            ->orderBy('id', 'DESC')
-                            ->take($this->argument('cantidad'))
-                            ->get();
+                            ->orderBy('id', 'DESC');
+
+        if ($this->argument('cantidad')) {
+
+            $articles->take($this->argument('cantidad'));
+        }
+        $articles = $articles->get();
 
         $this->info(count($articles).' articulos');
 
