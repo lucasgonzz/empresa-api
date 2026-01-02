@@ -219,6 +219,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // AFIP / Problemas al facturar
     Route::get('afip-ticket/problemas-al-facturar', 'AfipTicketController@problemas_al_facturar');
+    Route::get('afip-ticket/consultar-comprobante/{afip_ticket_id}', 'AfipTicketController@consultar_comprobante');
+
+
+    Route::delete('afip-ticket/{id}', 'AfipTicketController@destroy');
 
 
     Route::get('sale-modifications/{sale_id}', 'SaleModificationController@index');

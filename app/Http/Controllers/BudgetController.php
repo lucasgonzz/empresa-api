@@ -76,7 +76,6 @@ class BudgetController extends Controller
 
             $total_helper = (int)BudgetHelper::getTotal($model);
             $total_budget = (int)$model->total;
-            $total_budget = 1;
 
             // Calcula la diferencia absoluta
             $diferencia = abs($total_helper - $total_budget);

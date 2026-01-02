@@ -32,32 +32,30 @@ class AfipWsController extends Controller
     public $monto_minimo_para_factura_de_credito = 1357480;
     // public $monto_minimo_para_factura_de_credito = 546737;
 
-    function __construct($data) {
+    function __construct($afip_ticket) {
+
+        $this->afip_ticket = $afip_ticket;
         
-        if ($data['sale']) {
-            Log::info('AfipWsController __construct sale num: '.$data['sale']->num);
+        $this->testing = true;
+
+        if ($this->afip_ticket->afip_information->afip_ticket_production) {
+            $this->testing = false;
+        } 
+
+
+        
+        if ($this->afip_ticket->sale) {
+            Log::info('AfipWsController para sale id: '.$this->afip_ticket->sale->id);
         } else {
             Log::info('AfipWsController sale NULL');
         }
 
-        $this->sale = $data['sale'];
-        
-        $this->testing = true;
-
-        if ($this->sale->afip_information->afip_ticket_production) {
-            $this->testing = false;
-        } 
-
-        $this->ya_se_obtuvo_cae_desde_consultar_comprobante = false;
-
-        $this->afip_fecha_emision = $data['afip_fecha_emision'] ?? date('Y-m-d');
-
-        Log::info('AfipWsController sale id: '.$this->sale->id.' testing: '.$this->testing);
+        Log::info('AfipWsController sale id: '.$this->afip_ticket->sale->id.' testing: '.$this->testing);
     }
 
     function init() {
 
-        $afip_tipo_comprobante = $this->sale->afip_tipo_comprobante;
+        $afip_tipo_comprobante = $this->afip_ticket->afip_tipo_comprobante;
 
         // Comprobantes de exportación (si tipo es 19, 20, etc.)
         if (
@@ -68,14 +66,14 @@ class AfipWsController extends Controller
             $afip_wsaa->checkWsaa();
 
 
-            $helper = new AfipFexHelper($this->sale);
+            $helper = new AfipFexHelper($this->afip_ticket, $this->testing);
             
         } else {
             
             $afip_wsaa = new AfipWSAAHelper($this->testing, 'wsfe');
             $afip_wsaa->checkWsaa();
 
-            $helper = new AfipWsfeHelper(['sale' => $this->sale, 'afip_fecha_emision' => $this->afip_fecha_emision]);
+            $helper = new AfipWsfeHelper($this->afip_ticket, $this->testing);
         }
 
         $helper->procesar();

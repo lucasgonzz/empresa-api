@@ -3,8 +3,13 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Helpers\Afip\AfipFexHelper;
+use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
+use App\Http\Controllers\Helpers\Afip\AfipWsfeHelper;
+use App\Models\AfipTicket;
 use App\Models\Sale;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class AfipTicketController extends Controller
 {
@@ -42,7 +47,7 @@ class AfipTicketController extends Controller
                             ->with('afip_errors')
                             ->with('afip_observations')
                             ->with('employee')
-                            ->whereHas('afip_ticket', function($query) {
+                            ->whereHas('afip_tickets', function($query) {
                                 $query->whereNull('cae');
                             })
                             ->orderBy('created_at', 'DESC');
@@ -101,4 +106,48 @@ class AfipTicketController extends Controller
 
         return response()->json(['models' => $errores_de_facturacion], 200);
     }       
+
+    function consultar_comprobante($afip_ticket_id) {
+
+        $afip_ticket = AfipTicket::find($afip_ticket_id);
+
+        if ($afip_ticket) {
+
+            $afip_tipo_comprobante = $afip_ticket->afip_tipo_comprobante;
+
+            $testing = !$afip_ticket->afip_information->afip_ticket_production;
+
+            // Comprobantes de exportación (si tipo es 19, 20, etc.)
+            if (
+                $afip_tipo_comprobante->codigo == 19
+            ) {
+
+                Log::info('Exportacion');
+                $afip_wsaa = new AfipWSAAHelper($testing, 'wsfex');
+                $afip_wsaa->checkWsaa();
+
+
+                $helper = new AfipFexHelper($afip_ticket, $testing);
+                
+            } else {
+                
+                Log::info('NO Exportacion');
+                $afip_wsaa = new AfipWSAAHelper($testing, 'wsfe');
+                $afip_wsaa->checkWsaa();
+
+                $helper = new AfipWsfeHelper($afip_ticket, $testing);
+            }
+
+            $helper->consultar_comprobante();
+        }
+
+        return response()->json(['sale' => $this->fullModel('Sale', $afip_ticket->sale_id)], 200);
+    }
+
+    function destroy($id) {
+        $model = AfipTicket::find($id);
+        $sale_id = $model->sale_id;
+        $model->delete();
+        return response()->json(['sale' => $this->fullModel('Sale', $sale_id)], 200);
+    }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\Afip;
 
+use App\Http\Controllers\Helpers\Afip\AfipWsHelper;
 use App\Models\AfipError;
 use App\Models\AfipTicket;
 use App\Models\Afip\WSFEX;
@@ -11,15 +12,16 @@ use Illuminate\Support\Facades\Log;
 class AfipFexHelper
 {
 
-    public function __construct($sale) {
-        $this->sale = $sale;
-        $this->testing = !$this->sale->afip_information->afip_ticket_production;
+    public function __construct($afip_ticket) {
+        $this->afip_ticket = $afip_ticket;
+        $this->sale = $afip_ticket->sale;
+        $this->testing = !$this->afip_ticket->afip_information->afip_ticket_production;
 
         $this->numero_comprobante = 0;
 
         $this->wsfex = new WSFEX([
             'testing'           => $this->testing,
-            'cuit_representada' => $this->sale->afip_information->cuit,
+            'cuit_representada' => $this->afip_ticket->afip_information->cuit,
         ]);
 
         $this->wsfex->setXmlTa(file_get_contents(TA_file));
@@ -29,13 +31,14 @@ class AfipFexHelper
     public function procesar()
     {
 
-        $this->create_afip_ticket();
+        // $this->create_afip_ticket();
 
-        $res_numero_comprobante = Self::set_numero_comprobante($this->wsfex, $this->sale->afip_information->punto_venta, $this->sale->afip_tipo_comprobante->codigo);
+        $res_numero_comprobante = Self::set_numero_comprobante($this->wsfex, $this->afip_ticket->afip_information->punto_venta, $this->afip_ticket->afip_tipo_comprobante->codigo);
 
         if (!$res_numero_comprobante['hubo_un_error']) {
             $this->numero_comprobante = $res_numero_comprobante['numero_comprobante'];
         } else {
+
             return false;
         }
         
@@ -46,15 +49,34 @@ class AfipFexHelper
         // $pais_destino = 242; // código país destino (por ejemplo, Uruguay)
         $pais_destino = $this->sale->client->pais_exportacion->codigo_afip;
         $idioma_cbte = 1;     // Español
+
         $moneda = 'DOL';
         $moneda_cotiz = $this->sale->valor_dolar;
+        if ($this->sale->moneda_id == 1) {
+            $moneda = 'PES';
+            $moneda_cotiz = 1;
+        }
 
+        // $id = (int)$this->sale->id.rand(0,99999);
+        $id = (string)$this->sale->id . str_pad(rand(0, 999), 5, '0', STR_PAD_LEFT);
+
+        $this->afip_ticket->afip_id = $id;
+        $this->afip_ticket->save();
+
+        Log::info('Sale incoterms: '.$this->sale->incoterms);
+
+        $incoterms = 'FOB';
+        Log::info('incoterms: '.$incoterms);
+        if (!is_null($this->sale->incoterms)) {
+            $incoterms = $this->sale->incoterms;
+            Log::info('se cambio incoterms a: '.$incoterms);
+        }
 
         $data = [
-            'Id'                    => $this->sale->id.rand(0,99999),
+            'Id'                    => $id,
             'Fecha_cbte'            => date('Ymd'),
-            'Cbte_Tipo'             => 19,
-            'Punto_vta'             => $this->sale->afip_information->punto_venta,
+            'Cbte_Tipo'             => $this->afip_ticket->cbte_tipo,
+            'Punto_vta'             => $this->afip_ticket->afip_information->punto_venta,
             'Cbte_nro'              => $this->numero_comprobante,
             'Tipo_expo'             => 1,
             'pais_destino'          => $pais_destino,
@@ -65,8 +87,9 @@ class AfipFexHelper
             'Moneda_cotiz'          => $moneda_cotiz,
             'Imp_total'             => (float)$this->sale->total,
             'Idioma_cbte'           => $idioma_cbte,
-            'Incoterms'             => $this->sale->incoterms && $this->sale->incoterms != 0 ? $this->sale->incoterms : 'FOB',
-            'Permiso_existente'     => 'N',
+            'Incoterms'             => $incoterms,
+            'Permiso_existente'     => $this->afip_ticket->permiso_existente,
+            'Forma_pago'            => $this->afip_ticket->forma_de_pago,
         ];
 
 
@@ -99,53 +122,80 @@ class AfipFexHelper
 
         if ($result['hubo_un_error']) {
             Log::info('Hubo errores al facturar wsfex:');
+            $this->saveErrors($result);
         } else {
-            $this->update_afip_ticket($result['result']);
+            $this->update_afip_ticket($result, $moneda, $moneda_cotiz);
         }
 
 
         return ['success' => $result['result']];
     }
 
+    function saveErrors($result) {
 
-    function update_afip_ticket($result) {
+        AfipError::create([
+            'message'   => $result['error'],
+            'code'      => null,
+            'sale_id'   => $this->sale->id,
+            'afip_ticket_id'   => $this->afip_ticket->id,
+        ]);
+
+        $this->afip_ticket->update([
+            'request'           => $result['request'],
+            'response'          => $result['response'],
+        ]);
+    }
+
+
+    function update_afip_ticket($result, $moneda, $moneda_cotiz) {
+
+        $result_afip = $result['result'];
 
         if (
-            isset($result->FEXAuthorizeResult) 
-            && isset($result->FEXAuthorizeResult->FEXResultAuth)
+            isset($result_afip->FEXAuthorizeResult) 
+            && isset($result_afip->FEXAuthorizeResult->FEXResultAuth)
         ) {
 
-            $this->created_afip_ticket->update([
-                'cae'   => $result->FEXAuthorizeResult->FEXResultAuth->Cae,
-                'cae_expired_at'    => $result->FEXAuthorizeResult->FEXResultAuth->Fch_venc_Cae,
-                'resultado' => $result->FEXAuthorizeResult->FEXResultAuth->Resultado,
-                'importe_total' => $this->sale->total,
+            $this->afip_ticket->update([
+                'cbte_letra'        => AfipWsHelper::getTipoLetra($result_afip->FEXAuthorizeResult->FEXResultAuth->Cbte_tipo),
+                'cae'               => $result_afip->FEXAuthorizeResult->FEXResultAuth->Cae,
+                'cae_expired_at'    => $result_afip->FEXAuthorizeResult->FEXResultAuth->Fch_venc_Cae,
+                'resultado'         => $result_afip->FEXAuthorizeResult->FEXResultAuth->Resultado,
+                'importe_total'     => (float)$this->sale->total,
+                'moneda'            => $moneda,
+                'moneda_cotizacion' => $moneda_cotiz,
             ]);
 
+            AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $this->sale->total);
+
+
         } else if (
-            isset($result->FEXAuthorizeResult) 
-            && isset($result->FEXAuthorizeResult->FEXErr)
+            isset($result_afip->FEXAuthorizeResult) 
+            && isset($result_afip->FEXAuthorizeResult->FEXErr)
         ) {
 
             $message = mb_convert_encoding(
-                $result->FEXAuthorizeResult->FEXErr->ErrMsg,
+                $result_afip->FEXAuthorizeResult->FEXErr->ErrMsg,
                 'UTF-8',
                 'ISO-8859-1'
             );
 
             AfipError::create([
-                'message'   => $message,
-                'code'      => $result->FEXAuthorizeResult->FEXErr->ErrCode,
-                'sale_id'   => $this->sale->id,
-                // 'afip_ticket_id'   => $this->created_afip_ticket->id,
+                'message'           => $message,
+                'code'              => $result_afip->FEXAuthorizeResult->FEXErr->ErrCode,
+                'sale_id'           => $this->sale->id,
+                'afip_ticket_id'    => $this->afip_ticket->id,
+                'request'           => $result['request'],
+                'response'          => $result['response'],
             ]);
         }
     }
 
 
     function update_afip_ticket_numero_comprobante() {
-        $this->created_afip_ticket->cbte_numero = $this->numero_comprobante;
-        $this->created_afip_ticket->save();
+        $this->afip_ticket->cbte_tipo = 19;
+        $this->afip_ticket->cbte_numero = $this->numero_comprobante;
+        $this->afip_ticket->save();
     }
 
 
@@ -181,24 +231,24 @@ class AfipFexHelper
   //   ),
 
 
-    function create_afip_ticket() {
-        $this->created_afip_ticket = AfipTicket::create([
-            'cuit_negocio'      => $this->sale->afip_information->cuit,
-            'iva_negocio'       => $this->sale->afip_information->iva_condition->name,
-            'punto_venta'       => $this->sale->afip_information->punto_venta,
-            'cbte_tipo'         => 19,
+    // function create_afip_ticket() {
+    //     $this->afip_ticket = AfipTicket::create([
+    //         'cuit_negocio'      => $this->afip_ticket->afip_information->cuit,
+    //         'iva_negocio'       => $this->afip_ticket->afip_information->iva_condition->name,
+    //         'punto_venta'       => $this->afip_ticket->afip_information->punto_venta,
+    //         'cbte_tipo'         => 19,
 
-            'iva_negocio'       => $this->sale->afip_information->iva_condition->name,
-            'iva_cliente'       => !is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) ? $this->sale->client->iva_condition->name : '',
-            'cbte_letra'        => 'E',
-            'sale_id'           => $this->sale->id,
-            // 'afip_information_id'        => $this->sale->afip_information_id,
-            // 'afip_tipo_comprobante_id'   => $this->sale->afip_tipo_comprobante_id,
-            // 'afip_fecha_emision'             => $this->afip_fecha_emision,
-        ]);
+    //         'iva_negocio'       => $this->afip_ticket->afip_information->iva_condition->name,
+    //         'iva_cliente'       => !is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) ? $this->sale->client->iva_condition->name : '',
+    //         'cbte_letra'        => 'E',
+    //         'sale_id'           => $this->sale->id,
+    //         // 'afip_information_id'        => $this->sale->afip_information_id,
+    //         // 'afip_tipo_comprobante_id'   => $this->sale->afip_tipo_comprobante_id,
+    //         // 'afip_fecha_emision'             => $this->afip_fecha_emision,
+    //     ]);
 
-        $this->sale->load('afip_ticket');
-    }
+    //     // $this->sale->load('afip_ticket');
+    // }
 
     static function set_numero_comprobante($wsfex, $punto_venta, $Cbte_Tipo) {
 
@@ -209,8 +259,8 @@ class AfipFexHelper
 
         $res = $wsfex->FEXGetLast_CMP($data, 'incrustar_en_auth');
 
-        Log::info('result de set_numero_comprobante:');
-        Log::info((array)$res);
+        // Log::info('result de set_numero_comprobante:');
+        // Log::info((array)$res);
 
         $numero_comprobante = 1;
 
@@ -222,30 +272,60 @@ class AfipFexHelper
             }
 
             return [
-                'hubo_un_error' => false,
+                'hubo_un_error'         => false,
                 'numero_comprobante'    => $numero_comprobante,
             ];  
+        } else {
+
+            $this->afip_ticket->update([
+                'request'           => $result['request'],
+                'response'          => $result['response'],
+            ]);
+
+            Self::save_error($res);
         }
         
-        return [
-            'hubo_un_error' => true,
-        ];  
+        return $res;
 
+    }
+
+    static function save_error($result) {
+
+        if (isset($result['error'])) {
+
+            $message = $result['error']; 
+
+            if (
+                $message == 'Could not connect to host'
+                || $message == 'Error Fetching http headers'
+            ) {
+                $message = 'No se pudo establecer conexion con AFIP. Intente nuevamente en unos minutos';
+            }
+            
+            AfipError::create([
+                'message'           => $message,
+                'code'              => 'Error del lado de AFIP',
+                'afip_ticket_id'    => $this->afip_ticket->id,
+                'sale_id'           => $this->afip_ticket->sale->id,
+                'request'           => $result['request'],
+                'response'          => $result['response'],
+            ]);
+        }
     }
 
 
     static function get_fex_params($data) {
 
         Log::info('get_fex_params data:');
-        Log::info($data);
-        $id = $data["Cbte_Tipo"] . $data["Punto_vta"] . $data["Cbte_nro"];
-        Log::info('id: '.$id);
+        // Log::info($data);
+        // $id = $data["Cbte_Tipo"] . $data["Punto_vta"] . $data["Cbte_nro"];
+        // Log::info('id: '.$id);
 
         $params = new \stdClass();
 
         //Enbezado *********************************************
         $params->Cmp = new \stdClass();
-        $params->Cmp->Id = (float)$id;
+        $params->Cmp->Id = (int)$data["Id"];
         $params->Cmp->Fecha_cbte = $data["Fecha_cbte"]; // [N]
         $params->Cmp->Cbte_Tipo = $data["Cbte_Tipo"]; // FEXGetPARAM_Cbte_Tipo
         $params->Cmp->Punto_vta = $data["Punto_vta"];
@@ -277,7 +357,10 @@ class AfipFexHelper
             }
         }
 
-        //$params->Cmp->Forma_pago = $data["CondicionVenta"]; // [N]
+        if (isset($data['forma_de_pago'])) {
+            $params->Cmp->Forma_pago = $data["Forma_pago"]; // [N]
+        }
+        
         $params->Cmp->Incoterms = $data['Incoterms']; // Cláusula de venta - FEXGetPARAM_Incoterms [N]
         //$params->Cmp->Incoterms_Ds = ""; // [N]
         $params->Cmp->Idioma_cbte = $data["Idioma_cbte"]; // 2:Ingles - FEXGET_PARAM_IDIOMAS
@@ -349,6 +432,106 @@ class AfipFexHelper
         //     $params->Cmp->Items[] = $item;
         // }
     }
+    
 
+
+
+    function consultar_comprobante() {
+
+        Log::info('wsfex consultar_comprobante');
+
+        // Log::info($this->afip_ticket->cbte_tipo);
+        // Log::info($this->afip_ticket->cbte_numero);
+        // Log::info($this->afip_ticket->punto_venta);
+
+        if (
+            !is_null($this->afip_ticket->cbte_tipo) 
+            && !is_null($this->afip_ticket->cbte_numero) 
+            && !is_null($this->afip_ticket->punto_venta)
+        ) {
+
+            $params = new \stdClass();
+            $params->Cmp = new \stdClass();
+            $params->Cmp->Id         = $this->afip_ticket->afip_id; // ID que te devolvió AFIP al generar el CAE
+            $params->Cmp->Cbte_tipo  = $this->afip_ticket->cbte_tipo;
+            $params->Cmp->Punto_vta  = $this->afip_ticket->punto_venta;
+            $params->Cmp->Cbte_nro   = $this->afip_ticket->cbte_numero;
+
+            // Llamada al WS
+            $result = $this->wsfex->FEXGetCMP($params);
+
+            Log::info('consultar_comprobante_fex:');
+            Log::info($result);
+
+            // Manejo de errores de conexión o XML
+            if ($result['hubo_un_error']) {
+
+                Log::error('Error en FEXGetCMP: ' . print_r($result, true));
+
+                $this->afip_ticket->update([
+                    'request' => $this->wsfex->getLastRequest(),
+                    'response' => $this->wsfex->getLastResponse(),
+                ]);
+
+                return false;
+            }
+
+            $result_afip = $result['result'];
+            
+            // Si AFIP devolvió datos
+            if (isset($result_afip->FEXGetCMPResult)) {
+
+                if (isset($result_afip->FEXGetCMPResult->FEXErr)) {
+
+                    AfipError::create([
+                        'message'   => $result_afip->FEXGetCMPResult->FEXErr->ErrMsg,
+                        'code'      => $result_afip->FEXGetCMPResult->FEXErr->ErrCode,
+                        'sale_id'   => $this->sale->id,
+                        'afip_ticket_id'   => $this->afip_ticket->id,
+                    ]);
+
+                }
+
+                if (isset($result_afip->FEXGetCMPResult->FEXResultGet)) {
+
+                    $data = $result_afip->FEXGetCMPResult->FEXResultGet;
+                    
+                    if ($data->Id != 0) {
+
+
+                        Log::info('FEXGetCMPResult: ' . print_r($data, true));
+
+                        // Actualizo info local
+                        $this->afip_ticket->update([
+                            'consultado'      => 1,
+                            'importe_total'   => $data->Imp_total,
+                            'resultado'       => $data->Resultado,
+                            'cae'             => $data->Resultado == 'A' ? $data->Cae : null,
+                            'cae_expired_at'  => $data->Fch_venc_Cae ?? null,
+                            'cbte_letra'        => AfipWsHelper::getTipoLetra($data->Cbte_tipo),
+
+                            // 'request'         => $this->wsfex->getLastRequest(),
+                            // 'response'        => $this->wsfex->getLastResponse(),
+                        ]);
+
+                        Log::info("Comprobante consultado exitosamente en WSFEX");
+                    }
+
+
+                }
+
+                return $data;
+            }
+
+            Log::warning("No se encontró FEXGetCMPResult");
+        }
+
+        return false;
+    }
+
+    function get_incoterms() {
+        $res = $this->wsfex->FEXGetPARAM_Incoterms();
+        Log::info($res);
+    }
 
 }
