@@ -103,9 +103,9 @@ class ArticleIndexCache
             Log::info('');
             Log::info('');
         } else {
-            Log::info('cache en memoria:');
-            Log::info(count(Self::get($user_id)['ids']).' articulos del provider_id '.$provider_id);
-            Log::info(Self::get($user_id));
+            // Log::info('cache en memoria:');
+            // Log::info(count(Self::get($user_id)['ids']).' articulos del provider_id '.$provider_id);
+            // Log::info(Self::get($user_id));
         }
     }
 

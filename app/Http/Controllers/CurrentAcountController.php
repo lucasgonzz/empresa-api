@@ -279,7 +279,7 @@ class CurrentAcountController extends Controller
         } else if ($model->status == 'nota_credito') {
            
             if (!is_null($model->afip_ticket)) {
-                $pdf = new AfipTicketPdf(null, $model);
+                $pdf = new AfipTicketPdf($model);
             } else {
                 $pdf = new NotaCreditoPdf($model);
                 $pdf->printCurrentAcounts();

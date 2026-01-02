@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipSolicitarCaeHelper;
 use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
+use App\Http\Controllers\Helpers\Afip\AfipWsHelper;
 use App\Http\Controllers\Helpers\Afip\CondicionIvaReceptorHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -99,17 +100,22 @@ class AfipWsfeHelper extends Controller
 
             if (!$result['hubo_un_error']) {
 
-                $result = (array)$result['result'];
-                Log::info($result);
+                $afip_result = (array)$result['result'];
+                Log::info($afip_result);
 
                 Log::info('va por acaaaa');
-                Log::info(isset($result['FECompConsultarResult']));
+                Log::info(isset($afip_result['FECompConsultarResult']));
 
-                if (isset($result['FECompConsultarResult'])) {
+                if (isset($afip_result['FECompConsultarResult'])) {
 
-                    if (isset($result['FECompConsultarResult']->ResultGet)) {
+                    if (isset($afip_result['FECompConsultarResult']->ResultGet)) {
 
-                        $data = $result['FECompConsultarResult']->ResultGet;
+                        $this->afip_ticket->consultado = 1;
+                        $this->afip_ticket->save();
+
+                        $this->limpiar_errores();
+
+                        $data = $afip_result['FECompConsultarResult']->ResultGet;
 
                         $total_a_facturar = $this->afip_ticket->sale->total;
 
@@ -117,11 +123,24 @@ class AfipWsfeHelper extends Controller
                             $total_a_facturar = $this->afip_ticket->facturar_importe_personalizado;
                         }
 
+                        Log::info('total_a_facturar:');
+                        Log::info($total_a_facturar);
 
-                        if ($data->ImpTotal == $total_a_facturar) {
+                        Log::info('$data->ImpTotal:');
+                        Log::info($data->ImpTotal);
+
+                        Log::info($data->ImpTotal == $total_a_facturar);
+                        Log::info($data->PtoVta == $this->afip_ticket->punto_venta);
+                        Log::info($data->CbteTipo == $this->afip_ticket->cbte_tipo);
+
+                        if (
+                            $data->ImpTotal == $total_a_facturar
+                            && $data->PtoVta == $this->afip_ticket->punto_venta
+                            && $data->CbteTipo == $this->afip_ticket->cbte_tipo
+                        ) {
 
                             $this->afip_ticket->update([
-                                'cbte_letra'        => $this->getTipoLetra($data->CbteTipo),
+                                'cbte_letra'        => AfipWsHelper::getTipoLetra($data->CbteTipo),
                                 'importe_total'     => $data->ImpTotal,
                                 'moneda_id'         => $data->MonId,
                                 'resultado'         => $data->Resultado,
@@ -132,9 +151,14 @@ class AfipWsfeHelper extends Controller
                                 'request'           => $result['request'],
                                 'response'          => $result['response'],
                             ]);
+                            Log::info('se actualizo la info del comprobante');
+
+                            AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $total_a_facturar);
+
+                        } else {
+                            Log::info('NO se actualizo la info del comprobante');
                         }
 
-                        Log::info('se actualizo la info del comprobante');
                     } else if (isset($result['FECompConsultarResult']->Errors)) {
                         Log::info('Entro en errors:');
                         Log::info((array)$result['FECompConsultarResult']->Errors);
@@ -145,6 +169,8 @@ class AfipWsfeHelper extends Controller
             } else {
 
                 Log::info('Hubo un error a consultar comprobante');
+
+                Log::info((array)$result);
 
                 $this->afip_ticket->update([
                     'request'           => $result['request'],
@@ -261,14 +287,7 @@ class AfipWsfeHelper extends Controller
 
             $this->update_afip_ticket($afip_result, $importes, $moneda_id, $result);
 
-
-            $total_a_facturar = $importes['total'];
-            if ($this->afip_ticket->sale->total_a_facturar) {
-                Log::info('Sumando total_a_facturar de sale de '.$this->afip_ticket->sale->total_a_facturar);
-                $total_a_facturar += (float)$this->afip_ticket->sale->total_a_facturar;
-            }
-            $this->afip_ticket->sale->total_a_facturar = $total_a_facturar;
-            $this->afip_ticket->sale->save();
+            AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $importes['total']);
 
         } else {
             Log::info('HUBO UN ERROR:');
@@ -317,6 +336,8 @@ class AfipWsfeHelper extends Controller
         if (isset($afip_result->FECAESolicitarResult->Errors)) {
             $errors = $afip_result->FECAESolicitarResult->Errors;
             $errors = Utf8Helper::convertir_utf8($errors);
+            Log::info('Errores que van a guardarse:');
+            Log::info($errors);
             foreach ($errors as $error) {
 
                 $code = $error['Code']; 
@@ -325,6 +346,9 @@ class AfipWsfeHelper extends Controller
                     continue;
                 }
 
+                Log::info('Error Mensaje:');
+                Log::info($error['Msg']);
+
                 if (
                     $code == 'Could not connect to host'
                     || $code == 'Error Fetching http headers'
@@ -332,7 +356,7 @@ class AfipWsfeHelper extends Controller
                     $code = 'No se pudo establecer conexion con AFIP. Intente nuevamente en unos minutos';
                 }
                 AfipError::create([
-                    'message'           => $error['Msg'],
+                    'message'           => Utf8Helper::convertir_utf8($error['Msg']),
                     'code'              => $code,
                     'sale_id'           => $this->afip_ticket->id,
                     'afip_ticket_id'    => $this->afip_ticket->id,
@@ -354,7 +378,7 @@ class AfipWsfeHelper extends Controller
             if (isset($observations['Msg'])) {
                 if ($observations['Code'] != 10245) {
                     AfipObservation::create([
-                        'message'           => $observations['Msg'],
+                        'message'           => Utf8Helper::convertir_utf8($observations['Msg']),
                         'code'              => $observations['Code'],
                         'sale_id'           => $this->afip_ticket->id,
                         'afip_ticket_id'    => $this->afip_ticket->id,
@@ -368,10 +392,10 @@ class AfipWsfeHelper extends Controller
                     Log::info('observation:');
                     Log::info($observation);
                     if (
-                        $observations['Code'] != 10245
+                        $observation['Code'] != 10245
                     ) {
                         AfipObservation::create([
-                            'message'           => $observation['Msg'],
+                            'message'           => Utf8Helper::convertir_utf8($observation['Msg']),
                             'code'              => $observation['Code'],
                             'sale_id'           => $this->afip_ticket->id,
                             'afip_ticket_id'    => $this->afip_ticket->id,
@@ -406,7 +430,7 @@ class AfipWsfeHelper extends Controller
     function update_afip_ticket($afip_result, $importes, $moneda_id, $result) {
         if (isset($afip_result->FECAESolicitarResult->FeCabResp) && $afip_result->FECAESolicitarResult->FeCabResp->Resultado == 'A') {
             $this->afip_ticket->update([
-                'cbte_letra'        => $this->getTipoLetra($afip_result->FECAESolicitarResult->FeCabResp->CbteTipo),
+                'cbte_letra'        => AfipWsHelper::getTipoLetra($afip_result->FECAESolicitarResult->FeCabResp->CbteTipo),
                 'importe_total'     => $importes['total'],
                 'moneda_id'         => $moneda_id,
                 'resultado'         => $afip_result->FECAESolicitarResult->FeCabResp->Resultado,
@@ -425,13 +449,15 @@ class AfipWsfeHelper extends Controller
     function saveAfipTicket($result, $cbte_nro, $importe_total, $moneda_id) {
         if (!isset($result->FECAESolicitarResult->Errors)) {
         // if (!isset($result->FECAESolicitarResult->Errors) && !isset($result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones)) {
-            $this->deletePreviusAfipTicket();
+            
+            // $this->deletePreviusAfipTicket();
+            
             $afip_ticket = AfipTicket::create([
                 'cuit_negocio'      => $result->FECAESolicitarResult->FeCabResp->Cuit,
                 'iva_negocio'       => $this->afip_ticket->afip_information->iva_condition->name,
                 'punto_venta'       => $result->FECAESolicitarResult->FeCabResp->PtoVta,
                 'cbte_numero'       => $cbte_nro,
-                'cbte_letra'        => $this->getTipoLetra($result->FECAESolicitarResult->FeCabResp->CbteTipo),
+                'cbte_letra'        => AfipWsHelper::getTipoLetra($result->FECAESolicitarResult->FeCabResp->CbteTipo),
                 'cbte_tipo'         => $result->FECAESolicitarResult->FeCabResp->CbteTipo,
                 'importe_total'     => $importe_total,
                 'moneda_id'         => $moneda_id,
@@ -449,7 +475,7 @@ class AfipWsfeHelper extends Controller
     }
 
     function deletePreviusAfipTicket() {
-        $afip_ticket = $this->afip_ticket->afip_ticket;
+        $afip_ticket = $this->afip_ticket;
         if (!is_null($afip_ticket)) {
             // echo 'Se elimino el ticket id: '.$afip_ticket->id.' </br>';
             $afip_ticket->delete();
@@ -522,21 +548,21 @@ class AfipWsfeHelper extends Controller
         } 
     }
 
-    function getTipoLetra($cbte_tipo) {
-        Log::info('getTipoLetra: '.$cbte_tipo);
-        if ($cbte_tipo == 1 || $cbte_tipo == 201) {
-            return 'A';
-        }
-        if ($cbte_tipo == 6 || $cbte_tipo == 206) {
-            return 'B';
-        }
-        if ($cbte_tipo == 11 || $cbte_tipo == 211) {
-            return 'C';
-        }
-        if ($cbte_tipo == 51) {
-            return 'M';
-        }
-    }
+    // function getTipoLetra($cbte_tipo) {
+    //     Log::info('getTipoLetra: '.$cbte_tipo);
+    //     if ($cbte_tipo == 1 || $cbte_tipo == 201) {
+    //         return 'A';
+    //     }
+    //     if ($cbte_tipo == 6 || $cbte_tipo == 206) {
+    //         return 'B';
+    //     }
+    //     if ($cbte_tipo == 11 || $cbte_tipo == 211) {
+    //         return 'C';
+    //     }
+    //     if ($cbte_tipo == 51) {
+    //         return 'M';
+    //     }
+    // }
 
     function getPersona() {
         $this->define(true);
@@ -598,5 +624,11 @@ class AfipWsfeHelper extends Controller
             }
 
         }
+    }
+
+    function limpiar_errores() {
+        foreach ($this->afip_ticket->afip_errors as $afip_error) {
+             $afip_error->delete();
+         } 
     }
 }

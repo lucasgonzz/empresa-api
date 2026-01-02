@@ -788,7 +788,7 @@ class ProcessRow {
                 || !is_null($max_excel)
             ) {
 
-                // Log::info('Hay info en la columna '.$nombre_columna);
+                Log::info('Hay info en la columna '.$address->street);
 
                 $address_article = [
                     'address_id'    => $address->id,
@@ -797,8 +797,8 @@ class ProcessRow {
                     'amount'        => null,
                 ];
 
-                // Log::info($address->street.' min: '.$min_excel);
-                // Log::info($address->street.' max: '.$max_excel);
+                Log::info($address->street.' min: '.$min_excel);
+                Log::info($address->street.' max: '.$max_excel);
 
                 if (!is_null($articulo_ya_creado)) {
 
@@ -833,12 +833,19 @@ class ProcessRow {
                     //     $address_article['amount'] = $diferencia;
                     // }
                 } else {
-                    Log::info('No se agrego nada a la direccion '.$address->street);
+                    Log::info('No se agrego amount a la direccion '.$address->street);
                 }
 
                 $stock_addresses[] = $address_article;
+            } else {
+                Log::info('No hay nada en '.$address->street);
+                Log::info($column_min.' min: '.$min_excel);
+                Log::info($column_max.' max: '.$max_excel);
             }
         }
+
+        Log::info('stock_addresses:');
+        Log::info($stock_addresses);
 
         return $stock_addresses;
         // if ($set_stock_from_addresses) {
@@ -1403,26 +1410,28 @@ class ProcessRow {
             $diff_min = $old_min !== $new_min;
             $diff_max = $old_max !== $new_max;
 
+            Log::info('');
+            Log::info('');
             if ($existing) {
                 Log::info($existing->street.':');
             }
 
-            // Log::info('actual:');
-            // Log::info('stock: '.$old_amount);
-            // Log::info('min: '.$old_min);
-            // Log::info('max: '.$old_max);
+            Log::info('actual:');
+            Log::info('stock: '.$old_amount);
+            Log::info('min: '.$old_min);
+            Log::info('max: '.$old_max);
+
+            Log::info('');
+            Log::info('nuevo:');
+            Log::info('stock: '.$new_amount);
+            Log::info('min: '.$new_min);
+            Log::info('max: '.$new_max);
 
             // Log::info('');
-            // Log::info('nuevo:');
-            // Log::info('stock: '.$new_amount);
-            // Log::info('min: '.$new_min);
-            // Log::info('max: '.$new_max);
-
-            // Log::info('');
-            // Log::info('diff:');
-            // Log::info('stock: '.$diff_amount);
-            // Log::info('min: '.$diff_min);
-            // Log::info('max: '.$diff_max);
+            Log::info('diff:');
+            Log::info('stock: '.$diff_amount);
+            Log::info('min: '.$diff_min);
+            Log::info('max: '.$diff_max);
 
             // Si no hay cambios, continuar
             if (!$diff_amount && !$diff_min && !$diff_max) {
@@ -1469,6 +1478,9 @@ class ProcessRow {
 
             $out[] = $sa_out;
         }
+
+        Log::info('Out:');
+        Log::info($out);
 
         return $out;
     }

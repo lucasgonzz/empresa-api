@@ -89,7 +89,7 @@ class AfipController extends Controller
             $moneda = 'PES';
             $tipo_cambio = str_pad('0001000000', 10, '0', STR_PAD_LEFT); // 1.000000
 
-            $cantidad_iva = $this->get_cantidad_iva($sale);
+            $cantidad_iva = $this->get_cantidad_iva($afip_ticket);
 
             $codigo_operacion = '0'; // operación general
             $otros_tributos = str_pad('0', 15, '0', STR_PAD_LEFT);
@@ -154,7 +154,7 @@ class AfipController extends Controller
             }
 
             // Calculamos importes de IVA discriminados
-            $afip_helper = new AfipHelper($sale);
+            $afip_helper = new AfipHelper($afip_ticket);
             $importes = $afip_helper->getImportes();
             $ivas = $importes['ivas'];
 
@@ -192,9 +192,9 @@ class AfipController extends Controller
         return response()->download(storage_path('app/' . $fileName));
     }
 
-    function get_cantidad_iva($sale) {
+    function get_cantidad_iva($afip_ticket) {
 
-        $afip_helper = new AfipHelper($sale);
+        $afip_helper = new AfipHelper($afip_ticket);
         $importes = $afip_helper->getImportes();
 
         $cantidad_iva = 0;

@@ -28,4 +28,20 @@ class AfipTicket extends Model
     function afip_observations() {
         return $this->hasMany(AfipObservation::class);
     }
+
+    function nota_credito() {
+        return $this->belongsTo(CurrentAcount::class, 'nota_credito_id');
+    }
+
+    function nota_credito_afip() {
+        return $this->hasMany(AfipTicket::class, 'sale_afip_ticket_id');
+    }
+
+    function sale_afip() {
+        return $this->belongsTo(AfipTicket::class, 'sale_afip_ticket_id');
+    }
+
+    function sale_nota_credito() {
+        return $this->belongsTo(Sale::class, 'sale_nota_credito_id');
+    }
 }

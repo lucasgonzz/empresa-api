@@ -29,6 +29,10 @@ class PreviusDayController extends Controller
         
         $model_name = GeneralHelper::getModelName($model_name);
 
+        if ($model_name == 'App\\Models\\SyncToTnArticle') {
+            $model_name = 'App\\Models\\SyncToTNArticle';
+        }
+
         if ($index == 0) {
             $start = Carbon::now()->startOfWeek();
             $end = Carbon::now()->endOfWeek();

@@ -222,6 +222,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('afip-ticket/consultar-comprobante/{afip_ticket_id}', 'AfipTicketController@consultar_comprobante');
 
 
+    Route::delete('afip-ticket/{id}', 'AfipTicketController@destroy');
+
+
     Route::get('sale-modifications/{sale_id}', 'SaleModificationController@index');
 
 

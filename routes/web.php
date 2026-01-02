@@ -111,6 +111,20 @@ Route::get('/mercadolibre/metodos-envio', function () {
 });
 
 
+
+// Recursos Afip Webservices
+
+
+Route::post('/tiendanube/webhook/store_redact', function () {
+
+    $afip_wsaa = new App\Http\Controllers\Helpers\Afip\AfipWSAAHelper($this->testing, 'wsfex');
+    $afip_wsaa->checkWsaa();
+
+
+    $helper = new App\Http\Controllers\Helpers\Afip\AfipFexHelper($this->afip_ticket, $this->testing);
+    $helper->get_incoterms();
+});
+
         
 
 

@@ -28,6 +28,7 @@ use App\Http\Controllers\Pdf\SalePdf;
 use App\Http\Controllers\Pdf\SaleTicketPdf;
 use App\Http\Controllers\Pdf\SaleTicketRaw;
 use App\Http\Controllers\SellerCommissionController;
+use App\Models\AfipTicket;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
@@ -379,12 +380,14 @@ class SaleController extends Controller
             $afip = new MakeAfipTicket();
 
             $afip->make_afip_ticket([
-                'sale_id'                   => $request->sale_id,
-                'afip_information_id'       => $request->ventas_afip_information_id,
-                'afip_tipo_comprobante_id'  => $request->afip_tipo_comprobante_id,
-                'afip_fecha_emision'        => $request->afip_fecha_emision,
-                'facturar_importe_personalizado'        => $request->monto_a_facturar,
-                'incoterms'                 => $request->incoterms,
+                'sale_id'                           => $request->sale_id,
+                'afip_information_id'               => $request->ventas_afip_information_id,
+                'afip_tipo_comprobante_id'          => $request->afip_tipo_comprobante_id,
+                'afip_fecha_emision'                => $request->afip_fecha_emision,
+                'facturar_importe_personalizado'    => $request->monto_a_facturar,
+                'forma_de_pago'                     => $request->forma_de_pago,
+                'permiso_existente'                 => $request->permiso_existente,
+                'incoterms'                         => $request->incoterms,
             ]);
 
 
@@ -416,8 +419,8 @@ class SaleController extends Controller
     }
 
     function afipTicketPdf($id) {
-        $sale = Sale::where('id', $id)->withTrashed()->first();
-        $pdf = new SaleAfipTicketPdf($sale);
+        $afip_ticket = AfipTicket::find($id);
+        $pdf = new SaleAfipTicketPdf($afip_ticket);
     }
 
     function deliveredArticlesPdf($id) {
@@ -426,7 +429,7 @@ class SaleController extends Controller
     }
 
     function ticketPdf($id) {
-        $sale = Sale::find($id);
+        $afip_ticket = AfipTicket::find($id);
         $pdf = new SaleTicketPdf($sale);
     }
 
@@ -479,9 +482,14 @@ class SaleController extends Controller
                                             ->orWhereRaw('debe - pagandose > 300');
                                         });
                         })
-                        ->whereHas('client', function ($query) {
-                            $query->where('saldo', '>', 300);
-                        })
+                        // ->whereHas('client', function ($query) {
+                        //     $query->whereHas(function ($q) {
+                        //         $q->whereHas('credit_account', function($q_c_a) {
+                        //             $q_c_a->where('saldo', '>', 300);
+                        //         })
+                        //     });
+                        //     // $query->where('saldo', '>', 300);
+                        // })
                         ->whereDate('created_at', '<=', Carbon::today()->subDays($dias));
 
         if ($ver_solo_las_ventas_suyas) {
