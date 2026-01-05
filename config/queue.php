@@ -37,9 +37,9 @@ return [
         'database' => [
             'driver' => 'database',
             'table' => 'jobs',
-            'queue' => 'default',
-            'retry_after' => 90,
-            'after_commit' => false,
+            'queue' => 'default', // Para la cola 'default'
+            'retry_after' => 2400,
+            'after_commit' => true,
         ],
 
         'beanstalkd' => [
