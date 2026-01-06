@@ -47,6 +47,7 @@ class DepositMovementPdf extends fpdf {
 			'title' 			=> 'Mov. Depositos',
 			'fields' 			=> $this->getFields(),
 		];
+		$data['user'] = $this->user;
 		PdfHelper::header($this, $data);
 	}
 

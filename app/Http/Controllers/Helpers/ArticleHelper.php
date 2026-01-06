@@ -161,18 +161,18 @@ class ArticleHelper {
 
             $final_price = $cost;
 
-
-            if (
-                $article->cost_in_dollars
-                && $user->cotizar_precios_en_dolares
-            ) {
-                if (!is_null($article->provider) && !is_null($article->provider->dolar) && (float)$article->provider->dolar > 0) {
-                    $final_price = $final_price * $article->provider->dolar;
-                } else if ($article->cost_in_dollars > 0) {
-                    $final_price = $final_price * $user->dollar;
-                }
-                Log::info('Costo cotizado: '.$final_price);
-            }
+            $final_price = Self::cotizar($article, $user, $final_price);
+            // if (
+            //     $article->cost_in_dollars
+            //     && $user->cotizar_precios_en_dolares
+            // ) {
+            //     if (!is_null($article->provider) && !is_null($article->provider->dolar) && (float)$article->provider->dolar > 0) {
+            //         $final_price = $final_price * $article->provider->dolar;
+            //     } else if ($article->cost_in_dollars > 0) {
+            //         $final_price = $final_price * $user->dollar;
+            //     }
+            //     Log::info('Costo cotizado: '.$final_price);
+            // }
 
 
             if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)) {
@@ -288,6 +288,22 @@ class ArticleHelper {
             ];
         }
 
+    }
+
+    static function cotizar($article, $user, $final_price) {
+
+        if (
+            $article->cost_in_dollars
+            && $user->cotizar_precios_en_dolares
+        ) {
+            if (!is_null($article->provider) && !is_null($article->provider->dolar) && (float)$article->provider->dolar > 0) {
+                $final_price = $final_price * $article->provider->dolar;
+            } else if ($article->cost_in_dollars > 0) {
+                $final_price = $final_price * $user->dollar;
+            }
+            Log::info('Costo cotizado: '.$final_price);
+        }
+        return $final_price;
     }
 
     static function aplicar_descuentos_e_iva($article, $price, $user) {

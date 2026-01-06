@@ -49,20 +49,21 @@ class set_afip_tickets_data extends Command
 
 
         $sales = Sale::where('user_id', $user_id)
-                        ->whereHas('afip_ticket')
+                        ->whereHas('afip_tickets')
                         ->get();
 
         $this->info(count($sales).' afip_tickets');
 
         foreach ($sales as $sale) {
             
-            $afip_ticket = $sale->afip_ticket;
+            foreach ($sale->afip_tickets as $afip_ticket) {
 
-            $afip_ticket->afip_information_id = $sale->afip_information_id;
-            $afip_ticket->afip_tipo_comprobante_id = $sale->afip_tipo_comprobante_id;
-            $afip_ticket->save();
+                $afip_ticket->afip_information_id = $sale->afip_information_id;
+                $afip_ticket->afip_tipo_comprobante_id = $sale->afip_tipo_comprobante_id;
+                $afip_ticket->save();
 
-            $this->comment($afip_ticket->id.' ok');
+                $this->comment($afip_ticket->id.' ok');
+            }
         }
         $this->info('Listo');
         return 0;

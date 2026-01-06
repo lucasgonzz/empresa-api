@@ -362,7 +362,12 @@ class AfipTicketPdf extends fpdf {
 			$this->SetFont('Arial', 'B', 8);
 			$this->Cell(47, 5, 'Apellido y Nombre / Razón Social:', 0, 0, 'L');
 			$this->SetFont('Arial', '', 8);
-			$this->Cell(60, 5, $this->model->client->razon_social, 0, 1, 'L');
+
+			$name = $this->model->client->name;
+			if ($this->model->client->razon_social) {
+				$name = $this->model->client->razon_social;
+			}
+			$this->Cell(60, 5, $name, 0, 1, 'L');
 			$this->SetX(97);
 			$this->SetFont('Arial', 'B', 8);
 			$this->Cell(30, 5, 'Domicilio Comercial:', 0, 0, 'L');
@@ -402,10 +407,19 @@ class AfipTicketPdf extends fpdf {
 		$this->SetY(22);
 		// Domicilio
 		$this->SetX(6);
+
 		$this->SetFont('Arial', 'B', 9);
-		$this->Cell(35,5,'Domicilio Comercial:',0,0,'L');
-		$this->SetFont('Arial', '', 9);
-		$this->Cell(50,5,$this->afip_information->domicilio_comercial,0,1,'L');
+
+	    $this->MultiCell( 
+			95, 
+			5, 
+			'Domicilio Comercial: '.$this->afip_information->domicilio_comercial, 
+	    	0, 
+	    	'L', 
+	    	false
+	    );
+
+		// $this->Cell(50,5,$this->afip_information->domicilio_comercial,0,1,'L');
 		// Iva
 		$this->SetX(6);
 		$this->SetFont('Arial', 'B', 9);
@@ -539,7 +553,12 @@ class AfipTicketPdf extends fpdf {
 
 	function getTitle() {
 		$title = '';
-		if ($this->model->afip_ticket->cbte_tipo == 3 || $this->model->afip_ticket->cbte_tipo == 8 || $this->model->afip_ticket->cbte_tipo == 13) {
+		if (
+			$this->model->afip_ticket->cbte_tipo == 3 
+			|| $this->model->afip_ticket->cbte_tipo == 8 
+			|| $this->model->afip_ticket->cbte_tipo == 13
+			|| $this->model->afip_ticket->cbte_tipo == 21
+		) {
 			$title = 'Nota de Credito';
 		} else if ($this->model->afip_ticket->cbte_tipo == 203 || $this->model->afip_ticket->cbte_tipo == 208 || $this->model->afip_ticket->cbte_tipo == 213) {
 			$title = 'Nota de Credito FCE';

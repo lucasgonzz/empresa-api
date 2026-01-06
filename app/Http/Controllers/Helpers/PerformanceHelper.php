@@ -716,8 +716,6 @@ class PerformanceHelper
         $afip_informations = AfipInformation::where('user_id', $this->user_id)
                                             ->get();
 
-        Log::info('afip_informations:');
-        Log::info($afip_informations);
 
         $afip_tipo_comprobantes = AfipTipoComprobante::all();
 
@@ -882,8 +880,20 @@ class PerformanceHelper
         $this->company_performance->total_vendido_costos = $this->total_vendido_costos;
         $this->company_performance->total_vendido_costos_usd = $this->total_vendido_costos_usd;
 
-        $this->company_performance->ingresos_netos = $this->total_vendido - $this->total_devolucion - $this->total_vendido_costos;
-        $this->company_performance->ingresos_netos_usd = $this->total_vendido_usd - $this->total_devolucion_usd - $this->total_vendido_costos_usd;
+        // Ingresos = Utilidad en el front
+        $this->company_performance->ingresos_brutos = $this->total_vendido - $this->total_vendido_costos;
+        $this->company_performance->ingresos_brutos_usd = $this->total_vendido_usd - $this->total_vendido_costos_usd;
+
+
+        
+        // $total_vendido_neto = $this->total_vendido - $this->total_devolucion;
+        // Log::info('total_vendido_neto: '.$total_vendido_neto);
+        // Log::info('total_vendido_costos: '.$this->total_vendido_costos);
+        // Log::info('costos_devolucion: '.$this->costos_devolucion);
+
+        $this->company_performance->ingresos_netos =  $this->total_vendido_costos - $this->costos_devolucion;
+        // $this->company_performance->ingresos_netos = $this->total_vendido - $this->total_devolucion - $this->total_vendido_costos - $this->costos_devolucion;
+        $this->company_performance->ingresos_netos_usd = $this->total_vendido_costos_usd - $this->costos_devolucion_usd;
         
         $this->company_performance->rentabilidad = $this->total_vendido - $this->total_vendido_costos - $this->total_gastos;
         $this->company_performance->rentabilidad_usd = $this->total_vendido_usd - $this->total_vendido_costos_usd - $this->total_gastos_usd;
@@ -1073,6 +1083,10 @@ class PerformanceHelper
         $this->total_devolucion = 0;
         $this->total_devolucion_usd = 0;
 
+        $this->costos_devolucion = 0;
+        $this->costos_devolucion_usd = 0;
+
+
         foreach ($notas_de_credito as $nota_de_credito) {
 
             $moneda_id = 1;
@@ -1113,10 +1127,14 @@ class PerformanceHelper
 
                         if ($moneda_id == 1) {
 
-                            $this->total_vendido_costos -= (float)$article->pivot->cost * (float)$article->pivot->amount;
+                            $this->costos_devolucion += (float)$article->pivot->cost * (float)$article->pivot->amount;
+
+                            Log::info('sumando costo costos_devolucion '.(float)$article->pivot->cost.' de '.$article->name.', cant: '.(float)$article->pivot->amount);
+                            // $this->total_vendido_costos -= (float)$article->pivot->cost * (float)$article->pivot->amount;
 
                         } else if ($moneda_id == 2) {
-                            $this->total_vendido_costos_usd -= (float)$article->pivot->cost * (float)$article->pivot->amount;
+                            $this->costos_devolucion_usd += (float)$article->pivot->cost * (float)$article->pivot->amount;
+                            // $this->total_vendido_costos_usd -= (float)$article->pivot->cost * (float)$article->pivot->amount;
                         }
 
                     }

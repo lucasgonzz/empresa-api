@@ -111,11 +111,17 @@ class BudgetHelper {
 			Log::info('amount: '.$article->pivot->amount);
 			Log::info('cost: '.$article->pivot->cost);
 			Log::info('price: '.$article->pivot->price);
+			
+			$cost = $article->pivot->cost;
+			$price = $article->pivot->price;
+        	$ganancia = (float)$price - (float)$cost;
+			
 			$sale->articles()->attach($article->id, [
 				'amount'			=> $article->pivot->amount,
 				'checked_amount'	=> Self::get_checked_amount($has_extencion_check_sales, $article),
-				'price'	    		=> $article->pivot->price,
-				'cost'	    		=> $article->pivot->cost,
+				'price'	    		=> $price,
+				'cost'	    		=> $cost,
+				'ganancia'	    	=> $ganancia,
 				'price_type_personalizado_id'	    		=> $article->pivot->price_type_personalizado_id,
 				'discount'			=> $article->pivot->bonus,
 			]);

@@ -286,8 +286,11 @@ class AfipWsfeHelper extends Controller
             $this->checkErrors($afip_result, $result);
 
             $this->update_afip_ticket($afip_result, $importes, $moneda_id, $result);
+            
+            if ($this->afip_ticket->resultado == 'A') {
 
-            AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $importes['total']);
+                AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $importes['total']);
+            }
 
         } else {
             Log::info('HUBO UN ERROR:');

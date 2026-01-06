@@ -344,7 +344,6 @@ class AfipHelper extends Controller {
 
         // if ($precio_neto_sin_iva || $this->isBoletaA()) {
         if (!$this->exportacion()) {
-            dd('asd');  
             if (!is_null($article->iva) && $article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento' && $article->iva->percentage != 0) {
                 return $this->getPriceWithoutIva();
             } 
