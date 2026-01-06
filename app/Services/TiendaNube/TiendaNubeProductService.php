@@ -147,7 +147,7 @@ class TiendaNubeProductService extends BaseTiendaNubeService
         return $article;
     }
 
-    function update_images() {
+    function update_images($article) {
 
         $tn_image = new TiendaNubeProductImageService();
         $tn_image->sync_images_for_article($article);

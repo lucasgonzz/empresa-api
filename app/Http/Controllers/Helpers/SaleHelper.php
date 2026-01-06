@@ -881,14 +881,20 @@ class SaleHelper extends Controller {
         $user = $sale->user;
         Log::info('getCost');
 
+        if (is_object($item)) {
+            $item = json_decode(json_encode($item), true);
+        }
+
         $cost = null;
 
+        // Si se esta actualizando, se retorna el valor que estaba guardado (ya cotizado)
         if (
             isset($item['pivot'])
             && isset($item['pivot']['cost'])
         ) {
             Log::info('retornando del pivot: '.$item['pivot']['cost']);
             $cost = (float) $item['pivot']['cost'];
+            return $cost;
         }
 
 
@@ -925,10 +931,10 @@ class SaleHelper extends Controller {
                 if (
                     isset($item['cost_in_dollars']) 
                     && $item['cost_in_dollars'] == 1
-                    && (
-                        $user
-                        && $user->cotizar_precios_en_dolares == 0
-                    )
+                    // && (
+                    //     $user
+                    //     && $user->cotizar_precios_en_dolares == 0
+                    // )
                 ) {
                     $cost *= (float)$sale->valor_dolar;
                 }

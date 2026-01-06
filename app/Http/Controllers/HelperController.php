@@ -73,6 +73,64 @@ class HelperController extends Controller
         $this->{$method}($param, $param_2);
     }
 
+    function set_nota_credito_afip_ticket_data() {
+        $models = CurrentAcount::where('user_id', env('USER_ID'))
+                                ->where('status', 'nota_credito')
+                                ->whereHas('afip_ticket')
+                                ->orderBy('created_at', 'DESC')
+                                ->get();
+
+        foreach ($models as $nota_credito) {
+            
+            $afip_ticket = $nota_credito->afip_ticket;
+
+            $afip_ticket->afip_information_id = $nota_credito->sale->afip_tickets[0]->afip_information_id;
+            $afip_ticket->afip_tipo_comprobante_id = $nota_credito->sale->afip_tickets[0]->afip_tipo_comprobante_id;
+                
+            echo 'Nota credito N° '.$nota_credito->id.', afip_ticket: '.$afip_ticket->id.' afip_information_id: '. $nota_credito->sale->afip_tickets[0]->afip_information_id;
+            echo '<br>';
+            $afip_ticket->save();
+        }
+        echo 'Listo';
+    }
+
+    function check_price_types() {
+        $articles = Article::all();
+
+        $price_types = PriceType::all();
+        $price_type_d = PriceType::where('name', 'Lista D')->first();
+
+        foreach ($articles as $article) {
+
+            foreach ($price_types as $price_type) {
+
+                $p_t = $article->price_types()->where('price_type_id', $price_type->id)->exists();
+
+                if (!$p_t) {
+
+                    $p_t_d = $article->price_types()->where('price_type_id', $price_type_d->id)->first();
+
+                    echo $article->id.' no relacionado con '.$price_type->name;
+                    echo '<br>';
+
+                    if ($p_t_d) {
+
+                        $article->price_types()->attach($price_type->id, [
+                            'setear_precio_final'    => $p_t_d->pivot->setear_precio_final,
+                            'percentage'    => $p_t_d->pivot->percentage,
+                            'price'    => $p_t_d->pivot->price,
+                            'final_price'    => $p_t_d->pivot->final_price,
+                        ]);
+                    } else {
+                        echo 'No tiene P general';
+                        echo '<br>';
+
+                    }
+                }
+            }
+        }
+    }
+
     function cf_articles() {
         $articles = Article::where('provider_id', 5)
                             ->get();
