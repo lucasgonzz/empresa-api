@@ -16,7 +16,7 @@ class ArticlePriceTypeMonedaHelper {
         // $price_types = PriceType::where('user_id', $article->user_id)
         //                         ->get();
 
-        // if (empty($price_type_monedas)) return;
+        if (empty($price_type_monedas)) return;
 
         if (!$user) {
             $user = UserHelper::user();
