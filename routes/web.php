@@ -320,7 +320,9 @@ Route::get('home/clients', 'HomeController@clients');
 Route::get('sale/pdf/{id}/{with_prices}/{with_costs}/{precios_netos}/{confirmed?}', 'SaleController@pdf');
 Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
 Route::get('sale/ticket-raw/{id}', 'SaleController@ticketRaw');
+Route::get('sale/sale-ticket-pdf/{id}', 'SaleController@saleTicketPdf');
 Route::get('sale/afip-ticket-pdf/{id}', 'SaleController@afipTicketPdf');
+Route::get('sale/afip-ticket-a4-pdf/{id}', 'SaleController@afipTicketA4Pdf');
 Route::get('sale/delivered-articles-pdf/{id}', 'SaleController@deliveredArticlesPdf');
 Route::get('sale/etiqueta-envio/pdf/{sale_id}', 'SaleController@etiqueta_envio');
 

@@ -194,7 +194,14 @@ class ArticleImport implements ToCollection
             // $articulos_creados = $this->process_row->getArticulosParaCrear();
             $articulos_actualizados = $this->process_row->getArticulosParaActualizar();
 
-            ArticleImportHelper::create_article_import_result($this->import_uuid, $articulos_creados, $articulos_actualizados);
+            $articles_match = $this->process_row->get_articles_match();
+
+            Log::info('Trabajo terminado en ArticleImport');
+            Log::info('articulos_creados: '.count($articulos_creados));
+            Log::info('articulos_actualizados: '.count($articulos_actualizados));
+            Log::info('articles_match: '.$articles_match);
+
+            ArticleImportHelper::create_article_import_result($this->import_uuid, $articulos_creados, $articulos_actualizados, $articles_match);
             
             
             $this->trabajo_terminado = true;

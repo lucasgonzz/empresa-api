@@ -17,7 +17,7 @@ class AfipTicketController extends Controller
     function get_importes($sale_id) {
         $sale = Sale::find($sale_id);
 
-        $afip_helper = new AfipHelper($sale);
+        $afip_helper = new AfipHelper($sale->afip_tickets[0]);
 
         $importes = $afip_helper->getImportes();
 

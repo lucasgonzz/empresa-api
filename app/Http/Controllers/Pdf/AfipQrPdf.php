@@ -16,7 +16,7 @@ class AfipQrPdf {
     	if ($this->from_ticket) {
 
         	$this->afip_logo_width = 20;
-        	$this->afip_logo_height = 5;
+        	$this->afip_logo_height = 10;
 			$this->img_start_x = $this->img_centrada($this->instance, $this->img_width);
 			$this->afip_img_start_x = $this->img_centrada($this->instance, $this->img_width);
 
@@ -93,7 +93,9 @@ class AfipQrPdf {
 
     	$img_url = public_path().'/afip/logo.jpg';
         
-	    $this->instance->y -= 10;
+        if (!$this->from_ticket) {
+	    	$this->instance->y -= 10;
+        }
 
         $this->instance->Image($img_url, $this->afip_img_start_x, $this->instance->y, $this->afip_logo_width);
 

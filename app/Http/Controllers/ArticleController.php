@@ -466,7 +466,10 @@ class ArticleController extends Controller
 
         } else {
             Log::info('NO se va a guardar archivo');
-            Log::info($request->file('models')->getError());
+            return response()->json([
+                'hubo_un_error' => true, 
+                'message' => $request->file('models')->getError()
+            ]);
         }
 
         Log::info('archivo_excel_path: '.$archivo_excel_path);
@@ -476,7 +479,20 @@ class ArticleController extends Controller
 
         $owner = User::find($this->userId());
         
-        InitExcelImport::importar($import_uuid, $archivo_excel, $columns, $request->create_and_edit, $request->no_actualizar_articulos_de_otro_proveedor, $request->start_row, $request->finish_row, $request->provider_id, $owner, Auth()->user()->id, $archivo_excel_path);
+        $excel = new InitExcelImport();
+        $excel->importar([
+            'import_uuid'           => $import_uuid, 
+            'archivo_excel'         => $archivo_excel, 
+            'columns'               => $columns, 
+            'create_and_edit'       => $request->create_and_edit, 
+            'no_actualizar_articulos_de_otro_proveedor'             => $request->no_actualizar_articulos_de_otro_proveedor, 
+            'start_row'             => $request->start_row, 
+            'finish_row'            => $request->finish_row, 
+            'provider_id'           => $request->provider_id, 
+            'user'                 => $owner, 
+            'auth_user_id'          => Auth()->user()->id, 
+            'archivo_excel_path'    => $archivo_excel_path
+        ]);
         
         // ProcessArticleImport::dispatch($import_uuid, $archivo_excel, $columns, $request->create_and_edit, $request->no_actualizar_articulos_de_otro_proveedor, $request->start_row, $request->finish_row, $request->provider_id, $owner, Auth()->user()->id, $archivo_excel_path);
 
