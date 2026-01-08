@@ -168,10 +168,11 @@ class ArticleImport implements ToCollection
 
 
                         // Registra el progreso y errores en Import History
-                        ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, $error_message, $this->articulos_creados, $this->articulos_actualizados, $this->updated_props);
+                        // ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, $error_message, $this->articulos_creados, $this->articulos_actualizados, $this->updated_props);
 
-                        ArticleImportHelper::error_notification($this->user, $this->num_row, $e->getMessage());
-                        return $e;
+                        // ArticleImportHelper::error_notification($this->user, $this->num_row, $e->getMessage());
+                        
+                        throw $e;
 
                     } 
 
@@ -229,13 +230,15 @@ class ArticleImport implements ToCollection
             Log::error('Mensaje: ' . $e->getMessage());
             Log::error('Archivo: ' . $e->getFile());
             Log::error('Línea: ' . $e->getLine());
-            Log::error('Trace: ' . $e->getTraceAsString());
+            // Log::error('Trace: ' . $e->getTraceAsString());
 
 
             // Registra el progreso y errores en Import History
-            ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->columns, $this->archivo_excel_path, $error_message, $this->created_models, $this->updated_models);
+            // ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->columns, $this->archivo_excel_path, $error_message, $this->created_models, $this->updated_models);
 
-            ArticleImportHelper::error_notification($this->user, null, $e->getMessage());
+            // ArticleImportHelper::error_notification($this->user, null, $e->getMessage());
+
+            throw $e;
         } 
     }
 

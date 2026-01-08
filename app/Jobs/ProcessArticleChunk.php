@@ -102,12 +102,13 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
             Log::error('Mensaje: ' . $e->getMessage());
             Log::error('Archivo: ' . $e->getFile());
             Log::error('Línea: ' . $e->getLine());
-            Log::error('Trace: ' . $e->getTraceAsString());
+            // Log::error('Trace: ' . $e->getTraceAsString());
 
 
             $fin = microtime(true);
 
             $duracion = $fin - $inicio;
+
             Log::info('Tardo en procesarce: '.number_format($duracion, 3).' segundos');
 
             $this->set_import_history_error($e);
@@ -138,15 +139,33 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 
     function ejecutar_article_import() {
 
-        Excel::import(new ArticleImport(
-            $this->import_uuid,
-            $this->columns, $this->create_and_edit,
-            $this->no_actualizar_articulos_de_otro_proveedor,
-            $this->start_row, $this->finish_row,
-            $this->provider_id, $this->user,
-            $this->auth_user_id, $this->archivo_excel_path,
-            $this->chunk_number,
-        ), $this->archivo_excel_path, null, $this->reader_type);
+        try {
+
+            Excel::import(new ArticleImport(
+                $this->import_uuid,
+                $this->columns, $this->create_and_edit,
+                $this->no_actualizar_articulos_de_otro_proveedor,
+                $this->start_row, $this->finish_row,
+                $this->provider_id, $this->user,
+                $this->auth_user_id, $this->archivo_excel_path,
+                $this->chunk_number,
+            ), $this->archivo_excel_path, null, $this->reader_type);
+
+        } catch (\Throwable $e) {
+            
+            Log::error('Error al importar, desde ProcessArticleChunk ejecutar_article_import');
+
+            throw $e;
+        }
+    }
+
+    function guardar_error_en_import_history($e) {
+
+        $this->import_history->status = 'error';
+
+            Log::error('Mensaje: ' . $e->getMessage());
+            Log::error('Archivo: ' . $e->getFile());
+            Log::error('Línea: ' . $e->getLine());
     }
 
     function notificar_usuario() {
@@ -192,7 +211,7 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         $this->import_status->save();
 
 
-        $this->user->notify(new ImportStatusNotification($this->import_status, $this->user->id));
+        $this->user->notifyNow(new ImportStatusNotification($this->import_status, $this->user->id));
     }
 
     function update_import_history() {

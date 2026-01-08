@@ -48,9 +48,13 @@ class sync_articles_to_tienda_nube extends Command
 
         $service = new TiendaNubeSyncArticleService();
 
+        $index = 0;
         foreach ($sync_articles as $sync) {
             $service->sync_article($sync);
+            $index++;
+            $this->info($index.' subidos');
         }
+        $this->comment('Listo');
 
         return 0;
     }

@@ -444,11 +444,13 @@ class ArticleIndexCache
                 $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article->id;
             } else {
 
-                if (!isset($index['provider_codes'][$article->provider_id][$article->provider_code])) {
-                    $index['provider_codes'][$article->provider_id][$article->provider_code] = [];
-                }
+                // if (!isset($index['provider_codes'][$article->provider_id][$article->provider_code])) {
+                //     $index['provider_codes'][$article->provider_id][$article->provider_code] = [];
+                // }
 
-                $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article->id;
+                // Log::info('Agregando el articulo con provider_code '.$article->provider_code.' al cache:');
+                // Log::info($index['provider_codes'][$article->provider_id][$article->provider_code]);
+                $index['provider_codes'][$article->provider_id][$article->provider_code] = $article->id;
             }
         }
 
