@@ -21,6 +21,7 @@ class ProcessRow {
     protected $user;
     protected $ct;
     protected $provider_id;
+    protected $articles_match = 0;
     protected $articulosParaActualizar = [];
     protected $articulosParaCrear = [];
     protected $price_types = [];
@@ -34,11 +35,11 @@ class ProcessRow {
      * Constructor: recibe los datos necesarios para procesar las filas
      */
     function __construct($data) {
-        $this->columns = $data['columns'];
-        $this->user = $data['user'];
-        $this->ct = $data['ct'];
-        $this->provider_id = $data['provider_id'];
-        $this->create_and_edit = $data['create_and_edit'];
+        $this->columns                  = $data['columns'];
+        $this->user                     = $data['user'];
+        $this->ct                       = $data['ct'];
+        $this->provider_id              = $data['provider_id'];
+        $this->create_and_edit          = $data['create_and_edit'];
         $this->no_actualizar_articulos_de_otro_proveedor = $data['no_actualizar_articulos_de_otro_proveedor'];
 
         
@@ -265,6 +266,8 @@ class ProcessRow {
 
             $this->attach_provider($articulo_ya_creado, $data, $provider_id);
 
+            $this->add_article_match();
+
             if (
                 !is_null($articulo_ya_creado->provider_id)
                 && !is_null($provider_id)
@@ -352,6 +355,10 @@ class ProcessRow {
 
     }
 
+    function add_article_match() {
+        $this->articles_match++;
+    }
+
     function attach_provider($articulo_ya_creado, $data, $provider_id) {
 
         Log::info('attach_provider');
@@ -363,8 +370,8 @@ class ProcessRow {
             return;
         }
 
-        // Log::info('articulo_ya_creado: ');
-        // Log::info($articulo_ya_creado);
+        Log::info('articulo_ya_creado: ');
+        Log::info($articulo_ya_creado->toArray());
 
         $pivot_data = [
             'provider_code' => isset($data['provider_code']) ? $data['provider_code']: null,
@@ -1193,6 +1200,10 @@ class ProcessRow {
      */
     function getArticulosParaActualizar() {
         return $this->articulosParaActualizar;
+    }
+
+    function get_articles_match() {
+        return $this->articles_match;
     }
 
     /**

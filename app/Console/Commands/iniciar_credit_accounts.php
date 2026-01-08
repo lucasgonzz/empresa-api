@@ -158,19 +158,25 @@ class iniciar_credit_accounts extends Command
     }
 
     function vincular_current_acounts($model_name, $model, $moneda_id) {
+
+        if ($model) {
+
+            $credit_account = CreditAccount::where('model_name', $model_name)
+                                                ->where('model_id', $model->id)
+                                                ->where('moneda_id', $moneda_id)
+                                                ->first();
+
+            $current_acounts = CurrentAcount::where($model_name.'_id', $model->id)
+                                            ->update([
+                                                'credit_account_id'     => $credit_account->id
+                                            ]);
+
+            CurrentAcountHelper::checkSaldos($credit_account->id);
+            CurrentAcountHelper::checkPagos($credit_account->id, true);
+        } else {
+            $this->comment('No se vinculo');
+        }
         
-        $credit_account = CreditAccount::where('model_name', $model_name)
-                                            ->where('model_id', $model->id)
-                                            ->where('moneda_id', $moneda_id)
-                                            ->first();
-
-        $current_acounts = CurrentAcount::where($model_name.'_id', $model->id)
-                                        ->update([
-                                            'credit_account_id'     => $credit_account->id
-                                        ]);
-
-        CurrentAcountHelper::checkSaldos($credit_account->id);
-        CurrentAcountHelper::checkPagos($credit_account->id, true);
 
     }
 }

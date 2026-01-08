@@ -43,6 +43,7 @@ use App\Models\Image;
 use App\Models\InventoryLinkage;
 use App\Models\MeliOrder;
 use App\Models\MercadoLibreToken;
+use App\Models\Moneda;
 use App\Models\OnlineConfiguration;
 use App\Models\Order;
 use App\Models\OrderProduction;
@@ -71,6 +72,78 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null, $param_2 = null) {
         $this->{$method}($param, $param_2);
+    }
+
+    function precios_ffperformance() {
+        $user = User::find(env('USER_ID'));
+        $articles = Article::all(); 
+        $monedas = Moneda::all(); 
+        $price_types = PriceType::orderBy('position', 'ASC')
+                                ->get();
+
+        foreach ($price_types as $price_type) {
+
+            foreach ($monedas as $moneda) {
+                
+                foreach ($articles as $article) {
+
+
+                    $cost = $article->cost;
+                    $setear_precio_final = 0;
+                    $percentage = $price_type->percentage;
+                    $final_price = null;
+
+                    if ($cost && $cost > 0) {
+                        
+                        if ($setear_precio_final) {
+
+                            $percentage = ($final_price - $cost) / $cost * 100;
+
+                        } else {
+
+                            $final_price = $cost + ($cost * (float)$percentage / 100);
+
+                        }
+                    }
+
+                    if (
+                        $article->cost_in_dollars
+                        && $setear_precio_final == 0
+                    ) {
+                        if ($moneda->id == 1) {
+                            $final_price *= $user->dollar;
+                        }
+                    }
+
+                    $article->price_type_monedas()->updateOrCreate([
+                            'price_type_id'     => $price_type->id,
+                            'moneda_id'         => $moneda->id,
+                        ], 
+                        [
+                            'percentage'    => $price_type->percentage,
+                            'setear_precio_final'    => 0,
+                        ]
+                    );
+                    // if ($exist) {
+
+                    // } else {
+
+                    //     $article->price_type_monedas()->attach($price_type->id, [
+                    //         'percentage'    => $price_type->percentage,
+                    //         'setear_precio_final'    => 0,
+                    //     ]);
+                    // }
+
+                    ArticleHelper::setFinalPrice($article, env('USER_ID'));
+                    echo $article->id.' | '.$article->name.' ok. '.$price_type->name.': '.$price_type->percentage;
+                    echo '<br>';
+                }
+            }
+
+
+        }
+
+        echo 'Listo';
     }
 
     function set_nota_credito_afip_ticket_data() {

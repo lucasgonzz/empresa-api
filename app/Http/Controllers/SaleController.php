@@ -418,7 +418,7 @@ class SaleController extends Controller
         $pdf = new SalePdf($sale, $user, (boolean)$with_prices, (boolean)$with_costs, (boolean)$precios_netos);
     }
 
-    function afipTicketPdf($id) {
+    function afipTicketA4Pdf($id) {
         $afip_ticket = AfipTicket::find($id);
         $pdf = new SaleAfipTicketPdf($afip_ticket);
     }
@@ -428,9 +428,14 @@ class SaleController extends Controller
         $pdf = new SaleDeliveredArticlesPdf($sale);
     }
 
-    function ticketPdf($id) {
-        $afip_ticket = AfipTicket::find($id);
+    function saleTicketPdf($sale_id) {
+        $sale = Sale::find($sale_id);
         $pdf = new SaleTicketPdf($sale);
+    }
+
+    function afipTicketPdf($afip_ticket_id) {
+        $afip_ticket = AfipTicket::find($afip_ticket_id);
+        $pdf = new SaleTicketPdf($afip_ticket->sale, $afip_ticket);
     }
 
     function ticketRaw($id) {

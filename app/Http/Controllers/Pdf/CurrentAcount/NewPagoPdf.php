@@ -132,7 +132,7 @@ class NewPagoPdf extends fpdf {
             // FPDF necesita un archivo local o URL habilitada. Intentamos usar la URL directa.
             // Si el servidor bloquea allow_url_fopen, podés descargar la imagen al storage y pasar la ruta local.
             try {
-                $this->Image($logo_url, 40, 15, 35);
+                $this->Image($logo_url, 40, 14, 35);
             } catch (\Exception $e) {
                 // si falla la carga por URL, se ignora y sigue generando el PDF sin logo
             }
@@ -141,12 +141,23 @@ class NewPagoPdf extends fpdf {
         // Empresa (izquierda, debajo título)
         $this->SetFont('Arial','B',12);
         $this->x = 10;
-        $this->y += 42;
+        $this->y += 39;
         $this->Cell(95, 6, $datos['empresa_nombre'], 0, 1, 'C');
 
         $this->SetFont('Arial','',10);
         $this->x = 10;
-        $this->Cell(95,5, $datos['direccion_line'], 0, 1, 'C');
+
+        // $this->Cell(95,5, $datos['direccion_line'], 0, 1, 'C');
+        
+        $this->MultiCell( 
+            95, 
+            5, 
+            $datos['direccion_line'], 
+            0, 
+            'C', 
+            false
+        );
+
         $this->x = 10;
         $this->Cell(95,5, 'TELEFONO: '.$datos['telefono'], 0, 1, 'C');
         $this->x = 10;

@@ -14,11 +14,11 @@ require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class SaleTicketPdf extends fpdf {
 
-	function __construct($afip_ticket) {
+	function __construct($sale, $afip_ticket = null) {
 		$this->line_height = 5;
 		$this->user = UserHelper::getFullModel();
+		$this->sale = $sale;
 		$this->afip_ticket = $afip_ticket;
-		$this->sale = $afip_ticket->sale;
 
 		$this->x_incial = 4;
 
@@ -46,6 +46,8 @@ class SaleTicketPdf extends fpdf {
 
 	function afipInformation() {
 
+		if (!$this->afip_ticket) return;
+
 		$afip_information = $this->afip_ticket->afip_information;
 
 		if (!is_null($afip_information)) {
@@ -62,9 +64,9 @@ class SaleTicketPdf extends fpdf {
 			$this->x = $this->x_incial;
 			$this->Cell($this->cell_ancho, 5, 'Punto de venta: '.$afip_information->punto_venta, $this->b, 1, 'L');
 			$this->x = $this->x_incial;
-			$this->Cell($this->cell_ancho, 5, 'N° comprobante: '.$this->sale->afip_ticket->cbte_numero, $this->b, 1, 'L');
+			$this->Cell($this->cell_ancho, 5, 'N° comprobante: '.$this->afip_ticket->cbte_numero, $this->b, 1, 'L');
 			$this->x = $this->x_incial;
-			$this->Cell($this->cell_ancho, 5, 'CAE: '.$this->sale->afip_ticket->cae, $this->b, 1, 'L');
+			$this->Cell($this->cell_ancho, 5, 'CAE: '.$this->afip_ticket->cae, $this->b, 1, 'L');
 			$this->x = $this->x_incial;
 			$this->Cell($this->cell_ancho, 5, 'Vto cae: '.$this->getCaeExpiredAt(), $this->b, 1, 'L');
 
@@ -80,7 +82,7 @@ class SaleTicketPdf extends fpdf {
 		$this->SetFont('Arial', '', 10);
 
 		$this->x = $this->x_incial;
-		$this->Cell($this->cell_ancho, 6, 'Tipo comprobante: '.$this->sale->afip_ticket->cbte_letra, $this->b, 1, 'C', 1);
+		$this->Cell($this->cell_ancho, 6, 'Tipo comprobante: '.$this->afip_ticket->cbte_letra, $this->b, 1, 'C', 1);
 
 		$this->SetTextColor(0,0,0);
 	}
@@ -93,26 +95,28 @@ class SaleTicketPdf extends fpdf {
 
 			if (!is_null($this->sale->client->address)) {
 				$this->x = $this->x_incial;
-				$this->Cell($this->cell_ancho, 5, 'Direccion: '.$this->sale->client->address, $this->b, 1, 'L');
+
+				// $this->Cell($this->cell_ancho, 5, 'Direccion: '.$this->sale->client->address, $this->b, 1, 'L');
+				$this->MultiCell($this->cell_ancho, 5, 'Direccion: '.$this->sale->client->address, $this->b, 'L', 0);
 			}
 
 			if (
-				$this->sale->afip_ticket
-				&& $this->sale->afip_ticket->iva_cliente != ''
+				$this->afip_ticket
+				&& $this->afip_ticket->iva_cliente != ''
 			) {
 				$this->x = $this->x_incial;
-				$this->Cell($this->cell_ancho, 5, 'IVA '.$this->sale->afip_ticket->iva_cliente, $this->b, 1, 'L');
+				$this->Cell($this->cell_ancho, 5, 'IVA '.$this->afip_ticket->iva_cliente, $this->b, 1, 'L');
 			} 
 
-		} else if (is_null($this->sale->client) && $this->sale->afip_ticket) {
+		} else if (is_null($this->sale->client) && $this->afip_ticket) {
 			$this->Cell($this->cell_ancho, 5, 'Cliente: Consumidor final', $this->b, 1, 'L');
 		}
 	}
 
 	function getCaeExpiredAt() {
-		$date = $this->sale->afip_ticket->cae_expired_at;
+		$date = $this->afip_ticket->cae_expired_at;
 		return substr($date, 0, 11);
-		return substr($date, 0, 4).'/'.substr($this->sale->afip_ticket->cae_expired_at, 4, 2).'/'.substr($date, 6, 8);
+		return substr($date, 0, 4).'/'.substr($this->afip_ticket->cae_expired_at, 4, 2).'/'.substr($date, 6, 8);
 	}
 
 	function Footer() {
@@ -162,7 +166,10 @@ class SaleTicketPdf extends fpdf {
 		$this->MultiCell($ancho_cell, 7, $this->user->company_name, $this->b, 'L', 0);
 
 		$domicilio = null;
-		if (!is_null($this->afip_ticket->afip_information)) {
+		if (
+			$this->afip_ticket
+			&& !is_null($this->afip_ticket->afip_information)
+		) {
 			$domicilio = $this->afip_ticket->afip_information->domicilio_comercial;
 		} else {
 			$punto_venta = AfipInformation::where('user_id', $this->user->id)
@@ -391,13 +398,13 @@ class SaleTicketPdf extends fpdf {
 
 	function iva_discriminado() {
 
-		if (!is_null($this->sale->afip_ticket)) {
+		if (!is_null($this->afip_ticket)) {
 
 			$this->SetFont('Arial', '', 10);
 
 			$this->y += 5;
         	
-        	$afip_helper = new AfipHelper($this->sale);
+        	$afip_helper = new AfipHelper($this->afip_ticket);
 
 			$importes = $afip_helper->getImportes();
 
@@ -415,7 +422,7 @@ class SaleTicketPdf extends fpdf {
 	}
 
 	function qr() {
-		if (!is_null($this->sale->afip_ticket)) {
+		if (!is_null($this->afip_ticket)) {
 			$pdf = new AfipQrPdf($this, $this->sale, true);
 			$pdf->printQr();
 		}
@@ -433,7 +440,7 @@ class SaleTicketPdf extends fpdf {
 	}
 
 	function num() {
-		if (is_null($this->sale->afip_ticket)) {
+		if (is_null($this->afip_ticket)) {
 		    $this->x = $this->x_incial;
 		    $this->SetFont('Arial', '', 9);
 			$this->Cell($this->cell_ancho, 5, 'Venta N° '.$this->sale->num, $this->b, 0, 'L');
@@ -444,8 +451,8 @@ class SaleTicketPdf extends fpdf {
 	function date() {
 		$date = date_format($this->sale->created_at, 'd/m/Y H:i');
 
-		if ($this->sale->afip_ticket) {
-			$date = date_format($this->sale->afip_ticket->created_at, 'd/m/Y H:i');
+		if ($this->afip_ticket) {
+			$date = date_format($this->afip_ticket->created_at, 'd/m/Y H:i');
 		}
 
 	    $this->x = $this->x_incial;
@@ -482,8 +489,8 @@ class SaleTicketPdf extends fpdf {
 
 	function getPdfHeight() {
 		$height = 120;
-		if (!is_null($this->sale->afip_ticket)) {
-			$height += 90;
+		if (!is_null($this->afip_ticket)) {
+			$height += 120;
 		}
 		foreach ($this->sale->combos as $combo) {
 			$height += $this->getHeight($combo, 20);
