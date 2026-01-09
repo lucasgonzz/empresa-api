@@ -96,12 +96,12 @@ class ArticleIndexCache
         Log::info('Duración total cachear los articulos ' . number_format($duracion, 3) . ' segundos');
 
         if (env('APP_ENV') == 'local') {
-            Log::info('');
-            Log::info('**********************');
-            Log::info('cache en memoria:');
-            Log::info(Self::get($user_id));
-            Log::info('');
-            Log::info('');
+            // Log::info('');
+            // Log::info('**********************');
+            // Log::info('cache en memoria:');
+            // Log::info(Self::get($user_id));
+            // Log::info('');
+            // Log::info('');
         } else {
             // Log::info('cache en memoria:');
             // Log::info(count(Self::get($user_id)['ids']).' articulos del provider_id '.$provider_id);
@@ -269,7 +269,7 @@ class ArticleIndexCache
         $index = Cache::get($key);
 
 
-        Log::info('Llego a add: ');
+        // Log::info('Llego a add: ');
         // Log::info($article->id);
 
         $article_id = $article->fake_id;
@@ -310,8 +310,8 @@ class ArticleIndexCache
             $index['names'][strtolower(trim($article->name))] = $article_id;
         }
 
-        Log::info('Se agrego al cache: ');
-        Log::info($article->toArray());
+        // Log::info('Se agrego al cache: ');
+        // Log::info($article->toArray());
 
         Cache::put($key, $index, now()->addMinutes(30));
     }
@@ -444,11 +444,13 @@ class ArticleIndexCache
                 $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article->id;
             } else {
 
-                if (!isset($index['provider_codes'][$article->provider_id][$article->provider_code])) {
-                    $index['provider_codes'][$article->provider_id][$article->provider_code] = [];
-                }
+                // if (!isset($index['provider_codes'][$article->provider_id][$article->provider_code])) {
+                //     $index['provider_codes'][$article->provider_id][$article->provider_code] = [];
+                // }
 
-                $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article->id;
+                // Log::info('Agregando el articulo con provider_code '.$article->provider_code.' al cache:');
+                // Log::info($index['provider_codes'][$article->provider_id][$article->provider_code]);
+                $index['provider_codes'][$article->provider_id][$article->provider_code] = $article->id;
             }
         }
 

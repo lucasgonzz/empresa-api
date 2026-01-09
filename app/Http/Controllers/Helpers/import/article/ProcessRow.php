@@ -357,6 +357,7 @@ class ProcessRow {
 
     function add_article_match() {
         $this->articles_match++;
+        Log::info('articles_match: '.$this->articles_match);
     }
 
     function attach_provider($articulo_ya_creado, $data, $provider_id) {

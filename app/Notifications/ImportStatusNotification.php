@@ -10,7 +10,7 @@ use Illuminate\Notifications\Messages\BroadcastMessage;
 
 class ImportStatusNotification extends Notification
 {
-    use Queueable;
+    // use Queueable;
 
     public $import_status;
     public $owner_id;
@@ -46,5 +46,11 @@ class ImportStatusNotification extends Notification
         return new BroadcastMessage([
             'import_status'              => $this->import_status,
         ]);
+    }
+    
+    // 🔥 Esta es la parte clave
+    public function shouldBroadcastNow()
+    {
+        return true;
     }
 }

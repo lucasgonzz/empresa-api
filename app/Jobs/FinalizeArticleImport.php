@@ -150,7 +150,7 @@ class FinalizeArticleImport implements ShouldQueue
 
             Log::info("FinalizeArticleImport: ImportHistory creado para {$this->import_uuid}");
 
-            ArticleImportHelper::enviar_notificacion($this->user, count($created_ids), count($updated_props_by_article), $import_history->articles_match);
+            ArticleImportHelper::enviar_notificacion($this->user, count($created_ids), count($updated_props_by_article), $import_history->articles_match, $import_history->filas_procesadas);
 
             Log::info('Se envio notificacion');
 

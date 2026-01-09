@@ -191,7 +191,7 @@ class TiendaNubeProductService extends BaseTiendaNubeService
     function get_article_data($article) {
         $article_data = [
             'name'                      => ['es' => $article->name],
-            'seo_title'                 => $article->seo_title,
+            'seo_title'                 => !is_null($article->seo_title) ? $article->seo_title : $article->name,
             'seo_description'           => $article->seo_description,
             'video_url'                 => $article->video_url,
             'published'                 => $article->disponible_tienda_nube ? true : false,

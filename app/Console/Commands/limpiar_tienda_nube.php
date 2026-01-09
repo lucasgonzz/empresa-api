@@ -2,6 +2,10 @@
 
 namespace App\Console\Commands;
 
+use App\Models\Article;
+use App\Models\Category;
+use App\Models\SubCategory;
+use App\Models\SyncToTNArticle;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
 
@@ -53,15 +57,20 @@ class limpiar_tienda_nube extends Command
                     continue;
                 }
 
+                $deleted_products++;
                 $this->line("Eliminando producto ID: {$product['id']}");
                 Http::withHeaders($headers)->delete("$base_url/products/{$product['id']}");
-                $deleted_products++;
+                $this->comment($deleted_products.' eliminados');
             }
 
-            $page++;
+            // $page++;
         }
 
         $this->info("Se eliminaron $deleted_products productos.");
+
+        Article::query()->update(['tiendanube_product_id' => null]);
+
+        SyncToTNArticle::query()->delete();
 
         $this->info("Eliminando categorías...");
         $categories_response = Http::withHeaders($headers)->get("$base_url/categories");
@@ -85,6 +94,9 @@ class limpiar_tienda_nube extends Command
         } else {
             $this->error("Error al obtener categorías (código {$categories_response->status()})");
         }
+        
+        Category::query()->update(['tiendanube_category_id' => null]);
+        SubCategory::query()->update(['tiendanube_category_id' => null]);
 
         $this->info("Purgado completo.");
     }
