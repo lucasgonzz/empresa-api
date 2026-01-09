@@ -129,8 +129,6 @@ class ArticleImport implements ToCollection
 
         Log::info('articulos cacheados');
 
-        $this->num_row = 1;
-
         $this->set_finish_row($rows);
 
         $this->set_providers($rows);
@@ -138,15 +136,22 @@ class ArticleImport implements ToCollection
         $error_message = null;
 
         $this->filas_procesadas = 0;
+
+        Log::info('rows:');
+        Log::info($rows);
+
+        Log::info('filas_procesadas: '.$this->filas_procesadas);
+        Log::info('start_row: '.$this->start_row);
+        Log::info('finish_row: '.$this->finish_row);
         
         foreach ($rows as $row) {
 
-            if ($this->esta_en_el_rango_de_filas()) {
+            // if ($this->esta_en_el_rango_de_filas()) {
     
-                Log::info('');
-                Log::info('');
-                Log::info('');
-                Log::info('Va por fila '.$this->num_row);
+                // Log::info('');
+                // Log::info('');
+                // Log::info('');
+                Log::info('Va por fila '.$this->filas_procesadas);
 
                 if ($this->checkRow($row)) {
 
@@ -160,7 +165,7 @@ class ArticleImport implements ToCollection
                         
                     } catch (\Throwable $e) {
 
-                        $error_message = 'Error en la linea '.$this->num_row;
+                        $error_message = 'Error en la linea '.$this->filas_procesadas;
 
 
                         Log::error('Error al importar, se capturó una excepción.');
@@ -174,7 +179,7 @@ class ArticleImport implements ToCollection
                         // Registra el progreso y errores en Import History
                         // ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, $error_message, $this->articulos_creados, $this->articulos_actualizados, $this->updated_props);
 
-                        // ArticleImportHelper::error_notification($this->user, $this->num_row, $e->getMessage());
+                        // ArticleImportHelper::error_notification($this->user, $this->filas_procesadas, $e->getMessage());
                         
                         throw $e;
 
@@ -182,14 +187,13 @@ class ArticleImport implements ToCollection
 
 
                 } else {
-                    // Log::info('Se omitio una fila N° '.$this->num_row.' con nombre '.ImportHelper::getColumnValue($row, 'nombre', $this->columns));
+                    // Log::info('Se omitio una fila N° '.$this->filas_procesadas.' con nombre '.ImportHelper::getColumnValue($row, 'nombre', $this->columns));
                 } 
 
-            } else if ($this->num_row > $this->finish_row) {
+            // } else if ($this->filas_procesadas > $this->finish_row) {
 
-                break;
-            }
-            $this->num_row++;
+            //     break;
+            // }
         }
 
         if (!$this->trabajo_terminado) {
@@ -206,7 +210,7 @@ class ArticleImport implements ToCollection
             Log::info('articulos_actualizados: '.count($articulos_actualizados));
             Log::info('articles_match: '.$articles_match);
 
-            ArticleImportHelper::create_article_import_result($this->import_uuid, $articulos_creados, $articulos_actualizados, $articles_match);
+            ArticleImportHelper::create_article_import_result($this->import_uuid, $articulos_creados, $articulos_actualizados, $articles_match, $this->filas_procesadas);
             
             
             $this->trabajo_terminado = true;
@@ -257,11 +261,11 @@ class ArticleImport implements ToCollection
     }
 
     function check_fila_inicio() {
-        return $this->num_row >= $this->start_row;
+        return $this->filas_procesadas >= $this->start_row;
     }
 
     function check_fila_fin() {
-        return $this->num_row <= $this->finish_row;
+        return $this->filas_procesadas <= $this->finish_row;
     }
 
     function set_providers($rows) {
@@ -315,7 +319,7 @@ class ArticleImport implements ToCollection
 
     function saveArticle($row) {
 
-        // Log::info('saveArticle para row N° '.$this->num_row);
+        // Log::info('saveArticle para row N° '.$this->filas_procesadas);
         
         $data = [];
 
@@ -392,7 +396,7 @@ class ArticleImport implements ToCollection
                 $data['slug'] = ArticleHelper::slug(ImportHelper::getColumnValue($row, 'nombre', $this->columns), null, $this->user->id);
             }
             $data['user_id'] = $this->user->id;
-            $data['created_at'] = Carbon::now()->subSeconds($this->finish_row - $this->num_row);
+            $data['created_at'] = Carbon::now()->subSeconds($this->finish_row - $this->filas_procesadas);
             $data['apply_provider_percentage_gain'] = 1;
 
             $data['num'] = $this->ct->num('articles', null, 'user_id', $this->user->id);
@@ -408,7 +412,7 @@ class ArticleImport implements ToCollection
             $this->articulos_creados[] = $article;
 
         } else {
-            // Log::info('No entro a ningun lado la N° '.$this->num_row);
+            // Log::info('No entro a ningun lado la N° '.$this->filas_procesadas);
         }
 
         if (!is_null($this->articulo_existente)) {

@@ -17,7 +17,7 @@ use Illuminate\Support\Facades\Log;
 
 class ArticleImportHelper {
 
-	static function enviar_notificacion($user, $articulos_creados, $articulos_actualizados, $articles_match) {
+	static function enviar_notificacion($user, $articulos_creados, $articulos_actualizados, $articles_match, $filas_procesadas) {
 
 	    $functions_to_execute = [];
 	    
@@ -33,9 +33,10 @@ class ArticleImportHelper {
         	[
         		'title'		=> 'Resultado de la operacion',
         		'parrafos'	=> [
+        			$filas_procesadas. ' filas procesadas',
         			$articulos_creados. ' articulos creados',
-        			$articles_match. ' articulos macheados',
         			$articulos_actualizados. ' articulos actualizados',
+        			$articles_match. ' articulos macheados',
         		],
         	],
         ];
@@ -139,13 +140,14 @@ class ArticleImportHelper {
         }
     }
 
-    static function create_article_import_result($import_uuid, $articulos_creados, $articulos_actualizados, $articles_match) {
+    static function create_article_import_result($import_uuid, $articulos_creados, $articulos_actualizados, $articles_match, $filas_procesadas) {
         
         $import_result = ArticleImportResult::create([
 		    'import_uuid'    => $import_uuid,
 		    'created_count'  => count($articulos_creados),
 		    'updated_count'  => count($articulos_actualizados),
 		    'articles_match' => $articles_match,
+		    'filas_procesadas'	=> $filas_procesadas,
         ]);
 
 

@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Imports\ArticleImport;
 use App\Models\ArticleImportResult;
+// use App\Models\Collection;
 use App\Models\ImportHistory;
 use App\Models\ImportStatus;
 use App\Notifications\ImportStatusNotification;
@@ -16,10 +17,9 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Collection;
-use Illuminate\Contracts\Queue\ShouldBeUniqueUntilProcessing;
 use Maatwebsite\Excel\Excel as ExcelFormat;
 use Maatwebsite\Excel\Facades\Excel;
 
@@ -30,6 +30,7 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
     protected $import_uuid, $csv_path, $columns, $create_and_edit, $start_row, $finish_row,
               $provider_id, $user, $auth_user_id, $no_actualizar_articulos_de_otro_proveedor, $import_status_id, $import_history_id, $chunk_number;
 
+    // public $timeout = 5; // 30 minutos por chunk, ajustable
     public $timeout = 1800; // 30 minutos por chunk, ajustable
     public $tries = 1;
     
@@ -57,9 +58,11 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 
     public function handle()
     {
-        Log::warning("INICIO Job Chunk #{$this->chunk_number} del lote {$this->batchId()}. PID: " . getmypid());
+        Log::warning("INICIO Job Chunk #{$this->chunk_number}");
+        // Log::warning("INICIO Job Chunk #{$this->chunk_number} del lote {$this->batchId()}. PID: " . getmypid());
 
         $inicio = microtime(true);
+
 
         try {
 
@@ -69,73 +72,30 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
             if ($this->import_status->status == 'fallo') {
                 return;
             }
+            
 
-            $importer = new ArticleImport(
-                $this->import_uuid,
-                $this->columns,
-                $this->create_and_edit,
-                $this->no_actualizar_articulos_de_otro_proveedor,
-                $this->start_row,
-                $this->finish_row,
-                $this->provider_id,
-                $this->user,
-                $this->auth_user_id,
-                $this->csv_path,
-                $this->chunk_number
-            );
+            $this->crear_article_import();
     
-            $chunkRows = [];
-            $file_path = storage_path('app/' . $this->csv_path);
-    
-            Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Abriendo y leyendo archivo CSV.");
-            if (($handle = fopen($file_path, "r")) !== FALSE) {
-                $currentRow = 1;
-                while (($data = fgetcsv($handle, 0, ",")) !== FALSE) {
-                    if ($currentRow >= $this->start_row && $currentRow <= $this->finish_row) {
-                        $chunkRows[] = $data;
-                    }
-                    if ($currentRow > $this->finish_row) {
-                        break;
-                    }
-                    $currentRow++;
-                }
-                fclose($handle);
-            }
-            Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Archivo CSV leído y cerrado.");
-    
-            Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Invocando lógica de importación (importer->collection).");
-            $collection = new \Illuminate\Support\Collection($chunkRows);
-            $importer->collection($collection);
+            $chunkRows = $this->get_row_from_csv();
+
+            $collection = new Collection($chunkRows);
+            $this->importer->collection($collection);
 
             unset($collection, $chunkRows); // Liberar memoria explícitamente
 
-            Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Lógica de importación completada.");
-            $extension = pathinfo($this->archivo_excel_path, PATHINFO_EXTENSION);
+            // Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Lógica de importación completada.");
 
-            $ext = strtolower($extension);
-
-            if ($ext == 'xls') {
-                $this->reader_type = ExcelFormat::XLS;
-            } else if ($ext == 'xlsx') {
-                $this->reader_type = ExcelFormat::XLSX; 
-            } else {
-                $this->reader_type = ExcelFormat::XLSX; // fallback
-            }
-
-            $this->ejecutar_article_import();
 
             $this->get_article_import_result();
 
             $this->update_import_status();
 
-            $this->notificar_usuario();
+            $this->notificar_import_status();
 
             $this->update_import_history();
 
             $this->guardar_tiempo_de_ejecucion($inicio);
 
-            $duracion = $fin - $inicio;
-            Log::warning("FIN Job Chunk #{$this->chunk_number} del lote {$this->batchId()}. PID: " . getmypid() . " - Tardó en procesarse: " . number_format($duracion, 3) . " segundos");
 
         } catch (\Throwable $e) {
 
@@ -156,8 +116,6 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 
             $this->set_import_history_error($e);
 
-            // Registra el progreso y errores en Import History
-            // ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, $error_message, $this->articulos_creados, $this->articulos_actualizados, $this->updated_props);
 
             ArticleImportHelper::error_notification($this->user, null, $e->getMessage());
 
@@ -165,6 +123,35 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 
             throw $e; // ✅ Esto detiene la chain
         }
+    }
+
+    function get_row_from_csv() {
+        
+        $chunkRows = [];
+
+        $file_path = $this->csv_path;
+        // $file_path = storage_path('app/' . $this->csv_path);
+
+        Log::warning("Abriendo y leyendo archivo CSV.");
+        // Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Abriendo y leyendo archivo CSV.");
+        if (($handle = fopen($file_path, "r")) !== FALSE) {
+            $currentRow = 1;
+            while (($data = fgetcsv($handle, 0, ",")) !== FALSE) {
+                if ($currentRow >= $this->start_row && $currentRow <= $this->finish_row) {
+                    $chunkRows[] = $data;
+                }
+                if ($currentRow > $this->finish_row) {
+                    break;
+                }
+                $currentRow++;
+            }
+            fclose($handle);
+        }
+        Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Archivo CSV leído y cerrado.");
+
+        Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Invocando lógica de importación (importer->collection).");
+
+        return $chunkRows;
     }
 
     function set_import_history_error($e) {
@@ -180,23 +167,37 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         $this->import_history->save();
     }
 
-    function ejecutar_article_import() {
+    function crear_article_import() {
 
         try {
 
-            Excel::import(new ArticleImport(
+            $this->importer = new ArticleImport(
                 $this->import_uuid,
-                $this->columns, $this->create_and_edit,
+                $this->columns,
+                $this->create_and_edit,
                 $this->no_actualizar_articulos_de_otro_proveedor,
-                $this->start_row, $this->finish_row,
-                $this->provider_id, $this->user,
-                $this->auth_user_id, $this->archivo_excel_path,
-                $this->chunk_number,
-            ), $this->archivo_excel_path, null, $this->reader_type);
+                $this->start_row,
+                $this->finish_row,
+                $this->provider_id,
+                $this->user,
+                $this->auth_user_id,
+                $this->csv_path,
+                $this->chunk_number
+            );
+
+            // Excel::import(new ArticleImport(
+            //     $this->import_uuid,
+            //     $this->columns, $this->create_and_edit,
+            //     $this->no_actualizar_articulos_de_otro_proveedor,
+            //     $this->start_row, $this->finish_row,
+            //     $this->provider_id, $this->user,
+            //     $this->auth_user_id, $this->archivo_excel_path,
+            //     $this->chunk_number,
+            // ), $this->archivo_excel_path, null, $this->reader_type);
 
         } catch (\Throwable $e) {
             
-            Log::error('Error al importar, desde ProcessArticleChunk ejecutar_article_import');
+            Log::error('Error al importar, desde ProcessArticleChunk crear_article_import');
 
             throw $e;
         }
@@ -211,10 +212,6 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
             Log::error('Línea: ' . $e->getLine());
     }
 
-    function notificar_usuario() {
-        ArticleImportHelper::enviar_notificacion($this->user, count($this->created_ids), count($this->updated_props_by_article));
-
-    }
 
     function repasar_variantes() {
 
@@ -229,7 +226,6 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 
     function notificar_error_input_status($error) {
 
-        // $import_status = ImportStatus::find($this->import_status_id);
         $this->import_status->error_message = $error;
         $this->import_status->status = 'fallo';
         $this->import_status->save();
@@ -240,23 +236,23 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 
     function update_import_status() {
 
-        // $this->import_status = ImportStatus::find($this->import_status_id);
         $this->import_status->processed_chunks++;
         $this->import_status->articles_match += $this->import_result->articles_match;
         $this->import_status->created_models += $this->import_result->created_count;
         $this->import_status->updated_models += $this->import_result->updated_count;
+        $this->import_status->filas_procesadas += $this->import_result->filas_procesadas;
         Log::info('import_result->articles_match: '.$this->import_result->articles_match);
         
         // Use >= as a safeguard in case of concurrent increments
-        if ($import_status && $import_status->processed_chunks >= $import_status->total_chunks) {
-            $import_status->status = 'completado';
-            $import_status->save();
+        if ($this->import_status && $this->import_status->processed_chunks >= $this->import_status->total_chunks) {
+            $this->import_status->status = 'completado';
+            $this->import_status->save();
         }
         
         // Notify the user with the fresh status
-        $notification = new ImportStatusNotification($import_status, $this->user->id);
+        // $notification = new ImportStatusNotification($this->import_status, $this->user->id);
         Log::warning("Job [{$this->batchId()}] Dispatching notification for chunk #{$this->chunk_number}.");
-        $this->user->notify($notification);
+        // $this->user->notify($notification);
         Log::warning("Job [{$this->batchId()}] Dispatched notification for chunk #{$this->chunk_number}.");
       
         // fuerza a PHP a soltar buffers y sockets
@@ -272,7 +268,7 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 
     }
 
-    function notificar_usuario() {
+    function notificar_import_status() {
         $this->user->notifyNow(new ImportStatusNotification($this->import_status, $this->user->id));
     }
 
@@ -301,6 +297,7 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         $this->import_history->created_models  = count($this->created_ids);
         $this->import_history->updated_models  = count($this->updated_props_by_article);
         $this->import_history->articles_match  += $this->import_result->articles_match;
+        $this->import_history->filas_procesadas  += $this->import_result->filas_procesadas;
         $this->import_history->status          = 'en_proceso';
         $this->import_history->save();
 
