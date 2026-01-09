@@ -137,6 +137,8 @@ class ArticleImport implements ToCollection
 
         $error_message = null;
 
+        $this->filas_procesadas = 0;
+        
         foreach ($rows as $row) {
 
             if ($this->esta_en_el_rango_de_filas()) {
@@ -154,6 +156,8 @@ class ArticleImport implements ToCollection
 
                         $this->process_row->procesar($row, $this->nombres_proveedores);
 
+                        $this->filas_procesadas++;
+                        
                     } catch (\Throwable $e) {
 
                         $error_message = 'Error en la linea '.$this->num_row;

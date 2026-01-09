@@ -82,18 +82,12 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 
             $this->update_import_status();
 
+            $this->notificar_usuario();
+
             $this->update_import_history();
 
-            // $this->limpiar_import_result();
+            $this->guardar_tiempo_de_ejecucion($inicio);
 
-            // $this->notificar_usuario();
-
-            // $this->repasar_variantes();
-
-            $fin = microtime(true);
-
-            $duracion = $fin - $inicio;
-            Log::info('Tardo en procesarce: '.number_format($duracion, 3).' segundos');
 
         } catch (\Throwable $e) {
 
@@ -211,7 +205,24 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         $this->import_status->save();
 
 
+    }
+
+    function notificar_usuario() {
         $this->user->notifyNow(new ImportStatusNotification($this->import_status, $this->user->id));
+    }
+
+    function guardar_tiempo_de_ejecucion($inicio) {
+
+        $fin = microtime(true);
+        $duracion = $fin - $inicio;
+
+        Log::info('Tardo en procesarce: '.number_format($duracion, 3).' segundos');
+        
+        if (is_null($this->import_history->observations)) {
+            $this->import_history->observations = '';
+        }
+        $this->import_history->observations .= ' | '.number_format($duracion, 3).' segundos'; 
+        $this->import_history->save(); 
     }
 
     function update_import_history() {
