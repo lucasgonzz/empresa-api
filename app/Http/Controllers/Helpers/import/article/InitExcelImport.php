@@ -11,10 +11,54 @@ use App\Models\ImportHistory;
 use App\Models\ImportStatus;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Log;
+use OpenSpout\Reader\Common\Creator\ReaderEntityFactory;
+use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
 
 class InitExcelImport {
-	
+
 	function importar($data) {
+    
+        // --- INICIO: CONVERSIÓN DE XLSX a CSV ---
+        $csv_relative_path = 'imported_files/' . pathinfo($archivo_excel_path, PATHINFO_FILENAME) . '_' . time() . '.csv';
+        $csv_full_path = storage_path('app/' . $csv_relative_path);
+
+        try {
+            $conversion_inicio = microtime(true);
+            Log::info("Iniciando conversión de XLSX a CSV. Origen: ".$archivo_excel);
+
+			      $reader = ReaderEntityFactory::createXLSXReader();
+
+            $reader->open($archivo_excel);
+
+            $writer = WriterEntityFactory::createCSVWriter();
+            $writer->openToFile($csv_full_path);
+
+            foreach ($reader->getSheetIterator() as $sheet) {
+                foreach ($sheet->getRowIterator() as $row) {
+                    $writer->addRow($row);
+                }
+                break; // Solo procesar la primera hoja
+            }
+
+            $writer->close();
+            $reader->close();
+            $conversion_fin = microtime(true);
+            $conversion_duracion = $conversion_fin - $conversion_inicio;
+            Log::info("Conversión a CSV completada en ".number_format($conversion_duracion, 3)." segundos. Nuevo archivo: ".$csv_full_path);
+        } catch (\Exception $e) {
+            Log::error("Error al convertir XLSX a CSV: " . $e->getMessage());
+            // Opcional: notificar al usuario del error de conversión
+            return;
+        }
+        // --- FIN: CONVERSIÓN DE XLSX a CSV ---
+
+
+        $chunkSize = env('ARTICLE_EXCEL_CHUNK_SIZE', 3500);
+
+		    Log::warning('chunksize: '.$chunkSize);
+
+        $start = $start_row;
+	
         
         $this->import_uuid    = $data['import_uuid']; 
         $this->archivo_excel  = $data['archivo_excel']; 
