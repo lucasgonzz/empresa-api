@@ -194,6 +194,8 @@ abstract class WS
             'hubo_un_error' => $hubo_un_error,
             'result'        => $result,
             'error'         => $error,
+            'request'       => $this->soap_client->__getLastRequest(),
+            'response'      => $this->soap_client->__getLastResponse(),
         ];
     }
     

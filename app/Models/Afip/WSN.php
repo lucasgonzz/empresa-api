@@ -344,34 +344,4 @@ abstract class WSN extends WS
         return parent::__call($name, $datos);
         // return parent::__call($name, array($datos));
     }
-
-    function get_manual($datos, $arguments) {
-
-        $token = $datos['Auth']['Token'];
-        $sign = $datos['Auth']['Sign'];
-        $cuit = $datos['Auth']['Cuit'];
-
-        $manual = <<<XML
-        <?xml version="1.0" encoding="UTF-8"?>
-            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns="http://ar.gov.afip.dif.fexv1/">
-                <soap:Body>
-                    <ns1:FEXAuthorize>
-                        <ns1:Auth>
-                            <ns1:Token>{$token}</ns1:Token>
-                            <ns1:Sign>{$sign}</ns1:Sign>
-                            <ns1:Cuit>{$cuit}</ns1:Cuit>
-                        </ns1:Auth>
-        XML;
-
-        $manual .= $arguments;
-
-        $manual .= <<<XML
-                    </ns1:FEXAuthorize>
-                </soap:Body>
-            </soap:Envelope>
-        XML;
-
-
-        return $manual;
-    }
 }

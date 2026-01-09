@@ -18,10 +18,21 @@ class TiendaNubeProductDescriptionService extends BaseTiendaNubeService
     public function update_descriptions($article)
     {
 
-        if (count($article->descriptions) == 0) return;
+        $description = $article->descripcion;
+
+        if (count($article->descriptions) > 0) {
+            $description = $article->descriptions[0]->content;
+        }
+
+        if (
+            is_null($description)
+            || $description == ''
+        ) {
+            return;
+        }
         
         $payload = [
-            'description' => ['es' => $article->descriptions[0]->content],
+            'description' => ['es' => $description],
         ];
 
         $endpoint = "/{$this->store_id}/products/{$article->tiendanube_product_id}";

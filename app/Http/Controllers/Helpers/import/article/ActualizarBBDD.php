@@ -16,6 +16,7 @@ use App\Models\ArticlePropertyValue;
 use App\Models\ArticleUbication;
 use App\Models\ArticleVariant;
 use App\Models\PriceType;
+use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -252,11 +253,14 @@ class ActualizarBBDD {
             Log::info('Entra a actualizar tienda nube');
 
             foreach ($this->articulos_creados_models as $article) {
-                dispatch(new ProcessSyncArticleToTiendaNube($article));
+                TiendaNubeSyncArticleService::add_article_to_sync($article);
+                // TiendaNubeSyncArticleService::add_article_to_sync($model);
+                // dispatch(new ProcessSyncArticleToTiendaNube($article));
             }
 
             foreach ($this->articulos_actualizados_models as $article) {
-                dispatch(new ProcessSyncArticleToTiendaNube($article));
+                TiendaNubeSyncArticleService::add_article_to_sync($article);
+                // dispatch(new ProcessSyncArticleToTiendaNube($article));
             }
         }
     }
@@ -349,7 +353,7 @@ class ActualizarBBDD {
 
 
 
-        $articles_id_para_eliminarles_descuentos = [];
+        // $articles_id_para_eliminarles_descuentos = [];
 
         foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
 
@@ -364,17 +368,17 @@ class ActualizarBBDD {
 
             $article_id = $article_model->id;
 
-            $articles_id_para_eliminarles_descuentos[] = $article_id;
+            // $articles_id_para_eliminarles_descuentos[] = $article_id;
 
             $insertData = $this->get_discounts_surchages_insert_data('discounts', $article_id, $article_cache, $insertData, 'amount');
 
         }
 
 
-        DB::table('article_discounts')
-            ->whereIn('article_id', $articles_id_para_eliminarles_descuentos)
-            ->whereNotNull('amount')
-            ->delete();
+        // DB::table('article_discounts')
+        //     ->whereIn('article_id', $articles_id_para_eliminarles_descuentos)
+        //     ->whereNotNull('amount')
+        //     ->delete();
 
         // Log::info('Se eliminaron descuentos con amount de '.count($articles_id_para_eliminarles_descuentos).' articulos');
 
@@ -469,7 +473,7 @@ class ActualizarBBDD {
 
 
 
-        $articles_id_para_eliminarles_descuentos = [];
+        // $articles_id_para_eliminarles_descuentos = [];
 
         foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
 
@@ -484,17 +488,17 @@ class ActualizarBBDD {
 
             $article_id = $article_model->id;
 
-            $articles_id_para_eliminarles_descuentos[] = $article_id;
+            // $articles_id_para_eliminarles_descuentos[] = $article_id;
 
             $insertData = $this->get_discounts_surchages_insert_data('surchages', $article_id, $article_cache, $insertData, 'amount');
 
         }
 
 
-        DB::table('article_surchages')
-            ->whereIn('article_id', $articles_id_para_eliminarles_descuentos)
-            ->whereNotNull('amount')
-            ->delete();
+        // DB::table('article_surchages')
+        //     ->whereIn('article_id', $articles_id_para_eliminarles_descuentos)
+        //     ->whereNotNull('amount')
+        //     ->delete();
 
         // Log::info('Se eliminaron recargos con amount de '.count($articles_id_para_eliminarles_descuentos).' articulos');
 

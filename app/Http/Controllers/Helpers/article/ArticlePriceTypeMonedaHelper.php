@@ -2,14 +2,19 @@
 
 namespace App\Http\Controllers\Helpers\article;
 
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
+use App\Models\PriceType;
 use Illuminate\Support\Facades\Log;
 
 class ArticlePriceTypeMonedaHelper {
 
 
     static function attach_price_type_monedas($article, $price_type_monedas, $user = null) {
+
+        // $price_types = PriceType::where('user_id', $article->user_id)
+        //                         ->get();
 
         if (empty($price_type_monedas)) return;
 
@@ -20,9 +25,14 @@ class ArticlePriceTypeMonedaHelper {
         $cost = $article->cost;
 
         $cost = ArticlePricesHelper::aplicar_iva($article, $cost, $user);
+        // $cost = ArticleHelper::cotizar($article, $user, $cost);
 
         // price_type_monedas: array de {price_type_id, moneda_id, pivot: {percentage, final_price, setear_precio_final, incluir_en_excel}}
         
+        // foreach ($price_types as $price_type) {
+            
+            
+        // }
         foreach ($price_type_monedas as $ptm) {
 
             $moneda_id = $ptm['moneda_id'];
@@ -54,6 +64,10 @@ class ArticlePriceTypeMonedaHelper {
                     $percentage = ($final_price - $cost) / $cost * 100;
 
                 } else {
+
+                    // if (!$percentage) {
+                    //     $percentage = 
+                    // }
 
                     $final_price = $cost + ($cost * (float)$percentage / 100);
 

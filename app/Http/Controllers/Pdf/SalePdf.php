@@ -30,7 +30,7 @@ class SalePdf extends fpdf {
 		
 		$this->user = $user;
 
-        $this->afip_helper = new AfipHelper($this->sale, null, null, $user);
+        // $this->afip_helper = new AfipHelper($this->sale, null, null, $user);
 
 		$this->with_prices = $with_prices;
 		$this->with_costs = $with_costs;

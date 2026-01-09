@@ -147,7 +147,7 @@ class TiendaNubeProductService extends BaseTiendaNubeService
         return $article;
     }
 
-    function update_images() {
+    function update_images($article) {
 
         $tn_image = new TiendaNubeProductImageService();
         $tn_image->sync_images_for_article($article);
@@ -191,7 +191,7 @@ class TiendaNubeProductService extends BaseTiendaNubeService
     function get_article_data($article) {
         $article_data = [
             'name'                      => ['es' => $article->name],
-            'seo_title'                 => $article->seo_title,
+            'seo_title'                 => !is_null($article->seo_title) ? $article->seo_title : $article->name,
             'seo_description'           => $article->seo_description,
             'video_url'                 => $article->video_url,
             'published'                 => $article->disponible_tienda_nube ? true : false,

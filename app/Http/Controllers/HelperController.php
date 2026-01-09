@@ -8,6 +8,7 @@ use App\Http\Controllers\ArticlePerformanceController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartArticleAmountInsificienteHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
@@ -24,6 +25,7 @@ use App\Jobs\ProcessCheckSaldos;
 use App\Jobs\ProcessRecalculateCurrentAcounts;
 use App\Jobs\ProcessSetStockResultante;
 use App\Jobs\SetSalesTerminadaAtJob;
+use App\Models\Afip\WSFE;
 use App\Models\Article;
 use App\Models\ArticlePriceTypeMoneda;
 use App\Models\Budget;
@@ -41,6 +43,7 @@ use App\Models\Image;
 use App\Models\InventoryLinkage;
 use App\Models\MeliOrder;
 use App\Models\MercadoLibreToken;
+use App\Models\Moneda;
 use App\Models\OnlineConfiguration;
 use App\Models\Order;
 use App\Models\OrderProduction;
@@ -69,6 +72,188 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null, $param_2 = null) {
         $this->{$method}($param, $param_2);
+    }
+
+    function precios_ffperformance() {
+        $user = User::find(env('USER_ID'));
+        $articles = Article::all(); 
+        $monedas = Moneda::all(); 
+        $price_types = PriceType::orderBy('position', 'ASC')
+                                ->get();
+
+        foreach ($price_types as $price_type) {
+
+            foreach ($monedas as $moneda) {
+                
+                foreach ($articles as $article) {
+
+
+                    $cost = $article->cost;
+                    $setear_precio_final = 0;
+                    $percentage = $price_type->percentage;
+                    $final_price = null;
+
+                    if ($cost && $cost > 0) {
+                        
+                        if ($setear_precio_final) {
+
+                            $percentage = ($final_price - $cost) / $cost * 100;
+
+                        } else {
+
+                            $final_price = $cost + ($cost * (float)$percentage / 100);
+
+                        }
+                    }
+
+                    if (
+                        $article->cost_in_dollars
+                        && $setear_precio_final == 0
+                    ) {
+                        if ($moneda->id == 1) {
+                            $final_price *= $user->dollar;
+                        }
+                    }
+
+                    $article->price_type_monedas()->updateOrCreate([
+                            'price_type_id'     => $price_type->id,
+                            'moneda_id'         => $moneda->id,
+                        ], 
+                        [
+                            'percentage'    => $price_type->percentage,
+                            'setear_precio_final'    => 0,
+                        ]
+                    );
+                    // if ($exist) {
+
+                    // } else {
+
+                    //     $article->price_type_monedas()->attach($price_type->id, [
+                    //         'percentage'    => $price_type->percentage,
+                    //         'setear_precio_final'    => 0,
+                    //     ]);
+                    // }
+
+                    ArticleHelper::setFinalPrice($article, env('USER_ID'));
+                    echo $article->id.' | '.$article->name.' ok. '.$price_type->name.': '.$price_type->percentage;
+                    echo '<br>';
+                }
+            }
+
+
+        }
+
+        echo 'Listo';
+    }
+
+    function set_nota_credito_afip_ticket_data() {
+        $models = CurrentAcount::where('user_id', env('USER_ID'))
+                                ->where('status', 'nota_credito')
+                                ->whereHas('afip_ticket')
+                                ->orderBy('created_at', 'DESC')
+                                ->get();
+
+        foreach ($models as $nota_credito) {
+            
+            $afip_ticket = $nota_credito->afip_ticket;
+
+            $afip_ticket->afip_information_id = $nota_credito->sale->afip_tickets[0]->afip_information_id;
+            $afip_ticket->afip_tipo_comprobante_id = $nota_credito->sale->afip_tickets[0]->afip_tipo_comprobante_id;
+                
+            echo 'Nota credito N° '.$nota_credito->id.', afip_ticket: '.$afip_ticket->id.' afip_information_id: '. $nota_credito->sale->afip_tickets[0]->afip_information_id;
+            echo '<br>';
+            $afip_ticket->save();
+        }
+        echo 'Listo';
+    }
+
+    function check_price_types() {
+        $articles = Article::all();
+
+        $price_types = PriceType::all();
+        $price_type_d = PriceType::where('name', 'Lista D')->first();
+
+        foreach ($articles as $article) {
+
+            foreach ($price_types as $price_type) {
+
+                $p_t = $article->price_types()->where('price_type_id', $price_type->id)->exists();
+
+                if (!$p_t) {
+
+                    $p_t_d = $article->price_types()->where('price_type_id', $price_type_d->id)->first();
+
+                    echo $article->id.' no relacionado con '.$price_type->name;
+                    echo '<br>';
+
+                    if ($p_t_d) {
+
+                        $article->price_types()->attach($price_type->id, [
+                            'setear_precio_final'    => $p_t_d->pivot->setear_precio_final,
+                            'percentage'    => $p_t_d->pivot->percentage,
+                            'price'    => $p_t_d->pivot->price,
+                            'final_price'    => $p_t_d->pivot->final_price,
+                        ]);
+                    } else {
+                        echo 'No tiene P general';
+                        echo '<br>';
+
+                    }
+                }
+            }
+        }
+    }
+
+    function cf_articles() {
+        $articles = Article::where('provider_id', 5)
+                            ->get();
+
+        foreach ($articles as $article) {
+            $article->name = $article->bar_code;
+            $article->bar_code = null;
+            $article->timestamps = false;
+            $article->save();
+        }
+
+        echo 'Listo';
+        
+    }
+
+    function consultar_afip() {
+
+        $data = [
+            // 'cuit'      => '30716582899',
+            'cuit'      => '20292700599',
+            'CbteTipo'  => 1,
+            'CbteNro'   => 94,
+            'PtoVta'    => 12,
+        ];
+
+
+        $afip_wsaa = new AfipWSAAHelper(false, 'wsfe');
+        $afip_wsaa->checkWsaa();
+
+        $wsfe = new WSFE([
+            'testing'=> false, 
+            'cuit_representada' => $data['cuit'] 
+        ]);
+
+        $wsfe->setXmlTa(file_get_contents(TA_file));
+
+        $invoice = [
+            'FeCompConsReq' => [
+                'CbteTipo' => $data['CbteTipo'],
+                'CbteNro' => $data['CbteNro'],
+                'PtoVta' => $data['PtoVta'],
+           ]
+        ];
+
+        $result = $wsfe->FECompConsultar($invoice);
+        
+        Log::info('consultar_comprobante:');
+
+        $result = (array)$result['result'];
+        Log::info($result);
     }
 
     function poner_stocks_en_0() {

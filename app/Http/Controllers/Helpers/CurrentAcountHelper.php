@@ -280,10 +280,21 @@ class CurrentAcountHelper {
             foreach ($items as $item) {
                 if (isset($item['is_article'])) {
                     if (isset($item['unidades_devueltas'])) {
+
+                        $cost = $item['costo_real'];
+
+                        if (
+                            isset($item['pivot'])
+                            && isset($item['pivot']['cost'])
+                            && (float)$item['pivot']['cost'] > 0
+                        ) {
+                            $cost = (float)$item['pivot']['cost'];
+                        }
+
                         $nota_credito->articles()->attach($item['id'], [
                                                             'amount'    => $item['unidades_devueltas'],
                                                             'price'     => $item['price_vender'],
-                                                            'cost'      => $item['costo_real'],
+                                                            'cost'      => $cost,
                                                             'discount'  => $item['discount'],
                                                         ]);
                     }

@@ -51,6 +51,8 @@ class BudgetHelper {
 	            'total' 				=> $budget->total,
 	            'address_id' 			=> $budget->address_id,
 	            'moneda_id' 			=> $budget->moneda_id,
+	            'discounts_in_services'	=> $budget->discounts_in_services,
+	            'surchages_in_services'	=> $budget->surchages_in_services,
             	'price_type_id'         => Self::get_price_type_id($budget),
             	'employee_id'           => SaleHelper::getEmployeeId(),
 	            'save_current_acount' 	=> Self::get_guardar_cuenta_corriente($budget),
@@ -109,11 +111,17 @@ class BudgetHelper {
 			Log::info('amount: '.$article->pivot->amount);
 			Log::info('cost: '.$article->pivot->cost);
 			Log::info('price: '.$article->pivot->price);
+			
+			$cost = $article->pivot->cost;
+			$price = $article->pivot->price;
+        	$ganancia = (float)$price - (float)$cost;
+			
 			$sale->articles()->attach($article->id, [
 				'amount'			=> $article->pivot->amount,
 				'checked_amount'	=> Self::get_checked_amount($has_extencion_check_sales, $article),
-				'price'	    		=> $article->pivot->price,
-				'cost'	    		=> $article->pivot->cost,
+				'price'	    		=> $price,
+				'cost'	    		=> $cost,
+				'ganancia'	    	=> $ganancia,
 				'price_type_personalizado_id'	    		=> $article->pivot->price_type_personalizado_id,
 				'discount'			=> $article->pivot->bonus,
 			]);

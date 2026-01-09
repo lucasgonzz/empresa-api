@@ -21,6 +21,7 @@ class ProcessRow {
     protected $user;
     protected $ct;
     protected $provider_id;
+    protected $articles_match = 0;
     protected $articulosParaActualizar = [];
     protected $articulosParaCrear = [];
     protected $price_types = [];
@@ -34,11 +35,11 @@ class ProcessRow {
      * Constructor: recibe los datos necesarios para procesar las filas
      */
     function __construct($data) {
-        $this->columns = $data['columns'];
-        $this->user = $data['user'];
-        $this->ct = $data['ct'];
-        $this->provider_id = $data['provider_id'];
-        $this->create_and_edit = $data['create_and_edit'];
+        $this->columns                  = $data['columns'];
+        $this->user                     = $data['user'];
+        $this->ct                       = $data['ct'];
+        $this->provider_id              = $data['provider_id'];
+        $this->create_and_edit          = $data['create_and_edit'];
         $this->no_actualizar_articulos_de_otro_proveedor = $data['no_actualizar_articulos_de_otro_proveedor'];
 
         
@@ -265,6 +266,8 @@ class ProcessRow {
 
             $this->attach_provider($articulo_ya_creado, $data, $provider_id);
 
+            $this->add_article_match();
+
             if (
                 !is_null($articulo_ya_creado->provider_id)
                 && !is_null($provider_id)
@@ -352,6 +355,10 @@ class ProcessRow {
 
     }
 
+    function add_article_match() {
+        $this->articles_match++;
+    }
+
     function attach_provider($articulo_ya_creado, $data, $provider_id) {
 
         Log::info('attach_provider');
@@ -363,8 +370,8 @@ class ProcessRow {
             return;
         }
 
-        // Log::info('articulo_ya_creado: ');
-        // Log::info($articulo_ya_creado);
+        Log::info('articulo_ya_creado: ');
+        Log::info($articulo_ya_creado->toArray());
 
         $pivot_data = [
             'provider_code' => isset($data['provider_code']) ? $data['provider_code']: null,
@@ -788,7 +795,7 @@ class ProcessRow {
                 || !is_null($max_excel)
             ) {
 
-                // Log::info('Hay info en la columna '.$nombre_columna);
+                Log::info('Hay info en la columna '.$address->street);
 
                 $address_article = [
                     'address_id'    => $address->id,
@@ -797,8 +804,8 @@ class ProcessRow {
                     'amount'        => null,
                 ];
 
-                // Log::info($address->street.' min: '.$min_excel);
-                // Log::info($address->street.' max: '.$max_excel);
+                Log::info($address->street.' min: '.$min_excel);
+                Log::info($address->street.' max: '.$max_excel);
 
                 if (!is_null($articulo_ya_creado)) {
 
@@ -833,12 +840,19 @@ class ProcessRow {
                     //     $address_article['amount'] = $diferencia;
                     // }
                 } else {
-                    Log::info('No se agrego nada a la direccion '.$address->street);
+                    Log::info('No se agrego amount a la direccion '.$address->street);
                 }
 
                 $stock_addresses[] = $address_article;
+            } else {
+                Log::info('No hay nada en '.$address->street);
+                Log::info($column_min.' min: '.$min_excel);
+                Log::info($column_max.' max: '.$max_excel);
             }
         }
+
+        Log::info('stock_addresses:');
+        Log::info($stock_addresses);
 
         return $stock_addresses;
         // if ($set_stock_from_addresses) {
@@ -1188,6 +1202,10 @@ class ProcessRow {
         return $this->articulosParaActualizar;
     }
 
+    function get_articles_match() {
+        return $this->articles_match;
+    }
+
     /**
      * Devuelve los artículos detectados para crear
      */
@@ -1403,26 +1421,28 @@ class ProcessRow {
             $diff_min = $old_min !== $new_min;
             $diff_max = $old_max !== $new_max;
 
+            Log::info('');
+            Log::info('');
             if ($existing) {
                 Log::info($existing->street.':');
             }
 
-            // Log::info('actual:');
-            // Log::info('stock: '.$old_amount);
-            // Log::info('min: '.$old_min);
-            // Log::info('max: '.$old_max);
+            Log::info('actual:');
+            Log::info('stock: '.$old_amount);
+            Log::info('min: '.$old_min);
+            Log::info('max: '.$old_max);
+
+            Log::info('');
+            Log::info('nuevo:');
+            Log::info('stock: '.$new_amount);
+            Log::info('min: '.$new_min);
+            Log::info('max: '.$new_max);
 
             // Log::info('');
-            // Log::info('nuevo:');
-            // Log::info('stock: '.$new_amount);
-            // Log::info('min: '.$new_min);
-            // Log::info('max: '.$new_max);
-
-            // Log::info('');
-            // Log::info('diff:');
-            // Log::info('stock: '.$diff_amount);
-            // Log::info('min: '.$diff_min);
-            // Log::info('max: '.$diff_max);
+            Log::info('diff:');
+            Log::info('stock: '.$diff_amount);
+            Log::info('min: '.$diff_min);
+            Log::info('max: '.$diff_max);
 
             // Si no hay cambios, continuar
             if (!$diff_amount && !$diff_min && !$diff_max) {
@@ -1469,6 +1489,9 @@ class ProcessRow {
 
             $out[] = $sa_out;
         }
+
+        Log::info('Out:');
+        Log::info($out);
 
         return $out;
     }

@@ -137,6 +137,8 @@ class ArticleImport implements ToCollection
 
         $error_message = null;
 
+        $this->filas_procesadas = 0;
+        
         foreach ($rows as $row) {
 
             if ($this->esta_en_el_rango_de_filas()) {
@@ -154,6 +156,8 @@ class ArticleImport implements ToCollection
 
                         $this->process_row->procesar($row, $this->nombres_proveedores);
 
+                        $this->filas_procesadas++;
+                        
                     } catch (\Throwable $e) {
 
                         $error_message = 'Error en la linea '.$this->num_row;
@@ -168,10 +172,11 @@ class ArticleImport implements ToCollection
 
 
                         // Registra el progreso y errores en Import History
-                        ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, $error_message, $this->articulos_creados, $this->articulos_actualizados, $this->updated_props);
+                        // ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->created_models, $this->updated_models, $this->columns, $this->archivo_excel_path, $error_message, $this->articulos_creados, $this->articulos_actualizados, $this->updated_props);
 
-                        ArticleImportHelper::error_notification($this->user, $this->num_row, $e->getMessage());
-                        return $e;
+                        // ArticleImportHelper::error_notification($this->user, $this->num_row, $e->getMessage());
+                        
+                        throw $e;
 
                     } 
 
@@ -194,7 +199,14 @@ class ArticleImport implements ToCollection
             // $articulos_creados = $this->process_row->getArticulosParaCrear();
             $articulos_actualizados = $this->process_row->getArticulosParaActualizar();
 
-            ArticleImportHelper::create_article_import_result($this->import_uuid, $articulos_creados, $articulos_actualizados);
+            $articles_match = $this->process_row->get_articles_match();
+
+            Log::info('Trabajo terminado en ArticleImport');
+            Log::info('articulos_creados: '.count($articulos_creados));
+            Log::info('articulos_actualizados: '.count($articulos_actualizados));
+            Log::info('articles_match: '.$articles_match);
+
+            ArticleImportHelper::create_article_import_result($this->import_uuid, $articulos_creados, $articulos_actualizados, $articles_match);
             
             
             $this->trabajo_terminado = true;
@@ -222,13 +234,15 @@ class ArticleImport implements ToCollection
             Log::error('Mensaje: ' . $e->getMessage());
             Log::error('Archivo: ' . $e->getFile());
             Log::error('Línea: ' . $e->getLine());
-            Log::error('Trace: ' . $e->getTraceAsString());
+            // Log::error('Trace: ' . $e->getTraceAsString());
 
 
             // Registra el progreso y errores en Import History
-            ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->columns, $this->archivo_excel_path, $error_message, $this->created_models, $this->updated_models);
+            // ArticleImportHelper::create_import_history($this->user, $this->auth_user_id, $this->provider_id, $this->columns, $this->archivo_excel_path, $error_message, $this->created_models, $this->updated_models);
 
-            ArticleImportHelper::error_notification($this->user, null, $e->getMessage());
+            // ArticleImportHelper::error_notification($this->user, null, $e->getMessage());
+
+            throw $e;
         } 
     }
 

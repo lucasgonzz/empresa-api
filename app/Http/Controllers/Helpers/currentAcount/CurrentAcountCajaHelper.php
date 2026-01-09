@@ -21,14 +21,14 @@ class CurrentAcountCajaHelper {
             $concepto_movimiento_caja_id = 3;
             $ingreso = $pago_amount;
 
-            if (!$notas) {
+            if (!$notas && $pago) {
                 $notas = $pago->client->name.'. Pago N° '.$pago->num_receipt;
             }
         } else {
 
             $concepto_movimiento_caja_id = 4;
             $egreso = $pago_amount;
-            if (!$notas) {
+            if (!$notas && $pago) {
                 $notas = $pago->provider->name.'. Pago N° '.$pago->num_receipt;
             }
         }
@@ -39,7 +39,7 @@ class CurrentAcountCajaHelper {
             'egreso'                        => $egreso,
             'notas'                         => $notas,
             'caja_id'                       => $caja_id,
-            'current_acount_id'             => $pago->id,
+            // 'current_acount_id'             => $pago->id,
         ];
 
         $helper = new MovimientoCajaHelper();

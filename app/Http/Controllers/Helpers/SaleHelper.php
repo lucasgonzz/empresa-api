@@ -29,6 +29,7 @@ use App\Http\Controllers\Helpers\sale\UpdateHelper;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SellerCommissionController;
 use App\Http\Controllers\StockMovementController;
+use App\Models\AfipTicket;
 use App\Models\Article;
 use App\Models\ArticleVariant;
 use App\Models\Cart;
@@ -313,10 +314,20 @@ class SaleHelper extends Controller {
     // }
 
     static function set_total_a_facturar($sale, $request) {
-        if (!is_null($sale->afip_information_id) && $sale->afip_information_id != 0) {
+
+        if (
+            !is_null($request->afip_information_id) 
+            && $request->afip_information_id != 0
+        ) {
+
+            $afip_ticket = new AfipTicket();
+            $afip_ticket->afip_information_id = $request->afip_information_id;
+            $afip_ticket->afip_tipo_comprobante_id = $request->afip_tipo_comprobante_id;
+            $afip_ticket->facturar_importe_personalizado = null;
+            $afip_ticket->sale = $sale;
 
 
-            $afip_helper = new AfipHelper($sale);
+            $afip_helper = new AfipHelper($afip_ticket);
             $importes = $afip_helper->getImportes();
             Log::info('pidiendo total_a_facturar: '.$importes['total']);
 
@@ -774,6 +785,23 @@ class SaleHelper extends Controller {
                                         ->whereNull('haber')
                                         ->first();
         if (!is_null($current_acount)) {
+
+
+
+            /* 
+                Chequeo si habia un pago especifico (con tu_pay_id) para esta venta
+                Si lo habia, libero ese pago para que aporte a otras ventas
+            */
+            $pago = CurrentAcount::where('to_pay_id', $current_acount->id)
+                                ->first();
+
+            if ($pago) {
+                $pago->to_pay_id = null;
+                $pago->save();
+            }
+
+
+            // Elimino current_acount de la venta
             $current_acount->pagado_por()->detach();
             $current_acount->delete();
         }
@@ -853,14 +881,20 @@ class SaleHelper extends Controller {
         $user = $sale->user;
         Log::info('getCost');
 
+        if (is_object($item)) {
+            $item = json_decode(json_encode($item), true);
+        }
+
         $cost = null;
 
+        // Si se esta actualizando, se retorna el valor que estaba guardado (ya cotizado)
         if (
             isset($item['pivot'])
             && isset($item['pivot']['cost'])
         ) {
             Log::info('retornando del pivot: '.$item['pivot']['cost']);
             $cost = (float) $item['pivot']['cost'];
+            return $cost;
         }
 
 
@@ -897,10 +931,10 @@ class SaleHelper extends Controller {
                 if (
                     isset($item['cost_in_dollars']) 
                     && $item['cost_in_dollars'] == 1
-                    && (
-                        $user
-                        && $user->cotizar_precios_en_dolares == 0
-                    )
+                    // && (
+                    //     $user
+                    //     && $user->cotizar_precios_en_dolares == 0
+                    // )
                 ) {
                     $cost *= (float)$sale->valor_dolar;
                 }

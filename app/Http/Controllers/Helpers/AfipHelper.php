@@ -14,7 +14,7 @@ class AfipHelper extends Controller {
     public $factura_solo_algunos_metodos_de_pago;
     public $afip_selected_payment_methods;
 
-    function __construct($sale, $articles = null, $services = null, $user = null) {
+    function __construct($afip_ticket, $articles = null, $services = null, $user = null, $sale = null) {
 
         if (is_null($user)) {
            $this->user = $this->user();
@@ -22,7 +22,12 @@ class AfipHelper extends Controller {
            $this->user = $user;
         }
         
-        $this->sale = $sale;
+        $this->afip_ticket = $afip_ticket;
+
+        $this->sale = $afip_ticket->sale;
+        if (!is_null($sale)) {
+            $this->sale = $sale;
+        }
 
 
         // Seteo articulos
@@ -72,7 +77,7 @@ class AfipHelper extends Controller {
         $subtotal           = 0;
         $total              = 0;
 
-        if ($this->sale->afip_information->iva_condition->name == 'Responsable inscripto') {
+        if ($this->afip_ticket->afip_information->iva_condition->name == 'Responsable inscripto') {
 
             if ($this->factura_solo_algunos_metodos_de_pago) {
 
@@ -85,9 +90,9 @@ class AfipHelper extends Controller {
                 $ivas['21']['Importe']  += $helper->get_importe_iva();
                 $ivas['21']['BaseImp']  += $gravado;
 
-            } else if ($this->sale->facturar_importe_personalizado) {
+            } else if ($this->afip_ticket->facturar_importe_personalizado) {
 
-                $importe_personalizado = (float)$this->sale->facturar_importe_personalizado;
+                $importe_personalizado = (float)$this->afip_ticket->facturar_importe_personalizado;
                 
                 $base_imponible = round($importe_personalizado / 1.21, 2);
                 $importe_iva = round($importe_personalizado - $base_imponible, 2);
@@ -194,8 +199,8 @@ class AfipHelper extends Controller {
 
             $total_a_facturar = $this->sale->total;
 
-            if (!is_null($this->sale->facturar_importe_personalizado)) {
-                $total_a_facturar = $this->sale->facturar_importe_personalizado;
+            if (!is_null($this->afip_ticket->facturar_importe_personalizado)) {
+                $total_a_facturar = $this->afip_ticket->facturar_importe_personalizado;
             } 
 
             if (
@@ -336,11 +341,13 @@ class AfipHelper extends Controller {
     function getArticlePrice($sale, $article, $precio_neto_sin_iva = false) {
         $this->article = $article;
         $price = $this->article->pivot->price;
+
         // if ($precio_neto_sin_iva || $this->isBoletaA()) {
+        if (!$this->exportacion()) {
             if (!is_null($article->iva) && $article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento' && $article->iva->percentage != 0) {
                 return $this->getPriceWithoutIva();
             } 
-        // } 
+        } 
         foreach ($sale->discounts as $discount) {
             $price -= $price * $discount->pivot->percentage / 100;
         }
@@ -415,10 +422,15 @@ class AfipHelper extends Controller {
 
     function subTotal($article) {
         $this->article = $article;
-        // if ($this->isBoletaA()) {
+        if (!$this->exportacion()) {
             return $this->getPriceWithoutIva() * $article->pivot->amount;
-        // }
+        }
+        return $article->pivot->price * $article->pivot->amount;
         // return $this->getArticlePriceWithDiscounts() * $article->pivot->amount;
+    }
+
+    function exportacion() {
+        return $this->afip_ticket->cbte_tipo == 19 || $this->afip_ticket->cbte_tipo == 21;
     }
 
     function isBoletaA() {

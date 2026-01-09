@@ -6,9 +6,11 @@ use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipFexHelper;
 use App\Http\Controllers\Helpers\Afip\AfipSolicitarCaeHelper;
 use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
+use App\Http\Controllers\Helpers\Afip\AfipWsHelper;
 use App\Http\Controllers\Helpers\Afip\CondicionIvaReceptorHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\Utf8Helper;
 use App\Models\AfipError;
 use App\Models\AfipTicket;
 use App\Models\Afip\WSAA;
@@ -27,13 +29,14 @@ class AfipNotaCreditoHelper
     public $nota_credito;
     public $monto_minimo_para_factura_de_credito = 546737;
 
-    function __construct($sale, $nota_credito) {
-        $this->sale = $sale;
+    function __construct($afip_ticket, $nota_credito) {
+        $this->afip_ticket = $afip_ticket;
+        $this->sale = $afip_ticket->sale;
         $this->nota_credito = $nota_credito;
         
         $this->testing = true;
 
-        if ($this->nota_credito->sale->afip_information->afip_ticket_production) {
+        if ($this->afip_ticket->afip_information->afip_ticket_production) {
 
             $this->testing = false;
         }
@@ -41,15 +44,17 @@ class AfipNotaCreditoHelper
 
     function init() {
 
-        $sale = $this->notaCredito();
+        $this->create_afip_ticket();
 
-        return response()->json(['model' => $sale], 201);
+        $this->notaCredito();
     }
 
     function notaCredito() {
+
         $user = UserHelper::getFullModel();
-        $punto_venta = $this->sale->afip_information->punto_venta;
-        $cuit_negocio = $this->sale->afip_information->cuit;
+
+        $punto_venta = $this->afip_ticket->afip_information->punto_venta;
+        $cuit_negocio = $this->afip_ticket->afip_information->cuit;
 
 
         $res = AfipSolicitarCaeHelper::get_doc_client($this->sale);
@@ -59,7 +64,7 @@ class AfipNotaCreditoHelper
         $cbte_tipo = $this->getTipoCbte();
         Log::info('cbte_tipo para nota de credito: '.$cbte_tipo);
 
-        if ((int)$this->sale->afip_ticket->cbte_tipo == '19') {
+        if ((int)$this->afip_ticket->cbte_tipo == '19') {
 
             Log::info('Exportacion');
             $this->exportacion($punto_venta, $cuit_negocio, $doc_client, $doc_type, $cbte_tipo);
@@ -79,7 +84,7 @@ class AfipNotaCreditoHelper
 
         $wsfex = new WSFEX([
             'testing'           => $this->testing,
-            'cuit_representada' => $this->sale->afip_information->cuit,
+            'cuit_representada' => $this->afip_ticket->afip_information->cuit,
         ]);
 
         $wsfex->setXmlTa(file_get_contents(TA_file));
@@ -95,15 +100,21 @@ class AfipNotaCreditoHelper
 
         $pais_destino = $this->sale->client->pais_exportacion->codigo_afip;
         $idioma_cbte = 1;     // Español
+        
         $moneda = 'DOL';
         $moneda_cotiz = $this->sale->valor_dolar;
+        if ($this->sale->moneda_id == 1) {
+            $moneda = 'PES';
+            $moneda_cotiz = 1;
+        }
+
 
 
         $data = [
             'Id'                    => $this->sale->id.rand(0,99999),
             'Fecha_cbte'            => date('Ymd'),
             'Cbte_Tipo'             => 21, // Nota de credito de Exportacion
-            'Punto_vta'             => $this->sale->afip_information->punto_venta,
+            'Punto_vta'             => $this->afip_ticket->afip_information->punto_venta,
             'Cbte_nro'              => $cbte_nro,
             'Tipo_expo'             => 1,
             'pais_destino'          => $pais_destino,
@@ -113,8 +124,8 @@ class AfipNotaCreditoHelper
             'Moneda_Id'             => $moneda,
             'Moneda_cotiz'          => $moneda_cotiz,
             'Idioma_cbte'           => $idioma_cbte,
-            'Incoterms'             => $this->sale->incoterms && $this->sale->incoterms != 0 ? $this->sale->incoterms : 'FOB',
-            'cuit_emisor'           => $this->sale->afip_information->cuit,
+            'Incoterms'             => $this->sale->incoterms,
+            'cuit_emisor'           => $this->afip_ticket->afip_information->cuit,
             'Permiso_existente'     => '',
         ];
 
@@ -146,8 +157,8 @@ class AfipNotaCreditoHelper
         $data['CbtesAsoc'] = [
             [
                 'Tipo'      => 19,
-                'PtoVta'    => $this->sale->afip_information->punto_venta,
-                'Nro'       => $this->sale->afip_ticket->cbte_numero,
+                'PtoVta'    => $this->afip_ticket->afip_information->punto_venta,
+                'Nro'       => $this->afip_ticket->cbte_numero,
             ],
         ];
 
@@ -206,18 +217,18 @@ class AfipNotaCreditoHelper
                 $data = [
                     'cuit_negocio'      => $result->FEXAuthorizeResult->FEXResultAuth->Cuit,
                     'cbte_nro'          => $result->FEXAuthorizeResult->FEXResultAuth->Cbte_nro,
-                    'cbte_letra'        => $this->getTipoLetra($result->FEXAuthorizeResult->FEXResultAuth->Cbte_tipo),
+                    'cbte_letra'        => AfipWsHelper::getTipoLetra($result->FEXAuthorizeResult->FEXResultAuth->Cbte_tipo),
                     'cbte_tipo'         => $result->FEXAuthorizeResult->FEXResultAuth->Cbte_tipo,
                     'importe_total'     => $importe_total,
                     'moneda_id'         => $moneda,
                     'resultado'         => $result->FEXAuthorizeResult->FEXResultAuth->Resultado,
                     'concepto'          => null,
                     'cuit_cliente'      => $this->sale->client->cuit,
-                    'cae'               => $result->FEXAuthorizeResult->FEXResultAuth->CAE,
-                    'cae_expired_at'          => $result->FEXAuthorizeResult->FEXResultAuth->Fch_venc_Cae,
+                    'cae'               => $result->FEXAuthorizeResult->FEXResultAuth->Cae,
+                    'cae_expired_at'    => $result->FEXAuthorizeResult->FEXResultAuth->Fch_venc_Cae,
                 ];
 
-                $this->saveAfipTicket($data);
+                $this->update_afip_ticket($data);
             }
             
         } else {
@@ -248,7 +259,7 @@ class AfipNotaCreditoHelper
         // Log::info('services para obtener importes:');
         // Log::info($this->nota_credito->services);
 
-        $afip_helper = new AfipHelper($this->sale, $this->nota_credito->articles, $this->nota_credito->services);
+        $afip_helper = new AfipHelper($this->afip_ticket, $this->nota_credito->articles, $this->nota_credito->services);
         $importes = $afip_helper->getImportes();
         $today = date('Ymd');
         $moneda_id = 'PES';
@@ -280,11 +291,11 @@ class AfipNotaCreditoHelper
                         'CondicionIVAReceptorId'    => $iva_receptor,
                         'CbtesAsoc'    => [
                             [
-                                'Tipo'      => $this->sale->afip_ticket->cbte_tipo,
-                                'PtoVta'    => $this->sale->afip_ticket->punto_venta,
-                                'Nro'       => $this->sale->afip_ticket->cbte_numero,
-                                'Cuit'      => $this->sale->afip_ticket->cuit_negocio,
-                                'CbteFch'   => date_format($this->sale->afip_ticket->created_at, 'Ymd'),
+                                'Tipo'      => $this->afip_ticket->cbte_tipo,
+                                'PtoVta'    => $this->afip_ticket->punto_venta,
+                                'Nro'       => $this->afip_ticket->cbte_numero,
+                                'Cuit'      => $this->afip_ticket->cuit_negocio,
+                                'CbteFch'   => date_format($this->afip_ticket->created_at, 'Ymd'),
                             ],
                         ],
                     )
@@ -294,7 +305,7 @@ class AfipNotaCreditoHelper
         if (!is_null($this->FchVtoPago())) {
             $invoice['FeCAEReq']['FeDetReq']['FECAEDetRequest']['FchVtoPago'] = $this->FchVtoPago();
         }
-        if ($this->sale->afip_information->iva_condition->name == 'Responsable inscripto' && $importes['iva'] > 0) {
+        if ($this->afip_ticket->afip_information->iva_condition->name == 'Responsable inscripto' && $importes['iva'] > 0) {
             $ivas = [];
             foreach ($importes['ivas'] as $iva) {
                 if ($iva['BaseImp'] > 0) {
@@ -330,18 +341,18 @@ class AfipNotaCreditoHelper
                 $data = [
                     'cuit_negocio'      => $result->FECAESolicitarResult->FeCabResp->Cuit,
                     'cbte_nro'          => $cbte_nro,
-                    'cbte_letra'          => $this->getTipoLetra($result->FECAESolicitarResult->FeCabResp->CbteTipo),
-                    'cbte_tipo'          => $result->FECAESolicitarResult->FeCabResp->CbteTipo,
-                    'importe_total'          => $importes['total'],
-                    'moneda_id'          => $moneda_id,
-                    'resultado'          => $result->FECAESolicitarResult->FeCabResp->Resultado,
+                    'cbte_letra'        => AfipWsHelper::getTipoLetra($result->FECAESolicitarResult->FeCabResp->CbteTipo),
+                    'cbte_tipo'         => $result->FECAESolicitarResult->FeCabResp->CbteTipo,
+                    'importe_total'     => $importes['total'],
+                    'moneda_id'         => $moneda_id,
+                    'resultado'         => $result->FECAESolicitarResult->FeCabResp->Resultado,
                     'concepto'          => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Concepto,
-                    'cuit_cliente'          => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->DocNro,
-                    'cae'          => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAE,
-                    'cae_expired_at'          => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAEFchVto,
+                    'cuit_cliente'      => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->DocNro,
+                    'cae'               => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAE,
+                    'cae_expired_at'    => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAEFchVto,
                 ];
 
-                $this->saveAfipTicket($data);
+                $this->update_afip_ticket($data);
             }
 
         } else {
@@ -356,12 +367,13 @@ class AfipNotaCreditoHelper
         $errors = null;
         if (isset($result->FECAESolicitarResult->Errors)) {
             $errors = $result->FECAESolicitarResult->Errors;
-            $errors = $this->convertir_utf8($errors);
+            $errors = Utf8Helper::convertir_utf8($errors);
             foreach ($errors as $error) {
                 AfipError::create([
                     'message'   => $error['Msg'],
                     'code'      => $error['Code'],
                     'sale_id'   => $this->sale->id,
+                    'afip_ticket_id'   => $this->created_afip_ticket->id
                 ]);
             }
         }
@@ -377,13 +389,18 @@ class AfipNotaCreditoHelper
                     'message'   => $observations['Msg'],
                     'code'      => $observations['Code'],
                     'sale_id'   => $this->sale->id,
+                    'afip_ticket'   => $this->created_afip_ticket->id
                 ]);
-            } else {
-                foreach ($observations as $observation) {
+            } else if (
+                isset($observations['Obs'])
+                && is_array($observations['Obs'])
+            ) {
+                foreach ($observations['Obs'] as $observation) {
                     AfipError::create([
                         'message'   => $observation['Msg'],
                         'code'      => $observation['Code'],
                         'sale_id'   => $this->sale->id,
+                        'afip_ticket'   => $this->created_afip_ticket->id
                     ]);
                 }
             }
@@ -392,10 +409,14 @@ class AfipNotaCreditoHelper
 
     function save_error($result) {
         if (isset($result['error'])) {
+
             AfipError::create([
-                'message'   => $result['error'],
-                'code'      => 'Error del lado de AFIP',
-                'sale_id'   => $this->sale->id,
+                'message'           => $result['error'],
+                'code'              => 'Error del lado de AFIP',
+                'sale_id'           => $this->sale->id,
+                'afip_ticket_id'    => $this->created_afip_ticket->id,
+                'request'           => isset($result['request']) ? $result['request'] : null,
+                'response'          => isset($result['response']) ? $result['response'] : null,
             ]);
         }
     }
@@ -423,12 +444,24 @@ class AfipNotaCreditoHelper
     }
 
 
-    function saveAfipTicket($data) {
+    function create_afip_ticket() {
             
-        AfipTicket::create([
+        $this->created_afip_ticket = AfipTicket::create([
+            'afip_information_id'               => $this->afip_ticket->afip_information_id,
+            'afip_tipo_comprobante_id'          => $this->afip_ticket->afip_tipo_comprobante_id,
+            'iva_negocio'                       => $this->afip_ticket->afip_information->iva_condition->name,
+            'punto_venta'                       => $this->afip_ticket->afip_information->punto_venta,
+            'nota_credito_id'                   => $this->nota_credito->id,
+            'iva_cliente'                       => !is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) ? $this->sale->client->iva_condition->name : '',
+            'sale_nota_credito_id'              => $this->sale->id,
+        ]);
+    }
+
+
+    function update_afip_ticket($data) {
+            
+        $this->created_afip_ticket->update([
             'cuit_negocio'      => $data['cuit_negocio'],
-            'iva_negocio'       => $this->sale->afip_information->iva_condition->name,
-            'punto_venta'       => $this->sale->afip_information->punto_venta,
             'cbte_numero'       => $data['cbte_nro'],
             'cbte_letra'        => $data['cbte_letra'],
             'cbte_tipo'         => $data['cbte_tipo'],
@@ -437,11 +470,8 @@ class AfipNotaCreditoHelper
             'resultado'         => $data['resultado'],
             'concepto'          => $data['concepto'],
             'cuit_cliente'      => $data['cuit_cliente'],
-            'iva_cliente'       => !is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) ? $this->sale->client->iva_condition->name : '',
             'cae'               => $data['cae'],
             'cae_expired_at'    => $data['cae_expired_at'],
-            'nota_credito_id'   => $this->nota_credito->id,
-            'sale_nota_credito_id' => $this->sale->id,
         ]);
     }
 
@@ -470,9 +500,7 @@ class AfipNotaCreditoHelper
 
     function getTipoCbte() {
 
-        $cbte_tipo = $this->sale->afip_ticket->cbte_tipo;
-
-
+        $cbte_tipo = $this->afip_ticket->cbte_tipo;
 
         if ($cbte_tipo == '201') {
             #A
@@ -504,20 +532,5 @@ class AfipNotaCreditoHelper
         } 
     }
 
-    function getTipoLetra($cbte_tipo) {
-        Log::info('getTipoLetra: '.$cbte_tipo);
-        if ($cbte_tipo == 3 || $cbte_tipo == 203) {
-            return 'A';
-        }
-        if ($cbte_tipo == 8 || $cbte_tipo == 208) {
-            return 'B';
-        }
-        if ($cbte_tipo == 13 || $cbte_tipo == 213) {
-            return 'C';
-        }
-        if ($cbte_tipo == 19) {
-            return 'E';
-        }
-    }
 
 }

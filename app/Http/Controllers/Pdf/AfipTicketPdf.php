@@ -22,29 +22,26 @@ require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 // Este se usa para las notas de credito
 class AfipTicketPdf extends fpdf {
 
-	function __construct($sale, $current_acount = null) {
+	function __construct($current_acount) {
 		parent::__construct();
 		$this->SetAutoPageBreak(true, 1);
 
-		if (is_null($sale)) {
-			$this->model = $current_acount;
-			$this->sale = $current_acount->sale;
-			$this->is_nota_credito = true;
-        	$this->afip_helper = new AfipHelper($this->sale, $current_acount->articles, $current_acount->services);
-		} else {
-			$this->model = $sale;
-			$this->sale = $sale;
-			$this->is_nota_credito = false;
-        	$this->afip_helper = new AfipHelper($this->sale);
-		}
-		$this->afip_information = $this->sale->afip_information;
+		$this->model = $current_acount;
+
+		$this->afip_ticket = $current_acount->afip_ticket;
+
+		$this->sale = $this->afip_ticket->sale_nota_credito;
+
+    	$this->afip_helper = new AfipHelper($this->afip_ticket, $current_acount->articles, $current_acount->services, null, $this->sale);
+		
+		$this->afip_information = $this->afip_ticket->afip_information;
 
 		$this->borders = 'B';
         $this->user = UserHelper::getFullModel();
 
 		$widths = [];
 		$widths['codigo'] = 23;
-		$widths['producto'] = 66;
+		$widths['producto'] = 70;
 		// $widths['producto'] = 50;
 		$widths['cantidad'] = 17;
 		// $widths['unidad_medida'] = 16;
@@ -150,7 +147,7 @@ class AfipTicketPdf extends fpdf {
 		
 		$this->y += 5;
 
-		if ($this->sale->afip_ticket->cbte_letra == 'A') {
+		if ($this->afip_ticket->cbte_letra == 'A') {
 
 			$this->x = 110;
 			$this->SetFont('Arial', 'B', 9);
@@ -170,7 +167,17 @@ class AfipTicketPdf extends fpdf {
 		$this->SetFont('Arial', 'B', 12);
 		$this->x = 125;
 		$this->Cell(40, 7, 'Importe Total: ', 1, 0, 'L');
-		$this->Cell(40, 7, '$'.Numbers::price($importes['total']), 1, 0, 'R');
+
+
+
+		$importe = Numbers::price($importes['total'], true);
+
+		if ($this->afip_ticket->cbte_letra == 'E') {
+			$importe = Numbers::price($this->model->haber, true, $this->sale->moneda_id);
+		} 
+		
+		$this->Cell(40, 7, $importe, 1, 0, 'L');
+
 	}
 
 	function printAfipData() {
@@ -196,9 +203,10 @@ class AfipTicketPdf extends fpdf {
 
 	function printQR() {
 
+		if (env('APP_ENV') == 'local') return;
 
 
-		$pdf = new AfipQrPdf($this, $this->sale, false);
+		$pdf = new AfipQrPdf($this, $this->afip_ticket, false);
 		$pdf->printQr();
 
 		$this->y -= 40;
@@ -273,10 +281,24 @@ class AfipTicketPdf extends fpdf {
         $this->Cell($this->widths['producto'], 6, StringHelper::short($item->name, 30), 0, 0, 'L');
         $this->Cell($this->widths['cantidad'], 6, $item->pivot->amount, 0, 0, 'R');
         // $this->Cell($this->widths['unidad_medida'], 6, 'unidad', 0, 0, 'C');
-        $this->Cell($this->widths['precio_unitario'], 6, Numbers::price($this->afip_helper->getArticlePrice($this->sale, $item)), 0, 0, 'R');
+
+
+        $p = Numbers::price($this->afip_helper->getArticlePrice($this->sale, $item), true);
+        if ($this->afip_ticket->cbte_letra == 'E') {
+        	$p = Numbers::price($this->afip_helper->getArticlePrice($this->sale, $item), true, $this->sale->moneda_id);
+        }
+        $this->Cell($this->widths['precio_unitario'], 6, $p, 0, 0, 'R');
 
         $this->Cell($this->widths['bonif'], 6, $item->pivot->discount, 0, 0, 'R');
-        $this->Cell($this->widths['subtotal'], 6, Numbers::price($this->afip_helper->subTotal($item)), 0, 0, 'R');
+
+
+        $p = Numbers::price($this->afip_helper->subTotal($item), true);
+        if ($this->afip_ticket->cbte_letra == 'E') {
+        	$p = Numbers::price($this->afip_helper->subTotal($item), true, $this->sale->moneda_id);
+        }
+
+        $this->Cell($this->widths['subtotal'], 6, $p, 0, 0, 'R');
+		
 		if ($this->model->afip_ticket->cbte_letra == 'A') {
 			$iva = 21;
 			if (!is_null($item->iva)) {
@@ -340,7 +362,12 @@ class AfipTicketPdf extends fpdf {
 			$this->SetFont('Arial', 'B', 8);
 			$this->Cell(47, 5, 'Apellido y Nombre / Razón Social:', 0, 0, 'L');
 			$this->SetFont('Arial', '', 8);
-			$this->Cell(60, 5, $this->model->client->razon_social, 0, 1, 'L');
+
+			$name = $this->model->client->name;
+			if ($this->model->client->razon_social) {
+				$name = $this->model->client->razon_social;
+			}
+			$this->Cell(60, 5, $name, 0, 1, 'L');
 			$this->SetX(97);
 			$this->SetFont('Arial', 'B', 8);
 			$this->Cell(30, 5, 'Domicilio Comercial:', 0, 0, 'L');
@@ -380,10 +407,19 @@ class AfipTicketPdf extends fpdf {
 		$this->SetY(22);
 		// Domicilio
 		$this->SetX(6);
+
 		$this->SetFont('Arial', 'B', 9);
-		$this->Cell(35,5,'Domicilio Comercial:',0,0,'L');
-		$this->SetFont('Arial', '', 9);
-		$this->Cell(50,5,$this->afip_information->domicilio_comercial,0,1,'L');
+
+	    $this->MultiCell( 
+			95, 
+			5, 
+			'Domicilio Comercial: '.$this->afip_information->domicilio_comercial, 
+	    	0, 
+	    	'L', 
+	    	false
+	    );
+
+		// $this->Cell(50,5,$this->afip_information->domicilio_comercial,0,1,'L');
 		// Iva
 		$this->SetX(6);
 		$this->SetFont('Arial', 'B', 9);
@@ -517,7 +553,12 @@ class AfipTicketPdf extends fpdf {
 
 	function getTitle() {
 		$title = '';
-		if ($this->model->afip_ticket->cbte_tipo == 3 || $this->model->afip_ticket->cbte_tipo == 8 || $this->model->afip_ticket->cbte_tipo == 13) {
+		if (
+			$this->model->afip_ticket->cbte_tipo == 3 
+			|| $this->model->afip_ticket->cbte_tipo == 8 
+			|| $this->model->afip_ticket->cbte_tipo == 13
+			|| $this->model->afip_ticket->cbte_tipo == 21
+		) {
 			$title = 'Nota de Credito';
 		} else if ($this->model->afip_ticket->cbte_tipo == 203 || $this->model->afip_ticket->cbte_tipo == 208 || $this->model->afip_ticket->cbte_tipo == 213) {
 			$title = 'Nota de Credito FCE';
