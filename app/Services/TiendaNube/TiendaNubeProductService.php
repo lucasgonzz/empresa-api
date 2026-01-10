@@ -213,6 +213,50 @@ class TiendaNubeProductService extends BaseTiendaNubeService
             $article_data['tags'] = $tags;
         }
 
+        
+
+        // if ($article->images && count($article->images) > 0) {
+        //     $imagenes_payload = [];
+
+        //     $position = 1;
+        //     foreach ($article->images as $img) {
+        //         if (
+        //             $img->hosting_url
+        //             && $img->tienda_nube_image_id
+        //         ) {
+
+        //             $src = $img->hosting_url;
+
+        //             if (
+        //                 env('APP_ENV') === 'local'
+        //             ) {
+        //                 $src = 'https://api-golonorte.comerciocity.com/public/storage/174337850923485.webp';
+        //             }
+
+        //             $image_data = [];
+        //             $image_data = [
+        //                 'src' => $src,
+        //             ];
+
+        //             if ($img->tienda_nube_image_id) {
+        //                 $image_data['id']  = $img->tienda_nube_image_id;
+        //                 $image_data['product_id']  = $article->tiendanube_product_id;
+        //                 $image_data['position']  = $position;
+        //             }
+        //             $imagenes_payload[] = $image_data;
+        //             $position++;
+        //         }
+        //     }
+
+        //     if (count($imagenes_payload) > 0) {
+        //         $article_data['images'] = $imagenes_payload;
+        //     } else {
+        //         Log::info('La imagen no tiene image_url.');
+        //     }
+        // } else {
+        //     Log::info('Artículo sin imágenes al crear producto en Tienda Nube.');
+        // }
+
         return $article_data;
     }
 

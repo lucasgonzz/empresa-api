@@ -5,6 +5,7 @@ namespace App\Services\TiendaNube;
 use App\Models\Article;
 use App\Models\Image;
 use App\Services\TiendaNube\BaseTiendaNubeService;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Responsabilidad: Subida y manejo de imágenes de productos en Tienda Nube.
@@ -18,6 +19,8 @@ class TiendaNubeImageService extends BaseTiendaNubeService
      */
     public function subirImagenDeArticulo(Article $article, Image $image, ?int $position = null): array
     {
+
+        Log::info('subirImagenDeArticulo para '.$article->name);
         // Garantizar que el producto exista
         if (!$article->tiendanube_product_id) {
             // Podés inyectar el ProductService desde afuera si preferís;
@@ -50,10 +53,14 @@ class TiendaNubeImageService extends BaseTiendaNubeService
 
         $response = $this->http()->post($endpoint, $payload);
         if ($response->failed()) {
+            Log::error('Error subiendo imagen a TN: '.$response->body());
             throw new \RuntimeException('Error subiendo imagen a TN: '.$response->body());
         }
 
         $data = $response->json();
+
+        Log::info('respuesta de imagen tienda nube');
+        Log::info($data);
 
         // Guardar ID de imagen de TN si tu modelo Image tiene esa columna
         if ($image->getAttribute('tiendanube_image_id') !== null || property_exists($image, 'tiendanube_image_id')) {

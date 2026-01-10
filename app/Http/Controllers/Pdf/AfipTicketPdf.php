@@ -41,16 +41,20 @@ class AfipTicketPdf extends fpdf {
 
 		$widths = [];
 		$widths['codigo'] = 23;
-		$widths['producto'] = 70;
+		$widths['producto'] = 85;
 		// $widths['producto'] = 50;
 		$widths['cantidad'] = 17;
 		// $widths['unidad_medida'] = 16;
-		$widths['bonif'] = 15;
+		// $widths['bonif'] = 15;
 		$widths['iva'] = 14;
 		$widths['subtotal_con_iva'] = 25;
 		$widths['subtotal_final'] = 45;
 
-		if ($this->model->afip_ticket->cbte_letra == 'A') {
+		if (
+			$this->model->afip_ticket->cbte_letra == 'A'
+			|| $this->model->afip_ticket->cbte_letra == 'B'
+		) {
+			$widths['producto'] = 81;
 			$widths['precio_unitario'] = 20;
 			$widths['subtotal'] = 20;
 		} else {
@@ -289,7 +293,7 @@ class AfipTicketPdf extends fpdf {
         }
         $this->Cell($this->widths['precio_unitario'], 6, $p, 0, 0, 'R');
 
-        $this->Cell($this->widths['bonif'], 6, $item->pivot->discount, 0, 0, 'R');
+        // $this->Cell($this->widths['bonif'], 6, $item->pivot->discount, 0, 0, 'R');
 
 
         $p = Numbers::price($this->afip_helper->subTotal($item), true);
@@ -299,15 +303,22 @@ class AfipTicketPdf extends fpdf {
 
         $this->Cell($this->widths['subtotal'], 6, $p, 0, 0, 'R');
 		
-		if ($this->model->afip_ticket->cbte_letra == 'A') {
-			$iva = 21;
-			if (!is_null($item->iva)) {
-				$iva = $item->iva->percentage;
-			} 
-        	$this->Cell($this->widths['iva'], 6, $iva, 0, 0, 'C');
+		if (
+			$this->model->afip_ticket->cbte_letra == 'A'
+			|| $this->model->afip_ticket->cbte_letra == 'B'
+		) {
+		
+        	$this->Cell($this->widths['iva'], 6, $this->getArticleMontoIva($item), 0, 0, 'C');
         	$this->Cell($this->widths['subtotal_con_iva'], 6, $this->subtotalConIva($item), 0, 0, 'R');
 		}
         $this->y += 6;
+    }
+
+    function getArticleMontoIva($article) {
+
+		$this->afip_helper->article = $article;		
+		$monto_iva = $this->afip_helper->montoIvaDelPrecio() * $article->pivot->amount;
+		return Numbers::price($monto_iva, true);
     }
 
 	function Header() {
@@ -319,7 +330,8 @@ class AfipTicketPdf extends fpdf {
 
 	function subtotalConIva($article) {
 		$this->afip_helper->article = $article;		
-		return $this->afip_helper->getArticlePriceWithDiscounts() * $article->pivot->amount;
+		$p = $this->afip_helper->getArticlePriceWithDiscounts() * $article->pivot->amount;
+		return Numbers::price($p, true);
 	}
 
 	function printTicketCommerceInfo() {
@@ -505,9 +517,12 @@ class AfipTicketPdf extends fpdf {
 		$this->Cell($this->widths['cantidad'], 5, 'Cantidad', 1, 0, 'C');
 		// $this->Cell($this->widths['unidad_medida'], 5, 'U.medida', 1, 0, 'L');
 		$this->Cell($this->widths['precio_unitario'], 5, 'Precio Unit', 1, 0, 'C');
-		$this->Cell($this->widths['bonif'], 5, '% Bonif', 1, 0, 'L');
+		// $this->Cell($this->widths['bonif'], 5, '% Bonif', 1, 0, 'L');
 		$this->Cell($this->widths['subtotal'], 5, 'Subtotal', 1, 0, 'C');
-		if ($this->model->afip_ticket->cbte_letra == 'A') {
+		if (
+			$this->model->afip_ticket->cbte_letra == 'A'
+			|| $this->model->afip_ticket->cbte_letra == 'B'
+		) {
 			$this->Cell($this->widths['iva'], 5, 'IVA', 1, 0, 'C');
 			$this->Cell($this->widths['subtotal_con_iva'], 5, 'Subtotal c/IVA', 1, 0, 'C');
 		}
