@@ -10,10 +10,10 @@ class AfipWsHelper {
 
         Log::info('getTipoLetra: '.$cbte_tipo);
 
-        if ($cbte_tipo == 1 || $cbte_tipo == 201) {
+        if ($cbte_tipo == 1 || $cbte_tipo == 3 || $cbte_tipo == 201) {
             return 'A';
         }
-        if ($cbte_tipo == 6 || $cbte_tipo == 206) {
+        if ($cbte_tipo == 6 || $cbte_tipo == 8 || $cbte_tipo == 206) {
             return 'B';
         }
         if ($cbte_tipo == 11 || $cbte_tipo == 211) {

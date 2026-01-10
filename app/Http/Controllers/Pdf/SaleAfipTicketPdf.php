@@ -775,7 +775,7 @@ class SaleAfipTicketPdf extends fpdf {
         $this->Cell($this->widths['subtotal'], 6, $p, 0, 0, 'R');
 
 		if ($this->afip_ticket->cbte_letra != 'E') {
-        	$this->Cell($this->widths['iva'], 6, $this->getArticleIva($article), 0, 0, 'C');
+        	$this->Cell($this->widths['iva'], 6, $this->getArticleMontoIva($article), 0, 0, 'C');
         	$this->Cell($this->widths['subtotal_con_iva'], 6, $this->subtotalConIva($article), 0, 0, 'R');
 		}
 		$this->y = $y_2;
@@ -786,11 +786,10 @@ class SaleAfipTicketPdf extends fpdf {
     	return $this->afip_ticket->cbte_tipo == $cbte_tipo;
     }
 
-    function getArticleIva($article) {
-    	if (!is_null($article->iva)) {
-    		return $article->iva->percentage;
-    	} 
-    	return 21;
+    function getArticleMontoIva($article) {
+		$this->afip_helper->article = $article;		
+		$monto_iva = $this->afip_helper->montoIvaDelPrecio() * $article->pivot->amount;
+		return Numbers::price($monto_iva, true);
     }
 
 	function __Header() {
