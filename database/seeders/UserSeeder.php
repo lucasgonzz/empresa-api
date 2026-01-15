@@ -243,8 +243,8 @@ class UserSeeder extends Seeder
                 'autopartes',
                 'pagos_provisorios',
 
-                // 'articulo_margen_de_ganancia_segun_lista_de_precios',
-                // 'cambiar_price_type_en_vender',
+                'articulo_margen_de_ganancia_segun_lista_de_precios',
+                'cambiar_price_type_en_vender',
 
                 'ventas_en_dolares',
             ];
