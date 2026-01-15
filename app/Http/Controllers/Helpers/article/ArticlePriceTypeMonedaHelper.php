@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Log;
 
 class ArticlePriceTypeMonedaHelper {
 
-
+    // Solo adjunto los datos que vienen del front, no calculo ningun precio ni porcentaje
     static function attach_price_type_monedas($article, $price_type_monedas, $user = null) {
 
         // $price_types = PriceType::where('user_id', $article->user_id)
@@ -57,31 +57,6 @@ class ArticlePriceTypeMonedaHelper {
             // Log::info('percentage: '.$percentage);
             // Log::info('final_price: '.$final_price);
 
-            if ($cost && $cost > 0) {
-                
-                if ($setear_precio_final) {
-
-                    $percentage = ($final_price - $cost) / $cost * 100;
-
-                } else {
-
-                    // if (!$percentage) {
-                    //     $percentage = 
-                    // }
-
-                    $final_price = $cost + ($cost * (float)$percentage / 100);
-
-                }
-            }
-
-            if (
-                $article->cost_in_dollars
-                && $setear_precio_final == 0
-            ) {
-                if ($moneda_id == 1) {
-                    $final_price *= $user->dollar;
-                }
-            }
 
             $article->price_type_monedas()->updateOrCreate(
                 [
@@ -97,114 +72,66 @@ class ArticlePriceTypeMonedaHelper {
         }
     }
         
-
-    public static function aplicar_precios_por_price_type_y_moneda($article, $user)
+    /*
+        Con las relaciones y valores ya almacenados por attach_price_type_monedas, calculo y guardo el precio final
+        Recibo el costo con iva y sin cotizar
+    */
+    public static function aplicar_precios_por_price_type_y_moneda($article, $_cost, $user)
     {
-        $entries = $article->price_type_monedas;
 
-        if ($entries->isEmpty()) {
-            return;
-        }
+        if (
+            $_cost 
+            && $_cost > 0
+        ) {
 
-        $usd_id = 2;
-        $ars_id = 1;
+            foreach ($article->price_type_monedas as $price_type_moneda) {
 
-        $rate = (!is_null($article->provider) && !is_null($article->provider->dolar) && (float)$article->provider->dolar > 0)
-                ? (float)$article->provider->dolar
-                : (float)$user->dollar;
+                $cost = $_cost;
+                
+                $final_price = $price_type_moneda->final_price;
+                $percentage = $price_type_moneda->percentage;
+                $setear_precio_final = $price_type_moneda->setear_precio_final;
+                $moneda_id = $price_type_moneda->moneda_id;
 
-        $groups = $entries->groupBy('price_type_id');
+                if (
+                    $article->cost_in_dollars
+                    && $moneda_id == 1
+                ) {
+                    $cost *= $user->dollar;
 
-        foreach ($groups as $price_type_id => $group) {
+                } else if (
+                    $article->cost_in_dollars == 0
+                    && $moneda_id == 2
+                ) {
 
-            $usd_entry = $usd_id ? $group->firstWhere('moneda_id', $usd_id) : null;
-            $ars_entry = $ars_id ? $group->firstWhere('moneda_id', $ars_id) : null;
+                    $cost /= $user->dollar;
+                }
 
-            $calc_from_cost = function ($base_cost, $entry, $aplicar_iva) use ($article, $user) {
-                $final_price = null;
-                $percentage  = null;
 
-                if ($entry->setear_precio_final && $entry->final_price !== null && $entry->final_price !== '') {
-                    $final_price = (float)$entry->final_price;
 
-                    $costo_base = $aplicar_iva
-                        ? ArticlePricesHelper::aplicar_iva($article, $base_cost, $user)
-                        : $base_cost;
 
-                    $percentage = $costo_base > 0
-                        ? ($final_price - $costo_base) / $costo_base * 100
-                        : 0;
+                if ($setear_precio_final) {
+
+                    $percentage = ($final_price - $cost) / $cost * 100;
 
                 } else {
-                    $percentage = $entry->percentage !== null && $entry->percentage !== '' ? (float)$entry->percentage : 0;
-                    $price_wo_iva = $base_cost + ($base_cost * $percentage / 100);
-                    $final_price  = $aplicar_iva
-                        ? ArticlePricesHelper::aplicar_iva($article, $price_wo_iva, $user)
-                        : $price_wo_iva;
+
+                    // if (!$percentage) {
+                    //     $percentage = 
+                    // }
+
+                    $final_price = $cost + ($cost * (float)$percentage / 100);
+
                 }
 
-                return [$percentage, $final_price];
-            };
-
-            $save_entry = function ($entry, $percentage, $final_price) {
-                $entry->percentage  = $percentage;
-                $entry->final_price = $final_price;
-                $entry->save();
-            };
-
-            if ($article->cost_in_dollars) {
-                $cost_usd = (float)$article->cost;
-
-                // USD → ❌ sin IVA
-                if ($usd_entry) {
-                    [$usd_percentage, $usd_final] = $calc_from_cost($cost_usd, $usd_entry, false);
-                    $save_entry($usd_entry, $usd_percentage, $usd_final);
-                }
-
-                // ARS → ✅ con IVA
-                if ($ars_entry) {
-                    if (isset($usd_final)) {
-                        $precio_sin_iva_ars = $usd_final * $rate;
-                        $precio_con_iva_ars = ArticlePricesHelper::aplicar_iva($article, $precio_sin_iva_ars, $user);
-
-                        $cost_ars = $cost_usd * $rate;
-                        $costo_con_iva_ars = ArticlePricesHelper::aplicar_iva($article, $cost_ars, $user);
-
-                        $ars_percentage = $costo_con_iva_ars > 0
-                            ? (($precio_con_iva_ars - $costo_con_iva_ars) / $costo_con_iva_ars * 100)
-                            : 0;
-
-                        $save_entry($ars_entry, $ars_percentage, $precio_con_iva_ars);
-                    } else {
-                        $cost_ars = $cost_usd * $rate;
-                        [$ars_percentage, $ars_final] = $calc_from_cost($cost_ars, $ars_entry, true);
-                        $save_entry($ars_entry, $ars_percentage, $ars_final);
-                    }
-                }
-            } else {
-                $cost_ars = (float)$article->cost;
-
-                // ARS → ✅ con IVA
-                if ($ars_entry) {
-                    [$ars_percentage, $ars_final] = $calc_from_cost($cost_ars, $ars_entry, true);
-                    $save_entry($ars_entry, $ars_percentage, $ars_final);
-                }
-
-                // USD → ❌ sin IVA
-                if ($usd_entry && isset($ars_final) && $rate > 0) {
-                    $usd_final = $ars_final / $rate;
-                    $usd_percentage = $usd_entry->percentage;
-                    $save_entry($usd_entry, $usd_percentage, $usd_final);
-                }
-
-                // Si no hay ARS pero sí USD
-                if (!$ars_entry && $usd_entry && $rate > 0) {
-                    $cost_usd = $cost_ars / $rate;
-                    [$usd_percentage, $usd_final] = $calc_from_cost($cost_usd, $usd_entry, false);
-                    $save_entry($usd_entry, $usd_percentage, $usd_final);
-                }
+                $price_type_moneda->percentage = $percentage;
+                $price_type_moneda->final_price = $final_price;
+                $price_type_moneda->save();
             }
+
         }
+
+        
     }
 
 

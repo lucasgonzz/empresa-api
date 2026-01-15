@@ -161,7 +161,9 @@ class ArticleHelper {
 
             $final_price = $cost;
 
-            $final_price = Self::cotizar($article, $user, $final_price);
+            if (!UserHelper::hasExtencion('ventas_en_dolares', $user)) {
+                $final_price = Self::cotizar($article, $user, $final_price);
+            }
             // if (
             //     $article->cost_in_dollars
             //     && $user->cotizar_precios_en_dolares
@@ -183,7 +185,7 @@ class ArticleHelper {
 
                 if (UserHelper::hasExtencion('ventas_en_dolares', $user)) {
                     // Calculamos por tipo de precio y por moneda
-                    // ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda($article, $user);
+                    ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda($article, $final_price, $user);
                     
                 } else {
                     ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $final_price, $user, $price_types);

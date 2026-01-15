@@ -1,3 +1,4 @@
+                    $prov_code = trim($prov_code);
 <?php
 
 namespace App\Http\Controllers\Helpers\import\article;
@@ -75,6 +76,7 @@ class ArticleIndexCache
                     $prov_id = $provider->id;
                 
                     $prov_code = $provider->pivot->provider_code;
+                    $prov_code = trim($prov_code);
 
                     if (!isset($index['provider_codes'][$prov_id][$prov_code])) {
                         $index['provider_codes'][$prov_id][$prov_code] = [];
@@ -176,7 +178,7 @@ class ArticleIndexCache
         elseif (!empty($data['provider_code'])) {
 
             Log::info('Buscando por provider_code');
-            $provider_code = $data['provider_code'];
+            $provider_code = trim($data['provider_code']);
 
             $article_ids = [];
 
