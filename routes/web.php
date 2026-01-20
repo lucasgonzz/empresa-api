@@ -6,6 +6,9 @@ use App\Services\MercadoLibre\SetearCategoryNameService;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
 
+// consultar_comprobante($afip_ticket_id)
+// Route::post('/consultar-afip-ticket/afip_ticket_id', 'AfipTicketController@consultar_comprobante');
+
 // Paso 1: Redirige al usuario a Mercado Libre para autorizar la app
 Route::get('/mercadolibre/auth', function () {
     $query = http_build_query([

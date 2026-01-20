@@ -295,6 +295,12 @@ class AfipWsfeHelper extends Controller
         } else {
             Log::info('HUBO UN ERROR:');
             Log::info((array)$result);
+
+            $this->afip_ticket->update([
+                'request'           => $result['request'],
+                'response'          => $result['response'],
+            ]);
+
             $this->save_error($result);
         }
 
@@ -328,8 +334,8 @@ class AfipWsfeHelper extends Controller
                 'code'              => 'Error del lado de AFIP',
                 'afip_ticket_id'    => $this->afip_ticket->id,
                 'sale_id'           => $this->afip_ticket->sale->id,
-                'request'           => $result['request'],
-                'response'          => $result['response'],
+                'request'           => isset($result['request']) ? $result['request'] : null,
+                'response'          => isset($result['response']) ? $result['response'] : null,
             ]);
         }
     }

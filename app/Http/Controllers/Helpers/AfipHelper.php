@@ -14,7 +14,7 @@ class AfipHelper extends Controller {
     public $factura_solo_algunos_metodos_de_pago;
     public $afip_selected_payment_methods;
 
-    function __construct($afip_ticket, $articles = null, $services = null, $user = null, $sale = null) {
+    function __construct($afip_ticket, $articles = null, $services = null, $user = null, $sale = null, $descriptions = []) {
 
         if (is_null($user)) {
            $this->user = $this->user();
@@ -42,7 +42,8 @@ class AfipHelper extends Controller {
             $services = $this->sale->services;
         }
         $this->services = $services;
-
+        
+        $this->descriptions = $descriptions;
 
         $this->set_afip_selected_payment_methods();
     }
@@ -193,6 +194,20 @@ class AfipHelper extends Controller {
                     $gravado                += $res['BaseImp'];
                     $iva                    += $res['Importe'];
                 }
+
+                foreach ($this->descriptions as $description) {
+
+                    Log::info('Pidiendo iva de '.$description->notes);
+                    
+                    $iva_per = $description->iva ? (float)$description->iva->percentage : 21;
+
+                    $res                    = $this->get_description_iva($description, $iva_per);
+                    $ivas[$iva_per]['Importe']  += $res['Importe'];
+                    $ivas[$iva_per]['BaseImp']  += $res['BaseImp'];
+                    
+                    $gravado                += $res['BaseImp'];
+                    $iva                    += $res['Importe'];
+                }
             }
 
         } else {
@@ -246,9 +261,22 @@ class AfipHelper extends Controller {
         ];
     }
 
+    function get_description_iva($description, $iva) {
+        
+        $total = $description->price;
+
+        $precio_sin_iva = $total / (($iva / 100) + 1);
+        $monto_iva = $total - $precio_sin_iva; 
+        
+        return [
+            'Importe'   => round($monto_iva, 2),
+            'BaseImp'   => round($precio_sin_iva, 2)
+        ];
+    }
+
     function getImporteIva($iva = null) {
         if (is_null($iva)) {
-            $monto_iva = $this->montoIvaDelPrecio() * $this->article->pivot->amount;
+            $monto_iva = $this->montoIvaDelPrecio() * $this->get_article_amount();
 
             if (
                 $this->sale->moneda_id == 2
@@ -271,8 +299,8 @@ class AfipHelper extends Controller {
                 && $this->article->iva->percentage == $iva
             )
         ) {
-            $importe = $this->montoIvaDelPrecio() * $this->article->pivot->amount;
-            $base_imp = $this->getPriceWithoutIva() * $this->article->pivot->amount;
+            $importe = $this->montoIvaDelPrecio() * $this->get_article_amount();
+            $base_imp = $this->getPriceWithoutIva() * $this->get_article_amount();
 
             if (
                 $this->sale->moneda_id == 2
@@ -300,7 +328,7 @@ class AfipHelper extends Controller {
         if ($with_discount) {
             $price = $this->getArticlePriceWithDiscounts();
         } else {
-            $price = $this->article->pivot->price;
+            $price = $this->get_article_price();
         }
         if (is_null($this->article->iva) || (!is_null($this->article->iva && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0))) {
         // if ($this->user->iva_included || (!is_null($this->article->iva) && $this->article->iva->percentage != 'No Gravado' && $this->article->iva->percentage != 'Exento' && $this->article->iva->percentage != 0)) {
@@ -314,8 +342,11 @@ class AfipHelper extends Controller {
     }
 
     function getArticlePriceWithDiscounts() {
-        $price = $this->article->pivot->price;
-        if (!is_null($this->article->pivot->discount)) {
+        $price = $this->get_article_price();
+        if (
+            !$this->article->is_description
+            && !is_null($this->article->pivot->discount)
+        ) {
             Log::info('restando descouneto de articulo del '.$this->article->pivot->discount.' a '.$price);
             $price -= $price * $this->article->pivot->discount / 100;
             Log::info('quedo en '.$price);
@@ -340,7 +371,8 @@ class AfipHelper extends Controller {
 
     function getArticlePrice($sale, $article, $precio_neto_sin_iva = false) {
         $this->article = $article;
-        $price = $this->article->pivot->price;
+
+        $price = $this->get_article_price();
 
         // if ($precio_neto_sin_iva || $this->isBoletaA()) {
         if (!$this->exportacion()) {
@@ -355,6 +387,28 @@ class AfipHelper extends Controller {
             $price += $price * $surchage->pivot->percentage / 100;
         }
         return $price;
+    }
+
+    function get_article_price() {
+
+        if ($this->article->is_description) {
+            $price = $this->article->price;
+        } else {
+            $price = $this->article->pivot->price;
+        }
+
+        return $price;
+    }
+
+    function get_article_amount() {
+
+        if ($this->article->is_description) {
+            $amount = 1;
+        } else {
+            $amount = $this->article->pivot->amount;
+        }
+
+        return $amount;
     }
 
 
@@ -404,7 +458,7 @@ class AfipHelper extends Controller {
                 && $this->article->iva->percentage != 'Exento'
             )
         ) {
-            $gravado = $this->getPriceWithoutIva() * $this->article->pivot->amount;
+            $gravado = $this->getPriceWithoutIva() * $this->get_article_amount();
 
             if (
                 $this->sale->moneda_id == 2
@@ -423,9 +477,9 @@ class AfipHelper extends Controller {
     function subTotal($article) {
         $this->article = $article;
         if (!$this->exportacion()) {
-            return $this->getPriceWithoutIva() * $article->pivot->amount;
+            return $this->getPriceWithoutIva() * $this->get_article_amount();
         }
-        return $article->pivot->price * $article->pivot->amount;
+        return $this->get_article_price() * $this->get_article_amount();
         // return $this->getArticlePriceWithDiscounts() * $article->pivot->amount;
     }
 

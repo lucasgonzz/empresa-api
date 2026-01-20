@@ -183,6 +183,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Articulos por defecto en VENDER
     Route::get('/articles-por-defecto', 'ArticleController@articles_por_defecto');
 
+    Route::get('/article-acopios/{article_id}', 'ArticleController@ventas_con_acopio');
 
 
     // Vender

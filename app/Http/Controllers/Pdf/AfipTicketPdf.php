@@ -32,7 +32,7 @@ class AfipTicketPdf extends fpdf {
 
 		$this->sale = $this->afip_ticket->sale_nota_credito;
 
-    	$this->afip_helper = new AfipHelper($this->afip_ticket, $current_acount->articles, $current_acount->services, null, $this->sale);
+    	$this->afip_helper = new AfipHelper($this->afip_ticket, $current_acount->articles, $current_acount->services, null, $this->sale, $this->model->nota_credito_descriptions);
 		
 		$this->afip_information = $this->afip_ticket->afip_information;
 
@@ -94,6 +94,11 @@ class AfipTicketPdf extends fpdf {
             $this->add_item($service);
         }	
 
+        foreach ($this->model->nota_credito_descriptions as $description) {
+        	$description->is_description = true;
+            $this->add_item($description);
+        }	
+
 		$this->printPieDePagina();
         
         $this->Output();
@@ -153,7 +158,7 @@ class AfipTicketPdf extends fpdf {
 
 		if ($this->afip_ticket->cbte_letra == 'A') {
 
-			$this->x = 110;
+			$this->x = 125;
 			$this->SetFont('Arial', 'B', 9);
 
 			$this->Cell(40, 5, 'Importe Neto Gravado: ', 1, 0, 'L');
@@ -161,7 +166,7 @@ class AfipTicketPdf extends fpdf {
 
 			foreach ($importes['ivas'] as $iva => $importe) {
 				if ($importe['Importe'] > 0) {
-					$this->x = 110;
+					$this->x = 125;
 					$this->Cell(40, 5, 'IVA '.$iva.'%: ', 1, 0, 'L');
 					$this->Cell(40, 5, '$'.Numbers::price($importe['Importe']), 1, 1, 'L');
 				}
@@ -262,8 +267,15 @@ class AfipTicketPdf extends fpdf {
 	}
 
 	function sumarCostosYPrecios($article) {
-        $this->suma_costos_pagina += $this->getCost($article) * $article->pivot->amount;
-        $this->suma_precios_pagina += $article->pivot->price * $article->pivot->amount;
+		if ($article->is_description) {
+			
+	        $this->suma_precios_pagina += $article->price;
+
+		} else {
+
+	        $this->suma_costos_pagina += $this->getCost($article) * $this->get_amount($article);
+	        $this->suma_precios_pagina += $article->pivot->price * $this->get_amount($article);
+		}
 	}
 
 	function sumarCantidadDeArticulos() {
@@ -282,8 +294,16 @@ class AfipTicketPdf extends fpdf {
 	    $this->SetArticleConf();
     	$this->setFont('Arial', '', 8);
         $this->Cell($this->widths['codigo'], 6, StringHelper::short($item->bar_code, 14), 0, 0, 'L');
-        $this->Cell($this->widths['producto'], 6, StringHelper::short($item->name, 30), 0, 0, 'L');
-        $this->Cell($this->widths['cantidad'], 6, $item->pivot->amount, 0, 0, 'R');
+
+        $name = $item->name;
+        if ($item->is_description) {
+        	$name = $item->notes;
+        }
+        $this->Cell($this->widths['producto'], 6, StringHelper::short($name, 30), 0, 0, 'L');
+
+        $amount = $this->get_amount($item);
+
+        $this->Cell($this->widths['cantidad'], 6, $amount, 0, 0, 'R');
         // $this->Cell($this->widths['unidad_medida'], 6, 'unidad', 0, 0, 'C');
 
 
@@ -314,10 +334,20 @@ class AfipTicketPdf extends fpdf {
         $this->y += 6;
     }
 
+    function get_amount($item) {
+
+        if ($item->is_description) {
+        	$amount = 1;
+        } else {
+        	$amount = $item->pivot->amount;
+        }
+        return $amount;
+    }
+
     function getArticleMontoIva($article) {
 
 		$this->afip_helper->article = $article;		
-		$monto_iva = $this->afip_helper->montoIvaDelPrecio() * $article->pivot->amount;
+		$monto_iva = $this->afip_helper->montoIvaDelPrecio() * $this->get_amount($article);
 		return Numbers::price($monto_iva, true);
     }
 
@@ -330,7 +360,7 @@ class AfipTicketPdf extends fpdf {
 
 	function subtotalConIva($article) {
 		$this->afip_helper->article = $article;		
-		$p = $this->afip_helper->getArticlePriceWithDiscounts() * $article->pivot->amount;
+		$p = $this->afip_helper->getArticlePriceWithDiscounts() * $this->get_amount($article);
 		return Numbers::price($p, true);
 	}
 

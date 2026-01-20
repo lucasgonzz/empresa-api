@@ -101,6 +101,10 @@ class CurrentAcount extends Model
     }
 
     public function seller() {
-    	return $this->belongsTo('App\Models\Seller');
+        return $this->belongsTo('App\Models\Seller');
+    }
+
+    public function nota_credito_descriptions() {
+        return $this->hasMany(NotaCreditoDescription::class);
     }
 }
