@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\import\article\ImportChangeRecorder;
 use App\Models\Address;
 use App\Models\ArticlePropertyType;
 use App\Models\ArticlePropertyValue;
+use Illuminate\Support\Collection;
 use App\Models\PriceType;
 use App\Models\UnidadMedida;
 use Illuminate\Support\Facades\Log;
@@ -251,49 +252,37 @@ class ProcessRow {
 
 
 
-
-        
-
-
         $articulo_ya_creado = ArticleIndexCache::find($data, $this->user->id, $provider_id, $this->no_actualizar_articulos_de_otro_proveedor);
 
         if (
             !is_null($articulo_ya_creado)
-            || is_array($articulo_ya_creado)
+            || $this->son_varios_articulos($articulo_ya_creado)
         ) {
 
             Log::info('Articulo ya creado');
 
             $this->attach_provider($articulo_ya_creado, $data, $provider_id);
 
-            $this->add_article_match();
 
-            if (
-                !is_null($articulo_ya_creado->provider_id)
-                && !is_null($provider_id)
-                && $this->no_actualizar_articulos_de_otro_proveedor
-                && $articulo_ya_creado->provider_id != $provider_id
-            ) {
-                Log::info('El articulo '.$articulo_ya_creado->name.' ya pertenecia al proveedor id '.$articulo_ya_creado->provider_id);
-
-                return;
-            }
-
-
-            if (is_array($articulo_ya_creado)) {
+            if ($this->son_varios_articulos($articulo_ya_creado)) {
 
                 foreach ($articulo_ya_creado as $_articulo_ya_creado) {
+                    $this->add_article_match();
 
-                    Log::info('procesando articulo con provider_code repetido:');
-                    Log::info($_articulo_ya_creado->toArray());
+                    if (!$this->omitir_por_pertencer_a_otro_proveedor($_articulo_ya_creado, $provider_id)) {
 
-                    $this->procesar_articulo_ya_creado($_articulo_ya_creado, $data, $row);
+                        Log::info('procesando articulo con provider_code repetido:');
+                        $this->procesar_articulo_ya_creado($_articulo_ya_creado, $data, $row);
+                    }
+
                 }
             } else {
 
-                $this->procesar_articulo_ya_creado($articulo_ya_creado, $data, $row);
+                $this->add_article_match();
+                if (!$this->omitir_por_pertencer_a_otro_proveedor($articulo_ya_creado, $provider_id)) {
+                    $this->procesar_articulo_ya_creado($articulo_ya_creado, $data, $row);
+                }
             }
-
 
 
         } else if ($this->create_and_edit) {
@@ -355,6 +344,19 @@ class ProcessRow {
 
     }
 
+    function omitir_por_pertencer_a_otro_proveedor($articulo_ya_creado, $provider_id) {
+
+        if (
+            !is_null($articulo_ya_creado->provider_id)
+            && !is_null($provider_id)
+            && $this->no_actualizar_articulos_de_otro_proveedor
+            && $articulo_ya_creado->provider_id != $provider_id
+        ) {
+            return true;
+        }
+        return false;
+    }
+
     function add_article_match() {
         $this->articles_match++;
         Log::info('articles_match: '.$this->articles_match);
@@ -366,12 +368,27 @@ class ProcessRow {
 
         if (
             !$provider_id
-            || is_array($articulo_ya_creado)
+            || $this->son_varios_articulos($articulo_ya_creado)
         ) {
-            return;
+
+            foreach ($articulo_ya_creado as $article) {
+                $this->update_provider_relation($article, $data, $provider_id);
+            }
+        } else {
+            $this->update_provider_relation($articulo_ya_creado, $data, $provider_id);
         }
 
-        Log::info('articulo_ya_creado: ');
+        // Log::info('articulo_ya_creado: ');
+        // Log::info($articulo_ya_creado->toArray());
+    }
+
+    function son_varios_articulos($articulo_ya_creado) {
+        return $articulo_ya_creado instanceof Collection;
+    }
+
+    function update_provider_relation($articulo_ya_creado, $data, $provider_id) {
+
+        Log::info('update_provider_relation de ');
         Log::info($articulo_ya_creado->toArray());
 
         $pivot_data = [
@@ -392,7 +409,6 @@ class ProcessRow {
             // ✅ Crear pivot nuevo
             $articulo_ya_creado->providers()->attach($provider_id, $pivot_data);
         }
-
     }
 
     

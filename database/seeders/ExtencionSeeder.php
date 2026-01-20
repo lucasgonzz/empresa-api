@@ -391,6 +391,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'PLU Balanza codigos de barra',
                 'slug' => 'plu_balanza_bar_code',
             ],
+            [
+                'name' => 'Descripciones en Notas de credito',
+                'slug' => 'nota_credito_descriptions',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

@@ -21,7 +21,8 @@ class SalesFullExport implements FromCollection, WithHeadings, ShouldAutoSize
                 return [
                     'fecha'               => $sale->created_at->format('Y-m-d H:i:s'),
                     'numero_venta'        => $sale->id,
-                    'total'               => $sale->total ?? 0,
+                    'total'               => $sale->moneda_id == 1 ? $sale->total : '',
+                    'total_usd'           => $sale->moneda_id == 2 ? $sale->total : '',
                     'total_facturado'     => $sale->total_facturado,
                     'moneda'              => optional($sale->moneda)->name ?? 'Peso',
                     'metodo_pago'         => $sale->current_acount_payment_methods->pluck('name')->implode(', '),
@@ -46,6 +47,7 @@ class SalesFullExport implements FromCollection, WithHeadings, ShouldAutoSize
             'Fecha',
             'N°',
             'Total',
+            'Total USD',
             'Total Facturado',
             'Moneda',
             'Método de Pago',

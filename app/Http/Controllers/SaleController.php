@@ -504,7 +504,7 @@ class SaleController extends Controller
         // Log::info('ventas_sin_cobrar de hace '.$dias.' dias');
         // Log::info('ver_solo_las_ventas_suyas: '.$ver_solo_las_ventas_suyas);
 
-        $sales = $sales->with('client', 'employee', 'current_acount')
+        $sales = $sales->with('client.credit_accounts', 'employee', 'current_acount')
                         ->orderBy('created_at', 'DESC')
                         ->get();
 

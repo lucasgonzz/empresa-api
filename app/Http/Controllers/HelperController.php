@@ -25,6 +25,7 @@ use App\Jobs\ProcessCheckSaldos;
 use App\Jobs\ProcessRecalculateCurrentAcounts;
 use App\Jobs\ProcessSetStockResultante;
 use App\Jobs\SetSalesTerminadaAtJob;
+use App\Models\AfipTicket;
 use App\Models\Afip\WSFE;
 use App\Models\Article;
 use App\Models\ArticlePriceTypeMoneda;
@@ -72,6 +73,23 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null, $param_2 = null) {
         $this->{$method}($param, $param_2);
+    }
+
+    function afip_tickets_repetidos() {
+
+        
+        $afip_tickets = AfipTicket::all();
+
+        $repetidos = $afip_tickets->groupBy('cae')
+                        ->filter(function ($items) {
+                            return $items->count() > 1 && !is_null($items->first()->cae);
+                        })
+                        ->flatten();
+
+        foreach ($repetidos as $afip_ticket) {
+            echo 'ticket fecha: '.$afip_ticket->created_at->format('d-m-y').', sale num: '.$afip_ticket->sale->num.' | cae: '.$afip_ticket->cae.' repetido <br>';
+        }
+        echo 'Listo';
     }
 
     function precios_ffperformance() {

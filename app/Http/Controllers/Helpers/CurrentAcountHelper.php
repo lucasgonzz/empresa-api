@@ -19,6 +19,7 @@ use App\Models\CreditCard;
 use App\Models\CreditCardPaymentPlan;
 use App\Models\CurrentAcount;
 use App\Models\ErrorCurrentAcount;
+use App\Models\NotaCreditoDescription;
 use App\Models\Sale;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -206,7 +207,7 @@ class CurrentAcountHelper {
     //     }
     // }
 
-    static function notaCredito($credit_account_id, $haber, $description, $model_name, $model_id, $sale_id = null, $items = null) {
+    static function notaCredito($credit_account_id, $haber, $description, $model_name, $model_id, $sale_id = null, $items = null, $descriptions = null) {
 
         $moneda_id = Self::get_moneda_id($credit_account_id, $sale_id);
 
@@ -235,6 +236,7 @@ class CurrentAcountHelper {
 
         Self::attachNotaCreditoArticles($nota_credito, $items);
         Self::attachNotaCreditoServices($nota_credito, $items);
+        Self::attachNotaCreditoDescriptions($nota_credito, $descriptions);
 
         if (!is_null($model_name) && !is_null($model_id)) {
             $pago_helper = new CurrentAcountPagoHelper($credit_account_id, $model_name, $model_id, $nota_credito);
@@ -318,6 +320,24 @@ class CurrentAcountHelper {
                                                             'discount'  => $item['discount'],
                                                         ]);
                     }
+                }
+            }
+        }
+    }
+
+    static function attachNotaCreditoDescriptions($nota_credito, $descriptions) {
+        if (!is_null($descriptions)) {
+
+            foreach ($descriptions as $description) {
+
+                if (isset($description['price'])) {
+
+                    NotaCreditoDescription::create([
+                        'notes'     => $description['notes'],
+                        'price'     => $description['price'],
+                        'iva_id'    => $description['iva_id'],
+                        'current_acount_id'    => $nota_credito->id,
+                    ]);
                 }
             }
         }

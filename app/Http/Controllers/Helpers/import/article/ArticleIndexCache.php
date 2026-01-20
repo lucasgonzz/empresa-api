@@ -1,4 +1,3 @@
-                    $prov_code = trim($prov_code);
 <?php
 
 namespace App\Http\Controllers\Helpers\import\article;

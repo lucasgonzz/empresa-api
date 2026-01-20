@@ -42,7 +42,7 @@ class Sale extends Model
     }
 
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'client.credit_accounts', 'buyer.comercio_city_client', 'articles.article_variants', 'articles.price_types', 'articles.addresses', 'impressions', 'discounts', 'surchages', 'afip_tickets.afip_errors', 'afip_tickets.afip_observations', 'nota_credito_afip_tickets', 'combos.articles', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'afip_observations', 'current_acount', 'current_acount_payment_methods', 'price_type', 'sale_modifications', 'seller_commissions', 'promocion_vinotecas.articles', 'afip_information.iva_condition', 'meli_order')
+        $query->with('client.iva_condition', 'client.price_type', 'client.credit_accounts', 'buyer.comercio_city_client', 'articles.article_variants', 'articles.price_types', 'articles.addresses', 'impressions', 'discounts', 'surchages', 'afip_tickets.afip_errors', 'afip_tickets.afip_observations', 'nota_credito_afip_tickets', 'afip_tickets.nota_credito_afip.afip_errors', 'combos.articles', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'afip_observations', 'current_acount', 'current_acount_payment_methods', 'price_type', 'sale_modifications', 'seller_commissions', 'promocion_vinotecas.articles', 'afip_information.iva_condition', 'meli_order')
         ->withCount('sale_modifications');
     }
 

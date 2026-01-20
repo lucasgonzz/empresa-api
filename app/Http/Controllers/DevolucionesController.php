@@ -56,6 +56,7 @@ class DevolucionesController extends Controller
                 $model_id, 
                 $request->sale_id, 
                 $request->items,
+                $request->descriptions,
             );
 
             GeneralHelper::attachModels($nota_credito, 'discounts', $request->discounts, ['percentage']);

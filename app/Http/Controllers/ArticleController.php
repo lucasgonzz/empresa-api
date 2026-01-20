@@ -707,4 +707,17 @@ class ArticleController extends Controller
 
         return response()->json(['models' => $results], 200);
     }
+
+    function ventas_con_acopio($article_id) {
+        $article = Article::findOrFail($article_id);
+
+        $sales = $article->sales()
+                ->withPivot('delivered_amount')
+                ->wherePivotNotNull('delivered_amount')
+                ->where('en_acopio', true)
+                ->withAll()
+                ->get();
+
+        return response()->json(['sales'    => $sales], 200);
+    }
 }

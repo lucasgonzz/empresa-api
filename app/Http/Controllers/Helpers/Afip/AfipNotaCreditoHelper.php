@@ -152,6 +152,27 @@ class AfipNotaCreditoHelper
             $data['items'][] = $item;
         }
 
+        foreach ($this->nota_credito->nota_credito_descriptions as $description) {
+            
+            $amount = 1;
+            $price = (float)$description->price;
+
+            $total_item = $price * $amount;
+
+            $item = [];
+            $item['Pro_codigo']         = $description->id;
+            $item['Pro_ds']             = $description->notes;
+            $item['Pro_qty']            = $amount;
+            $item['Pro_umed']           = 1; // FEXGetPARAM_UMed 
+            $item['Pro_precio_uni']     = $price;
+            $item['Pro_bonificacion']   = 0;
+            $item['Pro_total_item']     = $total_item;
+
+            $importe_total += $total_item;
+
+            $data['items'][] = $item;
+        }
+
         $data['Imp_total'] = $importe_total;
 
         $data['CbtesAsoc'] = [
@@ -251,6 +272,10 @@ class AfipNotaCreditoHelper
         if (!$cbte_nro['hubo_un_error']) {
 
             $cbte_nro = $cbte_nro['numero_comprobante'];
+        } else {
+
+            $this->save_error($cbte_nro);
+            return;
         }
 
         // Log::info('articulos para obtener importes:');
@@ -259,7 +284,7 @@ class AfipNotaCreditoHelper
         // Log::info('services para obtener importes:');
         // Log::info($this->nota_credito->services);
 
-        $afip_helper = new AfipHelper($this->afip_ticket, $this->nota_credito->articles, $this->nota_credito->services);
+        $afip_helper = new AfipHelper($this->afip_ticket, $this->nota_credito->articles, $this->nota_credito->services, null, null, $this->nota_credito->nota_credito_descriptions);
         $importes = $afip_helper->getImportes();
         $today = date('Ymd');
         $moneda_id = 'PES';
@@ -305,7 +330,13 @@ class AfipNotaCreditoHelper
         if (!is_null($this->FchVtoPago())) {
             $invoice['FeCAEReq']['FeDetReq']['FECAEDetRequest']['FchVtoPago'] = $this->FchVtoPago();
         }
-        if ($this->afip_ticket->afip_information->iva_condition->name == 'Responsable inscripto' && $importes['iva'] > 0) {
+
+        Log::info('importes:');
+        Log::info($importes);
+
+        if (
+            $this->afip_ticket->afip_information->iva_condition->name == 'Responsable inscripto' 
+        ) {
             $ivas = [];
             foreach ($importes['ivas'] as $iva) {
                 if ($iva['BaseImp'] > 0) {
@@ -389,7 +420,7 @@ class AfipNotaCreditoHelper
                     'message'   => $observations['Msg'],
                     'code'      => $observations['Code'],
                     'sale_id'   => $this->sale->id,
-                    'afip_ticket'   => $this->created_afip_ticket->id
+                    'afip_ticket_id'   => $this->created_afip_ticket->id
                 ]);
             } else if (
                 isset($observations['Obs'])
@@ -400,7 +431,7 @@ class AfipNotaCreditoHelper
                         'message'   => $observation['Msg'],
                         'code'      => $observation['Code'],
                         'sale_id'   => $this->sale->id,
-                        'afip_ticket'   => $this->created_afip_ticket->id
+                        'afip_ticket_id'   => $this->created_afip_ticket->id
                     ]);
                 }
             }
@@ -408,17 +439,20 @@ class AfipNotaCreditoHelper
     }
 
     function save_error($result) {
-        if (isset($result['error'])) {
 
-            AfipError::create([
-                'message'           => $result['error'],
-                'code'              => 'Error del lado de AFIP',
-                'sale_id'           => $this->sale->id,
-                'afip_ticket_id'    => $this->created_afip_ticket->id,
-                'request'           => isset($result['request']) ? $result['request'] : null,
-                'response'          => isset($result['response']) ? $result['response'] : null,
-            ]);
-        }
+        AfipError::create([
+            'message'           => isset($result['error']) ? $result['error'] : null,
+            'code'              => 'Error del lado de AFIP',
+            'sale_id'           => $this->sale->id,
+            'afip_ticket_id'    => $this->created_afip_ticket->id,
+            'request'           => isset($result['request']) ? $result['request'] : null,
+            'response'          => isset($result['response']) ? $result['response'] : null,
+        ]);
+
+        $this->created_afip_ticket->update([
+            'request'           => isset($result['request']) ? $result['request'] : null,
+            'response'          => isset($result['response']) ? $result['response'] : null,
+        ]);
     }
 
     function convertir_utf8($value) {
@@ -454,6 +488,7 @@ class AfipNotaCreditoHelper
             'nota_credito_id'                   => $this->nota_credito->id,
             'iva_cliente'                       => !is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) ? $this->sale->client->iva_condition->name : '',
             'sale_nota_credito_id'              => $this->sale->id,
+            'sale_afip_ticket_id'               => $this->afip_ticket->id,
         ]);
     }
 
