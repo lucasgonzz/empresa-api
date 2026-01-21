@@ -28,13 +28,13 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
     use Batchable, Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     protected $import_uuid, $csv_path, $columns, $create_and_edit, $start_row, $finish_row,
-              $provider_id, $user, $auth_user_id, $no_actualizar_articulos_de_otro_proveedor, $import_status_id, $import_history_id, $chunk_number;
+              $provider_id, $user, $auth_user_id, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $import_status_id, $import_history_id, $chunk_number;
 
     // public $timeout = 5; // 30 minutos por chunk, ajustable
     public $timeout = 1800; // 30 minutos por chunk, ajustable
     public $tries = 1;
     
-	public function __construct($import_uuid, $csv_path, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $import_status_id, $import_history_id, $chunk_number)
+	public function __construct($import_uuid, $csv_path, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $import_status_id, $import_history_id, $chunk_number)
     {
 
         $this->import_uuid = $import_uuid;
@@ -42,6 +42,7 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
         $this->no_actualizar_articulos_de_otro_proveedor = $no_actualizar_articulos_de_otro_proveedor;
+        $this->actualizar_proveedor = $actualizar_proveedor;
         $this->start_row = $start_row;
         $this->finish_row = $finish_row;
         $this->provider_id = $provider_id;
@@ -176,6 +177,7 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
                 $this->columns,
                 $this->create_and_edit,
                 $this->no_actualizar_articulos_de_otro_proveedor,
+                $this->actualizar_proveedor,
                 $this->start_row,
                 $this->finish_row,
                 $this->provider_id,

@@ -395,6 +395,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Descripciones en Notas de credito',
                 'slug' => 'nota_credito_descriptions',
             ],
+            [
+                'name' => 'Cerrar ventas (para luego no poder seguir actualizandolas)',
+                'slug' => 'cerrar_ventas',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

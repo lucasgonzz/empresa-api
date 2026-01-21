@@ -23,6 +23,7 @@ class InitExcelImport {
         $this->columns    = $data['columns']; 
         $this->create_and_edit    = $data['create_and_edit']; 
         $this->no_actualizar_articulos_de_otro_proveedor  = $data['no_actualizar_articulos_de_otro_proveedor']; 
+        $this->actualizar_proveedor  = $data['actualizar_proveedor']; 
         $this->start_row  = $data['start_row']; 
         $this->finish_row = $data['finish_row']; 
         $this->provider_id    = $data['provider_id']; 
@@ -116,6 +117,7 @@ class InitExcelImport {
                 $this->columns,
                 $this->create_and_edit,
                 $this->no_actualizar_articulos_de_otro_proveedor,
+                $this->actualizar_proveedor,
                 $this->start,
                 $this->end,
                 $this->provider_id,
@@ -145,6 +147,7 @@ class InitExcelImport {
             $this->archivo_excel_path,
             $this->create_and_edit,
             $this->no_actualizar_articulos_de_otro_proveedor,
+            $this->actualizar_proveedor,
             $this->import_history->id,
         );
     }

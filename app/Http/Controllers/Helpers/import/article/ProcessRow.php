@@ -42,8 +42,8 @@ class ProcessRow {
         $this->provider_id              = $data['provider_id'];
         $this->create_and_edit          = $data['create_and_edit'];
         $this->no_actualizar_articulos_de_otro_proveedor = $data['no_actualizar_articulos_de_otro_proveedor'];
+        $this->actualizar_proveedor = $data['actualizar_proveedor'];
 
-        
         $this->import_history_id = $data['import_history_id'] ?? null;
         $this->import_uuid = $data['import_uuid'] ?? null;
 
@@ -628,6 +628,14 @@ class ProcessRow {
         foreach ($data as $key => $value) {
             // ignorar campos que no queremos comparar
             if (in_array($key, ['id', 'created_at', 'updated_at'])) continue;
+
+            if (
+                $key == 'provider_id'
+                && !$this->actualizar_proveedor
+            ) {
+                Log::info('No se agrego provider_id porque actualizar_proveedor: '.$this->actualizar_proveedor);
+                continue;
+            }
 
             // Valor nuevo normalizado
             $new = $this->normalize_value_for_comparison($value);

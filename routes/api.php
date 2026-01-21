@@ -208,6 +208,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('sale-clear-actualizandose-por/{sale_id}', 'SaleController@clear_actualizandose_por');
     Route::get('sale/por-entregar/{from}/{to}', 'SaleController@por_entregar');
     Route::put('sale/unidades-entregadas/{sale_id}', 'SaleController@unidades_entregadas');
+    Route::put('sale-cerrar-venta/{sale_id}', 'SaleController@cerrar_venta');
 
 
     // 
