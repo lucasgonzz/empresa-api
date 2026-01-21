@@ -35,7 +35,7 @@ class ArticleImport implements ToCollection
 {
 
     
-    public function __construct($import_uuid, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $archivo_excel_path, $chunk_number) {
+    public function __construct($import_uuid, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $archivo_excel_path, $chunk_number) {
         set_time_limit(9999999999);
 
         Log::info('Se creo ArticleImport con import_uuid: '.$import_uuid);
@@ -49,6 +49,7 @@ class ArticleImport implements ToCollection
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
         $this->no_actualizar_articulos_de_otro_proveedor = $no_actualizar_articulos_de_otro_proveedor;
+        $this->actualizar_proveedor = $actualizar_proveedor;
         $this->start_row = $start_row;
         $this->finish_row = $finish_row;
         $this->ct = new Controller();
@@ -73,6 +74,7 @@ class ArticleImport implements ToCollection
             'provider_id'      => $this->provider_id,
             'create_and_edit'      => $this->create_and_edit,
             'no_actualizar_articulos_de_otro_proveedor'      => $this->no_actualizar_articulos_de_otro_proveedor,
+            'actualizar_proveedor'      => $this->actualizar_proveedor,
         ]);
 
         $this->nombres_proveedores = [];

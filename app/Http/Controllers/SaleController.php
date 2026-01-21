@@ -574,4 +574,11 @@ class SaleController extends Controller
 
         return response()->json(['model' => $this->fullModel('Sale', $sale_id)], 200);
     }
+
+    function cerrar_venta($id) {
+        $sale = Sale::find($id);
+        $sale->is_cerrada = 1;
+        $sale->save();
+        return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
+    }
 }

@@ -20,14 +20,14 @@ class FinalizeArticleImport implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    protected $import_uuid, $model_name, $columns, $user, $auth_user_id, $provider_id, $archivo_excel_path, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $import_history_id;
+    protected $import_uuid, $model_name, $columns, $user, $auth_user_id, $provider_id, $archivo_excel_path, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $import_history_id;
 
     /**
      * Create a new job instance.
      *
      * @return void
      */
-    public function __construct($import_uuid, $model_name, $columns, $user, $auth_user_id, $provider_id, $archivo_excel_path, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $import_history_id)
+    public function __construct($import_uuid, $model_name, $columns, $user, $auth_user_id, $provider_id, $archivo_excel_path, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $import_history_id)
     {
         $this->import_uuid = $import_uuid;
         $this->model_name = $model_name;
@@ -38,6 +38,7 @@ class FinalizeArticleImport implements ShouldQueue
         $this->archivo_excel_path = $archivo_excel_path;
         $this->create_and_edit = $create_and_edit;
         $this->no_actualizar_articulos_de_otro_proveedor = $no_actualizar_articulos_de_otro_proveedor;
+        $this->actualizar_proveedor = $actualizar_proveedor;
         $this->import_history_id = $import_history_id;
     }
 
