@@ -26,6 +26,7 @@ use App\Models\Sale;
 use App\Models\SpecialPrice;
 use App\Models\User;
 use App\Services\MercadoLibre\ProductService;
+use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
@@ -277,6 +278,7 @@ class ArticleHelper {
         }
 
         ProductService::add_article_to_sync($article);
+        TiendaNubeSyncArticleService::add_article_to_sync($article);
         
         if ($guardar_cambios) {
             $article->timestamps = false;

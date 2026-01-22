@@ -230,8 +230,8 @@ class ArticleController extends Controller
 
         ArticleUbicationsHelper::init_ubications($model);
 
-        ProductService::add_article_to_sync($model);
-        TiendaNubeSyncArticleService::add_article_to_sync($model);
+        // ProductService::add_article_to_sync($model);
+        // TiendaNubeSyncArticleService::add_article_to_sync($model);
 
 
 
@@ -391,8 +391,8 @@ class ArticleController extends Controller
 
         // $this->sendAddModelNotification('article', $model->id);
 
-        ProductService::add_article_to_sync($model);
-        TiendaNubeSyncArticleService::add_article_to_sync($model);
+        // ProductService::add_article_to_sync($model);
+        // TiendaNubeSyncArticleService::add_article_to_sync($model);
 
         
         $inventory_linkage_helper = new InventoryLinkageHelper();

@@ -190,7 +190,7 @@ class SearchController extends Controller
             }
         }
 
-        if ($model_name_param == 'article' || $model_name_param == 'client' || $model_name_param == 'provider') {
+        if ($model_name_param == 'article') {
             $models = $models->where('status', 'active');
         }
         $models = $models->withAll()

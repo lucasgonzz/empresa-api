@@ -269,6 +269,19 @@ class TiendaNubeProductService extends BaseTiendaNubeService
                 return (float) $price_type_tn->pivot->final_price;
             }
         }
-        return (float) $article->final_price;
+
+        $price = (float) $article->final_price;
+
+        if (
+            $article->cost_in_dollars
+            && !$article->user->cotizar_precios_en_dolares
+        ) {
+            Log::info('Cotizando '.$price.' x '.$article->user->dollar);
+            $price *= $article->user->dollar;
+            $price = round($price, 0);
+            Log::info('Queda en: '.$price);
+        }
+
+        return $price;
     }
 }
