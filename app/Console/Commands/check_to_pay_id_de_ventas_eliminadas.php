@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Models\CurrentAcount;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
 
 class check_to_pay_id_de_ventas_eliminadas extends Command
 {
@@ -57,6 +58,8 @@ class check_to_pay_id_de_ventas_eliminadas extends Command
 
                 $pago->to_pay_id = null;
                 $pago->save();
+
+                Log::info('Se puso null en to_pay_id de current_acount id: '.$pago->id);
                 
                 CurrentAcountHelper::check_saldos_y_pagos($pago->credit_account_id);
             }

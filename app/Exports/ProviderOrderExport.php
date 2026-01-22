@@ -32,7 +32,7 @@ class ProviderOrderExport implements FromArray, WithHeadings
         return $provider_order->articles->map(function ($article) {
             return [
                 $article->name,
-                $article->barcode,
+                $article->bar_code,
                 $article->provider_code,
                 $article->pivot->amount,
             ];
