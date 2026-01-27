@@ -82,13 +82,16 @@ class ArticlePurchaseController extends Controller
 
             if (isset($agrupados[$article_id])) {
 
-                $agrupados[$article_id]['unidades_vendidas'] += $purchase->amount;
-                $agrupados[$article_id]['price'] += $purchase->price * $purchase->amount;
-                $agrupados[$article_id]['cost'] += $purchase->cost * $purchase->amount;
+                $agrupados[$article_id]['unidades_vendidas']    += $purchase->amount;
+                $agrupados[$article_id]['price']                += $purchase->price * $purchase->amount;
+                $agrupados[$article_id]['cost']                 += $purchase->cost * $purchase->amount;
 
-                if ($article_id == 1) {
-                    Log::info('Se SUMA a prensa con price = '.$purchase->price);
-                }
+                $agrupados[$article_id]['price_dolar']          += $purchase->price_dolar * $purchase->amount;
+                $agrupados[$article_id]['cost_dolar']           += $purchase->cost_dolar * $purchase->amount;
+
+                // if ($article_id == 1) {
+                //     Log::info('Se SUMA a prensa con price = '.$purchase->price);
+                // }
            
             } else {
 
@@ -101,6 +104,8 @@ class ArticlePurchaseController extends Controller
                     'unidades_vendidas'            => $purchase->amount,
                     'price'             => $purchase->price * $purchase->amount,
                     'cost'              => $purchase->cost * $purchase->amount,
+                    'price_dolar'       => $purchase->price_dolar * $purchase->amount,
+                    'cost_dolar'        => $purchase->cost_dolar * $purchase->amount,
                 ];
 
                 if ($article_id == 1) {
@@ -112,6 +117,7 @@ class ArticlePurchaseController extends Controller
         foreach ($agrupados as $article_id => $agrupado) {
 
             $agrupados[$article_id]['beneficio'] = (float)$agrupados[$article_id]['price'] - (float)$agrupados[$article_id]['cost'];
+            $agrupados[$article_id]['beneficio_dolar'] = (float)$agrupados[$article_id]['price_dolar'] - (float)$agrupados[$article_id]['cost_dolar'];
         }
 
         $agrupados = array_values($agrupados);

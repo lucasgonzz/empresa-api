@@ -142,9 +142,9 @@ class ArticleImport implements ToCollection
         Log::info('rows:');
         Log::info($rows);
 
-        Log::info('filas_procesadas: '.$this->filas_procesadas);
-        Log::info('start_row: '.$this->start_row);
-        Log::info('finish_row: '.$this->finish_row);
+        // Log::info('filas_procesadas: '.$this->filas_procesadas);
+        // Log::info('start_row: '.$this->start_row);
+        // Log::info('finish_row: '.$this->finish_row);
         
         foreach ($rows as $row) {
 

@@ -35,10 +35,13 @@ class ArticleIndexCache
             }])
             ->select(['id', 'bar_code', 'sku', 'name']);
 
+        $guardar_precio_de_otros_proveedores = env('GUARDAR_PRECIO_DE_OTROS_PROVEEDORES', true);
+
         if (
             !$user->comparar_precios_de_proveedores_en_excel
             && $provider_id
             && $no_actualizar_otro_proveedor
+            && !$guardar_precio_de_otros_proveedores
         ) {
             $articles->where('provider_id', $provider_id);
         }
@@ -140,6 +143,8 @@ class ArticleIndexCache
         Log::info($data);
 
         $article_id = null;
+        
+        $guardar_precio_de_otros_proveedores = env('GUARDAR_PRECIO_DE_OTROS_PROVEEDORES', true);
 
         // 1) Buscar por ID
         if (!empty($data['id'])) {
@@ -182,14 +187,14 @@ class ArticleIndexCache
             $article_ids = [];
 
             // Caso 1 → hay provider_id y no_actualizar_otro_proveedor = true
-            if ($provider_id && $no_actualizar_otro_proveedor) {
+            if ($provider_id && !$guardar_precio_de_otros_proveedores) {
                 if (isset($index['provider_codes'][$provider_id][$provider_code])) {
                     $article_ids = $index['provider_codes'][$provider_id][$provider_code];
                 }
             }
 
             // Caso 2 → hay provider_id pero se permite actualizar de otros providers
-            elseif ($provider_id && !$no_actualizar_otro_proveedor) {
+            elseif ($provider_id && $guardar_precio_de_otros_proveedores) {
 
 
                 // Buscar también en todos los demás providers

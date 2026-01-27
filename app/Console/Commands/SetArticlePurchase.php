@@ -47,7 +47,8 @@ class SetArticlePurchase extends Command
 
         foreach ($sales as $sale) {
 
-            ArticlePurchaseHelper::set_article_purcase($sale);
+            $h = new ArticlePurchaseHelper();
+            $h->set_article_purcase($sale);
             $this->info('Venta '.$sale->num.' del '.$sale->created_at->format('d/m/Y'));
         }
         $this->info('Termino');
