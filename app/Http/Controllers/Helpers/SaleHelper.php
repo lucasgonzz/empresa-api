@@ -274,7 +274,10 @@ class SaleHelper extends Controller {
         }
 
         Log::info('5');
-        ArticlePurchaseHelper::set_article_purcase($model);
+
+
+        $h = new ArticlePurchaseHelper();
+        $h->set_article_purcase($model);
 
         SaleTotalesHelper::set_total_cost($model);
     }

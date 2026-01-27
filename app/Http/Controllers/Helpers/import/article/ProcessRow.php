@@ -388,8 +388,8 @@ class ProcessRow {
 
     function update_provider_relation($articulo_ya_creado, $data, $provider_id) {
 
-        Log::info('update_provider_relation de ');
-        Log::info($articulo_ya_creado->toArray());
+        Log::info('update_provider_relation de '.$articulo_ya_creado->name);
+        // Log::info($articulo_ya_creado->toArray());
 
         $pivot_data = [
             'provider_code' => isset($data['provider_code']) ? $data['provider_code']: null,

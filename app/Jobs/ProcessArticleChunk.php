@@ -118,7 +118,8 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
             $this->set_import_history_error($e);
 
 
-            ArticleImportHelper::error_notification($this->user, null, $e->getMessage());
+            $error_message = $this->get_full_error($e);
+            ArticleImportHelper::error_notification($this->user, null, $error_message);
 
             $this->notificar_error_input_status($e->getMessage());
 
@@ -158,14 +159,21 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
     function set_import_history_error($e) {
         $this->import_history->status = 'error';
 
+        $error_message = $this->get_full_error($e);
+
+        $this->import_history->error_message = $error_message;
+        $this->import_history->save();
+    }
+
+    function get_full_error($e) {
+
         $error_message = '';
         $error_message .= ' | Mensaje: ' . $e->getMessage();
         $error_message .= ' | Archivo: ' . $e->getFile();
         $error_message .= ' | Línea: ' . $e->getLine();
-        $error_message .= ' | Trace: ' . $e->getTraceAsString();
+        // $error_message .= ' | Trace: ' . $e->getTraceAsString();
 
-        $this->import_history->error_message = $error_message;
-        $this->import_history->save();
+        return $error_message;
     }
 
     function crear_article_import() {

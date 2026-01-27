@@ -162,7 +162,12 @@ class ArticleHelper {
 
             $final_price = $cost;
 
-            if (!UserHelper::hasExtencion('ventas_en_dolares', $user)) {
+            if (
+                UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)
+                && UserHelper::hasExtencion('ventas_en_dolares', $user)
+            ) {
+
+            } else {
                 $final_price = Self::cotizar($article, $user, $final_price);
             }
             // if (

@@ -332,9 +332,9 @@ class SaleController extends Controller
             Log::info('Y pertenece al cliente '.$model->client->name);
         }
 
-        ArticlePurchaseHelper::borrar_article_purchase_actuales($model);
+        $h = new ArticlePurchaseHelper();
+        $h->borrar_article_purchase_actuales($model);
         
-    
         if ($model->client_id) {
 
             /* 

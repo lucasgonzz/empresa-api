@@ -9,6 +9,30 @@ use Illuminate\Support\Facades\Route;
 // consultar_comprobante($afip_ticket_id)
 // Route::post('/consultar-afip-ticket/afip_ticket_id', 'AfipTicketController@consultar_comprobante');
 
+
+// Obtener todos los productos para N8N
+Route::get('/n8n/productos-disponibles', function () {
+    // $articles = Article::all();
+    $articles = Article::select('id', 'name', 'final_price', 'descripcion')
+                        ->with('category:name') // importante: optimizamos la carga
+                        ->take(10000)
+                        ->get()
+                        ->map(function ($article) {
+                            return [
+                                'id' => $article->id,
+                                'name' => $article->name,
+                                'final_price' => $article->final_price,
+                                'descripcion' => $article->descripcion,
+                                'categoria' => $article->category->name ?? null,
+                            ];
+                        });
+    return response()->json(['articles' => $articles]);
+});
+// https://api-masquito.comerciocity.com/public/n8n/productos-disponibles
+
+
+
+
 // Paso 1: Redirige al usuario a Mercado Libre para autorizar la app
 Route::get('/mercadolibre/auth', function () {
     $query = http_build_query([
