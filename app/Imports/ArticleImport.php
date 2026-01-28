@@ -110,24 +110,26 @@ class ArticleImport implements ToCollection
         
         Log::info('cacheando articulos');
         
-        if ($this->chunk_number == 1) {
+        // if ($this->chunk_number == 1) {
             
             ArticleIndexCache::build(
                 $this->user->id,
                 $this->provider_id ?? null,
                 (bool)$this->no_actualizar_articulos_de_otro_proveedor
             );
-        } else {
+        // } else {
 
-            $index = ArticleIndexCache::get($this->user->id);
-            Log::info('Ya estaba cacheado, el cache esta asi:');
-            // Log::info(count($index['ids']).' ids');
-            // Log::info(count($index['bar_codes']).' bar_codes');
-            // Log::info(count($index['skus']).' skus');
-            // Log::info(count($index['provider_codes']).' provider_codes');
-            // Log::info(count($index['names']).' names');
-            Log::info('');
-        }
+        //     $index = ArticleIndexCache::get($this->user->id);
+        //     Log::info('Ya estaba cacheado, el cache esta asi:');
+        //     Log::info(gettype($index));
+            
+        //     // Log::info(count($index['ids']).' ids');
+        //     // Log::info(count($index['bar_codes']).' bar_codes');
+        //     // Log::info(count($index['skus']).' skus');
+        //     // Log::info(count($index['provider_codes']).' provider_codes');
+        //     // Log::info(count($index['names']).' names');
+        //     Log::info('');
+        // }
 
         Log::info('articulos cacheados');
 
@@ -139,8 +141,8 @@ class ArticleImport implements ToCollection
 
         $this->filas_procesadas = 0;
 
-        Log::info('rows:');
-        Log::info($rows);
+        // Log::info('rows:');
+        // Log::info($rows);
 
         // Log::info('filas_procesadas: '.$this->filas_procesadas);
         // Log::info('start_row: '.$this->start_row);

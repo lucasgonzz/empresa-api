@@ -359,12 +359,12 @@ class ProcessRow {
 
     function add_article_match() {
         $this->articles_match++;
-        Log::info('articles_match: '.$this->articles_match);
+        // Log::info('articles_match: '.$this->articles_match);
     }
 
     function attach_provider($articulo_ya_creado, $data, $provider_id) {
 
-        Log::info('attach_provider');
+        // Log::info('attach_provider');
 
         if (
             !$provider_id
@@ -388,7 +388,7 @@ class ProcessRow {
 
     function update_provider_relation($articulo_ya_creado, $data, $provider_id) {
 
-        Log::info('update_provider_relation de '.$articulo_ya_creado->name);
+        // Log::info('update_provider_relation de '.$articulo_ya_creado->name);
         // Log::info($articulo_ya_creado->toArray());
 
         $pivot_data = [
@@ -402,7 +402,7 @@ class ProcessRow {
 
         if ($existe_relacion) {
 
-            Log::info('Ya estaba relacionado con el provider id '.$provider_id);
+            // Log::info('Ya estaba relacionado con el provider id '.$provider_id);
             // ✅ Actualizar pivot existente
             $articulo_ya_creado->providers()->updateExistingPivot($provider_id, $pivot_data);
         } else {
@@ -470,7 +470,7 @@ class ProcessRow {
 
         if (!empty($cambios)) {
 
-            Log::info('SI Hubo Cambios');
+            // Log::info('SI Hubo Cambios');
 
             $cambios['id'] = $articulo_ya_creado->id;
 
@@ -482,8 +482,8 @@ class ProcessRow {
             //     ImportChangeRecorder::logUpdated($this->import_history_id, $articulo_ya_creado->id, $cambios);
             // }
         }  else {
-            Log::info('');
-            Log::info('NO HUBO CAMBIOS');
+            // Log::info('');
+            // Log::info('NO HUBO CAMBIOS');
         }
 
         // return $cambios;
@@ -555,7 +555,7 @@ class ProcessRow {
         if (!empty($data['id'])) {
 
             if (isset($art['id']) && $art['id'] === $data['id']) {
-                Log::info('Ya esta para crear, id: '.$art['id'].' = '.$data['id']);
+                // Log::info('Ya esta para crear, id: '.$art['id'].' = '.$data['id']);
                 return true;
             }
             return false;
@@ -565,7 +565,7 @@ class ProcessRow {
         if (!empty($data['bar_code'])) {
 
             if (isset($art['bar_code']) && $art['bar_code'] === $data['bar_code']) {
-                Log::info('Ya esta para crear, bar_code: '.$art['bar_code'].' = '.$data['bar_code']);
+                // Log::info('Ya esta para crear, bar_code: '.$art['bar_code'].' = '.$data['bar_code']);
                 return true;
             }
             return false;
@@ -575,7 +575,7 @@ class ProcessRow {
         if (!empty($data['provider_code']) && !$codigos_repetidos) {
 
             if (!empty($art['provider_code']) && $art['provider_code'] === $data['provider_code']) {
-                Log::info('Ya esta para crear, provider_code: '.$art['provider_code'].' = '.$data['provider_code']);
+                // Log::info('Ya esta para crear, provider_code: '.$art['provider_code'].' = '.$data['provider_code']);
                 return true;
             }
             return false;

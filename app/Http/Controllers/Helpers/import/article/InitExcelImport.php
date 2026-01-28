@@ -13,6 +13,8 @@ use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Log;
 use OpenSpout\Reader\Common\Creator\ReaderEntityFactory;
 use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
+use OpenSpout\Common\Entity\Row;
+use OpenSpout\Common\Entity\Cell;
 
 class InitExcelImport {
 
@@ -80,8 +82,33 @@ class InitExcelImport {
             $writer->openToFile($this->csv_full_path);
 
             foreach ($reader->getSheetIterator() as $sheet) {
+
+                // Remplazo el codigo de Leo por el de abajo para convertir los datos de las celdas a string plano
+                // foreach ($sheet->getRowIterator() as $row) {
+                //     $writer->addRow($row);
+                // }
+
+                
                 foreach ($sheet->getRowIterator() as $row) {
-                    $writer->addRow($row);
+
+                    $cells = [];
+
+                    foreach ($row->getCells() as $cell) {
+                        $value = $cell->getValue();
+
+                        if ($value instanceof \DateTime) {
+                            $value = $value->format('Y-m-d H:i:s');
+                        }
+
+                        if ($value === null) {
+                            $value = '';
+                        }
+
+                        $cells[] = new Cell((string)$value);
+                    }
+
+                    $new_row = new Row($cells, null);
+                    $writer->addRow($new_row);
                 }
                 break; // Solo procesar la primera hoja
             }
