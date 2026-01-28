@@ -197,10 +197,24 @@ class ArticleIndexCache
             elseif ($provider_id && $guardar_precio_de_otros_proveedores) {
 
 
+                Log::info('Tipo de dato en index[provider_codes]: '.gettype($index['provider_codes']));
+                if (is_array($index['provider_codes'])) {
+
+                    Log::info('Buscando dentro de '.count($index['provider_codes']).' proveedores');
+                } 
+
                 // Buscar también en todos los demás providers
                 foreach ($index['provider_codes'] as $prov_id => $codes) {
                     if (isset($codes[$provider_code])) {
-                        $article_ids = array_merge($article_ids, $codes[$provider_code]);
+                        if (is_array($codes[$provider_code])) {
+                            $article_ids = array_merge($article_ids, $codes[$provider_code]);
+                        } else {
+                            Log::info('Aca esta el error:');
+                            Log::info('provider_code: '.$provider_code);
+                            Log::info('Lo que hay: ');
+                            Log::info($codes[$provider_code]);
+                            Log::info(gettype($codes[$provider_code]));
+                        }
                     }
                 }
             }

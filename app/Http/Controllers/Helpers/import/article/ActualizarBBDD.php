@@ -211,7 +211,7 @@ class ActualizarBBDD {
         $this->guardar_variantes_desde_cache_simple();
 
 
-        $this->actualizar_cache();
+        // $this->actualizar_cache();
 
         $this->actualizar_tienda_nube();
 
