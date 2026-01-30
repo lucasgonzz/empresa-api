@@ -66,6 +66,10 @@ class FinalizeArticleImport implements ShouldQueue
             Log::info($results);
 
             // 2) Consolidar
+            $created_articles_count = 0;
+            $updated_articles_count = 0;
+
+
             $created_ids = [];
             $updated_props_by_article = []; // [article_id => array props merged]
 
@@ -103,7 +107,13 @@ class FinalizeArticleImport implements ShouldQueue
                         );
                     }
                 }
+
+
+                $created_articles_count += (int)$result->created_count;
+                $updated_articles_count += (int)$result->updated_count;
+                Log::info('created_articles_count: '.$created_articles_count);
             }
+
 
             // Unificar IDs creados
             $created_ids = array_values(array_unique($created_ids));
@@ -115,8 +125,8 @@ class FinalizeArticleImport implements ShouldQueue
 
             // 3) Crear ImportHistory definitivo (ajustá campos a tu migración real)
             $import_history->update([
-                'created_models'  => count($created_ids),
-                'updated_models'  => count($updated_props_by_article),
+                'created_models'  => $created_articles_count,
+                'updated_models'  => $updated_articles_count,
                 'status'          => 'terminado',
                 // 'operacion_a_realizar'  => $this->create_and_edit ? 'Crear y actualizar' : 'Solo actualizar',
                 // 'no_actualizar_otro_proveedor' => $this->no_actualizar_articulos_de_otro_proveedor,
@@ -151,7 +161,7 @@ class FinalizeArticleImport implements ShouldQueue
 
             Log::info("FinalizeArticleImport: ImportHistory creado para {$this->import_uuid}");
 
-            ArticleImportHelper::enviar_notificacion($this->user, count($created_ids), count($updated_props_by_article), $import_history->articles_match, $import_history->filas_procesadas);
+            ArticleImportHelper::enviar_notificacion($this->user, $created_articles_count, $updated_articles_count, $import_history->articles_match, $import_history->filas_procesadas);
 
             Log::info('Se envio notificacion');
 

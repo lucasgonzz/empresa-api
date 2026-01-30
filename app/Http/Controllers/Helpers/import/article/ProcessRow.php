@@ -16,6 +16,12 @@ use App\Models\PriceType;
 use App\Models\UnidadMedida;
 use Illuminate\Support\Facades\Log;
 
+use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
+use App\Models\Brand;
+use App\Models\Category;
+use App\Models\Iva;
+use App\Models\SubCategory;
+
 class ProcessRow {
 
     protected $columns;
@@ -29,6 +35,11 @@ class ProcessRow {
     protected $property_types = [];
     protected $unidad_medidas = [];
     protected $se_importaron_price_types = false;
+
+    protected $brand_cache = [];
+    protected $category_cache = [];
+    protected $sub_category_cache = []; // [category_id][name_key] => id
+    protected $iva_cache = [];   
 
 
 
@@ -52,6 +63,60 @@ class ProcessRow {
         $this->set_property_types();
         $this->set_unidad_medidas();
         $this->set_se_importaron_price_types();
+
+        $this->set_brand_cache();
+        $this->set_category_cache();
+        $this->set_sub_category_cache();
+        $this->set_iva_cache();
+    }
+
+    protected function normalize_cache_key($value): string
+    {
+        return strtolower(trim((string) $value));
+    }
+
+    protected function set_brand_cache(): void
+    {
+        $this->brand_cache = Brand::where('user_id', $this->user->id)
+            ->select('id', 'name')
+            ->get()
+            ->mapWithKeys(fn ($b) => [$this->normalize_cache_key($b->name) => (int)$b->id])
+            ->toArray();
+    }
+
+    protected function set_category_cache(): void
+    {
+        $this->category_cache = Category::where('user_id', $this->user->id)
+            ->select('id', 'name')
+            ->get()
+            ->mapWithKeys(fn ($c) => [$this->normalize_cache_key($c->name) => (int)$c->id])
+            ->toArray();
+    }
+
+    protected function set_sub_category_cache(): void
+    {
+        $this->sub_category_cache = [];
+
+        $subs = SubCategory::where('user_id', $this->user->id)
+            ->select('id', 'name', 'category_id')
+            ->get();
+
+        foreach ($subs as $s) {
+            $key = $this->normalize_cache_key($s->name);
+            $cid = (int)$s->category_id;
+            if (!isset($this->sub_category_cache[$cid])) {
+                $this->sub_category_cache[$cid] = [];
+            }
+            $this->sub_category_cache[$cid][$key] = (int)$s->id;
+        }
+    }
+
+    protected function set_iva_cache(): void
+    {
+        $this->iva_cache = Iva::select('id', 'percentage')
+            ->get()
+            ->mapWithKeys(fn ($i) => [trim((string)$i->percentage) => (int)$i->id])
+            ->toArray();
     }
 
     function set_se_importaron_price_types() {
@@ -241,13 +306,13 @@ class ProcessRow {
             if (!is_null($variant_payload)) {
 
                 $this->attach_variant_to_existing_article($data, $variant_payload);
-                Log::info('Fila repetida tratada como VARIANTE del artículo base');
+                // Log::info('Fila repetida tratada como VARIANTE del artículo base');
                 return;
             }
-            Log::info('SE OMITIO EN PROCES ROW (fila repetida sin propiedades de variante)');
+            // Log::info('SE OMITIO EN PROCES ROW (fila repetida sin propiedades de variante)');
             return;
         } else {
-            Log::info('No esta aun en el excel');
+            // Log::info('No esta aun en el excel');
         }
 
 
@@ -259,7 +324,7 @@ class ProcessRow {
             || $this->son_varios_articulos($articulo_ya_creado)
         ) {
 
-            Log::info('Articulo ya creado');
+            // Log::info('Articulo ya creado');
 
             $this->attach_provider($articulo_ya_creado, $data, $provider_id);
 
@@ -271,7 +336,7 @@ class ProcessRow {
 
                     if (!$this->omitir_por_pertencer_a_otro_proveedor($_articulo_ya_creado, $provider_id)) {
 
-                        Log::info('procesando articulo con provider_code repetido:');
+                        // Log::info('procesando articulo con provider_code repetido:');
                         $this->procesar_articulo_ya_creado($_articulo_ya_creado, $data, $row);
                     }
 
@@ -287,7 +352,7 @@ class ProcessRow {
 
         } else if ($this->create_and_edit) {
 
-            Log::info('El articulo NO existia');
+            // Log::info('El articulo NO existia');
             // Si no existe, lo agregamos a los artículos para crear
             
             /* 
@@ -549,7 +614,7 @@ class ProcessRow {
         $repetido = false;
 
         // Aseguramos boolean real por si el .env viene como string
-        $codigos_repetidos = filter_var(env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false), FILTER_VALIDATE_BOOLEAN);
+        $codigos_repetidos = filter_var(config('app.CODIGOS_DE_PROVEEDOR_REPETIDOS'), FILTER_VALIDATE_BOOLEAN);
 
         // 1) Coincidencia por ID
         if (!empty($data['id'])) {
@@ -713,7 +778,15 @@ class ProcessRow {
             return null;
         }
 
-        // 4. Formatear número a la cantidad de decimales solicitada
+        
+        // 4. Validar que la parte entera no tenga más de 10 dígitos
+        $parts = explode('.', $normalized);
+        $integer_part = ltrim($parts[0], '0'); // Eliminar ceros a la izquierda
+        if (strlen($integer_part) > 10) {
+            return null;
+        }
+
+        // 5. Formatear número a la cantidad de decimales solicitada
         return number_format((float) $normalized, $decimales, '.', '');
     }
 
@@ -876,8 +949,8 @@ class ProcessRow {
             }
         }
 
-        Log::info('stock_addresses:');
-        Log::info($stock_addresses);
+        // Log::info('stock_addresses:');
+        // Log::info($stock_addresses);
 
         return $stock_addresses;
         // if ($set_stock_from_addresses) {
@@ -1102,7 +1175,7 @@ class ProcessRow {
 
             }
         } else {
-            Log::info('Se omitieron price_types');
+            // Log::info('Se omitieron price_types');
         }
 
         return $price_types_data;
@@ -1145,10 +1218,33 @@ class ProcessRow {
     /**
      * Devuelve el ID del IVA a partir del valor textual en la columna "iva"
      */
-    function get_iva_id($row) {
+    // function get_iva_id($row) {
+    //     $iva_excel = ImportHelper::getColumnValue($row, 'iva', $this->columns);
+    //     $iva_id = LocalImportHelper::getIvaId($iva_excel);
+    //     return $iva_id;
+    // }
+    function get_iva_id($row)
+    {
         $iva_excel = ImportHelper::getColumnValue($row, 'iva', $this->columns);
-        $iva_id = LocalImportHelper::getIvaId($iva_excel);
-        return $iva_id;
+
+        if (is_null($iva_excel)) {
+            return 2; // mismo default que LocalImportHelper
+        }
+
+        $iva = trim(str_replace('%', '', (string)$iva_excel));
+
+        if ($iva === '' && $iva !== '0') {
+            return 2;
+        }
+
+        if (isset($this->iva_cache[$iva])) {
+            return $this->iva_cache[$iva];
+        }
+
+        $model = Iva::create(['percentage' => $iva]);
+        $this->iva_cache[$iva] = (int)$model->id;
+
+        return $model->id;
     }
 
 
@@ -1156,7 +1252,7 @@ class ProcessRow {
         $aplicar_iva = 1;
 
         $iva_excel = ImportHelper::getColumnValue($row, 'aplicar_iva', $this->columns);
-        Log::info('get_aplicar_iva: '.$iva_excel);
+        // Log::info('get_aplicar_iva: '.$iva_excel);
         if (
             $iva_excel == 'No'
             || $iva_excel == 'no'
@@ -1172,14 +1268,38 @@ class ProcessRow {
     /**
      * Devuelve el ID del IVA a partir del valor textual en la columna "iva"
      */
-    function get_brand_id($row) {
+    // function get_brand_id($row) {
+    //     $brand_excel = ImportHelper::getColumnValue($row, 'marca', $this->columns);
+
+    //     $brand_id = LocalImportHelper::get_bran_id($brand_excel, $this->ct, $this->user);
+
+    //     // Log::info('brand_id para article num: '.$row[0].' = '.$brand_id);
+
+    //     return $brand_id;
+    // }
+    function get_brand_id($row)
+    {
         $brand_excel = ImportHelper::getColumnValue($row, 'marca', $this->columns);
 
-        $brand_id = LocalImportHelper::get_bran_id($brand_excel, $this->ct, $this->user);
+        if (!$brand_excel || trim($brand_excel) === '') {
+            return null;
+        }
 
-        // Log::info('brand_id para article num: '.$row[0].' = '.$brand_id);
+        $name = trim((string)$brand_excel);
+        $key = $this->normalize_cache_key($name);
 
-        return $brand_id;
+        if (isset($this->brand_cache[$key])) {
+            return $this->brand_cache[$key];
+        }
+
+        $brand = Brand::create([
+            'name' => $name,
+            'user_id' => $this->user->id,
+        ]);
+
+        $this->brand_cache[$key] = (int)$brand->id;
+
+        return $brand->id;
     }
 
     function get_unidad_medida_id($row) {
@@ -1197,27 +1317,96 @@ class ProcessRow {
     /**
      * Devuelve el ID de la Categoria a partir del valor textual en la columna "Categoria"
      */
-    function get_category_id($row) {
+    // function get_category_id($row) {
 
+    //     $category_excel = ImportHelper::getColumnValue($row, 'categoria', $this->columns);
+
+    //     $category_id = null;
+    //     $sub_category_id = null;
+
+    //     // Si hay valor en la columna categoría, se obtiene el ID de categoría y subcategoría
+    //     if (ImportHelper::usa_columna($category_excel)) {
+    //         $category_id = LocalImportHelper::getCategoryId($category_excel, $this->ct, $this->user);
+
+    //         $sub_category_excel = ImportHelper::getColumnValue($row, 'sub_categoria', $this->columns);
+
+    //         $sub_category_id = LocalImportHelper::getSubcategoryId($category_excel, $sub_category_excel, $this->ct, $this->user);
+    //     }
+
+    //     return [
+    //         'category_id'       => $category_id,
+    //         'sub_category_id'   => $sub_category_id,
+    //     ];
+
+    // }
+    function get_category_id($row)
+    {
         $category_excel = ImportHelper::getColumnValue($row, 'categoria', $this->columns);
 
         $category_id = null;
         $sub_category_id = null;
 
-        // Si hay valor en la columna categoría, se obtiene el ID de categoría y subcategoría
-        if (ImportHelper::usa_columna($category_excel)) {
-            $category_id = LocalImportHelper::getCategoryId($category_excel, $this->ct, $this->user);
+        if (!ImportHelper::usa_columna($category_excel)) {
+            return [
+                'category_id' => null,
+                'sub_category_id' => null,
+            ];
+        }
 
-            $sub_category_excel = ImportHelper::getColumnValue($row, 'sub_categoria', $this->columns);
+        $category_name = trim((string)$category_excel);
+        $category_key = $this->normalize_cache_key($category_name);
 
-            $sub_category_id = LocalImportHelper::getSubcategoryId($category_excel, $sub_category_excel, $this->ct, $this->user);
+        // 1) Categoria
+        if (isset($this->category_cache[$category_key])) {
+            $category_id = $this->category_cache[$category_key];
+        } else {
+            $category = Category::create([
+                'num' => $this->ct->num('categories', $this->user->id, 'user_id', $this->user->id),
+                'name' => $category_name,
+                'user_id' => $this->user->id,
+            ]);
+
+            SetPriceTypesHelper::set_price_types($category, $this->user);
+            SetPriceTypesHelper::set_rangos($category, $this->user);
+
+            $category_id = (int)$category->id;
+            $this->category_cache[$category_key] = $category_id;
+        }
+
+        // 2) Subcategoria
+        $sub_category_excel = ImportHelper::getColumnValue($row, 'sub_categoria', $this->columns);
+        if (ImportHelper::usa_columna($sub_category_excel)) {
+
+            $sub_name = trim((string)$sub_category_excel);
+            $sub_key = $this->normalize_cache_key($sub_name);
+
+            if (isset($this->sub_category_cache[$category_id][$sub_key])) {
+                $sub_category_id = $this->sub_category_cache[$category_id][$sub_key];
+            } else {
+                $sub = SubCategory::create([
+                    'num' => $this->ct->num('sub_categories', $this->user->id, 'user_id', $this->user->id),
+                    'name' => $sub_name,
+                    'category_id' => $category_id,
+                    'user_id' => $this->user->id,
+                ]);
+
+                if (UserHelper::hasExtencion('lista_de_precios_por_categoria', $this->user)) {
+                    SetPriceTypesHelper::set_price_types($sub, $this->user);
+                }
+
+                if (!isset($this->sub_category_cache[$category_id])) {
+                    $this->sub_category_cache[$category_id] = [];
+                }
+                $this->sub_category_cache[$category_id][$sub_key] = (int)$sub->id;
+
+                $sub_category_id = (int)$sub->id;
+            }
         }
 
         return [
-            'category_id'       => $category_id,
-            'sub_category_id'   => $sub_category_id,
+            'category_id' => $category_id,
+            'sub_category_id' => $sub_category_id,
         ];
-
     }
 
     /**

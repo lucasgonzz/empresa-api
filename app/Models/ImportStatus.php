@@ -10,6 +10,10 @@ class ImportStatus extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        
+        $q->with('provider');
+    }
+
+    function provider() {
+        return $this->belongsTo(Provider::class);
     }
 }

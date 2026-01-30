@@ -13,6 +13,10 @@ class ArticleImportResult extends Model
         
     }
 
+    function provider() {
+        return $this->belongsTo(Provider::class);
+    }
+
     function articulos_creados() {
         return $this->belongsToMany(Article::class, 'article_creados_article_import_result');
     }

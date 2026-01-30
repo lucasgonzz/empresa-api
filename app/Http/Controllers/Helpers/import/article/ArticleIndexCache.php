@@ -6,6 +6,7 @@ use App\Models\Article;
 use App\Models\User;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 
 class ArticleIndexCache
 {
@@ -19,99 +20,217 @@ class ArticleIndexCache
      */
 
 
-    // Tengq ue modificar para que si son muuuchos productos guard solo los del proveedor
-    public static function build($user_id, $provider_id, $no_actualizar_otro_proveedor) 
+    public static function build($user_id, $provider_id, $no_actualizar_otro_proveedor)
     {
-
         $inicio = microtime(true);
 
         $user = User::find($user_id);
-
         $key = "article_index_user_{$user_id}";
 
-        $articles = Article::where('user_id', $user_id)
-            ->with(['providers' => function ($q) {
-                $q->select('providers.id');
-            }])
-            ->select(['id', 'bar_code', 'sku', 'name']);
+        $guardar_precio_de_otros_proveedores = config('app.GUARDAR_PRECIO_DE_OTROS_PROVEEDORES');
 
-        $guardar_precio_de_otros_proveedores = env('GUARDAR_PRECIO_DE_OTROS_PROVEEDORES', true);
-
-        if (
+        $filtrar_por_proveedor = (
             !$user->comparar_precios_de_proveedores_en_excel
             && $provider_id
             && $no_actualizar_otro_proveedor
             && !$guardar_precio_de_otros_proveedores
-        ) {
-            $articles->where('provider_id', $provider_id);
-        }
-
-        $articles = $articles->get();
+        );
 
         $index = [
             'ids' => [],
             'bar_codes' => [],
-            'skus'      => [],
-            'provider_codes' => [], // provider_id -> provider_code -> article_id
+            'skus' => [],
+            'provider_codes' => [], // provider_id -> provider_code -> article_id (o array si repetidos)
             'names' => [],
         ];
 
-        foreach ($articles as $article) {
-            $index['ids'][$article->id] = $article->id;
+        // 1) Index liviano desde articles (SIN with(providers), SIN get() gigante)
+        $article_query = Article::where('user_id', $user_id)
+            ->select(['id', 'bar_code', 'sku', 'name'])
+            ->orderBy('id');
 
-            if (!empty($article->bar_code)) {
-                $index['bar_codes'][$article->bar_code] = $article->id;
-            }
+        if ($filtrar_por_proveedor) {
+            $article_query->where('provider_id', $provider_id);
+        }
 
-            if (!empty($article->sku)) {
-                $index['skus'][$article->sku] = $article->id;
-            }
+        $article_query->chunkById(2000, function ($articles) use (&$index) {
+            foreach ($articles as $article) {
+                $article_id = (int) $article->id;
 
-            if (!empty($article->name)) {
-                $index['names'][strtolower(trim($article->name))] = $article->id;
-            }
+                $index['ids'][$article_id] = $article_id;
 
-            foreach ($article->providers as $provider) {
+                if (!empty($article->bar_code)) {
+                    $index['bar_codes'][(string) $article->bar_code] = $article_id;
+                }
 
-                if (!empty($provider->pivot->provider_code)) {
-                
-                    $prov_id = $provider->id;
-                
-                    $prov_code = $provider->pivot->provider_code;
-                    $prov_code = trim($prov_code);
+                if (!empty($article->sku)) {
+                    $index['skus'][(string) $article->sku] = $article_id;
+                }
 
-                    if (!isset($index['provider_codes'][$prov_id][$prov_code])) {
-                        $index['provider_codes'][$prov_id][$prov_code] = [];
-                    }
-
-                    $index['provider_codes'][$prov_id][$prov_code][] = $article->id;
+                if (!empty($article->name)) {
+                    $index['names'][strtolower(trim((string) $article->name))] = $article_id;
                 }
             }
+        });
+
+        // 2) provider_codes desde pivot con JOIN (sin cargar relaciones en memoria)
+        $codigos_repetidos = config('app.CODIGOS_DE_PROVEEDOR_REPETIDOS');
+
+        $pivot_query = DB::table('article_provider')
+            ->join('articles', 'articles.id', '=', 'article_provider.article_id')
+            ->where('articles.user_id', $user_id)
+            ->whereNotNull('article_provider.provider_code')
+            ->select([
+                'article_provider.provider_id',
+                'article_provider.provider_code',
+                'article_provider.article_id',
+            ])
+            ->orderBy('article_provider.article_id');
+
+        if ($filtrar_por_proveedor) {
+            $pivot_query->where('articles.provider_id', $provider_id);
         }
+
+        $pivot_query->chunk(5000, function ($rows) use (&$index, $codigos_repetidos) {
+            foreach ($rows as $row) {
+                $prov_id = (int) $row->provider_id;
+                $prov_code = trim((string) $row->provider_code);
+                $article_id = (int) $row->article_id;
+
+                if ($prov_code === '') {
+                    continue;
+                }
+                
+                if (!isset($index['provider_codes'][$prov_id][$prov_code])) {
+                    $index['provider_codes'][$prov_id][$prov_code] = [];
+                }
+                $index['provider_codes'][$prov_id][$prov_code][] = $article_id;
+
+                // if ($codigos_repetidos) {
+                //     if (!isset($index['provider_codes'][$prov_id][$prov_code])) {
+                //         $index['provider_codes'][$prov_id][$prov_code] = [];
+                //     }
+                //     $index['provider_codes'][$prov_id][$prov_code][] = $article_id;
+                // } else {
+                //     if (!isset($index['provider_codes'][$prov_id][$prov_code])) {
+                //         $index['provider_codes'][$prov_id][$prov_code] = [$article_id];
+                //     } else {
+                //         // por si aparecen duplicados inesperados, lo convertimos a array
+                //         if (!is_array($index['provider_codes'][$prov_id][$prov_code])) {
+                //             $index['provider_codes'][$prov_id][$prov_code] = [$index['provider_codes'][$prov_id][$prov_code]];
+                //         }
+                //         $index['provider_codes'][$prov_id][$prov_code][] = $article_id;
+                //     }
+                // }
+            }
+        });
 
         Cache::put($key, $index, now()->addMinutes(60));
-        Log::info("ArticleIndexCache::build -> total artículos: " . count($articles));
 
+        $duracion = microtime(true) - $inicio;
 
-        $fin = microtime(true);
+        Log::info("ArticleIndexCache::build -> ids: " . count($index['ids']) . " bar_codes: " . count($index['bar_codes']) . " skus: " . count($index['skus']) . " names: " . count($index['names']));
+        Log::info('Duración total cachear los articulos ' . $duracion . ' seg');
 
-        $duracion = $fin - $inicio;
-
-        Log::info('Duración total cachear los articulos ' . number_format($duracion, 3) . ' segundos');
-
-        if (env('APP_ENV') == 'local') {
-            // Log::info('');
-            // Log::info('**********************');
-            // Log::info('cache en memoria:');
-            // Log::info(Self::get($user_id));
-            // Log::info('');
-            // Log::info('');
-        } else {
-            // Log::info('cache en memoria:');
-            // Log::info(count(Self::get($user_id)['ids']).' articulos del provider_id '.$provider_id);
-            // Log::info(Self::get($user_id));
-        }
+        return $duracion;
     }
+
+
+    // Tengq ue modificar para que si son muuuchos productos guard solo los del proveedor
+    // public static function build($user_id, $provider_id, $no_actualizar_otro_proveedor) 
+    // {
+
+    //     $inicio = microtime(true);
+
+    //     $user = User::find($user_id);
+
+    //     $key = "article_index_user_{$user_id}";
+
+    //     $articles = Article::where('user_id', $user_id)
+    //         ->with(['providers' => function ($q) {
+    //             $q->select('providers.id');
+    //         }])
+    //         ->select(['id', 'bar_code', 'sku', 'name']);
+
+    //     $guardar_precio_de_otros_proveedores = config('app.GUARDAR_PRECIO_DE_OTROS_PROVEEDORES');
+
+    //     if (
+    //         !$user->comparar_precios_de_proveedores_en_excel
+    //         && $provider_id
+    //         && $no_actualizar_otro_proveedor
+    //         && !$guardar_precio_de_otros_proveedores
+    //     ) {
+    //         $articles->where('provider_id', $provider_id);
+    //     }
+
+    //     $articles = $articles->get();
+
+    //     $index = [
+    //         'ids' => [],
+    //         'bar_codes' => [],
+    //         'skus'      => [],
+    //         'provider_codes' => [], // provider_id -> provider_code -> article_id
+    //         'names' => [],
+    //     ];
+
+    //     foreach ($articles as $article) {
+    //         $index['ids'][$article->id] = $article->id;
+
+    //         if (!empty($article->bar_code)) {
+    //             $index['bar_codes'][$article->bar_code] = $article->id;
+    //         }
+
+    //         if (!empty($article->sku)) {
+    //             $index['skus'][$article->sku] = $article->id;
+    //         }
+
+    //         if (!empty($article->name)) {
+    //             $index['names'][strtolower(trim($article->name))] = $article->id;
+    //         }
+
+    //         foreach ($article->providers as $provider) {
+
+    //             if (!empty($provider->pivot->provider_code)) {
+                
+    //                 $prov_id = $provider->id;
+                
+    //                 $prov_code = $provider->pivot->provider_code;
+    //                 $prov_code = trim($prov_code);
+
+    //                 if (!isset($index['provider_codes'][$prov_id][$prov_code])) {
+    //                     $index['provider_codes'][$prov_id][$prov_code] = [];
+    //                 }
+
+    //                 $index['provider_codes'][$prov_id][$prov_code][] = $article->id;
+    //             }
+    //         }
+    //     }
+
+    //     Cache::put($key, $index, now()->addMinutes(60));
+    //     Log::info("ArticleIndexCache::build -> total artículos: " . count($articles));
+
+
+    //     $fin = microtime(true);
+
+    //     $duracion = $fin - $inicio;
+
+    //     Log::info('Duración total cachear los articulos ' . $duracion . ' seg');
+
+    //     if (config('app.APP_ENV' 'local') {
+    //         // Log::info('');
+    //         // Log::info('**********************');
+    //         // Log::info('cache en memoria:');
+    //         // Log::info(Self::get($user_id));
+    //         // Log::info('');
+    //         // Log::info('');
+    //     } else {
+    //         // Log::info('cache en memoria:');
+    //         // Log::info(count(Self::get($user_id)['ids']).' articulos del provider_id '.$provider_id);
+    //         // Log::info(Self::get($user_id));
+    //     }
+
+    //     return $duracion;
+    // }
 
     /**
      * Devuelve el índice cacheado (vacío si no existe).
@@ -128,23 +247,23 @@ class ArticleIndexCache
      * Busca un artículo en el índice y retorna la instancia de Eloquent
      * con relaciones críticas precargadas (para evitar N+1 en comparaciones).
      */
-    public static function find(array $data, int $user_id, ?int $provider_id = null, $no_actualizar_otro_proveedor)
+    public static function find(array $data, int $user_id, ?int $provider_id = null, $no_actualizar_otro_proveedor = null)
     {
 
         $key = "article_index_user_{$user_id}";
         $index = Cache::get($key);
 
-        // if (!$index) {
-        //     self::build($user_id);
-        //     $index = Cache::get($key);
-        // }
-
-        Log::info('find, data:');
-        Log::info($data);
+        $relations = [
+            'price_types',
+            'addresses',
+            'providers' => function ($q) {
+                $q->select('providers.id');
+            },
+        ];
 
         $article_id = null;
         
-        $guardar_precio_de_otros_proveedores = env('GUARDAR_PRECIO_DE_OTROS_PROVEEDORES', true);
+        $guardar_precio_de_otros_proveedores = config('app.GUARDAR_PRECIO_DE_OTROS_PROVEEDORES');
 
         // 1) Buscar por ID
         if (!empty($data['id'])) {
@@ -181,7 +300,7 @@ class ArticleIndexCache
         // 4) Buscar por provider_code 
         elseif (!empty($data['provider_code'])) {
 
-            Log::info('Buscando por provider_code');
+            // Log::info('Buscando por provider_code');
             $provider_code = trim($data['provider_code']);
 
             $article_ids = [];
@@ -197,18 +316,22 @@ class ArticleIndexCache
             elseif ($provider_id && $guardar_precio_de_otros_proveedores) {
 
 
-                Log::info('Tipo de dato en index[provider_codes]: '.gettype($index['provider_codes']));
+                // Log::info('Tipo de dato en index[provider_codes]: '.gettype($index['provider_codes']));
                 if (is_array($index['provider_codes'])) {
 
-                    Log::info('Buscando dentro de '.count($index['provider_codes']).' proveedores');
+                    // Log::info('Buscando dentro de '.count($index['provider_codes']).' proveedores');
                 } 
 
                 // Buscar también en todos los demás providers
                 foreach ($index['provider_codes'] as $prov_id => $codes) {
+
                     if (isset($codes[$provider_code])) {
+
                         if (is_array($codes[$provider_code])) {
+
                             $article_ids = array_merge($article_ids, $codes[$provider_code]);
                         } else {
+
                             Log::info('Aca esta el error:');
                             Log::info('provider_code: '.$provider_code);
                             Log::info('Lo que hay: ');
@@ -232,17 +355,19 @@ class ArticleIndexCache
 
             if (!empty($article_ids)) {
                 
-                if (env('CODIGOS_DE_PROVEEDOR_REPETIDOS')) {
+                if (config('app.CODIGOS_DE_PROVEEDOR_REPETIDOS')) {
 
-                    Log::info('articulos id encontrados por el provider_code:');
-                    Log::info($article_ids);
+                    // Log::info('articulos id encontrados por el provider_code:');
+                    // Log::info($article_ids);
 
-                    return Article::whereIn('id', $article_ids)->get();
+                    // return Article::whereIn('id', $article_ids)->get();
+                    return Article::with($relations)->whereIn('id', $article_ids)->get();
                 } else {
 
-                    Log::info('Filtrando articles con ids: ');
-                    Log::info($article_ids);
-                    return Article::whereIn('id', $article_ids)->first();
+                    // Log::info('Filtrando articles con ids: ');
+                    // Log::info($article_ids);
+                    // return Article::whereIn('id', $article_ids)->first();
+                    return Article::with($relations)->whereIn('id', $article_ids)->first();
                 }
             }
         }
@@ -259,7 +384,8 @@ class ArticleIndexCache
 
         // Log::info('artice_id: '.$article_id);
 
-        return $article_id ? Article::find($article_id) : null;
+        // return $article_id ? Article::find($article_id) : null;
+        return $article_id ? Article::with($relations)->find($article_id) : null;
     }
 
     /**
@@ -314,7 +440,7 @@ class ArticleIndexCache
         // }
         if ($article->provider_code) {
 
-            if (env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false)) {
+            if (config('app.CODIGOS_DE_PROVEEDOR_REPETIDOS')) {
 
                 if (!isset($index['provider_codes'][$article->provider_id][$article->provider_code])) {
                     $index['provider_codes'][$article->provider_id][$article->provider_code] = [];
@@ -455,7 +581,7 @@ class ArticleIndexCache
         // provider_code
         if (!empty($article->provider_id) && !empty($article->provider_code)) {
 
-            if (env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false)) {
+            if (config('app.CODIGOS_DE_PROVEEDOR_REPETIDOS')) {
 
                 if (!isset($index['provider_codes'][$article->provider_id][$article->provider_code])) {
                     $index['provider_codes'][$article->provider_id][$article->provider_code] = [];

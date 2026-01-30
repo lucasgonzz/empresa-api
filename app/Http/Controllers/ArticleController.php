@@ -27,7 +27,6 @@ use App\Http\Controllers\Pdf\ArticlePdf;
 use App\Http\Controllers\Pdf\ArticlePdf\TruvariArticleListPdf;
 use App\Http\Controllers\Pdf\ArticleTicketPdf;
 use App\Http\Controllers\Pdf\ArticleTicket\ArticleBarCodeEtiquetasPdf;
-use App\Http\Controllers\StockMovementController;
 use App\Imports\ArticleImport;
 use App\Imports\LocationImport;
 use App\Imports\ProvinciaImport;
@@ -490,9 +489,11 @@ class ArticleController extends Controller
             'start_row'             => $request->start_row, 
             'finish_row'            => $request->finish_row, 
             'provider_id'           => $request->provider_id, 
-            'user'                 => $owner, 
+            'user'                  => $owner, 
             'auth_user_id'          => Auth()->user()->id, 
-            'archivo_excel_path'    => $archivo_excel_path
+            'archivo_excel_path'    => $archivo_excel_path,
+            'registrar_art_cre'    => $request->registrar_art_cre,
+            'registrar_art_act'    => $request->registrar_art_act,
         ]);
         
         // ProcessArticleImport::dispatch($import_uuid, $archivo_excel, $columns, $request->create_and_edit, $request->no_actualizar_articulos_de_otro_proveedor, $request->start_row, $request->finish_row, $request->provider_id, $owner, Auth()->user()->id, $archivo_excel_path);

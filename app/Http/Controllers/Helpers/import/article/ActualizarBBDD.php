@@ -51,17 +51,30 @@ class ActualizarBBDD {
 
         $this->now = Carbon::now()->toDateTimeString();
 
+        $this->observations = '';
+
 
         $this->set_price_types();
 
         $this->guardar_articulos();
     }
 
+    function get_observations() {
+        return $this->observations;
+    }
+
+    function add_observation($text) {
+        $this->observations .= $text .' - ';
+    }
+
     function guardar_articulos() {
+
+        $inicio_global = microtime(true);
 
         // Crear los artículos nuevos en la bbdd
         if (!empty($this->articulos_para_crear_CACHE)) {
             
+            $inicio = microtime(true);
             Log::info('Se van a crear ' . count($this->articulos_para_crear_CACHE) . ' articulos');
             // if (app()->environment('local')) { Log::info($this->articulos_para_crear_CACHE); }
 
@@ -86,6 +99,11 @@ class ActualizarBBDD {
             
             Article::insert($sql);
 
+            $fin = microtime(true);
+            $dur = $fin - $inicio;
+
+            $this->add_observation('Art insertados en bbdd en '.number_format($dur, 2, '.', '').' seg');
+
             $this->set_articulos_creados_models();
         }
 
@@ -96,6 +114,9 @@ class ActualizarBBDD {
 
             
             if (count($this->articulos_actualizados_models) > 0) {
+                
+                $inicio = microtime(true);
+
                 Log::info('Se van a actualizar ' . count($this->articulos_actualizados_models) . ' articulos');
 
                 $table = (new Article)->getTable();
@@ -154,6 +175,11 @@ class ActualizarBBDD {
                 $updateSql .= " WHERE `id` IN (" . implode(',', $ids) . ")";
 
                 DB::statement($updateSql);
+
+                $fin = microtime(true);
+                $dur = $fin - $inicio;
+                $this->add_observation('Art actualizados en bbdd en '.number_format($dur, 2, '.', '').' seg'); 
+
             }
 
         }
@@ -215,10 +241,17 @@ class ActualizarBBDD {
 
         $this->actualizar_tienda_nube();
 
+
+        $fin_global = microtime(true);
+        $dur = $fin_global - $inicio_global;
+
+        $this->add_observation('ActualizarBBDD en '.number_format($dur, 2, '.', '').' seg'); 
+
     }
 
     function set_articles_providers() {
 
+        $inicio = microtime(true);
 
         foreach ($this->articulos_creados_models as $article) {
 
@@ -233,12 +266,23 @@ class ActualizarBBDD {
 
             $article->providers()->attach($article->provider_id, $pivot_data);
         }
+
+        $fin = microtime(true);
+
+        $dur = $fin - $inicio;
+
+        $this->add_observation('set articles_providers en '.number_format($dur, 2, '.', '').' seg'); 
+
     }
 
     function set_article_ubications() {
 
         $ubications = ArticleUbication::where('user_id', $this->user->id)
                                         ->get();
+
+        if (count($ubications) == 0) {
+            return;
+        }
 
         foreach ($this->articulos_creados_models as $article) {
             ArticleUbicationsHelper::init_ubications($article, $ubications);
@@ -248,7 +292,7 @@ class ActualizarBBDD {
 
     function actualizar_tienda_nube() {
         
-        if (env('USA_TIENDA_NUBE', false)) {
+        if (config('app.USA_TIENDA_NUBE')) {
 
             Log::info('Entra a actualizar tienda nube');
 
@@ -954,6 +998,7 @@ class ActualizarBBDD {
 
     function set_precios_finales() {
 
+        $inicio = microtime(true);
 
         $updates = [];
 
@@ -994,6 +1039,10 @@ class ActualizarBBDD {
         if (app()->environment('local')) { Log::info(''); }
 
         $this->updateMasivo($updates);
+
+        $fin = microtime(true);
+        $dur = $fin - $inicio;
+        $this->add_observation('Precios act en '.number_format($dur, 2, '.', '').' seg'); 
 
     }
 
@@ -1046,9 +1095,9 @@ class ActualizarBBDD {
             WHERE id IN (" . implode(',', $ids) . ")
         ";
 
-        if (app()->environment('local')) { Log::info('Lanzando consulta SQL para setear precios finales'); }
+        Log::info('Lanzando consulta SQL para setear precios finales');
         DB::statement($sql);
-        if (app()->environment('local')) { Log::info('Precios finales actualizados'); }
+        Log::info('Precios finales actualizados');
     }
 
 
@@ -1093,6 +1142,8 @@ class ActualizarBBDD {
 
     function set_articulos_creados_models() {
 
+        $inicio = microtime(true);
+        
         $byProviderCode = [];
         $byBarCode = [];
         $byName = [];
@@ -1114,16 +1165,29 @@ class ActualizarBBDD {
 
         $this->articulos_creados_models = $articles;
 
+        $fin = microtime(true);
+        $dur = $fin - $inicio;
+
+        $this->add_observation('Set articulos_creados en '.number_format($dur, 2, '.', '').' seg'); 
         Log::info('se seteo articulos_creados_models con '.count($this->articulos_creados_models).' articulos');
     }
 
     function set_articulos_actualizados_models() {
+
+        $inicio = microtime(true);
 
         $ids = array_column($this->articulos_para_actualizar_CACHE, 'id');
 
         $this->articulos_actualizados_models = Article::whereIn('id', $ids)->get()->keyBy('id');
 
         Log::info('Se seteo articulos_actualizados_models con '.count($this->articulos_actualizados_models).' articulos');
+
+        $fin = microtime(true);
+
+        $dur = $fin - $inicio;
+
+        $this->add_observation('Set articulos_actualizados en '.number_format($dur, 2, '.', '').' seg'); 
+
         // Log::info('$ids:');
         // Log::info($ids);
     }
@@ -1137,6 +1201,7 @@ class ActualizarBBDD {
 
     protected function guardar_variantes_desde_cache_simple(): void
     {
+        $inicio = microtime(true);
         // 1) Artículos a CREAR
         if (isset($this->articulos_para_crear_CACHE) && is_array($this->articulos_para_crear_CACHE)) {
             foreach ($this->articulos_para_crear_CACHE as $art_cache) {
@@ -1150,6 +1215,9 @@ class ActualizarBBDD {
                 $this->persistir_variantes_de_articulo_cache($art_cache);
             }
         }
+        $fin = microtime(true);
+        $dur = $fin - $inicio;
+        $this->add_observation('variantes en '.number_format($dur, 2, '.', '').' seg');
     }
 
     /**
