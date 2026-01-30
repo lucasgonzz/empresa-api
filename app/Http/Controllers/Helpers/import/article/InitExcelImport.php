@@ -20,20 +20,22 @@ class InitExcelImport {
 
 	function importar($data) {
         
-        $this->import_uuid    = $data['import_uuid']; 
-        $this->archivo_excel  = $data['archivo_excel']; 
-        $this->columns    = $data['columns']; 
-        $this->create_and_edit    = $data['create_and_edit']; 
+        $this->import_uuid                  = $data['import_uuid']; 
+        $this->archivo_excel                = $data['archivo_excel']; 
+        $this->columns                      = $data['columns']; 
+        $this->create_and_edit              = $data['create_and_edit']; 
         $this->no_actualizar_articulos_de_otro_proveedor  = $data['no_actualizar_articulos_de_otro_proveedor']; 
-        $this->actualizar_proveedor  = $data['actualizar_proveedor']; 
-        $this->start_row  = $data['start_row']; 
-        $this->finish_row = $data['finish_row']; 
-        $this->provider_id    = $data['provider_id']; 
-        $this->user   = $data['user']; 
-        $this->auth_user_id   = $data['auth_user_id']; 
-        $this->archivo_excel_path = $data['archivo_excel_path']; 
+        $this->actualizar_proveedor         = $data['actualizar_proveedor']; 
+        $this->start_row                    = $data['start_row']; 
+        $this->finish_row                   = $data['finish_row']; 
+        $this->provider_id                  = $data['provider_id']; 
+        $this->user                         = $data['user']; 
+        $this->auth_user_id                 = $data['auth_user_id']; 
+        $this->archivo_excel_path           = $data['archivo_excel_path']; 
+        $this->registrar_art_cre            = $data['registrar_art_cre']; 
+        $this->registrar_art_act            = $data['registrar_art_act']; 
 
-        $this->chunkSize = env('ARTICLE_EXCEL_CHUNK_SIZE', 3500);
+        $this->chunkSize = config('app.ARTICLE_EXCEL_CHUNK_SIZE');
         
         $this->start = $this->start_row;
 
@@ -118,7 +120,7 @@ class InitExcelImport {
             $conversion_fin = microtime(true);
             $conversion_duracion = $conversion_fin - $conversion_inicio;
             
-            Log::info("Conversión a CSV completada en ".number_format($conversion_duracion, 3)." segundos. Nuevo archivo: ".$csv_full_path);
+            Log::info("Conversión a CSV completada en ".number_format($conversion_duracion, 3)." segundos. Nuevo archivo: ".$this->csv_full_path);
 
         } catch (\Exception $e) {
             Log::error("Error al convertir XLSX a CSV: " . $e->getMessage());
@@ -190,6 +192,7 @@ class InitExcelImport {
             'created_models'    => 0,
             'updated_models'    => 0,
             'status'            => 'pendiente',
+            'provider_id'       => $this->provider_id,
         ]);
     }
 
@@ -208,6 +211,8 @@ class InitExcelImport {
             'columnas'        => json_encode(ArticleImportHelper::convertirPosicionesAColumnas($this->columns), JSON_PRETTY_PRINT),
             // 'observations'    => ArticleImportHelper::get_observations($this->columns ?? []),
             'excel_url'       => $this->archivo_excel_path,
+            'registrar_art_cre'       => $this->registrar_art_cre,
+            'registrar_art_act'       => $this->registrar_art_act,
         ]);
 
         

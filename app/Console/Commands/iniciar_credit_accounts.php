@@ -51,7 +51,8 @@ class iniciar_credit_accounts extends Command
         
         if (!$this->user_id) {
 
-            $this->user_id = env('USER_ID');
+            $this->user_id = config('app.USER_ID');
+            $this->info('USER_ID: '.config('app.USER_ID'));
         }
 
         
@@ -92,6 +93,7 @@ class iniciar_credit_accounts extends Command
                             ->withTrashed()
                             ->get();
 
+        $this->comment(count($providers).' Proveedores');
         foreach ($providers as $provider) {
             
             CreditAccountHelper::crear_credit_accounts('provider', $provider->id, $this->user_id);
@@ -153,7 +155,7 @@ class iniciar_credit_accounts extends Command
 
         }
         $this->info('*******************');
-        $this->info('Proveedores ok');
+        $this->info('Clientes ok');
         $this->info('*******************');
     }
 

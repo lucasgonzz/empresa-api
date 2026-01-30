@@ -28,7 +28,6 @@ use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\Helpers\sale\UpdateHelper;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SellerCommissionController;
-use App\Http\Controllers\StockMovementController;
 use App\Models\AfipTicket;
 use App\Models\Article;
 use App\Models\ArticleVariant;

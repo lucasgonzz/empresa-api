@@ -2,10 +2,10 @@
 
 namespace App\Jobs;
 
+use App\Events\ImportStatusUpdated;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Imports\ArticleImport;
 use App\Models\ArticleImportResult;
-// use App\Models\Collection;
 use App\Models\ImportHistory;
 use App\Models\ImportStatus;
 use App\Notifications\ImportStatusNotification;
@@ -28,7 +28,7 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
     use Batchable, Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     protected $import_uuid, $csv_path, $columns, $create_and_edit, $start_row, $finish_row,
-              $provider_id, $user, $auth_user_id, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $import_status_id, $import_history_id, $chunk_number;
+              $provider_id, $user, $auth_user_id, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $import_status_id, $import_history_id, $chunk_number, $observations;
 
     // public $timeout = 5; // 30 minutos por chunk, ajustable
     public $timeout = 1800; // 30 minutos por chunk, ajustable
@@ -51,6 +51,8 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         $this->import_status_id = $import_status_id;
         $this->import_history_id = $import_history_id;
         $this->chunk_number = $chunk_number;
+
+        $this->observations = '';
     }
 
     public function batchId() {
@@ -75,27 +77,36 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
             }
             
 
+
+            $inicio_excel = microtime(true);
             $this->crear_article_import();
     
             $chunkRows = $this->get_row_from_csv();
 
             $collection = new Collection($chunkRows);
-            $this->importer->collection($collection);
+            
+            // En observations traigo el detalle del tiempo tardado para cada paso de ArticleImport
+            $observations = $this->importer->collection($collection);
 
             unset($collection, $chunkRows); // Liberar memoria explícitamente
-
-            // Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Lógica de importación completada.");
+            $fin_excel = microtime(true);
+            $dur = $fin_excel - $inicio_excel;
+            $this->add_observation('ArticleImport procesado desde chunk en '.number_format($dur, 2, '.', '').' seg');
 
 
             $this->get_article_import_result();
 
             $this->update_import_status();
 
+            $inicio_noti = microtime(true);
             $this->notificar_import_status();
+            $fin = microtime(true);
+            $dur = $fin - $inicio_noti;
+            $this->add_observation('notificar_import_status en '.number_format($dur, 2, '.', '').' seg');
 
             $this->update_import_history();
 
-            $this->guardar_tiempo_de_ejecucion($inicio);
+            $this->guardar_tiempos_de_ejecucion($inicio, $observations);
 
 
         } catch (\Throwable $e) {
@@ -125,6 +136,10 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 
             throw $e; // ✅ Esto detiene la chain
         }
+    }
+
+    function add_observation($text) {
+        $this->observations .= $text .' - ';
     }
 
     function get_row_from_csv() {
@@ -192,7 +207,9 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
                 $this->user,
                 $this->auth_user_id,
                 $this->csv_path,
-                $this->chunk_number
+                $this->chunk_number,
+                $this->import_history->registrar_art_cre,
+                $this->import_history->registrar_art_act,
             );
 
             // Excel::import(new ArticleImport(
@@ -245,7 +262,7 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
     }
 
     function update_import_status() {
-
+        $inicio = microtime(true);
         $this->import_status->processed_chunks++;
         $this->import_status->articles_match += $this->import_result->articles_match;
         $this->import_status->created_models += $this->import_result->created_count;
@@ -256,14 +273,16 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         // Use >= as a safeguard in case of concurrent increments
         if ($this->import_status && $this->import_status->processed_chunks >= $this->import_status->total_chunks) {
             $this->import_status->status = 'completado';
-            $this->import_status->save();
+        } else if ($this->import_status && $this->import_status->processed_chunks >= 1) {
+            $this->import_status->status = 'en_proceso';
         }
+        $this->import_status->save();
         
         // Notify the user with the fresh status
         // $notification = new ImportStatusNotification($this->import_status, $this->user->id);
-        Log::warning("Job [{$this->batchId()}] Dispatching notification for chunk #{$this->chunk_number}.");
+        // Log::warning("Job [{$this->batchId()}] Dispatching notification for chunk #{$this->chunk_number}.");
         // $this->user->notify($notification);
-        Log::warning("Job [{$this->batchId()}] Dispatched notification for chunk #{$this->chunk_number}.");
+        // Log::warning("Job [{$this->batchId()}] Dispatched notification for chunk #{$this->chunk_number}.");
       
         // fuerza a PHP a soltar buffers y sockets
         if (function_exists('fastcgi_finish_request')) {
@@ -275,24 +294,39 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         gc_collect_cycles();
         $this->import_status->save();
 
+        $fin = microtime(true);
+        $dur = $fin - $inicio;
+        $this->add_observation('update_import_status en '.number_format($dur, 2, '.', '').' seg');
 
     }
 
     function notificar_import_status() {
-        $this->user->notifyNow(new ImportStatusNotification($this->import_status, $this->user->id));
+        broadcast(
+            new ImportStatusUpdated(
+                $this->import_status->id,
+                $this->user->id
+            )
+        );
+        // $this->user->notifyNow(new ImportStatusNotification($this->import_status->id, $this->user->id));
     }
 
-    function guardar_tiempo_de_ejecucion($inicio) {
+    function guardar_tiempos_de_ejecucion($inicio, $observations) {
 
         $fin = microtime(true);
-        $duracion = $fin - $inicio;
+        $duracion_chunk = $fin - $inicio;
 
-        Log::info('Tardo en procesarce: '.number_format($duracion, 3).' segundos');
-        
         if (is_null($this->import_history->observations)) {
             $this->import_history->observations = '';
         }
-        $this->import_history->observations .= ' | '.number_format($duracion, 3).' segundos'; 
+
+        $text = 'TOTAL Chunk: '.number_format($duracion_chunk, 2, '.', '').' seg. ';
+        $text .= $observations;
+        $text .= $this->observations;
+
+        // Log::info('observations que llegaron: '.$observations);
+
+
+        $this->import_history->observations .= ' | '.$text; 
         $this->import_history->save(); 
     }
 
@@ -304,11 +338,13 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         // Log::info('created_ids: ');
         // Log::info((array)$this->created_ids);
 
-        $this->import_history->created_models  = count($this->created_ids);
-        $this->import_history->updated_models  = count($this->updated_props_by_article);
-        $this->import_history->articles_match  += $this->import_result->articles_match;
-        $this->import_history->filas_procesadas  += $this->import_result->filas_procesadas;
-        $this->import_history->status          = 'en_proceso';
+        $inicio = microtime(true);
+
+        $this->import_history->created_models   += $this->import_result->created_count;
+        $this->import_history->updated_models   += $this->import_result->updated_count;
+        $this->import_history->articles_match   += $this->import_result->articles_match;
+        $this->import_history->filas_procesadas += $this->import_result->filas_procesadas;
+        $this->import_history->status           = 'en_proceso';
         $this->import_history->save();
 
 
@@ -326,56 +362,76 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
             }
             $this->import_history->articulos_actualizados()->syncWithoutDetaching($pivot_data);
         }
+
+        $fin = microtime(true);
+        $dur = $fin - $inicio;
+        $this->add_observation('update_import_history en '.number_format($dur, 2, '.', '').' seg');
     }
 
     function get_article_import_result() {
 
-        // 1) Traer el ultimo import_results creado 
-        $this->import_result = ArticleImportResult::with([
-                                                    'articulos_creados:id', // sólo id para no cargar de más
-                                                    'articulos_actualizados' => function ($q) {
-                                                        $q->select('articles.id'); // pivot vendrá con updated_props
-                                                    },
-                                                ])
-                                                ->where('import_uuid', $this->import_uuid)
-                                                ->orderBy('id', 'DESC')
-                                                ->first();
+        $inicio = microtime(true);
 
-                                            // 2) Consolidar
+        // 1) Traer el ultimo import_results creado 
+        // $this->import_result = ArticleImportResult::with([
+        $import_result = ArticleImportResult::where('import_uuid', $this->import_uuid)
+                                                ->orderBy('id', 'DESC');
+
+        if ($this->import_history->registrar_art_cre) {
+            $import_result->with('articulos_creados:id');
+        }
+
+        if ($this->import_history->registrar_art_act) {
+            $import_result->with(['articulos_actualizados' => function ($q) {
+                                    $q->select('articles.id'); // pivot vendrá con updated_props
+                                },]);
+        }
+
+        $this->import_result = $import_result->first();
+
+        
+        // 2) Consolidar
         $this->created_ids = [];
         $this->updated_props_by_article = []; // [article_id => array props merged]
 
 
 
         // 2.a) CREADOS
-        foreach ($this->import_result->articulos_creados as $art) {
-            $this->created_ids[] = (int)$art->id;
+        if ($this->import_history->registrar_art_cre) {
+            foreach ($this->import_result->articulos_creados as $art) {
+                $this->created_ids[] = (int)$art->id;
+            }
+
+            // Unificar IDs creados
+            $this->created_ids = array_values(array_unique($this->created_ids));
         }
 
         // 2.b) ACTUALIZADOS (merge si un article_id apareció en más de un chunk)
-        foreach ($this->import_result->articulos_actualizados as $art) {
-            $pivot_json = $art->pivot->updated_props ?? '{}';
-            $props = json_decode($pivot_json, true);
-            if (!is_array($props)) {
-                $props = [];
-            }
+        if ($this->import_history->registrar_art_act) {
+            foreach ($this->import_result->articulos_actualizados as $art) {
+                $pivot_json = $art->pivot->updated_props ?? '{}';
+                $props = json_decode($pivot_json, true);
+                if (!is_array($props)) {
+                    $props = [];
+                }
 
-            $aid = (int)$art->id;
+                $aid = (int)$art->id;
 
-            if (!isset($this->updated_props_by_article[$aid])) {
-                $this->updated_props_by_article[$aid] = $props;
-            } else {
-                // merge por clave (la última ocurrencia pisa)
-                $this->updated_props_by_article[$aid] = $this->mergeUpdatedProps(
-                    $this->updated_props_by_article[$aid],
-                    $props
-                );
+                if (!isset($this->updated_props_by_article[$aid])) {
+                    $this->updated_props_by_article[$aid] = $props;
+                } else {
+                    // merge por clave (la última ocurrencia pisa)
+                    $this->updated_props_by_article[$aid] = $this->mergeUpdatedProps(
+                        $this->updated_props_by_article[$aid],
+                        $props
+                    );
+                }
             }
         }
 
-        // Unificar IDs creados
-        $this->created_ids = array_values(array_unique($this->created_ids));
-
+        $fin = microtime(true);
+        $dur = $fin - $inicio;
+        $this->add_observation('get_article_import_result en '.number_format($dur, 2, '.', '').' seg');
     }
     /**
      * Merge de updated_props de un mismo artículo cuando aparece en múltiples chunks.

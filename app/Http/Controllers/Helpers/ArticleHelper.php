@@ -88,7 +88,7 @@ class ArticleHelper {
 
     static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null) {
 
-        Log::info('setFinalPrice para '.$article->name.' ,id: '.$article->id.' con costo de '.$article->cost.' y precio de '.$article->price);
+        // Log::info('setFinalPrice para '.$article->name.' ,id: '.$article->id.' con costo de '.$article->cost.' y precio de '.$article->price);
 
         $costo_real = null;
 
@@ -235,7 +235,7 @@ class ArticleHelper {
 
 
 
-            Log::info('final_price: '.$final_price);
+            // Log::info('final_price: '.$final_price);
         } else {
 
             $final_price = $article->price;

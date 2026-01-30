@@ -35,16 +35,20 @@ class ArticleImport implements ToCollection
 {
 
     
-    public function __construct($import_uuid, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $archivo_excel_path, $chunk_number) {
+    public function __construct($import_uuid, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $archivo_excel_path, $chunk_number, $registrar_articulos_creados, $registrar_articulos_actualizados) {
         set_time_limit(9999999999);
 
         Log::info('Se creo ArticleImport con import_uuid: '.$import_uuid);
+
+        $this->observations = '';
 
         $this->import_uuid = $import_uuid;
         $this->user = $user;
         $this->auth_user_id = $auth_user_id;
         $this->archivo_excel_path = $archivo_excel_path;
         $this->chunk_number = $chunk_number;
+        $this->registrar_articulos_creados = $registrar_articulos_creados;
+        $this->registrar_articulos_actualizados = $registrar_articulos_actualizados;
 
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
@@ -110,26 +114,14 @@ class ArticleImport implements ToCollection
         
         Log::info('cacheando articulos');
         
-        // if ($this->chunk_number == 1) {
             
-            ArticleIndexCache::build(
-                $this->user->id,
-                $this->provider_id ?? null,
-                (bool)$this->no_actualizar_articulos_de_otro_proveedor
-            );
-        // } else {
-
-        //     $index = ArticleIndexCache::get($this->user->id);
-        //     Log::info('Ya estaba cacheado, el cache esta asi:');
-        //     Log::info(gettype($index));
-            
-        //     // Log::info(count($index['ids']).' ids');
-        //     // Log::info(count($index['bar_codes']).' bar_codes');
-        //     // Log::info(count($index['skus']).' skus');
-        //     // Log::info(count($index['provider_codes']).' provider_codes');
-        //     // Log::info(count($index['names']).' names');
-        //     Log::info('');
-        // }
+        $duracion_cacheo = ArticleIndexCache::build(
+            $this->user->id,
+            $this->provider_id ?? null,
+            (bool)$this->no_actualizar_articulos_de_otro_proveedor
+        );
+        
+        $this->add_observation('Cacheado en '.number_format($duracion_cacheo, 2, '.', '').' seg');
 
         Log::info('articulos cacheados');
 
@@ -141,6 +133,8 @@ class ArticleImport implements ToCollection
 
         $this->filas_procesadas = 0;
 
+        $this->add_observation(count($rows).' filas');
+
         // Log::info('rows:');
         // Log::info($rows);
 
@@ -148,6 +142,7 @@ class ArticleImport implements ToCollection
         // Log::info('start_row: '.$this->start_row);
         // Log::info('finish_row: '.$this->finish_row);
         
+        $inicio = microtime(true);
         foreach ($rows as $row) {
 
             // if ($this->esta_en_el_rango_de_filas()) {
@@ -155,7 +150,7 @@ class ArticleImport implements ToCollection
                 // Log::info('');
                 // Log::info('');
                 // Log::info('');
-                Log::info('Va por fila '.$this->filas_procesadas);
+                // Log::info('Va por fila '.$this->filas_procesadas);
 
                 if ($this->checkRow($row)) {
 
@@ -200,9 +195,21 @@ class ArticleImport implements ToCollection
             // }
         }
 
+        $fin = microtime(true);
+        $duracion = $fin - $inicio;
+        $this->add_observation('Filas proc en '.number_format($duracion, 2, '.', '').' seg');
+
+
         if (!$this->trabajo_terminado) {
 
+            $inicio = microtime(true);
+
             $articulos_creados = $this->guardar_articulos();
+
+            $fin = microtime(true);
+            $dur = $fin - $inicio;
+            $this->add_observation('ActualizarBBDD desde ArticleImport en '.number_format($dur, 2, '.', '').' seg');
+
 
             // $articulos_creados = $this->process_row->getArticulosParaCrear();
             $articulos_actualizados = $this->process_row->getArticulosParaActualizar();
@@ -214,12 +221,34 @@ class ArticleImport implements ToCollection
             Log::info('articulos_actualizados: '.count($articulos_actualizados));
             Log::info('articles_match: '.$articles_match);
 
-            ArticleImportHelper::create_article_import_result($this->import_uuid, $articulos_creados, $articulos_actualizados, $articles_match, $this->filas_procesadas);
-            
+
+
+            $inicio = microtime(true);
+            ArticleImportHelper::create_article_import_result([
+                'import_uuid'                           => $this->import_uuid, 
+                'articulos_creados'                     => $articulos_creados, 
+                'articulos_actualizados'                => $articulos_actualizados, 
+                'articles_match'                        => $articles_match, 
+                'filas_procesadas'                      => $this->filas_procesadas, 
+                'provider_id'                           => $this->provider_id,
+                'registrar_articulos_creados'           => $this->registrar_articulos_creados,
+                'registrar_articulos_actualizados'      => $this->registrar_articulos_actualizados,
+            ]);
+            $fin = microtime(true);
+            $dur = $fin - $inicio;
+            $this->add_observation('import_result creado en '.number_format($dur, 2, '.', '').' seg');
             
             $this->trabajo_terminado = true;
         }
 
+        Log::info('retornando observations: '.$this->observations);
+
+        return $this->observations;
+
+    }
+
+    function add_observation($text) {
+        $this->observations .= $text .' - ';
     }
 
     function guardar_articulos() {
@@ -232,6 +261,10 @@ class ArticleImport implements ToCollection
         try {
 
             $actualizar_bbdd = new ActualizarBBDD($articulosParaCrear, $articulosParaActualizar, $this->user, $this->auth_user_id);
+            $observations = $actualizar_bbdd->get_observations();
+
+            $this->add_observation($observations);
+
             return $actualizar_bbdd->get_articulos_creados_models();
 
         } catch (\Throwable $e) {

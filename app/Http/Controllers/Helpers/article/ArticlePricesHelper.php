@@ -26,7 +26,7 @@ class ArticlePricesHelper {
             $final_price += $final_price * $article->category->percentage_gain / 100;
             Log::info('final_price luego: '.$final_price);
         } else {
-            Log::info('La categoria NO tiene margen de ganancia');
+            // Log::info('La categoria NO tiene margen de ganancia');
         }
         return $final_price;
     }

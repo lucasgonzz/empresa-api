@@ -2,11 +2,12 @@
 
 namespace App\Notifications;
 
+use App\Models\ImportStatus;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Notifications\Messages\BroadcastMessage;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
-use Illuminate\Notifications\Messages\BroadcastMessage;
 
 class ImportStatusNotification extends Notification
 {
@@ -20,9 +21,11 @@ class ImportStatusNotification extends Notification
      *
      * @return void
      */
-    public function __construct($import_status, $owner_id)
+    public function __construct($import_status_id, $owner_id)
     {
-        $this->import_status = $import_status;
+        $this->import_status = ImportStatus::where('id', $import_status_id)
+                                            ->withAll()
+                                            ->first();
         $this->owner_id = $owner_id;
     }
 
@@ -52,5 +55,25 @@ class ImportStatusNotification extends Notification
     public function shouldBroadcastNow()
     {
         return true;
+    }
+
+    /**
+     * Fuerza el canal broadcast a ejecutarse en conexión sync (no queda encolado).
+     */
+    public function viaConnections()
+    {
+        return [
+            'broadcast' => 'sync',
+        ];
+    }
+
+    /**
+     * Opcional: evita asignar una queue al broadcast.
+     */
+    public function viaQueues()
+    {
+        return [
+            'broadcast' => null,
+        ];
     }
 }

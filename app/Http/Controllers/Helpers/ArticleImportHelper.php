@@ -140,52 +140,53 @@ class ArticleImportHelper {
         }
     }
 
-    static function create_article_import_result($import_uuid, $articulos_creados, $articulos_actualizados, $articles_match, $filas_procesadas) {
+    static function create_article_import_result($data) {
         
         $import_result = ArticleImportResult::create([
-		    'import_uuid'    => $import_uuid,
-		    'created_count'  => count($articulos_creados),
-		    'updated_count'  => count($articulos_actualizados),
-		    'articles_match' => $articles_match,
-		    'filas_procesadas'	=> $filas_procesadas,
+		    'import_uuid'    	=> $data['import_uuid'],
+		    'created_count'  	=> count($data['articulos_creados']),
+		    'updated_count'  	=> count($data['articulos_actualizados']),
+		    'articles_match' 	=> $data['articles_match'],
+		    'filas_procesadas'	=> $data['filas_procesadas'],
+		    'provider_id'		=> $data['provider_id'],
         ]);
 
 
-        // Log::info('create_article_import_result, articulos_creados:');
-        // Log::info($articulos_creados);
-
-        
 		// 2) Adjuntar articulos_creados (IDs únicos)
-		$created_ids = [];
-		foreach ($articulos_creados as $article) {
-		    if (!empty($article['id'])) {
-		        $created_ids[] = (int)$article['id'];
-		    }
-		}
-		$created_ids = array_values(array_unique($created_ids));
+        if ($data['registrar_articulos_creados']) {
+			$created_ids = [];
+			foreach ($data['articulos_creados'] as $article) {
+			    if (!empty($article['id'])) {
+			        $created_ids[] = (int)$article['id'];
+			    }
+			}
+			$created_ids = array_values(array_unique($created_ids));
 
-		if (!empty($created_ids)) {
-		    $import_result->articulos_creados()->attach($created_ids);
-		}
+			if (!empty($created_ids)) {
+			    $import_result->articulos_creados()->attach($created_ids);
+			}
+        }
 
 		// 3) Adjuntar articulos_actualizados con updated_props en pivot
-		foreach ($articulos_actualizados as $article) {
-		    if (empty($article['id'])) {
-		        continue;
-		    }
-		    $article_id = (int)$article['id'];
+        if ($data['registrar_articulos_actualizados']) {
+			foreach ($data['articulos_actualizados'] as $article) {
+			    if (empty($article['id'])) {
+			        continue;
+			    }
+			    $article_id = (int)$article['id'];
 
-		    // Clonamos y removemos la clave 'id' para guardar sólo props y diffs
-		    $props = $article;
-		    unset($props['id']);
+			    // Clonamos y removemos la clave 'id' para guardar sólo props y diffs
+			    $props = $article;
+			    unset($props['id']);
 
-		    // Guardamos JSON (tal cual viene, con __diff__ incluidos)
-		    $import_result->articulos_actualizados()->attach($article_id, [
-		        'updated_props' => json_encode($props, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION),
-		    ]);
-		}
+			    // Guardamos JSON (tal cual viene, con __diff__ incluidos)
+			    $import_result->articulos_actualizados()->attach($article_id, [
+			        'updated_props' => json_encode($props, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION),
+			    ]);
+			}
+        }
 
-        Log::info('Se creo ArticleImportResult con '.count($articulos_creados).' creados y '.count($articulos_actualizados).' actualizados con import_uuid: '.$import_uuid);
+        Log::info('Se creo ArticleImportResult con '.count($data['articulos_creados']).' creados y '.count($data['articulos_actualizados']).' actualizados con import_uuid: '.$data['import_uuid']);
 
         // Log::info('create_article_import_result:');
         // Log::info('');
