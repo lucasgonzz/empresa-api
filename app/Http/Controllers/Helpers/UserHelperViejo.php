@@ -16,7 +16,7 @@ class UserHelperViejo {
             return $user->id;
         }
 
-        return env('USER_ID');
+        return config('app.USER_ID');
     }
 
     static function user($from_owner = true) {
@@ -105,7 +105,7 @@ class UserHelperViejo {
         if (is_null($user)) {
         	return false;
         } else {
-        	if (env('APP_ENV') == 'local') {
+        	if (config('app.APP_ENV') == 'local') {
 	        	return $user->company_name == 'Oscar';
         	} else {
 	        	return $user->id == 2;

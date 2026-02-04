@@ -75,7 +75,7 @@ class BudgetPdf extends fpdf {
 	function logo() {
         // Logo
         if (!is_null($this->user->image_url)) {
-        	if (env('APP_ENV') == 'local') {
+        	if (config('app.APP_ENV') == 'local') {
         		$this->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', 17, 0, 0, 25);
         	} else {
 	        	$this->Image($this->user->image_url, 17, 0, 0, 25);

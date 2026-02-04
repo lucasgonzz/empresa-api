@@ -82,8 +82,8 @@ class SetCompanyPerformances extends Command
                 228, // HiperMax
                 2, // Fenix
             ];
-            if (!is_null(env('USER_ID'))) {
-                $users_id = [env('USER_ID')];  
+            if (!is_null(config('app.USER_ID'))) {
+                $users_id = [config('app.USER_ID')];  
             }
 
             foreach ($users_id as $_user_id) {

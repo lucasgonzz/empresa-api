@@ -612,7 +612,7 @@ class ArticleController extends Controller
             $moneda_id = null;
         }
 
-        if (env('APP_ENV') == 'production') {
+        if (config('app.APP_ENV') == 'production') {
             $image = $user->image_url;
         } else {
             $image = 'https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png';

@@ -212,7 +212,7 @@ class AfipTicketPdf extends fpdf {
 
 	function printQR() {
 
-		if (env('APP_ENV') == 'local') return;
+		if (config('app.APP_ENV') == 'local') return;
 
 
 		$pdf = new AfipQrPdf($this, $this->afip_ticket, false);

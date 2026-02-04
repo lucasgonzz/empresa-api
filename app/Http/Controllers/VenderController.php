@@ -109,7 +109,7 @@ class VenderController extends Controller
         $price_vender = null;
 
         // Esto lo guardaria en bbdd, ahora lo harckodeo para panchito
-        if (env('APP_ENV') == 'local') {
+        if (config('app.APP_ENV') == 'local') {
             $default_article_id = 60;
         } else {
 
@@ -141,7 +141,7 @@ class VenderController extends Controller
         $amount = null;
 
         // Esto lo guardaria en bbdd, ahora lo harckodeo para panchito
-        if (env('APP_ENV') == 'local') {
+        if (config('app.APP_ENV') == 'local') {
             $default_article_id = 60;
         } else {
 

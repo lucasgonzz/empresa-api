@@ -68,6 +68,7 @@ class UserSetupController extends Controller
             // ],
             'base_de_datos'                     => 'empresa_prueba_1',
             'google_custom_search_api_key'      => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
+            'google_cuota'                      => 10,
         ]);
 
 
@@ -229,7 +230,7 @@ class UserSetupController extends Controller
             'scroll_infinito_en_home'       => 1,
             'default_article_image_url'     => 'http://empresa.local:8000/storage/169705209718205.jpg',
             'pausar_tienda_online'          => 0,
-            'user_id'                       => env('USER_ID'),
+            'user_id'                       => config('app.USER_ID'),
             'facebook'                      => 'htts://facebook.com',
             'instagram'                     => 'htts://instagram.com',
             'mensaje_contacto'              => 'Comunicate con nosotros',

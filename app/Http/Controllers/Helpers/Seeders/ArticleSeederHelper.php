@@ -76,7 +76,7 @@ class ArticleSeederHelper {
             'bar_code'              => $article['bar_code'],
             'provider_code'         => $article['provider_code'],
             'name'                  => $article['name'],
-            'slug'                  => ArticleHelper::slug($article['name'], env('USER_ID')),
+            'slug'                  => ArticleHelper::slug($article['name'], config('app.USER_ID')),
             'cost'                  => $article['cost'],
             // 'cost'                  => 100 * $num,
             'price'                 => isset($article['price']) ? $article['price'] : null,
@@ -97,7 +97,7 @@ class ArticleSeederHelper {
             'sub_category_id'       => $this->getSubcategoryId($article),
             'created_at'            => !is_null($days) ? Carbon::now()->subDays($days) : Carbon::now(),
             'updated_at'            => !is_null($days) ? Carbon::now()->subDays($days) : Carbon::now(),
-            'user_id'               => env('USER_ID'),
+            'user_id'               => config('app.USER_ID'),
         ]);    
         $created_article->timestamps = false;
         // $id+;
@@ -125,7 +125,7 @@ class ArticleSeederHelper {
 
     function getCategoryId($article) {
         if (isset($article['category_name'])) {
-            $category = Category::where('user_id', env('USER_ID'))
+            $category = Category::where('user_id', config('app.USER_ID'))
                                     ->where('name', $article['category_name'])
                                     ->first();
             if (!is_null($category)) {
@@ -133,7 +133,7 @@ class ArticleSeederHelper {
             }
         }
         if (isset($article['sub_category_name'])) {
-            $sub_category = SubCategory::where('user_id', env('USER_ID'))
+            $sub_category = SubCategory::where('user_id', config('app.USER_ID'))
                                         ->where('name', $article['sub_category_name'])
                                         ->first();
             if (!is_null($sub_category)) {
@@ -145,7 +145,7 @@ class ArticleSeederHelper {
 
     function getSubcategoryId($article) {
         if (isset($article['sub_category_name'])) {
-            $sub_category = SubCategory::where('user_id', env('USER_ID'))
+            $sub_category = SubCategory::where('user_id', config('app.USER_ID'))
                                         ->where('name', $article['sub_category_name'])
                                         ->first();
 

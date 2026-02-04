@@ -111,7 +111,7 @@ class TCPDCCatalog extends TCPDF
 
                 $url = $article->images[0]['hosting_url'];
 
-                if (env('APP_ENV') == 'local') {
+                if (config('app.APP_ENV') == 'local') {
 
                     $url = 'https://api-colman-prueba.comerciocity.com/public/storage/171699179550596.webp';
                 }

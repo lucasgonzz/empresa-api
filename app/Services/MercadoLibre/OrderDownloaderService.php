@@ -27,7 +27,7 @@ class OrderDownloaderService extends MercadoLibreService
     function __construct($user_id = null) {
         
         if (!$user_id) {
-            $user_id = env('USER_ID');
+            $user_id = config('app.USER_ID');
         }
         
         parent::__construct($user_id);
@@ -248,7 +248,7 @@ class OrderDownloaderService extends MercadoLibreService
                 'shipping_cost' => $this->order_data['shipping_cost'] ?? 0,
                 'meli_buyer_id' => $meli_buyer->id,
                 'created_at'    => $this->order_data['date_created'],
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ]
         );
 

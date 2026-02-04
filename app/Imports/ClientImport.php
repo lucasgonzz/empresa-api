@@ -110,7 +110,7 @@ class ClientImport implements ToCollection {
 
             // if (
             //     env('FOR_USER') == 'golo_norte'
-            //     && env('APP_ENV') == 'local'
+            //     && config('app.APP_ENV') == 'local'
             // ) {
 
             //     $res = ClientImportHelper::formateo_golonorte($row, $this->columns);

@@ -431,7 +431,7 @@ class SaleAfipTicketPdf extends fpdf {
 
 	function printQR() {
 
-		if (env('APP_ENV') == 'local') return;
+		if (config('app.APP_ENV') == 'local') return;
 
 		$pdf = new AfipQrPdf($this, $this->afip_ticket, false);
 		$pdf->printQr();
@@ -1061,7 +1061,7 @@ class SaleAfipTicketPdf extends fpdf {
 			$this->Cell(25,4,date_format($this->afip_information->inicio_actividades, 'd/m/Y'), 0, 1,'L');
 		}
 
-		if (env('APP_ENV') == 'local') {
+		if (config('app.APP_ENV') == 'local') {
     		$this->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 5, 15.2, 35, 35);
     	} else {
     		if (!is_null($this->user->image_url) && GeneralHelper::file_exists_2($this->user->image_url)) {

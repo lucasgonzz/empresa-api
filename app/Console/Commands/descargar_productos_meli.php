@@ -39,9 +39,9 @@ class descargar_productos_meli extends Command
      */
     public function handle()
     {
-        $service = new ProductoDownloaderService(env('USER_ID'));
+        $service = new ProductoDownloaderService(config('app.USER_ID'));
 
-        $token = MercadoLibreToken::where('user_id', env('USER_ID'))->first();
+        $token = MercadoLibreToken::where('user_id', config('app.USER_ID'))->first();
 
         $service->importar_productos($token->meli_user_id);
         return 0;

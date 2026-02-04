@@ -27,7 +27,7 @@ class UserHelper {
 
     static function userId($from_owner = true) {
         $user = self::user($from_owner);
-        return $user ? $user->id : env('USER_ID');
+        return $user ? $user->id : config('app.USER_ID');
     }
 
     static function getFullModel($from_owner = true) {

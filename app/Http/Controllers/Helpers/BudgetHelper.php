@@ -238,20 +238,49 @@ class BudgetHelper {
 		$budget->load('articles');
 		$budget->load('promocion_vinotecas');
 		$budget->load('services');
+
 		foreach ($budget->articles as $article) {
-			$total += Self::totalArticle($article);
+			$total_article = Self::totalArticle($article);
+
+			foreach ($budget->discounts as $discount) {
+				$total_article -= $discount->pivot->percentage * $total_article / 100;
+			}
+			foreach ($budget->surchages as $surchage) {
+				$total_article += $surchage->pivot->percentage * $total_article / 100;
+			}
+
+			$total += $total_article;
 		}
+
 		foreach ($budget->promocion_vinotecas as $promo) {
-			$total += Self::totalArticle($promo);
+			$total_article = Self::totalArticle($promo);
+
+			foreach ($budget->discounts as $discount) {
+				$total_article -= $discount->pivot->percentage * $total_article / 100;
+			}
+			foreach ($budget->surchages as $surchage) {
+				$total_article += $surchage->pivot->percentage * $total_article / 100;
+			}
+
+			$total += $total_article;
 		}
+		
 		foreach ($budget->services as $service) {
-			$total += Self::totalArticle($service);
-		}
-		foreach ($budget->discounts as $discount) {
-			$total -= $discount->pivot->percentage * $total / 100;
-		}
-		foreach ($budget->surchages as $surchage) {
-			$total += $surchage->pivot->percentage * $total / 100;
+			$total_service = Self::totalArticle($service);
+
+			if ($budget->discounts_in_services) {
+				foreach ($budget->discounts as $discount) {
+					$total_service -= $discount->pivot->percentage * $total_service / 100;
+				}
+			}
+
+			if ($budget->surchages_in_services) {
+				foreach ($budget->surchages as $surchage) {
+					$total_service += $surchage->pivot->percentage * $total_service / 100;
+				}
+			}
+
+			$total += $total_service;
 		}
 		return $total;
 	}

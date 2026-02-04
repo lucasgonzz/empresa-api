@@ -41,7 +41,7 @@ class set_articles_prices extends Command
      */
     public function handle()
     {
-        $user_id = env('USER_ID');
+        $user_id = config('app.USER_ID');
         if ($this->argument('user_id')) {
             $user_id = $this->argument('user_id');
         }

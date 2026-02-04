@@ -114,16 +114,32 @@ class ArticleImport implements ToCollection
         
         Log::info('cacheando articulos');
         
-            
-        $duracion_cacheo = ArticleIndexCache::build(
-            $this->user->id,
-            $this->provider_id ?? null,
-            (bool)$this->no_actualizar_articulos_de_otro_proveedor
-        );
+        if ($this->chunk_number == 1) {
+            $duracion_cacheo = ArticleIndexCache::build(
+                $this->user->id,
+                $this->provider_id ?? null,
+                (bool)$this->no_actualizar_articulos_de_otro_proveedor
+            );
+            $duracion_cacheo = number_format($duracion_cacheo, 2, '.', '');
+        } else {
+            $duracion_cacheo = 'Ya estaba cacheado';
+        }
         
-        $this->add_observation('Cacheado en '.number_format($duracion_cacheo, 2, '.', '').' seg');
+        $this->add_observation('Cacheado en '.$duracion_cacheo.' seg');
 
         Log::info('articulos cacheados');
+
+
+
+        $article_index = ArticleIndexCache::get_index(
+            $this->user->id,
+            $this->provider_id ? (int)$this->provider_id : null,
+            (bool)$this->no_actualizar_articulos_de_otro_proveedor
+        );
+
+        $this->process_row->set_article_index($article_index);
+
+
 
         $this->set_finish_row($rows);
 

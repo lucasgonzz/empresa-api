@@ -39,7 +39,7 @@ class TiendaNubeImageService extends BaseTiendaNubeService
         }
 
         // Atajo para probar en local (opcional)
-        if (env('APP_ENV') === 'local' && empty($payload['src'])) {
+        if (config('app.APP_ENV') === 'local' && empty($payload['src'])) {
             $payload['src'] = 'https://api-golonorte.comerciocity.com/public/storage/174222051315387.webp';
         }
 

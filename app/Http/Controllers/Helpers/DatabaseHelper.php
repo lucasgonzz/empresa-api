@@ -17,7 +17,7 @@ class DatabaseHelper {
         if (!is_null($base_de_datos)) {
             Config::set('database.connections.mysql.database', $base_de_datos);
 
-            if (env('APP_ENV') == 'production') {
+            if (config('app.APP_ENV') == 'production') {
                 Log::info('Setenado bbdd');
                 if ($set_user_name) {
                     Config::set('database.connections.mysql.username', $base_de_datos);

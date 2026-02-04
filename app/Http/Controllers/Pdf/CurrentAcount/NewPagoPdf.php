@@ -123,7 +123,7 @@ class NewPagoPdf extends fpdf {
 
         $logo_url = 'https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png';
 
-        if (env('APP_ENV') == 'production') {
+        if (config('app.APP_ENV') == 'production') {
             $logo_url = $this->user->image_url;
         }
         // Logo (si existe) - colocarlo arriba a la derecha

@@ -102,7 +102,7 @@ class ProviderOrderHelper {
 					$article->save();
 					ArticleHelper::setFinalPrice($article);
 
-					if (env('APP_ENV') == 'production' && isset($_article['add_to_articles']) && $_article['add_to_articles']) {
+					if (config('app.APP_ENV') == 'production' && isset($_article['add_to_articles']) && $_article['add_to_articles']) {
 						$ct = new Controller();
 			        	$ct->sendAddModelNotification('article', $article->id, false);
 					}

@@ -121,7 +121,7 @@ class BudgetPdf extends fpdf {
 	function logo() {
         // Logo
         if (!is_null($this->user->image_url)) {
-        	if (env('APP_ENV') == 'local') {
+        	if (config('app.APP_ENV') == 'local') {
         		$this->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', 17, 0, 0, 25);
         	} else {
 	        	$this->Image($this->user->image_url, 17, 0, 0, 25);
@@ -235,7 +235,7 @@ class BudgetPdf extends fpdf {
 
 	            $url = $article->images[0]['hosting_url'];
 
-	            if (env('APP_ENV') == 'local') {
+	            if (config('app.APP_ENV') == 'local') {
 
 	                $url = 'https://api-colman-prueba.comerciocity.com/public/storage/171699179550596.webp';
 	            }
@@ -269,7 +269,8 @@ class BudgetPdf extends fpdf {
 			$this->Cell($this->getFields()['Bonif'], $this->line_height, $this->getBonus($article), $this->b, 0, 'L');
 
 			$total_article = BudgetHelper::totalArticle($article);
-			$this->total_original += BudgetHelper::totalArticle($article, false);
+			$this->total_original += $total_article;
+			// $this->total_original += BudgetHelper::totalArticle($article, false);
 
 			$this->Cell($this->getFields()['Importe'], $this->line_height, '$'.Numbers::price($total_article), $this->b, 0, 'R');
 		}

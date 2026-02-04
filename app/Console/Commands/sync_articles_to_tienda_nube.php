@@ -40,7 +40,7 @@ class sync_articles_to_tienda_nube extends Command
     public function handle()
     {
 
-        $sync_articles = SyncToTNArticle::where('user_id', env('USER_ID'))
+        $sync_articles = SyncToTNArticle::where('user_id', config('app.USER_ID'))
                             ->where('status', 'pendiente')
                             ->get();
 

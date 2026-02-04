@@ -43,7 +43,7 @@ class check_stocks extends Command
     public function handle()
     {
         $articulos_mal = [];
-        $articles = Article::where('user_id', env('USER_ID'))
+        $articles = Article::where('user_id', config('app.USER_ID'))
                             ->get();
 
         $this->info(count($articles).' articulos');      
@@ -72,10 +72,10 @@ class check_stocks extends Command
 
         if (count($articulos_mal) > 0) {
 
-            $owner = User::find(env('USER_ID'));
+            $owner = User::find(config('app.USER_ID'));
 
             Mail::to('lucasgonzalez5500@gmail.com')->send(new SimpleMail([
-                'asunto'    => 'Stocks Mal | '.$owner->company_name . ' | user_id: '.env('USER_ID'),
+                'asunto'    => 'Stocks Mal | '.$owner->company_name . ' | user_id: '.config('app.USER_ID'),
                 'mensajes'  => $articulos_mal,
             ]));      
             

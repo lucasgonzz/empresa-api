@@ -43,7 +43,7 @@ class iniciar_deposito extends Command
         $address = Address::where('street', 'Esperanza')
                         ->first();
 
-        $articles = Article::where('user_id', env('USER_ID'))
+        $articles = Article::where('user_id', config('app.USER_ID'))
                             ->get();
 
         $ct_stock_movement = new StockMovementController();

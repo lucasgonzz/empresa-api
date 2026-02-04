@@ -13,7 +13,7 @@ class UserExtencionController extends Controller
     {
 
         if (is_null($user_id)) {
-            $user_id = env('USER_ID');
+            $user_id = config('app.USER_ID');
         }
 
         $user = User::find($user_id);

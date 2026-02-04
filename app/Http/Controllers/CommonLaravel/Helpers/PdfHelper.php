@@ -67,7 +67,7 @@ class PdfHelper {
 
 		if ($user->header_articulos_pdf) {
 
-			if (env('APP_ENV') == 'local') {
+			if (config('app.APP_ENV') == 'local') {
 	    		$instance->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 2, 2, 45, 45);
 	    	} else {
 	    		if (!is_null($user->image_url) && GeneralHelper::file_exists_2($user->image_url)) {
@@ -98,7 +98,7 @@ class PdfHelper {
         $user = $data['user'];
         $logo_url = $user->image_url;
         if (!is_null($logo_url)) {
-        	if (env('APP_ENV') == 'local') {
+        	if (config('app.APP_ENV') == 'local') {
         		$instance->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', 5, 5, 40, 25);
         	} else if (GeneralHelper::file_exists_2($logo_url)) {
 	        	$instance->Image($logo_url, 5, 5, 25, 25);
