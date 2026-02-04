@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\caja\CajaAperturaHelper;
 use App\Models\Address;
 use App\Models\Article;
 use App\Models\Caja;
+use App\Models\Client;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\DefaultPaymentMethodCaja;
 use App\Models\PriceType;
@@ -33,28 +34,19 @@ class set_datos_for_demo extends Command
      */
     protected $description = 'Command description';
 
-    /**
-     * Create a new command instance.
-     *
-     * @return void
-     */
     public function __construct()
     {
         parent::__construct();
     }
 
-    /**
-     * Execute the console command.
-     *
-     * @return int
-     */
     public function handle()
     {
+        $primera_vez = $this->get_primera_vez_flag();
 
-        if ($this->argument('primera_vez')) {
+        if ($primera_vez) {
 
             $this->crear_cajas();
-            
+
             $this->set_article_prices();
 
             $this->set_user_info();
@@ -64,8 +56,58 @@ class set_datos_for_demo extends Command
 
         $this->crear_sales();
 
-
         return 0;
+    }
+
+    /**
+     * Devuelve true/false.
+     * - Si te pasan el argumento primera_vez, lo interpreta.
+     * - Si NO te lo pasan, pregunta por consola y explica qué implica.
+     */
+    private function get_primera_vez_flag(): bool
+    {
+        $arg = $this->argument('primera_vez');
+
+        // Si NO viene argumento, preguntamos.
+        if (is_null($arg)) {
+            return $this->preguntar_primera_vez();
+        }
+
+        // Si viene argumento, lo interpretamos como boolean "humano"
+        // (1/0, true/false, yes/no, on/off).
+        $parsed = filter_var($arg, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+
+        // Si no se puede parsear, PHP igual lo trata como truthy si no está vacío.
+        if (is_null($parsed)) {
+            return (bool) $arg;
+        }
+
+        return (bool) $parsed;
+    }
+
+    private function preguntar_primera_vez(): bool
+    {
+        $this->line('');
+        $this->info('Modo "primera vez" hace lo siguiente:');
+        $this->line(' - Borra y recrea todas las cajas (Caja) y las abre.');
+        $this->line(' - Genera DefaultPaymentMethodCaja por address y método de pago.');
+        $this->line(' - Recalcula precios/costos de artículos (set_article_prices).');
+        $this->line(' - Pisa datos del usuario demo (set_user_info).');
+        $this->line(' - Ajusta precios/cantidades/totales de las últimas 100 ventas (set_sales_prices).');
+        $this->line('');
+        $this->comment('Si respondés "no", solo va a crear ventas nuevas (crear_sales).');
+        $this->line('');
+
+        $primera_vez = $this->confirm('¿Es la primera vez que corrés set_datos_for_demo?', false);
+
+        if ($primera_vez) {
+            $this->warn('Atención: esto modifica datos (borra cajas / recalcula precios / pisa datos del usuario demo).');
+            $confirmacion_final = $this->confirm('¿Confirmás que querés ejecutar el modo "primera vez"?', false);
+
+            return $confirmacion_final;
+        }
+
+        return false;
     }
 
     function crear_sales() {
@@ -76,7 +118,9 @@ class set_datos_for_demo extends Command
 
         $ventas = [];
 
-        foreach ($employees as $employee) { 
+        $client_id = Client::first()->id;
+
+        foreach ($employees as $employee) {
 
             $price_vender = rand(10000, 10000);
             $address_id = rand(1, 2);
@@ -89,7 +133,7 @@ class set_datos_for_demo extends Command
                 'total'             => $total,
                 'employee_id'       => $employee->id,
                 'address_id'        => $address_id,
-                'client_id'         => $address_id < 3 ? 1 : null,
+                'client_id'         => $address_id < 3 ? $client_id : null,
                 'articles'          => [
                     [
                         'id'            => 1,
@@ -122,7 +166,7 @@ class set_datos_for_demo extends Command
     }
 
     function set_sales_prices() {
-        
+
         $sales = Sale::orderBy('id', 'DESC')
                         ->take(100)
                         ->get();
@@ -135,7 +179,7 @@ class set_datos_for_demo extends Command
             $total = 0;
 
             foreach ($sale->articles as $article) {
-                
+
                 $amount = rand(1, 10);
                 $price = 1000;
                 $sale->articles()->updateExistingPivot($article->id, [
@@ -150,13 +194,13 @@ class set_datos_for_demo extends Command
 
             $sale->total = $total;
             $sale->timestamps = false;
-        
+
             if ($index <= 30) {
                 $sale->created_at = Carbon::now();
             }
 
             $sale->save();
-            
+
             if ($sale->client_id) {
 
                 SaleHelper::updateCurrentAcountsAndCommissions($sale);
@@ -177,14 +221,14 @@ class set_datos_for_demo extends Command
         foreach ($cajas as $caja) {
             $caja->delete();
         }
-        
+
         $addresses = Address::all();
         $payment_methods = CurrentAcountPaymentMethod::all();
         $num = 0;
         foreach ($addresses as $address) {
-            
+
             foreach ($payment_methods as $payment_method) {
-                
+
                 $num++;
 
                 $model = [
@@ -227,7 +271,7 @@ class set_datos_for_demo extends Command
     }
 
     function set_article_prices() {
-        
+
         $articles = Article::orderBy('id', 'DESC')
                             ->take(2000)
                             ->get();
@@ -239,7 +283,7 @@ class set_datos_for_demo extends Command
         $price_types = PriceType::all();
 
         foreach ($articles as $article) {
-            
+
             $article->cost = 100;
             $article->timestamps = false;
             $article->save();

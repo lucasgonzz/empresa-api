@@ -18,6 +18,8 @@ use OpenSpout\Common\Entity\Cell;
 
 class InitExcelImport {
 
+    protected $chunk_offsets = [];
+
 	function importar($data) {
         
         $this->import_uuid                  = $data['import_uuid']; 
@@ -46,6 +48,8 @@ class InitExcelImport {
         $this->armar_archivo_csv();
 
         $this->calcular_chunck();
+
+        $this->chunk_offsets = $this->build_csv_chunk_offsets();
 
         $this->crear_import_status();
 
@@ -130,6 +134,57 @@ class InitExcelImport {
         // --- FIN: CONVERSIÓN DE XLSX a CSV ---
     }
 
+    function build_csv_chunk_offsets(): array
+    {
+        $offsets = [];
+
+        // start rows de cada chunk (ej: 2, 102, 202...)
+        $target_rows = [];
+        $row = $this->start_row;
+
+        while ($row <= $this->finish_row) {
+            $target_rows[$row] = true;
+            $row += $this->chunkSize;
+        }
+
+        // Escaneamos el CSV una sola vez y registramos el ftell() al inicio de cada target row
+        $handle = fopen($this->csv_full_path, 'r');
+        if ($handle === false) {
+            Log::error('No se pudo abrir el CSV para generar offsets: '.$this->csv_full_path);
+            return $offsets;
+        }
+
+        $current_row = 1;
+
+        while (!feof($handle)) {
+
+            $pos = ftell($handle);
+
+            $line = fgets($handle);
+            if ($line === false) {
+                break;
+            }
+
+            if (isset($target_rows[$current_row])) {
+                $offsets[$current_row] = $pos;
+            }
+
+            // Si ya pasamos el último start posible, cortamos
+            if ($current_row > $this->finish_row) {
+                break;
+            }
+
+            $current_row++;
+        }
+
+        fclose($handle);
+
+        Log::info('Offsets de chunks generados: '.count($offsets));
+
+        return $offsets;
+    }
+
+
     function armar_cadena_de_chunks() {
 
         $this->chunk_number = 1;
@@ -155,6 +210,7 @@ class InitExcelImport {
                 $this->import_status->id,
                 $this->import_history->id,
                 $this->chunk_number,
+                $this->chunk_offsets[$this->start] ?? null
             );
 
             $this->chunk_number++;
@@ -203,7 +259,7 @@ class InitExcelImport {
             'updated_models'  => 0,
             'status'          => 'en_preparacion',
             'operacion_a_realizar'  => $this->create_and_edit ? 'Crear y actualizar' : 'Solo actualizar',
-            'no_actualizar_otro_proveedor' => $this->no_actualizar_articulos_de_otro_proveedor,
+            'no_actualizar_otro_proveedor' => (boolean)$this->no_actualizar_articulos_de_otro_proveedor,
             'user_id'         => $this->user ? $this->user->id : null,
             'employee_id'     => $this->auth_user_id,
             'model_name'      => 'article',

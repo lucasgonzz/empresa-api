@@ -58,7 +58,7 @@ class ArticlePdf extends fpdf {
 
 	function header_normal() {
 
-		if (env('APP_ENV') == 'local') {
+		if (config('app.APP_ENV') == 'local') {
     		$this->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 2, 2, 45, 45);
     	} else {
     		$logo = $this->user->image_url;
@@ -80,7 +80,7 @@ class ArticlePdf extends fpdf {
 	}
 
 	function image_header() {
-		if (env('APP_ENV') == 'local') {
+		if (config('app.APP_ENV') == 'local') {
     		$this->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 2, 2, 206, 47);
     	} else {
     		$this->Image($this->user->image_pdf_header_url, 2, 2, 206, 47);
@@ -119,7 +119,7 @@ class ArticlePdf extends fpdf {
 
 	function getJpgImage($article) {
 
-		if (env('APP_ENV') == 'local') {
+		if (config('app.APP_ENV') == 'local') {
 			$img_url = 'https://api-colman-prueba.comerciocity.com/public/storage/171699179550596.webp';
 		} else {
 			$img_url = $article->images[0]->{env('IMAGE_URL_PROP_NAME', 'image_url')};
@@ -132,7 +132,7 @@ class ArticlePdf extends fpdf {
 	        $name = explode('.', $array_name)[0];
 	        $extension = strtolower(pathinfo($array_name, PATHINFO_EXTENSION));
 
-	        if (env('APP_ENV') == 'local') {
+	        if (config('app.APP_ENV') == 'local') {
 	        	// $jpg_file_url = storage_path('app/' . $name . '.jpg');
 	        	$jpg_file_url = storage_path('app/public/' . $name . '.jpg');
 	        } else {
@@ -195,7 +195,7 @@ class ArticlePdf extends fpdf {
 	//         $name = explode('.', $array_name)[0];
 	//         $extencion = explode('.', $array_name)[1];
 
-	//         if (env('APP_ENV') == 'local') {
+	//         if (config('app.APP_ENV') == 'local') {
 	//         	$jpg_file_url = storage_path().'/app/'.$name.'.jpg';
 	//         } else {
 	//         	$jpg_file_url = storage_path().'/app/public/'.$name.'.jpg';
@@ -244,7 +244,7 @@ class ArticlePdf extends fpdf {
 
 		if (!is_null($article)) {
 			if (count($article->images) >= 1) {
-				if (env('APP_ENV') == 'local') {
+				if (config('app.APP_ENV') == 'local') {
 	        		$this->printImage($article);
 	        		// $this->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 2, $this->y, $this->image_width, $this->image_width);
 	        	} else {

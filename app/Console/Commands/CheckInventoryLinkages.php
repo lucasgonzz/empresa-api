@@ -46,7 +46,7 @@ class CheckInventoryLinkages extends Command
     {
         $company_name = 'Autopartes Boxes';
         
-        if (env('APP_ENV') == 'production') {
+        if (config('app.APP_ENV') == 'production') {
             $company_name = 'Fenix';
         } 
 

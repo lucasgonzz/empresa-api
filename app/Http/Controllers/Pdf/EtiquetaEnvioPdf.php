@@ -39,7 +39,7 @@ class EtiquetaEnvioPdf extends fpdf {
 		// Logo
 		$logo = $this->user->image_url;
 
-		if (env('APP_ENV') == 'local') {
+		if (config('app.APP_ENV') == 'local') {
 			$logo = 'https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg';
 		}
 

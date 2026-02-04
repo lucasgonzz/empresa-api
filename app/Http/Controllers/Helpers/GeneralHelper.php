@@ -131,7 +131,7 @@ class GeneralHelper {
             $name = explode('.', $array_name)[0];
             $extension = strtolower(pathinfo($array_name, PATHINFO_EXTENSION));
 
-            if (env('APP_ENV') == 'local') {
+            if (config('app.APP_ENV') == 'local') {
                 // $jpg_file_url = storage_path('app/' . $name . '.jpg');
                 $jpg_file_url = storage_path('app/public/' . $name . '.jpg');
             } else {

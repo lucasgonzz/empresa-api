@@ -39,7 +39,7 @@ class set_article_purchases_address_id extends Command
     public function handle()
     {
 
-        $user_id = env('USER_ID');
+        $user_id = config('app.USER_ID');
         if (!$user_id) {
             $user_id = $this->argument('user_id');
         }

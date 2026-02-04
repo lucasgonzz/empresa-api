@@ -803,7 +803,9 @@ class PerformanceHelper
 
             if (!is_null($payment_method_id) && $payment_method_id != 0) {
 
-                $this->users_payment_methods[$employee_id]['payment_methods'][$payment_method_id]['total'] += (float)$this->total_sale;
+                if (isset($this->users_payment_methods[$employee_id])) {
+                    $this->users_payment_methods[$employee_id]['payment_methods'][$payment_method_id]['total'] += (float)$this->total_sale;
+                }
             
             } else if (count($this->sale->current_acount_payment_methods) >= 1) {
 
@@ -816,7 +818,9 @@ class PerformanceHelper
                         $total -= (float)$payment_method->pivot->discount_amount;
                     }
 
-                    $this->users_payment_methods[$employee_id]['payment_methods'][$payment_method->id]['total'] += $total;
+                    if (isset($this->users_payment_methods[$employee_id])) {
+                        $this->users_payment_methods[$employee_id]['payment_methods'][$payment_method->id]['total'] += $total;
+                    }
                 }
             }
         }

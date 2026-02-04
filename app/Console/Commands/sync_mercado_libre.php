@@ -40,7 +40,7 @@ class sync_mercado_libre extends Command
     public function handle()
     {
 
-        $sync_articles = SyncToMeliArticle::where('user_id', env('USER_ID'))
+        $sync_articles = SyncToMeliArticle::where('user_id', config('app.USER_ID'))
                             ->where('status', 'pendiente')
                             ->get();
 

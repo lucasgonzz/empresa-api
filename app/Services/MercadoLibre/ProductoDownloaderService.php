@@ -30,7 +30,7 @@ class ProductoDownloaderService extends MercadoLibreService
     function __construct($user_id = null) {
 
         if (!$user_id) {
-            $user_id = env('USER_ID');
+            $user_id = config('app.USER_ID');
         }
 
         parent::__construct($user_id);

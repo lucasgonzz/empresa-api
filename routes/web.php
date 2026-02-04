@@ -9,6 +9,9 @@ use Illuminate\Support\Facades\Route;
 // consultar_comprobante($afip_ticket_id)
 // Route::post('/consultar-afip-ticket/afip_ticket_id', 'AfipTicketController@consultar_comprobante');
 
+Route::get('hola', function() {
+    echo 'Hola';
+});
 
 // Obtener todos los productos para N8N
 Route::get('/n8n/productos-disponibles', function () {

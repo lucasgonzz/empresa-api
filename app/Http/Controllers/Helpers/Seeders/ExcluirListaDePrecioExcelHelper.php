@@ -9,10 +9,10 @@ use App\Models\PriceType;
 class ExcluirListaDePrecioExcelHelper {
 	   
     static function set_articles() {
-        $articles = Article::where('user_id', env('USER_ID'))
+        $articles = Article::where('user_id', config('app.USER_ID'))
                             ->get();
 
-        $price_types = PriceType::where('user_id', env('USER_ID'))
+        $price_types = PriceType::where('user_id', config('app.USER_ID'))
                                 ->get();
 
         foreach ($articles as $article) {

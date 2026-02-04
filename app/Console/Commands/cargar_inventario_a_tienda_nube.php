@@ -41,7 +41,7 @@ class cargar_inventario_a_tienda_nube extends Command
     {
 
         $articles = Article::whereHas('images')
-                            ->where('user_id', env('USER_ID'))
+                            ->where('user_id', config('app.USER_ID'))
                             ->orderBy('id', 'DESC');
 
         if ($this->argument('cantidad')) {

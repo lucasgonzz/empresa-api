@@ -56,7 +56,7 @@ class act_masquito extends Command
 
         $percentage = 3;
         
-        $user = User::find(env('USER_ID'));
+        $user = User::find(config('app.USER_ID'));
 
         foreach ($articles as $article) {
             $cost = $article->cost;

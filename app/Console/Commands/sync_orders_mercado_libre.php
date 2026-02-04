@@ -39,7 +39,7 @@ class sync_orders_mercado_libre extends Command
     public function handle()
     {
         $this->info('Comenzando');
-        $service = new OrderDownloaderService(env('USER_ID'));
+        $service = new OrderDownloaderService(config('app.USER_ID'));
         $service->get_all_orders();
         $this->info('Termino');
 

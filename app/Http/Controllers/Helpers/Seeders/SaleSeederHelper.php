@@ -25,7 +25,7 @@ class SaleSeederHelper {
                 'fecha_entrega'     => RequestHelper::isset_array($sale, 'fecha_entrega'),
                 'terminada'     	=> RequestHelper::isset_array($sale, 'terminada', 1),
                 'confirmed'     	=> RequestHelper::isset_array($sale, 'confirmed', 1),
-                'user_id'           => env('USER_ID'),
+                'user_id'           => config('app.USER_ID'),
                 'save_current_acount'=> 1,
                 'terminada_at'      => RequestHelper::isset_array($sale, 'terminada', 1) ? $sale['created_at'] : null,
             ];

@@ -286,7 +286,7 @@ class corregir_stock extends Command
     function get_articles_mal() {
 
         $articulos_mal = [];
-        $articles = Article::where('user_id', env('USER_ID'));
+        $articles = Article::where('user_id', config('app.USER_ID'));
 
         $article_id = $this->argument('article_id');
 

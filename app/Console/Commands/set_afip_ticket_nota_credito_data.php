@@ -39,7 +39,7 @@ class set_afip_ticket_nota_credito_data extends Command
     public function handle()
     {
         
-        $models = CurrentAcount::where('user_id', env('USER_ID'))
+        $models = CurrentAcount::where('user_id', config('app.USER_ID'))
                                 ->where('status', 'nota_credito')
                                 ->whereHas('afip_ticket')
                                 ->orderBy('created_at', 'DESC')

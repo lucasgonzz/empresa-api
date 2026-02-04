@@ -35,7 +35,7 @@ class DemoSetupController extends Controller
 
         // Crear usuario demo
         $user = User::create([
-            'id'                            => env('USER_ID'),
+            'id'                            => config('app.USER_ID'),
             'api_url'                       => env('APP_URL').'/public',
             'name'                          => $request->user_name,
             'use_archivos_de_intercambio'   => 0,
@@ -271,7 +271,7 @@ class DemoSetupController extends Controller
             'scroll_infinito_en_home'       => 1,
             'default_article_image_url'     => 'http://empresa.local:8000/storage/169705209718205.jpg',
             'pausar_tienda_online'          => 0,
-            'user_id'                       => env('USER_ID'),
+            'user_id'                       => config('app.USER_ID'),
             'facebook'                      => 'htts://facebook.com',
             'instagram'                     => 'htts://instagram.com',
             'mensaje_contacto'              => 'Comunicate con nosotros',
@@ -320,7 +320,7 @@ class DemoSetupController extends Controller
                 Log::info('creando address '.$address);
                 Address::create([
                     'street'    => $address,
-                    'user_id'   => env('USER_ID'),
+                    'user_id'   => config('app.USER_ID'),
                 ]); 
             }
         }
@@ -339,7 +339,7 @@ class DemoSetupController extends Controller
                     'percentage'    => 5 * $i,
                     'position'      => $i,
                     'ocultar_al_publico'    => 0,
-                    'user_id'       => env('USER_ID'),
+                    'user_id'       => config('app.USER_ID'),
                 ]); 
             }
         }

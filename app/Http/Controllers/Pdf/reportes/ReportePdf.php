@@ -171,8 +171,8 @@ class ReportePdf extends PDF_Diag {
 
 
 
-        if (!is_null($this->user->image_url) || env('APP_ENV') == 'local') {
-        	if (env('APP_ENV') == 'local') {
+        if (!is_null($this->user->image_url) || config('app.APP_ENV') == 'local') {
+        	if (config('app.APP_ENV') == 'local') {
         		// $this->pdf->Image('https://fenix-mayorista.com.ar/img/icon.c48d046f.png', 160, 10, 40, 40);
 	        	$this->pdf->Image($this->user->image_url, 160, 10, 40, 40);
         	} else {

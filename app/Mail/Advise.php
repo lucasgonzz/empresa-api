@@ -35,7 +35,7 @@ class Advise extends Mailable
             $user = UserHelper::getFullModel();
 
             $article_url = null;
-            if (env('APP_ENV') == 'production') {
+            if (config('app.APP_ENV') == 'production') {
                 $article_url = $user->online.'/articulos/'.$this->article->slug.'/'.$user->id;
             }
 

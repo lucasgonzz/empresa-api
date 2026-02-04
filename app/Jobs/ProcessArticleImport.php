@@ -62,7 +62,7 @@ class ProcessArticleImport implements ShouldQueue
 
         $chunkSize = env('ARTICLE_EXCEL_CHUNK_SIZE', 3500);
 
-        if (env('APP_ENV') == 'local') {
+        if (config('app.APP_ENV') == 'local') {
             $chunkSize = 100;
         } 
         

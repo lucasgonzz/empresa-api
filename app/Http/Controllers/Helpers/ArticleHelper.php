@@ -923,7 +923,7 @@ class ArticleHelper {
                     $first_image = $image->hosting_url;
                 }
             }
-            if (env('APP_ENV') == 'production') {
+            if (config('app.APP_ENV') == 'production') {
                 $position = strpos($first_image, 'storage');
                 $first = substr($first_image, 0, $position);
                 $end = substr($first_image, $position);

@@ -93,7 +93,7 @@ class HelperController extends Controller
     }
 
     function precios_ffperformance() {
-        $user = User::find(env('USER_ID'));
+        $user = User::find(config('app.USER_ID'));
         $articles = Article::all(); 
         $monedas = Moneda::all(); 
         $price_types = PriceType::orderBy('position', 'ASC')
@@ -152,7 +152,7 @@ class HelperController extends Controller
                     //     ]);
                     // }
 
-                    ArticleHelper::setFinalPrice($article, env('USER_ID'));
+                    ArticleHelper::setFinalPrice($article, config('app.USER_ID'));
                     echo $article->id.' | '.$article->name.' ok. '.$price_type->name.': '.$price_type->percentage;
                     echo '<br>';
                 }
@@ -165,7 +165,7 @@ class HelperController extends Controller
     }
 
     function set_nota_credito_afip_ticket_data() {
-        $models = CurrentAcount::where('user_id', env('USER_ID'))
+        $models = CurrentAcount::where('user_id', config('app.USER_ID'))
                                 ->where('status', 'nota_credito')
                                 ->whereHas('afip_ticket')
                                 ->orderBy('created_at', 'DESC')
@@ -299,7 +299,7 @@ class HelperController extends Controller
     }
 
     function set_articles_slug() {
-        $articles = Article::where('user_id', env('USER_ID'))
+        $articles = Article::where('user_id', config('app.USER_ID'))
                             ->whereNull('slug')
                             ->get();
 
@@ -349,7 +349,7 @@ class HelperController extends Controller
         
         if (!$user_id) {
 
-            $user_id = env('USER_ID'); 
+            $user_id = config('app.USER_ID'); 
         }
 
         $sales = Sale::where('user_id', $user_id)
@@ -408,7 +408,7 @@ class HelperController extends Controller
     function set_cajas() {
         $payment_methods = CurrentAcountPaymentMethod::get();
 
-        $employees = User::where('owner_id', env('USER_ID'))
+        $employees = User::where('owner_id', config('app.USER_ID'))
                         ->get();
 
         $num = 1;
@@ -421,7 +421,7 @@ class HelperController extends Controller
                     'name'          => $payment_method->name,
                     'employee_id'   => $employee->id,
                     'address_id'    => $employee->address_id,
-                    'user_id'       => env('USER_ID'),
+                    'user_id'       => config('app.USER_ID'),
                     'saldo'         => 0,
                 ];
 
@@ -435,7 +435,7 @@ class HelperController extends Controller
                     'current_acount_payment_method_id'  => $payment_method->id,
                     'address_id'                        => $caja->address_id,
                     'employee_id'                       => $employee->id,
-                    'user_id'                           => env('USER_ID'),
+                    'user_id'                           => config('app.USER_ID'),
                 ]);
 
                 echo 'Se creo caja '.$caja->name.' para '.$employee->name;
@@ -452,7 +452,7 @@ class HelperController extends Controller
             if ($article->final_price > 0) {
                 
                 echo $article->id. ' <br>';
-                ArticleHelper::setFinalPrice($article, env('USER_ID'));
+                ArticleHelper::setFinalPrice($article, config('app.USER_ID'));
             }
         }
     }
@@ -489,7 +489,7 @@ class HelperController extends Controller
         
         $meli_orders = MeliOrder::all();
 
-        $user = User::find(env('USER_ID'));
+        $user = User::find(config('app.USER_ID'));
 
         foreach ($meli_orders as $meli_order) {
             CreateSaleOrderHelper::save_sale($meli_order, $this, false, true, $user);
@@ -498,7 +498,7 @@ class HelperController extends Controller
     }
 
     function add_price_types_to_articles() {
-        $articles = Article::where('user_id', env('USER_ID'))->get();
+        $articles = Article::where('user_id', config('app.USER_ID'))->get();
 
         $price_types = PriceType::all();
 
@@ -522,23 +522,23 @@ class HelperController extends Controller
     }
 
     function importar_productos_ml() {
-        $service = new ProductoDownloaderService(env('USER_ID'));
+        $service = new ProductoDownloaderService(config('app.USER_ID'));
 
-        $token = MercadoLibreToken::where('user_id', env('USER_ID'))->first();
+        $token = MercadoLibreToken::where('user_id', config('app.USER_ID'))->first();
 
         $service->importar_productos($token->meli_user_id);
     }
 
     function importar_orders_ml() {
-        $service = new OrderDownloaderService(env('USER_ID'));
+        $service = new OrderDownloaderService(config('app.USER_ID'));
 
-        // $token = MercadoLibreToken::where('user_id', env('USER_ID'))->first();
+        // $token = MercadoLibreToken::where('user_id', config('app.USER_ID'))->first();
 
         $service->get_all_orders();
     }
 
     function check_saldos() {
-        $user = User::find(env('USER_ID'));
+        $user = User::find(config('app.USER_ID'));
 
         $credit_accounts = CreditAccount::where('user_id', $user->id) 
                                         ->get();
@@ -564,7 +564,7 @@ class HelperController extends Controller
     }
 
     function check_total_facturado() {
-        $sales = Sale::where('user_id', env('USER_ID'))
+        $sales = Sale::where('user_id', config('app.USER_ID'))
                         ->orderBy('id', 'ASC')
                         ->get();
 
@@ -583,7 +583,7 @@ class HelperController extends Controller
     }
 
     // function check_saldos() {
-    //     $clients = Client::where('user_id', env('USER_ID'))
+    //     $clients = Client::where('user_id', config('app.USER_ID'))
     //                         ->get();
 
     //     foreach ($clients as $client) {
@@ -594,7 +594,7 @@ class HelperController extends Controller
 
 
 
-    //     $providers = Provider::where('user_id', env('USER_ID'))
+    //     $providers = Provider::where('user_id', config('app.USER_ID'))
     //                         ->get();
     //     foreach ($providers as $provider) {
     //         foreach ($provider->credit_accounts as $credit_account) {
@@ -604,7 +604,7 @@ class HelperController extends Controller
     // }
 
     function corregir_stock_ferretotal($article_id = null) {
-        $articles = Article::where('user_id', env('USER_ID'));
+        $articles = Article::where('user_id', config('app.USER_ID'));
 
         if (!is_null($article_id)) {
             $articles->where('id', $article_id);
@@ -708,7 +708,7 @@ class HelperController extends Controller
     function bar_code_repetidos($user_id = null) {
 
         if (!$user_id) {
-            $user_id = env('USER_ID');
+            $user_id = config('app.USER_ID');
         }
         
         $articles = Article::where('user_id', $user_id)
@@ -729,7 +729,7 @@ class HelperController extends Controller
     function cheques_repetidos($user_id = null) {
 
         if (!$user_id) {
-            $user_id = env('USER_ID');
+            $user_id = config('app.USER_ID');
         }
 
         $cheques = Cheque::where('user_id', $user_id)->get();
@@ -762,7 +762,7 @@ class HelperController extends Controller
 
     public function provider_code_repetidos($eliminar_repetidos = false, $filtrar_por_bar_code = false)
     {
-        $user_id = env('USER_ID');
+        $user_id = config('app.USER_ID');
 
         $articles = Article::where('user_id', $user_id)->get();
 
@@ -816,7 +816,7 @@ class HelperController extends Controller
     function eliminar_provider_code_repetidos($user_id = null) {
 
         if (!$user_id) {
-            $user_id = env('USER_ID');
+            $user_id = config('app.USER_ID');
         }
         
         $articles = Article::where('user_id', $user_id)

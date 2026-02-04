@@ -228,7 +228,7 @@ class TiendaNubeProductService extends BaseTiendaNubeService
         //             $src = $img->hosting_url;
 
         //             if (
-        //                 env('APP_ENV') === 'local'
+        //                 config('app.APP_ENV') === 'local'
         //             ) {
         //                 $src = 'https://api-golonorte.comerciocity.com/public/storage/174337850923485.webp';
         //             }

@@ -102,7 +102,7 @@ class TruvariArticleListPdf extends fpdf {
 
 	function logo() {
 		$image = $this->user->image_url;
-		if (env('APP_ENV') == 'local') {
+		if (config('app.APP_ENV') == 'local') {
     		$image = 'https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png';
     	}
     	if ($image) {
@@ -215,7 +215,7 @@ class TruvariArticleListPdf extends fpdf {
 	        $name = explode('.', $array_name)[0];
 	        $extension = strtolower(pathinfo($array_name, PATHINFO_EXTENSION));
 
-	        if (env('APP_ENV') == 'local') {
+	        if (config('app.APP_ENV') == 'local') {
 	        	// $jpg_file_url = storage_path('app/' . $name . '.jpg');
 	        	$jpg_file_url = storage_path('app/public/' . $name . '.jpg');
 	        } else {

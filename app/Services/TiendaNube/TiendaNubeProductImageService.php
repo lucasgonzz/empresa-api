@@ -44,7 +44,7 @@ class TiendaNubeProductImageService extends BaseTiendaNubeService
 
         $src = $image->hosting_url;
 
-        if (env('APP_ENV') === 'local') {
+        if (config('app.APP_ENV') === 'local') {
             $src = 'https://api-golonorte.comerciocity.com/public/storage/174337850923485.webp';
         }
 

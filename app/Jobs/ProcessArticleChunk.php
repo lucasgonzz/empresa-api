@@ -28,13 +28,13 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
     use Batchable, Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     protected $import_uuid, $csv_path, $columns, $create_and_edit, $start_row, $finish_row,
-              $provider_id, $user, $auth_user_id, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $import_status_id, $import_history_id, $chunk_number, $observations;
+              $provider_id, $user, $auth_user_id, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $import_status_id, $import_history_id, $chunk_number, $observations, $start_offset;
 
     // public $timeout = 5; // 30 minutos por chunk, ajustable
     public $timeout = 1800; // 30 minutos por chunk, ajustable
     public $tries = 1;
     
-	public function __construct($import_uuid, $csv_path, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $import_status_id, $import_history_id, $chunk_number)
+	public function __construct($import_uuid, $csv_path, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $import_status_id, $import_history_id, $chunk_number, $start_offset = null)
     {
 
         $this->import_uuid = $import_uuid;
@@ -51,6 +51,7 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         $this->import_status_id = $import_status_id;
         $this->import_history_id = $import_history_id;
         $this->chunk_number = $chunk_number;
+        $this->start_offset = $start_offset;
 
         $this->observations = '';
     }
@@ -128,11 +129,11 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 
             $this->set_import_history_error($e);
 
+            $this->notificar_error_input_status($e->getMessage());
 
             $error_message = $this->get_full_error($e);
             ArticleImportHelper::error_notification($this->user, null, $error_message);
 
-            $this->notificar_error_input_status($e->getMessage());
 
             throw $e; // ✅ Esto detiene la chain
         }
@@ -143,33 +144,73 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
     }
 
     function get_row_from_csv() {
-        
-        $chunkRows = [];
 
+        $chunkRows = [];
         $file_path = $this->csv_path;
-        // $file_path = storage_path('app/' . $this->csv_path);
 
         Log::warning("Abriendo y leyendo archivo CSV.");
-        // Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Abriendo y leyendo archivo CSV.");
-        if (($handle = fopen($file_path, "r")) !== FALSE) {
-            $currentRow = 1;
-            while (($data = fgetcsv($handle, 0, ",")) !== FALSE) {
+
+        if (($handle = fopen($file_path, "r")) !== false) {
+
+            // Si tenemos offset, arrancamos directo en la fila del chunk (mucho más rápido)
+            if (!is_null($this->start_offset) && is_numeric($this->start_offset) && $this->start_offset >= 0) {
+                fseek($handle, (int)$this->start_offset);
+                $currentRow = $this->start_row;
+            } else {
+                // Fallback: comportamiento anterior
+                $currentRow = 1;
+            }
+
+            while (($data = fgetcsv($handle, 0, ",")) !== false) {
+
                 if ($currentRow >= $this->start_row && $currentRow <= $this->finish_row) {
                     $chunkRows[] = $data;
                 }
-                if ($currentRow > $this->finish_row) {
+
+                if ($currentRow >= $this->finish_row) {
                     break;
                 }
+
                 $currentRow++;
             }
+
             fclose($handle);
         }
-        Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Archivo CSV leído y cerrado.");
 
+        Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Archivo CSV leído y cerrado.");
         Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Invocando lógica de importación (importer->collection).");
 
         return $chunkRows;
     }
+
+    // function get_row_from_csv() {
+        
+    //     $chunkRows = [];
+
+    //     $file_path = $this->csv_path;
+    //     // $file_path = storage_path('app/' . $this->csv_path);
+
+    //     Log::warning("Abriendo y leyendo archivo CSV.");
+    //     // Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Abriendo y leyendo archivo CSV.");
+    //     if (($handle = fopen($file_path, "r")) !== FALSE) {
+    //         $currentRow = 1;
+    //         while (($data = fgetcsv($handle, 0, ",")) !== FALSE) {
+    //             if ($currentRow >= $this->start_row && $currentRow <= $this->finish_row) {
+    //                 $chunkRows[] = $data;
+    //             }
+    //             if ($currentRow > $this->finish_row) {
+    //                 break;
+    //             }
+    //             $currentRow++;
+    //         }
+    //         fclose($handle);
+    //     }
+    //     Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Archivo CSV leído y cerrado.");
+
+    //     Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Invocando lógica de importación (importer->collection).");
+
+    //     return $chunkRows;
+    // }
 
     function set_import_history_error($e) {
         $this->import_history->status = 'error';

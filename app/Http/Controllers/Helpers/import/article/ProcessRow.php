@@ -40,7 +40,7 @@ class ProcessRow {
     protected $category_cache = [];
     protected $sub_category_cache = []; // [category_id][name_key] => id
     protected $iva_cache = [];   
-
+    protected $article_index = [];
 
 
     /**
@@ -68,6 +68,11 @@ class ProcessRow {
         $this->set_category_cache();
         $this->set_sub_category_cache();
         $this->set_iva_cache();
+    }
+
+    public function set_article_index(array $article_index): void
+    {
+        $this->article_index = $article_index;
     }
 
     protected function normalize_cache_key($value): string
@@ -317,7 +322,15 @@ class ProcessRow {
 
 
 
-        $articulo_ya_creado = ArticleIndexCache::find($data, $this->user->id, $provider_id, $this->no_actualizar_articulos_de_otro_proveedor);
+        // $articulo_ya_creado = ArticleIndexCache::find($data, $this->user->id, $provider_id, $this->no_actualizar_articulos_de_otro_proveedor);
+
+        $articulo_ya_creado = ArticleIndexCache::find_with_index(
+            $data,
+            $this->article_index,
+            $this->user->id,
+            $provider_id,
+            $this->no_actualizar_articulos_de_otro_proveedor
+        );
 
         if (
             !is_null($articulo_ya_creado)
@@ -431,9 +444,12 @@ class ProcessRow {
 
         // Log::info('attach_provider');
 
+        if (!$provider_id) {
+            return;
+        }
+        
         if (
-            !$provider_id
-            || $this->son_varios_articulos($articulo_ya_creado)
+            $this->son_varios_articulos($articulo_ya_creado)
         ) {
 
             foreach ($articulo_ya_creado as $article) {
@@ -698,7 +714,7 @@ class ProcessRow {
                 $key == 'provider_id'
                 && !$this->actualizar_proveedor
             ) {
-                Log::info('No se agrego provider_id porque actualizar_proveedor: '.$this->actualizar_proveedor);
+                // Log::info('No se agrego provider_id porque actualizar_proveedor: '.$this->actualizar_proveedor);
                 continue;
             }
 
@@ -1604,7 +1620,7 @@ class ProcessRow {
     {
         $out = [];
 
-        Log::info('stock addresses:');
+        // Log::info('stock addresses:');
         foreach ($stock_addresses as $sa) {
 
             $address_id = isset($sa['address_id']) ? $sa['address_id'] : null;
@@ -1635,28 +1651,28 @@ class ProcessRow {
             $diff_min = $old_min !== $new_min;
             $diff_max = $old_max !== $new_max;
 
-            Log::info('');
-            Log::info('');
+            // Log::info('');
+            // Log::info('');
             if ($existing) {
-                Log::info($existing->street.':');
+                // Log::info($existing->street.':');
             }
 
-            Log::info('actual:');
-            Log::info('stock: '.$old_amount);
-            Log::info('min: '.$old_min);
-            Log::info('max: '.$old_max);
-
-            Log::info('');
-            Log::info('nuevo:');
-            Log::info('stock: '.$new_amount);
-            Log::info('min: '.$new_min);
-            Log::info('max: '.$new_max);
+            // Log::info('actual:');
+            // Log::info('stock: '.$old_amount);
+            // Log::info('min: '.$old_min);
+            // Log::info('max: '.$old_max);
 
             // Log::info('');
-            Log::info('diff:');
-            Log::info('stock: '.$diff_amount);
-            Log::info('min: '.$diff_min);
-            Log::info('max: '.$diff_max);
+            // Log::info('nuevo:');
+            // Log::info('stock: '.$new_amount);
+            // Log::info('min: '.$new_min);
+            // Log::info('max: '.$new_max);
+
+            // Log::info('');
+            // Log::info('diff:');
+            // Log::info('stock: '.$diff_amount);
+            // Log::info('min: '.$diff_min);
+            // Log::info('max: '.$diff_max);
 
             // Si no hay cambios, continuar
             if (!$diff_amount && !$diff_min && !$diff_max) {
@@ -1704,8 +1720,8 @@ class ProcessRow {
             $out[] = $sa_out;
         }
 
-        Log::info('Out:');
-        Log::info($out);
+        // Log::info('Out:');
+        // Log::info($out);
 
         return $out;
     }
@@ -1893,8 +1909,8 @@ class ProcessRow {
 
         if ($article) {
             $article->load('article_surchages');
-            Log::info('article_surchages:');
-            Log::info($article->article_surchages);
+            // Log::info('article_surchages:');
+            // Log::info($article->article_surchages);
         }
 
         if ($article && $article->article_surchages) {

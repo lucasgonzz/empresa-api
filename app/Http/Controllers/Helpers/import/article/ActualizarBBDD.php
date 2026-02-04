@@ -237,7 +237,7 @@ class ActualizarBBDD {
         $this->guardar_variantes_desde_cache_simple();
 
 
-        // $this->actualizar_cache();
+        $this->actualizar_cache();
 
         $this->actualizar_tienda_nube();
 
@@ -1143,24 +1143,9 @@ class ActualizarBBDD {
     function set_articulos_creados_models() {
 
         $inicio = microtime(true);
-        
-        $byProviderCode = [];
-        $byBarCode = [];
-        $byName = [];
-
-        foreach ($this->articulos_para_crear_CACHE as $art) {
-            if (!empty($art['provider_code'])) {
-                $byProviderCode[] = $art['provider_code'];
-            } elseif (!empty($art['bar_code'])) {
-                $byBarCode[] = $art['bar_code'];
-            } elseif (!empty($art['name'])) {
-                $byName[] = $art['name'];
-            }
-        }
-
-        $articles = Article::whereIn('provider_code', $byProviderCode)
-                            ->orWhereIn('bar_code', $byBarCode)
-                            ->orWhereIn('name', $byName)
+       
+        $articles = Article::where('user_id', $this->user->id)
+                            ->where('created_at', $this->now)
                             ->get();
 
         $this->articulos_creados_models = $articles;
@@ -1171,6 +1156,42 @@ class ActualizarBBDD {
         $this->add_observation('Set articulos_creados en '.number_format($dur, 2, '.', '').' seg'); 
         Log::info('se seteo articulos_creados_models con '.count($this->articulos_creados_models).' articulos');
     }
+
+    // function set_articulos_creados_models() {
+
+    //     $inicio = microtime(true);
+        
+    //     $byBarCode = [];
+    //     $bySku = [];
+    //     $byProviderCode = [];
+    //     $byName = [];
+
+    //     foreach ($this->articulos_para_crear_CACHE as $art) {
+    //         if (!empty($art['bar_code'])) {
+    //             $byBarCode[] = $art['bar_code'];
+    //         } else if (!empty($art['sku'])) {
+    //             $bySku[] = $art['sku'];
+    //         } else if (!empty($art['provider_code'])) {
+    //             $byProviderCode[] = $art['provider_code'];
+    //         } elseif (!empty($art['name'])) {
+    //             $byName[] = $art['name'];
+    //         }
+    //     }
+
+    //     $articles = Article::whereIn('bar_code', $byBarCode)
+    //                         ->orWhereIn('sku', $bySku)
+    //                         ->orWhereIn('provider_code', $byProviderCode)
+    //                         ->orWhereIn('name', $byName)
+    //                         ->get();
+
+    //     $this->articulos_creados_models = $articles;
+
+    //     $fin = microtime(true);
+    //     $dur = $fin - $inicio;
+
+    //     $this->add_observation('Set articulos_creados en '.number_format($dur, 2, '.', '').' seg'); 
+    //     Log::info('se seteo articulos_creados_models con '.count($this->articulos_creados_models).' articulos');
+    // }
 
     function set_articulos_actualizados_models() {
 
@@ -1623,12 +1644,12 @@ class ActualizarBBDD {
         Log::info('');
 
         $index = ArticleIndexCache::get($this->user->id);
-        // Log::info('El cache esta asi:');
-        // Log::info(count($index['ids']).' ids');
-        // Log::info(count($index['bar_codes']).' bar_codes');
-        // Log::info(count($index['skus']).' skus');
-        // Log::info(count($index['provider_codes']).' provider_codes');
-        // Log::info(count($index['names']).' names');
+        Log::info('El cache esta asi:');
+        Log::info(count($index['ids']).' ids');
+        Log::info(count($index['bar_codes']).' bar_codes');
+        Log::info(count($index['skus']).' skus');
+        Log::info(count($index['provider_codes']).' provider_codes');
+        Log::info(count($index['names']).' names');
         Log::info('');
 
         foreach ($this->articulos_creados_models as $article) {

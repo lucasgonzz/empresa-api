@@ -29,7 +29,7 @@ class ErrorController extends Controller
             $mensajes[] = 'LINK: '.$model->api_url;
 
 
-            $owner = User::find(env('USER_ID'));
+            $owner = User::find(config('app.USER_ID'));
 
             Mail::to('lucasgonzalez5500@gmail.com')->send(new SimpleMail([
                 'asunto'    => 'Error API | '.$owner->company_name . ' | user_id: '.$owner->id,

@@ -243,6 +243,111 @@ class ArticleIndexCache
         return Cache::get($key, []);
     }
 
+
+    public static function get_index(int $user_id, ?int $provider_id = null, $no_actualizar_otro_proveedor = null): array
+    {
+        $key = "article_index_user_{$user_id}";
+        $index = Cache::get($key, []);
+
+        if (!is_array($index) || empty($index)) {
+            self::build($user_id, $provider_id, $no_actualizar_otro_proveedor);
+            $index = Cache::get($key, []);
+        }
+
+        return is_array($index) ? $index : [];
+    }
+
+    public static function find_with_index(
+        array $data,
+        array $index,
+        int $user_id,
+        ?int $provider_id = null,
+        $no_actualizar_otro_proveedor = null
+    ) {
+        // Si vino vacío por algún motivo, fallback seguro
+        if (!is_array($index) || empty($index)) {
+            return self::find($data, $user_id, $provider_id, $no_actualizar_otro_proveedor);
+        }
+
+        $relations = [
+            'price_types',
+            'addresses',
+            'providers' => function ($q) {
+                $q->select('providers.id');
+            },
+        ];
+
+        $article_id = null;
+
+        $guardar_precio_de_otros_proveedores = config('app.GUARDAR_PRECIO_DE_OTROS_PROVEEDORES');
+
+        // 1) Buscar por ID
+        if (!empty($data['id'])) {
+            if (isset($index['ids'][$data['id']])) {
+                $article_id = $index['ids'][$data['id']];
+            }
+        }
+        // 2) Buscar por bar_code
+        elseif (!empty($data['bar_code'])) {
+            if (isset($index['bar_codes'][$data['bar_code']])) {
+                $article_id = $index['bar_codes'][$data['bar_code']];
+            }
+        }
+        // 3) Buscar por sku
+        elseif (!empty($data['sku'])) {
+            if (isset($index['skus'][$data['sku']])) {
+                $article_id = $index['skus'][$data['sku']];
+            }
+        }
+        // 4) Buscar por provider_code
+        elseif (!empty($data['provider_code'])) {
+
+            $provider_code = trim((string)$data['provider_code']);
+            $article_ids = [];
+
+            if ($provider_id && !$guardar_precio_de_otros_proveedores) {
+
+                if (isset($index['provider_codes'][$provider_id][$provider_code])) {
+                    $article_ids = $index['provider_codes'][$provider_id][$provider_code];
+                }
+
+            } 
+
+            elseif ($provider_id && $guardar_precio_de_otros_proveedores) {
+
+                foreach ($index['provider_codes'] as $prov_id => $codes) {
+                    if (isset($codes[$provider_code])) {
+                        if (is_array($codes[$provider_code])) {
+                            $article_ids = array_merge($article_ids, $codes[$provider_code]);
+                        }
+                    }
+                }
+            } else {
+                foreach ($index['provider_codes'] as $prov_id => $codes) {
+                    if (isset($codes[$provider_code])) {
+                        $article_ids = array_merge($article_ids, $codes[$provider_code]);
+                    }
+                }
+            }
+
+            if (!empty($article_ids)) {
+                if (config('app.CODIGOS_DE_PROVEEDOR_REPETIDOS')) {
+                    return Article::with($relations)->whereIn('id', $article_ids)->get();
+                }
+                return Article::with($relations)->whereIn('id', $article_ids)->first();
+            }
+        }
+        // 5) Buscar por nombre
+        elseif (!empty($data['name'])) {
+            $key_name = strtolower(trim((string)$data['name']));
+            if (isset($index['names'][$key_name])) {
+                $article_id = $index['names'][$key_name];
+            }
+        }
+
+        return $article_id ? Article::with($relations)->find($article_id) : null;
+    }
+
     /**
      * Busca un artículo en el índice y retorna la instancia de Eloquent
      * con relaciones críticas precargadas (para evitar N+1 en comparaciones).
@@ -250,8 +355,17 @@ class ArticleIndexCache
     public static function find(array $data, int $user_id, ?int $provider_id = null, $no_actualizar_otro_proveedor = null)
     {
 
+        $index = self::get_index($user_id, $provider_id, $no_actualizar_otro_proveedor);
+        return self::find_with_index($data, $index, $user_id, $provider_id, $no_actualizar_otro_proveedor);
+
         $key = "article_index_user_{$user_id}";
-        $index = Cache::get($key);
+        $index = Cache::get($key, []);
+
+        // Si el índice no existe (o quedó corrupto), lo reconstruimos
+        if (!is_array($index) || empty($index)) {
+            self::build($user_id, $provider_id, $no_actualizar_otro_proveedor);
+            $index = Cache::get($key, []);
+        }
 
         $relations = [
             'price_types',
@@ -517,7 +631,10 @@ class ArticleIndexCache
                 $prov_id = $article->provider_id;
                 $prov_code = $article->provider_code;
 
-                if (isset($index['provider_codes'][$prov_id][$prov_code])) {
+                if (
+                    isset($index['provider_codes'][$prov_id])
+                    && isset($index['provider_codes'][$prov_id][$prov_code])
+                ) {
 
                     $entry = $index['provider_codes'][$prov_id][$prov_code];
 

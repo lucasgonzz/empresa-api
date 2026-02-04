@@ -147,7 +147,7 @@ class SaleTicketPdf extends fpdf {
         // $image_width -= 4;
 
         if (!is_null($this->user->image_url)) {
-        	if (env('APP_ENV') == 'local') {
+        	if (config('app.APP_ENV') == 'local') {
         		$this->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', 0, 0, $image_width, $image_width);
         	} else {
 	        	$this->Image($this->user->image_url, $this->x_incial, $this->x_incial, $image_width, $image_width);
