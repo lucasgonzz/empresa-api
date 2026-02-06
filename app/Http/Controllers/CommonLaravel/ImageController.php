@@ -41,9 +41,9 @@ class ImageController extends Controller
         } else {
 
             if (config('app.VPS')) {
-                $name = env('APP_URL').'/storage/'.$name;
+                $name = config('app.APP_URL').'/storage/'.$name;
             } else {
-                $name = env('APP_URL').'/public/storage/'.$name;
+                $name = config('app.APP_URL').'/public/storage/'.$name;
             }
         }
 

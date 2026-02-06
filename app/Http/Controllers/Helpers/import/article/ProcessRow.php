@@ -21,6 +21,7 @@ use App\Models\Brand;
 use App\Models\Category;
 use App\Models\Iva;
 use App\Models\SubCategory;
+use Illuminate\Support\Str;
 
 class ProcessRow {
 
@@ -41,6 +42,12 @@ class ProcessRow {
     protected $sub_category_cache = []; // [category_id][name_key] => id
     protected $iva_cache = [];   
     protected $article_index = [];
+
+    protected $observations = '';
+    protected $inicio = '';
+    protected $fin = '';
+    protected $taken_slugs = [];
+    protected $slug_next_index = [];
 
 
     /**
@@ -68,6 +75,41 @@ class ProcessRow {
         $this->set_category_cache();
         $this->set_sub_category_cache();
         $this->set_iva_cache();
+    }
+
+    public function set_taken_slugs(array $slugs): void
+    {
+        // set estilo "hash" para lookup O(1)
+        $this->taken_slugs = [];
+        foreach ($slugs as $s) {
+            $this->taken_slugs[$s] = true;
+        }
+    }
+
+    protected function unique_slug(string $name): string
+    {
+        $base = Str::slug($name);
+        if ($base === '') {
+            $base = 'articulo';
+        }
+
+        if (!isset($this->slug_next_index[$base])) {
+            $this->slug_next_index[$base] = 1;
+        }
+
+        $slug = $base;
+
+        if (isset($this->taken_slugs[$slug])) {
+            $i = $this->slug_next_index[$base];
+            do {
+                $slug = $base . '-' . $i;
+                $i++;
+            } while (isset($this->taken_slugs[$slug]));
+            $this->slug_next_index[$base] = $i;
+        }
+
+        $this->taken_slugs[$slug] = true;
+        return $slug;
     }
 
     public function set_article_index(array $article_index): void
@@ -153,8 +195,11 @@ class ProcessRow {
      */
     function procesar($row, $nombres_proveedores) {
 
+        $this->observations = '';
+
         $this->nombres_proveedores = $nombres_proveedores;
 
+        $this->iniciar();
         $props_to_add = [
             [
                 'excel_column'  => 'numero',
@@ -294,9 +339,11 @@ class ProcessRow {
             $data = array_merge($data, $data_autopartes);
         }
 
+        $this->terminar('set $data');
 
 
 
+        $this->iniciar();
         /* 
             Si el articulo ya estaba previamente en una fila del excel, 
             se omite para no sobreescribirlo
@@ -319,11 +366,13 @@ class ProcessRow {
         } else {
             // Log::info('No esta aun en el excel');
         }
+        $this->terminar('check variants');
 
 
 
         // $articulo_ya_creado = ArticleIndexCache::find($data, $this->user->id, $provider_id, $this->no_actualizar_articulos_de_otro_proveedor);
 
+        $this->iniciar();
         $articulo_ya_creado = ArticleIndexCache::find_with_index(
             $data,
             $this->article_index,
@@ -331,6 +380,7 @@ class ProcessRow {
             $provider_id,
             $this->no_actualizar_articulos_de_otro_proveedor
         );
+        $this->terminar('find en cache');
 
         if (
             !is_null($articulo_ya_creado)
@@ -339,7 +389,9 @@ class ProcessRow {
 
             // Log::info('Articulo ya creado');
 
+            $this->iniciar();
             $this->attach_provider($articulo_ya_creado, $data, $provider_id);
+            $this->terminar('attach_provider');
 
 
             if ($this->son_varios_articulos($articulo_ya_creado)) {
@@ -376,30 +428,43 @@ class ProcessRow {
                 * Y desde el ArticleHelper veo si le pongo el % que viene en el excel o 
                     el % por defecto del price_type 
             */
+            $this->iniciar();
             $price_types_data = $this->obtener_price_types($row);
             $data['price_types_data'] = $price_types_data;
+            $this->terminar('crear: obtener_price_types');
 
             
+            $this->iniciar();
             $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
             if (!empty($discounts_diff)) {
                 $data['discounts'] = $discounts_diff;
             } 
+            $this->terminar('crear: discounts_diff');
 
+            $this->iniciar();
             $surchages_diff = $this->get_surchages_diff($articulo_ya_creado, $row);
             if (!empty($surchages_diff)) {
                 $data['surchages'] = $surchages_diff;
             }
+            $this->terminar('crear: surchages_diff');
 
 
+            $this->iniciar();
             $stock = $this->obtener_stock($row);
+            $this->terminar('crear: obtener_stock');
 
+            $this->iniciar();
             if (!is_null($stock['stock_global'])) {
                 $data['stock_global'] = $stock['stock_global'];
             } else if (count($stock['stock_addresses']) > 0) {
                 $data['stock_addresses'] = $stock['stock_addresses'];
             }
+            $this->terminar('crear: stock_global');
 
-            $data['slug'] = ArticleHelper::slug($data['name']);
+            $this->iniciar();
+            // $data['slug'] = ArticleHelper::slug($data['name'], $this->user->id);
+            $data['slug'] = $this->unique_slug((string)$data['name']);
+            $this->terminar('crear: article slug');
 
             $data['variants_data'] = []; // 👈 espacio para variantes
 
@@ -410,6 +475,7 @@ class ProcessRow {
 
             $this->articulosParaCrear[] = $data;
 
+            $this->iniciar();
             // Lo agregamos al índice para evitar procesarlo duplicado en siguientes filas
             $fakeArticle = new \App\Models\Article($data);
             // $num = $this->ct->num('articles', $this->user->id);
@@ -418,8 +484,22 @@ class ProcessRow {
             // $fakeArticle->fake_id = $data['id'];
 
             ArticleIndexCache::add($fakeArticle);
+            $this->terminar('crear: add cache');
         }
 
+        return $this->observations;
+    }
+
+    function iniciar() {
+        $this->inicio = microtime(true);
+    }
+
+    function terminar($title) {
+        $this->fin = microtime(true);
+        $dur = $this->fin - $this->inicio;
+        if ($dur > 0) {
+            $this->observations .= $title.' '. number_format($dur, 2, '.', '') .' seg. ';
+        }
     }
 
     function omitir_por_pertencer_a_otro_proveedor($articulo_ya_creado, $provider_id) {
@@ -467,64 +547,78 @@ class ProcessRow {
         return $articulo_ya_creado instanceof Collection;
     }
 
+
     function update_provider_relation($articulo_ya_creado, $data, $provider_id) {
 
-        // Log::info('update_provider_relation de '.$articulo_ya_creado->name);
-        // Log::info($articulo_ya_creado->toArray());
+        $epsilon = 0.01; // ajustalo según tu caso (p.ej. centavos: 0.01 / 0.001)
 
-        $pivot_data = [
-            'provider_code' => isset($data['provider_code']) ? $data['provider_code']: null,
-            'cost'          => isset($data['cost']) ? $data['cost'] : null,
-        ];
+        if (
+            isset($data['cost'])
+            && abs((float)$data['cost'] - (float)$articulo_ya_creado->cost) > $epsilon 
+        ) {
 
-        $existe_relacion = $articulo_ya_creado->providers()
-                                ->where('provider_id', $provider_id)
-                                ->exists();
+            $pivot_data = [
+                'provider_code' => isset($data['provider_code']) ? $data['provider_code']: null,
+                'cost'          => isset($data['cost']) ? $data['cost'] : null,
+            ];
 
-        if ($existe_relacion) {
-
-            // Log::info('Ya estaba relacionado con el provider id '.$provider_id);
-            // ✅ Actualizar pivot existente
-            $articulo_ya_creado->providers()->updateExistingPivot($provider_id, $pivot_data);
-        } else {
-            // ✅ Crear pivot nuevo
-            $articulo_ya_creado->providers()->attach($provider_id, $pivot_data);
+            // ✅ 1 sola operación: inserta o actualiza pivot sin hacer exists() antes
+            $articulo_ya_creado->providers()->syncWithoutDetaching([
+                $provider_id => $pivot_data
+            ]);
         }
+        
+
     }
 
     
 
     function procesar_articulo_ya_creado($articulo_ya_creado, $data, $row) {
+        $this->iniciar();
         $articulo_ya_creado->loadMissing(['price_types', 'addresses']);
+        $this->terminar('loadMissing');
 
         // Comparar propiedades y obtener las que cambiaron
+        $this->iniciar();
         $cambios = $this->get_modified_fields($articulo_ya_creado, $data);
+        $this->terminar('get_modified_fields');
 
+
+        $this->iniciar();
         $price_types_data = $this->obtener_price_types($row, $articulo_ya_creado);
         $price_types_data = $this->filter_only_changed_price_types($articulo_ya_creado, $price_types_data);
         if (!empty($price_types_data)) {
             $cambios['price_types_data'] = $price_types_data;
         }
+        $this->terminar('price_types_data');
 
         
+        $this->iniciar();
         $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
         if (!empty($discounts_diff)) {
             $cambios['discounts'] = $discounts_diff;
         } 
+        $this->terminar('discounts_diff');
 
+        $this->iniciar();
         $surchages_diff = $this->get_surchages_diff($articulo_ya_creado, $row);
         if (!empty($surchages_diff)) {
             $cambios['surchages'] = $surchages_diff;
         }
+        $this->terminar('surchages_diff');
         
 
         // if (count($price_types_data) > 0) {
         //     $cambios['price_types_data'] = $price_types_data;
         // }
 
+        $this->iniciar();
         $stock_data = $this->obtener_stock($row, $articulo_ya_creado);
+        $this->terminar('obtener_stock');
+
 
         // 🔎 Chequeamos si vino stock global y si cambió realmente
+        $this->iniciar();
         if (isset($stock_data['stock_global'])) {
             $excel_stock = (float)$this->normalize_scalar($stock_data['stock_global']);
             $actual_stock = (float)$this->normalize_scalar($articulo_ya_creado->stock ?? 0);
@@ -538,8 +632,11 @@ class ProcessRow {
                 ];
             }
         }
+        $this->terminar('stock_global');
+
 
         // 🏬 Si vino stock por direcciones, limpiamos las diferencias cero
+        $this->iniciar();
         if (isset($stock_data['stock_addresses']) && is_array($stock_data['stock_addresses'])) {
             $stock_changes = $this->purge_zero_stock_diffs($stock_data['stock_addresses'], $articulo_ya_creado);
 
@@ -547,6 +644,7 @@ class ProcessRow {
                 $cambios['stock_addresses'] = $stock_changes;
             }
         }
+        $this->terminar('stock_addresses');
 
 
         if (!empty($cambios)) {

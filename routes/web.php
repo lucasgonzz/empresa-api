@@ -91,7 +91,7 @@ Route::post('/mercadolibre/webhook', 'MercadoPagoController@webhook');
 
 Route::get('/mercadolibre/category_for_article/{article_id}', function ($article_id) {
    
-    $category_service = new CategoryService(env('USER_ID'));
+    $category_service = new CategoryService(config('app.APP_ENV'));
 
     $article = Article::find($article_id);
 
@@ -101,7 +101,7 @@ Route::get('/mercadolibre/category_for_article/{article_id}', function ($article
 
 Route::get('/mercadolibre/setear-categorias/{article_id}', function ($article_id) {
    
-    $category_service = new SetearCategoryNameService(env('USER_ID'));
+    $category_service = new SetearCategoryNameService(config('app.APP_ENV'));
 
     $category_service->setear_category_name($article_id);
 });

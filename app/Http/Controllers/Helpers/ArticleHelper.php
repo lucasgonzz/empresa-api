@@ -341,6 +341,10 @@ class ArticleHelper {
             // return ceil($price / 100) * 100;
         }
 
+        if (env('REDONDEAR_PRECIOS_EN_DECENAS', false)) {
+            return round($price, -1);
+        }
+
         if (env('REDONDEAR_DE_A_50', false)) {
             return ceil($price / 50) * 50;
         }

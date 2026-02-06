@@ -24,11 +24,11 @@ class CajaSeeder extends Seeder
         $models = [
             [
                 'name'    => 'Caja Fuerte',
-                'user_id'   => env('USER_ID')
+                'user_id'   => config('app.USER_ID')
             ],
             [
                 'name'    => 'MercadoPago Transferencias',
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
                 'default_payment_method_caja'   => [
                     // Id de CurrentAcountPaymentMethod "MercadoPago"
                     'payment_method_id'    => 6,
@@ -38,7 +38,7 @@ class CajaSeeder extends Seeder
             [
                 'name'    => 'Santender',
                 'saldo'   => 10000,
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
                 'default_payment_method_caja'   => [
                     // Id de CurrentAcountPaymentMethod "Debito"
                     'payment_method_id'    => 2,
@@ -47,10 +47,10 @@ class CajaSeeder extends Seeder
             ],
         ];
 
-        $this->addresses = Address::where('user_id', env('USER_ID'))
+        $this->addresses = Address::where('user_id', config('app.USER_ID'))
                                 ->get();
 
-        $employees = User::where('owner_id', env('USER_ID'))
+        $employees = User::where('owner_id', config('app.USER_ID'))
                                     ->get();
 
         foreach ($this->addresses as $address) {
@@ -62,7 +62,7 @@ class CajaSeeder extends Seeder
                     'name'      => 'Efectivo',
                     'employee_id'   => $employee->id,
                     'address_id'    => $address->id,
-                    'user_id'   => env('USER_ID'),
+                    'user_id'   => config('app.USER_ID'),
                     'saldo'     => 10000,
                     'default_payment_method_caja' => [
                         'payment_method_id'     => 3,
@@ -75,7 +75,7 @@ class CajaSeeder extends Seeder
                     'employee_id'   => $employee->id,
                     'name'      => 'Debitos',
                     'address_id'    => $address->id,
-                    'user_id'   => env('USER_ID'),
+                    'user_id'   => config('app.USER_ID'),
                     'saldo'     => 10000,
                 ];
                 
@@ -84,7 +84,7 @@ class CajaSeeder extends Seeder
                     'employee_id'   => $employee->id,
                     'name'      => 'Tarjetas',
                     'address_id'    => $address->id,
-                    'user_id'   => env('USER_ID'),
+                    'user_id'   => config('app.USER_ID'),
                     'saldo'     => 10000,
                 ];
                 
@@ -93,7 +93,7 @@ class CajaSeeder extends Seeder
                     'employee_id'   => $employee->id,
                     'name'      => 'Transferencias',
                     'address_id'    => $address->id,
-                    'user_id'   => env('USER_ID'),
+                    'user_id'   => config('app.USER_ID'),
                     'saldo'     => 10000,
                 ];
             }

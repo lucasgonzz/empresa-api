@@ -24,7 +24,7 @@ class TitleSeeder extends Seeder
     function default() {
 
 
-        if (env('FOR_USER') == 'truvari') {
+        if (config('app.FOR_USER') == 'truvari') {
             return;
         }
 
@@ -38,14 +38,14 @@ class TitleSeeder extends Seeder
         ];
         
         foreach ($models as $title) {
-            $title['user_id'] = env('USER_ID');
+            $title['user_id'] = config('app.USER_ID');
             Title::create($title);
         }
     }
 
     function truvari() {
 
-        if (env('FOR_USER') != 'truvari') {
+        if (config('app.FOR_USER') != 'truvari') {
             return;
         }
 
@@ -63,7 +63,7 @@ class TitleSeeder extends Seeder
         ];
         
         foreach ($models as $title) {
-            $title['user_id'] = env('USER_ID');
+            $title['user_id'] = config('app.USER_ID');
             Title::create($title);
         }
     }

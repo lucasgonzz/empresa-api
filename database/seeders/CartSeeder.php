@@ -17,17 +17,17 @@ class CartSeeder extends Seeder
      */
     public function run()
     {
-        $buyers = Buyer::where('user_id', env('USER_ID'))
+        $buyers = Buyer::where('user_id', config('app.USER_ID'))
                             ->get();
 
-        $articles = Article::where('user_id', env('USER_ID'))
+        $articles = Article::where('user_id', config('app.USER_ID'))
                             ->take(10)
                             ->get();
 
         foreach ($buyers as $buyer) {
             $cart = Cart::create([
                 'buyer_id' => $buyer->id,
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ]);
 
             $total = 0;

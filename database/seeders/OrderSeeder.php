@@ -41,10 +41,10 @@ class OrderSeeder extends Seeder
                 'order_status_id'       => $model['order_status_id'],
                 'deliver'               => $model['deliver'],
                 'created_at'            => $model['created_at'],
-                'user_id'               => env('USER_ID'),
+                'user_id'               => config('app.USER_ID'),
             ]);
 
-            $articles = Article::where('user_id', env('USER_ID'))
+            $articles = Article::where('user_id', config('app.USER_ID'))
                                 ->get();
 
             foreach ($articles as $article) {

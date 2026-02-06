@@ -29,11 +29,11 @@ class SellerSeeder extends Seeder
     function truvari() {
 
 
-        if (env('FOR_USER') != 'truvari') {
+        if (config('app.FOR_USER') != 'truvari') {
             return;
         }
 
-        $employees = User::where('owner_id', env('USER_ID'))
+        $employees = User::where('owner_id', config('app.USER_ID'))
                             ->get();
 
         $num = 0;
@@ -57,7 +57,7 @@ class SellerSeeder extends Seeder
     function golo_norte() {
 
 
-        if (env('FOR_USER') != 'golo_norte') {
+        if (config('app.FOR_USER') != 'golo_norte') {
             return;
         }
 
@@ -82,7 +82,7 @@ class SellerSeeder extends Seeder
 
         foreach ($models as $model) {
             
-            $model['user_id'] = env('USER_ID');
+            $model['user_id'] = config('app.USER_ID');
 
             $seller = Seller::create([
                 'num'               => $model['num'],
@@ -106,7 +106,7 @@ class SellerSeeder extends Seeder
 
     function fenix() {
 
-        if (env('FOR_USER') != 'fenix') {
+        if (config('app.FOR_USER') != 'fenix') {
             return;
         }
 
@@ -115,37 +115,37 @@ class SellerSeeder extends Seeder
                 'num'                       => 1,
                 'name'                      => 'Marcelo',
                 'commission_after_pay_sale' => 1,
-                'user_id'                   => env('USER_ID'),
+                'user_id'                   => config('app.USER_ID'),
             ],
             [
                 'num'                       => 2,
                 'name'                      => 'Matias',
                 'commission_after_pay_sale' => 1,
-                'user_id'                   => env('USER_ID'),
+                'user_id'                   => config('app.USER_ID'),
             ],
             [
                 'num'                       => 3,
                 'name'                      => 'Oscar (perdidas)',
                 'commission_after_pay_sale' => 0,
-                'user_id'                   => env('USER_ID'),
+                'user_id'                   => config('app.USER_ID'),
             ],
             [
                 'num'                       => 4,
                 'name'                      => 'Oscar',
                 'commission_after_pay_sale' => 0,
-                'user_id'                   => env('USER_ID'),
+                'user_id'                   => config('app.USER_ID'),
             ],
             [
                 'num'                       => 5,
                 'name'                      => 'Fede',
                 'commission_after_pay_sale' => 0,
-                'user_id'                   => env('USER_ID'),
+                'user_id'                   => config('app.USER_ID'),
             ],
             [
                 'num'                       => 6,
                 'name'                      => 'Papi',
                 'commission_after_pay_sale' => 0,
-                'user_id'                   => env('USER_ID'),
+                'user_id'                   => config('app.USER_ID'),
             ],
         ];
 

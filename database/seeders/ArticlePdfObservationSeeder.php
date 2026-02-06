@@ -49,7 +49,7 @@ class ArticlePdfObservationSeeder extends Seeder
         $position = 1;
         foreach ($models as $model) {
             
-            $model['user_id'] = env('USER_ID');
+            $model['user_id'] = config('app.USER_ID');
             $model['position'] = $position;
 
             $position++;

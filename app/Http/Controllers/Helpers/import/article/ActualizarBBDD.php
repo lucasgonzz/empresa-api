@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
@@ -1223,17 +1224,21 @@ class ActualizarBBDD {
     protected function guardar_variantes_desde_cache_simple(): void
     {
         $inicio = microtime(true);
-        // 1) Artículos a CREAR
-        if (isset($this->articulos_para_crear_CACHE) && is_array($this->articulos_para_crear_CACHE)) {
-            foreach ($this->articulos_para_crear_CACHE as $art_cache) {
-                $this->persistir_variantes_de_articulo_cache($art_cache);
-            }
-        }
 
-        // 2) Artículos a ACTUALIZAR
-        if (isset($this->articulos_para_actualizar_CACHE) && is_array($this->articulos_para_actualizar_CACHE)) {
-            foreach ($this->articulos_para_actualizar_CACHE as $art_cache) {
-                $this->persistir_variantes_de_articulo_cache($art_cache);
+        if (UserHelper::hasExtencion('article_variants', $this->user)) {
+            
+            // 1) Artículos a CREAR
+            if (isset($this->articulos_para_crear_CACHE) && is_array($this->articulos_para_crear_CACHE)) {
+                foreach ($this->articulos_para_crear_CACHE as $art_cache) {
+                    $this->persistir_variantes_de_articulo_cache($art_cache);
+                }
+            }
+
+            // 2) Artículos a ACTUALIZAR
+            if (isset($this->articulos_para_actualizar_CACHE) && is_array($this->articulos_para_actualizar_CACHE)) {
+                foreach ($this->articulos_para_actualizar_CACHE as $art_cache) {
+                    $this->persistir_variantes_de_articulo_cache($art_cache);
+                }
             }
         }
         $fin = microtime(true);

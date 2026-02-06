@@ -234,11 +234,13 @@ return [
 
     ],
 
-    'USER_ID' => env('USER_ID'),
-    'GUARDAR_PRECIO_DE_OTROS_PROVEEDORES' => env('GUARDAR_PRECIO_DE_OTROS_PROVEEDORES', false),
-    'CODIGOS_DE_PROVEEDOR_REPETIDOS' => env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false),
-    'ARTICLE_EXCEL_CHUNK_SIZE' => env('ARTICLE_EXCEL_CHUNK_SIZE', 300),
-    'VPS' => env('VPS', false),
-    'APP_ENV' => env('APP_ENV', 'production'),
+    'USER_ID'                                   => env('USER_ID'),
+    'GUARDAR_PRECIO_DE_OTROS_PROVEEDORES'       => env('GUARDAR_PRECIO_DE_OTROS_PROVEEDORES', false),
+    'CODIGOS_DE_PROVEEDOR_REPETIDOS'            => env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false),
+    'ARTICLE_EXCEL_CHUNK_SIZE'                  => env('ARTICLE_EXCEL_CHUNK_SIZE', 300),
+    'VPS'                                       => env('VPS', false),
+    'APP_ENV'                                   => env('APP_ENV', 'production'),
+    'APP_URL'                                   => env('APP_URL'),
+    'FOR_USER'                                  => env('FOR_USER'),
 
 ];

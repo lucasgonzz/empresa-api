@@ -29,7 +29,7 @@ class OrderProductionStatusSeeder extends Seeder
         foreach ($models as $model) {
             $position++;
             $model['position'] = $position;
-            $model['user_id'] = env('USER_ID');
+            $model['user_id'] = config('app.USER_ID');
             OrderProductionStatus::create($model);
         }
     }

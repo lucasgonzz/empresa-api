@@ -89,8 +89,8 @@ class ArticleBarCodePdf extends fpdf {
 
 			$code = $article->bar_code;
 			if (
-				env('APP_URL') == 'https://api-feitoamao-beta.comerciocity.com'
-				|| env('APP_URL') == 'https://api-feitoamao.comerciocity.com'
+				config('app.APP_URL') == 'https://api-feitoamao-beta.comerciocity.com'
+				|| config('app.APP_URL') == 'https://api-feitoamao.comerciocity.com'
 			) {
 
 				$code = ''.$article->num;

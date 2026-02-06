@@ -100,7 +100,16 @@ class ClientImport implements ToCollection {
         $data = [];
         foreach ($this->props_to_set as $key => $value) {
             if (!is_null(ImportHelper::getColumnValue($row, $value, $this->columns))) {
-                $data[$key] = ImportHelper::getColumnValue($row, $value, $this->columns);
+
+                if ($key == 'cuit') {
+                    $cuit = ImportHelper::getColumnValue($row, $value, $this->columns);
+                    $cuit = str_replace('-', '', $cuit);
+
+                    $data[$key] = $cuit;
+                } else {
+
+                    $data[$key] = ImportHelper::getColumnValue($row, $value, $this->columns);
+                }
             }
         }
         if (!is_null(ImportHelper::getColumnValue($row, 'condicion_frente_al_iva', $this->columns))) {
@@ -109,7 +118,7 @@ class ClientImport implements ToCollection {
         if (!is_null(ImportHelper::getColumnValue($row, 'localidad', $this->columns))) {
 
             // if (
-            //     env('FOR_USER') == 'golo_norte'
+            //     config('app.FOR_USER') == 'golo_norte'
             //     && config('app.APP_ENV') == 'local'
             // ) {
 

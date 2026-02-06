@@ -31,7 +31,7 @@ class ExpenseSeeder extends Seeder
 
                 $model['num'] = $num;
                 $model['amount'] = $amount;
-                $model['user_id'] = env('USER_ID');
+                $model['user_id'] = config('app.USER_ID');
                 $model['created_at'] = Carbon::now()->subMonths($mes);
 
                 Expense::create($model);

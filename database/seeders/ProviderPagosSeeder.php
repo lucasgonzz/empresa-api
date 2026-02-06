@@ -22,7 +22,7 @@ class ProviderPagosSeeder extends Seeder
     {
         $num = 1;
 
-        $user_id = env('USER_ID');
+        $user_id = config('app.USER_ID');
 
         $provider = Provider::where('name', 'Buenos Aires')->first();
 

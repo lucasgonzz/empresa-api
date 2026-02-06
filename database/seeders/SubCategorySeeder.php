@@ -23,11 +23,11 @@ class SubCategorySeeder extends Seeder
 
     function truvari() {
 
-        if (env('FOR_USER') != 'truvari') {
+        if (config('app.FOR_USER') != 'truvari') {
             return;
         }
         
-        $categories = Category::where('user_id', env('USER_ID'))
+        $categories = Category::where('user_id', config('app.USER_ID'))
                                 ->get();
 
         require('subcategories/truvari.php');
@@ -39,7 +39,7 @@ class SubCategorySeeder extends Seeder
                     'num'           => $num,
                     'name'          => $sub_category,
                     'category_id'   => $category['category_id'],
-                    'user_id'       => env('USER_ID'),
+                    'user_id'       => config('app.USER_ID'),
                 ]);         
                 $num++;
             }
@@ -48,11 +48,11 @@ class SubCategorySeeder extends Seeder
 
     function default() {
 
-        if (env('FOR_USER') == 'truvari') {
+        if (config('app.FOR_USER') == 'truvari') {
             return;
         }
         
-        $categories = Category::where('user_id', env('USER_ID'))
+        $categories = Category::where('user_id', config('app.USER_ID'))
                                 ->get();
 
         require('subcategories/supermercado.php');
@@ -64,7 +64,7 @@ class SubCategorySeeder extends Seeder
                     'num'           => $num,
                     'name'          => $sub_category,
                     'category_id'   => $category['category_id'],
-                    'user_id'       => env('USER_ID'),
+                    'user_id'       => config('app.USER_ID'),
                 ]);         
                 $num++;
             }

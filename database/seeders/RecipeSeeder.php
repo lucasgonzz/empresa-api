@@ -16,7 +16,7 @@ class RecipeSeeder extends Seeder
      */
     public function run()
     {
-        $article = Article::where('user_id', env('USER_ID'))
+        $article = Article::where('user_id', config('app.USER_ID'))
                             ->where('name', 'Gabinete')
                             ->first();
 
@@ -24,7 +24,7 @@ class RecipeSeeder extends Seeder
             'num'           => 1,
             'article_id'    => $article->id,
             'address_id'    => 1,
-            'user_id'       => env('USER_ID'),
+            'user_id'       => config('app.USER_ID'),
         ]);
         
         $articles = [
@@ -48,7 +48,7 @@ class RecipeSeeder extends Seeder
             ],
         ];
         foreach ($articles as $article) {
-            $art = Article::where('user_id', env('USER_ID'))
+            $art = Article::where('user_id', config('app.USER_ID'))
                             ->where('name', $article['name'])
                             ->first();
             $recipe->articles()->attach($art->id, [

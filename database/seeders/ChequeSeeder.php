@@ -77,11 +77,13 @@ class ChequeSeeder extends Seeder
                                             ->where('moneda_id', 1)
                                             ->first();
 
+            if (!$credit_account) continue;
+            
             $pago = CurrentAcount::create([
                 'haber'                             => $model['amount'],
                 'description'                       => null,
                 'status'                            => 'pago_from_client',
-                'user_id'                           => env('USER_ID'),
+                'user_id'                           => config('app.USER_ID'),
                 'num_receipt'                       => $index,
                 'detalle'                           => 'Pago N°'.$index,
                 'provider_id'                         => $model['provider_id'],
@@ -164,11 +166,13 @@ class ChequeSeeder extends Seeder
                                             ->where('moneda_id', 1)
                                             ->first();
 
+            if (!$credit_account) continue;
+
             $pago = CurrentAcount::create([
                 'haber'                             => $model['amount'],
                 'description'                       => null,
                 'status'                            => 'pago_from_client',
-                'user_id'                           => env('USER_ID'),
+                'user_id'                           => config('app.USER_ID'),
                 'num_receipt'                       => $index,
                 'detalle'                           => 'Pago N°'.$index,
                 'client_id'                         => $model['client_id'],

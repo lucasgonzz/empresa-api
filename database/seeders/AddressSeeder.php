@@ -16,9 +16,9 @@ class AddressSeeder extends Seeder
     public function run()
     {
 
-        if (env('FOR_USER') == 'fenix') {
+        if (config('app.FOR_USER') == 'fenix') {
             return;
-        } else if (env('FOR_USER') == 'bad_girls') {
+        } else if (config('app.FOR_USER') == 'bad_girls') {
             $this->bad_girls();
         } else {
             $this->default();
@@ -31,13 +31,13 @@ class AddressSeeder extends Seeder
             [
                 'num'       => 1,
                 'street'    => 'Arriba',
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ],
             [
                 'num'       => 2,
                 'street'    => 'Abajo',
                 'default_address'    => 1,
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ],
         ];
         foreach ($models as $model) {
@@ -51,25 +51,25 @@ class AddressSeeder extends Seeder
             [
                 'num'       => 1,
                 'street'    => 'Tucuman',
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ],
             [
                 'num'       => 2,
                 'street'    => 'Santa Fe',
                 'default_address'    => 1,
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ],
             [
                 'num'       => 3,
                 'street'    => 'Buenos Aires',
                 'default_address'    => 1,
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ],
             [
                 'num'       => 4,
                 'street'    => 'Mar del Plata',
                 'default_address'    => 1,
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ],
         ];
         foreach ($models as $model) {

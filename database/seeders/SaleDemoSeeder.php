@@ -22,7 +22,7 @@ class SaleDemoSeeder extends Seeder
 
         $cantidad_de_ventas_por_dia = 5;
 
-        $price_types = PriceType::where('user_id', env('USER_ID'))
+        $price_types = PriceType::where('user_id', config('app.USER_ID'))
                                     ->get();
 
         for ($dias_atras=3; $dias_atras >= 0 ; $dias_atras--) { 
@@ -37,7 +37,7 @@ class SaleDemoSeeder extends Seeder
                     'num'               => $num,
                     'employee_id'       => null,
                     'moneda_id'         => 1,
-                    'user_id'           => env('USER_ID'),
+                    'user_id'           => config('app.USER_ID'),
                     'terminada'         => 1,
                     'confirmed'         => 1,
                     'save_current_acount'=> 1,

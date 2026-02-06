@@ -23,7 +23,7 @@ class SalesSinConfirmarSeeder extends Seeder
             'employee_id'       => null,
             'client_id'         => 1,
             'created_at'        => Carbon::now()->subMonths(1)->endOfMonth(),
-            'user_id'           => env('USER_ID'),
+            'user_id'           => config('app.USER_ID'),
             'terminada'         => 0,
             'confirmed'         => 1,
             'fecha_entrega'     => Carbon::today()->addDays(2),

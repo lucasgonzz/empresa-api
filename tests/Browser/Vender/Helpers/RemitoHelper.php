@@ -18,7 +18,7 @@ class RemitoHelper {
         //     '001'      => 5,
         //     '002'     => 6,
         // ];
-        // if (env('FOR_USER') == 'feito') {
+        // if (config('app.FOR_USER') == 'feito') {
         //     return $articles_num[$bar_code];
         // }
         return $bar_code;

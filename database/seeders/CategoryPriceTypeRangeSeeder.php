@@ -16,10 +16,10 @@ class CategoryPriceTypeRangeSeeder extends Seeder
      */
     public function run()
     {
-        $categories = Category::where('user_id', env('USER_ID'))
+        $categories = Category::where('user_id', config('app.USER_ID'))
                                 ->get();
 
-        $this->price_types = PriceType::where('user_id', env('USER_ID'))
+        $this->price_types = PriceType::where('user_id', config('app.USER_ID'))
                                 ->orderBy('position', 'DESC')
                                 ->get();
 
@@ -39,7 +39,7 @@ class CategoryPriceTypeRangeSeeder extends Seeder
                     'price_type_id' => $price_type->id,
                     'min'           => $min,
                     'max'           => $max,
-                    'user_id'       => env('USER_ID'),
+                    'user_id'       => config('app.USER_ID'),
                 ]);
 
                 $min += 6;
@@ -79,7 +79,7 @@ class CategoryPriceTypeRangeSeeder extends Seeder
                     'price_type_id'     => $price_type->id,
                     'min'               => $min,
                     'max'               => $max,
-                    'user_id'           => env('USER_ID'),
+                    'user_id'           => config('app.USER_ID'),
                 ]);
                                 
                 $min += 10;

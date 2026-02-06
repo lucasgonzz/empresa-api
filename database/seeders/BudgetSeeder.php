@@ -22,14 +22,14 @@ class BudgetSeeder extends Seeder
                 'num'           => 1,
                 'client_id'     => 1,
                 'observations'  => 'El envio se realiza una vez pagado el 50% del total',
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
         ];
         foreach ($models as $model) {
 
             $budget = Budget::create($model);
 
-            $articles = Article::where('user_id', env('USER_ID'))
+            $articles = Article::where('user_id', config('app.USER_ID'))
                             ->take(3)
                             ->get();
 

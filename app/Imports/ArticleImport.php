@@ -30,6 +30,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Session;
 use Maatwebsite\Excel\Concerns\ToCollection;
 use Maatwebsite\Excel\Concerns\WithHeadingRow;
+use Illuminate\Support\Str;
 
 class ArticleImport implements ToCollection
 {
@@ -93,6 +94,35 @@ class ArticleImport implements ToCollection
     }
 
 
+    function slugs($rows) {
+        // ✅ Prefetch de slugs para evitar queries por fila al crear artículos
+        $slug_bases = [];
+        foreach ($rows as $row) {
+            $name = ImportHelper::getColumnValue($row, 'nombre', $this->columns);
+            if (!is_null($name) && trim((string)$name) !== '') {
+                $base = Str::slug((string)$name);
+                if ($base !== '') {
+                    $slug_bases[$base] = true;
+                }
+            }
+        }
+        $slug_bases = array_keys($slug_bases);
+
+        $taken_slugs = [];
+        if (!empty($slug_bases)) {
+            $taken_slugs = Article::where('user_id', $this->user->id)
+                ->where(function ($q) use ($slug_bases) {
+                    foreach ($slug_bases as $base) {
+                        $q->orWhere('slug', $base)
+                          ->orWhere('slug', 'like', $base . '-%');
+                    }
+                })
+                ->pluck('slug')
+                ->toArray();
+        }
+
+        $this->process_row->set_taken_slugs($taken_slugs);
+    }
 
 
     function setAddresses() {
@@ -140,6 +170,7 @@ class ArticleImport implements ToCollection
         $this->process_row->set_article_index($article_index);
 
 
+        $this->slugs($rows);
 
         $this->set_finish_row($rows);
 
@@ -174,10 +205,13 @@ class ArticleImport implements ToCollection
 
                     try {
 
-                        $this->process_row->procesar($row, $this->nombres_proveedores);
+                        $observations = $this->process_row->procesar($row, $this->nombres_proveedores);
 
                         $this->filas_procesadas++;
-                        
+
+                        // $obs_row = ' Info fila N° '.$this->filas_procesadas.': '.$observations.' ';
+                        // $this->observations .= $obs_row;
+
                     } catch (\Throwable $e) {
 
                         $error_message = 'Error en la linea '.$this->filas_procesadas;

@@ -17,7 +17,7 @@ class ArticlePriceTypeGroupSeeder extends Seeder
     {
         $models = [
             [
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
                 'articles'  => [
                     [   
                         'name'  => 'Fanta 1',

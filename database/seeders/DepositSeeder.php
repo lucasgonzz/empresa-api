@@ -20,19 +20,19 @@ class DepositSeeder extends Seeder
                 'num'           => 1,
                 'name'          => 'Nave',
                 'description'   => 'Este es el mas importante',
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ],
             [
                 'num'           => 2,
                 'name'          => 'Fila',
                 'description'   => '',
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ],
             [
                 'num'           => 3,
                 'name'          => 'Columna',
                 'description'   => '',
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ],
         ];
         foreach ($models as $model) {

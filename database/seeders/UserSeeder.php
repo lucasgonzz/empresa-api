@@ -27,18 +27,18 @@ class UserSeeder extends Seeder
             return;
         } 
 
-        $this->for_user = env('FOR_USER');
+        $this->for_user = config('app.FOR_USER');
 
 
         $ct = new Controller();
         $models = [
             [
-                'id'                            => env('USER_ID'),
+                'id'                            => config('app.USER_ID'),
                 'name'                          => 'Lucas',
                 'use_archivos_de_intercambio'   => 0,
                 'company_name'                  => 'Autopartes Boxes',
                 // 'image_url'                     => null,
-                'image_url'                     => env('APP_ENV') == 'local' ? env('APP_URL').'/storage/icon.png' : 'https://comerciocity.com/img/logo.95c86b81.jpg',
+                'image_url'                     => env('APP_ENV') == 'local' ? config('app.APP_URL').'/storage/icon.png' : 'https://comerciocity.com/img/logo.95c86b81.jpg',
                 'doc_number'                    => '1234',
                 'impresora'                     => 'XP-80',
                 'email'                         => 'lucasgonzalez5500@gmail.com',
@@ -715,15 +715,15 @@ class UserSeeder extends Seeder
                     }
                 }
                 
-                Log::info('env user_Id: '.env('USER_ID'));
-                Log::info('env FOR_USER: '.env('FOR_USER'));
+                Log::info('env user_Id: '.config('app.USER_ID'));
+                Log::info('env FOR_USER: '.config('app.FOR_USER'));
                 UserConfiguration::create([
                     'current_acount_pagado_details'         => 'Saldado',
                     'current_acount_pagandose_details'      => 'Recibo de pago',
                     'iva_included'                          => 1,
                     'limit_items_in_sale_per_page'          => null,
                     'can_make_afip_tickets'                 => 1,
-                    'user_id'                               => env('USER_ID'),
+                    'user_id'                               => config('app.USER_ID'),
                 ]);
 
 
@@ -743,7 +743,7 @@ class UserSeeder extends Seeder
                         'punto_venta'           => 4,
                         'ingresos_brutos'       => '20175018841',
                         'inicio_actividades'    => Carbon::now()->subYears(5),
-                        'user_id'               => env('USER_ID'),
+                        'user_id'               => config('app.USER_ID'),
                     ]);
                     
                     AfipInformation::create([
@@ -754,7 +754,7 @@ class UserSeeder extends Seeder
                         'punto_venta'           => 2,
                         'ingresos_brutos'       => '20423548984',
                         'inicio_actividades'    => Carbon::now()->subYears(5),
-                        'user_id'               => env('USER_ID'),
+                        'user_id'               => config('app.USER_ID'),
                     ]);
                     AfipInformation::create([
                         'iva_condition_id'      => 2,
@@ -764,13 +764,13 @@ class UserSeeder extends Seeder
                         'punto_venta'           => 3,
                         'ingresos_brutos'       => '20423548984',
                         'inicio_actividades'    => Carbon::now()->subYears(5),
-                        'user_id'               => env('USER_ID'),
+                        'user_id'               => config('app.USER_ID'),
                     ]);
                 }
 
                 if (isset($model['online_configuration'])) {
                     $online_configuration               = $model['online_configuration'];
-                    $online_configuration['user_id']    = env('USER_ID');
+                    $online_configuration['user_id']    = config('app.USER_ID');
                     $online_configuration['quienes_somos']    = 'Somos un negocio que se dedica a muchas cosas';
                     $online_configuration['facebook']    = 'htts://facebook.com';
                     $online_configuration['instagram']    = 'htts://instagram.com';

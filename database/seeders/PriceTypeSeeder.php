@@ -16,7 +16,7 @@ class PriceTypeSeeder extends Seeder
      */
     public function run()
     {
-        $for_user = env('FOR_USER');
+        $for_user = config('app.FOR_USER');
 
         if ($for_user == 'pack_descartables') {
             $this->pack_descartables();
@@ -83,7 +83,7 @@ class PriceTypeSeeder extends Seeder
                 'percentage'                    => $model['percentage'],
                 'setear_precio_final'           => $model['setear_precio_final'],
                 'se_usa_en_ml'         => $model['se_usa_en_ml'],
-                'user_id'                       => env('USER_ID'),
+                'user_id'                       => config('app.USER_ID'),
             ]);
 
 
@@ -189,7 +189,7 @@ class PriceTypeSeeder extends Seeder
                 'percentage'                    => $model['percentage'],
                 'setear_precio_final'           => $model['setear_precio_final'],
                 'se_usa_en_tienda_nube'         => $model['se_usa_en_tienda_nube'],
-                'user_id'                       => env('USER_ID'),
+                'user_id'                       => config('app.USER_ID'),
             ]);
 
 
@@ -220,7 +220,7 @@ class PriceTypeSeeder extends Seeder
                 'position'      => 1,
                 'percentage'    => 10,
                 'setear_precio_final'   => 1,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             [
                 'num'           => 1,
@@ -229,7 +229,7 @@ class PriceTypeSeeder extends Seeder
                 'percentage'    => 20,
                 'setear_precio_final'   => 1,
                 'incluir_en_lista_de_precios_de_excel'      => 0,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             [
                 'num'           => 2,
@@ -237,7 +237,7 @@ class PriceTypeSeeder extends Seeder
                 'percentage'    => 30,
                 'position'      => 2,
                 'setear_precio_final'   => 1,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             
         ];
@@ -256,7 +256,7 @@ class PriceTypeSeeder extends Seeder
                 'position'      => 1,
                 'percentage'    => 15,
                 'incluir_en_lista_de_precios_de_excel'      => 0,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             [
                 'num'           => 1,
@@ -264,7 +264,7 @@ class PriceTypeSeeder extends Seeder
                 'position'      => 1,
                 'percentage'    => 15,
                 'incluir_en_lista_de_precios_de_excel'      => 0,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             [
                 'num'           => 2,
@@ -272,7 +272,7 @@ class PriceTypeSeeder extends Seeder
                 'percentage'    => 50,
                 'position'      => 2,
                 'incluir_en_lista_de_precios_de_excel'    => 1,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             
         ];
@@ -291,21 +291,21 @@ class PriceTypeSeeder extends Seeder
                 'percentage'    => 5,
                 'position'      => 1,
                 'ocultar_al_publico'    => 1,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             [
                 'num'           => 2,
                 'name'          => 'Mayorista',
                 'percentage'    => 10,
                 'position'      => 2,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             [
                 'num'           => 3,
                 'name'          => 'Minorista',
                 'percentage'    => 15,
                 'position'      => 3,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             
         ];
@@ -323,14 +323,14 @@ class PriceTypeSeeder extends Seeder
                 'name'          => 'Mayorista',
                 'percentage'    => 20,
                 'position'      => 1,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             [
                 'num'           => 2,
                 'name'          => 'Minorista',
                 'percentage'    => 40,
                 'position'      => 2,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
         ];
         foreach ($models as $model) {
@@ -347,21 +347,21 @@ class PriceTypeSeeder extends Seeder
                 'name'          => 'Mayorista',
                 'percentage'    => 100,
                 'position'      => 1,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             [
                 'num'           => 2,
                 'name'          => 'Comercio',
                 'percentage'    => 100,
                 'position'      => 2,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             [
                 'num'           => 3,
                 'name'          => 'Consumidor final',
                 'percentage'    => 100,
                 'position'      => 3,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
         ];
         foreach ($models as $model) {

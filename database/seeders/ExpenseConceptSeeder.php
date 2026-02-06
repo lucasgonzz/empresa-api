@@ -44,7 +44,7 @@ class ExpenseConceptSeeder extends Seeder
 
         $num = 1;
         foreach ($models as $model) {
-            $model['user_id'] = env('USER_ID');
+            $model['user_id'] = config('app.USER_ID');
             $model['num'] = $num;
             ExpenseConcept::create($model);
 
