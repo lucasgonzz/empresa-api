@@ -42,7 +42,7 @@ class SaleSeeder extends Seeder
             'employee_id'       => null,
             'client_id'         => 1,
             'created_at'        => Carbon::now()->subMonths(1)->endOfMonth(),
-            'user_id'           => env('USER_ID'),
+            'user_id'           => config('app.USER_ID'),
             'terminada'         => 0,
             'confirmed'         => 1,
             'save_current_acount'=> 1,
@@ -81,7 +81,7 @@ class SaleSeeder extends Seeder
     }
 
     // function create_sales($sales) {
-    //     $user = User::find(env('USER_ID'));
+    //     $user = User::find(config('app.USER_ID'));
 
     //     foreach ($sales as $sale) {
 
@@ -92,7 +92,7 @@ class SaleSeeder extends Seeder
     //             'employee_id'       => $sale['employee_id'],
     //             'client_id'         => $sale['client_id'],
     //             'created_at'        => $sale['created_at'],
-    //             'user_id'           => env('USER_ID'),
+    //             'user_id'           => config('app.USER_ID'),
     //             'save_current_acount'=> 1,
     //             'terminada'         => 1,
     //             'terminada_at'      => $sale['created_at'],
@@ -109,7 +109,7 @@ class SaleSeeder extends Seeder
     }
 
     function ventas_a_cuenta_corriente() {
-        $user = User::find(env('USER_ID'));
+        $user = User::find(config('app.USER_ID'));
 
         $models = [
             [
@@ -117,7 +117,7 @@ class SaleSeeder extends Seeder
                 'client_id'             => 1,
                 'employee_id'           => 503,
                 'save_current_acount'   => 1,
-                'user_id'               => env('USER_ID'),
+                'user_id'               => config('app.USER_ID'),
                 'moneda_id'             => 1,
             ],
         ];
@@ -169,7 +169,7 @@ class SaleSeeder extends Seeder
     }
 
     function ventas_en_mostrador() {
-        $user = User::find(env('USER_ID'));
+        $user = User::find(config('app.USER_ID'));
 
         $models = [
             [
@@ -179,7 +179,7 @@ class SaleSeeder extends Seeder
                 'save_current_acount'   => 0,
                 'omitir_en_cuenta_corriente'   => 1,
                 'current_acount_payment_method_id'  => 2,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
         ];
 
@@ -199,7 +199,7 @@ class SaleSeeder extends Seeder
     }
 
     function ventas_sin_pagar() {
-        $user = User::find(env('USER_ID'));
+        $user = User::find(config('app.USER_ID'));
 
         $models = [
             [
@@ -207,49 +207,49 @@ class SaleSeeder extends Seeder
                 'client_id'     => 1,
                 'employee_id'   => 503,
                 'save_current_acount'   => 1,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             [
                 'num'           => 2,
                 'client_id'     => 1,
                 'employee_id'   => 504,
                 'save_current_acount'   => 1,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             [
                 'num'           => 3,
                 'client_id'     => 1,
                 'employee_id'   => 503,
                 'save_current_acount'   => 1,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             [
                 'num'           => 4,
                 'client_id'     => 1,
                 'employee_id'   => 504,
                 'save_current_acount'   => 1,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             [
                 'num'           => 5,
                 'client_id'     => 1,
                 'employee_id'   => 504,
                 'save_current_acount'   => 1,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             [
                 'num'           => 6,
                 'client_id'     => 1,
                 'employee_id'   => 504,
                 'save_current_acount'   => 1,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
             [
                 'num'           => 7,
                 'client_id'     => 1,
                 'employee_id'   => 504,
                 'save_current_acount'   => 1,
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ],
         ];
 
@@ -390,24 +390,24 @@ class SaleSeeder extends Seeder
     }
 
     function videos() {
-        $user = User::find(env('USER_ID'));
-        $addresses = Address::where('user_id', env('USER_ID'))
+        $user = User::find(config('app.USER_ID'));
+        $addresses = Address::where('user_id', config('app.USER_ID'))
                         ->get();
-        $employees = User::where('owner_id', env('USER_ID'))
+        $employees = User::where('owner_id', config('app.USER_ID'))
                         ->get();
         $ct = new Controller();
         for ($day=10; $day >= 0; $day--) { 
             $minutes = 100;
             foreach ($employees as $employee) {
                 $sale = Sale::create([
-                    'user_id'           => env('USER_ID'),
-                    'num'               => $ct->num('sales', env('USER_ID')),
+                    'user_id'           => config('app.USER_ID'),
+                    'num'               => $ct->num('sales', config('app.USER_ID')),
                     'created_at'        => Carbon::now()->subDays($day)->subMinutes($minutes),
                     'employee_id'       => $employee->id,
                     'address_id'        => count($addresses) >= 1 ? $addresses[0]->id : null,
                 ]);
                 $minutes -= 10;
-                $articles = Article::where('user_id', env('USER_ID'))
+                $articles = Article::where('user_id', config('app.USER_ID'))
                                     ->get();
                 foreach ($articles as $article) {
                     $sale->articles()->attach($article->id, [

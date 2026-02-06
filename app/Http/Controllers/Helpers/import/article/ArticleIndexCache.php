@@ -18,7 +18,8 @@ class ArticleIndexCache
      * Si $solo_de_ese_proveedor = true y se pasa $provider_id, indexa solo
      * artículos de ese proveedor (reduce memoria).
      */
-
+    protected static $runtime_index_by_key = [];
+    protected static $runtime_loaded_by_key = [];
 
     public static function build($user_id, $provider_id, $no_actualizar_otro_proveedor)
     {
@@ -131,6 +132,7 @@ class ArticleIndexCache
 
         Log::info("ArticleIndexCache::build -> ids: " . count($index['ids']) . " bar_codes: " . count($index['bar_codes']) . " skus: " . count($index['skus']) . " names: " . count($index['names']));
         Log::info('Duración total cachear los articulos ' . $duracion . ' seg');
+        Log::info('ACTUALIZADO 2');
 
         return $duracion;
     }
@@ -247,6 +249,14 @@ class ArticleIndexCache
     public static function get_index(int $user_id, ?int $provider_id = null, $no_actualizar_otro_proveedor = null): array
     {
         $key = "article_index_user_{$user_id}";
+
+        // ✅ runtime memoization (RAM) para este proceso/job
+        if (!empty(self::$runtime_loaded_by_key[$key])) {
+            return self::$runtime_index_by_key[$key];
+        }
+
+        Log::info('GET INDEX DESDE REDIS '.$key);
+
         $index = Cache::get($key, []);
 
         if (!is_array($index) || empty($index)) {
@@ -254,7 +264,12 @@ class ArticleIndexCache
             $index = Cache::get($key, []);
         }
 
-        return is_array($index) ? $index : [];
+        $index = is_array($index) ? $index : [];
+
+        self::$runtime_index_by_key[$key] = $index;
+        self::$runtime_loaded_by_key[$key] = true;
+
+        return $index;
     }
 
     public static function find_with_index(
@@ -573,7 +588,11 @@ class ArticleIndexCache
         // Log::info('Se agrego al cache: ');
         // Log::info($article->toArray());
 
+
         Cache::put($key, $index, now()->addMinutes(30));
+
+        self::$runtime_index_by_key[$key] = $index;
+        self::$runtime_loaded_by_key[$key] = true;
     }
 
     public static function update(Article $article)
@@ -601,7 +620,7 @@ class ArticleIndexCache
                 unset($index['ids'][$index['bar_codes'][$article->bar_code]]);
                 unset($index['bar_codes'][$article->bar_code]);
                 $fake_eliminado = true;
-                Log::info('Se elimino del cache bar_code: '.$article->bar_code);
+                // Log::info('Se elimino del cache bar_code: '.$article->bar_code);
             }
         } 
 
@@ -616,7 +635,7 @@ class ArticleIndexCache
                     unset($index['ids'][$index['skus'][$article->sku]]);
                     unset($index['skus'][$article->sku]);
                     $fake_eliminado = true;
-                    Log::info('Se elimino del cache sku: '.$article->sku);
+                    // Log::info('Se elimino del cache sku: '.$article->sku);
                 }
             } 
         }
@@ -644,7 +663,7 @@ class ArticleIndexCache
                             return !str_starts_with($id, 'fake_');
                         });
                         
-                        Log::info('Se eliminaron del cache los provider_code: '.$prov_code);
+                        // Log::info('Se eliminaron del cache los provider_code: '.$prov_code);
                         $fake_eliminado = true;
 
                     } else {
@@ -653,7 +672,7 @@ class ArticleIndexCache
                             unset($index['provider_codes'][$prov_id][$prov_code]);
                             unset($index['ids'][$entry]);
 
-                            Log::info('Se elimino del cache provider_code: '.$prov_code);
+                            // Log::info('Se elimino del cache provider_code: '.$prov_code);
                             $fake_eliminado = true;
                         }
                     }
@@ -671,14 +690,14 @@ class ArticleIndexCache
 
                     unset($index['ids'][$index['names'][$name_key]]);
                     unset($index['names'][$name_key]);
-                    Log::info('Se elimino del cache name: '.$name_key);
+                    // Log::info('Se elimino del cache name: '.$name_key);
                 }
             }
         }
 
         if (!$fake_eliminado) {
 
-            Log::info('No se elimino ningun fake');
+            // Log::info('No se elimino ningun fake');
         }
 
         /** ------------------------------------------------------------------
@@ -718,6 +737,9 @@ class ArticleIndexCache
         }
 
         Cache::put($key, $index, now()->addMinutes(30));
+
+        self::$runtime_index_by_key[$key] = $index;
+        self::$runtime_loaded_by_key[$key] = true;
     }
 
     static function limpiar_cache($user_id) {
@@ -727,6 +749,9 @@ class ArticleIndexCache
         Cache::forget($cache_key);
 
         Log::info("Cache de importación de artículos limpiado: {$cache_key}");
+
+        unset(self::$runtime_index_by_key[$cache_key]);
+        unset(self::$runtime_loaded_by_key[$cache_key]);
     }
 
 }

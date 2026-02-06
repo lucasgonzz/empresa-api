@@ -18,11 +18,11 @@ class SaleTypeSeeder extends Seeder
         $models = [
             [
                 'name'  => 'Juguetes',
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ],
             [
                 'name'  => 'Varios',
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ],
         ];
 

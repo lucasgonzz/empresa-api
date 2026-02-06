@@ -139,6 +139,7 @@ class SaleController extends Controller
                 'client_id'                         => $request->client_id,
                 'sale_type_id'                      => $request->sale_type_id,
                 'observations'                      => $request->observations,
+                'observations_ocultas'              => $request->observations_ocultas,
                 'address_id'                        => $request->address_id,
                 'current_acount_payment_method_id'  => SaleHelper::getCurrentAcountPaymentMethodId($request),
                 'afip_information_id'               => $request->afip_information_id,
@@ -267,7 +268,8 @@ class SaleController extends Controller
             $model->sale_type_id                        = $request->sale_type_id;
             
             $model->observations                        = $request->observations;
-            
+            $model->observations_ocultas                = $request->observations_ocultas;
+
             $model->to_check                            = $request->to_check;
             
             $model->checked                             = $request->checked;

@@ -20,7 +20,7 @@ class CategoryIndumentariaSeeder extends Seeder
         foreach ($models as $model) {
             Category::create([
                 'name'  => $model,
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ]);
         }
     }

@@ -50,7 +50,7 @@ class PaymentMethodSeeder extends Seeder
                 'payment_method_type_id'    => isset($model['payment_method_type_id']) ? $model['payment_method_type_id'] : null,
                 'public_key'                => isset($model['public_key']) ? $model['public_key'] : null,
                 'access_token'              => isset($model['access_token']) ? $model['access_token'] : null,
-                'user_id'                   => env('USER_ID'),
+                'user_id'                   => config('app.USER_ID'),
                 'surchage'                  => isset($model['surchage']) ? $model['surchage'] : null,
                 'discount'                  => isset($model['discount']) ? $model['discount'] : null,
             ]);

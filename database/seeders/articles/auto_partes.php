@@ -1401,8 +1401,8 @@ $articles = [
 
 // function get_image_url($url) {
 //     if (env('APP_ENV') == 'production') {
-//         return env('APP_URL').'/public'.$url;
+//         return config('app.APP_URL').'/public'.$url;
 //     } else {
-//         return env('APP_URL').$url;
+//         return config('app.APP_URL').$url;
 //     }
 // }

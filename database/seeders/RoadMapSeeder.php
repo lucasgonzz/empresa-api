@@ -68,7 +68,7 @@ class RoadMapSeeder extends Seeder
                 'num'           => $num,
                 'fecha_entrega' => $model['fecha_entrega'],
                 'employee_id'   => $model['employee_id'],
-                'user_id'       => env('USER_ID'),
+                'user_id'       => config('app.USER_ID'),
             ]);
             
             $num++;

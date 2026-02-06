@@ -46,10 +46,10 @@ class ArticleSeeder extends Seeder
 
         if (
             env('APP_ENV') == 'local'
-            || env('FOR_USER') == 'demo'
+            || config('app.FOR_USER') == 'demo'
         ) {
             
-            $this->for_user = env('FOR_USER');
+            $this->for_user = config('app.FOR_USER');
 
             $this->lucas();
         }
@@ -58,14 +58,14 @@ class ArticleSeeder extends Seeder
 
     function lucas() {
         
-        $this->user = User::find(env('USER_ID'));
+        $this->user = User::find(config('app.USER_ID'));
 
         $this->price_types = PriceType::all();
 
-        $bsas = Provider::where('user_id', env('USER_ID'))
+        $bsas = Provider::where('user_id', config('app.USER_ID'))
                             ->where('name', 'Buenos Aires')
                             ->first();
-        $rosario = Provider::where('user_id', env('USER_ID'))
+        $rosario = Provider::where('user_id', config('app.USER_ID'))
                             ->where('name', 'Rosario')
                             ->first();
 
@@ -118,7 +118,7 @@ class ArticleSeeder extends Seeder
                 $this->setColors($art, $article); 
                 // $this->setAddresses($art, $article); 
 
-                ArticleHelper::setFinalPrice($art, env('USER_ID'));
+                ArticleHelper::setFinalPrice($art, config('app.USER_ID'));
 
                 $this->crear_price_type_monedas($art);
                 
@@ -191,7 +191,7 @@ class ArticleSeeder extends Seeder
     }
 
     function check_variants($created_article, $article) {
-        if (env('FOR_USER') == 'feito') {
+        if (config('app.FOR_USER') == 'feito') {
             if (isset($article['variants'])) {
                 foreach ($article['variants']['article_properties'] as $article_property) {
                     $article_property_type = ArticlePropertyType::where('name', $article_property['article_property_type'])->first();
@@ -224,7 +224,7 @@ class ArticleSeeder extends Seeder
     function setStockMovement($created_article, $article) {
 
         if (
-            env('FOR_USER') == 'feito'
+            config('app.FOR_USER') == 'feito'
             && isset($article['variants'])
         ) {
             return;
@@ -309,7 +309,7 @@ class ArticleSeeder extends Seeder
     }
 
     function createDescriptions($created_article, $article) {
-        if (env('FOR_USER') == 'truvari') {
+        if (config('app.FOR_USER') == 'truvari') {
             Description::create([
                 'title'      => 'Nota de Cata:',
                 'content'    => 'Color rojo rubí profundo.

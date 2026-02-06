@@ -95,7 +95,7 @@ class Crear_nuevo_articulo_Test extends TestCase
 
         return array_merge($columns, $props);
 
-        // $addresses = Address::where('user_id', env('USER_ID'))
+        // $addresses = Address::where('user_id', config('app.APP_ENV'))
         //                         ->orderBy('id', 'ASC')
         //                         ->get();
 

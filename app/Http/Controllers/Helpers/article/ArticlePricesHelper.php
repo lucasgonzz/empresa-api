@@ -155,8 +155,12 @@ class ArticlePricesHelper {
                 Sino, calculo el precio final en base al porcentaje
             */
 
+            $cost = (float) $cost;
 
-            if ($cost !== 0) {
+            // Normalizo porcentaje por si viene null/string
+            $percentage = is_null($percentage) ? 0 : (float) $percentage;
+
+            if ($cost !== 0.0) {
                 
                 if (!is_null($final_price)) {
 

@@ -15,7 +15,7 @@ for ($num=30; $num >= 1 ; $num--) {
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => env('APP_URL').'/storage/pinza.jpeg',
+                'url'       => config('app.APP_URL').'/storage/pinza.jpeg',
             ],
         ],
     ];

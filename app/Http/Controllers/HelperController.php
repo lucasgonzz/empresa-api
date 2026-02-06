@@ -92,7 +92,7 @@ class HelperController extends Controller
         echo 'Listo';
     }
 
-    function precios_ffperformance() {
+    function listas_a_listas_en_dolares() {
         $user = User::find(config('app.USER_ID'));
         $articles = Article::all(); 
         $monedas = Moneda::all(); 
@@ -111,7 +111,11 @@ class HelperController extends Controller
                     $percentage = $price_type->percentage;
                     $final_price = null;
 
-                    if ($cost && $cost > 0) {
+                    if (
+                        $cost 
+                        && $cost > 0
+                        && $percentage
+                    ) {
                         
                         if ($setear_precio_final) {
 
@@ -3501,7 +3505,7 @@ class HelperController extends Controller
             return null;
         }
         Storage::disk('public')->put($name, file_get_contents($url_cloudinary));
-        return env('APP_URL').'/storage/'.$name;
+        return config('app.APP_URL').'/storage/'.$name;
     }
 
     function getPlural($model) {

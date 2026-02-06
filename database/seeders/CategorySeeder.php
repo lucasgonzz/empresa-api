@@ -24,7 +24,7 @@ class CategorySeeder extends Seeder
 
 
     function truvari() {
-        if (env('FOR_USER') != 'truvari') {
+        if (config('app.FOR_USER') != 'truvari') {
             return;
         }
 
@@ -40,7 +40,7 @@ class CategorySeeder extends Seeder
             Category::create([
                 'num'     => $num,
                 'name'    => $category,
-                'user_id' => env('USER_ID'),
+                'user_id' => config('app.USER_ID'),
             ]);
             $num++;
         }
@@ -48,7 +48,7 @@ class CategorySeeder extends Seeder
 
 
     function default() {
-        if (env('FOR_USER') == 'truvari') {
+        if (config('app.FOR_USER') == 'truvari') {
             return;
         }
         $models = [
@@ -77,19 +77,19 @@ class CategorySeeder extends Seeder
             $categories[] = Category::create([
                 'num'     => $num,
                 'name'    => $category,
-                'user_id' => env('USER_ID'),
+                'user_id' => config('app.USER_ID'),
             ]);
             $num++;
         }
 
-        if (env('FOR_USER') == 'golo_norte') {
+        if (config('app.FOR_USER') == 'golo_norte') {
             $this->adjuntar_price_types($categories);
         }
     }
 
     function adjuntar_price_types($categories) {
 
-        $price_types = PriceType::where('user_id', env('USER_ID'))
+        $price_types = PriceType::where('user_id', config('app.USER_ID'))
                                 ->orderBy('position', 'ASC')
                                 ->get();
 

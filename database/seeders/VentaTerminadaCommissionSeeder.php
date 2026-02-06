@@ -27,7 +27,7 @@ class VentaTerminadaCommissionSeeder extends Seeder
 
         foreach ($models as $model) {
             
-            $model['user_id'] = env('USER_ID');
+            $model['user_id'] = config('app.USER_ID');
 
             VentaTerminadaCommission::create($model);
         }

@@ -45,8 +45,8 @@ class ClientsTableSeeder extends Seeder
         $ct = new Controller();
         foreach ($users as $user) {
             foreach ($models as $model) {
-                $model['num']     = $ct->num('clients', env('USER_ID'));  
-                $model['user_id'] = env('USER_ID');
+                $model['num']     = $ct->num('clients', config('app.USER_ID'));  
+                $model['user_id'] = config('app.USER_ID');
             }
             Client::create($model);
         }

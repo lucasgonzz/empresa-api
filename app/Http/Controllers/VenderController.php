@@ -80,9 +80,6 @@ class VenderController extends Controller
             }
         }
 
-
-
-
         $this->fin($code, $inicio, $article);
 
         return response()->json(['article' => $article, 'variant_id' => $variant_id, 'variant' => $variant], 200);
@@ -170,6 +167,7 @@ class VenderController extends Controller
         $keywords = explode(' ', trim($request->query_value));
 
         $category_id = $request->category_id;
+        $stock_option = $request->stock_option;
 
         $per_page = 50;
         $current_page = LengthAwarePaginator::resolveCurrentPage();
@@ -200,11 +198,21 @@ class VenderController extends Controller
                                 }
                             }
                         })
-                    ->with(['article_variants', 'images', 'price_types', 'addresses', 'price_type_monedas', 'article_price_ranges']);
+                    ->with(['article_variants', 'images', 'price_types', 'addresses', 'price_type_monedas', 'article_price_ranges', 'provider']);
 
         if ($category_id) {
             Log::info('category_id');
             $articles->where('category_id', $category_id);
+        }
+
+        if ($stock_option) {
+            Log::info('stock_option');
+
+            if ($stock_option == 'con_stock') {
+                $articles->where('stock', '>', 0);
+            } else if ($stock_option == 'hayan_tenido_stock') {
+                $articles->whereNotNull('stock');
+            }
         }
 
         $articles = $articles->get();

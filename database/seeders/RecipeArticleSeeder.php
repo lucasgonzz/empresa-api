@@ -59,9 +59,9 @@ class RecipeArticleSeeder extends Seeder
         ];
 
         foreach ($articles as $article) {
-            $article['user_id'] = env('USER_ID');
+            $article['user_id'] = config('app.USER_ID');
             $art = Article::create($article);
-            ArticleHelper::setFinalPrice($art, env('USER_ID'));
+            ArticleHelper::setFinalPrice($art, config('app.USER_ID'));
         }
     }
 }

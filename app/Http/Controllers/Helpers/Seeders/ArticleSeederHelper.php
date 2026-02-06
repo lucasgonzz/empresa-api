@@ -92,7 +92,7 @@ class ArticleSeederHelper {
             'presentacion'          => isset($article['presentacion']) ? $article['presentacion'] : null,
             
             'apply_provider_percentage_gain'    => isset($article['apply_provider_percentage_gain']) ? $article['apply_provider_percentage_gain'] : 0,
-            'default_in_vender'     => isset($article['default_in_vender']) && env('FOR_USER') == 'hipermax' ? $article['default_in_vender'] : null,
+            'default_in_vender'     => isset($article['default_in_vender']) && config('app.FOR_USER') == 'hipermax' ? $article['default_in_vender'] : null,
             'category_id'           => $this->getCategoryId($article),
             'sub_category_id'       => $this->getSubcategoryId($article),
             'created_at'            => !is_null($days) ? Carbon::now()->subDays($days) : Carbon::now(),
@@ -108,7 +108,7 @@ class ArticleSeederHelper {
                     'imageable_type'                            => 'article',
                     'imageable_id'                              => $created_article->id,
                     env('IMAGE_URL_PROP_NAME', 'image_url')     => $image['url'],
-                    // env('IMAGE_URL_PROP_NAME', 'image_url')     => env('APP_URL').'/storage/'.$image['url'],
+                    // env('IMAGE_URL_PROP_NAME', 'image_url')     => config('app.APP_URL').'/storage/'.$image['url'],
                     'color_id'                                  => isset($image['color_id']) ? $image['color_id'] : null,
                 ]);
             }    

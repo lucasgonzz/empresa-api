@@ -19,13 +19,13 @@ class SurchageSeeder extends Seeder
             'num'        => 1,
             'name'       => 'Iva 21',
             'percentage' => 21,
-            'user_id'    => env('USER_ID'),
+            'user_id'    => config('app.USER_ID'),
         ]);
         Surchage::create([
             'num'        => 2,
             'name'       => 'Envio',
             'percentage' => 50,
-            'user_id'    => env('USER_ID'),
+            'user_id'    => config('app.USER_ID'),
         ]);
     }
 }

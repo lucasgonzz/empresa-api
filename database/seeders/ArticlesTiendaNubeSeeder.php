@@ -46,7 +46,7 @@ class ArticlesTiendaNubeSeeder extends Seeder
                 'bar_code'              => '00'.$num,
                 'provider_code'         => 'p/'.$num,
                 'name'                  => $article['name'],
-                'slug'                  => ArticleHelper::slug($article['name'], env('USER_ID')),
+                'slug'                  => ArticleHelper::slug($article['name'], config('app.USER_ID')),
                 'cost'                  => $article['cost'],
                 'price'                 => isset($article['price']) ? $article['price'] : null,
                 'costo_mano_de_obra'    => isset($article['costo_mano_de_obra']) ? $article['costo_mano_de_obra'] : null,
@@ -66,10 +66,10 @@ class ArticlesTiendaNubeSeeder extends Seeder
                 // 'sub_category_id'       => $this->getSubcategoryId($user, $article),
                 // 'created_at'            => Carbon::now()->subDays($days),
                 // 'updated_at'            => Carbon::now()->subDays($days),
-                'user_id'               => env('USER_ID'),
+                'user_id'               => config('app.USER_ID'),
             ]);    
             
-            ArticleHelper::setFinalPrice($art, env('USER_ID'));
+            ArticleHelper::setFinalPrice($art, config('app.USER_ID'));
         }
 
 

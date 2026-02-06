@@ -36,7 +36,7 @@ class DemoSetupController extends Controller
         // Crear usuario demo
         $user = User::create([
             'id'                            => config('app.USER_ID'),
-            'api_url'                       => env('APP_URL').'/public',
+            'api_url'                       => config('app.APP_URL').'/public',
             'name'                          => $request->user_name,
             'use_archivos_de_intercambio'   => 0,
             'company_name'                  => $request->company_name,

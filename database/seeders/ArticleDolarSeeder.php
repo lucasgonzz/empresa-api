@@ -34,7 +34,7 @@ class ArticleDolarSeeder extends Seeder
 
             $art = $helper->crear_article($article);
 
-            ArticleHelper::setFinalPrice($art, env('USER_ID'));
+            ArticleHelper::setFinalPrice($art, config('app.USER_ID'));
 
             ArticleSeederHelper::set_stock_movement($art, $article);
             // ArticleHelper::setArticleStockFromAddresses($art);

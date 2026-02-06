@@ -34,7 +34,7 @@ class ArticleIndumentariaSeeder extends Seeder
                 'category_id'       => $article['category_id'],
                 'cost'      => $article['cost'],
                 'percentage_gain'      => $article['percentage_gain'],
-                'user_id'      => env('USER_ID'),
+                'user_id'      => config('app.USER_ID'),
             ]);
 
             ArticleSeederHelper::set_images($created_article, $article, 'indumentaria');
@@ -45,7 +45,7 @@ class ArticleIndumentariaSeeder extends Seeder
 
             // $this->createDescriptions($article, $article); 
 
-            ArticleHelper::setFinalPrice($created_article, env('USER_ID'));
+            ArticleHelper::setFinalPrice($created_article, config('app.USER_ID'));
 
             // $this->setStockMovement($article, $article);
         }

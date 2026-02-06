@@ -17,15 +17,15 @@ class ProvinciaSeeder extends Seeder
         $models = [
             [
                 'name'    => 'Entre Rios',
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ],
             [
                 'name'    => 'Santa Fe',
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ],
             [
                 'name'    => 'Buenos Aires',
-                'user_id'   => env('USER_ID'),
+                'user_id'   => config('app.USER_ID'),
             ],
         ];
         foreach ($models as $model) {

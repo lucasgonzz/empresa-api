@@ -15,7 +15,7 @@ class DeliveryZoneSeeder extends Seeder
      */
     public function run()
     {
-        if (env('FOR_USER') == 'pinocho') {
+        if (config('app.FOR_USER') == 'pinocho') {
             
             $models = [
                 [
@@ -34,7 +34,7 @@ class DeliveryZoneSeeder extends Seeder
                     'name'          => $model['name'],
                     'description'   => $model['description'],
                     'price'         => $model['price'],
-                    'user_id'       => env('USER_ID'),
+                    'user_id'       => config('app.USER_ID'),
                 ]);
             }
         }

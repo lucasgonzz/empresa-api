@@ -23,8 +23,8 @@ class DatabaseSeeder extends Seeder
 
         // return;
 
-        $for_user = env('FOR_USER');
-        Log::info('env user_Id: '.env('USER_ID'));
+        $for_user = config('app.FOR_USER');
+        Log::info('env user_Id: '.config('app.USER_ID'));
 
         if (env('FOR_SERVER') == 'la_barraca') {
             $this->call(UserSeeder::class);
@@ -225,7 +225,7 @@ class DatabaseSeeder extends Seeder
                 $this->call(CommissionSeeder::class);
             }
 
-            $this->call(SaleDemoSeeder::class);
+            // $this->call(SaleDemoSeeder::class);
 
         }
     }
@@ -234,7 +234,7 @@ class DatabaseSeeder extends Seeder
 
         if (
             env('APP_ENV') == 'local'
-            || env('FOR_USER') == 'demo'
+            || config('app.FOR_USER') == 'demo'
         ) {
 
             $this->call(CategorySeeder::class);

@@ -249,7 +249,7 @@ class MeLiOrderSeeder extends Seeder
                         'date_closed'       => $model['date_closed'],
                         'total'             => $model['total'], 
                         'me_li_buyer_id'    => $me_li_buyer->id, 
-                        'user_id'           => env('USER_ID'),
+                        'user_id'           => config('app.USER_ID'),
                         'created_at'        => Carbon::now()->subDays($dias),
                     ]); 
 

@@ -15,7 +15,7 @@ class EmployeeSeeder extends Seeder
      */
     public function run()
     {
-        if (env('FOR_USER') == 'truvari') {
+        if (config('app.FOR_USER') == 'truvari') {
             $this->truvari();
         } else {
             $this->empleados();

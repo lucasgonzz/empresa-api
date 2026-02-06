@@ -58,7 +58,7 @@ class set_article_images extends Command
         Image::create([
             'imageable_id'  => $article->id,
             'imageable_type'  => 'article',
-            'hosting_url'   => env('APP_URL').'/public'.$url,
+            'hosting_url'   => config('app.APP_URL').'/public'.$url,
         ]); 
     }
 

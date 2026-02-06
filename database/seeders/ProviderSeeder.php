@@ -34,7 +34,7 @@ class ProviderSeeder extends Seeder
                 'dolar'             => 1200,
                 'email'             => 'lucasgonzalez5500@gmail.com',
                 'address'           => 'Calle 123',
-                'user_id'           => env('USER_ID'),
+                'user_id'           => config('app.USER_ID'),
                 'saldo'             => 100,
                 'porcentaje_comision_negro' => 10,
                 'porcentaje_comision_blanco' => 5,
@@ -45,7 +45,7 @@ class ProviderSeeder extends Seeder
                 'percentage_gain'   => null,
                 'email'             => 'lucasgonzalez5500@gmail.com',
                 'address'           => 'Calle 123',
-                'user_id'           => env('USER_ID'),
+                'user_id'           => config('app.USER_ID'),
                 'saldo'             => 1200,
                 'porcentaje_comision_negro' => 7,
                 'porcentaje_comision_blanco' => 5,
@@ -56,7 +56,7 @@ class ProviderSeeder extends Seeder
                 'percentage_gain'   => 0,
                 'email'             => 'lucasgonzalez5500@gmail.com',
                 'address'           => 'Calle 123',
-                'user_id'           => env('USER_ID'),
+                'user_id'           => config('app.USER_ID'),
                 'porcentaje_comision_negro' => 6,
                 'porcentaje_comision_blanco' => 5,
             ],
@@ -84,7 +84,7 @@ class ProviderSeeder extends Seeder
             'num'                   => 1,
             'name'                  => 'Oscar Peroni',
             'comercio_city_user_id' => $lucas_user->id,
-            'user_id'               => env('USER_ID'),
+            'user_id'               => config('app.USER_ID'),
             'percentage_gain'       => 10,
         ]);
     }
@@ -104,12 +104,12 @@ class ProviderSeeder extends Seeder
         ];
         foreach ($models as $model) {
             Provider::create([
-                'num'               => $ct->num('providers', env('USER_ID')), 
+                'num'               => $ct->num('providers', config('app.USER_ID')), 
                 'name'              => $model['name'],
                 'percentage_gain'   => $model['percentage_gain'],
                 'email'             => 'lucasgonzalez5500@gmail.com',
                 'address'           => 'Calle 123',
-                'user_id'           => env('USER_ID'),
+                'user_id'           => config('app.USER_ID'),
             ]);
         }
     }
