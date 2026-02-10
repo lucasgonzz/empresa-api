@@ -14,9 +14,9 @@ class SetStockUpdatedAt  {
             $article->stock_updated_at = $stock_movement->created_at;
             $article->timestamps = false;
             $article->save();
-            Log::info('SI se seteo stock_updated_at');
+            // Log::info('SI se seteo stock_updated_at');
         } else {
-            Log::info('No se seteo stock_updated_at');
+            // Log::info('No se seteo stock_updated_at');
         }
 
     }
