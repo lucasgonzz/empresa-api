@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\category\PriceTypeHelper;
 use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
+use App\Models\Article;
 use App\Models\SubCategory;
 use App\Services\TiendaNube\TiendaNubeCategoryImageService;
 use Illuminate\Http\Request;
@@ -63,11 +64,20 @@ class SubCategoryController extends Controller
     public function destroy($id) {
         $model = SubCategory::find($id);
         if (!is_null($model)) {
+            $this->detachArticlesSUbCategory($model);
             $model->delete();
             ImageController::deleteModelImages($model);
             $this->sendDeleteModelNotification('sub_category', $model->id);
         }
         return response(null);
+    }
+
+    public function detachArticlesSUbCategory($sub_category) {
+        Article::where('user_id', $this->userId())
+                ->where('sub_category_id', $sub_category->id)
+                ->update([
+                    'sub_category_id'   => 0,
+                ]);
     }
 
     function check_tienda_nube_image($model) {

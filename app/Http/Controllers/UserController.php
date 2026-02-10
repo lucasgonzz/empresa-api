@@ -111,6 +111,14 @@ class UserController extends Controller
         return response()->json(['model' => $model], 200);
     }
 
+    function set_img_auto_timeout($value) {
+        $model = User::find($this->userId());
+        $model->img_auto_timeout = $value;
+        $model->save();
+        
+        return response()->json(['model' => $model], 200);
+    }
+
     function actualizar_empleados($user) {
         
         $functions_to_execute = [

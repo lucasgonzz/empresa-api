@@ -479,7 +479,7 @@ class ArticleController extends Controller
         $owner = User::find($this->userId());
         
         $excel = new InitExcelImport();
-        $excel->importar([
+        $result = $excel->importar([
             'import_uuid'           => $import_uuid, 
             'archivo_excel'         => $archivo_excel, 
             'columns'               => $columns, 
@@ -496,9 +496,17 @@ class ArticleController extends Controller
             'registrar_art_act'    => $request->registrar_art_act,
         ]);
         
-        // ProcessArticleImport::dispatch($import_uuid, $archivo_excel, $columns, $request->create_and_edit, $request->no_actualizar_articulos_de_otro_proveedor, $request->start_row, $request->finish_row, $request->provider_id, $owner, Auth()->user()->id, $archivo_excel_path);
+        if ($result['hubo_un_error']) {
+            return response()->json([
+                'hubo_un_error' => true,
+                'message' => $result['message'] ?? 'Ocurrió un error al preparar la importación.',
+                'info_to_show'  => $result['info_to_show'],
+                'functions_to_execute'  => $result['functions_to_execute'],
+            ], 500);
+        } else {
+            return response(null, 200);
+        }
 
-        return response(null, 200);
     }
 
     function export(Request $request) {

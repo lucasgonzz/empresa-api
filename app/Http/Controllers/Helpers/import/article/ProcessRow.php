@@ -463,7 +463,10 @@ class ProcessRow {
 
             $this->iniciar();
             // $data['slug'] = ArticleHelper::slug($data['name'], $this->user->id);
-            $data['slug'] = $this->unique_slug((string)$data['name']);
+
+            if (isset($data['slug'])) {
+                $data['slug'] = $this->unique_slug((string)$data['name']);
+            }
             $this->terminar('crear: article slug');
 
             $data['variants_data'] = []; // 👈 espacio para variantes

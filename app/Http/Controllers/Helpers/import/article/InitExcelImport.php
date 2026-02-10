@@ -45,7 +45,31 @@ class InitExcelImport {
 
 
 
-        $this->armar_archivo_csv();
+        $csv_ok = $this->armar_archivo_csv();
+
+        if (!$csv_ok) {
+            $link_tutorial = 'https://drive.google.com/drive/folders/1yMNfiJ57tXjtw_lSrnfTBzml-4-M0wWA?usp=drive_link';
+            return [
+                'hubo_un_error' => true,
+                'message'       => 'Error al abrir Excel',
+                'info_to_show'  => [
+                    [
+                        'title'     => 'Formato de archivo invalido',
+                        'parrafos'  => [
+                            'Copie el contenido de su archivo excel, en un nuevo archivo para no tener este problema.', 
+                            'Vea el siguiente video de referencia:',
+                        ]
+                    ]
+                ],
+                'functions_to_execute'  => [
+                    [
+                        'btn_text'      => 'Ver Tutorial (menos de 2min)',
+                        'btn_variant'   => 'primary',
+                        'link'          => $link_tutorial,
+                    ]
+                ],
+            ];
+        }
 
         $this->calcular_chunck();
 
@@ -58,6 +82,10 @@ class InitExcelImport {
         $this->armar_cadena_de_chunks();
 
         Bus::chain($this->chain)->dispatch();
+
+        return [
+            'hubo_un_error' => false,
+        ];
 	}
 
     function calcular_chunck() {
@@ -87,6 +115,8 @@ class InitExcelImport {
 
             $writer->openToFile($this->csv_full_path);
 
+            $fila = 1;
+
             foreach ($reader->getSheetIterator() as $sheet) {
 
                 // Remplazo el codigo de Leo por el de abajo para convertir los datos de las celdas a string plano
@@ -97,24 +127,28 @@ class InitExcelImport {
                 
                 foreach ($sheet->getRowIterator() as $row) {
 
-                    $cells = [];
+                    if ($fila >= $this->start_row) {
 
-                    foreach ($row->getCells() as $cell) {
-                        $value = $cell->getValue();
+                        $cells = [];
 
-                        if ($value instanceof \DateTime) {
-                            $value = $value->format('Y-m-d H:i:s');
+                        foreach ($row->getCells() as $cell) {
+                            $value = $cell->getValue();
+
+                            if ($value instanceof \DateTime) {
+                                $value = $value->format('Y-m-d H:i:s');
+                            }
+
+                            if ($value === null) {
+                                $value = '';
+                            }
+
+                            $cells[] = new Cell((string)$value);
                         }
 
-                        if ($value === null) {
-                            $value = '';
-                        }
-
-                        $cells[] = new Cell((string)$value);
+                        $new_row = new Row($cells, null);
+                        $writer->addRow($new_row);
                     }
-
-                    $new_row = new Row($cells, null);
-                    $writer->addRow($new_row);
+                    $fila++;
                 }
                 break; // Solo procesar la primera hoja
             }
@@ -126,10 +160,11 @@ class InitExcelImport {
             
             Log::info("Conversión a CSV completada en ".number_format($conversion_duracion, 3)." segundos. Nuevo archivo: ".$this->csv_full_path);
 
+            return true;
         } catch (\Exception $e) {
             Log::error("Error al convertir XLSX a CSV: " . $e->getMessage());
             // Opcional: notificar al usuario del error de conversión
-            return;
+            return false;
         }
         // --- FIN: CONVERSIÓN DE XLSX a CSV ---
     }

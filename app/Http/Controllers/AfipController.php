@@ -9,6 +9,7 @@ use App\Models\Sale;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Log;
 
 class AfipController extends Controller
 {
@@ -154,8 +155,13 @@ class AfipController extends Controller
             }
 
             // Calculamos importes de IVA discriminados
-            $afip_helper = new AfipHelper($afip_ticket);
-            $importes = $afip_helper->getImportes();
+            // $afip_helper = new AfipHelper($afip_ticket);
+            // $importes = $afip_helper->getImportes();
+            $importes = $this->get_importes($afip_ticket);
+
+
+
+
             $ivas = $importes['ivas'];
 
             // Datos base
@@ -194,8 +200,7 @@ class AfipController extends Controller
 
     function get_cantidad_iva($afip_ticket) {
 
-        $afip_helper = new AfipHelper($afip_ticket);
-        $importes = $afip_helper->getImportes();
+        $importes = $this->get_importes($afip_ticket);
 
         $cantidad_iva = 0;
         
@@ -209,5 +214,31 @@ class AfipController extends Controller
         }
 
         return $cantidad_iva;
+    }
+
+    function get_importes($afip_ticket) {
+
+        $sale = null;
+        $articles = null;
+        $services = [];
+
+        if ($afip_ticket->sale) {
+            // Factura de una venta
+            $sale = $afip_ticket->sale;
+            $services = $afip_ticket->services;
+            Log::info('Factura');
+
+        } else if ($afip_ticket->nota_credito) {
+            // Factura de una nota de credito
+            $sale = $afip_ticket->sale_nota_credito;
+            $articles = $afip_ticket->nota_credito->articles;
+            Log::info('Nota de credito');
+        }
+
+        $afip_helper = new AfipHelper($afip_ticket, $articles, $services, null, $sale);
+
+        $importes = $afip_helper->getImportes();
+
+        return $importes;
     }
 }

@@ -352,6 +352,29 @@ class PermissionSeeder extends Seeder
             ],
 
 
+            // no estan creados hasta recien
+            [
+                'singular'      => 'Ver margenes de ganancia',
+                'plural'        => 'articulos',
+                'en'          => 'article.percentage_gain',
+            ],
+            [
+                'singular'      => 'Ver proveedores',
+                'plural'        => 'articulos',
+                'en'          => 'article.provider',
+            ],
+            [
+                'singular'      => 'Ver stock solo de su sucursal',
+                'plural'        => 'articulos',
+                'en'          => 'article.stock_only_sucursal',
+            ],
+            [
+                'singular'      => 'Ver stocks minimos y maximos',
+                'plural'        => 'articulos',
+                'en'          => 'article.stock_min_max',
+            ],
+
+
             // Permisos para ver ventas
             [
                 'singular'      => 'Ver las ventas de TODAS las SUCURSALES',
@@ -427,6 +450,20 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'Hojas de ruta',
                 'en'            => 'road_map.terminadas.all',
             ],
+
+
+            // Planes de pago - no estan creados hasta recien
+            [
+                'singular'      => 'Crear Plan de pagos',
+                'plural'        => 'Plan de pagos',
+                'en'          => 'payment_plan.store',
+            ],
+            [
+                'singular'      => 'Editar Plan de pagos',
+                'plural'        => 'Plan de pagos',
+                'en'          => 'payment_plan.update',
+            ],
+
         ];
         foreach ($permissions as $permission) {
             PermissionEmpresa::create([
