@@ -149,6 +149,9 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         $file_path = $this->csv_path;
 
         Log::warning("Abriendo y leyendo archivo CSV.");
+        Log::info("start_offset: ".$this->start_offset);
+        Log::info("start_row: ".$this->start_row);
+        Log::info("finish_row: ".$this->finish_row);
 
         if (($handle = fopen($file_path, "r")) !== false) {
 
@@ -175,10 +178,12 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
             }
 
             fclose($handle);
-        }
+        }   
 
-        Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Archivo CSV leído y cerrado.");
-        Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Invocando lógica de importación (importer->collection).");
+        Log::info(count($chunkRows).' extraidas del csv');
+
+        // Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Archivo CSV leído y cerrado.");
+        // Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Invocando lógica de importación (importer->collection).");
 
         return $chunkRows;
     }

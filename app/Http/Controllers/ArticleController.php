@@ -583,7 +583,7 @@ class ArticleController extends Controller
         ArticleHelper::check_recipes_despues_de_eliminar_articulo($recipes_donde_esta_este_articulo, $this);
 
         if ($send_notification) {
-            $this->sendDeleteModelNotification('article', $model->id);
+            // $this->sendDeleteModelNotification('article', $model->id);
         }
 
         return response(null);

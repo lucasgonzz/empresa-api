@@ -339,7 +339,7 @@ class SaleAfipTicketPdf extends fpdf {
 	function printImportes() {
 
 		$importes = $this->afip_helper->getImportes();
-		if ($this->afip_ticket->cbte_letra == 'A') {
+		if ($this->afip_ticket->cbte_letra == 'A' || $this->afip_ticket->cbte_letra == 'B') {
 
 			$this->x = 125;
 			$this->y += 5;

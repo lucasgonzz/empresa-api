@@ -109,6 +109,8 @@ class InitExcelImport {
 
             $reader = ReaderEntityFactory::createXLSXReader();
 
+            $reader->setShouldPreserveEmptyRows(true); // ✅ clave para que start_row sea “fila real del Excel”
+
             $reader->open($this->archivo_excel);
 
             $writer = WriterEntityFactory::createCSVWriter();
@@ -127,27 +129,30 @@ class InitExcelImport {
                 
                 foreach ($sheet->getRowIterator() as $row) {
 
-                    if ($fila >= $this->start_row) {
+                    $cells = [];
 
-                        $cells = [];
+                    foreach ($row->getCells() as $cell) {
+                        $value = $cell->getValue();
 
-                        foreach ($row->getCells() as $cell) {
-                            $value = $cell->getValue();
-
-                            if ($value instanceof \DateTime) {
-                                $value = $value->format('Y-m-d H:i:s');
-                            }
-
-                            if ($value === null) {
-                                $value = '';
-                            }
-
-                            $cells[] = new Cell((string)$value);
+                        if ($value instanceof \DateTime) {
+                            $value = $value->format('Y-m-d H:i:s');
                         }
 
-                        $new_row = new Row($cells, null);
-                        $writer->addRow($new_row);
+                        if ($value === null) {
+                            $value = '';
+                        }
+
+                        $cells[] = new Cell((string)$value);
                     }
+
+                    // ✅ Si la fila viene vacía, igual la escribimos para preservar numeración
+                    if (count($cells) === 0) {
+                        $cells[] = new Cell('');
+                    }
+
+                    $new_row = new Row($cells, null);
+                    $writer->addRow($new_row);
+
                     $fila++;
                 }
                 break; // Solo procesar la primera hoja
