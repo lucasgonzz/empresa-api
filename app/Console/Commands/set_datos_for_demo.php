@@ -163,6 +163,8 @@ class set_datos_for_demo extends Command
 
         SaleSeederHelper::create_sales($ventas);
 
+        $this->info('Ventas creadas');
+
     }
 
     function set_sales_prices() {

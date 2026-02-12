@@ -381,13 +381,39 @@ class ProcessRow {
             $this->no_actualizar_articulos_de_otro_proveedor
         );
         $this->terminar('find en cache');
+        Log::info('Se llamo a find article');
+        // if ($articulo_ya_creado instanceof \App\Models\Article) {
+
+        //     Log::info('Es article');
+        // } else {
+        //     Log::info('NO ES article');
+
+        // }
+
+        // if (!is_null($articulo_ya_creado)) {
+        //     Log::info('No es null');
+        // } else {
+        //     Log::info('Es null');
+
+        // }
 
         if (
-            !is_null($articulo_ya_creado)
+            !$this->son_varios_articulos($articulo_ya_creado)
+            && !($articulo_ya_creado instanceof \App\Models\Article)
+        ) {
+            $articulo_ya_creado = null;
+        }
+
+        // if ($articulo_ya_creado instanceof \App\Models\Article) {
+        //     Log::info('Es instancia de Artlce');
+        // }
+
+        if (
+            (!is_null($articulo_ya_creado) && $articulo_ya_creado instanceof \App\Models\Article)
             || $this->son_varios_articulos($articulo_ya_creado)
         ) {
 
-            // Log::info('Articulo ya creado');
+            Log::info('Articulo ya creado');
 
             $this->iniciar();
             $this->attach_provider($articulo_ya_creado, $data, $provider_id);
@@ -417,7 +443,7 @@ class ProcessRow {
 
         } else if ($this->create_and_edit) {
 
-            // Log::info('El articulo NO existia');
+            Log::info('El articulo NO existia');
             // Si no existe, lo agregamos a los artículos para crear
             
             /* 
@@ -547,7 +573,16 @@ class ProcessRow {
     }
 
     function son_varios_articulos($articulo_ya_creado) {
-        return $articulo_ya_creado instanceof Collection;
+        // Log::info('son_varios_articulos: '.$articulo_ya_creado instanceof Collection);
+        if ($articulo_ya_creado instanceof Collection) {
+            Log::info('hay '.count($articulo_ya_creado));
+            if (count($articulo_ya_creado) >= 1) {
+                return true;
+            }
+        }
+        Log::info('No son varios articulos');
+        return false;
+        // return $articulo_ya_creado instanceof Collection;
     }
 
 
@@ -1022,7 +1057,7 @@ class ProcessRow {
                 Log::info($address->street.' min: '.$min_excel);
                 Log::info($address->street.' max: '.$max_excel);
 
-                if (!is_null($articulo_ya_creado)) {
+                if (!is_null($articulo_ya_creado) && $articulo_ya_creado instanceof \App\Models\Article) {
 
                     $article_address = $articulo_ya_creado->addresses()->where('address_id', $address->id)->first();
                     if ($article_address) {

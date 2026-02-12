@@ -139,7 +139,8 @@ class ArticleImport implements ToCollection
     }
 
     public function collection(Collection $rows) {
-        Log::info('entro a collection');
+        Log::info('entro a collection, rows:');
+        Log::info($rows);
 
         
         Log::info('cacheando articulos');
@@ -153,6 +154,7 @@ class ArticleImport implements ToCollection
             $duracion_cacheo = number_format($duracion_cacheo, 2, '.', '');
         } else {
             $duracion_cacheo = 'Ya estaba cacheado';
+            Log::info('Ya estaban cacheados');
         }
         
         $this->add_observation('Cacheado en '.$duracion_cacheo.' seg');
@@ -197,7 +199,7 @@ class ArticleImport implements ToCollection
                 // Log::info('');
                 // Log::info('');
                 // Log::info('');
-                // Log::info('Va por fila '.$this->filas_procesadas);
+                Log::info('Va por fila '.$this->filas_procesadas);
 
                 if ($this->checkRow($row)) {
 

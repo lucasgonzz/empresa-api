@@ -33,7 +33,7 @@ class ActualizarBBDD {
 
         Log::info('articulos_para_crear_CACHE:');
         Log::info('Cantidad: '.count($articulos_para_crear_CACHE));
-        // Log::info($articulos_para_crear_CACHE);
+        Log::info($articulos_para_crear_CACHE);
 
         Log::info('articulos_para_actualizar_CACHE:');
         Log::info('Cantidad: '.count($articulos_para_actualizar_CACHE));
@@ -333,7 +333,9 @@ class ActualizarBBDD {
             $article_id = $article_model->id;
 
             $insertData = $this->get_discounts_surchages_insert_data('discounts', $article_id, $article_cache, $insertData, '%');
-            
+
+            Log::info('Se guardaron descuentos para article id '.$article_id);
+
         }
 
 
@@ -371,7 +373,11 @@ class ActualizarBBDD {
         // Log::info('Se eliminaron descuentos con percentage de '.count($articles_id_para_eliminarles_descuentos).' articulos');
 
         if (!empty($insertData)) {
+            // Log::info('insertData:');
+            // Log::info($insertData);
+
             DB::table('article_discounts')->insert($insertData);
+
         }
     }
 
@@ -1102,16 +1108,89 @@ class ActualizarBBDD {
     }
 
 
+    // function get_article_model_from_cache($articulo_cache) {
+
+    //     $article = $this->articulos_creados_models->first(function ($a) use ($articulo_cache) {
+    //         return
+    //             (!empty($articulo_cache['provider_code']) && $a->provider_code === $articulo_cache['provider_code']) ||
+    //             (!empty($articulo_cache['bar_code']) && $a->bar_code === $articulo_cache['bar_code']) ||
+    //             (!empty($articulo_cache['name']) && $a->name === $articulo_cache['name']);
+    //     });
+
+    //     return $article;
+    // }
+
+
     function get_article_model_from_cache($articulo_cache) {
 
-        $article = $this->articulos_creados_models->first(function ($a) use ($articulo_cache) {
-            return
-                (!empty($articulo_cache['provider_code']) && $a->provider_code === $articulo_cache['provider_code']) ||
-                (!empty($articulo_cache['bar_code']) && $a->bar_code === $articulo_cache['bar_code']) ||
-                (!empty($articulo_cache['name']) && $a->name === $articulo_cache['name']);
-        });
+        $provider_code = isset($articulo_cache['provider_code'])
+            ? trim((string)$articulo_cache['provider_code'])
+            : '';
 
-        return $article;
+        $bar_code = isset($articulo_cache['bar_code'])
+            ? trim((string)$articulo_cache['bar_code'])
+            : '';
+
+        $name = isset($articulo_cache['name'])
+            ? trim((string)$articulo_cache['name'])
+            : '';
+
+        // 1) Si viene provider_code, NO caigas a name (evita asignar descuentos al artículo incorrecto)
+        if ($provider_code !== '') {
+
+            $article = $this->articulos_creados_models->first(function ($a) use ($provider_code) {
+                return trim((string)$a->provider_code) === $provider_code;
+            });
+
+            if ($article) return $article;
+
+            Log::warning('get_article_model_from_cache: No se encontró artículo creado por provider_code. Se omite asignación para evitar errores.', [
+                'provider_code' => $provider_code,
+                'bar_code' => $bar_code,
+                'name' => $name,
+            ]);
+
+            return null;
+        }
+
+        // 2) Fallback por bar_code si no hay provider_code
+        if ($bar_code !== '') {
+
+            $article = $this->articulos_creados_models->first(function ($a) use ($bar_code) {
+                return trim((string)$a->bar_code) === $bar_code;
+            });
+
+            if ($article) return $article;
+
+            Log::warning('get_article_model_from_cache: No se encontró artículo creado por bar_code. Se omite asignación para evitar errores.', [
+                'bar_code' => $bar_code,
+                'name' => $name,
+            ]);
+
+            return null;
+        }
+
+        // 3) Último recurso: name (pero si hay duplicados, es ambiguo)
+        if ($name !== '') {
+
+            $matches = $this->articulos_creados_models->filter(function ($a) use ($name) {
+                return trim((string)$a->name) === $name;
+            });
+
+            if ($matches->count() === 1) {
+                return $matches->first();
+            }
+
+            if ($matches->count() > 1) {
+                Log::warning('get_article_model_from_cache: Nombre duplicado en artículos creados. Se omite asignación para evitar errores.', [
+                    'name' => $name,
+                    'matches_ids' => $matches->pluck('id')->values()->all(),
+                ]);
+                return null;
+            }
+        }
+
+        return null;
     }
 
     function get_articles_models_from_cache($articulos_cache) {

@@ -80,6 +80,7 @@ class ArticleIndexCache
         $pivot_query = DB::table('article_provider')
             ->join('articles', 'articles.id', '=', 'article_provider.article_id')
             ->where('articles.user_id', $user_id)
+            ->whereNull('articles.deleted_at') // ✅ clave: excluye eliminados en JOIN
             ->whereNotNull('article_provider.provider_code')
             ->select([
                 'article_provider.provider_id',
@@ -130,9 +131,9 @@ class ArticleIndexCache
 
         $duracion = microtime(true) - $inicio;
 
-        Log::info("ArticleIndexCache::build -> ids: " . count($index['ids']) . " bar_codes: " . count($index['bar_codes']) . " skus: " . count($index['skus']) . " names: " . count($index['names']));
+        Log::info("ArticleIndexCache::build -> ids: " . count($index['ids']) . " provider_codes: ". count($index['provider_codes']) . " bar_codes: " . count($index['bar_codes']) . " skus: " . count($index['skus']) . " names: " . count($index['names']));
+        Log::info($index);
         Log::info('Duración total cachear los articulos ' . $duracion . ' seg');
-        Log::info('ACTUALIZADO 2');
 
         return $duracion;
     }
@@ -281,8 +282,12 @@ class ArticleIndexCache
     ) {
         // Si vino vacío por algún motivo, fallback seguro
         if (!is_array($index) || empty($index)) {
+            Log::info('Buscand en index ya existente');
             return self::find($data, $user_id, $provider_id, $no_actualizar_otro_proveedor);
         }
+
+        // Log::info('find data:');
+        // Log::info($data);
 
         $relations = [
             'price_types',
@@ -324,6 +329,8 @@ class ArticleIndexCache
 
                 if (isset($index['provider_codes'][$provider_id][$provider_code])) {
                     $article_ids = $index['provider_codes'][$provider_id][$provider_code];
+                    // Log::info('Buscando aca:');
+                    // Log::info($article_ids);
                 }
 
             } 
@@ -334,6 +341,7 @@ class ArticleIndexCache
                     if (isset($codes[$provider_code])) {
                         if (is_array($codes[$provider_code])) {
                             $article_ids = array_merge($article_ids, $codes[$provider_code]);
+                            // Log::info('Buscando aca 2');
                         }
                     }
                 }
@@ -341,11 +349,13 @@ class ArticleIndexCache
                 foreach ($index['provider_codes'] as $prov_id => $codes) {
                     if (isset($codes[$provider_code])) {
                         $article_ids = array_merge($article_ids, $codes[$provider_code]);
+                            // Log::info('Buscando aca 3');
                     }
                 }
             }
 
             if (!empty($article_ids)) {
+                // Log::info('Buscando aca 4');
                 if (config('app.CODIGOS_DE_PROVEEDOR_REPETIDOS')) {
                     return Article::with($relations)->whereIn('id', $article_ids)->get();
                 }
@@ -381,6 +391,9 @@ class ArticleIndexCache
             self::build($user_id, $provider_id, $no_actualizar_otro_proveedor);
             $index = Cache::get($key, []);
         }
+
+        Log::info('find data:');
+        Log::info($data);
 
         $relations = [
             'price_types',
@@ -438,6 +451,7 @@ class ArticleIndexCache
             if ($provider_id && !$guardar_precio_de_otros_proveedores) {
                 if (isset($index['provider_codes'][$provider_id][$provider_code])) {
                     $article_ids = $index['provider_codes'][$provider_id][$provider_code];
+                    Log::info('Buscando aca');
                 }
             }
 
@@ -483,6 +497,9 @@ class ArticleIndexCache
             }
 
             if (!empty($article_ids)) {
+
+                Log::info('article_ids:');
+                Log::info($article_ids);
                 
                 if (config('app.CODIGOS_DE_PROVEEDOR_REPETIDOS')) {
 
