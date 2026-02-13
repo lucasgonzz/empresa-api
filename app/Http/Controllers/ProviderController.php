@@ -50,22 +50,23 @@ class ProviderController extends Controller
 
     public function store(Request $request) {
         $model = Provider::create([
-            'num'                   => $this->num('providers'),
-            'name'                  => $request->name,  
-            'phone'                 => $request->phone, 
-            'address'               => $request->address,   
-            'email'                 => $request->email, 
-            'razon_social'          => $request->razon_social,  
-            'cuit'                  => $request->cuit,  
-            'observations'          => $request->observations,  
-            'location_id'           => $request->location_id,   
-            'provincia_id'          => $request->provincia_id,   
-            'iva_condition_id'      => $request->iva_condition_id,  
-            'percentage_gain'       => $request->percentage_gain,   
-            'porcentaje_comision_negro'       => $request->porcentaje_comision_negro,   
-            'porcentaje_comision_blanco'      => $request->porcentaje_comision_blanco,   
-            'dolar'                 => $request->dolar, 
-            'user_id'               => $this->userId(),
+            'num'                               => $this->num('providers'),
+            'name'                              => $request->name,  
+            'phone'                             => $request->phone, 
+            'address'                           => $request->address,   
+            'email'                             => $request->email, 
+            'razon_social'                      => $request->razon_social,  
+            'cuit'                              => $request->cuit,  
+            'observations'                      => $request->observations,  
+            'location_id'                       => $request->location_id,   
+            'provincia_id'                      => $request->provincia_id,   
+            'iva_condition_id'                  => $request->iva_condition_id,  
+            'percentage_gain'                   => $request->percentage_gain,   
+            'porcentaje_comision_negro'         => $request->porcentaje_comision_negro,   
+            'porcentaje_comision_blanco'        => $request->porcentaje_comision_blanco,   
+            'dolar'                             => $request->dolar, 
+            'price_from_cost_mas_iva'           => $request->price_from_cost_mas_iva, 
+            'user_id'                           => $this->userId(),
         ]);
 
         CreditAccountHelper::crear_credit_accounts('provider', $model->id);
@@ -84,22 +85,23 @@ class ProviderController extends Controller
 
     public function update(Request $request, $id) {
         $model = Provider::find($id);
-        $last_percentage_gain       = $model->percentage_gain;
-        $last_dolar                 = $model->dolar;
-        $model->name                = $request->name;
-        $model->phone               = $request->phone; 
-        $model->address             = $request->address;   
-        $model->email               = $request->email; 
-        $model->razon_social        = $request->razon_social;  
-        $model->cuit                = $request->cuit;  
-        $model->observations        = $request->observations;  
-        $model->location_id         = $request->location_id;   
-        $model->provincia_id        = $request->provincia_id;   
-        $model->iva_condition_id    = $request->iva_condition_id;  
-        $model->percentage_gain     = $request->percentage_gain;   
-        $model->dolar               = $request->dolar; 
+        $last_percentage_gain                           = $model->percentage_gain;
+        $last_dolar                                     = $model->dolar;
+        $model->name                                    = $request->name;
+        $model->phone                                   = $request->phone; 
+        $model->address                                 = $request->address;   
+        $model->email                                   = $request->email; 
+        $model->razon_social                            = $request->razon_social;  
+        $model->cuit                                    = $request->cuit;  
+        $model->observations                            = $request->observations;  
+        $model->location_id                             = $request->location_id;   
+        $model->provincia_id                            = $request->provincia_id;   
+        $model->iva_condition_id                        = $request->iva_condition_id;  
+        $model->percentage_gain                         = $request->percentage_gain;   
+        $model->dolar                                   = $request->dolar; 
         $model->porcentaje_comision_negro               = $request->porcentaje_comision_negro; 
         $model->porcentaje_comision_blanco              = $request->porcentaje_comision_blanco; 
+        $model->price_from_cost_mas_iva                 = $request->price_from_cost_mas_iva; 
         $model->save();
 
 

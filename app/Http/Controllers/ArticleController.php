@@ -730,4 +730,10 @@ class ArticleController extends Controller
 
         return response()->json(['sales'    => $sales], 200);
     }
+
+    function get_final_price_description($id) {
+        $article = Article::find($id);
+        $description = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true);
+        return response()->json(['description'    => $description], 200);
+    }
 }

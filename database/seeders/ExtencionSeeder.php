@@ -399,6 +399,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Cerrar ventas (para luego no poder seguir actualizandolas)',
                 'slug' => 'cerrar_ventas',
             ],
+            [
+                'name' => 'Setear Precios de articulos con COSTO + IVA',
+                'slug' => 'providers_article_price_from_costo_mas_iva',
+            ],
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([

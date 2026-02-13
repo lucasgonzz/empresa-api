@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\article;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\ArticleDiscount;
 use App\Models\ArticleDiscountBlanco;
@@ -15,20 +16,24 @@ use Illuminate\Support\Facades\Log;
 
 class ArticlePricesHelper {
 
-    static function aplicar_category_percentage_gain($article, $final_price) {
+    static function aplicar_category_percentage_gain($article, $price, $des) {
 
         if (
             $article->category
             && $article->category->percentage_gain
         ) {
-            Log::info('La categoria tiene margen de ganancia del '.$article->category->percentage_gain);
-            Log::info('final_price: '.$final_price);
-            $final_price += $final_price * $article->category->percentage_gain / 100;
-            Log::info('final_price luego: '.$final_price);
+            // Log::info('La categoria tiene margen de ganancia del '.$article->category->percentage_gain);
+            // Log::info('price: '.$price);
+            $price += $price * $article->category->percentage_gain / 100;
+            $des[] = 'Mas margen de la categoria del '.$article->category->percentage_gain.'% = '.Numbers::price($price, true);
+            // Log::info('price luego: '.$price);
         } else {
             // Log::info('La categoria NO tiene margen de ganancia');
         }
-        return $final_price;
+        return [
+            'price' => $price,
+            'des'   => $des,
+        ];
     }
 
 
@@ -220,7 +225,7 @@ class ArticlePricesHelper {
 
     }
 
-    static function aplicar_iva($article, $price, $user) {
+    static function aplicar_iva($article, $price, $user, $des = []) {
 
         $precio_con_iva = $price;
 
@@ -236,44 +241,57 @@ class ArticlePricesHelper {
 
                 $precio_con_iva += $importe_iva;
 
+                $des[] = 'Mas IVA de '.$article->iva->percentage.'% = '.Numbers::price($precio_con_iva, true);
             }
         }
 
-        return $precio_con_iva;
+        return [
+            'price'   => $precio_con_iva,
+            'des'     => $des,
+        ];
     }
 
     static function hasIva($article) {
         return !is_null($article->iva) && $article->iva->percentage != '0' && $article->iva->percentage != 'Exento' && $article->iva->percentage != 'No Gravado'; 
     }
 
-    static function aplicar_descuentos($article, $final_price) {
+    static function aplicar_descuentos($article, $price, $des = []) {
 
         if (count($article->article_discounts) >= 1) {
             foreach ($article->article_discounts as $discount) {
 
                 if (!is_null($discount->percentage)) {
-                    $final_price -= $final_price * $discount->percentage / 100;
+                    $price -= $price * $discount->percentage / 100;
+                    $des[] = 'Menos descuento de '.$discount->percentage.'% = '.Numbers::price($price, true);
                 } else if (!is_null($discount->amount)) {
-                    $final_price -= $discount->amount;
+                    $price -= $discount->amount;
+                    $des[] = 'Menos descuento de $'.$discount->amount.' = '.Numbers::price($price, true);
                 }
 
             }
         }
-        return $final_price;
+        return [
+            'price'   => $price,
+            'des'     => $des,
+        ];
     }
 
-    static function aplicar_provider_discounts($article, $final_price) {
+    static function aplicar_provider_discounts($article, $price, $des) {
 
         if (!is_null($article->provider)) {
 
             foreach ($article->provider->provider_discounts as $discount) {
-                $final_price -= $final_price * $discount->percentage / 100;
+                $price -= $price * $discount->percentage / 100;
+                $des[] = 'Menos descuento del proveedor de '.$discount->percentage.'% = '.Numbers::price($price, true);
             }
         }
-        return $final_price;
+        return [
+            'price'   => $price,
+            'des'     => $des,
+        ];
     }
 
-    static function aplicar_recargos($article, $final_price, $luego_del_precio_final = false) {
+    static function aplicar_recargos($article, $price, $luego_del_precio_final = false, $des = []) {
 
         if (count($article->article_surchages) >= 1) {
 
@@ -290,19 +308,24 @@ class ArticlePricesHelper {
                         && $luego_del_precio_final
                     )
                 ) {
-                    Log::info('Aplicando recargo luego_del_precio_final: '.$surchage->luego_del_precio_final);
-                    Log::info('luego_del_precio_final param: '.$luego_del_precio_final);
+                    // Log::info('Aplicando recargo luego_del_precio_final: '.$surchage->luego_del_precio_final);
+                    // Log::info('luego_del_precio_final param: '.$luego_del_precio_final);
                     if (!is_null($surchage->percentage)) {
-                        $final_price += $final_price * $surchage->percentage / 100;
+                        $price += $price * $surchage->percentage / 100;
+                        $des[] = 'Mas recargo de '.$surchage->percentage.'% = '.Numbers::price($price, true);
                     } else if (!is_null($surchage->amount)) {
-                        $final_price += $surchage->amount;
+                        $price += $surchage->amount;
+                        $des[] = 'Mas recargo de $'.$surchage->percentage.' = '.Numbers::price($price, true);
                     }
                 } 
 
 
             }
         }
-        return $final_price;
+        return [
+            'price'   => $price,
+            'des'     => $des,
+        ];
     }
 
     static function set_precios_en_blanco($article) {
