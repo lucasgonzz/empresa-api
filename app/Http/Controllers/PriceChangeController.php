@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\PriceChange;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class PriceChangeController extends Controller
 {

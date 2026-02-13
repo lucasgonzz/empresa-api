@@ -86,11 +86,13 @@ class ArticleHelper {
         }
     }
 
-    static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null) {
+    static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null, $return_description = false) {
 
         // Log::info('setFinalPrice para '.$article->name.' ,id: '.$article->id.' con costo de '.$article->cost.' y precio de '.$article->price);
 
         $costo_real = null;
+
+        $des = [];
 
         if (
             is_null($article->cost)
@@ -118,9 +120,19 @@ class ArticleHelper {
 
         if ($article->cost) {
 
-            $costo_real = Self::aplicar_descuentos_e_iva($article, $article->cost, $user);
+            $des[] = 'CALCULO DEL COSTO REAL';
+            $des[] = 'Comienza con costo de '.Numbers::price($article->cost, true);
+
+            $res = Self::aplicar_descuentos_e_iva($article, $article->cost, $user, $des);
+
+            $costo_real = $res['price'];
+            $des        = $res['des'];
+
             $article->costo_real = $costo_real;
             $article->save();
+
+            $des[] = 'Costo Real queda en = '.Numbers::price($costo_real, true);
+
         }
 
 
@@ -150,87 +162,136 @@ class ArticleHelper {
 
         if (is_null($article->price) || $article->price == '') {
 
-            $cost = $article->costo_real;
 
-            if (!is_null($user->percentage_gain)) {
-                $cost += $cost * $user->percentage_gain / 100;
+            $usar_lista_mas_iva = false;
+
+            if (!is_null($article->provider) && (bool)$article->provider->price_from_cost_mas_iva) {
+                $usar_lista_mas_iva = true;
             }
 
-            if ($article->unidades_individuales) {
-                $cost = $cost / $article->unidades_individuales;
-            }
+            if ($usar_lista_mas_iva && !is_null($article->cost)) {
 
-            $final_price = $cost;
+                // PRECIO DE VENTA = PRECIO LISTA (cost) + IVA
+                $cost = (float) $article->cost;
 
-            if (
-                UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)
-                && UserHelper::hasExtencion('ventas_en_dolares', $user)
-            ) {
+                $des[] = 'CALCULO DEL PRECIO FINAL';
+                $des[] = 'Comienza con el costo de lista = '.Numbers::price($cost, true);
 
-            } else {
-                $final_price = Self::cotizar($article, $user, $final_price);
-            }
-            // if (
-            //     $article->cost_in_dollars
-            //     && $user->cotizar_precios_en_dolares
-            // ) {
-            //     if (!is_null($article->provider) && !is_null($article->provider->dolar) && (float)$article->provider->dolar > 0) {
-            //         $final_price = $final_price * $article->provider->dolar;
-            //     } else if ($article->cost_in_dollars > 0) {
-            //         $final_price = $final_price * $user->dollar;
-            //     }
-            //     Log::info('Costo cotizado: '.$final_price);
-            // }
-
-
-            if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)) {
-
-                Log::info('articulo_margen_de_ganancia_segun_lista_de_precios');
-                
-                // ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $final_price, $user, $price_types);
-
-                if (UserHelper::hasExtencion('ventas_en_dolares', $user)) {
-                    // Calculamos por tipo de precio y por moneda
-                    ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda($article, $final_price, $user);
-                    
-                } else {
-                    ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $final_price, $user, $price_types);
+                if ($article->unidades_individuales) {
+                    $cost = $cost / $article->unidades_individuales;
                 }
 
-            } else if (UserHelper::hasExtencion('lista_de_precios_por_categoria', $user)) {
+                $res = ArticlePricesHelper::aplicar_iva($article, $cost, $user, $des);
+                $final_price = $res['price'];
+                $des         = $res['des'];
 
-                ArticlePricesHelper::aplicar_precios_segun_listas_de_precios_y_categorias($article, $final_price, $user);
+                // Respeta la lógica de cotización si aplica (dólares)
+                if (
+                    !UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)
+                    || !UserHelper::hasExtencion('ventas_en_dolares', $user)
+                ) {
+                    $res = Self::cotizar($article, $user, $final_price, $des);
+                    $final_price = $res['price'];
+                    $des        = $res['des'];
+                }
 
-            } 
+            } else {
 
-            if ($article->apply_provider_percentage_gain) {
+                // MODO NORMAL (actual): PRECIO = costo_real + margen + etc
+
+                $des[] = 'CALCULO DEL PRECIO FINAL';
+
+                $cost = $article->costo_real;
+
+                $des[] = 'Comienza con costo real en = '.Numbers::price($cost, true);
+
+                if (!is_null($user->percentage_gain)) {
+                    $cost += $cost * $user->percentage_gain / 100;
+                    $des[] = 'Mas ganancia del usuario del '.$user->percentage_gain.'% = '.Numbers::price($cost, true);
+                }
+
+                if ($article->unidades_individuales) {
+                    $cost = $cost / $article->unidades_individuales;
+                    $des[] = 'Dividido en '.$article->unidades_individuales.' unidades individuales = '.Numbers::price($cost, true);
+                }
+
+                $final_price = $cost;
+
+                if (
+                    UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)
+                    && UserHelper::hasExtencion('ventas_en_dolares', $user)
+                ) {
+
+                } else {
+                    $res = Self::cotizar($article, $user, $final_price, $des);
+                    $final_price = $res['price'];
+                    $des = $res['des'];
+                }
+                // if (
+                //     $article->cost_in_dollars
+                //     && $user->cotizar_precios_en_dolares
+                // ) {
+                //     if (!is_null($article->provider) && !is_null($article->provider->dolar) && (float)$article->provider->dolar > 0) {
+                //         $final_price = $final_price * $article->provider->dolar;
+                //     } else if ($article->cost_in_dollars > 0) {
+                //         $final_price = $final_price * $user->dollar;
+                //     }
+                //     Log::info('Costo cotizado: '.$final_price);
+                // }
 
 
-                if (!is_null($article->provider_price_list)) {
-                    $final_price = $final_price + ($final_price * $article->provider_price_list->percentage / 100);
+                if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)) {
 
-                } else if ((!is_null($article->provider) && $article->provider->percentage_gain)) {
-                    $final_price = $final_price + ($final_price * $article->provider->percentage_gain / 100);
+                    Log::info('articulo_margen_de_ganancia_segun_lista_de_precios');
                     
-                    // Log::info('Aplicando margen del proveedor de '.$article->provider->percentage_gain.', quedo en '.$final_price);
+                    // ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $final_price, $user, $price_types);
+
+                    if (UserHelper::hasExtencion('ventas_en_dolares', $user)) {
+                        // Calculamos por tipo de precio y por moneda
+                        ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda($article, $final_price, $user);
+                        
+                    } else {
+                        ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $final_price, $user, $price_types);
+                    }
+
+                } else if (UserHelper::hasExtencion('lista_de_precios_por_categoria', $user)) {
+
+                    ArticlePricesHelper::aplicar_precios_segun_listas_de_precios_y_categorias($article, $final_price, $user);
 
                 } 
-            }
 
-            $final_price = ArticlePricesHelper::aplicar_category_percentage_gain($article, $final_price);
-            
+                if ($article->apply_provider_percentage_gain) {
 
-            if (!is_null($article->percentage_gain)) {
-                // Log::info('Sumando percentage_gain, va en '.$final_price);
-                
-                $final_price += $final_price * $article->percentage_gain / 100;
 
-                // Log::info('Y quedo en '.$final_price);
-            }
+                    if (!is_null($article->provider_price_list)) {
+                        $final_price = $final_price + ($final_price * $article->provider_price_list->percentage / 100);
 
-            if (UserHelper::hasExtencion('vinoteca', $user)) {
+                    } else if ((!is_null($article->provider) && $article->provider->percentage_gain)) {
+                        $final_price = $final_price + ($final_price * $article->provider->percentage_gain / 100);
+                        $des[] = 'Mas margen del proveedor del '.$article->provider->percentage_gain.'% = '.Numbers::price($final_price, true);
+                        
+                        // Log::info('Aplicando margen del proveedor de '.$article->provider->percentage_gain.', quedo en '.$final_price);
 
-                $final_price = VinotecaPriceHelper::calcular_presentacion($article, $final_price);
+                    } 
+                }
+
+                $res = ArticlePricesHelper::aplicar_category_percentage_gain($article, $final_price, $des);
+                $final_price = $res['price'];
+                $des         = $res['des'];
+
+
+                if (!is_null($article->percentage_gain)) {
+                    // Log::info('Sumando percentage_gain, va en '.$final_price);
+                    
+                    $final_price += $final_price * $article->percentage_gain / 100;
+                    $des[] = 'Mas margen del articulo del '.$article->percentage_gain.'% = '.Numbers::price($final_price, true);
+                    // Log::info('Y quedo en '.$final_price);
+                }
+
+                if (UserHelper::hasExtencion('vinoteca', $user)) {
+
+                    $final_price = VinotecaPriceHelper::calcular_presentacion($article, $final_price);
+                }
             }
 
 
@@ -238,26 +299,36 @@ class ArticleHelper {
             // Log::info('final_price: '.$final_price);
         } else {
 
+            $des[] = 'CALCULO DEL PRECIO FINAL';
             $final_price = $article->price;
+            $des[] = 'Usando el precio manual de '.Numbers::price($final_price, true);
         }
 
         // $final_price = ArticlePricesHelper::aplicar_iva($article, $final_price, $user);
 
-        $final_price = ArticlePricesHelper::aplicar_recargos($article, $final_price, true);
+        $res = ArticlePricesHelper::aplicar_recargos($article, $final_price, true, $des);
+        $final_price = $res['price'];
+        $des = $res['des'];
         
         // Log::info('aplico iva y final_price: '.$final_price);
 
 
         if (!$user->aplicar_descuentos_en_articulos_antes_del_margen_de_ganancia) {
 
-            $final_price = ArticlePricesHelper::aplicar_descuentos($article, $final_price);
+            $res = ArticlePricesHelper::aplicar_descuentos($article, $final_price, $des);
+            $final_price = $res['price'];
+            $des = $res['des'];
             
-            $final_price = ArticlePricesHelper::aplicar_recargos($article, $final_price);
+            $res = ArticlePricesHelper::aplicar_recargos($article, $final_price, $des);
+            $final_price = $res['price'];
+            $des = $res['des'];
 
             // Log::info('Aplicando recargos despues del margen de ganancia');
         }
 
-        $final_price = Self::redondear($final_price, $user);
+        $res = Self::redondear($final_price, $user, $des);
+        $final_price = $res['price'];
+        $des = $res['des'];
 
         $article->final_price = $final_price;
 
@@ -288,6 +359,11 @@ class ArticleHelper {
         if ($guardar_cambios) {
             $article->timestamps = false;
             $article->save();
+
+            if ($return_description) {
+
+                return $des;
+            }
             return $article;
         } else {
             return [
@@ -299,60 +375,82 @@ class ArticleHelper {
 
     }
 
-    static function cotizar($article, $user, $final_price) {
+    static function cotizar($article, $user, $price, $des) {
 
         if (
             $article->cost_in_dollars
             && $user->cotizar_precios_en_dolares
         ) {
             if (!is_null($article->provider) && !is_null($article->provider->dolar) && (float)$article->provider->dolar > 0) {
-                $final_price = $final_price * $article->provider->dolar;
+                $price = $price * $article->provider->dolar;
+                $des[] = 'Cotizando al dolar del proveedor '.Numbers::price($article->provider->dolar, true).' = '.Numbers::price($price, true);
             } else if ($article->cost_in_dollars > 0) {
-                $final_price = $final_price * $user->dollar;
+                $price = $price * $user->dollar;
+                $des[] = 'Cotizando al dolar global '.Numbers::price($user->dollar, true).' = '.Numbers::price($price, true);
             }
-            Log::info('Costo cotizado: '.$final_price);
+            Log::info('Costo cotizado: '.$price);
         }
-        return $final_price;
+        return [
+            'price' => $price,
+            'des'   => $des,
+        ];
     }
 
-    static function aplicar_descuentos_e_iva($article, $price, $user) {
+    static function aplicar_descuentos_e_iva($article, $price, $user, $des) {
 
-        $price = ArticlePricesHelper::aplicar_descuentos($article, $price);
+        $res = ArticlePricesHelper::aplicar_descuentos($article, $price, $des);
+        $price = $res['price'];
+        $des   = $res['des'];
 
-        $price = ArticlePricesHelper::aplicar_recargos($article, $price);
+        $res = ArticlePricesHelper::aplicar_recargos($article, $price, false, $des);
+        $price = $res['price'];
+        $des   = $res['des'];
 
-        $price = ArticlePricesHelper::aplicar_provider_discounts($article, $price);
+        $res = ArticlePricesHelper::aplicar_provider_discounts($article, $price, $des);
+        $price = $res['price'];
+        $des   = $res['des'];
 
-        $price = ArticlePricesHelper::aplicar_iva($article, $price, $user);
+        $res = ArticlePricesHelper::aplicar_iva($article, $price, $user, $des);
+        $price = $res['price'];
+        $des   = $res['des'];
 
-        return $price;
+        return [
+            'price' => $price,
+            'des'   => $des,
+        ];
     }
 
-    static function redondear($price, $user) {
+    static function redondear($price, $user, $des) {
 
         if ($user->redondear_miles_en_vender) {
-
-            return round($price / 1000) * 1000;
+            $price = round($price / 1000) * 1000;
+            $des[] = 'Redondeando por mil = '.Numbers::price($price, true);
         }
 
         if ($user->redondear_centenas_en_vender) {
 
-            return round($price, -2);
-            // return ceil($price / 100) * 100;
+            $price = round($price, -2);
+            $des[] = 'Redondeando por centenas = '.Numbers::price($price, true);
         }
 
         if (env('REDONDEAR_PRECIOS_EN_DECENAS', false)) {
-            return round($price, -1);
+            $price = round($price, -1);
+            $des[] = 'Redondeando por decenas = '.Numbers::price($price, true);
         }
 
         if (env('REDONDEAR_DE_A_50', false)) {
-            return ceil($price / 50) * 50;
+            $price = ceil($price / 50) * 50;
+            $des[] = 'Redondeando de a 50 = '.Numbers::price($price, true);
         }
 
         if (env('REDONDEAR_PRECIOS_EN_CENTAVOS', false)) {
-            return round($price);
+            $price = round($price);
+            $des[] = 'Redondeando centavos = '.Numbers::price($price, true);
         }
-        return $price;
+        return [
+            'price' => $price,
+            'des'   => $des,
+        ];
     }
 
     static function setStockFromStockMovement($article) {

@@ -187,6 +187,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('/article-acopios/{article_id}', 'ArticleController@ventas_con_acopio');
 
+    // Descripcion del precio final
+    Route::get('/article/final-price-description/{id}', 'ArticleController@get_final_price_description');
+    
+
 
     // Vender
     // Esta ruta se usa en VENDER - LISTADO - CONSULTORA DE PRECIOS
