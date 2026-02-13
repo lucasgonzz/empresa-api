@@ -315,7 +315,7 @@ class ArticlePricesHelper {
                         $des[] = 'Mas recargo de '.$surchage->percentage.'% = '.Numbers::price($price, true);
                     } else if (!is_null($surchage->amount)) {
                         $price += $surchage->amount;
-                        $des[] = 'Mas recargo de $'.$surchage->percentage.' = '.Numbers::price($price, true);
+                        $des[] = 'Mas recargo de '.Numbers::price($surchage->amount, true).' = '.Numbers::price($price, true);
                     }
                 } 
 
