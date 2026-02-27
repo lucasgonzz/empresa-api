@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Controller;
+use App\Services\Filter\FilterHistoryService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -16,7 +17,9 @@ class DeleteController extends Controller
         $formated_model_name = GeneralHelper::getModelName($model_name);
         if ($request->from_filter) {
             $search_ct = new SearchController();
-            $models = $search_ct->search($request, $model_name, $request->filter_form);
+            $res = $search_ct->search($request, $model_name, $request->filter_form, 0, true);
+            $models = $res['models'];
+            $used_filters = $res['used_filters'];
             // foreach($models as $model) {
             //     Log::info($model->name);
             // }
@@ -34,6 +37,8 @@ class DeleteController extends Controller
         if (count($models) > 300) {
             $send_notification = false;
         }
+
+        $eliminados = 0;
         foreach ($models as $model) {
             $controller_name = 'App\\Http\\Controllers\\'.explode('\\', $formated_model_name)[2].'Controller';
             $controller = new $controller_name();
@@ -49,7 +54,22 @@ class DeleteController extends Controller
             } else {
                 $controller->destroy($model->id);
             }
+
+            $eliminados++;
             
+        }
+
+
+        if ($model_name == 'article') {
+            FilterHistoryService::log_action([
+                'user_id'             => $this->userId(true),
+                'auth_user_id'        => $this->userId(false),
+                'action'              => 'eliminacion',
+                'model_name'          => 'article',
+                'filtrados_count'     => count($models),
+                'afectados_count'     => $eliminados,
+                'used_filters'        => $used_filters,
+            ]);
         }
         return response()->json(['models' => $models], 200);
     }

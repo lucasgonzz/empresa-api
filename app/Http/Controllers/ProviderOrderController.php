@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ProviderOrderHelper;
+use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Imports\ProviderOrderArticleImport;
 use App\Jobs\ProcessProviderOrderArticleImport;
@@ -58,6 +59,7 @@ class ProviderOrderController extends Controller
     public function store(Request $request) {
         $model = ProviderOrder::create([
             'num'                                       => $this->num('provider_orders'),
+            'modo_facturacion'                          => $request->modo_facturacion,
             'total_with_iva'                            => $request->total_with_iva,
             'total_from_provider_order_afip_tickets'    => $request->total_from_provider_order_afip_tickets,
             'provider_id'                               => $request->provider_id,
@@ -74,8 +76,15 @@ class ProviderOrderController extends Controller
 
         $this->updateRelationsCreated('provider_order', $model->id, $request->childrens);
         
+
         $helper = new NewProviderOrderHelper($model, $request->articles);
+        
+        $helper->attach_articles();
+        
+        ModoFacturacionHelper::check_modo_facturacion($model, $helper);
+
         $helper->procesar_pedido();
+
 
         return response()->json(['model' => $this->fullModel('ProviderOrder', $model->id)], 201);
     }  
@@ -90,6 +99,7 @@ class ProviderOrderController extends Controller
         $ya_se_actualizo_stock = $model->update_stock;
 
         $model->total_with_iva                              = $request->total_with_iva;
+        $model->modo_facturacion                            = $request->modo_facturacion;
         $model->total_from_provider_order_afip_tickets      = $request->total_from_provider_order_afip_tickets;
         $model->provider_id                                 = $request->provider_id;
         $model->provider_order_status_id                    = $request->provider_order_status_id;
@@ -101,7 +111,13 @@ class ProviderOrderController extends Controller
         $model->moneda_id                                   = $request->moneda_id;        
         $model->save();
 
+
         $helper = new NewProviderOrderHelper($model, $request->articles, $ya_se_actualizo_stock);
+        
+        $helper->attach_articles();
+        
+        ModoFacturacionHelper::check_modo_facturacion($model, $helper);
+
         $helper->procesar_pedido();
         
         return response()->json(['model' => $this->fullModel('ProviderOrder', $model->id)], 200);

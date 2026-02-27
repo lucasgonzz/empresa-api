@@ -667,7 +667,10 @@ class SalePdf extends fpdf {
 	}
 
 	function surchages() {
-		if (count($this->sale->surchages) >= 1) {
+		if (
+			count($this->sale->surchages) >= 1
+			&& !$this->sale->aplicar_recargos_directo_a_items
+		) {
 		    $this->SetFont('Arial', '', 9);
 		    // $total_articles = $this->total_articles;
 		    // $total_services = $this->total_services;

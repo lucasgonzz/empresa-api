@@ -51,6 +51,8 @@ class ProviderOrderSeeder extends Seeder
         $models = [
             [
                 'total' => $total / 2,
+                'code'  => '0002-000998221',
+                'issued_at' => $order->created_at->subDays(2),
             ],
             [
                 'total' => $total / 2,

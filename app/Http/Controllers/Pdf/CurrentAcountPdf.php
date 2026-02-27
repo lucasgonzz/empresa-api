@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\StringHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Models\User;
+use Carbon\Carbon;
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
@@ -163,11 +164,23 @@ class CurrentAcountPdf extends fpdf {
 					// reseteo la posicion x para mantener los articulos alineados
 					// $this->SetX($detalle_col_x);
 
-					$width_name = $this->getFields()['Fecha'] +$this->getFields()['Detalle'] + $this->getFields()['Debe'] + $this->getFields()['Haber'];
+					$width_name = $this->getFields()['Fecha'] +$this->getFields()['Detalle'] + $this->getFields()['Debe'];
                     
                     $name_with_amount = StringHelper::short($article->name, 60) . ' ('. $article->pivot->amount .')';
 
                     $this->Cell($width_name, 5, '    - '. $name_with_amount, $this->b, 0, 'L');
+
+	                $width_fecha_agregado = $this->getFields()['Haber'];
+                    if (!is_null($article->pivot->fecha_agregado)) {
+
+	                    // $this->Cell($width_fecha_agregado, 5, '('. $article->pivot->fecha_agregado.')', $this->b, 0, 'L');
+
+						$this->SetFont('Arial', '', 7);
+	                    $this->Cell($width_fecha_agregado, 5, '('. date_format(Carbon::parse($article->pivot->fecha_agregado), 'd/m/y H:m').')', $this->b, 0, 'L');
+						$this->SetFont('Arial', '', 10);
+                    } else {
+                    	$this->x += $width_fecha_agregado;
+                    }
 
                     $unit_price = $article->pivot->price ? Numbers::price($article->pivot->price, true, $moneda_id) : '';
                     $this->Cell($this->getFields()['Saldo'], 5, $unit_price, $this->b, 0, 'L');

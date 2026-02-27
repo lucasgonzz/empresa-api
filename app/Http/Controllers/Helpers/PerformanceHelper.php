@@ -24,6 +24,7 @@ use App\Models\ExpenseConcept;
 use App\Models\PriceType;
 use App\Models\Provider;
 use App\Models\ProviderOrder;
+use App\Models\ProviderOrderAfipTicket;
 use App\Models\Sale;
 use App\Models\User;
 use Carbon\Carbon;
@@ -241,19 +242,14 @@ class PerformanceHelper
 
         $this->total_iva_comprado = 0;
 
-        $provider_orders = ProviderOrder::where('user_id', $this->user_id)
-                                    ->whereDate('created_at', '>=', $this->mes_inicio)
-                                    ->whereDate('created_at', '<=', $this->mes_fin)
+        $provider_order_afip_tickets = ProviderOrderAfipTicket::where('user_id', $this->user_id)
+                                    ->whereDate('issued_at', '>=', $this->mes_inicio)
+                                    ->whereDate('issued_at', '<=', $this->mes_fin)
                                     ->get();
 
-        foreach ($provider_orders as $provider_order) {
+        foreach ($provider_order_afip_tickets as $afip_ticket) {
 
-            // $this->total_iva_comprado += (float)$provider_order->total_iva;
-
-            foreach ($provider_order->provider_order_afip_tickets as $afip_ticket) {
-
-                $this->total_iva_comprado += $afip_ticket->total_iva;
-            }
+            $this->total_iva_comprado += $afip_ticket->total_iva;
         }
 
     }

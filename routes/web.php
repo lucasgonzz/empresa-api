@@ -238,6 +238,12 @@ Route::post('/user-setup', 'UserSetupController@setup')->name('user.setup');
 Route::get('/user/extencions/edit/{user_id?}', 'UserExtencionController@edit')->name('users.extencions.edit');
 Route::post('/users/{user_id}/extencions', 'UserExtencionController@update')->name('users.extencions.update');
 
+// Route::get('/user/payment-expired-at/{user_id?}', function() {
+//     echo 'asd';
+// });
+Route::get('/mensualidad/{user_id?}', 'UserPaymentExpiredAtController@edit')->name('users.payment_expired_at.edit');
+
+Route::put('/users/payment-expired-at/{user_id}', 'UserPaymentExpiredAtController@update')->name('users.payment_expired_at.update');
 
 
 // ------------------------------------------------------------------------------
@@ -412,6 +418,11 @@ Route::get('sale/charts/{from}/{to}', 'SaleController@charts');
 
 Route::get('afip-txt/{mes_inicio}/{mes_fin}', 'AfipController@exportVentas');
 Route::get('afip-txt-alicuotas/{mes_inicio}/{mes_fin}', 'AfipController@exportAlicuotasTxt');
+
+Route::get('afip-iva-compras/{mes_inicio}/{mes_fin}', 'AfipController@iva_compras_pdf');
+Route::get('afip-iva-ventas/{mes_inicio}/{mes_fin}', 'AfipController@iva_ventas_pdf');
+
+
 
 
 

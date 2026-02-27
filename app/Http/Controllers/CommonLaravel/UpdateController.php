@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Services\Filter\FilterHistoryService;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -29,6 +30,10 @@ class UpdateController extends Controller
         // if (count($models) < 2) {
         if (count($models) < 3000) {
 
+            $used_filters = [];
+
+            $afectados = 0;
+
             foreach ($models as $model) {
                 foreach ($request->update_form as $form) {
                     if ($form['type'] == 'number' && str_contains($form['key'], 'decrement') && $form['value'] != '') {
@@ -38,6 +43,15 @@ class UpdateController extends Controller
                             $model->{substr($form['key'], 10)} = round($model->{substr($form['key'], 10)}, 0, PHP_ROUND_HALF_UP);
                         }
                         $model->save();
+                        $afectados++;
+
+
+                        $used_filters[] = [
+                            'key'       => $form['key'],
+                            'operator'  => 'disminuir',
+                            'value'     => $form['value'],
+                            'type'      => $form['type'],
+                        ];
                         // Log::info('Se disminuyo '.substr($form['key'], 10).' de '.$model->name.', quedo en '.$model->{substr($form['key'], 10)});
                     } else if ($form['type'] == 'number' && str_contains($form['key'], 'increment') && $form['value'] != '') {
                         $value = $model->{substr($form['key'], 10)} * (float)$form['value'] / 100;
@@ -46,18 +60,54 @@ class UpdateController extends Controller
                             $model->{substr($form['key'], 10)} = round($model->{substr($form['key'], 10)}, 0, PHP_ROUND_HALF_UP);
                         }
                         $model->save();
+                        $afectados++;
+
+
+                        $used_filters[] = [
+                            'key'       => $form['key'],
+                            'operator'  => 'incrementar',
+                            'value'     => $form['value'],
+                            'type'      => $form['type'],
+                        ];
                         // Log::info('Se aumento '.substr($form['key'], 10).' de '.$model->name.', quedo en '.$model->{substr($form['key'], 10)});
                     } else if ($form['type'] == 'number' && str_contains($form['key'], 'set_') && $form['value'] != '') {
                         $model->{substr($form['key'], 4)} = (float)$form['value'];
                         $model->save();
+                        $afectados++;
                         Log::info('Se seteo '.substr($form['key'], 4).' de '.$model->name.', quedo en '.$model->{substr($form['key'], 4)});
+
+
+                        $used_filters[] = [
+                            'key'       => $form['key'],
+                            'operator'  => 'setear',
+                            'value'     => $form['value'],
+                            'type'      => $form['type'],
+                        ];
                     } else if ($form['type'] == 'search' && str_contains($form['key'], '_id') && $form['value'] != '' && $form['value'] != 0) {
                         $model->{$form['key']} = $form['value'];
                         $model->save();
+                        $afectados++;
+
+
+                        $used_filters[] = [
+                            'key'       => $form['key'],
+                            'operator'  => 'setear',
+                            'value'     => $form['value'],
+                            'type'      => $form['type'],
+                        ];
                         // Log::info('Se seteo '.$form['key'].' de '.$model->name.', quedo en '.$model->{$form['key']});
                     } else if ($form['type'] == 'select' && str_contains($form['key'], '_id') && $form['value'] != '' && $form['value'] != 0) {
                         $model->{$form['key']} = $form['value'];
                         $model->save();
+                        $afectados++;
+
+
+                        $used_filters[] = [
+                            'key'       => $form['key'],
+                            'operator'  => 'setear',
+                            'value'     => $form['value'],
+                            'type'      => $form['type'],
+                        ];
                         // Log::info('Se seteo '.$form['key'].' de '.$model->name.', quedo en '.$model->{$form['key']});
                     }
                 }
@@ -67,6 +117,19 @@ class UpdateController extends Controller
                 }
                 $models_response[] = $this->fullModel($model_name, $model->id);
             }
+
+            if ($model_name == 'article') {
+                FilterHistoryService::log_action([
+                    'user_id'             => $this->userId(true),
+                    'auth_user_id'        => $this->userId(false),
+                    'action'              => 'actualizacion',
+                    'model_name'          => 'article',
+                    'filtrados_count'     => count($models),
+                    'afectados_count'     => $afectados,
+                    'used_filters'        => $used_filters,
+                ]);
+            }
+
             Log::info('se actualizaron '.count($models).' '.$model_name.' desde updateController');
         } else {
             Log::info('NO se permitio actualizar los '.count($models).' '.$model_name);

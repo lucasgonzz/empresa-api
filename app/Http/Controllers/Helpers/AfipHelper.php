@@ -356,10 +356,14 @@ class AfipHelper extends Controller {
             $price -= $price * $discount->pivot->percentage / 100;
             Log::info('quedo en '.$price);
         }
-        foreach ($this->sale->surchages as $surchage) {
-            Log::info('aumentando recargo de venta de '.$surchage->pivot->percentage.' a '.$price);
-            $price += $price * $surchage->pivot->percentage / 100;
-            Log::info('quedo en '.$price);
+
+        if (!$this->sale->aplicar_recargos_directo_a_items) {
+            
+            foreach ($this->sale->surchages as $surchage) {
+                Log::info('aumentando recargo de venta de '.$surchage->pivot->percentage.' a '.$price);
+                $price += $price * $surchage->pivot->percentage / 100;
+                Log::info('quedo en '.$price);
+            }
         }
 
         if ($this->sale->descuento > 0) {
@@ -380,12 +384,12 @@ class AfipHelper extends Controller {
                 return $this->getPriceWithoutIva();
             } 
         } 
-        foreach ($sale->discounts as $discount) {
-            $price -= $price * $discount->pivot->percentage / 100;
-        }
-        foreach ($sale->surchages as $surchage) {
-            $price += $price * $surchage->pivot->percentage / 100;
-        }
+        // foreach ($sale->discounts as $discount) {
+        //     $price -= $price * $discount->pivot->percentage / 100;
+        // }
+        // foreach ($sale->surchages as $surchage) {
+        //     $price += $price * $surchage->pivot->percentage / 100;
+        // }
         return $price;
     }
 

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\providerOrder;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\caja\MovimientoCajaHelper;
 use App\Http\Controllers\Stock\StockMovementController;
@@ -38,7 +39,7 @@ class NewProviderOrderHelper {
 
     function procesar_pedido() {
 
-        $this->attach_articles();
+        // $this->attach_articles();
 
         $this->set_totales();
 
@@ -52,144 +53,311 @@ class NewProviderOrderHelper {
                                                 ->first();
     }
 
+
+    /*
+        * Si total_from_provider_order_afip_tickets = TRUE
+            1. Se calcula $total en base las provider_order_afip_ticket->total
+            2. 
+
+
+        * Si total_from_provider_order_afip_tickets = FALSE
+            1. Se calculo $total_articulos en base a los articulos sin tener en cuenta el IVA de cada articulo.
+            2. 
+
+    */
     function set_totales() {
 
-        $sub_total = 0;
+        $total_articulos = 0;
+        $descuentos_individuales = 0;
+        $descuentos_compra = 0;
         $total_descuento = 0;
+        $total_costos_extra = 0;
         $total_iva = 0;
         $total = 0;
+
+        $this->provider_order->load([
+            'articles',
+            'provider_order_afip_tickets',
+            'provider_order_discounts',
+            'provider_order_extra_costs',
+            'provider', // porque en get_total_article lo usás para dólar
+        ]);
+
+
+        $des = [];
+
+
+        $des[] = 'TOTAL ARTICULOS';
+        foreach ($this->provider_order->articles as $article) {
+
+            $res                = $this->get_total_article($article);
+            $sub_total_article  = $res['sub_total_article'];
+            // $total_article      = $res['total_article'];
+            $article_descuento  = $res['total_descuento'];
+            // $article_iva        = $res['article_iva']['importe_iva'];
+
+            $total_articulos += $sub_total_article;
+            $descuentos_individuales += $article_descuento;
+
+            Log::info('Sumando '.$sub_total_article.' de '.$article->name);
+            Log::info('Descuentos de articulo '.$article_descuento);
+
+            $des[] = Numbers::price($sub_total_article, true).' x '.$article->pivot->amount.' u. de '.$article->name;
+        }
+
+        if ($total_articulos > 0) {
+            if ($descuentos_individuales > 0) {
+
+                $des[] = 'Total articulos (sin descuentos) = '.Numbers::price($total_articulos, true);
+            } else {
+                $des[] = 'Total articulos = '.Numbers::price($total_articulos, true);
+            }
+        }
+
+        if ($descuentos_individuales > 0) {
+
+            $des[] = Numbers::price($descuentos_individuales, true).' de descuentos individuales en articulos';  
+        }
+
 
         if ($this->provider_order->total_from_provider_order_afip_tickets) {
 
             Log::info('Sumando total de las facturas');
 
-            foreach ($this->provider_order->provider_order_afip_tickets as $afip_ticket) {
+            $des[] = 'CALCULANDO TOTAL EN BASE A FACTURAS';
 
-                // $total_iva  += $afip_ticket->total_iva;
+            foreach ($this->provider_order->provider_order_afip_tickets as $afip_ticket) {
                 $total      += $afip_ticket->total;
+                $des[] = Numbers::price($afip_ticket->total, true).' de factura N° '.$afip_ticket->code;
             }
 
+            $des[] = 'Total pedido = '.Numbers::price($total, true);
         } else {
+            $total += $total_articulos;
+        }
 
-            Log::info('Sumando total de los articulos');
 
-            $this->provider_order->load('articles');
 
-            foreach ($this->provider_order->articles as $article) {
+        /*
+            Sumando IVA que va a venir siempre de los provider_order_afip_tickets
+            Estos van a ser creados de forma manual o automatica en base a "modo_facturacion"
+            De eso se encarga ModoFacturacionHelper
+        */
 
-                $cost = (float)($article->pivot->cost);
-                
-                if (
-                    $article->pivot->cost_in_dollars
-                    && $this->provider_order->moneda_id == 1
-                ) {
+        if (count($this->provider_order->provider_order_afip_tickets) >= 1) {
+            $des[] = 'CALCULANDO IVA EN BASE A FACTURAS';
+        }
+        foreach ($this->provider_order->provider_order_afip_tickets as $afip_ticket) {
 
-                    $valor_dolar = $this->user->dollar;
+            $total_iva  += $afip_ticket->total_iva;
+            $des[] = Numbers::price($afip_ticket->total_iva, true).' de IVA de factura N° '.$afip_ticket->code;
+        }
+        if ($total_iva > 0) {
+            $des[] =  'Total IVA = '.Numbers::price($total_iva, true);
+        }
 
-                    if (
-                        !is_null($article->provider) 
-                        && !is_null($article->provider->dolar) 
-                        && (float)$article->provider->dolar > 0) {
 
-                        $cost = $cost * $article->provider->dolar;
+        $this->provider_order->total_iva            = $total_iva;
+        $this->provider_order->sub_total            = $total_articulos;
 
-                    } else if ($article->cost_in_dollars) {
-                        
-                        $cost = $cost * $this->user->dollar;
-                    
-                    }
-                }
 
-                $total_article = $cost * (float)($article->pivot->amount);
+        // Descuentos del pedido
 
-                if (
-                    (
-                        $total_article == 0
-                        || is_null($total_article)
-                    )
-                    && $article->pivot->price
-                ) {
-                    $total_article = (float)$article->pivot->price * (float)($article->pivot->amount);
-                }
+        $total_solo_con_descuentos_individuales = $total_articulos - $descuentos_individuales;
 
-                if (!is_null($article->presentacion)) {
-                    $total_article *= $article->presentacion;
-                }
+        if (count($this->provider_order->provider_order_discounts) >= 1) {
+            $des[] = 'CALCULANDO DESCUENTOS DE COMPRA';
+            $des[] = 'Total articulos = '.Numbers::price($total_articulos, true);
 
-                $sub_total += $total_article;
-
-                if (!is_null($article->pivot->discount)) {
-
-                    $descuento = $total_article * (float)$article->pivot->discount / 100;
-                    
-                    $total_descuento += $descuento;
-
-                    $total_article -= $descuento;
-                }
-
-                $article_iva = 0;
-
-                if (
-                    !$this->user->iva_included
-                    && !is_null($article->pivot->iva_id)
-                    && $article->pivot->iva_id != 0) {
-
-                    $iva = $this->get_iva($article->pivot->iva_id);
-
-                    if (!is_null($iva)) {
-                        
-                        $article_iva = $total_article * (float)$iva->percentage / 100;
-
-                        $total_iva += $article_iva;
-                    } else {
-                        Log::info('No se encontro el iva_id: '.$article->pivot->iva_id);
-                    }
-
-                }
-
-                if ($this->provider_order->total_with_iva) {
-
-                    $total_article += $article_iva;
-                }
-
-                // $total += $total_article;
-
+            if ($descuentos_individuales > 0) {
+                $des[] = 'Descuentos individuales = '.Numbers::price($descuentos_individuales, true);
+                $des[] = 'Total articulos con desc aplicado = '.Numbers::price($total_solo_con_descuentos_individuales, true);
             }
         }
 
-        if (count($this->provider_order->provider_order_afip_tickets) >= 1) {
+        foreach ($this->provider_order->provider_order_discounts as $discount) {
 
-            $total_iva = 0;
-            foreach ($this->provider_order->provider_order_afip_tickets as $afip_ticket) {
+            if (
+                !is_null($discount->percentage)
+                && $discount->percentage != ''
+            ) {
 
-                $total_iva  += $afip_ticket->total_iva;
+                $monto_descuento = $total_solo_con_descuentos_individuales * (float)$discount->percentage / 100;
+                $des[] = 'Menos el '.$discount->percentage.'% de '.Numbers::price($total_solo_con_descuentos_individuales, true).' = '.Numbers::price($monto_descuento, true);
+            } else if (
+                !is_null($discount->monto)
+                && $discount->monto != ''
+            ) {
+
+                $monto_descuento = $discount->monto;
+                $des[] = 'Menos '.Numbers::price($discount->monto, true).' = '.Numbers::price($monto_descuento, true);
+                Log::info('menos $'.$discount->monto);
             }
-        } 
 
 
-        $this->provider_order->total_descuento      = $total_descuento;
-        $this->provider_order->total_iva            = $total_iva;
-        $this->provider_order->sub_total            = $sub_total;
+            $descuentos_compra += $monto_descuento;
+            $total_solo_con_descuentos_individuales -= $monto_descuento;
 
+            $des[] = 'Descuentos Compra = '.Numbers::price($descuentos_compra, true);
+
+
+            // Log::info('monto_descuento = '.$monto_descuento);
+            // Log::info('total_descuento = '.$total_descuento);
+        }
+
+        // if ($total_descuento > 0) {
+        //     $des[] = 'Total articulos con descuentos aplicados = '.Numbers::price($total_)
+        // }
+
+        $total_descuento = $descuentos_individuales + $descuentos_compra;
+        
+        $this->provider_order->descuentos_individuales    = $descuentos_individuales;
+        $this->provider_order->descuentos_compra          = $descuentos_compra;
+        $this->provider_order->total_descuento            = $total_descuento;
 
         if (!$this->provider_order->total_from_provider_order_afip_tickets) {
 
-            $total = $sub_total - $total_descuento;
+            $total_sin_descuento = $total;
+            $total -= $total_descuento;
+
+            $des[] = 'APLICANDO DESCUENTOS DE COMPRA';
+            $des[] = 'Total articulos sin descuentos = '.Numbers::price($total_sin_descuento, true);
+            $des[] = 'Descuento individuales = '.Numbers::price($descuentos_individuales, true);
+            $des[] = 'Descuentos de compra = '.Numbers::price($descuentos_compra, true);
+            $des[] = 'Total Descuentos = '.Numbers::price($total_descuento, true);
+            $des[] = 'Total con descuentos aplicado = '.Numbers::price($total, true);
         }
 
-        foreach ($this->provider_order->provider_order_extra_costs as $extra_cost) {
-            $total += (float)$extra_cost->value;
+
+        if (count($this->provider_order->provider_order_extra_costs) >= 1) {
+            $des[] = 'CALCULANDO COSTOS EXTRAS';
         }
+        foreach ($this->provider_order->provider_order_extra_costs as $extra_cost) {
+            $total_costos_extra += (float)$extra_cost->value;
+            $des[] = 'Sumando '.Numbers::price($extra_cost->value, true).' de '.$extra_cost->description;
+            $des[] = 'Costos extras en '.Numbers::price($total_costos_extra, true);
+        }
+
+        if ($total_costos_extra > 0) {
+            $total_sin_costo_extra = $total;
+            $total += $total_costos_extra;
+
+            $des[] = 'APLICANDO COSTOS EXTRAS';
+            $des[] = 'Total en '.Numbers::price($total_sin_costo_extra, true).' mas '.Numbers::price($total_costos_extra, true).' de costos extra = '.Numbers::price($total, true);
+        }
+
+        $this->provider_order->total_costos_extra            = $total_costos_extra;
+
 
         if ($this->provider_order->total_with_iva) {
 
+            $total_sin_iva = $total;
+
             $total += $total_iva;
+            
+            $des[] = 'APLICANDO IVA';
+            $des[] = 'Total en '.Numbers::price($total_sin_iva, true).' mas '.Numbers::price($total_iva, true).' de IVA = '.Numbers::price($total, true);
         }
 
+        $des[] = 'TOTAL FINAL';
+        $des[] = 'Total final = '.Numbers::price($total, true);
+
+
         $this->provider_order->total                = $total;
+        $this->provider_order->price_description    = json_encode($des);
 
         $this->provider_order->save();
 
+
+
+    }
+
+    function get_total_article($article) {
+
+        $cost = (float)($article->pivot->cost);
+        $sub_total_article = 0;
+        $total_article = 0;
+        $total_descuento = 0;
+        $article_iva = [
+            'iva_id'        => 0,
+            'importe_iva'   => 0,
+        ];
+        
+        if (
+            $article->pivot->cost_in_dollars
+            && $this->provider_order->moneda_id == 1
+        ) {
+
+            $valor_dolar = $this->user->dollar;
+
+            if (
+                !is_null($this->provider_order->provider) 
+                && !is_null($this->provider_order->provider->dolar) 
+                && (float)$this->provider_order->provider->dolar > 0) {
+
+                $valor_dolar = $this->provider_order->provider->dolar;
+
+            }
+
+            $cost *= $valor_dolar;
+        }
+
+        $total_article = $cost * (float)($article->pivot->amount);
+
+        if (
+            (
+                $total_article == 0
+                || is_null($total_article)
+            )
+            && $article->pivot->price
+        ) {
+            $total_article = (float)$article->pivot->price * (float)($article->pivot->amount);
+        }
+
+        if (!is_null($article->presentacion)) {
+            $total_article *= $article->presentacion;
+        }
+
+
+        $sub_total_article = $total_article;
+
+        if (!is_null($article->pivot->discount)) {
+
+            $descuento = $total_article * (float)$article->pivot->discount / 100;
+            
+            $total_descuento += $descuento;
+
+            $total_article -= $descuento;
+        }
+
+
+        if (
+            !$this->user->iva_included
+            && !is_null($article->pivot->iva_id)
+            && $article->pivot->iva_id != 0) {
+
+            $iva = $this->get_iva($article->pivot->iva_id);
+
+            if (!is_null($iva)) {
+                
+                $importe_iva = $total_article * (float)$iva->percentage / 100;
+
+                $article_iva['iva_id']      = $iva->id;
+                $article_iva['neto']        = $total_article;
+                $article_iva['importe_iva'] = $importe_iva;
+
+            } else {
+                Log::info('No se encontro el iva_id: '.$article->pivot->iva_id);
+            }
+
+        }
+
+        return [
+            'total_article'     => $total_article,
+            'sub_total_article' => $sub_total_article,
+            'article_iva'       => $article_iva,
+            'total_descuento'   => $total_descuento,
+        ];
     }
 
     function get_iva($iva_id) {

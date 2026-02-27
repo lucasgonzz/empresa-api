@@ -429,8 +429,11 @@ class ArticleHelper {
 
         if ($user->redondear_centenas_en_vender) {
 
-            $price = round($price, -2);
-            $des[] = 'Redondeando por centenas = '.Numbers::price($price, true);
+            if ($price > 100) {
+                
+                $price = round($price, -2);
+                $des[] = 'Redondeando por centenas = '.Numbers::price($price, true);
+            }
         }
 
         if (env('REDONDEAR_PRECIOS_EN_DECENAS', false)) {

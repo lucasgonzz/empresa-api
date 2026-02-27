@@ -172,6 +172,8 @@ class Controller extends BaseController
 
     function sendAddModelNotification($model_name, $model_id, $check_added_by = true, $for_user_id = null, $ignore_queue = false) {
 
+        return; 
+        
         if ($model_name == 'article'
         && !$this->user()->download_articles) {
             return;

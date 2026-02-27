@@ -6,12 +6,13 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
+use App\Services\Filter\FilterHistoryService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 class SearchController extends Controller
 {
-    function search(Request $request, $model_name_param, $_filters = null, $paginate = 0) {
+    function search(Request $request, $model_name_param, $_filters = null, $paginate = 0, $return_used_filters = false) {
         $model_name = GeneralHelper::getModelName($model_name_param);
         $models = $model_name::where('user_id', $this->userId());
 
@@ -32,13 +33,15 @@ class SearchController extends Controller
                             ->withTrashed();
         }
         
-        Log::info('filters:');
-        Log::info($filters);
+        // Log::info('filters:');
+        // Log::info($filters);
+
+        $used_filters = [];
 
         foreach ($filters as $filter) {
             
-            Log::info('Va con ');
-            Log::info($filter);
+            // Log::info('Va con ');
+            // Log::info($filter);
 
             if (isset($filter['type'])) {
 
@@ -46,12 +49,19 @@ class SearchController extends Controller
                 && $filter['ordenar_de'] != '') {
                     $models = $models->orderBy($filter['key'], $filter['ordenar_de']);
 
-                    Log::info('ordenando por '.$filter['key']. ' de '.$filter['ordenar_de']);
+                    // Log::info('ordenando por '.$filter['key']. ' de '.$filter['ordenar_de']);
+
+                    $used_filters[] = [
+                        'key'       => $filter['key'],
+                        'operator'  => 'order_by',
+                        'value'     => $filter['ordenar_de'],
+                        'type'      => $filter['type'],
+                    ];
                 }
 
                 if (isset($filter['en_blanco']) && (boolean)$filter['en_blanco']) {
 
-                    Log::info($filter['key'].' en_blanco');
+                    // Log::info($filter['key'].' en_blanco');
                     
                     if ($filter['type'] == 'select'
                         || $filter['type'] == 'search') {
@@ -66,12 +76,27 @@ class SearchController extends Controller
                         });
 
 
+                        $used_filters[] = [
+                            'key'       => $filter['key'],
+                            'operator'  => 'en_blanco',
+                            'value'     => true,
+                            'type'      => $filter['type'],
+                        ];
+
+
                     } else {
 
                         $models = $models->where(function ($subquery) use ($filter) {
                             $subquery->whereNull($filter['key'])
                                         ->orWhere($filter['key'], '');
                         });
+
+                        $used_filters[] = [
+                            'key'       => $filter['key'],
+                            'operator'  => 'en_blanco',
+                            'value'     => true,
+                            'type'      => $filter['type'],
+                        ];
                         // $models = $models->whereNull($filter['key']);
                     }
 
@@ -96,18 +121,41 @@ class SearchController extends Controller
                             
                             $models = $models->where($key, '<', trim($filter['menor_que']));
                             Log::info('Filtrando por number '.$key.' menor_que');
+
+                            $used_filters[] = [
+                                'key'       => $filter['key'],
+                                'operator'  => 'menor_que',
+                                'value'     => $filter['menor_que'],
+                                'type'      => $filter['type'],
+                            ];
                         }
                         if (isset($filter['igual_que'])
                             && $filter['igual_que'] != '') {
                             
                             $models = $models->where($key, '=', trim($filter['igual_que']));
-                            Log::info('Filtrando por number '.$key.' igual');
+                            // Log::info('Filtrando por number '.$key.' igual');
+
+
+                            $used_filters[] = [
+                                'key'       => $filter['key'],
+                                'operator'  => 'igual_que',
+                                'value'     => $filter['igual_que'],
+                                'type'      => $filter['type'],
+                            ];
                         }
                         if (isset($filter['mayor_que'])
                             && $filter['mayor_que'] != '') {
                             
                             $models = $models->where($key, '>', trim($filter['mayor_que']));
-                            Log::info('Filtrando por number '.$key.' mayor_que');
+                            // Log::info('Filtrando por number '.$key.' mayor_que');
+
+
+                            $used_filters[] = [
+                                'key'       => $filter['key'],
+                                'operator'  => 'mayor_que',
+                                'value'     => $filter['mayor_que'],
+                                'type'      => $filter['type'],
+                            ];
                         }
                     } else if (($filter['type'] == 'text' || $filter['type'] == 'textarea')) {
 
@@ -115,19 +163,35 @@ class SearchController extends Controller
                             && $filter['igual_que'] != '') {
 
                             $models = $models->where($filter['key'], trim($filter['igual_que']));
-                            Log::info('Que '.$filter['key'].' sea igual que: '.$filter['igual_que']);
+                            // Log::info('Que '.$filter['key'].' sea igual que: '.$filter['igual_que']);
+
+
+                            $used_filters[] = [
+                                'key'       => $filter['key'],
+                                'operator'  => 'igual_que',
+                                'value'     => $filter['igual_que'],
+                                'type'      => $filter['type'],
+                            ];
 
                         } else if (isset($filter['que_contenga'])
                             && $filter['que_contenga'] != '') {
 
                             $keywords = explode(' ', $filter['que_contenga']);
 
-                            Log::info('Que '.$filter['key'].' contenga '.$filter['que_contenga'].':');
+                            // Log::info('Que '.$filter['key'].' contenga '.$filter['que_contenga'].':');
                             foreach ($keywords as $keyword) {
                                 $query = $filter['key'].' LIKE ?';
                                 $models->whereRaw($query, ["%$keyword%"]);
-                                Log::info('keyword: '.$keyword);
+                                // Log::info('keyword: '.$keyword);
                             }
+
+
+                            $used_filters[] = [
+                                'key'       => $filter['key'],
+                                'operator'  => 'que_contenga',
+                                'value'     => $filter['que_contenga'],
+                                'type'      => $filter['type'],
+                            ];
 
 
                             // $models = $models->where($filter['key'], 'like', '%'.$filter['value'].'%');
@@ -138,9 +202,16 @@ class SearchController extends Controller
                         && $filter['igual_que'] != 0
                         && $filter['igual_que'] != '') {
                         
-                        Log::info('Filtrando por search '.$filter['key'].' igual_que '.$filter['igual_que']);
+                        // Log::info('Filtrando por search '.$filter['key'].' igual_que '.$filter['igual_que']);
 
                         $models = $models->where($filter['key'], $filter['igual_que']);
+
+                        $used_filters[] = [
+                            'key'       => $filter['key'],
+                            'operator'  => 'igual_que',
+                            'value'     => $filter['igual_que'],
+                            'type'      => $filter['type'],
+                        ];
                     
                     } else if ($filter['type'] == 'date' 
                         && ( 
@@ -153,20 +224,42 @@ class SearchController extends Controller
                         if (isset($filter['menor_que'])) {
 
                             $models = $models->whereDate($filter['key'], '<', $filter['menor_que']);
-                            Log::info('Filtrando por date '.$filter['key'].' menor_que '.$filter['menor_que']);
+                            // Log::info('Filtrando por date '.$filter['key'].' menor_que '.$filter['menor_que']);
+
+
+                            $used_filters[] = [
+                                'key'       => $filter['key'],
+                                'operator'  => 'menor_que',
+                                'value'     => $filter['menor_que'],
+                                'type'      => $filter['type'],
+                            ];
                         }
 
                         if (isset($filter['igual_que'])) {
 
                             $models = $models->whereDate($filter['key'], $filter['igual_que']);
-                            Log::info('Filtrando por date '.$filter['key'].' igual_que '.$filter['igual_que']);
+                            // Log::info('Filtrando por date '.$filter['key'].' igual_que '.$filter['igual_que']);
+                            
+                            $used_filters[] = [
+                                'key'       => $filter['key'],
+                                'operator'  => 'igual_que',
+                                'value'     => $filter['igual_que'],
+                                'type'      => $filter['type'],
+                            ];
                         }
 
                         if (isset($filter['mayor_que'])) {
 
                             $models = $models->whereDate($filter['key'], '>', $filter['mayor_que']);
                             
-                            Log::info('Filtrando por date '.$filter['key'].' mayor_que '.$filter['mayor_que']);
+                            $used_filters[] = [
+                                'key'       => $filter['key'],
+                                'operator'  => 'mayor_que',
+                                'value'     => $filter['mayor_que'],
+                                'type'      => $filter['type'],
+                            ];
+                            
+                            // Log::info('Filtrando por date '.$filter['key'].' mayor_que '.$filter['mayor_que']);
                         }
 
                     } else if ($filter['type'] == 'select' 
@@ -175,7 +268,14 @@ class SearchController extends Controller
                     ) {
                         
                         $models = $models->where($filter['key'], $filter['igual_que']);
-                        Log::info('Filtrando por select '.$filter['key'].' igual_que '.$filter['igual_que']);
+                        // Log::info('Filtrando por select '.$filter['key'].' igual_que '.$filter['igual_que']);
+                        
+                        $used_filters[] = [
+                            'key'       => $filter['key'],
+                            'operator'  => 'igual_que',
+                            'value'     => $filter['igual_que'],
+                            'type'      => $filter['type'],
+                        ];
 
                     } else if ($filter['type'] == 'checkbox' 
                         && isset($filter['checkbox'])
@@ -183,7 +283,14 @@ class SearchController extends Controller
                     ) {
                         
                         $models = $models->where($filter['key'], $filter['checkbox']);
-                        Log::info('Filtrando por checkbox '.$filter['key'].' igual_que '.$filter['checkbox']);
+
+                        $used_filters[] = [
+                            'key'       => $filter['key'],
+                            'operator'  => 'checkbox',
+                            'value'     => $filter['checkbox'],
+                            'type'      => $filter['type'],
+                        ];
+                        // Log::info('Filtrando por checkbox '.$filter['key'].' igual_que '.$filter['checkbox']);
                     }
 
                 }
@@ -202,12 +309,32 @@ class SearchController extends Controller
             $models = $models->get();
         }
 
-        Log::info('Resultado de la busqueda: '.count($models).' modelos');
-        Log::info('-------------------');
+        // Log::info('Resultado de la busqueda: '.count($models).' modelos');
+        // Log::info('-------------------');
+
+        if ($model_name_param == 'article') {
+
+            FilterHistoryService::log_action([
+                'user_id'             => $this->userId(true),
+                'auth_user_id'        => $this->userId(false),
+                'action'              => 'busqueda',
+                'model_name'          => 'article',
+                'filtrados_count'     => count($models),
+                'afectados_count'     => 0,
+                'used_filters'        => empty($used_filters) ? null : $used_filters,
+            ]);
+        }
 
         if (is_null($_filters)) {
             return response()->json(['models' => $models], 200);
         } else {
+
+            if ($return_used_filters) {
+                return [
+                    'models'    => $models,
+                    'used_filters'  => $used_filters, 
+                ];
+            }
             return $models;
         }
     }

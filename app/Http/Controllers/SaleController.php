@@ -166,6 +166,7 @@ class SaleController extends Controller
                 'moneda_id'                         => !is_null($request->moneda_id) ? $request->moneda_id : 1,
                 'valor_dolar'                       => $request->valor_dolar,
                 'incoterms'                         => $request->incoterms,
+                'aplicar_recargos_directo_a_items'  => $request->aplicar_recargos_directo_a_items,
                 'descuento'                         => round($request->descuento, 2, PHP_ROUND_HALF_UP),
                 'user_id'                           => $this->userId(),
             ]);
@@ -202,15 +203,15 @@ class SaleController extends Controller
             // Calcula la diferencia absoluta
             $diferencia = abs($total_helper - $total_sale);
 
-            if ($diferencia > 3) {
-                Log::info('Total mal para la venta '.$model->id);
-                Log::info('total_sale '.$total_sale);
-                Log::info('total_helper '.$total_helper);
+            // if ($diferencia > 3) {
+            //     Log::info('Total mal para la venta '.$model->id);
+            //     Log::info('total_sale '.$total_sale);
+            //     Log::info('total_helper '.$total_helper);
 
-                $message = 'El total de la venta no corresponde con los productos ingresados';
+            //     $message = 'El total de la venta no corresponde con los productos ingresados';
                 
-                throw new Exception($message);
-            }
+            //     throw new Exception($message);
+            // }
 
             DB::commit();
 
@@ -289,6 +290,8 @@ class SaleController extends Controller
             $model->total                               = $request->total;
 
             $model->fecha_entrega                       = $request->fecha_entrega;
+            
+            $model->aplicar_recargos_directo_a_items    = $request->aplicar_recargos_directo_a_items;
 
             // $model->valor_dolar                         = $request->valor_dolar;
             
