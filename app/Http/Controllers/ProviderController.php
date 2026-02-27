@@ -105,18 +105,23 @@ class ProviderController extends Controller
         $model->save();
 
 
-        $should_update_prices = false;
+        $should_update_prices = $model->should_update_prices;
 
-        Log::info('dolar antes: '.$last_dolar);
-        Log::info('dolar ahora: '.$model->dolar);
+        if ($should_update_prices) {
+            Log::info('Cambios por should_update_prices');
+        }
+
+        // Log::info('dolar antes: '.$last_dolar);
+        // Log::info('dolar ahora: '.$model->dolar);
 
         if ($last_percentage_gain != $model->percentage_gain) {
             $should_update_prices = true;
-            Log::info('Cambios en el dolar');
+            Log::info('Cambios en el margen');
         }
 
         if ($last_dolar != $model->dolar) {
             $should_update_prices = true;
+            Log::info('Cambios en el dolar');
         }
 
 
@@ -125,6 +130,9 @@ class ProviderController extends Controller
         if ($should_update_prices) {
             GeneralHelper::checkNewValuesForArticlesPrices($this, 0, 1, 'provider_id', $model->id);
         }
+
+        $model->should_update_prices = 0;
+        $model->save();
 
         $this->sendAddModelNotification('Provider', $model->id);
         return response()->json(['model' => $this->fullModel('Provider', $model->id)], 200);

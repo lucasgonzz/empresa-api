@@ -54,6 +54,7 @@ class UserController extends Controller
         $current_dolar                          = $model->dollar;
         $current_iva_included                   = $model->iva_included;
         $current_percentage_gain                = $model->percentage_gain;
+        $current_cotizar_precios_en_dolares     = $model->cotizar_precios_en_dolares;
 
         $model->name                            = $request->name;
         $model->doc_number                      = $request->doc_number;
@@ -96,13 +97,15 @@ class UserController extends Controller
         $model->show_afip_errors_al_iniciar     = $request->show_afip_errors_al_iniciar;
         $model->usar_articles_cache             = $request->usar_articles_cache;
         $model->clave_eliminar_article          = $request->clave_eliminar_article;
+        $model->img_auto_timeout                = $request->img_auto_timeout;
+
 
 
         $model->save();
 
         UserHelper::set_sessions($model);
 
-        $this->check_actualizar_articulos($model, $current_dolar, $current_iva_included, $current_percentage_gain);
+        $this->check_actualizar_articulos($model, $current_dolar, $current_iva_included, $current_percentage_gain, $current_cotizar_precios_en_dolares);
 
         $model = UserHelper::getFullModel();
 
@@ -141,16 +144,18 @@ class UserController extends Controller
         ]));
     }
 
-    function check_actualizar_articulos($model, $current_dolar, $current_iva_included, $current_percentage_gain) {
+    function check_actualizar_articulos($model, $current_dolar, $current_iva_included, $current_percentage_gain, $current_cotizar_precios_en_dolares) {
 
         if (
             $model->dollar != $current_dolar
             || $model->iva_included != $current_iva_included
             || $model->percentage_gain != $current_percentage_gain
+            || $model->cotizar_precios_en_dolares != $current_cotizar_precios_en_dolares
         ) {
             Log::info($model->dollar.' | '.$current_dolar);
             Log::info($model->iva_included.' | '.$current_iva_included);
             Log::info($model->percentage_gain.' | '.$current_percentage_gain);
+            Log::info($model->cotizar_precios_en_dolares.' | '.$current_cotizar_precios_en_dolares);
             Log::info('Hubo cambios en propiedades de user');
 
             $from_dolar = false;

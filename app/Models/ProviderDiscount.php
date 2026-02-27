@@ -12,4 +12,8 @@ class ProviderDiscount extends Model
     function scopeWithAll($q) {
         
     }
+
+    function provider() {
+        return $this->belongsTo(Provider::class);
+    }
 }

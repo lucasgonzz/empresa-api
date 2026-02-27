@@ -47,6 +47,7 @@ class ConceptoStockMovementSeeder extends Seeder
 
             // Compras
             [
+                // id 8
                 'name'  => 'Compra a proveedor',
             ],
             [

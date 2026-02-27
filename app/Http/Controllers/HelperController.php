@@ -25,6 +25,7 @@ use App\Jobs\ProcessCheckSaldos;
 use App\Jobs\ProcessRecalculateCurrentAcounts;
 use App\Jobs\ProcessSetStockResultante;
 use App\Jobs\SetSalesTerminadaAtJob;
+use App\Models\Address;
 use App\Models\AfipTicket;
 use App\Models\Afip\WSFE;
 use App\Models\Article;
@@ -73,6 +74,61 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null, $param_2 = null) {
         $this->{$method}($param, $param_2);
+    }
+
+    function ferretotal_nc() {
+        $sale = Sale::find(24874);
+        foreach ($sale->articles as $article) {
+            $ultimo_movimiento = StockMovement::where('article_id', $article->id)
+                                            ->orderBy('id', 'DESC')
+                                            ->first();
+
+            if ($ultimo_movimiento) {
+
+                echo $ultimo_movimiento->amount.' de '.$ultimo_movimiento->concepto_movement->name.' <br>';
+
+                $article->stock -= (float)$ultimo_movimiento->amount;
+                $article->timestamps = false;
+                $article->save();
+
+                $ultimo_movimiento->delete();
+
+            }
+
+        }
+    }
+
+    function articles_sin_addresses() {
+        $articles = Article::doesntHave('addresses')
+                            ->whereNotNull('stock')
+                            ->orderBy('id', 'ASC')
+                            ->get();
+
+        echo count($articles).' articulos sin addresses <br>';
+
+
+        $stock = new StockMovementController();
+
+        $owner = User::find(env('USER_ID'));
+
+        $ferreteria = Address::find(2);
+
+        foreach ($articles as $article) {
+
+            $data = [
+                'model_id'              => $article->id,
+                'amount'                => $article->stock,
+                'provider_id'           => null,
+                'from_address_id'       => null,
+                'to_address_id'         => $ferreteria->id,
+                'article_variant_id'    => null,
+                'observations'          => null,
+                'concepto_stock_movement_id'            => 10,
+            ];
+
+            $stock->crear($data, false, $owner, $owner->id);
+            echo $article->id.' listo <br>';
+        }
     }
 
     function afip_tickets_repetidos() {

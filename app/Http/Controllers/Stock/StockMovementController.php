@@ -31,14 +31,29 @@ class StockMovementController extends Controller
         $this->update_tienda_nube = $update_tienda_nube;
     }
 
-    function index($article_id) {
+    
+    function index($article_id, $ultimos_movimientos, $concepto_id) {
         $models = StockMovement::where('article_id', $article_id)
                                 ->orderBy('id', 'DESC')
                                 ->with('article_variant')
-                                ->get();
+                                ->with('sale')
+                                ->take($ultimos_movimientos);
+        if ($concepto_id != 0) {
+            $models = $models->where('concepto_stock_movement_id', $concepto_id);
+        }
+        $models = $models->get();
                                 
         return response()->json(['models' => $models], 200);
     }
+
+    // function index($article_id) {
+    //     $models = StockMovement::where('article_id', $article_id)
+    //                             ->orderBy('id', 'DESC')
+    //                             ->with('article_variant')
+    //                             ->get();
+                                
+    //     return response()->json(['models' => $models], 200);
+    // }
 
     /*
         * Store solo se llama desde el modal de stock del Listado

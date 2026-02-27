@@ -32,6 +32,11 @@ class ProviderDiscountController extends Controller
 
     public function destroy($id) {
         $model = ProviderDiscount::find($id);
+
+        $provider = $model->provider;
+        $provider->should_update_prices = 1;
+        $provider->save();
+        
         ImageController::deleteModelImages($model);
         $model->delete();
         $this->sendDeleteModelNotification('ProviderDiscount', $model->id);

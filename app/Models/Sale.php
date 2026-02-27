@@ -127,7 +127,7 @@ class Sale extends Model
     }
 
     public function articles() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'cost', 'price', 'returned_amount', 'delivered_amount', 'discount', 'with_dolar', 'checked_amount', 'variant_description', 'article_variant_id', 'price_type_personalizado_id', 'ganancia')->withTrashed();
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'cost', 'price', 'returned_amount', 'delivered_amount', 'discount', 'with_dolar', 'checked_amount', 'variant_description', 'article_variant_id', 'price_type_personalizado_id', 'ganancia', 'fecha_agregado')->withTrashed();
     }
 
     public function combos() {

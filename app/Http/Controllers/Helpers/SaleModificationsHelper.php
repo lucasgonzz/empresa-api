@@ -31,9 +31,9 @@ class SaleModificationsHelper {
         if (!is_null($sale_modification)) {
             $sale->load('articles');
             foreach ($sale->articles as $article) {
-                Log::info($article->name);
-                Log::info('amount '.$article->pivot->amount);
-                Log::info('checked_amount '.$article->pivot->checked_amount);
+                // Log::info($article->name);
+                // Log::info('amount '.$article->pivot->amount);
+                // Log::info('checked_amount '.$article->pivot->checked_amount);
                 $sale_modification->articulos_despues_de_actualizar()->attach($article->id, [
                     'amount'            => $article->pivot->amount,
                     'checked_amount'    => $article->pivot->checked_amount,
@@ -47,9 +47,9 @@ class SaleModificationsHelper {
         if (!is_null($sale_modification)) {
             $sale->load('articles');
             foreach ($sale->articles as $article) {
-                Log::info($article->name);
-                Log::info('amount '.$article->pivot->amount);
-                Log::info('checked_amount '.$article->pivot->checked_amount);
+                // Log::info($article->name);
+                // Log::info('amount '.$article->pivot->amount);
+                // Log::info('checked_amount '.$article->pivot->checked_amount);
                 $sale_modification->articulos_antes_de_actualizar()->attach($article->id, [
                     'amount'            => $article->pivot->amount,
                     'checked_amount'    => $article->pivot->checked_amount,

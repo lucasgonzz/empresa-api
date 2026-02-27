@@ -101,7 +101,7 @@ class AfipConstanciaInscripcionController extends Controller
 
             return [
                 'hubo_un_error'     => $response['hubo_un_error'],
-                'afip_data'         => $data,
+                'afip_data'         => Utf8Helper::convertir_utf8($data),
             ];
 
         } else {

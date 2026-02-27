@@ -66,6 +66,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('concepto-stock-movement', 'ConceptoStockMovementController@index');
 
+    // Filter history
+    Route::get('filter-history/from-date/{from_date?}/{until_date?}', 'FilterHistoryController@index');
+
     // Inventory performance
     Route::get('inventory-performance', 'InventoryPerformanceController@index');
 
@@ -201,7 +204,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('stock-movement', 'Stock\StockMovementController')->except(['index', 'show']);
     // Route::resource('stock-movement', 'StockMovementController')->except(['index', 'show']);
-    Route::get('stock-movement/{article_id}/{ultimos_movimientos}/{concepto_id}', 'StockMovementController@index');
+    Route::get('stock-movement/{article_id}/{ultimos_movimientos}/{concepto_id}', 'Stock\StockMovementController@index');
 
     Route::get('price-change/{article_id}', 'PriceChangeController@index');
 
@@ -308,6 +311,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('provider-order/days-to-advise/not-received', 'ProviderOrderController@indexDaysToAdvise');
     Route::resource('provider-order-status', 'ProviderOrderStatusController');
     Route::resource('provider-order-afip-ticket', 'ProviderOrderAfipTicketController');
+    Route::resource('provider-order-afip-ticket-iva', 'ProviderOrderAfipTicketIvaController');
+    Route::resource('provider-order-discount', 'ProviderOrderDiscountController');
     
     Route::resource('order', 'OrderController');
     Route::get('order/unconfirmed/models', 'OrderController@indexUnconfirmed');

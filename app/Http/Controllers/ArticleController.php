@@ -685,8 +685,8 @@ class ArticleController extends Controller
     function articles_por_defecto() {
         $models = Article::where('user_id', $this->userId())
                             ->where('status', 'active')
-                            ->where('default_in_vender', 1)
-                            ->orderBy('created_at', 'ASC')
+                            ->whereNotNull('default_in_vender')
+                            ->orderBy('default_in_vender', 'DESC')
                             ->withAll()
                             ->get();
 

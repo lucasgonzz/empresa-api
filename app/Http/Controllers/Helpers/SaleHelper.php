@@ -220,7 +220,13 @@ class SaleHelper extends Controller {
         Self::attachDiscounts($model, $request->discounts);
         Self::attachSurchages($model, $request->surchages);
 
-        Self::attachArticles($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
+        $fecha_agregado_by_article_id = [];
+
+        if (!is_null($previus_articles)) {
+            $fecha_agregado_by_article_id = Self::get_fecha_agregado_map_for_normal_articles($request->items, $previus_articles);
+        }
+
+        Self::attachArticles($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez, $fecha_agregado_by_article_id);
         
         Log::info('1');
 
@@ -607,7 +613,7 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function attachArticles($sale, $articles, $previus_articles, $se_esta_confirmando_por_primera_vez) {
+    static function attachArticles($sale, $articles, $previus_articles, $se_esta_confirmando_por_primera_vez, $fecha_agregado_by_article_id = []) {
         
         foreach ($articles as $article) {
             if (isset($article['is_article'])) {
@@ -621,8 +627,9 @@ class SaleHelper extends Controller {
                         if ($otro_precio['amount'] == '') {
                             $otro_precio['amount'] = 1;
                         }
-
-                        Self::attachArticle($sale, $otro_precio);
+                        
+                        $fecha_agregado = Self::get_fecha_agregado_for_item($otro_precio, $fecha_agregado_map);
+                        Self::attachArticle($sale, $otro_precio, null);
 
                     }
                 } else {
@@ -633,7 +640,10 @@ class SaleHelper extends Controller {
                         || (!is_null($amount) && $amount > 0) ) {
 
                         // Log::info('Agregando el articulos: '.$article['name']);
-                        Self::attachArticle($sale, $article);
+                        $article_id = (int)$article['id'];
+                        $fecha_agregado = $fecha_agregado_by_article_id[$article_id] ?? null;
+
+                        Self::attachArticle($sale, $article, $fecha_agregado);
                     } else {
                         // Log::info('No se agrego articulo '.$article['name'].' a la venta N° '.$sale->num.'. Amount: '.$amount);
                     }
@@ -670,7 +680,7 @@ class SaleHelper extends Controller {
         return false;
     }
 
-    static function attachArticle($sale, $article) {
+    static function attachArticle($sale, $article, $fecha_agregado = null) {
         
         $delivered_amount = Self::getDeliveredAmount($article);
 
@@ -692,6 +702,9 @@ class SaleHelper extends Controller {
             'article_variant_id'    => Self::getArticleVariantId($article),
             'variant_description'    => Self::getVariantDescription($article),
             'price_type_personalizado_id'    => Self::get_price_type_personalizado($article),
+
+            'fecha_agregado'        => $fecha_agregado,
+            
             'created_at'            => Carbon::now(),
         ]);
 
@@ -961,6 +974,14 @@ class SaleHelper extends Controller {
             $cost += $cost * $surchage->pivot->percentage / 100;
         }
 
+        if (
+            isset($item['unidades_individuales'])
+            && $item['unidades_individuales']
+            && (float)$item['unidades_individuales'] > 0
+        ) {
+            $cost /= (float)$item['unidades_individuales'];
+        }
+
         return $cost;
     }
 
@@ -974,10 +995,6 @@ class SaleHelper extends Controller {
     static function detachItems($sale, $sale_modification) {
 
         SaleModificationsHelper::attach_articulos_antes_de_actualizar($sale, $sale_modification);
-
-        // if (!$sale->to_check && !$sale->checked) {
-        //     Self::restaurar_stock($sale);
-        // }
 
         $sale->articles()->detach();
         $sale->combos()->detach();
@@ -1208,4 +1225,74 @@ class SaleHelper extends Controller {
         return $total;
     }
 
+    static function get_fecha_agregado_map_for_normal_articles($request_items, $previus_articles)
+    {
+        $now = Carbon::now();
+
+        // Mapa: article_id => fecha_agregado previa (para preservarla si ya existía)
+        $previus_fecha_agregado_by_id = [];
+        $previus_ids = [];
+
+        foreach ($previus_articles as $article) {
+            $id = (int)$article->id;
+            $previus_ids[$id] = true;
+
+            // preserva si ya tenía fecha (por un update anterior); si no, queda null
+            $previus_fecha_agregado_by_id[$id] = $article->pivot->fecha_agregado ?? null;
+        }
+
+        // ids "normales" que vienen en el request (sin varios_precios)
+        $new_normal_ids = [];
+        foreach ($request_items as $item) {
+            if (!isset($item['is_article'])) {
+                continue;
+            }
+            if (isset($item['varios_precios']) && is_array($item['varios_precios'])) {
+                // NO nos interesa para fecha_agregado
+                continue;
+            }
+            $new_normal_ids[(int)$item['id']] = true;
+        }
+
+        // Armar map final: article_id => fecha_agregado a guardar
+        $result = [];
+
+        foreach (array_keys($new_normal_ids) as $article_id) {
+
+            $existed_before = isset($previus_ids[$article_id]);
+
+            if (!$existed_before) {
+                // NUEVO artículo normal agregado en este update
+                $result[$article_id] = $now;
+            } else {
+                // Ya existía: preservar (probablemente null si era de creación)
+                $result[$article_id] = $previus_fecha_agregado_by_id[$article_id] ?? null;
+            }
+        }
+
+        return $result;
+    }
+
+    // static function build_article_sale_key_from_item($item)
+    // {
+    //     $article_id = (int) $item['id'];
+
+    //     $article_variant_id = $item['article_variant_id'] ?? null;
+    //     $price_type_personalizado_id = $item['price_type_personalizado_id'] ?? null;
+
+    //     $price = $item['price_vender'] ?? null;
+
+    //     return implode('|', [
+    //         (string)$article_id,
+    //         (string)($article_variant_id ?? ''),
+    //         // (string)($price_type_personalizado_id ?? ''),
+    //         // (string)($price ?? ''),
+    //     ]);
+    // }
+
+    // static function get_fecha_agregado_for_item($item, $fecha_agregado_map)
+    // {
+    //     $key = Self::build_article_sale_key_from_item($item);
+    //     return $fecha_agregado_map[$key] ?? null;
+    // }
 }

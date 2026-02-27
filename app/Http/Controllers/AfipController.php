@@ -2,14 +2,19 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\StringHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipSolicitarCaeHelper;
+use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Pdf\Afip\LibroIvaCompraPdf;
 use App\Models\AfipTicket;
+use App\Models\ProviderOrder;
+use App\Models\ProviderOrderAfipTicket;
 use App\Models\Sale;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 class AfipController extends Controller
 {
@@ -241,4 +246,55 @@ class AfipController extends Controller
 
         return $importes;
     }
+
+
+
+    function iva_compras_pdf($inicio, $fin) {
+
+        $inicioCarbon = Carbon::parse($inicio)->startOfMonth();
+        $finCarbon = Carbon::parse($fin)->endOfMonth();
+
+        $provider_order_afip_tickets = ProviderOrderAfipTicket::where('user_id', $this->userId())
+                                                        ->whereBetween('issued_at', [$inicioCarbon, $finCarbon])
+                                                        ->whereHas('provider_order', function($q) {
+                                                            $q->where('total_from_provider_order_afip_tickets', 1);
+                                                        })
+                                                        ->orderBy('created_at', 'ASC')
+                                                        ->get();
+
+
+        $comprobantes = [];
+
+        // dd($provider_order_afip_tickets);
+
+        foreach ($provider_order_afip_tickets as $provider_order_afip_ticket) {
+
+            $provider = $provider_order_afip_ticket->provider_order->provider;
+
+            foreach ($provider_order_afip_ticket->provider_order_afip_ticket_ivas as $iva) {
+                $comprobante = [
+                    'issued_at'         => $provider_order_afip_ticket->issued_at,
+                    'created_at'        => $provider_order_afip_ticket->created_at,
+                    'num_comprobante'   => $provider_order_afip_ticket->code,
+                    'proveedor'         => StringHelper::short($provider->name, 22),
+                    'iva'               => $provider->iva_condition ? $provider->iva_condition->slug : '',
+                    'cuit'              => $provider->cuit,
+                    'neto'              => $iva->neto,
+                    'iva_27'            => $iva->iva_id == 1 ? $iva->iva_importe : '',
+                    'iva_21'            => $iva->iva_id == 2 ? $iva->iva_importe : '',
+                    'iva_10'            => $iva->iva_id == 3 ? $iva->iva_importe : '',
+                    'no_gravado'        => $iva->iva_id == 8 ? $iva->iva_importe : '',
+                    'per_iibb'          => $provider_order_afip_ticket->percepcion_iibb,
+                    'per_iva'           => $provider_order_afip_ticket->percepcion_iva,
+                    'total'             => $iva->neto + $iva->iva_importe,
+                ];
+
+                $comprobantes[] = $comprobante;
+
+             } 
+        }
+
+        $pdf = new LibroIvaCompraPdf($comprobantes, $inicioCarbon, $finCarbon);
+    }
+
 }
