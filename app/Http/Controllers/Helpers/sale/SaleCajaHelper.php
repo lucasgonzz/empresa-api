@@ -12,27 +12,8 @@ class SaleCajaHelper {
 
 		Log::info('check_caja para la venta N° '.$sale->num.'. caja_id: '.$sale->caja_id);
 
-		if (count($sale->current_acount_payment_methods) >= 1
-			&&
-			(
-				count($sale->current_acount_payment_methods) >= 2
-				|| (
-					!is_null($sale->caja_id)
-					&& $sale->caja_id != 0
-					&&
-					(
-						is_null($sale->client_id)
-						|| $sale->omitir_en_cuenta_corriente
-					)
-				)
-			)
-			&& (
-				(
-					!is_null($sale->caja_id)
-					&& $sale->caja_id !== 0
-				)
-				|| count($sale->current_acount_payment_methods) >= 1
-			)
+		if (
+			count($sale->current_acount_payment_methods) >= 1
 		) {
 
 			Self::crear_movimiento_caja($sale);

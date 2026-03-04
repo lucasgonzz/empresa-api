@@ -12,14 +12,14 @@ class Expense extends Model
     ];
 
     function scopeWithAll($q) {
-        $q->with('payment_methods');
+        $q->with('current_acount_payment_methods');
     }
 
     function expense_concept() {
         return $this->belongsTo(ExpenseConcept::class);
     }
 
-    function payment_methods() {
+    function current_acount_payment_methods() {
         return $this->belongsToMany(CurrentAcountPaymentMethod::class, 'expense_current_acount_payment_method')->withPivot('amount', 'caja_id')->withTimestamps();
     }
 }

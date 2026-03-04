@@ -284,8 +284,8 @@ abstract class WS
         }
 
         try {
-            Log::info('Llego esto a WS para enviar:');
-            Log::info((array) $arguments);
+            // Log::info('Llego esto a WS para enviar:');
+            // Log::info((array) $arguments);
 
             $params = $arguments;
 
@@ -298,7 +298,7 @@ abstract class WS
 
 
             // Reintentos automaticos si falla por error de conexion
-            $max_attempts = 3;
+            $max_attempts = $this->should_retry_method($name) ? 3 : 1;
 
             for ($attempt = 1; $attempt <= $max_attempts; $attempt++) {
                 try {
@@ -465,5 +465,25 @@ abstract class WS
             || str_contains($message, 'connection reset')
             || str_contains($message, 'name or service not known')
             || str_contains($message, 'temporary failure in name resolution');
+    }
+
+    protected function should_retry_method($method_name)
+    {
+        // Solo reintentar lecturas / parámetros / dummy.
+        $retryable_methods = [
+            'FEDummy',
+            'FECompUltimoAutorizado',
+            'FECompConsultar',
+            'FEParamGetTiposCbte',
+            'FEParamGetTiposDoc',
+            'FEParamGetTiposIva',
+            'FEParamGetTiposMonedas',
+            'FEParamGetCotizacion',
+            'FEParamGetPtosVenta',
+            'FEParamGetCondicionIvaReceptor',
+            // Agregá acá cualquier otro "GET" que uses
+        ];
+
+        return in_array($method_name, $retryable_methods, true);
     }
 }

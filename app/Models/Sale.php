@@ -14,7 +14,7 @@ class Sale extends Model
     protected $dates = ['fecha_entrega'];
 
     public function current_acount_payment_methods(){
-        return $this->belongsToMany(CurrentAcountPaymentMethod::class)->withPivot('amount', 'discount_percentage', 'discount_amount', 'caja_id');
+        return $this->belongsToMany(CurrentAcountPaymentMethod::class)->withPivot('amount', 'discount_percentage', 'discount_amount', 'caja_id', 'amount_cotizado', 'cotizacion', 'moneda_id');
     }
 
     function article_purchases() {

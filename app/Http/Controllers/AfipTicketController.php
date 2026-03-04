@@ -44,12 +44,11 @@ class AfipTicketController extends Controller
 
         $sales_with_afip_errors = Sale::where('user_id', $this->userId())
                             ->with('address')
-                            ->with('afip_errors')
-                            ->with('afip_observations')
                             ->with('employee')
                             ->whereHas('afip_tickets', function($query) {
                                 $query->whereNull('cae');
                             })
+                            ->with('afip_tickets.afip_errors', 'afip_tickets.afip_observations')
                             ->orderBy('created_at', 'DESC');
 
         if (!$this->is_admin()) {
@@ -60,8 +59,11 @@ class AfipTicketController extends Controller
 
         $sales_with_afip_observations = Sale::where('user_id', $this->userId())
                             ->with('address')
-                            ->with('afip_errors')
-                            ->with('afip_observations')
+                            ->whereHas('afip_tickets', function($query) {
+                                $query->has('afip_errors')
+                                        ->orHas('afip_observations');
+                            })
+                            ->with('afip_tickets.afip_errors', 'afip_tickets.afip_observations')
                             ->whereHas('afip_observations')
                             ->with('employee')
                             ->orderBy('created_at', 'ASC');
@@ -72,34 +74,41 @@ class AfipTicketController extends Controller
 
         $sales_with_afip_observations = $sales_with_afip_observations->get();
 
-        
-
         $errores_de_facturacion = [];
 
-        foreach ($sales_with_afip_errors as $sale_afip_error) {
-            
-            if (!is_null($sale_afip_error->afip_ticket)
-                && (
-                    is_null($sale_afip_error->afip_ticket->cae)
-                    || $sale_afip_error->afip_ticket->cae == ''
-                )
-            ) {
+        // Log::info('sales_with_afip_errors:');
+        // Log::info($sales_with_afip_errors);
+        
+        // Log::info('sales_with_afip_observations:');
+        // Log::info($sales_with_afip_observations);
 
-                $errores_de_facturacion[] = $sale_afip_error;
+        foreach ($sales_with_afip_errors as $sale_afip_error) {
+
+            foreach ($sale_afip_error->afip_tickets as $afip_ticket) {
+
+                if (
+                    is_null($afip_ticket->cae)
+                    || $afip_ticket->cae == ''
+                ) {
+
+                    $errores_de_facturacion[] = $sale_afip_error;
+                }
             }
+            
         }
 
         foreach ($sales_with_afip_observations as $sale_afip_obs) {
             
-            if (!is_null($sale_afip_obs->afip_ticket)
-                && (
-                    is_null($sale_afip_obs->afip_ticket->cae)
-                    || $sale_afip_obs->afip_ticket->cae == ''
-                )
-            ) {
+            foreach ($sale_afip_error->afip_tickets as $afip_ticket) {
 
-                if (!collect($errores_de_facturacion)->pluck('id')->contains($sale_afip_obs->id)) {
-                    $errores_de_facturacion[] = $sale_afip_obs;
+                if (
+                    is_null($afip_ticket->cae)
+                    || $afip_ticket->cae == ''
+                ) {
+
+                    if (!collect($errores_de_facturacion)->pluck('id')->contains($afip_ticket->id)) {
+                        $errores_de_facturacion[] = $sale_afip_obs;
+                    }
                 }
             }
         }

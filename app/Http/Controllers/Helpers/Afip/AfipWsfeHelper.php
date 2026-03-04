@@ -32,6 +32,9 @@ class AfipWsfeHelper extends Controller
     public $afip_fecha_emision;
     public $monto_minimo_para_factura_de_credito = 1357480;
 
+    public $consulto_despues_de_error_en_emision = false;
+    public $error_al_consultar_comprobante = false;
+
     public function __construct($afip_ticket, $testing = null) {
 
         $this->afip_ticket = $afip_ticket;
@@ -300,6 +303,30 @@ class AfipWsfeHelper extends Controller
                 'request'           => $result['request'],
                 'response'          => $result['response'],
             ]);
+
+            // Si fue un error de red, puede haber quedado autorizado en AFIP aunque no recibimos respuesta.
+            $error_message = isset($result['error']) ? $result['error'] : null;
+
+            if (
+                !$this->consulto_despues_de_error_en_emision
+                && $this->is_network_error($error_message)
+            ) {
+                $this->consulto_despues_de_error_en_emision = true;
+
+                Log::warning('Error de red al emitir. Se intenta FECompConsultar automático para recuperar posible CAE.');
+
+                // Esto ya tiene reintentos (porque FECompConsultar es "lectura")
+                $this->consultar_comprobante();
+
+                // Si luego de consultar ya tenemos CAE, tratamos como éxito y NO guardamos error de emisión.
+                if (!is_null($this->afip_ticket->cae)) {
+                    Log::info('Se recuperó CAE mediante consultar_comprobante() luego de error en emisión.');
+
+                    return;
+                }
+
+                Log::warning('No se pudo recuperar CAE mediante consultar_comprobante(). Se guarda el error original.');
+            } 
 
             $this->save_error($result);
         }
@@ -639,5 +666,20 @@ class AfipWsfeHelper extends Controller
         foreach ($this->afip_ticket->afip_errors as $afip_error) {
              $afip_error->delete();
          } 
+    }
+
+    protected function is_network_error($message)
+    {
+        $message = mb_strtolower((string) $message);
+
+        return str_contains($message, 'could not connect to host')
+            || str_contains($message, 'failed to connect')
+            || str_contains($message, 'timed out')
+            || str_contains($message, 'operation timed out')
+            || str_contains($message, 'connection reset')
+            || str_contains($message, 'name or service not known')
+            || str_contains($message, 'temporary failure in name resolution')
+            || str_contains($message, 'http request failed')
+            || str_contains($message, 'ssl');
     }
 }

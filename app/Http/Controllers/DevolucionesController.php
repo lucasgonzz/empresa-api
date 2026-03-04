@@ -40,9 +40,12 @@ class DevolucionesController extends Controller
                 && !is_null($request->client_id)
             ) {
                 $model_id = $request->client_id;
+
+                $moneda_id = $this->get_moneda_id($request);
+
                 $credit_account_id = CreditAccount::where('model_name', 'client')
                                                     ->where('model_id', $model_id)
-                                                    ->where('moneda_id', 1)
+                                                    ->where('moneda_id', $moneda_id)
                                                     ->first()
                                                     ->id;
             }
@@ -92,5 +95,14 @@ class DevolucionesController extends Controller
         }
 
 
+    }
+
+    function get_moneda_id($request) {
+        $moneda_id = 1;
+        if ($request->sale_id) {
+            $sale = Sale::find($request->sale_id);
+            $moneda_id = $sale->moneda_id;
+        }
+        return $moneda_id;
     }
 }

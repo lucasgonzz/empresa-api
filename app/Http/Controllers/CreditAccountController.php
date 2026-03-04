@@ -19,7 +19,7 @@ class CreditAccountController extends Controller
                             ->with('current_acount_payment_methods')
                             ->with('pagado_por')
                             ->with('cheques')
-                            ->with('sale.afip_tickets')
+                            ->with('sale.afip_tickets', 'afip_ticket')
                             // ->get();
                             ->get();
 

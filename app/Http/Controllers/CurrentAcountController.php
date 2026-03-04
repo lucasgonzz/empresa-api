@@ -107,7 +107,18 @@ class CurrentAcountController extends Controller
         $total = 0;
         foreach ($request->current_acount_payment_methods as $payment_method) {
             
-            $total += (float)$payment_method['amount'];
+            if (
+                !is_null($payment_method['amount_cotizado'])
+                && $payment_method['amount_cotizado'] != ''
+                && (float)$payment_method['amount_cotizado'] > 0
+            ) {
+                $haber = (float)$payment_method['amount_cotizado'];
+            } else {
+
+                $haber = (float)$payment_method['amount'];
+            }
+
+            $total += $haber;
         }
         return $total;
     }

@@ -89,7 +89,7 @@ class CurrentAcount extends Model
     }
 
     public function current_acount_payment_methods() {
-        return $this->belongsToMany('App\Models\CurrentAcountPaymentMethod')->withPivot('amount', 'bank', 'num', 'fecha_emision', 'fecha_pago', 'cobrado_at', 'check_status_id', 'credit_card_id', 'credit_card_payment_plan_id');
+        return $this->belongsToMany('App\Models\CurrentAcountPaymentMethod')->withPivot('amount', 'bank', 'num', 'fecha_emision', 'fecha_pago', 'cobrado_at', 'check_status_id', 'credit_card_id', 'credit_card_payment_plan_id', 'amount_cotizado', 'cotizacion', 'moneda_id');
     }
 
     public function client() {

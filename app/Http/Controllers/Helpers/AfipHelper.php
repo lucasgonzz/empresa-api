@@ -121,7 +121,7 @@ class AfipHelper extends Controller {
 
                 foreach ($this->articles as $article) {
 
-                    Log::info('Pidiendo iva del article '.$article->name);
+                    // Log::info('Pidiendo iva del article '.$article->name);
 
                     $this->article = $article;
                     $gravado                += $this->getImporteGravado();
@@ -153,7 +153,7 @@ class AfipHelper extends Controller {
                     $ivas['0']['Importe']  += $res['Importe'];
                     $ivas['0']['BaseImp']  += $res['BaseImp'];
 
-                    Log::info($ivas);
+                    // Log::info($ivas);
                 } 
 
                 foreach ($this->sale->combos as $combo) {
