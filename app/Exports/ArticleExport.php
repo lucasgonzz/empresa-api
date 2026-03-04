@@ -152,33 +152,43 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
     public function headings(): array
     {
         $headings = [
+            
+            // Datos Generales
             'Numero',
             'Codigo de barras',
             'Sku',
             'Codigo de proveedor',
             'Nombre',
-            'Categoria',
-            'Sub Categoria',
-            'Marca',
-            'Stock actual',
-            'Stock minimo',
-            'Iva',
-            'Aplicar Iva',
             'Proveedor',
+
+
+            // Precio
+            'Moneda',
             'Costo',
-            'Margen de ganancia',
             'Descuentos',
             'Recargos',
             'Descuentos montos',
             'Recargos montos',
+            'Iva',
+            'Aplicar Iva',
+            'Margen de ganancia',
             'Precio',
-            'Moneda',
+            'Precio Final',
+
+            // Categoria
+            'Categoria',
+            'Sub Categoria',
+            'Marca',
             'Descripcion',
             'Unidad medida',
-            'Precio Final',
+            'U individuales',
+
+            // Stock
+            'Stock actual',
+            'Stock minimo',
         ];
         
-        $headings = ExportHelper::set_unidades_individuales($headings);
+        // $headings = ExportHelper::set_unidades_individuales($headings);
 
         $headings = ExportHelper::set_props_autopartes($headings);
         

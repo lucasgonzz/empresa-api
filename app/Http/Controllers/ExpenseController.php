@@ -48,7 +48,7 @@ class ExpenseController extends Controller
                     $caja_id = $payment_method['caja_id'];
                 }
                 
-                $model->payment_methods()->attach($payment_method['id'],[
+                $model->current_acount_payment_methods()->attach($payment_method['current_acount_payment_method_id'],[
                     'amount'    => $amount,
                     'caja_id'   => $caja_id,
                 ]);

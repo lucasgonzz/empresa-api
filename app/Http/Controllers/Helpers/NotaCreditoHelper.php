@@ -2,7 +2,8 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Http\Controllers\StockMovementController;
+use App\Http\Controllers\Stock\StockMovementController;
+
 
 class NotaCreditoHelper {
 	

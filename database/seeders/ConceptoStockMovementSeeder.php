@@ -71,6 +71,7 @@ class ConceptoStockMovementSeeder extends Seeder
 
             // Pedido online
             [
+                // id 14
                 'name'  => 'Pedido Online',
             ],
 

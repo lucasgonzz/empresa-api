@@ -147,7 +147,11 @@ class ExportHelper {
 		$addresses = Self::getAddresses();
 		if (count($addresses) >= 1) {
 			
-			// unset($map[7]);
+			// $stock_index = array_search('Stock actual', $headings);
+			// $stock_min_index = array_search('Stock minimo', $headings);
+
+			// unset($headings[$stock_index]);
+			// unset($headings[$stock_min_index]);
 
 			foreach ($addresses as $address) {
 				$map[] = $article->{$address->street};
@@ -285,7 +289,12 @@ class ExportHelper {
 		$addresses = Self::getAddresses();
 		if (count($addresses) >= 1) {
 
-			// unset($headings[7]);
+			$stock_index = array_search('Stock actual', $headings);
+			$stock_min_index = array_search('Stock minimo', $headings);
+
+			unset($headings[$stock_index]);
+			unset($headings[$stock_min_index]);
+			
 
 			foreach ($addresses as $address) {
 				$headings[] = $address->street;
@@ -315,19 +324,36 @@ class ExportHelper {
 
 			Log::info('setPriceTypesHeadings');
 
-			unset($headings[14]);
-			unset($headings[19]);
-			unset($headings[23]);
+			$margen_ganancia_index = array_search('Margen de ganancia', $headings);
+			$precio_index = array_search('Precio', $headings);
+			$precio_final_index = array_search('Precio Final', $headings);
+
+			unset($headings[$margen_ganancia_index]);
+			unset($headings[$precio_index]);
+			unset($headings[$precio_final_index]);
+
+
+			$aplicar_iva_index = array_search('Aplicar Iva', $headings);
+
+			// Lo aumento para que se inserten luego de este indice
+			$aplicar_iva_index++;
+
+			// Log::info('aplicar_iva_index: '.$aplicar_iva_index);
+
 
 			foreach ($price_types as $price_type) {
 
 				if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
 					Log::info('agregando');
 
+					array_splice($headings, $aplicar_iva_index, 0, '$ Final '.$price_type->name);
+					array_splice($headings, $aplicar_iva_index, 0, '% '.$price_type->name);
+					array_splice($headings, $aplicar_iva_index, 0, 'Setear precio final '.$price_type->name);
+
 					// $headings[] = '% '.$price_type->name;
-					$headings[] = 'Setear precio final '.$price_type->name;
-					$headings[] = '% '.$price_type->name;
-					$headings[] = '$ Final '.$price_type->name;
+					// $headings[] = 'Setear precio final '.$price_type->name;
+					// $headings[] = '% '.$price_type->name;
+					// $headings[] = '$ Final '.$price_type->name;
 				} else {
 
 					$headings[] = $price_type->name;

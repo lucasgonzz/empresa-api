@@ -41,6 +41,7 @@ use App\Models\CurrentAcount;
 use App\Models\CurrentAcountCurrentAcountPaymentMethod;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\DefaultPaymentMethodCaja;
+use App\Models\DepositMovement;
 use App\Models\Image;
 use App\Models\InventoryLinkage;
 use App\Models\MeliOrder;
@@ -74,6 +75,31 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null, $param_2 = null) {
         $this->{$method}($param, $param_2);
+    }
+
+    function revertir_3dtisk() {
+        $deposit_movement = DepositMovement::find(144);
+
+        $stock = new StockMovementController();
+
+        $owner = User::find(env('USER_ID'));
+
+        foreach ($deposit_movement->articles as $article) {
+            
+            $data = [
+                'model_id'              => $article->id,
+                'amount'                => $article->pivot->amount,
+                'provider_id'           => null,
+                'from_address_id'       => $deposit_movement->to_address_id,
+                'to_address_id'         => $deposit_movement->from_address_id,
+                'article_variant_id'    => null,
+                'observations'          => null,
+                'concepto_stock_movement_id'            => 13,
+            ];
+
+            echo 'Se va a mover '.$article->pivot->amount.' de '.$deposit_movement->to_address->street.' hacia '.$deposit_movement->from_address->street.' <br>';
+            $stock->crear($data, false, $owner, $owner->id);
+        }
     }
 
     function ferretotal_nc() {
@@ -820,49 +846,56 @@ class HelperController extends Controller
         echo 'Listo';
     }
 
-    public function provider_code_repetidos($eliminar_repetidos = false, $filtrar_por_bar_code = false)
-    {
+    public function provider_code_repetidos($eliminar_repetidos = false, $filtrar_por_bar_code = false) {
         $user_id = config('app.USER_ID');
 
         $articles = Article::where('user_id', $user_id)->get();
 
-        // Agrupar por provider_code
-        $agrupados = $articles->groupBy('provider_code')
-            ->filter(function ($items, $provider_code) use ($filtrar_por_bar_code) {
-                if (is_null($provider_code) || $items->count() <= 1) {
-                    return false;
-                }
+        // Agrupar por provider_id + provider_code (clave compuesta)
+        $agrupados = $articles->groupBy(function ($article) {
+            // Importante: si provider_code es null, lo marcamos para filtrar luego
+            return $article->provider_id . '|' . ($article->provider_code ?? 'NULL');
+        })->filter(function ($items) use ($filtrar_por_bar_code) {
+            // Duplicado real: más de 1 registro
+            if ($items->count() <= 1) {
+                return false;
+            }
 
-                if ($filtrar_por_bar_code) {
+            // Si provider_code es null no lo consideramos "repetido"
+            $provider_code = $items->first()->provider_code;
+            if (is_null($provider_code)) {
+                return false;
+            }
 
-                    // Verifica que todos tengan el mismo bar_code o que todos sean null
-                    $barcodes = $items->pluck('bar_code')->unique();
+            if ($filtrar_por_bar_code) {
+                // Verifica que todos tengan el mismo bar_code o que todos sean null
+                $barcodes = $items->pluck('bar_code')->unique();
+                return $barcodes->count() === 1;
+            }
 
-                    return $barcodes->count() === 1;
-                } else {
-                    return true;
-                }
-            });
+            return true;
+        });
 
-        foreach ($agrupados as $provider_code => $articulos) {
-            echo "provider_code: $provider_code repetido en los siguientes artículos:<br>";
+        foreach ($agrupados as $key => $articulos) {
+            $provider_id = $articulos->first()->provider_id;
+            $provider_code = $articulos->first()->provider_code;
+
+            echo "provider_id: {$provider_id} | provider_code: {$provider_code} repetido en los siguientes artículos:<br>";
 
             foreach ($articulos as $article) {
                 echo "- {$article->name} (ID: {$article->id}), bar_code: {$article->bar_code}, updated_at: {$article->updated_at->format('d/m/y')} <br>";
             }
 
+            // Si querés reactivar borrado, esto funciona igual que antes:
             if ($eliminar_repetidos) {
                 $mas_reciente = $articulos->sortByDesc('updated_at')->first();
-
-                $a_eliminar = $articulos->filter(function ($articulo) use ($mas_reciente) {
-                    return $articulo->id !== $mas_reciente->id;
-                });
-
+                $a_eliminar = $articulos->where('id', '!=', $mas_reciente->id);
+            
                 foreach ($a_eliminar as $articulo) {
                     echo "Eliminando artículo ID {$articulo->id} con updated_at: {$articulo->updated_at->format('d/m/y')}<br>";
                     $articulo->delete();
                 }
-
+            
                 echo "Se conservó el artículo ID {$mas_reciente->id} actualizado el {$mas_reciente->updated_at}<br><br>";
             }
         }

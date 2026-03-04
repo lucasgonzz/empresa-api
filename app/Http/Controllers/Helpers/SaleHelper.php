@@ -350,16 +350,19 @@ class SaleHelper extends Controller {
             $sale->current_acount_payment_methods()->detach();
 
             if (
-                !$request->current_acount_payment_method_id
-                && is_array($request->selected_payment_methods)
+                is_array($request->selected_payment_methods)
+                && count($request->selected_payment_methods) >= 1
             ) {
                 foreach ($request->selected_payment_methods as $payment_method) {
 
                     if (!is_null($payment_method['amount'])) {
 
                         $amount = $payment_method['amount'];
+                        $amount_cotizado = $payment_method['amount_cotizado'];
+                        $cotizacion = $payment_method['cotizacion'];
+                        $moneda_id = $payment_method['moneda_id'];
 
-                        if ($payment_method['id'] == 5 
+                        if ($payment_method['current_acount_payment_method_id'] == 5 
                             && isset($request->monto_credito_real)
                             && !is_null($request->monto_credito_real)) {
 
@@ -367,15 +370,21 @@ class SaleHelper extends Controller {
                         }
 
                         $caja_id = null;
+
                         if (isset($payment_method['caja_id'])
                             && $payment_method['caja_id'] != 0) {
                             $caja_id = $payment_method['caja_id'];
                         }
                         
-                        $sale->current_acount_payment_methods()->attach($payment_method['id'],[
-                            'amount'    => $amount,
-                            'caja_id'   => $caja_id,
+                        $sale->current_acount_payment_methods()->attach($payment_method['current_acount_payment_method_id'],[
+                            'amount'            => $amount,
+                            'caja_id'           => $caja_id,
+                            'amount_cotizado'   => $amount_cotizado,
+                            'cotizacion'        => $cotizacion,
+                            'moneda_id'         => $moneda_id,
                         ]);
+
+                        Log::info('adjuntando current_acount_payment_method_id: '.$payment_method['current_acount_payment_method_id'].' y caja_id: '.$caja_id);
                     }
                 }
             } else {

@@ -47,6 +47,7 @@ class DepositMovementHelper {
 
 		if (!is_null($this->deposit_movement->deposit_movement_status) 
 			&& $this->deposit_movement->deposit_movement_status->name == 'Recibido') {
+			// && is_null($this->deposit_movement->recibido_at)) {
 
 			$this->set_fecha_recibido();
 

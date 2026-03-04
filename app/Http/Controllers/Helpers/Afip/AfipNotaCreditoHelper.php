@@ -136,20 +136,24 @@ class AfipNotaCreditoHelper
             $amount = (float)$article->pivot->amount;
             $price = (float)$article->pivot->price;
 
-            $total_item = $price * $amount;
+            if ($amount > 0) {
+                
+                $total_item = $price * $amount;
 
-            $item = [];
-            $item['Pro_codigo']         = $article->id;
-            $item['Pro_ds']             = $article->name;
-            $item['Pro_qty']            = $amount;
-            $item['Pro_umed']           = 1; // FEXGetPARAM_UMed 
-            $item['Pro_precio_uni']     = $price;
-            $item['Pro_bonificacion']   = 0;
-            $item['Pro_total_item']     = $total_item;
+                $item = [];
+                $item['Pro_codigo']         = $article->id;
+                $item['Pro_ds']             = $article->name;
+                $item['Pro_qty']            = $amount;
+                $item['Pro_umed']           = 1; // FEXGetPARAM_UMed 
+                $item['Pro_precio_uni']     = $price;
+                $item['Pro_bonificacion']   = 0;
+                $item['Pro_total_item']     = $total_item;
 
-            $importe_total += $total_item;
+                $importe_total += $total_item;
 
-            $data['items'][] = $item;
+                $data['items'][] = $item;
+            }
+
         }
 
         foreach ($this->nota_credito->nota_credito_descriptions as $description) {

@@ -299,7 +299,7 @@ class AfipTicketPdf extends fpdf {
         if ($item->is_description) {
         	$name = $item->notes;
         }
-        $this->Cell($this->widths['producto'], 6, StringHelper::short($name, 30), 0, 0, 'L');
+        $this->Cell($this->widths['producto'], 6, StringHelper::short($name, 60), 0, 0, 'L');
 
         $amount = $this->get_amount($item);
 

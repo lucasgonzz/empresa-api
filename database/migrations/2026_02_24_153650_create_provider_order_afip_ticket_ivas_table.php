@@ -19,8 +19,8 @@ class CreateProviderOrderAfipTicketIvasTable extends Migration
             $table->integer('provider_order_afip_ticket_id')->nullable();
             $table->integer('iva_id')->nullable();
 
-            $table->decimal('neto', 20, 2)->default(0);
-            $table->decimal('iva_importe', 20, 2)->default(0);
+            $table->decimal('neto', 20, 2)->nullable(0);
+            $table->decimal('iva_importe', 20, 2)->nullable(0);
             
             $table->string('temporal_id')->nullable();
 

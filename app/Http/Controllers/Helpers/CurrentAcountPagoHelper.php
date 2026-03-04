@@ -128,6 +128,22 @@ class CurrentAcountPagoHelper {
         
         foreach ($payment_methods as $payment_method) {
             $amount = $payment_method['amount'];
+            $amount_cotizado = $payment_method['amount_cotizado'];
+            $cotizacion = $payment_method['cotizacion'];
+            $moneda_id = $payment_method['moneda_id'];
+
+            $haber = 0;
+
+            if (
+                !is_null($amount_cotizado)
+                && $amount_cotizado != ''
+                && (float)$amount_cotizado > 0
+            ) {
+                $haber = $amount_cotizado;
+            } else {
+
+                $haber = $amount;
+            }
             
             if ($amount == '' || is_null($amount)) {
                 $amount = $pago->haber;
@@ -139,7 +155,10 @@ class CurrentAcountPagoHelper {
             }
 
             $pago->current_acount_payment_methods()->attach($payment_method['current_acount_payment_method_id'], [
-                    'amount'                        => $amount,
+                    'amount'    => $haber,
+                    'amount_cotizado'    => $amount_cotizado,
+                    'cotizacion'    => $cotizacion,
+                    'moneda_id'    => $moneda_id,
                     'user_id'   => UserHelper::userId(),
             ]);
 

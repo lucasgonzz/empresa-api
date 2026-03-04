@@ -14,7 +14,7 @@ class AddAplSurToSales extends Migration
     public function up()
     {
         Schema::table('sales', function (Blueprint $table) {
-            $table->boolean('aplicar_recargos_directo_a_items')->default(0);
+            $table->boolean('aplicar_recargos_directo_a_items')->nullable();
         });
     }
 
