@@ -19,10 +19,13 @@ class NewPagoPdf extends fpdf {
 
         $this->model_name = $model_name;
 
+        $titulo = null;
         if ($model_name == 'client') {
             $this->model = $this->current_acount->client;
+            $titulo = 'Recibo';
         } else {
             $this->model = $this->current_acount->provider;
+            $titulo = 'Orden de Pago';
         }
 
         $this->user = UserHelper::user();
@@ -42,7 +45,7 @@ class NewPagoPdf extends fpdf {
         }
 
         $datos = [
-            'titulo' => 'Recibo',
+            'titulo' => $titulo,
             'condicion_iva' => $this->user->afip_information->iva_condition->name,
             'empresa_nombre' => $this->user->afip_information->razon_social,
             'direccion_line' => $this->user->afip_information->domicilio_comercial,
@@ -50,7 +53,7 @@ class NewPagoPdf extends fpdf {
             'telefono' => $this->user->phone,
             'email' => $this->user->email,
             'nota_factura' => 'DOCUMENTO NO VALIDO COMO FACTURA',
-            'tipo' => 'RECIBO',
+            'tipo' => $titulo,
             'numero' => 'Nº '.$model->num_receipt,
             'fecha' => $model->created_at->format('d/m/Y'),
             'cuit' => $this->user->afip_information->cuit,

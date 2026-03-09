@@ -52,6 +52,7 @@ class SaleDeliveredArticlesPdf extends fpdf {
 			'model_info'	=> $this->sale->client,
 			'model_props' 	=> $this->getModelProps(),
 		];
+		$data['user'] = $this->sale->user;
 		PdfHelper::header($this, $data);
 	}
 

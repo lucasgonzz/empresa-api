@@ -146,7 +146,11 @@ class DemoSetupController extends Controller
 
             'EmployeeSeeder',
             'SellerSeeder',            
-            'ChequeSeeder',            
+            'ChequeSeeder',      
+
+            'ProductionBatchStatusSeeder',   
+            'ProductionBatchMovementTypeSeeder',       
+            'RecipeRouteTypeSeeder',  
         ];
 
 

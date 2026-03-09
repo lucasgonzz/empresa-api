@@ -29,4 +29,10 @@ class CurrentAcountPaymentMethodController extends Controller
         $model->save();
         return response()->json(['model' => $model], 200);
     }
+
+    public function destroy($id) {
+        $model = CurrentAcountPaymentMethod::find($id);
+        $model->delete();
+        return response(null, 200);
+    }
 }

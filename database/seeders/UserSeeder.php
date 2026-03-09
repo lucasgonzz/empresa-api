@@ -129,6 +129,34 @@ class UserSeeder extends Seeder
                 // 'online',
             ];
 
+        } else if ($this->for_user == 'ht5') {
+
+            $models[0]['name'] = 'Ruben';
+            $models[0]['company_name'] = 'HT5 Store';
+            $models[0]['iva_included'] = 0;
+            $models[0]['iva_condition_id'] = 1;
+            $models[0]['doc_number'] = '42385504';
+            $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
+            
+            // $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
+            $models[0]['default_version'] = null;
+
+            $models[0]['extencions'] = [
+
+                'comerciocity_interno',
+                'budgets',
+                // 'bar_code_scanner',
+                'ask_save_current_acount',
+                'imagenes',
+                // 'forzar_total',
+                'cajas',
+                'production',
+                'productionV2',
+                // 'ventas_con_fecha_de_entrega',
+                // 'road_map_detalle_por_articulos_y_no_por_venta',
+                // 'online',
+            ];
+
         } else if ($this->for_user == 'leudinox') {
 
             $models[0]['name'] = 'Ariel';

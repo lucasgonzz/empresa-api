@@ -102,6 +102,9 @@ class ConceptoStockMovementSeeder extends Seeder
             [
                 'name'  => 'Mercado Libre',
             ],
+            [
+                'name'  => 'Ajuste Insumo de produccion',
+            ],
 
         ];
 

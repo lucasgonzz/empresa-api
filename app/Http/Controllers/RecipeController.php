@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\RecipeHelper;
+use App\Models\Article;
 use App\Models\Recipe;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
@@ -21,17 +22,22 @@ class RecipeController extends Controller
     }
 
     public function store(Request $request) {
+        $article = Article::find($request->article_id);
         $model = Recipe::create([
             'num'                       => $this->num('recipes'),
+            'name'                      => $article->name,
             'article_id'                => $request->article_id,
             'article_cost_from_recipe'  => $request->article_cost_from_recipe,
             'address_id'                => $request->address_id,
             'observations'              => $request->observations,
             'user_id'                   => $this->userId(),
         ]);
-        RecipeHelper::attachArticles($model, $request->articles);
-        RecipeHelper::checkCostFromRecipe($model, $this);
-        $this->sendAddModelNotification('Recipe', $model->id);
+        
+        // RecipeHelper::attachArticles($model, $request->articles);
+        // RecipeHelper::checkCostFromRecipe($model, $this);
+
+        $this->updateRelationsCreated('recipe', $model->id, $request->childrens);
+
         return response()->json(['model' => $this->fullModel('Recipe', $model->id)], 201);
     }  
 
@@ -40,7 +46,11 @@ class RecipeController extends Controller
     }
 
     public function update(Request $request, $id) {
+
+        $article = Article::find($request->article_id);
+
         $model = Recipe::find($id);
+        $model->name                        = $article->name;
         $model->article_cost_from_recipe    = $request->article_cost_from_recipe;
         $model->article_id                  = $request->article_id;
         $model->address_id                  = $request->address_id;
@@ -101,5 +111,16 @@ class RecipeController extends Controller
         }
         return response()->json(['models' => $models], 200);
         // return response()->json(['models' => $models, 'recipes' => $recipes], 200);
+    }
+
+    function search_article(Request $request) {
+        $recipes = Recipe::where('user_id', $this->userId())
+                            ->whereHas('article', function($q) use ($request) {
+                                $q->where('name', 'like', '%'.$request->query_value.'%');
+                            })
+                            ->withAll()
+                            ->paginate(100);
+
+        return response()->json(['models' => $recipes], 200);
     }
 }

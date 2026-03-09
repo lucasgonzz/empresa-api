@@ -63,6 +63,7 @@ class AcopioArticleDeliveryPdf extends fpdf {
 			'model_props' 		=> $this->getModelProps(),
 			'fields' 			=> $this->getFields(),
 		];
+		$data['user'] = $this->user;
 		PdfHelper::header($this, $data);
 	}
 

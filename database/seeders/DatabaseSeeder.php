@@ -192,6 +192,16 @@ class DatabaseSeeder extends Seeder
 
                 $this->call(ArticleSeeder::class);
 
+            }  else if ($for_user == 'ht5') {
+
+                $this->call(AddressSeeder::class);
+                $this->call(ArticleSeeder::class);
+                $this->call(ProductionBatchStatusSeeder::class);
+                $this->call(ProductionBatchMovementTypeSeeder::class);
+                $this->call(RecipeRouteTypeSeeder::class);
+                $this->call(OrderProductionStatusSeeder::class);
+                $this->call(HT5ProductionSeeder::class);
+                
             } else {
 
                 if (

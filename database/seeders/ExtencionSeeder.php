@@ -403,6 +403,11 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Setear Precios de articulos con COSTO + IVA',
                 'slug' => 'providers_article_price_from_costo_mas_iva',
             ],
+            [
+                'name' => 'Modulo de produccion V2',
+                'slug' => 'productionV2',
+            ],
+
         ];
         foreach ($extencions as $extencion) {
             ExtencionEmpresa::create([
