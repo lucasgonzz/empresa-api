@@ -128,9 +128,9 @@ class CurrentAcountPagoHelper {
         
         foreach ($payment_methods as $payment_method) {
             $amount = $payment_method['amount'];
-            $amount_cotizado = $payment_method['amount_cotizado'];
-            $cotizacion = $payment_method['cotizacion'];
-            $moneda_id = $payment_method['moneda_id'];
+            $amount_cotizado = isset($payment_method['amount_cotizado']) ? $payment_method['amount_cotizado'] : null;
+            $cotizacion = isset($payment_method['cotizacion']) ? $payment_method['cotizacion'] : null;
+            $moneda_id = isset($payment_method['moneda_id']) ? $payment_method['moneda_id'] : null;
 
             $haber = 0;
 

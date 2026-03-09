@@ -77,6 +77,40 @@ class HelperController extends Controller
         $this->{$method}($param, $param_2);
     }
 
+    function get_neto() {
+        $inicioCarbon = Carbon::today()->subMonth()->startOfMonth();
+        $finCarbon = Carbon::today()->subMonth()->endOfMonth();
+        
+        $afip_tickets = AfipTicket::whereBetween('created_at', [$inicioCarbon, $finCarbon])
+                                    ->orderBy('created_at', 'ASC')
+                                    ->get();
+
+        $maria_grande = Address::where('street', 'Maria Grande')->first();
+
+        $total_iva  = 0;
+        $total  = 0;
+
+        foreach ($afip_tickets as $afip_ticket) {
+
+            $ticket = $afip_ticket;
+            if (!$ticket || !$ticket->cae) continue;
+
+            $sale = $afip_ticket->sale;
+            if (!is_null($sale)) {
+                // $sale = Sale::find($afip_ticket->sale_nota_credito_id);
+                
+                if ($sale->address_id == $maria_grande->id) {
+                    $total_iva += (float)$afip_ticket->importe_iva;
+                    $total += (float)$afip_ticket->importe_total;
+                }
+            }
+
+        }
+
+        echo 'Importe NETO: '.Numbers::price($total - $total_iva, true);
+        echo 'Importe IVA: '.Numbers::price($total_iva, true);
+    }
+ 
     function revertir_3dtisk() {
         $deposit_movement = DepositMovement::find(144);
 

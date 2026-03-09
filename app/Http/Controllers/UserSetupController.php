@@ -117,6 +117,12 @@ class UserSetupController extends Controller
             'ArticlePropertyTypeSeeder',
             'ArticlePropertyValueSeeder',
             'ArticlePropertySeeder',
+
+
+            'ProductionBatchStatusSeeder',   
+            'ProductionBatchMovementTypeSeeder',     
+            'RecipeRouteTypeSeeder',  
+            
             // 'DepositSeeder',
             // 'ClientSeeder',
             // 'BuyerSeeder',

@@ -122,7 +122,7 @@ class ArticleSeeder extends Seeder
 
                 $this->crear_price_type_monedas($art);
                 
-                $this->setStockMovement($art, $article);
+                $helper->setStockMovement($art, $article);
                 // ArticleHelper::setArticleStockFromAddresses($art);
 
                 ArticleUbicationsHelper::init_ubications($art);
@@ -218,55 +218,6 @@ class ArticleSeeder extends Seeder
 
             $article->percentage_gain_blanco = 200;
             $article->save();
-        }
-    }
-
-    function setStockMovement($created_article, $article) {
-
-        if (
-            config('app.FOR_USER') == 'feito'
-            && isset($article['variants'])
-        ) {
-            return;
-        }
-
-        $ct = new StockMovementController(false);
-        
-        $data['model_id'] = $created_article->id;
-        $data['provider_id'] = $created_article->provider_id;
-
-        if (isset($article['addresses'])) {
-
-            $segundos = 0;
-
-            foreach ($article['addresses'] as $address) {
-            
-                $data['to_address_id'] = $address['id'];
-                $data['amount'] = $address['amount'];
-                $data['concepto_stock_movement_name'] = 'Creacion de deposito';
-
-                $ct->crear($data, false, null, null, $segundos);
-                $segundos += 5;
-            }
-
-            foreach ($article['addresses'] as $address) {
-
-                if (isset($address['min'])) {
-                    $created_article->addresses()->updateExistingPivot($address['id'], [
-                        'stock_min'   => $address['min'],
-                        'stock_max'   => $address['max'],
-                    ]);
-                }
-            }
-
-
-
-        } else if (
-            isset($article['stock'])
-            && !is_null($article['stock'])
-        ) {
-            $data['amount'] = $article['stock'];
-            $ct->crear($data);
         }
     }
 

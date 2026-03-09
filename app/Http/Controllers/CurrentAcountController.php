@@ -108,7 +108,8 @@ class CurrentAcountController extends Controller
         foreach ($request->current_acount_payment_methods as $payment_method) {
             
             if (
-                !is_null($payment_method['amount_cotizado'])
+                isset($payment_method['amount_cotizado'])
+                && !is_null($payment_method['amount_cotizado'])
                 && $payment_method['amount_cotizado'] != ''
                 && (float)$payment_method['amount_cotizado'] > 0
             ) {

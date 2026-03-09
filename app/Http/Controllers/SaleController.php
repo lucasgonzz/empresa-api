@@ -203,15 +203,15 @@ class SaleController extends Controller
             // Calcula la diferencia absoluta
             $diferencia = abs($total_helper - $total_sale);
 
-            // if ($diferencia > 3) {
-            //     Log::info('Total mal para la venta '.$model->id);
-            //     Log::info('total_sale '.$total_sale);
-            //     Log::info('total_helper '.$total_helper);
+            if ($diferencia > 3) {
+                Log::info('Total mal para la venta '.$model->id);
+                Log::info('total_sale '.$total_sale);
+                Log::info('total_helper '.$total_helper);
 
-            //     $message = 'El total de la venta no corresponde con los productos ingresados';
+                $message = 'El total de la venta no corresponde con los productos ingresados';
                 
-            //     throw new Exception($message);
-            // }
+                throw new Exception($message);
+            }
 
             DB::commit();
 

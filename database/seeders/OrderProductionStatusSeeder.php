@@ -16,12 +16,10 @@ class OrderProductionStatusSeeder extends Seeder
     public function run()
     {
         $models = [
-            ['name' => 'Chapa'], 
             ['name' => 'Corte'], 
-            ['name' => 'Plegado'], 
-            ['name' => 'Arenado'], 
-            ['name' => 'Pintura en polvo'], 
-            ['name' => 'Armado'], 
+            ['name' => 'Confeccion'], 
+            ['name' => 'Diseño'], 
+            ['name' => 'Control de calidad'], 
             ['name' => 'Terminado'], 
         ];
 

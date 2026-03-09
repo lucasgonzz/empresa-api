@@ -362,7 +362,6 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('order-production', 'OrderProductionController');
     Route::resource('order-production-status', 'OrderProductionStatusController');
-    Route::resource('recipe', 'RecipeController');
     Route::resource('address', 'AddressController');
 
     Route::resource('title', 'TitleController');
@@ -552,6 +551,45 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('tag', 'TagController');
 
     Route::get('import-status', 'ImportStatusController@index');
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Production V2 (Batches)
+    |--------------------------------------------------------------------------
+    | Convención:
+    | - production-batches: CRUD de lotes
+    | - production-batch-movements: CRUD de movimientos (store/destroy/show opcional)
+    | - preview + update_inputs: acciones específicas
+    */
+
+    Route::resource('recipe', 'RecipeController');
+    Route::post('recipe/search-article', 'RecipeController@search_article');
+
+
+    // Lotes (CRUD común)
+    Route::resource('production-batch', 'ProductionBatchController');
+    Route::get('production-batch/from-date/{from_date?}/{until_date?}', 'ProductionBatchController@index');
+
+    // Movimientos (resource para comunes)
+    // Nota: si no querés index/show/update, podés limitarlo con only()
+    Route::resource('production-batch-movement', 'ProductionBatchMovementController');
+
+    // Preview de movimiento (para calcular insumos planificados y devolver la tablita editable)
+    Route::post('production-batch-movement/preview', 'ProductionBatchMovementController@preview');
+
+
+    // Editar consumos reales del movimiento (delta de stock)
+    Route::put('production-batch-movement/inputs/{id}', 'ProductionBatchMovementController@update_inputs');
+
+    Route::resource('recipe-route', 'RecipeRouteController');
+
+    Route::resource('recipe-route-type', 'RecipeRouteTypeController');
+    Route::resource('production-batch-status', 'ProductionBatchStatusController');
+
+    Route::resource('production-batch-movement-type', 'ProductionBatchMovementTypeController');
+
+
 });
 
 
