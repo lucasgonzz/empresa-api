@@ -87,6 +87,7 @@ class UserSetupController extends Controller
             'ProviderOrderStatusSeeder',
             'OnlinePriceTypeSeeder',
             'DepositMovementStatusSeeder',
+            'CAPaymentMethodTypeSeeder',
 
             'IvaSeeder',
             'MonedaSeeder',

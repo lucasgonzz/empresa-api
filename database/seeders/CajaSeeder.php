@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\caja\CajaAperturaHelper;
 use App\Models\Address;
 use App\Models\Caja;
+use App\Models\CurrentAcountPaymentMethod;
 use App\Models\DefaultPaymentMethodCaja;
 use App\Models\User;
 use Illuminate\Database\Seeder;
@@ -18,9 +19,99 @@ class CajaSeeder extends Seeder
      *
      * @return void
      */
-    public function run()
+    public function run() {
+
+        // $this->una_caja_por_cada_empleado_y_cada_sucursal();
+
+        $this->una_caja_para_cada_direccion_y_por_cada_metodo_de_pago();
+    }
+
+    function una_caja_para_cada_direccion_y_por_cada_metodo_de_pago() {
+
+        $models = [
+            [
+                'name'    => 'Caja Fuerte',
+                'user_id'   => config('app.USER_ID')
+            ],
+            // [
+            //     'name'    => 'MercadoPago Transferencias',
+            //     'user_id'   => config('app.USER_ID'),
+            //     'default_payment_method_caja'   => [
+            //         // Id de CurrentAcountPaymentMethod "MercadoPago"
+            //         'payment_method_id'    => 6,
+            //         'payment_method_id'    => 4,
+            //     ],  
+            // ],
+            // [
+            //     'name'    => 'Santender',
+            //     'saldo'   => 10000,
+            //     'user_id'   => config('app.USER_ID'),
+            //     'default_payment_method_caja'   => [
+            //         // Id de CurrentAcountPaymentMethod "Debito"
+            //         'payment_method_id'    => 2,
+            //         'payment_method_id'    => 5,
+            //     ],  
+            // ],
+        ];
+
+        $this->addresses = Address::where('user_id', config('app.USER_ID'))
+                                ->get();
+
+        $payment_methods = CurrentAcountPaymentMethod::all();
+
+        foreach ($this->addresses as $address) {
+
+            foreach ($payment_methods as $payment_method) {
+
+                $models[] = [
+                    'name'          => $payment_method->name.' '.$address->street,
+                    'employee_id'   => null,
+                    'address_id'    => $address->id,
+                    'user_id'   => config('app.USER_ID'),
+                    'saldo'     => 10000,
+                    'default_payment_method_caja' => [
+                        'payment_method_id'     => $payment_method->id,
+                        'address_id'            => $address->id,
+                    ],
+                ];
+                
+            }
+        }
+
+        $num = 1;
+
+        foreach ($models as $model) {
+            Log::info('creando caja '.$model['name']);
+            $model_to_create = [];
+            $model_to_create['num'] = $num;
+            $model_to_create['name'] = $model['name'];
+            $model_to_create['address_id'] = $model['address_id'] ?? null;
+            $model_to_create['user_id'] = $model['user_id'];
+
+            if(isset($model['saldo'])) {
+
+                $model_to_create['saldo'] = $model['saldo'];
+            } 
+            
+            if(isset($model['employee_id'])) {
+
+                $model_to_create['employee_id'] = $model['employee_id'];
+            } 
+            
+            $caja = Caja::create($model_to_create);
+            $num++;
+
+            $this->set_metodos_de_pago_disponibles($caja, $model);
+
+            $this->set_cajas_por_defecto($caja, $model);
+
+            $this->abrir_caja($caja);
+
+        }
+    }
+
+    public function una_caja_por_cada_empleado_y_cada_sucursal()
     {
-        Log::info('Caja seeder');
         $models = [
             [
                 'name'    => 'Caja Fuerte',

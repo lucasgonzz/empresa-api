@@ -14,6 +14,6 @@ class InventoryPerformance extends Model
     }
 
     function articles_stock_minimo() {
-        return $this->belongsToMany(Article::class);
+        return $this->belongsToMany(Article::class)->withPivot('address_id', 'stock_address', 'stock_min_address');
     }
 }

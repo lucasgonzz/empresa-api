@@ -9,7 +9,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 
 class ChequeHelper {
 
-    static function crear_cheque($pago, $payment_method) {
+    static function crear_cheque($model, $payment_method, $from_expense = false) {
         
         Cheque::create([
 
@@ -21,17 +21,17 @@ class ChequeHelper {
             'es_echeq'                  => $payment_method['es_echeq'] ?? 0,
 
             // Tipo de cheque: recibido (de cliente) o emitido (a proveedor)
-            'tipo'                      => !is_null($pago->client_id) ? 'recibido' : 'emitido',
+            'tipo'                      => Self::get_tipo($model, $from_expense),
 
             // Cliente que entregó el cheque (si tipo = recibido)
-            'client_id'                 => $pago->client_id,
+            'client_id'                 => $model->client_id,
 
             // Proveedor al que se le emitió el cheque (si tipo = emitido)
-            'provider_id'               => $pago->provider_id,
+            'provider_id'               => $model->provider_id,
             'endosado_desde_client_id'               => isset($payment_method['endosado_desde_client_id']) ? $payment_method['endosado_desde_client_id'] : null,
 
             // Cuenta corriente relacionada
-            'current_acount_id'         => $pago->id,
+            'current_acount_id'         => $from_expense ? null : $model->id,
 
             // Usuario que registró el cheque
             'employee_id'               => UserHelper::userId(false),
@@ -47,6 +47,16 @@ class ChequeHelper {
             // Estado actual manual (solo si fue cobrado o rechazado)
             'estado_manual'             => null,
         ]);
+    }
+
+    static function get_tipo($model, $from_expense) {
+        if ($from_expense) {
+            return 'emitido';
+        }
+        if (!is_null($model->client_id)) {
+            return 'recibido';
+        }
+        return 'emitido';
     }
 
 }

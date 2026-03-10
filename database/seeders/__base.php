@@ -5,7 +5,7 @@ namespace Database\Seeders;
 use App\Models\MODEL_NAME;
 use Illuminate\Database\Seeder;
 
-class MODEL_NAME Seeder extends Seeder
+class MODEL_NAMESeeder extends Seeder
 {
     /**
      * Run the database seeds.

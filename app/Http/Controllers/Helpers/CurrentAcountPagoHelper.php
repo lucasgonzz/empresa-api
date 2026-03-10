@@ -126,50 +126,60 @@ class CurrentAcountPagoHelper {
 
     static function attachPaymentMethods($pago, $payment_methods, $model_name = null) {
         
-        foreach ($payment_methods as $payment_method) {
-            $amount = $payment_method['amount'];
-            $amount_cotizado = isset($payment_method['amount_cotizado']) ? $payment_method['amount_cotizado'] : null;
-            $cotizacion = isset($payment_method['cotizacion']) ? $payment_method['cotizacion'] : null;
-            $moneda_id = isset($payment_method['moneda_id']) ? $payment_method['moneda_id'] : null;
+        PaymentMethodHelper::attach_payment_methods($pago, $payment_methods);
 
-            $haber = 0;
+        $pago->load('current_acount_payment_methods');
+        
+        foreach ($pago->current_acount_payment_methods as $payment_method) {
 
-            if (
-                !is_null($amount_cotizado)
-                && $amount_cotizado != ''
-                && (float)$amount_cotizado > 0
-            ) {
-                $haber = $amount_cotizado;
-            } else {
+            if ($payment_method->pivot->caja_id) {
 
-                $haber = $amount;
-            }
+                CurrentAcountCajaHelper::guardar_pago($payment_method->pivot->amount, $payment_method->pivot->caja_id, $model_name, $pago);
+
+            // $amount = $payment_method['amount'];
+            // $amount_cotizado = isset($payment_method['amount_cotizado']) ? $payment_method['amount_cotizado'] : null;
+            // $cotizacion = isset($payment_method['cotizacion']) ? $payment_method['cotizacion'] : null;
+            // $moneda_id = isset($payment_method['moneda_id']) ? $payment_method['moneda_id'] : null;
+
+            // $haber = 0;
+
+            // if (
+            //     !is_null($amount_cotizado)
+            //     && $amount_cotizado != ''
+            //     && (float)$amount_cotizado > 0
+            // ) {
+            //     $haber = $amount_cotizado;
+            // } else {
+
+            //     $haber = $amount;
+            // }
             
-            if ($amount == '' || is_null($amount)) {
-                $amount = $pago->haber;
-            }
+            // if ($amount == '' || is_null($amount)) {
+            //     $amount = $pago->haber;
+            // }
             
-            // Si es cheque
-            if ($payment_method['current_acount_payment_method_id'] == 1) {
-                ChequeHelper::crear_cheque($pago, $payment_method);
-            }
+            // // Si es cheque
+            // if ($payment_method['current_acount_payment_method_id'] == 1) {
+            //     ChequeHelper::crear_cheque($pago, $payment_method);
+            // }
 
-            $pago->current_acount_payment_methods()->attach($payment_method['current_acount_payment_method_id'], [
-                    'amount'    => $haber,
-                    'amount_cotizado'    => $amount_cotizado,
-                    'cotizacion'    => $cotizacion,
-                    'moneda_id'    => $moneda_id,
-                    'user_id'   => UserHelper::userId(),
-            ]);
+            // $pago->current_acount_payment_methods()->attach($payment_method['current_acount_payment_method_id'], [
+            //         'amount'    => $haber,
+            //         'amount_cotizado'    => $amount_cotizado,
+            //         'cotizacion'    => $cotizacion,
+            //         'moneda_id'    => $moneda_id,
+            //         'user_id'   => UserHelper::userId(),
+            // ]);
 
-            if (
-                $payment_method['current_acount_payment_method_id'] != 1
-                && isset($payment_method['caja_id'])
-                && $payment_method['caja_id'] != 0
-                && !is_null($model_name)
-            ) {
+            // if (
+            //     $payment_method['current_acount_payment_method_id'] != 1
+            //     && isset($payment_method['caja_id'])
+            //     && $payment_method['caja_id'] != 0
+            //     && !is_null($model_name)
+            // ) {
 
-                CurrentAcountCajaHelper::guardar_pago($amount, $payment_method['caja_id'], $model_name, $pago);
+            //     CurrentAcountCajaHelper::guardar_pago($amount, $payment_method['caja_id'], $model_name, $pago);
+            // }
             }
 
 
