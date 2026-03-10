@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\PaymentMethodHelper;
 use App\Http\Controllers\Helpers\expense\ExpenseCajaHelper;
 use App\Models\Expense;
 use Illuminate\Http\Request;
@@ -40,26 +41,45 @@ class ExpenseController extends Controller
             'caja_id'                               => 0,
         ]);
         
-        foreach ($request->payment_methods as $payment_method) {
-            if (!is_null($payment_method['amount'])) {
-                $amount = $payment_method['amount'];
-                $caja_id = null;
-                if (isset($payment_method['caja_id']) && $payment_method['caja_id'] != 0) {
-                    $caja_id = $payment_method['caja_id'];
-                }
-                
-                $model->current_acount_payment_methods()->attach($payment_method['current_acount_payment_method_id'],[
-                    'amount'    => $amount,
-                    'caja_id'   => $caja_id,
-                ]);
+        PaymentMethodHelper::attach_payment_methods($model, $request->payment_methods);
 
-                $data = [
-                    'amount'    => $amount,
-                    'caja_id'    => $caja_id,
-                ];  
+        $model->load('current_acount_payment_methods');
         
+        foreach ($model->current_acount_payment_methods as $payment_method) {
+
+            if (
+                $payment_method->type != 'cheque'                
+                && $payment_method->pivot->caja_id
+            ) {
+                
+                $data = [
+                    'amount'    => $payment_method->pivot->amount,
+                    'caja_id'   => $payment_method->pivot->caja_id,
+                ];  
+
                 ExpenseCajaHelper::guardar_movimiento_caja($model, $data);
             }
+
+            // if (!is_null($payment_method['amount'])) {
+
+            //     $amount = $payment_method['amount'];
+            //     $caja_id = null;
+            //     if (isset($payment_method['caja_id']) && $payment_method['caja_id'] != 0) {
+            //         $caja_id = $payment_method['caja_id'];
+            //     }
+                
+            //     $model->current_acount_payment_methods()->attach($payment_method['current_acount_payment_method_id'],[
+            //         'amount'    => $amount,
+            //         'caja_id'   => $caja_id,
+            //     ]);
+
+            //     $data = [
+            //         'amount'    => $amount,
+            //         'caja_id'    => $caja_id,
+            //     ];  
+        
+            //     ExpenseCajaHelper::guardar_movimiento_caja($model, $data);
+            // }
         }
 
         $model->save();

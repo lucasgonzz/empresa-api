@@ -92,6 +92,7 @@ class DemoSetupController extends Controller
             'ProviderOrderStatusSeeder',
             'OnlinePriceTypeSeeder',
             'DepositMovementStatusSeeder',
+            'CAPaymentMethodTypeSeeder',
 
             'IvaSeeder',
             

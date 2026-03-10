@@ -301,7 +301,7 @@ class NewPagoPdf extends fpdf {
     function pagos_recibidos($datos) {
 
         $this->x = 10;
-        $this->y += 10;
+        $this->y += 5;
         $this->SetFont('Arial','B',10);
         $this->SetFillColor(200,200,200);
         $this->Cell(190,6, 'DETALLE DE PAGOS RECIBIDOS', 1, 1, 'C', 1);
@@ -360,7 +360,7 @@ class NewPagoPdf extends fpdf {
 
             
         $this->x = 10;
-        $this->y += 10;
+        $this->y += 5;
         $this->SetFont('Arial','B',10);
         $this->SetFillColor(200,200,200);
         $this->Cell(190,6, 'COMPROBANTES IMPUTADOS', 1, 1, 'C', 1);
@@ -370,8 +370,15 @@ class NewPagoPdf extends fpdf {
         $this->Cell(40,6, 'Total Comprobante', 1, 0, 'R');
         $this->Cell(40,6, 'Imputado', 1, 1, 'R');
 
+        $index = 0;
+
         foreach ($this->current_acount->pagando_a as $pagando_a) {
+
+            $index++;
             
+            if ($index > 10) {
+                continue;
+            }    
             if ($pagando_a->sale && $pagando_a->sale->afip_ticket) {
                 $cbte_imputado = 'Factura '.$pagando_a->sale->afip_ticket->cbte_letra.' N° '.$pagando_a->sale->afip_ticket->cbte_numero;
             } else if ($pagando_a->sale) {

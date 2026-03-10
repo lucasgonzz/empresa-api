@@ -99,7 +99,14 @@ class InventoryPerformanceHelper {
 			// Iterar por cada grupo y adjuntar artículos
 			foreach ($grouped_articles as $provider_id => $articles_group) {
 				foreach ($articles_group as $article) {
-					$this->inventory_performance->articles_stock_minimo()->attach($article->id);
+
+					$pivot_data = [];
+					if ($article->address_id) {
+						$pivot_data['address_id'] = $article->address_id;
+						$pivot_data['stock_min_address'] = $article->stock_min_address;
+						$pivot_data['stock_address'] = $article->stock_address;
+					} 
+					$this->inventory_performance->articles_stock_minimo()->attach($article->id, $pivot_data);
 				}
 			}
 		}
@@ -132,8 +139,7 @@ class InventoryPerformanceHelper {
 				$this->stockeados++;
 
 				if (
-					!is_null($article->stock)
-					&& $article->stock > 0
+					$article->stock > 0
 				) {
 					
 
@@ -170,11 +176,16 @@ class InventoryPerformanceHelper {
 				
 				} else {
 
+					// if (
+					// 	count($article->addresses) == 0
+					// 	&& !is_null($article->stock_min)
+					// 	&& !is_null($article->stock)
+					// 	&& $article->stock < $article->stock_min
+					// ) {
 					if (
-						count($article->addresses) == 0
-						&& !is_null($article->stock_min)
+						!is_null($article->stock_min)
 						&& !is_null($article->stock)
-						&& $article->stock < $article->stock_min
+						&& $article->stock <= $article->stock_min
 					) {
 
 						$this->stock_minimo++;
@@ -194,7 +205,12 @@ class InventoryPerformanceHelper {
 
 								$this->stock_minimo++;
 
-								$this->articles_stock_minimo[] = $article;
+								$article_to_add = $article;
+								$article_to_add->address_id = $address->id;
+								$article_to_add->stock_min_address = $address->pivot->stock_min;
+								$article_to_add->stock_address = $address->pivot->amount;
+
+								$this->articles_stock_minimo[] = $article_to_add;
 							}
 						}
 					}

@@ -589,6 +589,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('production-batch-movement-type', 'ProductionBatchMovementTypeController');
 
+    Route::resource('c-a-payment-method-type', 'CAPaymentMethodTypeController');
+
 
 });
 

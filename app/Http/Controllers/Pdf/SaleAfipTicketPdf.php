@@ -1173,9 +1173,12 @@ class SaleAfipTicketPdf extends fpdf {
 	}
 
 	function getPaymentMethod() {
-		if (!is_null($this->sale->current_acount_payment_method)) {
-			return $this->sale->current_acount_payment_method->name; 
+		if ($this->sale->current_acount) {
+			return 'Cuenta corriente';
 		}
+		// if (count($this->sale->current_acount_payment_methods) >= 1) {
+		// 	return 'Contado'
+		// }
 		return 'Contado';
 	}
 

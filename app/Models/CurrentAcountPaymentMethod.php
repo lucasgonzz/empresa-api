@@ -13,9 +13,12 @@ class CurrentAcountPaymentMethod extends Model
     }
 
     function scopeWithAll($q) {
-        // $q->with('caja_por_defecto');
+        $q->with('type');
     }
 
+    function type() {
+        return $this->belongsTo(CAPaymentMethodType::class, 'c_a_payment_method_type_id');
+    }
     // function cajas_por_defecto() {
     //     return $this->hasMany(DefaultPaymentMethodCaja::class);
     // }

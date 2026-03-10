@@ -40,6 +40,7 @@ class DatabaseSeeder extends Seeder
             $this->call(IvaSeeder::class);
             $this->call(IvaConditionSeeder::class);
             // $this->call(WorkdaySeeder::class);
+            $this->call(CAPaymentMethodType::class);
             $this->call(CurrentAcountPaymentMethodSeeder::class);
             $this->call(BudgetStatusSeeder::class);
         } else {
@@ -312,6 +313,7 @@ class DatabaseSeeder extends Seeder
         $this->call(IvaConditionSeeder::class);
 
         // $this->call(OrderProductionStatusSeeder::class);
+        $this->call(CAPaymentMethodTypeSeeder::class);
         $this->call(CurrentAcountPaymentMethodSeeder::class);
         $this->call(BudgetStatusSeeder::class);
 
