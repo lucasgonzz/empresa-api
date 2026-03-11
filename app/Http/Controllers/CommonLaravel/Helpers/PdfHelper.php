@@ -231,28 +231,36 @@ class PdfHelper {
 		// Direccion
 		if (isset($data['address'])) {
 
-			$instance->x = 105;
-			$instance->SetFont('Arial', 'B', 10);
-			$instance->Cell(12, 5, 'Direc: ', $instance->b, 0, 'L');
+			if (is_array($data['address'])) {
 
-			$address_text = $data['address'];
-			$instance->SetFont('Arial', '', 10);
-			$instance->Cell(88, 5, $address_text, $instance->b, 0, 'L');
+				$print_title_direc = true;
 
-		} else if (count($user->addresses) >= 1) {
-			$address = $user->addresses[0];
-			$instance->x = 105;
-			$instance->SetFont('Arial', 'B', 10);
-			$instance->Cell(12, 5, 'Direc: ', $instance->b, 0, 'L');
+				foreach ($data['address'] as $address) {
 
-			$address_text = "{$address->street} {$address->street_number}, {$address->city}, {$address->province}";
-			$instance->SetFont('Arial', '', 10);
-			$instance->Cell(88, 5, $address_text, $instance->b, 0, 'L');
-		}
+					Self::print_address($instance, $address, $print_title_direc);
+					$instance->y += 5;
+					$print_title_direc = false;
+				}
+			} else {
+				Self::print_address($instance, $data['address'], true);
+				$instance->y += 5;
+			}
+
+
+		} 
+		// else if (count($user->addresses) >= 1) {
+		// 	$address = $user->addresses[0];
+		// 	$instance->x = 105;
+		// 	$instance->SetFont('Arial', 'B', 10);
+		// 	$instance->Cell(12, 5, 'Direc: ', $instance->b, 0, 'L');
+
+		// 	$address_text = "{$address->street} {$address->street_number}, {$address->city}, {$address->province}";
+		// 	$instance->SetFont('Arial', '', 10);
+		// 	$instance->Cell(88, 5, $address_text, $instance->b, 0, 'L');
+		// }
 
 		// Correo
 		$instance->x = 105;
-		$instance->y += 5;
 		$instance->SetFont('Arial', 'B', 10);
 		$instance->Cell(12, 5, 'Email:', $instance->b, 0, 'L');
 		$instance->SetFont('Arial', '', 10);
@@ -261,12 +269,40 @@ class PdfHelper {
 		$instance->y += 2;
 	}
 
+	static function print_address($instance, $address_text, $print_title_direc) {
+
+		if ($print_title_direc) {
+
+			$instance->x = 105;
+			$instance->SetFont('Arial', 'B', 10);
+			$instance->Cell(12, 5, 'Direc: ', $instance->b, 0, 'L');
+		} else {
+			$instance->x = 117;
+		}
+		$instance->SetFont('Arial', '', 10);
+		$instance->Cell(88, 5, $address_text, $instance->b, 0, 'L');
+
+	}
+
 	static function commerceInfoLine($instance) {
+
+		$y_de_abajo = $instance->y;
+		// Arriba
 		$instance->Line(5, 5, 205, 5);
-		$instance->Line(205, 5, 205, 30);
-		$instance->Line(205, 30, 5, 30);
-		$instance->Line(5, 30, 5, 5);
-		$instance->Line(105, 20, 105, 30);
+		
+		// Derecha
+		$instance->Line(205, 5, 205, $y_de_abajo);
+		
+		// Abajo
+		$instance->Line(205, $y_de_abajo, 5, $y_de_abajo);
+
+		// Izquierda
+		$instance->Line(5, $y_de_abajo, 5, 5);
+		
+		// Linea del medio
+		$instance->Line(105, 20, 105, $y_de_abajo);
+
+		$instance->y += 2;
 	}
 
 	static function modelInfo($instance, $data) {

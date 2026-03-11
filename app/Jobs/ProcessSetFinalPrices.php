@@ -51,10 +51,20 @@ class ProcessSetFinalPrices implements ShouldQueue
                 !is_null($this->from_dolar)
                 && $this->from_dolar
             ) {
+                // $articles_query = Article::where('user_id', $this->user_id)
+                //                         ->where('cost_in_dollars', 1)
+                //                         ->select('id');
+                // Log::info('Obteniendo articulos en con costos en dolares');
                 $articles_query = Article::where('user_id', $this->user_id)
-                                        ->where('cost_in_dollars', 1)
+                                        ->where(function ($q) {
+                                            $q->where('cost_in_dollars', 1)
+                                              ->orWhereHas('price_type_monedas', function ($q2) {
+                                                  $q2->where('cotizar_desde_otra_moneda', 1);
+                                              });
+                                        })
                                         ->select('id');
-                Log::info('Obteniendo articulos en con costos en dolares');
+
+                Log::info('Obteniendo articulos con costos en dolares O con price_type_monedas cotizando desde otra moneda');
             } else {
                 $articles_query = Article::where('user_id', $this->user_id)->select('id');
             }

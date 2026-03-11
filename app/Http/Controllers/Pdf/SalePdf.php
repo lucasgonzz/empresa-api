@@ -11,8 +11,9 @@ use App\Http\Controllers\Helpers\ImageHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
-use Illuminate\Support\Facades\Log;
+use App\Models\Address;
 use App\Models\User;
+use Illuminate\Support\Facades\Log;
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
@@ -171,17 +172,34 @@ class SalePdf extends fpdf {
 	}
 
 	function get_address() {
-		
+
 		$address = $this->sale->address;
-		$address_text = null;
+		$addresses = [];
 
-		if (!is_null($address)) {
-
-			$address_text = "{$address->street} {$address->street_number}, {$address->city}, {$address->province}";
-
+		if (!is_null($this->user->address_company)) {
+			$addresses[] = $this->user->address_company;
 		}
 
-		return $address_text;
+		if ($this->user->all_addresses_in_sale_pdf) {
+
+			$addresses_models = Address::where('user_id', $this->user->id)
+										->get();
+
+			foreach ($addresses_models as $address_model) {
+				$addresses[] = "{$address_model->street} {$address_model->street_number}, {$address_model->city}, {$address_model->province}";
+			}
+
+		} else {
+
+			if (!is_null($address)) {
+
+				$addresses[] = "{$address->street} {$address->street_number}, {$address->city}, {$address->province}";
+
+			} 
+		}
+
+
+		return $addresses;
 	}
  
 	function Footer() {

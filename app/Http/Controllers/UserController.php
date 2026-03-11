@@ -99,6 +99,9 @@ class UserController extends Controller
         $model->clave_eliminar_article          = $request->clave_eliminar_article;
         $model->img_auto_timeout                = $request->img_auto_timeout;
 
+        $model->address_company                 = $request->address_company;
+        $model->all_addresses_in_sale_pdf       = $request->all_addresses_in_sale_pdf;
+
 
 
         $model->save();

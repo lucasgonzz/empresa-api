@@ -13,26 +13,16 @@ class ArticlePriceTypeMonedaHelper {
     // Solo adjunto los datos que vienen del front, no calculo ningun precio ni porcentaje
     static function attach_price_type_monedas($article, $price_type_monedas, $user = null) {
 
-        // $price_types = PriceType::where('user_id', $article->user_id)
-        //                         ->get();
-
         if (empty($price_type_monedas)) return;
 
         if (!$user) {
             $user = UserHelper::user();
         }
 
-        $cost = $article->cost;
+        // $cost = $article->cost;
 
-        $cost = ArticlePricesHelper::aplicar_iva($article, $cost, $user);
-        // $cost = ArticleHelper::cotizar($article, $user, $cost);
-
-        // price_type_monedas: array de {price_type_id, moneda_id, pivot: {percentage, final_price, setear_precio_final, incluir_en_excel}}
+        // $cost = ArticlePricesHelper::aplicar_iva($article, $cost, $user);
         
-        // foreach ($price_types as $price_type) {
-            
-            
-        // }
         foreach ($price_type_monedas as $ptm) {
 
             $moneda_id = $ptm['moneda_id'];
@@ -50,13 +40,22 @@ class ArticlePriceTypeMonedaHelper {
                 $setear_precio_final = 1;
             }
 
+            
+
+            $cotizar_desde_otra_moneda = 0;
+
+            if (
+                isset($ptm['cotizar_desde_otra_moneda'])
+                && (
+                    $ptm['cotizar_desde_otra_moneda'] == 1
+                    || $ptm['cotizar_desde_otra_moneda'] == '1'
+                )
+            ) {
+                $cotizar_desde_otra_moneda = 1;
+            }
+
             $percentage = (float)$ptm['percentage'];
             $final_price = (float)$ptm['final_price'];
-
-            // Log::info('moneda_id: '.$moneda_id);
-            // Log::info('percentage: '.$percentage);
-            // Log::info('final_price: '.$final_price);
-
 
             $article->price_type_monedas()->updateOrCreate(
                 [
@@ -67,6 +66,7 @@ class ArticlePriceTypeMonedaHelper {
                     'percentage'                     => $percentage,
                     'final_price'                    => $final_price,
                     'setear_precio_final'            => $setear_precio_final,
+                    'cotizar_desde_otra_moneda'      => $cotizar_desde_otra_moneda,
                 ]
             );
         }
@@ -78,61 +78,234 @@ class ArticlePriceTypeMonedaHelper {
     */
     public static function aplicar_precios_por_price_type_y_moneda($article, $_cost, $user)
     {
-
-        if (
-            $_cost 
-            && $_cost > 0
-        ) {
-
-            foreach ($article->price_type_monedas as $price_type_moneda) {
-
-                $cost = $_cost;
-                
-                $final_price = $price_type_moneda->final_price;
-                $percentage = $price_type_moneda->percentage;
-                $setear_precio_final = $price_type_moneda->setear_precio_final;
-                $moneda_id = $price_type_moneda->moneda_id;
-
-                if (
-                    $article->cost_in_dollars
-                    && $moneda_id == 1
-                ) {
-                    $cost *= $user->dollar;
-
-                } else if (
-                    $article->cost_in_dollars == 0
-                    && $moneda_id == 2
-                ) {
-
-                    $cost /= $user->dollar;
-                }
-
-
-
-
-                if ($setear_precio_final) {
-
-                    $percentage = ($final_price - $cost) / $cost * 100;
-
-                } else {
-
-                    // if (!$percentage) {
-                    //     $percentage = 
-                    // }
-
-                    $final_price = $cost + ($cost * (float)$percentage / 100);
-
-                }
-
-                $price_type_moneda->percentage = $percentage;
-                $price_type_moneda->final_price = $final_price;
-                $price_type_moneda->save();
-            }
-
+        if (!$_cost || $_cost <= 0) {
+            return;
         }
 
-        
+        $ars_id = 1;
+        $usd_id = 2;
+
+        $rate = (float) $user->dollar;
+
+        $get_cost_for_moneda = function ($base_cost, $moneda_id) use ($article, $rate, $ars_id, $usd_id) {
+
+            $cost = (float) $base_cost;
+
+            // Si el artículo tiene costo en USD y queremos ARS => multiplicar
+            if ($article->cost_in_dollars && $moneda_id == $ars_id) {
+                $cost *= $rate;
+
+            // Si el artículo tiene costo en ARS y queremos USD => dividir
+            } else if ((int)$article->cost_in_dollars === 0 && $moneda_id == $usd_id) {
+
+                if ($rate > 0) {
+                    $cost /= $rate;
+                }
+            }
+
+            return $cost;
+        };
+
+        $calc_normal = function ($entry, $base_cost) use ($get_cost_for_moneda) {
+
+            $moneda_id = (int) $entry->moneda_id;
+
+            $cost = $get_cost_for_moneda($base_cost, $moneda_id);
+
+            $final_price = (float) $entry->final_price;
+            $percentage  = (float) $entry->percentage;
+
+            $setear_precio_final = (int) $entry->setear_precio_final;
+
+            if ($setear_precio_final) {
+
+                if ($cost > 0) {
+                    $percentage = ($final_price - $cost) / $cost * 100;
+                } else {
+                    $percentage = 0;
+                }
+
+            } else {
+
+                $final_price = $cost + ($cost * (float)$percentage / 100);
+            }
+
+            return [
+                'cost'        => $cost,
+                'percentage'  => $percentage,
+                'final_price' => $final_price,
+            ];
+        };
+
+        // Agrupo por price_type_id para poder resolver ARS/USD juntos
+        $groups = $article->price_type_monedas->groupBy('price_type_id');
+
+        foreach ($groups as $price_type_id => $group) {
+
+            $ars_entry = $group->firstWhere('moneda_id', $ars_id);
+            $usd_entry = $group->firstWhere('moneda_id', $usd_id);
+
+            $ars_cotiza = $ars_entry ? (int)($ars_entry->cotizar_desde_otra_moneda ?? 0) : 0;
+            $usd_cotiza = $usd_entry ? (int)($usd_entry->cotizar_desde_otra_moneda ?? 0) : 0;
+
+            // Si ambos están marcados, es inconsistente -> fallback a modo normal para evitar loop
+            if ($ars_cotiza && $usd_cotiza) {
+                foreach ($group as $entry) {
+                    $res = $calc_normal($entry, $_cost);
+                    $entry->percentage  = $res['percentage'];
+                    $entry->final_price = $res['final_price'];
+                    $entry->save();
+                }
+                continue;
+            }
+
+            // Caso 1: ARS se cotiza desde USD (ARS derivada, USD referencia)
+            if ($ars_entry && $usd_entry && $ars_cotiza) {
+
+                // 1) Calculo USD normal (referencia)
+                $usd_res = $calc_normal($usd_entry, $_cost);
+
+                $usd_entry->percentage  = $usd_res['percentage'];
+                $usd_entry->final_price = $usd_res['final_price'];
+                $usd_entry->save();
+
+                // 2) Cotizo ARS desde final USD
+                $ars_final = $usd_res['final_price'] * $rate;
+
+                $ars_cost = $get_cost_for_moneda($_cost, $ars_id);
+
+                $ars_percentage = 0;
+                if ($ars_cost > 0) {
+                    $ars_percentage = ($ars_final - $ars_cost) / $ars_cost * 100;
+                }
+
+                $ars_entry->final_price = $ars_final;
+                $ars_entry->percentage  = $ars_percentage;
+                $ars_entry->save();
+
+                // 3) Si hay otras monedas en el grupo (distintas de ARS/USD), las calculo normal
+                foreach ($group as $entry) {
+                    if ((int)$entry->moneda_id === $ars_id || (int)$entry->moneda_id === $usd_id) {
+                        continue;
+                    }
+                    $res = $calc_normal($entry, $_cost);
+                    $entry->percentage  = $res['percentage'];
+                    $entry->final_price = $res['final_price'];
+                    $entry->save();
+                }
+
+                continue;
+            }
+
+            // Caso 2: USD se cotiza desde ARS (USD derivada, ARS referencia)
+            if ($ars_entry && $usd_entry && $usd_cotiza) {
+
+                // 1) Calculo ARS normal (referencia)
+                $ars_res = $calc_normal($ars_entry, $_cost);
+
+                $ars_entry->percentage  = $ars_res['percentage'];
+                $ars_entry->final_price = $ars_res['final_price'];
+                $ars_entry->save();
+
+                // 2) Cotizo USD desde final ARS
+                $usd_final = 0;
+
+                if ($rate > 0) {
+                    $usd_final = $ars_res['final_price'] / $rate;
+                }
+
+                $usd_cost = $get_cost_for_moneda($_cost, $usd_id);
+
+                $usd_percentage = 0;
+                if ($usd_cost > 0) {
+                    $usd_percentage = ($usd_final - $usd_cost) / $usd_cost * 100;
+                }
+
+                $usd_entry->final_price = $usd_final;
+                $usd_entry->percentage  = $usd_percentage;
+                $usd_entry->save();
+
+                // 3) Otras monedas: normal
+                foreach ($group as $entry) {
+                    if ((int)$entry->moneda_id === $ars_id || (int)$entry->moneda_id === $usd_id) {
+                        continue;
+                    }
+                    $res = $calc_normal($entry, $_cost);
+                    $entry->percentage  = $res['percentage'];
+                    $entry->final_price = $res['final_price'];
+                    $entry->save();
+                }
+
+                continue;
+            }
+
+            // Caso 3: Sin modo referencia -> comportamiento actual (normal por cada entry)
+            foreach ($group as $entry) {
+                $res = $calc_normal($entry, $_cost);
+                $entry->percentage  = $res['percentage'];
+                $entry->final_price = $res['final_price'];
+                $entry->save();
+            }
+        }
     }
+    
+    // public static function aplicar_precios_por_price_type_y_moneda($article, $_cost, $user)
+    // {
+
+    //     if (
+    //         $_cost 
+    //         && $_cost > 0
+    //     ) {
+
+    //         foreach ($article->price_type_monedas as $price_type_moneda) {
+
+    //             $cost = $_cost;
+                
+    //             $final_price = $price_type_moneda->final_price;
+    //             $percentage = $price_type_moneda->percentage;
+    //             $setear_precio_final = $price_type_moneda->setear_precio_final;
+    //             $moneda_id = $price_type_moneda->moneda_id;
+
+    //             if (
+    //                 $article->cost_in_dollars
+    //                 && $moneda_id == 1
+    //             ) {
+    //                 $cost *= $user->dollar;
+
+    //             } else if (
+    //                 $article->cost_in_dollars == 0
+    //                 && $moneda_id == 2
+    //             ) {
+
+    //                 $cost /= $user->dollar;
+    //             }
+
+
+
+
+    //             if ($setear_precio_final) {
+
+    //                 $percentage = ($final_price - $cost) / $cost * 100;
+
+    //             } else {
+
+    //                 // if (!$percentage) {
+    //                 //     $percentage = 
+    //                 // }
+
+    //                 $final_price = $cost + ($cost * (float)$percentage / 100);
+
+    //             }
+
+    //             $price_type_moneda->percentage = $percentage;
+    //             $price_type_moneda->final_price = $final_price;
+    //             $price_type_moneda->save();
+    //         }
+
+    //     }
+
+        
+    // }
 
 
 

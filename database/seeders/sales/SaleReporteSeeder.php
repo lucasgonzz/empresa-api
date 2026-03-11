@@ -67,15 +67,15 @@ class SaleReporteSeeder extends Seeder
                     ],
                     'payment_methods'   => [
                         [
-                            'id'        => rand(1,2),
+                            'current_acount_payment_method_id'        => rand(1,2),
                             'amount'    => $total / 4,
                         ],
                         [
-                            'id'        => rand(3,5),
+                            'current_acount_payment_method_id'        => rand(3,5),
                             'amount'    => ($total / 4) * 2,
                         ],
                         [
-                            'id'        => 5,
+                            'current_acount_payment_method_id'        => 5,
                             'amount'    => $total / 4,
                         ],
                     ],
@@ -149,11 +149,11 @@ class SaleReporteSeeder extends Seeder
                     ],
                     'payment_methods'   => [
                         [
-                            'id'        => rand(1,2),
+                            'current_acount_payment_method_id'        => rand(1,2),
                             'amount'    => $total / 3,
                         ],
                         [
-                            'id'        => rand(2,5),
+                            'current_acount_payment_method_id'        => rand(2,5),
                             'amount'    => ($total / 3) * 2,
                         ],
                     ],
