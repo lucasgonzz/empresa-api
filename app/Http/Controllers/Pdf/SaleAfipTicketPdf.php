@@ -1019,13 +1019,9 @@ class SaleAfipTicketPdf extends fpdf {
 	    	'L', 
 	    	false
 	    );
-		// $this->SetY(32);
 
 		// Domicilio
 		$this->SetX(40);
-
-		// $this->SetFont('Arial', 'B', 9);
-		// $this->Cell(20,5,'Domicilio:',0,0,'L');
 
 		$this->SetFont('Arial', '', 9);
 

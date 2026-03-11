@@ -11,7 +11,7 @@ class NotaCreditoController extends Controller
 
         $models = CurrentAcount::where('user_id', $this->userId())
                                 ->where('status', 'nota_credito')
-                                ->with('afip_ticket', 'sale', 'articles', 'discounts', 'surchages', 'nota_credito_descriptions')
+                                ->with('afip_ticket.afip_errors', 'afip_ticket.afip_observations', 'sale', 'articles', 'discounts', 'surchages', 'nota_credito_descriptions')
                                 ->orderBy('created_at', 'DESC');
 
         if (!is_null($from_date)) {
