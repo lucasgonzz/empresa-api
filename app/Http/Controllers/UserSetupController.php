@@ -39,7 +39,7 @@ class UserSetupController extends Controller
             'company_name'                  => $request->company_name,
             'image_url'                     => 'https://api-demo.comerciocity.com/public/storage/174292591094040.png',
             'doc_number'                    => $request->doc_number,
-            'impresora'                     => 'XP-80',
+            'impresora'                     => 'comerciocity',
             'email'                         => $request->email,
             'phone'                         => $request->phone,
             'sale_ticket_description'       => null,

@@ -81,14 +81,16 @@ class NewPagoPdf extends fpdf {
 
             $concepto = 'COBRO EN CONCEPTO DE ';
 
-            if ($this->current_acount->to_pay->sale && $this->current_acount->to_pay->sale->afip_ticket) {
-                
-                $concepto .= 'Fac N° '.$this->current_acount->to_pay->sale->afip_ticket->cbte_numero;
-            
-            } else if ($this->current_acount->to_pay->sale) {
+            if (
+                $this->current_acount->to_pay->sale 
+            ) {
+                if (count($this->current_acount->to_pay->sale->afip_tickets) >= 1) {
 
+                    $concepto .= 'Fac N° '.$this->current_acount->to_pay->sale->afip_tickets[0]->cbte_numero.' - ';
+                }
+            
                 $concepto .= 'Venta N° '.$this->current_acount->to_pay->sale->num;
-            }
+            } 
         } else {
             $concepto = 'VARIOS';
         }

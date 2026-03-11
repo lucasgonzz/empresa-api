@@ -17,23 +17,25 @@ class AfipTicketController extends Controller
     function get_importes($sale_id) {
         $sale = Sale::find($sale_id);
 
-        $afip_helper = new AfipHelper($sale->afip_tickets[0]);
+        $afip_ticket = $sale->afip_tickets[0];
+
+        $afip_helper = new AfipHelper($afip_ticket);
 
         $importes = $afip_helper->getImportes();
 
         $data = [
             'ver'           => 1,
-            'fecha'         => date_format($sale->afip_ticket->created_at, 'Y-m-d'),
-            'cuit'          => $sale->afip_ticket->cuit_negocio,
-            'ptoVta'        => $sale->afip_ticket->punto_venta,
-            'tipoCmp'       => $sale->afip_ticket->cbte_tipo,
-            'nroCmp'        => $sale->afip_ticket->cbte_numero,
-            'importe'       => $sale->afip_ticket->importe_total,
-            'moneda'        => $sale->afip_ticket->moneda_id,
+            'fecha'         => date_format($afip_ticket->created_at, 'Y-m-d'),
+            'cuit'          => $afip_ticket->cuit_negocio,
+            'ptoVta'        => $afip_ticket->punto_venta,
+            'tipoCmp'       => $afip_ticket->cbte_tipo,
+            'nroCmp'        => $afip_ticket->cbte_numero,
+            'importe'       => $afip_ticket->importe_total,
+            'moneda'        => $afip_ticket->moneda_id,
             'ctz'           => 1,
             'tipoDocRec'    => AfipHelper::getDocType('Cuit'),
-            'nroDocRec'     => $sale->afip_ticket->cuit_cliente,
-            'codAut'        => $sale->afip_ticket->cae,
+            'nroDocRec'     => $afip_ticket->cuit_cliente,
+            'codAut'        => $afip_ticket->cae,
         ];
         $afip_link = 'https://www.afip.gob.ar/fe/qr/?'.base64_encode(json_encode($data));
 

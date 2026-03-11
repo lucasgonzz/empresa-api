@@ -17,14 +17,14 @@ class CreateChequesTable extends Migration
             $table->id();
 
             // Datos del cheque
-            $table->string('numero');
+            $table->string('numero')->nullable();
             $table->string('banco')->nullable();
             $table->decimal('amount', 22, 2)->nullable();
             $table->date('fecha_emision')->nullable();
             $table->date('fecha_pago')->nullable();
 
             // Tipo de cheque: recibido (de cliente) o emitido (a proveedor)
-            $table->enum('tipo', ['recibido', 'emitido']);
+            $table->enum('tipo', ['recibido', 'emitido'])->nullable();
 
             // Cliente que entregó el cheque (si tipo = recibido)
             $table->integer('client_id')->nullable();
