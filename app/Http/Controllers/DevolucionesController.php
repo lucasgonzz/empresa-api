@@ -65,7 +65,10 @@ class DevolucionesController extends Controller
             GeneralHelper::attachModels($nota_credito, 'discounts', $request->discounts, ['percentage']);
             GeneralHelper::attachModels($nota_credito, 'surchages', $request->surchages, ['percentage']);
 
-            if ($request->sale_id) {
+            if (
+                $request->sale_id
+                && $request->update_unidades_devueltas
+            ) {
                 UpdateSaleHelper::update_sale_returned_items($request);
             }
 

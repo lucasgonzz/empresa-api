@@ -44,6 +44,34 @@ class AfipTicketController extends Controller
 
     function problemas_al_facturar() {
 
+        $user_id = $this->userId();
+
+        $errores_de_facturacion = [];
+        
+        $afip_tickets_con_errores = AfipTicket::where(function($q) {
+                                                $q->whereNull('cae')
+                                                    ->orWhere('cae', '');
+                                            })
+                                            ->whereHas('sale', function($q2) use($user_id) {
+                                                $q2->where('user_id', $user_id);
+                                            })
+                                            ->with('sale.afip_tickets.afip_observations', 'sale.afip_tickets.afip_errors')
+                                            ->orderBy('created_at', 'DESC')
+                                            ->get();
+
+        foreach ($afip_tickets_con_errores as $afip_ticket) {
+
+            $errores_de_facturacion[] = $afip_ticket->sale;
+        }
+
+        return response()->json(['models' => $errores_de_facturacion], 200);
+
+
+
+
+
+
+
         $sales_with_afip_errors = Sale::where('user_id', $this->userId())
                             ->with('address')
                             ->with('employee')
@@ -115,6 +143,9 @@ class AfipTicketController extends Controller
             }
         }
 
+        Log::info('errores_de_facturacion');
+        Log::info($errores_de_facturacion);
+
         return response()->json(['models' => $errores_de_facturacion], 200);
     }       
 
@@ -152,7 +183,12 @@ class AfipTicketController extends Controller
             $helper->consultar_comprobante();
         }
 
-        return response()->json(['sale' => $this->fullModel('Sale', $afip_ticket->sale_id)], 200);
+        $afip_ticket = AfipTicket::find($afip_ticket_id);
+
+        return response()->json([
+            'sale' => $this->fullModel('Sale', $afip_ticket->sale_id),
+            'afip_ticket'   => $afip_ticket,
+        ], 200);
     }
 
     function destroy($id) {

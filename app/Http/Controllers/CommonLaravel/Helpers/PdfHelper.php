@@ -287,6 +287,11 @@ class PdfHelper {
 	static function commerceInfoLine($instance) {
 
 		$y_de_abajo = $instance->y;
+
+		if ($y_de_abajo < 30) {
+			$y_de_abajo = 30;
+		}
+
 		// Arriba
 		$instance->Line(5, 5, 205, 5);
 		
@@ -302,7 +307,7 @@ class PdfHelper {
 		// Linea del medio
 		$instance->Line(105, 20, 105, $y_de_abajo);
 
-		$instance->y += 2;
+		$instance->y += 3;
 	}
 
 	static function modelInfo($instance, $data) {

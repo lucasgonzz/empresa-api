@@ -101,45 +101,77 @@ class AfipWsfeHelper extends Controller
             
             Log::info('consultar_comprobante:');
 
+            $from_sale = true;
+
+            if (
+                // Nota credito A
+                $this->afip_ticket->cbte_tipo == 3
+                // Nota credito B
+                || $this->afip_ticket->cbte_tipo == 8
+                // Nota credito C
+                || $this->afip_ticket->cbte_tipo == 13
+                // Nota credito E
+                || $this->afip_ticket->cbte_tipo == 21
+            ) {
+                $from_sale = false;
+            }
+
             if (!$result['hubo_un_error']) {
 
                 $afip_result = (array)$result['result'];
                 Log::info($afip_result);
 
-                Log::info('va por acaaaa');
+                Log::info('se consulto comprobante');
                 Log::info(isset($afip_result['FECompConsultarResult']));
 
                 if (isset($afip_result['FECompConsultarResult'])) {
 
-                    if (isset($afip_result['FECompConsultarResult']->ResultGet)) {
+                    $this->afip_ticket->consultado = 1;
+                    $this->afip_ticket->save();
 
-                        $this->afip_ticket->consultado = 1;
-                        $this->afip_ticket->save();
+                    if (isset($afip_result['FECompConsultarResult']->ResultGet)) {
 
                         $this->limpiar_errores();
 
                         $data = $afip_result['FECompConsultarResult']->ResultGet;
 
-                        $total_a_facturar = $this->afip_ticket->sale->total;
+                        $total_a_facturar = null;
+                        
+                        if ($from_sale) {
 
-                        if ($this->afip_ticket->facturar_importe_personalizado) {
-                            $total_a_facturar = $this->afip_ticket->facturar_importe_personalizado;
-                        }
+                            $total_a_facturar = $this->afip_ticket->sale->total;
 
-                        Log::info('total_a_facturar:');
-                        Log::info($total_a_facturar);
+                            if ($this->afip_ticket->facturar_importe_personalizado) {
+                            
+                                $total_a_facturar = $this->afip_ticket->facturar_importe_personalizado;
+                            
+                            } else if (
+                                $this->afip_ticket->sale->moneda_id == 2
+                                && !is_null($this->afip_ticket->sale->valor_dolar)
+                                && (float)$this->afip_ticket->sale->valor_dolar > 0
+                            ) {
+                                $total_a_facturar *= (float)$this->afip_ticket->sale->valor_dolar;
+                            }
 
-                        Log::info('$data->ImpTotal:');
-                        Log::info($data->ImpTotal);
+                            Log::info('total_a_facturar:');
+                            Log::info($total_a_facturar);
 
-                        Log::info($data->ImpTotal == $total_a_facturar);
-                        Log::info($data->PtoVta == $this->afip_ticket->punto_venta);
-                        Log::info($data->CbteTipo == $this->afip_ticket->cbte_tipo);
+                            Log::info('$data->ImpTotal:');
+                            Log::info($data->ImpTotal);
+
+                            Log::info($data->ImpTotal == $total_a_facturar);
+                            Log::info($data->PtoVta == $this->afip_ticket->punto_venta);
+                            Log::info($data->CbteTipo == $this->afip_ticket->cbte_tipo);
+                        } 
+
 
                         if (
-                            $data->ImpTotal == $total_a_facturar
-                            && $data->PtoVta == $this->afip_ticket->punto_venta
+                            $data->PtoVta == $this->afip_ticket->punto_venta
                             && $data->CbteTipo == $this->afip_ticket->cbte_tipo
+                            && (
+                                !$from_sale
+                                || $data->ImpTotal == $total_a_facturar
+                            )
                         ) {
 
                             $this->afip_ticket->update([
@@ -156,7 +188,9 @@ class AfipWsfeHelper extends Controller
                             ]);
                             Log::info('se actualizo la info del comprobante');
 
-                            AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $total_a_facturar);
+                            if ($from_sale) {
+                                AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $total_a_facturar);
+                            }
 
                         } else {
                             Log::info('NO se actualizo la info del comprobante');
