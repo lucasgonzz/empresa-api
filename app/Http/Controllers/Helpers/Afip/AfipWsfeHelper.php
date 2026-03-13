@@ -585,6 +585,8 @@ class AfipWsfeHelper extends Controller
             Log::info('No entro en afip_tipo_comprobante_id: '.$this->afip_ticket->afip_tipo_comprobante_id);
         }
 
+        return null;
+
         if (SaleHelper::getTotalSale($this->afip_ticket) >= $this->monto_minimo_para_factura_de_credito) {
 
             Log::info('Entro con mas al monto_minimo_para_factura_de_credito: '.SaleHelper::getTotalSale($this->afip_ticket));

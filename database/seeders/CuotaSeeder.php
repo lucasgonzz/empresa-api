@@ -17,15 +17,15 @@ class CuotaSeeder extends Seeder
         $models = [
             [
                 'cantidad_cuotas'   => 1,
-                'descuento'         => 10,
+                'recargo'         => 5,
             ],
             [
                 'cantidad_cuotas'   => 3,
-                'descuento'         => 10,
+                'recargo'         => 10,
             ],
             [
                 'cantidad_cuotas'   => 6,
-                'descuento'         => 10,
+                'recargo'         => 20,
             ],
             [
                 'cantidad_cuotas'   => 9,

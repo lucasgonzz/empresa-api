@@ -52,8 +52,8 @@ class SetSalesTotalCost extends Command
 
             $sale = SaleTotalesHelper::set_total_cost($sale);
 
-            $total = SaleHelper::getTotalSale($sale);
-            $sale->total = $total;
+            // $total = SaleHelper::getTotalSale($sale);
+            // $sale->total = $total;
             $sale->timestamps = false;
             $sale->save();
 

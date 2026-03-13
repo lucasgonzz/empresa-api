@@ -77,6 +77,19 @@ class HelperController extends Controller
         $this->{$method}($param, $param_2);
     }
 
+    function articulos_san_blas() {
+        $guidoli = 4;
+        $durol = 56;
+        $ferreteria_sb = 57;
+        $articles = Article::query()
+                        ->whereNull('stock')
+                        ->whereDoesntHave('images')            // no tiene registros relacionados en images
+                        ->whereNotIn('provider_id', [$guidoli, $durol, $ferreteria_sb]) // provider_id no sea 1,2,3
+                        ->delete();
+
+        echo $articles.' articulos';
+    }
+
     function get_neto() {
         $inicioCarbon = Carbon::today()->subMonth()->startOfMonth();
         $finCarbon = Carbon::today()->subMonth()->endOfMonth();

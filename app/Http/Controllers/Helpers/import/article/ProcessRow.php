@@ -366,7 +366,7 @@ class ProcessRow {
         } else {
             // Log::info('No esta aun en el excel');
         }
-        $this->terminar('check variants');
+        $this->terminar('Chequear si estaba repetida la fila');
 
 
 

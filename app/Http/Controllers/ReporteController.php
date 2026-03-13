@@ -293,7 +293,7 @@ class ReporteController extends Controller
         $metodos_de_pago = $this->get_payment_methods();
 
         foreach ($sales as $sale) {
-            $total_sale = SaleHelper::getTotalSale($sale);
+            $total_sale = $sale->total;
             
             $total_vendido += $total_sale;
 

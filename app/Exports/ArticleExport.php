@@ -31,29 +31,35 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $article->sku,
             $article->provider_code,
             $article->name,
-            !is_null($article->category) ? $article->category->name : '',
-            !is_null($article->sub_category) ? $article->sub_category->name : '',
-            !is_null($article->brand) ? $article->brand->name : '',
-            $row->is_variant ? $row->variant->stock : $article->stock,
-            $article->stock_min,
-            !is_null($article->iva) ? $article->iva->percentage : '',
-            $article->aplicar_iva ? 'Si' : 'No',
             !is_null($article->provider) ? $article->provider->name : '',
+
+            $this->getCostInDollars($article),
             $article->cost,
-            $article->percentage_gain,
+
             $article->discounts_percentage_formated,
             $article->surchages_percentage_formated,
             $article->discounts_amount_formated,
             $article->surchages_amount_formated,
+
+            !is_null($article->iva) ? $article->iva->percentage : '',
+            $article->aplicar_iva ? 'Si' : 'No',
+            $article->percentage_gain,
             $article->price,
-            $this->getCostInDollars($article),
+            $article->final_price,
+
+            !is_null($article->category) ? $article->category->name : '',
+            !is_null($article->sub_category) ? $article->sub_category->name : '',
+            !is_null($article->brand) ? $article->brand->name : '',
             $article->descripcion,
             $this->getUnidadMedida($article),
-            $article->final_price,
+            $article->unidades_individuales,
+            
+            $row->is_variant ? $row->variant->stock : $article->stock,
+            $article->stock_min,
         ];
 
         // Ahora continuás con los helpers
-        $map = ExportHelper::map_unidades_individuales($map, $article);
+        // $map = ExportHelper::map_unidades_individuales($map, $article);
 
         $map = ExportHelper::map_autopartes($map, $article);
 

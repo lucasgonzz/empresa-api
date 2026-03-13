@@ -78,24 +78,27 @@ class ArticlePriceTypeMonedaHelper {
     */
     public static function aplicar_precios_por_price_type_y_moneda($article, $_cost, $user)
     {
-        if (!$_cost || $_cost <= 0) {
-            return;
-        }
-
+        Log::info('entro 2');
         $ars_id = 1;
         $usd_id = 2;
 
         $rate = (float) $user->dollar;
 
-        $get_cost_for_moneda = function ($base_cost, $moneda_id) use ($article, $rate, $ars_id, $usd_id) {
+        // ✅ CAMBIO: si no viene _cost, NO inventamos costo base.
+        // Solo permitimos cotización cruzada desde la moneda referencia con final fijo.
+        $base_cost = null;
 
-            $cost = (float) $base_cost;
+        if (!is_null($_cost) && (float)$_cost > 0) {
+            $base_cost = (float) $_cost;
+        }
 
-            // Si el artículo tiene costo en USD y queremos ARS => multiplicar
+        $get_cost_for_moneda = function ($cost_con_iva, $moneda_id) use ($article, $rate, $ars_id, $usd_id) {
+
+            $cost = (float) $cost_con_iva;
+
             if ($article->cost_in_dollars && $moneda_id == $ars_id) {
                 $cost *= $rate;
 
-            // Si el artículo tiene costo en ARS y queremos USD => dividir
             } else if ((int)$article->cost_in_dollars === 0 && $moneda_id == $usd_id) {
 
                 if ($rate > 0) {
@@ -106,11 +109,11 @@ class ArticlePriceTypeMonedaHelper {
             return $cost;
         };
 
-        $calc_normal = function ($entry, $base_cost) use ($get_cost_for_moneda) {
+        $calc_normal = function ($entry, $cost_con_iva) use ($get_cost_for_moneda) {
 
             $moneda_id = (int) $entry->moneda_id;
 
-            $cost = $get_cost_for_moneda($base_cost, $moneda_id);
+            $cost = $get_cost_for_moneda($cost_con_iva, $moneda_id);
 
             $final_price = (float) $entry->final_price;
             $percentage  = (float) $entry->percentage;
@@ -137,9 +140,77 @@ class ArticlePriceTypeMonedaHelper {
             ];
         };
 
-        // Agrupo por price_type_id para poder resolver ARS/USD juntos
         $groups = $article->price_type_monedas->groupBy('price_type_id');
 
+        Log::info('groups');
+        Log::info($groups);
+
+        /**
+         * ✅ MODO SIN COSTO: solo cotización cruzada usando final_price fijo de la moneda referencia
+         */
+        if (is_null($base_cost) || (float)$base_cost <= 0) {
+
+            if ($rate <= 0) {
+                return;
+            }
+
+            foreach ($groups as $price_type_id => $group) {
+
+                $ars_entry = $group->firstWhere('moneda_id', $ars_id);
+                $usd_entry = $group->firstWhere('moneda_id', $usd_id);
+
+                if (!$ars_entry || !$usd_entry) {
+                    continue;
+                }
+
+                $ars_cotiza = (int)($ars_entry->cotizar_desde_otra_moneda ?? 0);
+                $usd_cotiza = (int)($usd_entry->cotizar_desde_otra_moneda ?? 0);
+
+                // Evitar loops
+                if ($ars_cotiza && $usd_cotiza) {
+                    continue;
+                }
+
+                // ARS derivado desde USD (USD referencia debe tener final fijo)
+                if ($ars_cotiza) {
+
+                    if ((int)$usd_entry->setear_precio_final === 1 && (float)$usd_entry->final_price > 0) {
+
+                        $ars_final = (float)$usd_entry->final_price * $rate;
+
+                        $ars_entry->final_price = $ars_final;
+
+                        // Sin costo base NO recalculamos percentage
+                        $ars_entry->save();
+                        Log::Info('ENTRO ACA para pesos');
+                    }
+
+                    continue;
+                }
+
+                // USD derivado desde ARS (ARS referencia debe tener final fijo)
+                if ($usd_cotiza) {
+
+                    if ((int)$ars_entry->setear_precio_final === 1 && (float)$ars_entry->final_price > 0) {
+
+                        $usd_final = (float)$ars_entry->final_price / $rate;
+
+                        $usd_entry->final_price = $usd_final;
+
+                        // Sin costo base NO recalculamos percentage
+                        $usd_entry->save();
+                    }
+
+                    continue;
+                }
+            }
+
+            return;
+        }
+
+        /**
+         * ✅ MODO CON COSTO: lógica completa (normal + link + recálculo de %)
+         */
         foreach ($groups as $price_type_id => $group) {
 
             $ars_entry = $group->firstWhere('moneda_id', $ars_id);
@@ -148,10 +219,10 @@ class ArticlePriceTypeMonedaHelper {
             $ars_cotiza = $ars_entry ? (int)($ars_entry->cotizar_desde_otra_moneda ?? 0) : 0;
             $usd_cotiza = $usd_entry ? (int)($usd_entry->cotizar_desde_otra_moneda ?? 0) : 0;
 
-            // Si ambos están marcados, es inconsistente -> fallback a modo normal para evitar loop
+            // Si ambos están marcados, fallback a modo normal
             if ($ars_cotiza && $usd_cotiza) {
                 foreach ($group as $entry) {
-                    $res = $calc_normal($entry, $_cost);
+                    $res = $calc_normal($entry, $base_cost);
                     $entry->percentage  = $res['percentage'];
                     $entry->final_price = $res['final_price'];
                     $entry->save();
@@ -159,20 +230,18 @@ class ArticlePriceTypeMonedaHelper {
                 continue;
             }
 
-            // Caso 1: ARS se cotiza desde USD (ARS derivada, USD referencia)
+            // ARS derivado desde USD
             if ($ars_entry && $usd_entry && $ars_cotiza) {
 
-                // 1) Calculo USD normal (referencia)
-                $usd_res = $calc_normal($usd_entry, $_cost);
+                $usd_res = $calc_normal($usd_entry, $base_cost);
 
                 $usd_entry->percentage  = $usd_res['percentage'];
                 $usd_entry->final_price = $usd_res['final_price'];
                 $usd_entry->save();
 
-                // 2) Cotizo ARS desde final USD
                 $ars_final = $usd_res['final_price'] * $rate;
 
-                $ars_cost = $get_cost_for_moneda($_cost, $ars_id);
+                $ars_cost = $get_cost_for_moneda($base_cost, $ars_id);
 
                 $ars_percentage = 0;
                 if ($ars_cost > 0) {
@@ -183,12 +252,9 @@ class ArticlePriceTypeMonedaHelper {
                 $ars_entry->percentage  = $ars_percentage;
                 $ars_entry->save();
 
-                // 3) Si hay otras monedas en el grupo (distintas de ARS/USD), las calculo normal
                 foreach ($group as $entry) {
-                    if ((int)$entry->moneda_id === $ars_id || (int)$entry->moneda_id === $usd_id) {
-                        continue;
-                    }
-                    $res = $calc_normal($entry, $_cost);
+                    if ((int)$entry->moneda_id === $ars_id || (int)$entry->moneda_id === $usd_id) continue;
+                    $res = $calc_normal($entry, $base_cost);
                     $entry->percentage  = $res['percentage'];
                     $entry->final_price = $res['final_price'];
                     $entry->save();
@@ -197,24 +263,18 @@ class ArticlePriceTypeMonedaHelper {
                 continue;
             }
 
-            // Caso 2: USD se cotiza desde ARS (USD derivada, ARS referencia)
+            // USD derivado desde ARS
             if ($ars_entry && $usd_entry && $usd_cotiza) {
 
-                // 1) Calculo ARS normal (referencia)
-                $ars_res = $calc_normal($ars_entry, $_cost);
+                $ars_res = $calc_normal($ars_entry, $base_cost);
 
                 $ars_entry->percentage  = $ars_res['percentage'];
                 $ars_entry->final_price = $ars_res['final_price'];
                 $ars_entry->save();
 
-                // 2) Cotizo USD desde final ARS
-                $usd_final = 0;
+                $usd_final = $rate > 0 ? ($ars_res['final_price'] / $rate) : 0;
 
-                if ($rate > 0) {
-                    $usd_final = $ars_res['final_price'] / $rate;
-                }
-
-                $usd_cost = $get_cost_for_moneda($_cost, $usd_id);
+                $usd_cost = $get_cost_for_moneda($base_cost, $usd_id);
 
                 $usd_percentage = 0;
                 if ($usd_cost > 0) {
@@ -225,12 +285,9 @@ class ArticlePriceTypeMonedaHelper {
                 $usd_entry->percentage  = $usd_percentage;
                 $usd_entry->save();
 
-                // 3) Otras monedas: normal
                 foreach ($group as $entry) {
-                    if ((int)$entry->moneda_id === $ars_id || (int)$entry->moneda_id === $usd_id) {
-                        continue;
-                    }
-                    $res = $calc_normal($entry, $_cost);
+                    if ((int)$entry->moneda_id === $ars_id || (int)$entry->moneda_id === $usd_id) continue;
+                    $res = $calc_normal($entry, $base_cost);
                     $entry->percentage  = $res['percentage'];
                     $entry->final_price = $res['final_price'];
                     $entry->save();
@@ -239,9 +296,9 @@ class ArticlePriceTypeMonedaHelper {
                 continue;
             }
 
-            // Caso 3: Sin modo referencia -> comportamiento actual (normal por cada entry)
+            // Normal sin link
             foreach ($group as $entry) {
-                $res = $calc_normal($entry, $_cost);
+                $res = $calc_normal($entry, $base_cost);
                 $entry->percentage  = $res['percentage'];
                 $entry->final_price = $res['final_price'];
                 $entry->save();

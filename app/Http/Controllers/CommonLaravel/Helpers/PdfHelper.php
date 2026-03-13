@@ -511,22 +511,30 @@ class PdfHelper {
 		$instance->SetFont('Arial', '', 10);
 		$instance->Cell(30, 5, '$'.Numbers::price($saldo_anterior + $compra_actual), $instance->b, 1, 'L');
 
-		if (!is_null($instance->sale->employee)) {
-			$vendedor = $instance->sale->employee->name;
-		} else {
-			if ($user) {
+		$user = UserHelper::getFullModel();
 
-				$vendedor = $user->name;
+		if ($user->mostrar_vendedor_en_venta_pdf) {
+
+			if (!is_null($instance->sale->employee)) {
+				$vendedor = $instance->sale->employee->name;
 			} else {
+				if ($user) {
 
-				$vendedor = UserHelper::getFullModel()->name;
+					$vendedor = $user->name;
+				} else {
+
+					$vendedor = $user->name;
+				}
 			}
+			
+			$instance->x = 105;
+			$instance->SetFont('Arial', 'B', 10);
+			$instance->Cell(30, 5, 'Vendedor:', $instance->b, 0, 'L');
+			$instance->SetFont('Arial', '', 10);
+			$instance->Cell(30, 5, $vendedor, $instance->b, 1, 'L');
+		} else {
+			$instance->y += 5;
 		}
-		$instance->x = 105;
-		$instance->SetFont('Arial', 'B', 10);
-		$instance->Cell(30, 5, 'Vendedor:', $instance->b, 0, 'L');
-		$instance->SetFont('Arial', '', 10);
-		$instance->Cell(30, 5, $vendedor, $instance->b, 1, 'L');
 
 		$instance->Line(105, $start_y, 205, $start_y);
 		$instance->Line(205, $start_y, 205, $instance->y);

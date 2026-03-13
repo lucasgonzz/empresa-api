@@ -68,10 +68,10 @@ class CajaReportsHelper {
 							$sale_payment_methods[$current_acount_payment_method->name] += $amount;
 						}
 					} else {
-						$sale_payment_methods['Efectivo'] += SaleHelper::getTotalSale($sale);
+						$sale_payment_methods['Efectivo'] += $sale->total;
 					}
 				} else {
-					$sale_payment_methods[$sale->current_acount_payment_method->name] += SaleHelper::getTotalSale($sale);
+					$sale_payment_methods[$sale->current_acount_payment_method->name] += $sale->total;
 				}
 			}
     	}

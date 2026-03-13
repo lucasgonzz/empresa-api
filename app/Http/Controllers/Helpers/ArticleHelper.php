@@ -97,6 +97,10 @@ class ArticleHelper {
         if (
             is_null($article->cost)
             && is_null($article->price)
+            && (
+                !UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')
+                && !UserHelper::hasExtencion('ventas_en_dolares')
+            )
         ) {
 
             if ($guardar_cambios) {
@@ -159,8 +163,20 @@ class ArticleHelper {
         }
 
 
+            Log::info('entro');
 
-        if (is_null($article->price) || $article->price == '') {
+        if (
+            (
+                is_null($article->price) 
+                || $article->price == ''
+            )
+            || (
+                UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')
+                && UserHelper::hasExtencion('ventas_en_dolares')
+            )
+        ) {
+
+            Log::info('entro 1');
 
 
             $usar_lista_mas_iva = false;
@@ -522,19 +538,21 @@ class ArticleHelper {
         return $result;
     }
 
-    static function getSalesFromArticle($id, $from_date, $until_date) {
-        // Log::info($from_date);
-        // Log::info($until_date);
-        $sales = Sale::where('user_id', UserHelper::userId())
-                            ->whereHas('articles', function(Builder $query) use ($id) {
-                                $query->where('article_id', $id);
-                            })
-                            // ->whereDate('terminada_at', '>=', $from_date)
-                            // ->whereDate('terminada_at', '<=', $until_date)
-                            ->where('terminada', 1)
-                            ->orderBy('created_at', 'DESC')
-                            ->withAll()
-                            ->get();
+    static function getSalesFromArticle($article_id, $from_date, $until_date) {
+        $inicio = Carbon::parse($from_date)->startOfDay();
+        $fin    = Carbon::parse($until_date)->endOfDay();
+
+        $sales = Sale::query()
+                ->where('user_id', UserHelper::userId())
+                ->whereHas('articles', function (Builder $query) use ($article_id) {
+                    $query->where('articles.id', $article_id);
+                })
+                ->whereBetween('sales.created_at', [$inicio, $fin])
+                ->orderBy('created_at', 'DESC')
+                ->withAll()
+                ->get();
+
+
         return $sales;
     }
 

@@ -121,7 +121,9 @@ class SaleTicketPdf extends fpdf {
 
 	function Footer() {
 
-		$this->total_sale = SaleHelper::getTotalSale($this->sale, false, false);
+		$this->observations();
+
+		$this->total_sale = $this->sale->sub_total;
 
 		$this->total_sin_des_rec();
 
@@ -138,6 +140,21 @@ class SaleTicketPdf extends fpdf {
 		$this->qr();
 
 		// $this->comerciocityInfo();
+	}
+
+	function observations() {
+		if ($this->sale->observations) {
+
+			$this->y += 2;
+			$this->SetFont('Arial', 'B', 10);
+
+			$this->x = $this->x_incial;
+			$this->Cell($this->cell_ancho, 5, 'Observaciones:', $this->b, 1, 'L');
+	
+			$this->SetFont('Arial', '', 10);
+			$this->x = $this->x_incial;
+			$this->MultiCell($this->cell_ancho, 5, $this->sale->observations, $this->b, 'L', 0);
+		}
 	}
 
 	function logo() {
@@ -500,6 +517,14 @@ class SaleTicketPdf extends fpdf {
 		}
 		foreach ($this->sale->articles as $article) {
 			$height += $this->getHeight($article, 8);
+		}
+		
+		if ($this->sale->observations) {
+			$renglones = strlen($this->sale->observations) / 20;
+			if ($renglones < 1) {
+				$renglones = 1;
+			}
+			$height += $renglones * 5;
 		}
 		// $height += 
 		return $height;

@@ -93,7 +93,6 @@ class DatabaseSeeder extends Seeder
                 $this->call(CurrentAcountPaymentMethodDiscountSeeder::class);
                 $this->call(AfipSelectedPaymentMethodSeeder::class);
 
-                $this->call(CuotaSeeder::class);
 
 
             } else if ($for_user == 'fenix') {
@@ -251,6 +250,7 @@ class DatabaseSeeder extends Seeder
             $this->call(CategorySeeder::class);
             $this->call(SubCategorySeeder::class);
 
+            $this->call(CuotaSeeder::class);
 
 
             // Por alguna rezon, a estos los llamaba despues de los seeders de cada negocio

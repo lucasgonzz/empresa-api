@@ -566,7 +566,7 @@ class PerformanceHelper
             if (is_null($this->total_sale)
                 ||  $this->total_sale == 0) {
 
-                $this->total_sale = SaleHelper::getTotalSale($sale);
+                $this->total_sale = $sale->total;
                 
                 $sale->total = $this->total_sale;
                 $sale->timestamps = false;
@@ -1371,7 +1371,7 @@ class PerformanceHelper
         $metodos_de_pago = $this->get_payment_methods();
 
         foreach ($sales as $sale) {
-            $total_sale = SaleHelper::getTotalSale($sale);
+            $total_sale = $sale->total;
             
             $total_vendido += $total_sale;
 

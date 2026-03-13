@@ -195,23 +195,21 @@ class SaleController extends Controller
 
             Log::info('Se creo sale n°: '.$model->num.'. Total: '.$model->total);
 
+            // $total_helper = (int)SaleHelper::getTotalSale($model, true, true, false, true);
+            // $total_sale = (int)$model->total;
 
+            // // Calcula la diferencia absoluta
+            // $diferencia = abs($total_helper - $total_sale);
 
-            $total_helper = (int)SaleHelper::getTotalSale($model, true, true, false, true);
-            $total_sale = (int)$model->total;
+            // if ($diferencia > 3) {
+            //     Log::info('Total mal para la venta '.$model->id);
+            //     Log::info('total_sale '.$total_sale);
+            //     Log::info('total_helper '.$total_helper);
 
-            // Calcula la diferencia absoluta
-            $diferencia = abs($total_helper - $total_sale);
-
-            if ($diferencia > 3) {
-                Log::info('Total mal para la venta '.$model->id);
-                Log::info('total_sale '.$total_sale);
-                Log::info('total_helper '.$total_helper);
-
-                $message = 'El total de la venta no corresponde con los productos ingresados';
+            //     $message = 'El total de la venta no corresponde con los productos ingresados';
                 
-                throw new Exception($message);
-            }
+            //     throw new Exception($message);
+            // }
 
             DB::commit();
 

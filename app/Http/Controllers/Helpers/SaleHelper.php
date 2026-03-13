@@ -1043,6 +1043,37 @@ class SaleHelper extends Controller {
         }
     }
 
+    static function get_sub_total($sale) {
+        $total_articles = 0;
+        $total_combos = 0;
+        $total_services = 0;
+        $total_promocion_vinotecas = 0;
+
+        $sale->load('articles');
+        $sale->load('combos');
+        $sale->load('promocion_vinotecas');
+        $sale->load('services');
+        
+
+        foreach ($sale->articles as $article) {
+            $total_articles += Self::getTotalItem($article);
+        }
+        foreach ($sale->combos as $combo) {
+            $total_combos += Self::getTotalItem($combo);
+        }
+        foreach ($sale->promocion_vinotecas as $promocion_vinoteca) {
+            $total_promocion_vinotecas += Self::getTotalItem($promocion_vinoteca);
+        }
+        foreach ($sale->services as $service) {
+            $total_services += Self::getTotalItem($service);
+        }
+
+        $sub_total = $total_articles + $total_combos + $total_promocion_vinotecas + $total_services;
+
+        
+        return $sub_total;
+    }
+
     static function getTotalSale($sale, $with_discount = true, $with_surchages = true, $with_seller_commissions = false, $load_info = false) {
         $total_articles = 0;
         $total_combos = 0;
@@ -1058,12 +1089,9 @@ class SaleHelper extends Controller {
             $sale->load('surchages');
         }
         
-        // Log::info('getTotalSale');
-        // Log::info(count($sale->articles).' articles');
 
         foreach ($sale->articles as $article) {
             $total_articles += Self::getTotalItem($article);
-            Log::info('Sumando '.$total_articles.' de '.$article->name);
         }
         foreach ($sale->combos as $combo) {
             $total_combos += Self::getTotalItem($combo);
@@ -1074,6 +1102,13 @@ class SaleHelper extends Controller {
         foreach ($sale->services as $service) {
             $total_services += Self::getTotalItem($service);
         }
+
+        $sub_total = $total_articles + $total_combos + $total_promocion_vinotecas + $total_services;
+
+        if ($sale->descuento) {
+            $total_articles -= $sale->descuento;
+        }
+
         if ($with_discount) {
             foreach ($sale->discounts as $discount) {
                 $total_articles -= $total_articles * $discount->pivot->percentage / 100;
@@ -1085,7 +1120,11 @@ class SaleHelper extends Controller {
                 }
             }
         }
-        if ($with_surchages) {
+
+        if (
+            $with_surchages
+            && !$sale->aplicar_recargos_directo_a_items
+        ) {
             foreach ($sale->surchages as $surchage) {
                 $total_articles += $total_articles * $surchage->pivot->percentage / 100;
                 $total_combos += $total_combos * $surchage->pivot->percentage / 100;
@@ -1096,17 +1135,19 @@ class SaleHelper extends Controller {
                 }
             }
         }
+
         $total = $total_articles + $total_services + $total_combos + $total_promocion_vinotecas;
-        if (!is_null($sale->percentage_card)) {
-            $total += ($total * Numbers::percentage($sale->percentage_card));
+        
+
+        if ($sale->cuota_id) {
+            
         }
 
-        if ($with_discount) {
-
-            if ($sale->descuento > 0) {
-                $total -= ($total * $sale->descuento / 100);
-            }
+        foreach ($sale->current_acount_payment_methods as $payment_method) {
+            // if ($payment_method->pivot->cuota_id)
         }
+
+       
 
         if ($with_seller_commissions) {
             foreach ($sale->seller_commissions as $seller_commission) {
@@ -1116,16 +1157,24 @@ class SaleHelper extends Controller {
         return $total;
     }
 
+    static function total_menos_comisiones($sale) {
+        $total = $sale->total;
+        foreach ($sale->seller_commissions as $seller_commission) {
+            $total -= $seller_commission->debe;
+        }
+        return $total;
+    }
+
     static function getTotalItem($item) {
         $amount = $item->pivot->amount;
         // if (!is_null($item->pivot->returned_amount)) {
         //     $amount -= $item->pivot->returned_amount;
         // }
-        Log::info('getTotalItem:');
-        Log::info('amount: '.$amount);
-        Log::info('price: '.$item->pivot->price);
+        // Log::info('getTotalItem:');
+        // Log::info('amount: '.$amount);
+        // Log::info('price: '.$item->pivot->price);
         $total = $item->pivot->price * $amount;
-        Log::info('total: '.$total);
+        // Log::info('total: '.$total);
         if (!is_null($item->pivot->discount)) {
             $total -= $total * ($item->pivot->discount / 100);
         }
