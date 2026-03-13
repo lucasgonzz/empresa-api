@@ -407,6 +407,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Modulo de produccion V2',
                 'slug' => 'productionV2',
             ],
+            [
+                'name' => 'Varios precios por articulo en VENDER',
+                'slug' => 'varios_precios',
+            ],
 
         ];
         foreach ($extencions as $extencion) {

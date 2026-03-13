@@ -308,7 +308,7 @@ class SaleAfipTicketPdf extends fpdf {
 			$this->Cell(200, 7, $aclaracion, 1, 1, 'C');
 			$this->y += 2;
 				
-			$total = Numbers::price(SaleHelper::getTotalSale($this->sale, false, false), true, $this->sale->moneda_id);
+			$total = Numbers::price($sale->sub_total, true, $this->sale->moneda_id);
 			$this->x = 5;
 			$this->SetFont('Arial', 'B', 12);
 			$this->Cell(40, 7, 'Total Original: ', 1, 0, 'L');
@@ -511,7 +511,7 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->SetY($this->Y);
 		$this->Y += 5;
         $this->SetX(5);
-    	$this->Cell(100,5,'Precios de esta venta: $'.Numbers::price(SaleHelper::getTotalSale($this->sale, false)),'B',0,'L');
+    	$this->Cell(100,5,'Precios de esta venta: $'.Numbers::price($this->sale->sub_total),'B',0,'L');
         if ($this->for_commerce) {
         	$this->Cell(100,5,'Costos de esta venta: $'.Numbers::price(SaleHelper::getTotalCostSale($this->sale)),'B',0,'L');
         } 
@@ -521,7 +521,7 @@ class SaleAfipTicketPdf extends fpdf {
         if ($this->saleHasDiscounts()) {
 			$this->SetY($this->Y);
 	        $this->SetX(5);
-	    	$this->Cell(100,5,'Precios venta con descuento: $'.Numbers::price(SaleHelper::getTotalSale($this->sale)),'B',0,'L');
+	    	$this->Cell(100,5,'Precios venta con descuento: $'.Numbers::price($this->sale->total),'B',0,'L');
 
 			if ($this->total_pages > 1) {
 				$precio_con_descuento = SaleHelper::getTotalMenosDescuentos($this->sale, $this->suma_precios_pagina);

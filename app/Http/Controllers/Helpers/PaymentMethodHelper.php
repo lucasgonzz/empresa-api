@@ -16,7 +16,8 @@ class PaymentMethodHelper {
                 $amount 			= $payment_method['amount'];
                 $amount_cotizado 	= isset($payment_method['amount_cotizado']) ? $payment_method['amount_cotizado'] : null;
                 $cotizacion 		= isset($payment_method['cotizacion']) ? $payment_method['cotizacion'] : null;
-                $moneda_id 			= isset($payment_method['moneda_id']) ? $payment_method['moneda_id'] : null;
+                $moneda_id          = isset($payment_method['moneda_id']) ? $payment_method['moneda_id'] : null;
+                $cuota_id 			= isset($payment_method['cuota_id']) ? $payment_method['cuota_id'] : null;
                 $caja_id 			= null;
 
                 $payment_method_model = CurrentAcountPaymentMethod::find($payment_method['current_acount_payment_method_id']);
@@ -50,6 +51,7 @@ class PaymentMethodHelper {
                     'amount_cotizado'   => $amount_cotizado,
                     'cotizacion'        => $cotizacion,
                     'moneda_id'         => $moneda_id,
+                    'cuota_id'          => $cuota_id,
                 ]);
 
             }

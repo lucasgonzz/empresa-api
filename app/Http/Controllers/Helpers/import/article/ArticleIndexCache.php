@@ -355,6 +355,7 @@ class ArticleIndexCache
             }
 
             if (!empty($article_ids)) {
+                $article_ids = \Illuminate\Support\Arr::wrap($article_ids);
                 // Log::info('Buscando aca 4');
                 if (config('app.CODIGOS_DE_PROVEEDOR_REPETIDOS')) {
                     return Article::with($relations)->whereIn('id', $article_ids)->get();
@@ -500,6 +501,7 @@ class ArticleIndexCache
 
                 Log::info('article_ids:');
                 Log::info($article_ids);
+                $article_ids = \Illuminate\Support\Arr::wrap($article_ids);
                 
                 if (config('app.CODIGOS_DE_PROVEEDOR_REPETIDOS')) {
 

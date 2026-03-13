@@ -23,7 +23,7 @@ class CurrentAcountPaymentMethodDiscountSeeder extends Seeder
             ],  
             [
                 'current_acount_payment_method_id'  => 3,
-                'discount_percentage'               => 20,
+                'discount_percentage'               => -20,
             ],  
             [
                 'current_acount_payment_method_id'  => 4,

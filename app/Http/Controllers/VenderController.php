@@ -121,7 +121,9 @@ class VenderController extends Controller
 
             $price_vender = intval($amount_str);
 
-            $article = Article::find($default_article_id);
+            $article = Article::where('id', $default_article_id)
+                                ->withAll()
+                                ->first();
         }
 
         return [
@@ -132,32 +134,36 @@ class VenderController extends Controller
 
     function check_balanza_plu($barcode) {
 
-        $prefix = substr($barcode, 0, 2);
-
-        $article = null;
-        $amount = null;
-
-        // Esto lo guardaria en bbdd, ahora lo harckodeo para panchito
-        if (config('app.APP_ENV') == 'local') {
-            $default_article_id = 60;
-        } else {
-
-            // Id de la carniceria
-            $default_article_id = 6346;
+        if (mb_strlen($barcode) < 12) {
+            return [
+                'article'   => null,
+            ];
         }
 
-        if ($prefix == '22') {
 
-            $last_6_digits = substr($barcode, -8);
-            $amount_str = substr($last_6_digits, 0, 7);
+        // 2
+        $tipo_balanza = mb_substr($barcode, 0, 2);
 
-            $amount = intval($amount_str);
+        // 5 (quita ceros iniciales)
+        $plu = ltrim(mb_substr($barcode, 2, 5), '0');
 
-            $article = Article::find($default_article_id);
-        }
+        // 6 (quita ceros iniciales)
+        $amount = ltrim(mb_substr($barcode, 7, 5), '0');
+
+        // Si queda vacío (ej: "00000"), lo llevamos a 0
+        $amount = $amount === '' ? 0 : (float) $amount;
+
+        Log::info('tipo_balanza: '.$tipo_balanza);
+        Log::info('plu: '.$plu);
+        Log::info('amount: '.$amount);
+
+        $article = Article::where('user_id', $this->userId())
+                            ->where('plu', $plu)
+                            ->withAll()
+                            ->first();
 
         return [
-            'article'           => $article,
+            'article'     => $article,
             'amount'      => $amount,
         ];
     }
@@ -182,7 +188,10 @@ class VenderController extends Controller
 
                                 $query_builder->where(function ($q) use ($keyword, $from_provider_order) {
                                     $q->where('name', 'LIKE', "%$keyword%")
-                                      ->orWhere('provider_code', 'LIKE', "%$keyword%");
+                                      ->orWhere('provider_code', 'LIKE', "%$keyword%")
+                                      ->orWhereRaw('LOWER(descripcion) LIKE ?', ['%' . mb_strtolower($keyword) . '%']);
+
+                                      Log::info('Buscando por descripcion: '.$keyword);
 
                                     if ($from_provider_order) {
                                         Log::info('from_provider_order '.$keyword);
@@ -193,8 +202,8 @@ class VenderController extends Controller
                                 foreach ($keywords as $keyword) {
                                     $query_builder->where(function ($q) use ($keyword) {
                                         $q->where('name', 'LIKE', "%$keyword%")
-                                            ->orWhere('provider_code', 'LIKE', "%$keyword%");
-                                          // ->orWhere('descripcion', 'LIKE', "%$keyword%");
+                                            ->orWhere('provider_code', 'LIKE', "%$keyword%")
+                                          ->orWhere('descripcion', 'LIKE', "%$keyword%");
                                     });
                                 }
                             }
@@ -207,82 +216,87 @@ class VenderController extends Controller
         }
 
         if ($stock_option) {
-            Log::info('stock_option');
 
             if ($stock_option == 'con_stock') {
+                Log::info('stock > 0');
                 $articles->where('stock', '>', 0);
             } else if ($stock_option == 'hayan_tenido_stock') {
+                Log::info('stock not null');
                 $articles->whereNotNull('stock');
             }
         }
 
         $articles = $articles->get();
 
-        foreach ($articles as $article) {
+        Log::info(count($articles). ' articulos');
 
-            // Detectar qué palabras de la búsqueda coincidieron con el nombre o código del artículo
-            $matched_keywords = collect($keywords)->filter(function ($word) use ($article) {
-                return str_contains(
-                                   mb_strtolower($article->name ?? '', 'UTF-8'),
-                                   mb_strtolower($word, 'UTF-8')
-                               ) ||
-                               str_contains(
-                                   mb_strtolower($article->provider_code ?? '', 'UTF-8'),
-                                   mb_strtolower($word, 'UTF-8')
-                               ) ||
-                               str_contains(
-                                   mb_strtolower($article->bar_code ?? '', 'UTF-8'),
-                                   mb_strtolower($word, 'UTF-8')
-                               );
-            })->values();
+        $results = $articles;
 
-            // Palabras restantes para buscar dentro de variant_description
-            $remaining_keywords = array_diff($keywords, $matched_keywords->toArray());
+        // foreach ($articles as $article) {
 
-            // Si el artículo tiene variantes
-            if ($article->article_variants->count() > 0) {
+        //     // Detectar qué palabras de la búsqueda coincidieron con el nombre o código del artículo
+        //     $matched_keywords = collect($keywords)->filter(function ($word) use ($article) {
+        //         return str_contains(
+        //                            mb_strtolower($article->name ?? '', 'UTF-8'),
+        //                            mb_strtolower($word, 'UTF-8')
+        //                        ) ||
+        //                        str_contains(
+        //                            mb_strtolower($article->provider_code ?? '', 'UTF-8'),
+        //                            mb_strtolower($word, 'UTF-8')
+        //                        ) ||
+        //                        str_contains(
+        //                            mb_strtolower($article->bar_code ?? '', 'UTF-8'),
+        //                            mb_strtolower($word, 'UTF-8')
+        //                        );
+        //     })->values();
 
-                Log::info('Buscando variantes');
+        //     // Palabras restantes para buscar dentro de variant_description
+        //     $remaining_keywords = array_diff($keywords, $matched_keywords->toArray());
 
-                // Filtrar variantes que coincidan con todas las palabras restantes
-                $matching_variants = $article->article_variants->filter(function ($variant) use ($remaining_keywords) {
-                    foreach ($remaining_keywords as $word) {
-                        if (!str_contains(
-                                mb_strtolower($variant->variant_description ?? '', 'UTF-8'),
-                                mb_strtolower($word, 'UTF-8')
-                            )) {
-                            return false;
-                        }
-                    }
-                    return true;
-                });
+        //     // Si el artículo tiene variantes
+        //     if ($article->article_variants->count() > 0) {
 
-                if ($matching_variants->count() > 0) {
-                    foreach ($matching_variants as $variant) {
-                        $results->push((object)[
-                            'is_variant'            => true,
-                            'id'                    => $variant->article->id,
-                            'variant_id'            => $variant->id,
-                            'variant_description'   => $variant->variant_description,
-                            'final_price'           => $this->get_variant_price($variant),
-                            'price_types'           => $article->price_types,
-                            'bar_code'              => $variant->bar_code,
-                            'name'                  => $article->name. ' '.$variant->variant_description,
-                            'article'               => $article,
-                            'images'                => $this->get_variant_images($variant),
-                            'addresses'             => $variant->addresses,
-                        ]);
-                    }
-                }
+        //         Log::info('Buscando variantes');
 
-            } else {
-                // Si no tiene variantes, y al menos una keyword matcheó → agregar el artículo
-                if ($matched_keywords->isNotEmpty()) {
-                    $article->is_variant = false;
-                    $results->push($article);
-                }
-            }
-        }
+        //         // Filtrar variantes que coincidan con todas las palabras restantes
+        //         $matching_variants = $article->article_variants->filter(function ($variant) use ($remaining_keywords) {
+        //             foreach ($remaining_keywords as $word) {
+        //                 if (!str_contains(
+        //                         mb_strtolower($variant->variant_description ?? '', 'UTF-8'),
+        //                         mb_strtolower($word, 'UTF-8')
+        //                     )) {
+        //                     return false;
+        //                 }
+        //             }
+        //             return true;
+        //         });
+
+        //         if ($matching_variants->count() > 0) {
+        //             foreach ($matching_variants as $variant) {
+        //                 $results->push((object)[
+        //                     'is_variant'            => true,
+        //                     'id'                    => $variant->article->id,
+        //                     'variant_id'            => $variant->id,
+        //                     'variant_description'   => $variant->variant_description,
+        //                     'final_price'           => $this->get_variant_price($variant),
+        //                     'price_types'           => $article->price_types,
+        //                     'bar_code'              => $variant->bar_code,
+        //                     'name'                  => $article->name. ' '.$variant->variant_description,
+        //                     'article'               => $article,
+        //                     'images'                => $this->get_variant_images($variant),
+        //                     'addresses'             => $variant->addresses,
+        //                 ]);
+        //             }
+        //         }
+
+        //     } else {
+        //         // Si no tiene variantes, y al menos una keyword matcheó → agregar el artículo
+        //         if ($matched_keywords->isNotEmpty()) {
+        //             $article->is_variant = false;
+        //             $results->push($article);
+        //         }
+        //     }
+        // }
 
         // Paginar manualmente
         $paginated = new LengthAwarePaginator(

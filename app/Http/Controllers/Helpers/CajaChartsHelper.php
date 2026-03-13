@@ -37,7 +37,8 @@ class CajaChartsHelper {
 
 		foreach ($sales as $sale) {
 			$cantidad_ventas++;
-			$total_ventas += SaleHelper::getTotalSale($sale);
+			$total_ventas += $sale->total;
+			// $total_ventas += SaleHelper::getTotalSale($sale);
 			if (!is_null($sale->client)) {
 				if (isset($clientes_cantidad_ventas[$sale->client_id])) {
 					$clientes_cantidad_ventas[$sale->client_id]['amount'] += 1;
@@ -49,30 +50,30 @@ class CajaChartsHelper {
 				}
 
 				if (isset($clientes_monto_gastado[$sale->client_id])) {
-					$clientes_monto_gastado[$sale->client_id]['amount'] += SaleHelper::getTotalSale($sale);
+					$clientes_monto_gastado[$sale->client_id]['amount'] += $sale->total;
 				} else {
 					$clientes_monto_gastado[$sale->client_id] = [
 						'name'		=> $sale->client->name,
-						'amount'	=> SaleHelper::getTotalSale($sale), 
+						'amount'	=> $sale->total, 
 					]; 
 				}
 			} else if (is_null($sale->current_acount)) {
 				if (!is_null($sale->current_acount_payment_method)) {
 					if (isset($metodos_de_pago[$sale->current_acount_payment_method_id])) {
-						$metodos_de_pago[$sale->current_acount_payment_method_id]['amount'] += SaleHelper::getTotalSale($sale);
+						$metodos_de_pago[$sale->current_acount_payment_method_id]['amount'] += $sale->total;
 					} else {
 						$metodos_de_pago[$sale->current_acount_payment_method_id] = [
 							'name'		=> $sale->current_acount_payment_method->name,
-							'amount'	=> SaleHelper::getTotalSale($sale),
+							'amount'	=> $sale->total,
 						]; 
 					}
 				} else {
 					if (isset($metodos_de_pago[$p_m_efectivo->id])) {
-						$metodos_de_pago[$p_m_efectivo->id]['amount'] += SaleHelper::getTotalSale($sale);
+						$metodos_de_pago[$p_m_efectivo->id]['amount'] += $sale->total;
 					} else {
 						$metodos_de_pago[$p_m_efectivo->id] = [
 							'name'		=> $p_m_efectivo->name,
-							'amount'	=> SaleHelper::getTotalSale($sale),
+							'amount'	=> $sale->total,
 						]; 
 					}
 				}

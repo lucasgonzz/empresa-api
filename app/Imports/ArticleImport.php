@@ -139,8 +139,8 @@ class ArticleImport implements ToCollection
     }
 
     public function collection(Collection $rows) {
-        Log::info('entro a collection, rows:');
-        Log::info($rows);
+        // Log::info('entro a collection, rows:');
+        // Log::info($rows);
 
         
         Log::info('cacheando articulos');

@@ -150,7 +150,7 @@ class SalePdf extends fpdf {
 			$data = array_merge($data, [
 				'current_acount' 	=> $this->sale->current_acount,
 				'client_id'			=> $this->sale->client_id,
-				'compra_actual'		=> SaleHelper::getTotalSale($this->sale),
+				'compra_actual'		=> $this->sale->total,
 			]);
 		}
 
@@ -565,7 +565,7 @@ class SalePdf extends fpdf {
 	    // $this->y = 247;
 	    $this->SetFont('Arial', 'B', 12);
 		
-		$text = 'Total: $'. Numbers::price(SaleHelper::getTotalSale($this->sale, false, false, false));
+		$text = 'Total: $'. Numbers::price($this->sale->sub_total);
 		
 		if ($this->sale->moneda_id == 2) {
 			$text .= ' (USD)';
@@ -573,7 +573,7 @@ class SalePdf extends fpdf {
 
 		$this->Cell(
 			200,
-			7,
+			10,
 			$text,
 
 			/*
@@ -639,7 +639,6 @@ class SalePdf extends fpdf {
 
 		    foreach ($this->sale->discounts as $discount) {
 		    	$this->x = $this->start_x;
-		    	$text = '-'.$discount->pivot->percentage.'% '.$discount->name;
 		    	
 		    	$total_descuento += $this->total_articles * floatval($discount->pivot->percentage) / 100;
 
@@ -652,17 +651,15 @@ class SalePdf extends fpdf {
 		    		$total_descuento += $this->total_services * floatval($discount->pivot->percentage) / 100;
 		    	}
 
-		    	// $total_with_discounts = $this->total_articles + $this->total_services + $this->total_combos + $this->total_promocion_vinotecas;
-
-		    	$text .= ' = '.Numbers::price($total_descuento, true, $this->sale->moneda_id);
+		    	$text = 'Menos '.Numbers::price($total_descuento, true, $this->sale->moneda_id).' ('.$discount->pivot->percentage.'% '.$discount->name.')';
 
 				$this->Cell(
-					50, 
-					5, 
+					200, 
+					7, 
 					$text, 
 					$this->b, 
 					1, 
-					'L'
+					'R'
 				);
 		    }
 		    if (count($this->sale->services) > 0) {
@@ -673,12 +670,12 @@ class SalePdf extends fpdf {
 		    		$text = 'No se aplican descuentos a los servicios';
 		    	}
 	    		$this->Cell(
-					50, 
-					5, 
+					200, 
+					7, 
 					$text, 
 					$this->b, 
 					1, 
-					'L'
+					'R'
 				);
 		    } 
 		}
@@ -699,8 +696,6 @@ class SalePdf extends fpdf {
 
 		    foreach ($this->sale->surchages as $surchage) {
 		    	$this->x = $this->start_x;
-		    	$text = '+'.$surchage->pivot->percentage.'% '.$surchage->name;
-
 		    	
 		    	$total_recargo += $this->total_articles * floatval($surchage->pivot->percentage) / 100;
 
@@ -715,15 +710,15 @@ class SalePdf extends fpdf {
 
 		    	// $total_with_discounts = $this->total_articles + $this->total_services + $this->total_combos + $this->total_promocion_vinotecas;
 
-		    	$text .= ' = '.Numbers::price($total_recargo, true, $this->sale->moneda_id);
+		    	$text = 'Mas '.Numbers::price($total_recargo, true, $this->sale->moneda_id).' ('.$surchage->pivot->percentage.'% '.$surchage->name.')';
 
 				$this->Cell(
-					50, 
-					5, 
+					200, 
+					7, 
 					$text, 
 					$this->b, 
 					1, 
-					'L'
+					'R'
 				);
 
 		    }
@@ -735,12 +730,12 @@ class SalePdf extends fpdf {
 		    		$text = 'No se aplican recargos a los servicios';
 		    	}
 	    		$this->Cell(
-					50, 
-					5, 
+					200, 
+					7, 
 					$text, 
 					$this->b, 
 					1, 
-					'L'
+					'R'
 				);
 		    } 
 		}
@@ -765,7 +760,10 @@ class SalePdf extends fpdf {
 		if (
 				(
 					count($this->sale->discounts) >= 1 
-					|| count($this->sale->surchages) >= 1 
+					|| (
+						count($this->sale->surchages) >= 1
+						&& !$this->sale->aplicar_recargos_directo_a_items
+					) 
 					|| (
 					    count($this->sale->seller_commissions) >= 1
 					    && $this->with_costs
@@ -779,22 +777,22 @@ class SalePdf extends fpdf {
 	    	$this->x = 5;
 	    	$this->y += 2;
 		    $this->Cell(
-				50, 
-				5, 
-				'Total final: '.Numbers::price(SaleHelper::getTotalSale($this->sale, true, true, false), true, $this->sale->moneda_id), 
+				200, 
+				7, 
+				'Total final: '.Numbers::price($this->sale->total, true, $this->sale->moneda_id), 
 				$this->b, 
 				1, 
-				'L'
+				'R'
 			);
 			if ($this->with_costs && count($this->sale->seller_commissions) >= 1) {
 	    		$this->x = 5;
 			    $this->Cell(
-					50, 
-					5, 
-					'Total menos comisiones: $'.Numbers::price(SaleHelper::getTotalSale($this->sale, true, true, true)), 
+					200, 
+					7, 
+					'Total menos comisiones: $'.Numbers::price(SaleHelper::total_menos_comisiones($this->sale)), 
 					$this->b, 
 					1, 
-					'L'
+					'R'
 				);
 			}
 		}

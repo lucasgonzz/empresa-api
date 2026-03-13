@@ -20,7 +20,7 @@ class SaleChartHelper {
 						->get();
 		foreach ($sales as $sale) {
 			$cantidad_ventas++;
-			$total_ventas += SaleHelper::getTotalSale($sale);
+			$total_ventas += $sale->total;
 			foreach ($sale->articles as $article) {
 				if (isset($articulos[$article->id])) {
 					$articulos[$article->id]['amount'] += (float)$article->pivot->amount;

@@ -146,7 +146,7 @@ class SellerCommissionHelper {
 
     static function getDescription($current_acount = null) {
         if (!is_null($current_acount) && !is_null($current_acount->sale)) {
-            return 'Venta N°'.$current_acount->sale->num.' ($'.Numbers::price(SaleHelper::getTotalSale($current_acount->sale)).')';
+            return 'Venta N°'.$current_acount->sale->num.' ($'.Numbers::price($sale->total).')';
         }
         return 'Pago a vendedor';
     }

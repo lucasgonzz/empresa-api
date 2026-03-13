@@ -9,10 +9,11 @@ class FilterHistoryService
 {
     public static function log_action($data) {
 
-        $used_filters_text = self::filters_to_text($data['used_filters']);
-
         Log::info('used_filters:');
         Log::info($data['used_filters']);
+        
+        $used_filters_text = self::filters_to_text($data['used_filters']);
+
 
         Log::info('used_filters_text:');
         Log::info($used_filters_text);

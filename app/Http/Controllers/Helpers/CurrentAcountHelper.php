@@ -48,8 +48,8 @@ class CurrentAcountHelper {
                         $current_acount->debe = null;
                     } else {
                         $prev_debe = $current_acount->debe; 
-                        $current_acount->debe = SaleHelper::getTotalSale($current_acount->sale);
-                        echo 'Se actualizo el debe de la venta N° '.$current_acount->sale->num.' de '.$prev_debe.' a '.SaleHelper::getTotalSale($current_acount->sale).' </br>';
+                        $current_acount->debe = $sale->total;
+                        echo 'Se actualizo el debe de la venta N° '.$current_acount->sale->num.' de '.$prev_debe.' a '.$sale->total.' </br>';
                         echo '--------------------------  </br>';
                     }
                     $current_acount->save();
@@ -624,7 +624,7 @@ class CurrentAcountHelper {
             if (!is_null($total)) {
                 $description = '$'.Numbers::price($total);
             } else {
-                $description = '$'.Numbers::price(SaleHelper::getTotalSale($sale));
+                $description = '$'.Numbers::price($sale->total);
             }
             foreach ($sale->discounts as $discount) {
                 $description .= '(-'.$discount->pivot->percentage . '% '. substr($discount->name, 0, 3) .')';
