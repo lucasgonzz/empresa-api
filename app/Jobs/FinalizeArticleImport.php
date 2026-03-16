@@ -49,119 +49,122 @@ class FinalizeArticleImport implements ShouldQueue
         // try {
             
             // 1) Traer todos los resultados por UUID con relaciones ya cargadas
-            $results = ArticleImportResult::with([
-                'articulos_creados:id', // sólo id para no cargar de más
-                'articulos_actualizados' => function ($q) {
-                    $q->select('articles.id'); // pivot vendrá con updated_props
-                },
-            ])->where('import_uuid', $this->import_uuid)->get();
+            // $results = ArticleImportResult::with([
+            //     'articulos_creados:id', // sólo id para no cargar de más
+            //     'articulos_actualizados' => function ($q) {
+            //         $q->select('articles.id'); // pivot vendrá con updated_props
+            //     },
+            // ])->where('import_uuid', $this->import_uuid)->get();
 
-            if ($results->isEmpty()) {
-                Log::warning("FinalizeArticleImport: No hay ArticleImportResults para UUID {$this->import_uuid}");
-                // DB::rollBack();
-                return;
-            }
+            // if ($results->isEmpty()) {
+            //     Log::warning("FinalizeArticleImport: No hay ArticleImportResults para UUID {$this->import_uuid}");
+            //     // DB::rollBack();
+            //     return;
+            // }
 
-            Log::info('FinalizeArticleImport, results:');
-            Log::info($results);
+            // Log::info('FinalizeArticleImport, results:');
+            // Log::info($results);
 
-            // 2) Consolidar
-            $created_articles_count = 0;
-            $updated_articles_count = 0;
-
-
-            $created_ids = [];
-            $updated_props_by_article = []; // [article_id => array props merged]
-
-            foreach ($results as $result) {
-
-                Log::info('result created_count:');
-                Log::info($result->created_count);
-
-                // Log::info('result articulos actualizados:');
-                // Log::info($result->articulos_actualizados);
+            // // 2) Consolidar
+            // $created_articles_count = 0;
+            // $updated_articles_count = 0;
 
 
-                // 2.a) CREADOS
-                foreach ($result->articulos_creados as $art) {
-                    $created_ids[] = (int)$art->id;
-                }
+            // $created_ids = [];
+            // $updated_props_by_article = []; // [article_id => array props merged]
 
-                // 2.b) ACTUALIZADOS (merge si un article_id apareció en más de un chunk)
-                foreach ($result->articulos_actualizados as $art) {
-                    $pivot_json = $art->pivot->updated_props ?? '{}';
-                    $props = json_decode($pivot_json, true);
-                    if (!is_array($props)) {
-                        $props = [];
-                    }
+            // foreach ($results as $result) {
 
-                    $aid = (int)$art->id;
+            //     Log::info('result created_count:');
+            //     Log::info($result->created_count);
 
-                    if (!isset($updated_props_by_article[$aid])) {
-                        $updated_props_by_article[$aid] = $props;
-                    } else {
-                        // merge por clave (la última ocurrencia pisa)
-                        $updated_props_by_article[$aid] = self::mergeUpdatedProps(
-                            $updated_props_by_article[$aid],
-                            $props
-                        );
-                    }
-                }
+            //     // Log::info('result articulos actualizados:');
+            //     // Log::info($result->articulos_actualizados);
 
 
-                $created_articles_count += (int)$result->created_count;
-                $updated_articles_count += (int)$result->updated_count;
-                Log::info('created_articles_count: '.$created_articles_count);
-            }
+            //     // 2.a) CREADOS
+            //     foreach ($result->articulos_creados as $art) {
+            //         $created_ids[] = (int)$art->id;
+            //     }
+
+            //     // 2.b) ACTUALIZADOS (merge si un article_id apareció en más de un chunk)
+            //     foreach ($result->articulos_actualizados as $art) {
+            //         $pivot_json = $art->pivot->updated_props ?? '{}';
+            //         $props = json_decode($pivot_json, true);
+            //         if (!is_array($props)) {
+            //             $props = [];
+            //         }
+
+            //         $aid = (int)$art->id;
+
+            //         if (!isset($updated_props_by_article[$aid])) {
+            //             $updated_props_by_article[$aid] = $props;
+            //         } else {
+            //             // merge por clave (la última ocurrencia pisa)
+            //             $updated_props_by_article[$aid] = self::mergeUpdatedProps(
+            //                 $updated_props_by_article[$aid],
+            //                 $props
+            //             );
+            //         }
+            //     }
 
 
-            // Unificar IDs creados
-            $created_ids = array_values(array_unique($created_ids));
+            //     $created_articles_count += (int)$result->created_count;
+            //     $updated_articles_count += (int)$result->updated_count;
+            //     Log::info('created_articles_count: '.$created_articles_count);
+            // }
 
-            Log::info('created_ids:');
-            Log::info($created_ids);
 
-            $import_history = ImportHistory::find($this->import_history_id);
+            // // Unificar IDs creados
+            // $created_ids = array_values(array_unique($created_ids));
 
-            // 3) Crear ImportHistory definitivo (ajustá campos a tu migración real)
-            $import_history->update([
-                'created_models'  => $created_articles_count,
-                'updated_models'  => $updated_articles_count,
-                'status'          => 'terminado',
-                // 'operacion_a_realizar'  => $this->create_and_edit ? 'Crear y actualizar' : 'Solo actualizar',
-                // 'no_actualizar_otro_proveedor' => $this->no_actualizar_articulos_de_otro_proveedor,
-                // 'user_id'         => $this->user ? $this->user->id : null,
-                // 'employee_id'     => $this->auth_user_id,
-                // 'model_name'      => 'article',
-                // 'provider_id'     => $this->provider_id && $this->provider_id !== 'null' ? (int)$this->provider_id : null,
-                // 'columnas'        => json_encode(ArticleImportHelper::convertirPosicionesAColumnas($this->columns), JSON_PRETTY_PRINT),
-                // 'observations'    => ArticleImportHelper::get_observations($this->columns ?? []),
-                // 'excel_url'       => $this->archivo_excel_path,
-            ]);
+            // Log::info('created_ids:');
+            // Log::info($created_ids);
 
-            // 4) Adjuntar relaciones al ImportHistory definitivo
-            if (!empty($created_ids)) {
-                $import_history->articulos_creados()->syncWithoutDetaching($created_ids);
-            }
+            // $import_history = ImportHistory::find($this->import_history_id);
 
-            if (!empty($updated_props_by_article)) {
-                $pivot_data = [];
-                foreach ($updated_props_by_article as $article_id => $props_array) {
-                    $pivot_data[$article_id] = [
-                        'updated_props' => json_encode($props_array, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION),
-                    ];
-                }
-                $import_history->articulos_actualizados()->syncWithoutDetaching($pivot_data);
-            }
+            // // 3) Crear ImportHistory definitivo (ajustá campos a tu migración real)
+            // $import_history->update([
+            //     'created_models'  => $created_articles_count,
+            //     'updated_models'  => $updated_articles_count,
+            //     'status'          => 'terminado',
+            //     // 'operacion_a_realizar'  => $this->create_and_edit ? 'Crear y actualizar' : 'Solo actualizar',
+            //     // 'no_actualizar_otro_proveedor' => $this->no_actualizar_articulos_de_otro_proveedor,
+            //     // 'user_id'         => $this->user ? $this->user->id : null,
+            //     // 'employee_id'     => $this->auth_user_id,
+            //     // 'model_name'      => 'article',
+            //     // 'provider_id'     => $this->provider_id && $this->provider_id !== 'null' ? (int)$this->provider_id : null,
+            //     // 'columnas'        => json_encode(ArticleImportHelper::convertirPosicionesAColumnas($this->columns), JSON_PRETTY_PRINT),
+            //     // 'observations'    => ArticleImportHelper::get_observations($this->columns ?? []),
+            //     // 'excel_url'       => $this->archivo_excel_path,
+            // ]);
 
-            // 5) Eliminar resultados temporales de este UUID
-            ArticleImportResult::where('import_uuid', $this->import_uuid)->delete();
+            // // 4) Adjuntar relaciones al ImportHistory definitivo
+            // if (!empty($created_ids)) {
+            //     $import_history->articulos_creados()->syncWithoutDetaching($created_ids);
+            // }
+
+            // if (!empty($updated_props_by_article)) {
+            //     $pivot_data = [];
+            //     foreach ($updated_props_by_article as $article_id => $props_array) {
+            //         $pivot_data[$article_id] = [
+            //             'updated_props' => json_encode($props_array, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION),
+            //         ];
+            //     }
+            //     $import_history->articulos_actualizados()->syncWithoutDetaching($pivot_data);
+            // }
+
+            // // 5) Eliminar resultados temporales de este UUID
+            // ArticleImportResult::where('import_uuid', $this->import_uuid)->delete();
 
             // DB::commit();
 
             Log::info("FinalizeArticleImport: ImportHistory creado para {$this->import_uuid}");
+            $import_history = ImportHistory::find($this->import_history_id);
+            $import_history->status = 'terminado';
+            $import_history->save();
 
-            ArticleImportHelper::enviar_notificacion($this->user, $created_articles_count, $updated_articles_count, $import_history->articles_match, $import_history->filas_procesadas);
+            ArticleImportHelper::enviar_notificacion($this->user, $import_history);
 
             Log::info('Se envio notificacion');
 

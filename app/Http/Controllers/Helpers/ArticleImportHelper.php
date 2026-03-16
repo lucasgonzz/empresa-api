@@ -17,7 +17,7 @@ use Illuminate\Support\Facades\Log;
 
 class ArticleImportHelper {
 
-	static function enviar_notificacion($user, $articulos_creados, $articulos_actualizados, $articles_match, $filas_procesadas) {
+	static function enviar_notificacion($user, $import_history) {
 
 	    $functions_to_execute = [];
 	    
@@ -33,10 +33,10 @@ class ArticleImportHelper {
         	[
         		'title'		=> 'Resultado de la operacion',
         		'parrafos'	=> [
-        			$filas_procesadas. ' filas procesadas',
-        			$articulos_creados. ' articulos creados',
-        			$articulos_actualizados. ' articulos actualizados',
-        			$articles_match. ' articulos macheados',
+        			$import_history->filas_procesadas. ' filas procesadas',
+        			$import_history->created_models. ' articulos creados',
+        			$import_history->articles_match. ' articulos macheados',
+        			$import_history->updated_models. ' articulos actualizados',
         		],
         	],
         ];
@@ -140,10 +140,11 @@ class ArticleImportHelper {
         }
     }
 
-    static function create_article_import_result($data) {
-        
-        $import_result = ArticleImportResult::create([
-		    'import_uuid'    	=> $data['import_uuid'],
+    static function update_article_import_result($data) {
+
+        $import_result = ArticleImportResult::find($data['import_result_id']);
+
+        $import_result->update([
 		    'created_count'  	=> count($data['articulos_creados']),
 		    'updated_count'  	=> count($data['articulos_actualizados']),
 		    'articles_match' 	=> $data['articles_match'],
@@ -186,7 +187,7 @@ class ArticleImportHelper {
 			}
         }
 
-        Log::info('Se creo ArticleImportResult con '.count($data['articulos_creados']).' creados y '.count($data['articulos_actualizados']).' actualizados con import_uuid: '.$data['import_uuid']);
+        Log::info('Se creo ArticleImportResult con '.count($data['articulos_creados']).' creados y '.count($data['articulos_actualizados']).' actualizados con import_uuid: ');
 
         // Log::info('create_article_import_result:');
         // Log::info('');

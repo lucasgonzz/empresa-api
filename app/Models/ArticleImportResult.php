@@ -13,6 +13,10 @@ class ArticleImportResult extends Model
         
     }
 
+    function article_import_result_observations() {
+        return $this->hasMany(ArticleImportResultObservation::class);
+    }
+
     function provider() {
         return $this->belongsTo(Provider::class);
     }

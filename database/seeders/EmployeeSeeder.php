@@ -96,6 +96,7 @@ class EmployeeSeeder extends Seeder
     }
 
     function empleados() {
+
         $models = [
             [
                 'name'              => 'Patricio',

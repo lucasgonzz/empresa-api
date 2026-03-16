@@ -6,7 +6,9 @@ use App\Events\ImportStatusUpdated;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Imports\ArticleImport;
 use App\Models\ArticleImportResult;
+use App\Models\ArticleImportResultObservation;
 use App\Models\ImportHistory;
+use App\Models\ImportResultObservation;
 use App\Models\ImportStatus;
 use App\Notifications\ImportStatusNotification;
 use Illuminate\Bus\Batchable;
@@ -22,13 +24,14 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Excel as ExcelFormat;
 use Maatwebsite\Excel\Facades\Excel;
+use Carbon\Carbon;
 
 class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 {
     use Batchable, Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     protected $import_uuid, $csv_path, $columns, $create_and_edit, $start_row, $finish_row,
-              $provider_id, $user, $auth_user_id, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $import_status_id, $import_history_id, $chunk_number, $observations, $start_offset;
+              $provider_id, $user, $auth_user_id, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $import_status_id, $import_history_id, $chunk_number, $observations, $start_offset, $inicio_chunk;
 
     // public $timeout = 5; // 30 minutos por chunk, ajustable
     public $timeout = 1800; // 30 minutos por chunk, ajustable
@@ -54,6 +57,8 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         $this->start_offset = $start_offset;
 
         $this->observations = '';
+
+        $this->inicio_chunk = microtime(true);
     }
 
     public function batchId() {
@@ -77,7 +82,8 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
                 return;
             }
             
-
+            // ArticleImportHistory es la clase que guarda toda la info del chunk, cada ArticleImportHistory reprecenta a un chunk
+            $this->crear_article_import_result();
 
             $inicio_excel = microtime(true);
             $this->crear_article_import();
@@ -92,10 +98,16 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
             unset($collection, $chunkRows); // Liberar memoria explícitamente
             $fin_excel = microtime(true);
             $dur = $fin_excel - $inicio_excel;
+
+
             $this->add_observation('ArticleImport procesado desde chunk en '.number_format($dur, 2, '.', '').' seg');
 
 
-            $this->get_article_import_result();
+            // $this->get_article_import_result();
+
+            $this->recargar_article_import_result();
+
+            $this->guardar_tiempos_de_ejecucion_en_article_import_result($observations);
 
             $this->update_import_status();
 
@@ -107,7 +119,7 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 
             $this->update_import_history();
 
-            $this->guardar_tiempos_de_ejecucion($inicio, $observations);
+            // $this->guardar_tiempos_de_ejecucion($inicio, $observations);
 
 
         } catch (\Throwable $e) {
@@ -137,6 +149,10 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 
             throw $e; // ✅ Esto detiene la chain
         }
+    }
+
+    function recargar_article_import_result() {
+        $this->import_result = ArticleImportResult::find($this->import_result->id);
     }
 
     function add_observation($text) {
@@ -217,6 +233,14 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
     //     return $chunkRows;
     // }
 
+    function crear_article_import_result() {
+
+        $this->import_result = ArticleImportResult::create([
+            'import_history_id'    => $this->import_history->id,
+            'chunk_number'         => $this->chunk_number,
+        ]);
+    }
+
     function set_import_history_error($e) {
         $this->import_history->status = 'error';
 
@@ -256,17 +280,8 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
                 $this->chunk_number,
                 $this->import_history->registrar_art_cre,
                 $this->import_history->registrar_art_act,
+                $this->import_result->id,
             );
-
-            // Excel::import(new ArticleImport(
-            //     $this->import_uuid,
-            //     $this->columns, $this->create_and_edit,
-            //     $this->no_actualizar_articulos_de_otro_proveedor,
-            //     $this->start_row, $this->finish_row,
-            //     $this->provider_id, $this->user,
-            //     $this->auth_user_id, $this->archivo_excel_path,
-            //     $this->chunk_number,
-            // ), $this->archivo_excel_path, null, $this->reader_type);
 
         } catch (\Throwable $e) {
             
@@ -393,25 +408,79 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         $this->import_history->status           = 'en_proceso';
         $this->import_history->save();
 
-
+        // Esto no lo hago mas ya que guardo esos datos unicamente en ArticleImportResult (donde guardo la info de cada chunk)
         // 4) Adjuntar relaciones al ImportHistory definitivo
-        if (!empty($this->created_ids)) {
-            $this->import_history->articulos_creados()->syncWithoutDetaching($this->created_ids);
-        }
+        // if (!empty($this->created_ids)) {
+        //     $this->import_history->articulos_creados()->syncWithoutDetaching($this->created_ids);
+        // }
 
-        if (!empty($this->updated_props_by_article)) {
-            $pivot_data = [];
-            foreach ($this->updated_props_by_article as $this->article_id => $this->props_array) {
-                $pivot_data[$this->article_id] = [
-                    'updated_props' => json_encode($this->props_array, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION),
-                ];
-            }
-            $this->import_history->articulos_actualizados()->syncWithoutDetaching($pivot_data);
-        }
+        // if (!empty($this->updated_props_by_article)) {
+        //     $pivot_data = [];
+        //     foreach ($this->updated_props_by_article as $this->article_id => $this->props_array) {
+        //         $pivot_data[$this->article_id] = [
+        //             'updated_props' => json_encode($this->props_array, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION),
+        //         ];
+        //     }
+        //     $this->import_history->articulos_actualizados()->syncWithoutDetaching($pivot_data);
+        // }
 
         $fin = microtime(true);
         $dur = $fin - $inicio;
         $this->add_observation('update_import_history en '.number_format($dur, 2, '.', '').' seg');
+    }
+
+    function guardar_tiempos_de_ejecucion_en_article_import_result($observations) {
+
+        $fin = microtime(true);
+
+        $dur = $fin - $this->inicio_chunk;
+        $this->import_result->terminado_at = Carbon::now();
+        $this->import_result->duration = $dur;
+        $this->import_result->save();
+
+        $rows_observations              = $observations['rows_observations'];
+        $article_import_observations    = $observations['article_import_observations'];
+
+        // Log::info('rows_observations');
+        // Log::info($rows_observations);
+        // Log::info('article_import_observations');
+        // Log::info($article_import_observations);
+
+        usort($rows_observations, function ($a, $b) {
+            $total_a = $a['duration'];
+            $total_b = $b['duration'];
+
+            // Orden descendente (más lento primero)
+            return $total_b <=> $total_a;
+        });
+
+        $insert_data = [];
+        foreach ($rows_observations as $row_observations) {
+
+            $insert_data[] = [
+                'article_import_result_id'  => $this->import_result->id,
+                'duration'                  => $row_observations['duration'],
+                'fila'                      => $row_observations['fila'],
+                'procesos'                  => json_encode($row_observations['procesos']),
+            ];
+        }
+
+        /* 
+
+            Cada ArticleImportResultObservation equivale a una fila del excel, y
+            y cada ArticleImportResultObservation pertenece a un article_import_result, que equivale a un chunk
+        */ 
+        ArticleImportResultObservation::insert($insert_data); 
+
+        usort($article_import_observations['procesos'], function ($a, $b) {
+            $total_a = $a['duration'];
+            $total_b = $b['duration'];
+
+            // Orden descendente (más lento primero)
+            return $total_b <=> $total_a;
+        });
+        $this->import_result->article_import_observations = json_encode($article_import_observations);
+        $this->import_result->save();
     }
 
     function get_article_import_result() {
