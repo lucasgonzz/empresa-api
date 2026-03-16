@@ -28,7 +28,8 @@ class ArticleIndexCache
         $user = User::find($user_id);
         $key = "article_index_user_{$user_id}";
 
-        $guardar_precio_de_otros_proveedores = config('app.GUARDAR_PRECIO_DE_OTROS_PROVEEDORES');
+        // $guardar_precio_de_otros_proveedores = config('app.GUARDAR_PRECIO_DE_OTROS_PROVEEDORES');
+        $guardar_precio_de_otros_proveedores = true;
 
         $filtrar_por_proveedor = (
             !$user->comparar_precios_de_proveedores_en_excel
@@ -131,9 +132,9 @@ class ArticleIndexCache
 
         $duracion = microtime(true) - $inicio;
 
-        Log::info("ArticleIndexCache::build -> ids: " . count($index['ids']) . " provider_codes: ". count($index['provider_codes']) . " bar_codes: " . count($index['bar_codes']) . " skus: " . count($index['skus']) . " names: " . count($index['names']));
-        Log::info($index);
-        Log::info('Duración total cachear los articulos ' . $duracion . ' seg');
+        // Log::info("ArticleIndexCache::build -> ids: " . count($index['ids']) . " provider_codes: ". count($index['provider_codes']) . " bar_codes: " . count($index['bar_codes']) . " skus: " . count($index['skus']) . " names: " . count($index['names']));
+        // Log::info($index);
+        // Log::info('Duración total cachear los articulos ' . $duracion . ' seg');
 
         return $duracion;
     }
@@ -299,7 +300,8 @@ class ArticleIndexCache
 
         $article_id = null;
 
-        $guardar_precio_de_otros_proveedores = config('app.GUARDAR_PRECIO_DE_OTROS_PROVEEDORES');
+        // $guardar_precio_de_otros_proveedores = config('app.GUARDAR_PRECIO_DE_OTROS_PROVEEDORES');
+        $guardar_precio_de_otros_proveedores = true;
 
         // 1) Buscar por ID
         if (!empty($data['id'])) {
@@ -393,8 +395,8 @@ class ArticleIndexCache
             $index = Cache::get($key, []);
         }
 
-        Log::info('find data:');
-        Log::info($data);
+        // Log::info('find data:');
+        // Log::info($data);
 
         $relations = [
             'price_types',
@@ -406,7 +408,8 @@ class ArticleIndexCache
 
         $article_id = null;
         
-        $guardar_precio_de_otros_proveedores = config('app.GUARDAR_PRECIO_DE_OTROS_PROVEEDORES');
+        // $guardar_precio_de_otros_proveedores = config('app.GUARDAR_PRECIO_DE_OTROS_PROVEEDORES');
+        $guardar_precio_de_otros_proveedores = true;
 
         // 1) Buscar por ID
         if (!empty($data['id'])) {

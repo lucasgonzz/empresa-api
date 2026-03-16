@@ -36,20 +36,21 @@ class ArticleImport implements ToCollection
 {
 
     
-    public function __construct($import_uuid, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $archivo_excel_path, $chunk_number, $registrar_articulos_creados, $registrar_articulos_actualizados) {
+    public function __construct($import_uuid, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $archivo_excel_path, $chunk_number, $registrar_articulos_creados, $registrar_articulos_actualizados, $import_result_id) {
         set_time_limit(9999999999);
 
         Log::info('Se creo ArticleImport con import_uuid: '.$import_uuid);
 
-        $this->observations = '';
+        $this->observations = [];
 
-        $this->import_uuid = $import_uuid;
-        $this->user = $user;
-        $this->auth_user_id = $auth_user_id;
-        $this->archivo_excel_path = $archivo_excel_path;
-        $this->chunk_number = $chunk_number;
-        $this->registrar_articulos_creados = $registrar_articulos_creados;
+        $this->import_uuid                      = $import_uuid;
+        $this->user                             = $user;
+        $this->auth_user_id                     = $auth_user_id;
+        $this->archivo_excel_path               = $archivo_excel_path;
+        $this->chunk_number                     = $chunk_number;
+        $this->registrar_articulos_creados      = $registrar_articulos_creados;
         $this->registrar_articulos_actualizados = $registrar_articulos_actualizados;
+        $this->import_result_id                 = $import_result_id;
 
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
@@ -142,8 +143,12 @@ class ArticleImport implements ToCollection
         // Log::info('entro a collection, rows:');
         // Log::info($rows);
 
-        
+        $this->iniciar();
         Log::info('cacheando articulos');
+
+        $rows_observations = [];
+
+        $text = 'Cacheo de articulos';
         
         if ($this->chunk_number == 1) {
             $duracion_cacheo = ArticleIndexCache::build(
@@ -151,13 +156,13 @@ class ArticleImport implements ToCollection
                 $this->provider_id ?? null,
                 (bool)$this->no_actualizar_articulos_de_otro_proveedor
             );
-            $duracion_cacheo = number_format($duracion_cacheo, 2, '.', '');
+            // $duracion_cacheo = number_format($duracion_cacheo, 2, '.', '');
         } else {
-            $duracion_cacheo = 'Ya estaba cacheado';
+            $text .= '. Ya estaba cacheado';
             Log::info('Ya estaban cacheados');
         }
         
-        $this->add_observation('Cacheado en '.$duracion_cacheo.' seg');
+        $this->terminar($text);
 
         Log::info('articulos cacheados');
 
@@ -172,7 +177,9 @@ class ArticleImport implements ToCollection
         $this->process_row->set_article_index($article_index);
 
 
+        $this->iniciar();
         $this->slugs($rows);
+        $this->terminar('seteando slugs');
 
         $this->set_finish_row($rows);
 
@@ -180,9 +187,8 @@ class ArticleImport implements ToCollection
 
         $error_message = null;
 
+        $filas_procesada = $this->start_row;
         $this->filas_procesadas = 0;
-
-        $this->add_observation(count($rows).' filas');
 
         // Log::info('rows:');
         // Log::info($rows);
@@ -191,7 +197,7 @@ class ArticleImport implements ToCollection
         // Log::info('start_row: '.$this->start_row);
         // Log::info('finish_row: '.$this->finish_row);
         
-        $inicio = microtime(true);
+        $this->iniciar();
         foreach ($rows as $row) {
 
             // if ($this->esta_en_el_rango_de_filas()) {
@@ -207,9 +213,15 @@ class ArticleImport implements ToCollection
 
                     try {
 
-                        $observations = $this->process_row->procesar($row, $this->nombres_proveedores);
+                        $row_observations = $this->process_row->procesar($row, $this->nombres_proveedores);
+                        
+                        $row_observations['fila'] = $filas_procesada;
+
+                        $rows_observations[] = $row_observations;
 
                         $this->filas_procesadas++;
+                        $filas_procesada++;
+                        
 
                         // $obs_row = ' Info fila N° '.$this->filas_procesadas.': '.$observations.' ';
                         // $this->observations .= $obs_row;
@@ -247,20 +259,16 @@ class ArticleImport implements ToCollection
             // }
         }
 
-        $fin = microtime(true);
-        $duracion = $fin - $inicio;
-        $this->add_observation('Filas proc en '.number_format($duracion, 2, '.', '').' seg');
+        $this->terminar('Procesar todas las filas');
 
 
         if (!$this->trabajo_terminado) {
 
-            $inicio = microtime(true);
 
+            $this->iniciar();
             $articulos_creados = $this->guardar_articulos();
 
-            $fin = microtime(true);
-            $dur = $fin - $inicio;
-            $this->add_observation('ActualizarBBDD desde ArticleImport en '.number_format($dur, 2, '.', '').' seg');
+            $this->terminar('ActualizarBBDD desde ArticleImport');
 
 
             // $articulos_creados = $this->process_row->getArticulosParaCrear();
@@ -272,12 +280,13 @@ class ArticleImport implements ToCollection
             Log::info('articulos_creados: '.count($articulos_creados));
             Log::info('articulos_actualizados: '.count($articulos_actualizados));
             Log::info('articles_match: '.$articles_match);
+            Log::info('filas_procesadas: '.$this->filas_procesadas);
 
 
 
-            $inicio = microtime(true);
-            ArticleImportHelper::create_article_import_result([
-                'import_uuid'                           => $this->import_uuid, 
+            $this->iniciar();
+            ArticleImportHelper::update_article_import_result([
+                'import_result_id'                      => $this->import_result_id, 
                 'articulos_creados'                     => $articulos_creados, 
                 'articulos_actualizados'                => $articulos_actualizados, 
                 'articles_match'                        => $articles_match, 
@@ -286,21 +295,39 @@ class ArticleImport implements ToCollection
                 'registrar_articulos_creados'           => $this->registrar_articulos_creados,
                 'registrar_articulos_actualizados'      => $this->registrar_articulos_actualizados,
             ]);
-            $fin = microtime(true);
-            $dur = $fin - $inicio;
-            $this->add_observation('import_result creado en '.number_format($dur, 2, '.', '').' seg');
+            $this->terminar('Update article_import_result');
             
             $this->trabajo_terminado = true;
         }
 
-        Log::info('retornando observations: '.$this->observations);
+        // Log::info('retornando observations: '.$this->observations);
 
-        return $this->observations;
+        return [
+            'article_import_observations'   => $this->observations,
+            'rows_observations'             => $rows_observations,
+        ];
+
+        // return $this->observations;
 
     }
 
-    function add_observation($text) {
-        $this->observations .= $text .' - ';
+    function iniciar() {
+        $this->inicio = microtime(true);
+    }
+
+    function terminar($text) {
+
+        $this->fin = microtime(true);
+        $dur = $this->fin - $this->inicio;
+
+        if ($dur > 0) {
+            $proceso = [
+                'name'          => $text,
+                'duration'      => number_format($dur, 2, '.', ''),
+            ];
+
+            $this->observations['procesos'][] = $proceso;
+        }
     }
 
     function guardar_articulos() {
@@ -312,10 +339,15 @@ class ArticleImport implements ToCollection
 
         try {
 
+            $this->iniciar();
             $actualizar_bbdd = new ActualizarBBDD($articulosParaCrear, $articulosParaActualizar, $this->user, $this->auth_user_id);
             $observations = $actualizar_bbdd->get_observations();
 
-            $this->add_observation($observations);
+            foreach ($observations as $observation) {
+                $observation['name'] = 'BBDD -> '.$observation['name'];
+                $this->observations['procesos'][] = $observation;
+            }
+
 
             return $actualizar_bbdd->get_articulos_creados_models();
 

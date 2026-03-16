@@ -13,6 +13,7 @@ class CreateArticleImportResultsTable extends Migration
      */
     public function up()
     {
+        // Este seria un chunk de la importacion
         Schema::create('article_import_results', function (Blueprint $table) {
             $table->id();
 

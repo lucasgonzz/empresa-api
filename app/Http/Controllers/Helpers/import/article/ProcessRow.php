@@ -43,7 +43,7 @@ class ProcessRow {
     protected $iva_cache = [];   
     protected $article_index = [];
 
-    protected $observations = '';
+    protected $observations = [];
     protected $inicio = '';
     protected $fin = '';
     protected $taken_slugs = [];
@@ -195,11 +195,12 @@ class ProcessRow {
      */
     function procesar($row, $nombres_proveedores) {
 
-        $this->observations = '';
+        $this->observations = [
+            'procesos'  => [],
+        ];
 
         $this->nombres_proveedores = $nombres_proveedores;
 
-        $this->iniciar();
         $props_to_add = [
             [
                 'excel_column'  => 'numero',
@@ -255,6 +256,8 @@ class ProcessRow {
             ],
         ];
         
+        $this->iniciar();
+
         $provider_id = $this->get_provider_id($row);
 
         // Construir array de datos del artículo usando los valores extraídos del Excel
@@ -263,7 +266,10 @@ class ProcessRow {
             'user_id'              => $this->user->id,
         ];
 
+        $this->terminar('get_provider_id');
 
+
+        $this->iniciar();
         foreach ($props_to_add as $prop_to_add) {
 
             if (!ImportHelper::isIgnoredColumn($prop_to_add['excel_column'], $this->columns)) {
@@ -281,14 +287,18 @@ class ProcessRow {
             }
 
         }
+        $this->terminar('set props_to_add');
 
 
+        $this->iniciar();
         $iva_id = $this->get_iva_id($row);
         $data['iva_id'] = $iva_id;
+        $this->terminar('set iva_id');
 
 
 
         // Categoria y Sub categoria
+        $this->iniciar();
         $res = $this->get_category_id($row);
 
         $category_id = $res['category_id'];
@@ -300,29 +310,39 @@ class ProcessRow {
         if (!ImportHelper::isIgnoredColumn('sub_categoria', $this->columns)) {
             $data['sub_category_id'] = $sub_category_id;
         }
+        $this->terminar('categoria y sub categoria');
 
 
 
 
 
+        $this->iniciar();
         if (!ImportHelper::isIgnoredColumn('moneda', $this->columns)) {
             $data['cost_in_dollars'] = $this->get_cost_in_dollars($row);
         }
+        $this->terminar('moneda');
 
+        $this->iniciar();
         if (!ImportHelper::isIgnoredColumn('aplicar_iva', $this->columns)) {
             $data['aplicar_iva'] = $this->get_aplicar_iva($row);
         }
+        $this->terminar('moneda');
 
+        $this->iniciar();
         if (!ImportHelper::isIgnoredColumn('marca', $this->columns)) {
             $brand_id = ImportHelper::getColumnValue($row, 'marca', $this->columns);
             $data['brand_id'] = $this->get_brand_id($row);
         }
+        $this->terminar('brand_id');
 
+        $this->iniciar();
         if (!ImportHelper::isIgnoredColumn('unidad_medida', $this->columns)) {
             $data['unidad_medida_id'] = $this->get_unidad_medida_id($row);
         }
+        $this->terminar('unidad_medida_id');
 
 
+        $this->iniciar();
         if (UserHelper::hasExtencion('autopartes', $this->user)) {
             $data_autopartes = [
                 'espesor'               => ImportHelper::getColumnValue($row, 'espesor', $this->columns),
@@ -338,16 +358,15 @@ class ProcessRow {
 
             $data = array_merge($data, $data_autopartes);
         }
-
-        $this->terminar('set $data');
-
+        $this->terminar('autopartes');
 
 
-        $this->iniciar();
+
         /* 
             Si el articulo ya estaba previamente en una fila del excel, 
             se omite para no sobreescribirlo
         */
+        $this->iniciar();
         $ya_estaba_en_excel = $this->ya_estaba_en_el_excel($data);
 
         if ($ya_estaba_en_excel) {
@@ -381,7 +400,7 @@ class ProcessRow {
             $this->no_actualizar_articulos_de_otro_proveedor
         );
         $this->terminar('find en cache');
-        Log::info('Se llamo a find article');
+        // Log::info('Se llamo a find article');
         // if ($articulo_ya_creado instanceof \App\Models\Article) {
 
         //     Log::info('Es article');
@@ -413,11 +432,11 @@ class ProcessRow {
             || $this->son_varios_articulos($articulo_ya_creado)
         ) {
 
-            Log::info('Articulo ya creado');
+            // Log::info('Articulo ya creado');
 
             $this->iniciar();
             $this->attach_provider($articulo_ya_creado, $data, $provider_id);
-            $this->terminar('attach_provider');
+            $this->terminar('attach_provider a articulo creado');
 
 
             if ($this->son_varios_articulos($articulo_ya_creado)) {
@@ -428,15 +447,25 @@ class ProcessRow {
                     if (!$this->omitir_por_pertencer_a_otro_proveedor($_articulo_ya_creado, $provider_id)) {
 
                         // Log::info('procesando articulo con provider_code repetido:');
+                        $this->iniciar();
+                        
                         $this->procesar_articulo_ya_creado($_articulo_ya_creado, $data, $row);
+
+                        $this->terminar('procesar_articulo_ya_creado con provider_code repetido');
                     }
 
                 }
             } else {
 
                 $this->add_article_match();
+
                 if (!$this->omitir_por_pertencer_a_otro_proveedor($articulo_ya_creado, $provider_id)) {
+
+                    $this->iniciar();
+
                     $this->procesar_articulo_ya_creado($articulo_ya_creado, $data, $row);
+                    
+                    $this->terminar('procesar_articulo_ya_creado');
                 }
             }
 
@@ -516,7 +545,18 @@ class ProcessRow {
             $this->terminar('crear: add cache');
         }
 
+        $this->sumar_durations();
+
         return $this->observations;
+    }
+
+    function sumar_durations() {
+        $duration = 0;
+        foreach ($this->observations['procesos'] as $observation) {
+            
+            $duration += $observation['duration'];
+        }
+        $this->observations['duration'] = $duration;
     }
 
     function iniciar() {
@@ -527,7 +567,13 @@ class ProcessRow {
         $this->fin = microtime(true);
         $dur = $this->fin - $this->inicio;
         if ($dur > 0) {
-            $this->observations .= $title.' '. number_format($dur, 2, '.', '') .' seg. ';
+            $proceso = [
+                'name'          => $title,
+                'duration'      => number_format($dur, 2, '.', ''),
+            ];
+
+            $this->observations['procesos'][] = $proceso;
+            // $this->observations .= $title.' '. number_format($dur, 2, '.', '') .' seg. ';
         }
     }
 
@@ -554,8 +600,11 @@ class ProcessRow {
         // Log::info('attach_provider');
 
         if (!$provider_id) {
+            // Log::info('no entro a attach_provider');
             return;
         }
+
+        Log::info('attach_provider');
         
         if (
             $this->son_varios_articulos($articulo_ya_creado)
@@ -590,9 +639,13 @@ class ProcessRow {
 
         $epsilon = 0.01; // ajustalo según tu caso (p.ej. centavos: 0.01 / 0.001)
 
+        // Log::info('update_provider_relation, data:');
+        // Log::info($data);
+        // Log::info('actual cost: '.$articulo_ya_creado->cost);
+
         if (
             isset($data['cost'])
-            && abs((float)$data['cost'] - (float)$articulo_ya_creado->cost) > $epsilon 
+            // && abs((float)$data['cost'] - (float)$articulo_ya_creado->cost) > $epsilon 
         ) {
 
             $pivot_data = [
@@ -600,10 +653,17 @@ class ProcessRow {
                 'cost'          => isset($data['cost']) ? $data['cost'] : null,
             ];
 
+            Log::info('Se adjunta relacion con provider a '.$articulo_ya_creado->name. ' a provider_id: '.$provider_id);
+            // Log::info('provider_id '.$provider_id);
+            // Log::info('pivot_data '.$pivot_data);
+
             // ✅ 1 sola operación: inserta o actualiza pivot sin hacer exists() antes
             $articulo_ya_creado->providers()->syncWithoutDetaching([
                 $provider_id => $pivot_data
             ]);
+        } else {
+
+            // Log::info('NO Se adjunta relacion con provider');
         }
         
 
@@ -614,7 +674,7 @@ class ProcessRow {
     function procesar_articulo_ya_creado($articulo_ya_creado, $data, $row) {
         $this->iniciar();
         $articulo_ya_creado->loadMissing(['price_types', 'addresses']);
-        $this->terminar('loadMissing');
+        $this->terminar('precargar price_types y addresses para procesar articulo ya creado');
 
         // Comparar propiedades y obtener las que cambiaron
         $this->iniciar();

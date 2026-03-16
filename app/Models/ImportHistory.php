@@ -13,6 +13,10 @@ class ImportHistory extends Model
         'changed_fields' => 'array',
     ];
 
+    function chunks() {
+        return $this->hasMany(ArticleImportResult::class, 'import_history_id');
+    }
+
     function articulos_creados() {
         return $this->belongsToMany(Article::class, 'article_creados_import_history');
     }

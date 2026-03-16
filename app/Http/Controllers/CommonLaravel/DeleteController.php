@@ -15,6 +15,9 @@ class DeleteController extends Controller
     function delete(Request $request, $model_name) {
         $models = [];
         $formated_model_name = GeneralHelper::getModelName($model_name);
+
+        $used_filters = [];
+        
         if ($request->from_filter) {
             $search_ct = new SearchController();
             $res = $search_ct->search($request, $model_name, $request->filter_form, 0, true);

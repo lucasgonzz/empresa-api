@@ -75,5 +75,14 @@ class AddressSeeder extends Seeder
         foreach ($models as $model) {
             Address::create($model);
         }
+
+        $employees = User::whereNotNull('owner_id')->get();
+
+        $address_id = 1;
+        foreach ($employees as $employee) {
+            $employee->address_id = $address_id;
+            $employee->save();
+            $address_id++;
+        }
     }
 }

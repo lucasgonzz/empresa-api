@@ -52,7 +52,7 @@ class ActualizarBBDD {
 
         $this->now = Carbon::now()->toDateTimeString();
 
-        $this->observations = '';
+        $this->observations = [];
 
 
         $this->set_price_types();
@@ -64,18 +64,31 @@ class ActualizarBBDD {
         return $this->observations;
     }
 
-    function add_observation($text) {
-        $this->observations .= $text .' - ';
+    function iniciar() {
+        $this->inicio = microtime(true);
+    }
+
+    function terminar($text) {
+
+        $this->fin = microtime(true);
+        $dur = $this->fin - $this->inicio;
+
+        if ($dur > 0) {
+            $proceso = [
+                'name'          => $text,
+                'duration'      => number_format($dur, 2, '.', ''),
+            ];
+
+            $this->observations[] = $proceso;
+        }
     }
 
     function guardar_articulos() {
 
-        $inicio_global = microtime(true);
-
         // Crear los artículos nuevos en la bbdd
         if (!empty($this->articulos_para_crear_CACHE)) {
             
-            $inicio = microtime(true);
+            $this->iniciar();
             Log::info('Se van a crear ' . count($this->articulos_para_crear_CACHE) . ' articulos');
             // if (app()->environment('local')) { Log::info($this->articulos_para_crear_CACHE); }
 
@@ -100,10 +113,7 @@ class ActualizarBBDD {
             
             Article::insert($sql);
 
-            $fin = microtime(true);
-            $dur = $fin - $inicio;
-
-            $this->add_observation('Art insertados en bbdd en '.number_format($dur, 2, '.', '').' seg');
+            $this->terminar(count($this->articulos_para_crear_CACHE).' Articulos insertados en bbdd');
 
             $this->set_articulos_creados_models();
         }
@@ -116,7 +126,7 @@ class ActualizarBBDD {
             
             if (count($this->articulos_actualizados_models) > 0) {
                 
-                $inicio = microtime(true);
+                $this->iniciar();
 
                 Log::info('Se van a actualizar ' . count($this->articulos_actualizados_models) . ' articulos');
 
@@ -177,9 +187,7 @@ class ActualizarBBDD {
 
                 DB::statement($updateSql);
 
-                $fin = microtime(true);
-                $dur = $fin - $inicio;
-                $this->add_observation('Art actualizados en bbdd en '.number_format($dur, 2, '.', '').' seg'); 
+                $this->terminar(count($this->articulos_actualizados_models).' Articulos actualizados en bbdd'); 
 
             }
 
@@ -242,17 +250,11 @@ class ActualizarBBDD {
 
         $this->actualizar_tienda_nube();
 
-
-        $fin_global = microtime(true);
-        $dur = $fin_global - $inicio_global;
-
-        $this->add_observation('ActualizarBBDD en '.number_format($dur, 2, '.', '').' seg'); 
-
     }
 
     function set_articles_providers() {
 
-        $inicio = microtime(true);
+        $this->iniciar();
 
         foreach ($this->articulos_creados_models as $article) {
 
@@ -268,11 +270,7 @@ class ActualizarBBDD {
             $article->providers()->attach($article->provider_id, $pivot_data);
         }
 
-        $fin = microtime(true);
-
-        $dur = $fin - $inicio;
-
-        $this->add_observation('set articles_providers en '.number_format($dur, 2, '.', '').' seg'); 
+        $this->terminar('set articles_providers'); 
 
     }
 
@@ -316,6 +314,8 @@ class ActualizarBBDD {
 
         $insertData = [];
 
+        $this->iniciar();
+
         foreach ($this->articulos_para_crear_CACHE as $article_cache) {
 
             if (
@@ -338,8 +338,11 @@ class ActualizarBBDD {
 
         }
 
+        $this->terminar('Descuentos percentage articulos para crear');
 
 
+
+        $this->iniciar();
         $articles_id_para_eliminarles_descuentos = [];
 
         foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
@@ -379,11 +382,13 @@ class ActualizarBBDD {
             DB::table('article_discounts')->insert($insertData);
 
         }
+        $this->terminar('Descuentos percentage articulos para actualizar');
     }
 
     function asignar_discounts_amounts() {
 
         $insertData = [];
+        $this->iniciar();
 
         foreach ($this->articulos_para_crear_CACHE as $article_cache) {
 
@@ -402,9 +407,10 @@ class ActualizarBBDD {
             
         }
 
-
+        $this->terminar('Descuentos montos articulos para crear');
 
         // $articles_id_para_eliminarles_descuentos = [];
+        $this->iniciar();
 
         foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
 
@@ -436,12 +442,13 @@ class ActualizarBBDD {
         if (!empty($insertData)) {
             DB::table('article_discounts')->insert($insertData);
         }
+        $this->terminar('Descuentos montos articulos para actualizar');
     }
 
     function asignar_surchages_percentages() {
 
         $insertData = [];
-
+        $this->iniciar();
         foreach ($this->articulos_para_crear_CACHE as $article_cache) {
 
             if (
@@ -462,8 +469,10 @@ class ActualizarBBDD {
             
         }
 
+        $this->terminar('Recargos porcentaje articulos para crear');
 
 
+        $this->iniciar();
         $articles_id_para_eliminarles_descuentos = [];
 
         foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
@@ -499,10 +508,12 @@ class ActualizarBBDD {
         if (!empty($insertData)) {
             DB::table('article_surchages')->insert($insertData);
         }
+        $this->terminar('Recargos porcentaje articulos para actualizar');
     }
 
     function asignar_surchages_amounts() {
 
+        $this->iniciar();
         $insertData = [];
 
         foreach ($this->articulos_para_crear_CACHE as $article_cache) {
@@ -523,6 +534,7 @@ class ActualizarBBDD {
         }
 
 
+        $this->terminar('Recargos montos articulos para crear');
 
         // $articles_id_para_eliminarles_descuentos = [];
 
@@ -556,6 +568,7 @@ class ActualizarBBDD {
         if (!empty($insertData)) {
             DB::table('article_surchages')->insert($insertData);
         }
+        $this->terminar('Recargos montos articulos para actualizar');
     }
 
     function get_discounts_surchages_insert_data($relation = 'discounts', $article_id, $article_cache, $insertData, $discount_type = '%') {
@@ -651,6 +664,7 @@ class ActualizarBBDD {
     function actualizar_stock(bool $creados) {
         if ($creados) {
 
+            $this->iniciar();
             foreach ($this->articulos_para_crear_CACHE as $article_cache) {
 
                 if (
@@ -671,8 +685,11 @@ class ActualizarBBDD {
                 }
 
             }
+
+            $this->terminar('Stock de articulos creados');
         } else {
 
+            $this->iniciar();
             foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
 
                 if (
@@ -694,6 +711,7 @@ class ActualizarBBDD {
                 }
                 
             }
+            $this->terminar('Stock de articulos actualizados');
         }
     }
 
@@ -777,6 +795,8 @@ class ActualizarBBDD {
 
         // Recorrer todos los artículos
         // foreach ($articles_data as $article_data) {
+
+        $this->iniciar();
         foreach ($this->articulos_para_crear_CACHE as $article_cache) {
 
             if (empty($article_cache['price_types_data'])) continue;
@@ -831,8 +851,10 @@ class ActualizarBBDD {
             DB::statement($sql);
             if (app()->environment('local')) { Log::info('Se ejecuto consulta'); }
         }
+        $this->terminar('price_types de articulos creados');
 
 
+        $this->iniciar();
         foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
 
             if (empty($article_cache['price_types_data'])) continue;
@@ -920,6 +942,7 @@ class ActualizarBBDD {
             // if (app()->environment('local')) { Log::info(''); }
         }
 
+        $this->terminar('price_types de articulos actualizados');
 
     }
 
@@ -1005,7 +1028,7 @@ class ActualizarBBDD {
 
     function set_precios_finales() {
 
-        $inicio = microtime(true);
+        $this->iniciar();
 
         $updates = [];
 
@@ -1047,9 +1070,7 @@ class ActualizarBBDD {
 
         $this->updateMasivo($updates);
 
-        $fin = microtime(true);
-        $dur = $fin - $inicio;
-        $this->add_observation('Precios act en '.number_format($dur, 2, '.', '').' seg'); 
+        $this->terminar('Setear Precios'); 
 
     }
 
@@ -1233,7 +1254,7 @@ class ActualizarBBDD {
         $fin = microtime(true);
         $dur = $fin - $inicio;
 
-        $this->add_observation('Set articulos_creados en '.number_format($dur, 2, '.', '').' seg'); 
+        $this->terminar('Set articulos_creados en '.number_format($dur, 2, '.', '').' seg'); 
         Log::info('se seteo articulos_creados_models con '.count($this->articulos_creados_models).' articulos');
     }
 
@@ -1269,25 +1290,21 @@ class ActualizarBBDD {
     //     $fin = microtime(true);
     //     $dur = $fin - $inicio;
 
-    //     $this->add_observation('Set articulos_creados en '.number_format($dur, 2, '.', '').' seg'); 
+    //     $this->terminar('Set articulos_creados en '.number_format($dur, 2, '.', '').' seg'); 
     //     Log::info('se seteo articulos_creados_models con '.count($this->articulos_creados_models).' articulos');
     // }
 
     function set_articulos_actualizados_models() {
 
-        $inicio = microtime(true);
-
+        $this->iniciar();
         $ids = array_column($this->articulos_para_actualizar_CACHE, 'id');
 
         $this->articulos_actualizados_models = Article::whereIn('id', $ids)->get()->keyBy('id');
 
         Log::info('Se seteo articulos_actualizados_models con '.count($this->articulos_actualizados_models).' articulos');
 
-        $fin = microtime(true);
 
-        $dur = $fin - $inicio;
-
-        $this->add_observation('Set articulos_actualizados en '.number_format($dur, 2, '.', '').' seg'); 
+        $this->terminar('Set articulos_actualizados'); 
 
         // Log::info('$ids:');
         // Log::info($ids);
@@ -1302,8 +1319,8 @@ class ActualizarBBDD {
 
     protected function guardar_variantes_desde_cache_simple(): void
     {
-        $inicio = microtime(true);
 
+        $this->iniciar();
         if (UserHelper::hasExtencion('article_variants', $this->user)) {
             
             // 1) Artículos a CREAR
@@ -1320,9 +1337,7 @@ class ActualizarBBDD {
                 }
             }
         }
-        $fin = microtime(true);
-        $dur = $fin - $inicio;
-        $this->add_observation('variantes en '.number_format($dur, 2, '.', '').' seg');
+        $this->terminar('variantes');
     }
 
     /**
@@ -1721,6 +1736,7 @@ class ActualizarBBDD {
 
 
     function actualizar_cache() {
+        $this->iniciar();
 
         Log::info('');
         Log::info('');
@@ -1747,6 +1763,8 @@ class ActualizarBBDD {
         Log::info('');
         Log::info('');
         Log::info('');
+
+        $this->terminar('Actualizar Cache');
     }
 
     

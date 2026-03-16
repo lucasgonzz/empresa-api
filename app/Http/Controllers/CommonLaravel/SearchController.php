@@ -331,7 +331,7 @@ class SearchController extends Controller
 
             if ($return_used_filters) {
                 return [
-                    'models'    => $models,
+                    'models'        => $models,
                     'used_filters'  => $used_filters, 
                 ];
             }
