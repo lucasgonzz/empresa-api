@@ -6,21 +6,21 @@ use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\article\ImportChangeRecorder;
 use App\Models\Address;
 use App\Models\ArticlePropertyType;
 use App\Models\ArticlePropertyValue;
-use Illuminate\Support\Collection;
-use App\Models\PriceType;
-use App\Models\UnidadMedida;
-use Illuminate\Support\Facades\Log;
-
-use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
 use App\Models\Brand;
 use App\Models\Category;
+use App\Models\ImportHistory;
 use App\Models\Iva;
+use App\Models\PriceType;
 use App\Models\SubCategory;
+use App\Models\UnidadMedida;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class ProcessRow {
@@ -30,6 +30,7 @@ class ProcessRow {
     protected $ct;
     protected $provider_id;
     protected $articles_match = 0;
+    protected $articles_repetidos = 0;
     protected $articulosParaActualizar = [];
     protected $articulosParaCrear = [];
     protected $price_types = [];
@@ -59,8 +60,12 @@ class ProcessRow {
         $this->ct                       = $data['ct'];
         $this->provider_id              = $data['provider_id'];
         $this->create_and_edit          = $data['create_and_edit'];
-        $this->no_actualizar_articulos_de_otro_proveedor = $data['no_actualizar_articulos_de_otro_proveedor'];
-        $this->actualizar_proveedor = $data['actualizar_proveedor'];
+        
+        $this->actualizar_articulos_de_otro_proveedor               = $data['actualizar_articulos_de_otro_proveedor'];
+        $this->actualizar_proveedor                                 = $data['actualizar_proveedor'];
+        $this->permitir_provider_code_repetido                      = $data['permitir_provider_code_repetido'];
+        $this->permitir_provider_code_repetido_en_multi_providers   = $data['permitir_provider_code_repetido_en_multi_providers'];
+        $this->actualizar_por_provider_code                         = $data['actualizar_por_provider_code'];
 
         $this->import_history_id = $data['import_history_id'] ?? null;
         $this->import_uuid = $data['import_uuid'] ?? null;
@@ -380,7 +385,8 @@ class ProcessRow {
                 // Log::info('Fila repetida tratada como VARIANTE del artículo base');
                 return;
             }
-            // Log::info('SE OMITIO EN PROCES ROW (fila repetida sin propiedades de variante)');
+            $this->articles_repetidos++;
+            Log::info('SE OMITIO EN PROCES ROW (fila repetida sin propiedades de variante)');
             return;
         } else {
             // Log::info('No esta aun en el excel');
@@ -397,17 +403,31 @@ class ProcessRow {
             $this->article_index,
             $this->user->id,
             $provider_id,
-            $this->no_actualizar_articulos_de_otro_proveedor
+            
+            $this->permitir_provider_code_repetido,
+            $this->permitir_provider_code_repetido_en_multi_providers,
+            $this->actualizar_articulos_de_otro_proveedor,
+            $this->actualizar_por_provider_code,
+            $this->actualizar_proveedor,
         );
         $this->terminar('find en cache');
+
+        Log::info('articulo encontrado:');
+
         // Log::info('Se llamo a find article');
-        // if ($articulo_ya_creado instanceof \App\Models\Article) {
+        if ($articulo_ya_creado instanceof \App\Models\Article) {
 
-        //     Log::info('Es article');
-        // } else {
-        //     Log::info('NO ES article');
+            Log::info($articulo_ya_creado->name);
+        } else if ($this->son_varios_articulos($articulo_ya_creado)) {
 
-        // }
+            Log::info('Macheo con '.count($articulo_ya_creado).' articulos:');
+
+            foreach ($articulo_ya_creado as $article) {
+                Log::info($article->name);
+            }
+        } else {
+            Log::info('No hubo mach');
+        }
 
         // if (!is_null($articulo_ya_creado)) {
         //     Log::info('No es null');
@@ -432,7 +452,7 @@ class ProcessRow {
             || $this->son_varios_articulos($articulo_ya_creado)
         ) {
 
-            // Log::info('Articulo ya creado');
+            Log::info('Articulo ya creado');
 
             $this->iniciar();
             $this->attach_provider($articulo_ya_creado, $data, $provider_id);
@@ -582,7 +602,7 @@ class ProcessRow {
         if (
             !is_null($articulo_ya_creado->provider_id)
             && !is_null($provider_id)
-            && $this->no_actualizar_articulos_de_otro_proveedor
+            && !$this->actualizar_articulos_de_otro_proveedor
             && $articulo_ya_creado->provider_id != $provider_id
         ) {
             return true;
@@ -624,7 +644,7 @@ class ProcessRow {
     function son_varios_articulos($articulo_ya_creado) {
         // Log::info('son_varios_articulos: '.$articulo_ya_creado instanceof Collection);
         if ($articulo_ya_creado instanceof Collection) {
-            Log::info('hay '.count($articulo_ya_creado));
+            // Log::info('hay '.count($articulo_ya_creado));
             if (count($articulo_ya_creado) >= 1) {
                 return true;
             }
@@ -826,7 +846,7 @@ class ProcessRow {
         $repetido = false;
 
         // Aseguramos boolean real por si el .env viene como string
-        $codigos_repetidos = filter_var(config('app.CODIGOS_DE_PROVEEDOR_REPETIDOS'), FILTER_VALIDATE_BOOLEAN);
+        $codigos_repetidos = $this->codigos_proveedor_repetidos;
 
         // 1) Coincidencia por ID
         if (!empty($data['id'])) {
@@ -1630,6 +1650,10 @@ class ProcessRow {
 
     function get_articles_match() {
         return $this->articles_match;
+    }
+
+    function get_articles_repetidos() {
+        return $this->articles_repetidos;
     }
 
     /**

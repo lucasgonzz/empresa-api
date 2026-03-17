@@ -30,31 +30,52 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 {
     use Batchable, Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    protected $import_uuid, $csv_path, $columns, $create_and_edit, $start_row, $finish_row,
-              $provider_id, $user, $auth_user_id, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $import_status_id, $import_history_id, $chunk_number, $observations, $start_offset, $inicio_chunk;
+    protected $csv_path, $columns, $create_and_edit, $start_row, $finish_row,
+              $provider_id, $user, $auth_user_id, $import_status_id, $import_history_id, $chunk_number, $observations, $start_offset, $inicio_chunk, $actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $permitir_provider_code_repetido, $permitir_provider_code_repetido_en_multi_providers, $actualizar_por_provider_code;
 
     // public $timeout = 5; // 30 minutos por chunk, ajustable
     public $timeout = 1800; // 30 minutos por chunk, ajustable
     public $tries = 1;
     
-	public function __construct($import_uuid, $csv_path, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $import_status_id, $import_history_id, $chunk_number, $start_offset = null)
-    {
+	public function __construct(
+            $csv_path, 
+            $columns, 
+            $create_and_edit, 
+            $start_row, 
+            $finish_row, 
+            $provider_id, 
+            $user, 
+            $auth_user_id, 
+            $import_status_id, 
+            $import_history_id, 
+            $chunk_number, 
+            $start_offset, 
+            
+            $actualizar_articulos_de_otro_proveedor, 
+            $actualizar_proveedor, 
+            $permitir_provider_code_repetido, 
+            $permitir_provider_code_repetido_en_multi_providers,
+            $actualizar_por_provider_code
+    ) {
 
-        $this->import_uuid = $import_uuid;
-        $this->csv_path = $csv_path;
-        $this->columns = $columns;
-        $this->create_and_edit = $create_and_edit;
-        $this->no_actualizar_articulos_de_otro_proveedor = $no_actualizar_articulos_de_otro_proveedor;
-        $this->actualizar_proveedor = $actualizar_proveedor;
-        $this->start_row = $start_row;
-        $this->finish_row = $finish_row;
-        $this->provider_id = $provider_id;
-        $this->user = $user;
-        $this->auth_user_id = $auth_user_id;
-        $this->import_status_id = $import_status_id;
-        $this->import_history_id = $import_history_id;
-        $this->chunk_number = $chunk_number;
-        $this->start_offset = $start_offset;
+        $this->csv_path                                     = $csv_path;
+        $this->columns                                      = $columns;
+        $this->create_and_edit                              = $create_and_edit;
+        $this->start_row                                    = $start_row;
+        $this->finish_row                                   = $finish_row;
+        $this->provider_id                                  = $provider_id;
+        $this->user                                         = $user;
+        $this->auth_user_id                                 = $auth_user_id;
+        $this->import_status_id                             = $import_status_id;
+        $this->import_history_id                            = $import_history_id;
+        $this->chunk_number                                 = $chunk_number;
+        $this->start_offset                                 = $start_offset;
+
+        $this->actualizar_articulos_de_otro_proveedor               = $actualizar_articulos_de_otro_proveedor;
+        $this->actualizar_proveedor                                 = $actualizar_proveedor;
+        $this->permitir_provider_code_repetido                      = $permitir_provider_code_repetido;
+        $this->permitir_provider_code_repetido_en_multi_providers   = $permitir_provider_code_repetido_en_multi_providers;
+        $this->actualizar_por_provider_code                         = $actualizar_por_provider_code;
 
         $this->observations = '';
 
@@ -67,7 +88,10 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 
     public function handle()
     {
-        Log::warning("INICIO Job Chunk #{$this->chunk_number}");
+        Log::info('Procesando chunk', [
+            'chunk_number' => $this->chunk_number,
+            'pid' => getmypid(),
+        ]);
         // Log::warning("INICIO Job Chunk #{$this->chunk_number} del lote {$this->batchId()}. PID: " . getmypid());
 
         $inicio = microtime(true);
@@ -266,11 +290,8 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         try {
 
             $this->importer = new ArticleImport(
-                $this->import_uuid,
                 $this->columns,
                 $this->create_and_edit,
-                $this->no_actualizar_articulos_de_otro_proveedor,
-                $this->actualizar_proveedor,
                 $this->start_row,
                 $this->finish_row,
                 $this->provider_id,
@@ -281,6 +302,12 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
                 $this->import_history->registrar_art_cre,
                 $this->import_history->registrar_art_act,
                 $this->import_result->id,
+
+                $this->actualizar_articulos_de_otro_proveedor,
+                $this->actualizar_proveedor,
+                $this->permitir_provider_code_repetido,
+                $this->permitir_provider_code_repetido_en_multi_providers,
+                $this->actualizar_por_provider_code,
             );
 
         } catch (\Throwable $e) {
@@ -308,10 +335,6 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         ]);
     }
 
-    function limpiar_import_result() {
-        ArticleImportResult::where('import_uuid', $this->import_uuid)->delete();
-    }
-
     function notificar_error_input_status($error) {
 
         $this->import_status->error_message = $error;
@@ -325,10 +348,12 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
     function update_import_status() {
         $inicio = microtime(true);
         $this->import_status->processed_chunks++;
-        $this->import_status->articles_match += $this->import_result->articles_match;
-        $this->import_status->created_models += $this->import_result->created_count;
-        $this->import_status->updated_models += $this->import_result->updated_count;
-        $this->import_status->filas_procesadas += $this->import_result->filas_procesadas;
+        $this->import_status->articles_match        += $this->import_result->articles_match;
+        $this->import_status->created_models        += $this->import_result->created_count;
+        $this->import_status->updated_models        += $this->import_result->updated_count;
+        $this->import_status->filas_procesadas      += $this->import_result->filas_procesadas;
+        $this->import_status->articles_repetidos    += $this->import_result->articles_repetidos;
+
         Log::info('import_result->articles_match: '.$this->import_result->articles_match);
         
         // Use >= as a safeguard in case of concurrent increments
@@ -401,10 +426,12 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
 
         $inicio = microtime(true);
 
-        $this->import_history->created_models   += $this->import_result->created_count;
-        $this->import_history->updated_models   += $this->import_result->updated_count;
-        $this->import_history->articles_match   += $this->import_result->articles_match;
-        $this->import_history->filas_procesadas += $this->import_result->filas_procesadas;
+        $this->import_history->created_models       += $this->import_result->created_count;
+        $this->import_history->updated_models       += $this->import_result->updated_count;
+        $this->import_history->articles_match       += $this->import_result->articles_match;
+        $this->import_history->filas_procesadas     += $this->import_result->filas_procesadas;
+        $this->import_history->articles_repetidos   += $this->import_result->articles_repetidos;
+
         $this->import_history->status           = 'en_proceso';
         $this->import_history->save();
 
@@ -483,71 +510,6 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         $this->import_result->save();
     }
 
-    function get_article_import_result() {
-
-        $inicio = microtime(true);
-
-        // 1) Traer el ultimo import_results creado 
-        // $this->import_result = ArticleImportResult::with([
-        $import_result = ArticleImportResult::where('import_uuid', $this->import_uuid)
-                                                ->orderBy('id', 'DESC');
-
-        if ($this->import_history->registrar_art_cre) {
-            $import_result->with('articulos_creados:id');
-        }
-
-        if ($this->import_history->registrar_art_act) {
-            $import_result->with(['articulos_actualizados' => function ($q) {
-                                    $q->select('articles.id'); // pivot vendrá con updated_props
-                                },]);
-        }
-
-        $this->import_result = $import_result->first();
-
-        
-        // 2) Consolidar
-        $this->created_ids = [];
-        $this->updated_props_by_article = []; // [article_id => array props merged]
-
-
-
-        // 2.a) CREADOS
-        if ($this->import_history->registrar_art_cre) {
-            foreach ($this->import_result->articulos_creados as $art) {
-                $this->created_ids[] = (int)$art->id;
-            }
-
-            // Unificar IDs creados
-            $this->created_ids = array_values(array_unique($this->created_ids));
-        }
-
-        // 2.b) ACTUALIZADOS (merge si un article_id apareció en más de un chunk)
-        if ($this->import_history->registrar_art_act) {
-            foreach ($this->import_result->articulos_actualizados as $art) {
-                $pivot_json = $art->pivot->updated_props ?? '{}';
-                $props = json_decode($pivot_json, true);
-                if (!is_array($props)) {
-                    $props = [];
-                }
-
-                $aid = (int)$art->id;
-
-                if (!isset($this->updated_props_by_article[$aid])) {
-                    $this->updated_props_by_article[$aid] = $props;
-                } else {
-                    // merge por clave (la última ocurrencia pisa)
-                    $this->updated_props_by_article[$aid] = $this->mergeUpdatedProps(
-                        $this->updated_props_by_article[$aid],
-                        $props
-                    );
-                }
-            }
-        }
-
-        $fin = microtime(true);
-        $dur = $fin - $inicio;
-        $this->add_observation('get_article_import_result en '.number_format($dur, 2, '.', '').' seg');
-    }
     /**
      * Merge de updated_props de un mismo artículo cuando aparece en múltiples chunks.
      * - Estrategia: la última ocurrencia pisa campos anteriores.

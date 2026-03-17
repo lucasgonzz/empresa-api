@@ -12,7 +12,7 @@ class set_article_purchases_address_id extends Command
      *
      * @var string
      */
-    protected $signature = 'set_article_purchases_address_id {user_id?}';
+    protected $signature = 'set_article_purchases_address_id {sale_id?}';
 
     /**
      * The console command description.
@@ -39,14 +39,20 @@ class set_article_purchases_address_id extends Command
     public function handle()
     {
 
-        $user_id = config('app.USER_ID');
-        if (!$user_id) {
-            $user_id = $this->argument('user_id');
-        }
+        // $user_id = config('app.USER_ID');
+        // if (!$user_id) {
+        //     $user_id = $this->argument('user_id');
+        // }
 
         $sales = Sale::where('user_id', $user_id)
-                        ->orderBy('id', 'ASC')
-                        ->get();
+                        ->orderBy('id', 'ASC');
+
+        $sale_id = $this->argument('sale_id');
+        if ($sale_id) {
+            $sales->where('id', '>', $sale_id);
+            $this->comment('desde el id > '.$sale_id);
+        }
+        $sales = $sales->get();
 
         $this->info(count($sales).' ventas');
 

@@ -37,6 +37,7 @@ class ArticleImportHelper {
         			$import_history->created_models. ' articulos creados',
         			$import_history->articles_match. ' articulos macheados',
         			$import_history->updated_models. ' articulos actualizados',
+        			// $import_history->articles_repetidos. ' articulos repetidos',
         		],
         	],
         ];
@@ -145,11 +146,12 @@ class ArticleImportHelper {
         $import_result = ArticleImportResult::find($data['import_result_id']);
 
         $import_result->update([
-		    'created_count'  	=> count($data['articulos_creados']),
-		    'updated_count'  	=> count($data['articulos_actualizados']),
-		    'articles_match' 	=> $data['articles_match'],
-		    'filas_procesadas'	=> $data['filas_procesadas'],
-		    'provider_id'		=> $data['provider_id'],
+		    'created_count'  		=> count($data['articulos_creados']),
+		    'updated_count'  		=> count($data['articulos_actualizados']),
+		    'articles_match' 		=> $data['articles_match'],
+		    'articles_repetidos'	=> $data['articles_repetidos'],
+		    'filas_procesadas'		=> $data['filas_procesadas'],
+		    'provider_id'			=> $data['provider_id'],
         ]);
 
 

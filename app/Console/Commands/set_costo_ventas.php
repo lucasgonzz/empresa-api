@@ -41,6 +41,8 @@ class set_costo_ventas extends Command
      */
     public function handle()
     {
+        $this->info('Ejecutandose...');
+        
         $sales = Sale::orderBy('id', 'ASC');
 
         if ($this->option('solo_ventas_de_hoy')) {

@@ -25,7 +25,7 @@ use Illuminate\Support\Facades\Schema;
 
 class ActualizarBBDD {
 
-    function __construct($articulos_para_crear_CACHE, $articulos_para_actualizar_CACHE, $user, $auth_user_id) {
+    function __construct($articulos_para_crear_CACHE, $articulos_para_actualizar_CACHE, $user, $auth_user_id, $codigos_proveedor_repetidos, $chunk_number) {
         
         Log::info('');
         Log::info('********* ActualizarBBDD ************');
@@ -41,6 +41,9 @@ class ActualizarBBDD {
 
         $this->user                                 = $user;
         $this->auth_user_id                         = $auth_user_id;
+        $this->codigos_proveedor_repetidos          = $codigos_proveedor_repetidos;
+        $this->chunk_number                         = $chunk_number.'-'.time(); 
+
 
         $this->articulos_para_crear_CACHE           = $articulos_para_crear_CACHE;
         $this->articulos_para_actualizar_CACHE      = $articulos_para_actualizar_CACHE;
@@ -106,6 +109,7 @@ class ActualizarBBDD {
                 ])->merge([
                     'created_at' => $this->now,
                     'updated_at' => $this->now,
+                    'chunk_number'  => $this->chunk_number,
                 ])->toArray();
             }, $this->articulos_para_crear_CACHE);
 
@@ -1246,7 +1250,7 @@ class ActualizarBBDD {
         $inicio = microtime(true);
        
         $articles = Article::where('user_id', $this->user->id)
-                            ->where('created_at', $this->now)
+                            ->where('chunk_number', $this->chunk_number)
                             ->get();
 
         $this->articulos_creados_models = $articles;
@@ -1753,12 +1757,12 @@ class ActualizarBBDD {
         Log::info('');
 
         foreach ($this->articulos_creados_models as $article) {
-            Log::info('Entro con '.$article->id);
-            ArticleIndexCache::update($article);
+            // Log::info('Entro con '.$article->id);
+            ArticleIndexCache::update($article, $this->codigos_proveedor_repetidos);
         }
 
         foreach ($this->articulos_actualizados_models as $article) {
-            ArticleIndexCache::update($article);
+            ArticleIndexCache::update($article, $this->codigos_proveedor_repetidos);
         }
         Log::info('');
         Log::info('');
