@@ -36,14 +36,30 @@ class ArticleImport implements ToCollection
 {
 
     
-    public function __construct($import_uuid, $columns, $create_and_edit, $no_actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $start_row, $finish_row, $provider_id, $user, $auth_user_id, $archivo_excel_path, $chunk_number, $registrar_articulos_creados, $registrar_articulos_actualizados, $import_result_id) {
-        set_time_limit(9999999999);
+    public function __construct(
+        $columns, 
+        $create_and_edit, 
+        $start_row, 
+        $finish_row, 
+        $provider_id, 
+        $user, 
+        $auth_user_id, 
+        $archivo_excel_path, 
+        $chunk_number, 
+        $registrar_articulos_creados, 
+        $registrar_articulos_actualizados, 
+        $import_result_id, 
 
-        Log::info('Se creo ArticleImport con import_uuid: '.$import_uuid);
+        $actualizar_articulos_de_otro_proveedor, 
+        $actualizar_proveedor, 
+        $permitir_provider_code_repetido, 
+        $permitir_provider_code_repetido_en_multi_providers,
+        $actualizar_por_provider_code
+    ) {
+
 
         $this->observations = [];
 
-        $this->import_uuid                      = $import_uuid;
         $this->user                             = $user;
         $this->auth_user_id                     = $auth_user_id;
         $this->archivo_excel_path               = $archivo_excel_path;
@@ -52,10 +68,17 @@ class ArticleImport implements ToCollection
         $this->registrar_articulos_actualizados = $registrar_articulos_actualizados;
         $this->import_result_id                 = $import_result_id;
 
+
+
+        $this->actualizar_articulos_de_otro_proveedor               = $actualizar_articulos_de_otro_proveedor;
+        $this->actualizar_proveedor                                 = $actualizar_proveedor;
+        $this->permitir_provider_code_repetido                      = $permitir_provider_code_repetido;
+        $this->permitir_provider_code_repetido_en_multi_providers   = $permitir_provider_code_repetido_en_multi_providers;
+        $this->actualizar_por_provider_code                         = $actualizar_por_provider_code;
+
+
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
-        $this->no_actualizar_articulos_de_otro_proveedor = $no_actualizar_articulos_de_otro_proveedor;
-        $this->actualizar_proveedor = $actualizar_proveedor;
         $this->start_row = $start_row;
         $this->finish_row = $finish_row;
         $this->ct = new Controller();
@@ -71,16 +94,24 @@ class ArticleImport implements ToCollection
         $this->updated_props = [];
 
 
+        Log::info('');
         Log::info('Empieza ArticleImport');
+        Log::info('');
+
+
 
         $this->process_row = new ProcessRow([
-            'ct'        => $this->ct, 
-            'columns'   => $this->columns,
-            'user'      => $this->user,
-            'provider_id'      => $this->provider_id,
-            'create_and_edit'      => $this->create_and_edit,
-            'no_actualizar_articulos_de_otro_proveedor'      => $this->no_actualizar_articulos_de_otro_proveedor,
-            'actualizar_proveedor'      => $this->actualizar_proveedor,
+            'ct'                                            => $this->ct, 
+            'columns'                                       => $this->columns,
+            'user'                                          => $this->user,
+            'provider_id'                                   => $this->provider_id,
+            'create_and_edit'                               => $this->create_and_edit,
+
+            'actualizar_articulos_de_otro_proveedor'                => $this->actualizar_articulos_de_otro_proveedor,
+            'actualizar_proveedor'                                  => $this->actualizar_proveedor,
+            'permitir_provider_code_repetido'                       => $this->permitir_provider_code_repetido,
+            'permitir_provider_code_repetido_en_multi_providers'    => $this->permitir_provider_code_repetido_en_multi_providers,
+            'actualizar_por_provider_code'                          => $this->actualizar_por_provider_code,
         ]);
 
         $this->nombres_proveedores = [];
@@ -154,7 +185,7 @@ class ArticleImport implements ToCollection
             $duracion_cacheo = ArticleIndexCache::build(
                 $this->user->id,
                 $this->provider_id ?? null,
-                (bool)$this->no_actualizar_articulos_de_otro_proveedor
+                (bool)$this->actualizar_articulos_de_otro_proveedor,
             );
             // $duracion_cacheo = number_format($duracion_cacheo, 2, '.', '');
         } else {
@@ -171,7 +202,7 @@ class ArticleImport implements ToCollection
         $article_index = ArticleIndexCache::get_index(
             $this->user->id,
             $this->provider_id ? (int)$this->provider_id : null,
-            (bool)$this->no_actualizar_articulos_de_otro_proveedor
+            (bool)$this->actualizar_articulos_de_otro_proveedor
         );
 
         $this->process_row->set_article_index($article_index);
@@ -275,11 +306,14 @@ class ArticleImport implements ToCollection
             $articulos_actualizados = $this->process_row->getArticulosParaActualizar();
 
             $articles_match = $this->process_row->get_articles_match();
+            $articles_repetidos = $this->process_row->get_articles_repetidos();
+
 
             Log::info('Trabajo terminado en ArticleImport');
             Log::info('articulos_creados: '.count($articulos_creados));
             Log::info('articulos_actualizados: '.count($articulos_actualizados));
             Log::info('articles_match: '.$articles_match);
+            Log::info('articles_repetidos: '.$articles_repetidos);
             Log::info('filas_procesadas: '.$this->filas_procesadas);
 
 
@@ -290,6 +324,7 @@ class ArticleImport implements ToCollection
                 'articulos_creados'                     => $articulos_creados, 
                 'articulos_actualizados'                => $articulos_actualizados, 
                 'articles_match'                        => $articles_match, 
+                'articles_repetidos'                    => $articles_repetidos, 
                 'filas_procesadas'                      => $this->filas_procesadas, 
                 'provider_id'                           => $this->provider_id,
                 'registrar_articulos_creados'           => $this->registrar_articulos_creados,
@@ -340,7 +375,7 @@ class ArticleImport implements ToCollection
         try {
 
             $this->iniciar();
-            $actualizar_bbdd = new ActualizarBBDD($articulosParaCrear, $articulosParaActualizar, $this->user, $this->auth_user_id);
+            $actualizar_bbdd = new ActualizarBBDD($articulosParaCrear, $articulosParaActualizar, $this->user, $this->auth_user_id, $this->permitir_provider_code_repetido, $this->chunk_number);
             $observations = $actualizar_bbdd->get_observations();
 
             foreach ($observations as $observation) {

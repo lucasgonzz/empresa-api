@@ -435,8 +435,8 @@ class ArticleController extends Controller
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
 
-        Log::info('columns:');
-        Log::info($columns);
+        // Log::info('columns:');
+        // Log::info($columns);
         /*
             Agrego columnas de:
                 1. Direcciones
@@ -484,8 +484,6 @@ class ArticleController extends Controller
             'archivo_excel'         => $archivo_excel, 
             'columns'               => $columns, 
             'create_and_edit'       => $request->create_and_edit, 
-            'no_actualizar_articulos_de_otro_proveedor'             => $request->no_actualizar_articulos_de_otro_proveedor,
-            'actualizar_proveedor'  => $request->actualizar_proveedor, 
             'start_row'             => $request->start_row, 
             'finish_row'            => $request->finish_row, 
             'provider_id'           => $request->provider_id, 
@@ -494,6 +492,13 @@ class ArticleController extends Controller
             'archivo_excel_path'    => $archivo_excel_path,
             'registrar_art_cre'    => $request->registrar_art_cre,
             'registrar_art_act'    => $request->registrar_art_act,
+
+            'permitir_provider_code_repetido'                       => $request->permitir_provider_code_repetido,
+            'permitir_provider_code_repetido_en_multi_providers'    => $request->permitir_provider_code_repetido_en_multi_providers,
+            'actualizar_articulos_de_otro_proveedor'                => $request->actualizar_articulos_de_otro_proveedor,
+            'actualizar_por_provider_code'                          => $request->actualizar_por_provider_code,
+            'actualizar_proveedor'                                  => $request->actualizar_proveedor, 
+
         ]);
         
         if ($result['hubo_un_error']) {

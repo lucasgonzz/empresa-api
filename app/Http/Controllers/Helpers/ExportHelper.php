@@ -147,11 +147,11 @@ class ExportHelper {
 		$addresses = Self::getAddresses();
 		if (count($addresses) >= 1) {
 			
-			// $stock_index = array_search('Stock actual', $headings);
-			// $stock_min_index = array_search('Stock minimo', $headings);
+			$stock_index = array_search('Stock actual', $map);
+			$stock_min_index = array_search('Stock minimo', $map);
 
-			// unset($headings[$stock_index]);
-			// unset($headings[$stock_min_index]);
+			unset($map[$stock_index]);
+			unset($map[$stock_min_index]);
 
 			foreach ($addresses as $address) {
 				$map[] = $article->{$address->street};
@@ -170,9 +170,13 @@ class ExportHelper {
 			if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
 				Log::info('articulo_margen_de_ganancia_segun_lista_de_precios');
 				
-				unset($map[14]);
-				unset($map[19]);
-				unset($map[23]);
+				$margen_index = array_search('Margen de ganancia', $map);
+				$precio_index = array_search('Precio', $map);
+				$precio_final_index = array_search('Precio Final', $map);
+
+				unset($map[$margen_index]);
+				unset($map[$precio_index]);
+				unset($map[$precio_final_index]);
 
 				// Caso Pack descartables
 				foreach ($price_types as $price_type) {
