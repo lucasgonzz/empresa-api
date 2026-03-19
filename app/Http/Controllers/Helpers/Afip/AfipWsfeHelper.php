@@ -122,9 +122,9 @@ class AfipWsfeHelper extends Controller
                 Log::info($afip_result);
 
                 Log::info('se consulto comprobante');
-                Log::info(isset($afip_result['FECompConsultarResult']));
 
                 if (isset($afip_result['FECompConsultarResult'])) {
+                    Log::info((array)$afip_result['FECompConsultarResult']);
 
                     $this->afip_ticket->consultado = 1;
                     $this->afip_ticket->save();

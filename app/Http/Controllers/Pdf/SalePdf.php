@@ -63,7 +63,7 @@ class SalePdf extends fpdf {
 		$fields = [
 			'#' 		=> 5,
 			'Num' 		=> 15,
-			'Codigo' 	=> 35,
+			'Codigo' 	=> 30,
 			'Nombre' 	=> 55,
 			'Cant' 		=> 15,
 		];
@@ -73,6 +73,11 @@ class SalePdf extends fpdf {
 				'Costo' 	=> 20,
 			]);
 			$fields['Nombre'] = 35;
+		}
+
+		if (UserHelper::hasExtencion('article_variants')) {
+			$fields['Nombre'] -= 15;
+			$fields['Variante'] = 20;
 		}
 
 		if ($this->with_prices) {
@@ -430,6 +435,19 @@ class SalePdf extends fpdf {
 			0, 
 			'C'
 		);
+
+		if (isset($this->getFields()['Variante'])) {
+			$this->Cell(
+				$this->getFields()['Variante'], 
+				$this->line_height, 
+				$item->pivot->variant_description, 
+				$this->b, 
+				0, 
+				'C'
+			);
+		}
+
+
 		if ($this->with_costs) {
 			$this->Cell(
 				$this->getFields()['Costo'], 

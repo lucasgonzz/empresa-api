@@ -38,6 +38,12 @@ class SaleAfipTicketPdf extends fpdf {
 		$widths = [];
 		$widths['codigo'] = 23;
 		$widths['producto'] = 66;
+
+		if (UserHelper::hasExtencion('article_variants')) {
+			$widths['producto'] = 51;
+			$widths['variante'] = 15;
+		}
+
 		$widths['cantidad'] = 17;
 		$widths['bonif'] = 15;
 
@@ -754,6 +760,14 @@ class SaleAfipTicketPdf extends fpdf {
 
 	    $this->x = 5 + $this->widths['codigo'] + $this->widths['producto'];
 
+	    if (
+	    	isset($this->widths['variante'])
+	    ) {
+
+        	$this->Cell($this->widths['variante'], 6, $article->pivot->variant_description, 0, 0, 'R');
+	    }
+
+
         $this->Cell($this->widths['cantidad'], 6, Numbers::price($article->pivot->amount), 0, 0, 'R');
 
         $p = Numbers::price($this->afip_helper->getArticlePrice($this->sale, $article), true);
@@ -1131,6 +1145,11 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->SetFont('Arial', 'B', 9, 'L');
 		$this->Cell($this->widths['codigo'], 5, 'Código', 1, 0, 'L');
 		$this->Cell($this->widths['producto'], 5, 'Producto / Servicio', 1, 0, 'L');
+		
+		if (isset($this->widths['variante'])) {
+			$this->Cell($this->widths['variante'], 5, 'Variante', 1, 0, 'L');
+		}
+
 		$this->Cell($this->widths['cantidad'], 5, 'Cantidad', 1, 0, 'C');
 		// $this->Cell($this->widths['unidad_medida'], 5, 'U.medida', 1, 0, 'L');
 		$this->Cell($this->widths['precio_unitario'], 5, 'Precio Unit', 1, 0, 'C');

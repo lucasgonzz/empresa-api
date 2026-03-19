@@ -88,11 +88,21 @@ class InitExcelImport
     {
         Bus::batch($this->jobs)
             ->name('import_history_' . $this->import_history->id)
+            ->onConnection('redis')   // <-- clave
+            ->onQueue('default')      // <-- clave
             ->then(function (Batch $batch) {
+
+                Log::info('BATCH THEN ejecutado', [
+                    'batch_id' => $batch->id,
+                    'total_jobs' => $batch->totalJobs,
+                    'pending_jobs' => $batch->pendingJobs,
+                    'failed_jobs' => $batch->failedJobs,
+                ]);
 
                 FinalizeArticleImport::dispatch(
                     $this->user->id,
-                    $this->import_history->id
+                    $this->import_history->id,
+                    $this->import_status->id
                 );
             })
             ->catch(function (Batch $batch, Throwable $e) {
@@ -241,7 +251,7 @@ class InitExcelImport
                 $this->start,
                 $this->end,
                 $this->provider_id,
-                $this->user,
+                $this->user->id,
                 $this->auth_user_id,
                 $this->import_status->id,
                 $this->import_history->id,
@@ -277,20 +287,62 @@ class InitExcelImport
     function crear_import_history()
     {
         $this->import_history = ImportHistory::create([
-            'created_models' => 0,
-            'updated_models' => 0,
-            'status' => 'en_preparacion',
-            'operacion_a_realizar' => $this->create_and_edit ? 'Crear y actualizar' : 'Solo actualizar',
+            'created_models'        => 0,
+            'updated_models'        => 0,
+            'articles_match'        => 0,
+            'status'                => 'en_preparacion',
+            'operacion_a_realizar'  => $this->create_and_edit ? 'Crear y actualizar' : 'Solo actualizar',
             // 'no_actualizar_otro_proveedor' => (bool) $this->actualizar_articulos_de_otro_proveedor,
-            'user_id' => $this->user ? $this->user->id : null,
-            'employee_id' => $this->auth_user_id,
-            'model_name' => 'article',
-            'provider_id' => $this->provider_id && $this->provider_id !== 'null' ? (int) $this->provider_id : null,
-            'columnas' => json_encode(ArticleImportHelper::convertirPosicionesAColumnas($this->columns), JSON_PRETTY_PRINT),
-            'excel_url' => $this->archivo_excel_path,
-            'registrar_art_cre' => $this->registrar_art_cre,
-            'registrar_art_act' => $this->registrar_art_act,
-            // 'permitir_provider_code_repetido' => $this->permitir_provider_code_repetido,
+            'user_id'               => $this->user ? $this->user->id : null,
+            'employee_id'           => $this->auth_user_id,
+            'model_name'            => 'article',
+            'provider_id'           => $this->provider_id && $this->provider_id !== 'null' ? (int) $this->provider_id : null,
+            'columnas'              => json_encode(ArticleImportHelper::convertirPosicionesAColumnas($this->columns), JSON_PRETTY_PRINT),
+            'excel_url'             => $this->archivo_excel_path,
+            'registrar_art_cre'     => $this->registrar_art_cre,
+            'registrar_art_act'     => $this->registrar_art_act,
+            // 'permitir_provider_code_repetido'    => $this->permitir_provider_code_repetido,
+            'total_chunks'          => $this->total_chunks,
+            'processed_chunks'      => 0,
+            'operaciones'           => json_encode($this->get_operaciones()),
         ]);
+    }
+
+    function get_operaciones() {
+
+        return [
+            [
+                'name'  => 'Operaciones',
+                'value' => (bool)$this->create_and_edit ? 'Crear y actualizar' : 'Solo actualizar',
+            ],
+            [
+                'name'  => 'Fila inicio',
+                'value' => $this->start_row,
+            ],
+            [
+                'name'  => 'Fila fin',
+                'value' => $this->finish_row,
+            ],
+            [
+                'name'  => 'Permitir codigos de proveedor repetidos',
+                'value' => $this->permitir_provider_code_repetido ? 'Si' : 'No',
+            ],
+            [
+                'name'  => 'Permitir codigos de proveedor repetidos en multiples proveedores',
+                'value' => $this->permitir_provider_code_repetido_en_multi_providers ? 'Si' : 'No',
+            ],
+            [
+                'name'  => 'Actualizar articulos de otro proveedor',
+                'value' => $this->actualizar_articulos_de_otro_proveedor ? 'Si' : 'No',
+            ],
+            [
+                'name'  => 'Actualizar por codigos de proveedor',
+                'value' => $this->actualizar_por_provider_code ? 'Si' : 'No',
+            ],
+            [
+                'name'  => 'Actualizar proveedor',
+                'value' => $this->actualizar_proveedor ? 'Si' : 'No',
+            ],
+        ];
     }
 }

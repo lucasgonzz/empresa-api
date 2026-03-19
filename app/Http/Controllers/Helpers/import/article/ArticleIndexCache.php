@@ -21,6 +21,7 @@ class ArticleIndexCache
      */
     protected static $runtime_index_by_key = [];
     protected static $runtime_loaded_by_key = [];
+    protected static $runtime_dirty_by_key = [];
 
     public static function build($user_id, $provider_id, $actualizar_articulos_de_otro_proveedor)
     {
@@ -74,15 +75,15 @@ class ArticleIndexCache
                     $index['skus'][(string) $article->sku] = $article_id;
                 }
 
-                Log::info('provider_code: '.$article->provider_code);
-                Log::info('provider_id: '.$article->provider_id);
+                // Log::info('provider_code: '.$article->provider_code);
+                // Log::info('provider_id: '.$article->provider_id);
 
                 // if (!$provider_codes_desde_pivot_table) {
                     if (
                         !is_null($article->provider_code)
                         && !is_null($article->provider_id)
                     ) {
-                        Log::info('Entro en provider_codes para hacer index');
+                        // Log::info('Entro en provider_codes para hacer index');
                         $prov_code  = $article->provider_code;
                         $prov_id    = $article->provider_id;
 
@@ -162,8 +163,8 @@ class ArticleIndexCache
         $duracion = microtime(true) - $inicio;
 
         Log::info("ArticleIndexCache::build -> ids: " . count($index['ids']) . " provider_codes: ". count($index['provider_codes']) . " bar_codes: " . count($index['bar_codes']) . " skus: " . count($index['skus']) . " names: " . count($index['names']));
-        Log::info('$index->provider_codes: ');
-        Log::info($index['provider_codes']);
+        // Log::info('$index->provider_codes: ');
+        // Log::info($index['provider_codes']);
         // Log::info('Duración total cachear los articulos ' . $duracion . ' seg');
 
         return $duracion;
@@ -291,9 +292,52 @@ class ArticleIndexCache
 
         $index = Cache::get($key, []);
 
+        // if (!is_array($index) || empty($index)) {
+        //     self::build($user_id, $provider_id, $actualizar_otro_proveedor);
+        //     $index = Cache::get($key, []);
+        // }
+
         if (!is_array($index) || empty($index)) {
-            self::build($user_id, $provider_id, $actualizar_otro_proveedor);
-            $index = Cache::get($key, []);
+
+            $lock_key = "lock_build_article_index_user_{$user_id}";
+
+            // Si tenés Redis/Database cache, esto evita builds duplicados en paralelo
+            try {
+                $lock = Cache::lock($lock_key, 300); // 5 min
+
+                if ($lock->get()) {
+                    try {
+                        // Re-check por si otro lo llenó justo antes
+                        $index = Cache::get($key, []);
+                        if (!is_array($index) || empty($index)) {
+                            self::build($user_id, $provider_id, $actualizar_otro_proveedor);
+                            $index = Cache::get($key, []);
+                        }
+                    } finally {
+                        $lock->release();
+                    }
+                } else {
+                    // No obtuve lock: espero a que el otro termine el build
+                    $wait_until = microtime(true) + 30; // hasta 30s
+                    while (microtime(true) < $wait_until) {
+                        usleep(200000); // 200ms
+                        $index = Cache::get($key, []);
+                        if (is_array($index) && !empty($index)) {
+                            break;
+                        }
+                    }
+
+                    // Si aún está vacío, hago build igual (fallback)
+                    if (!is_array($index) || empty($index)) {
+                        self::build($user_id, $provider_id, $actualizar_otro_proveedor);
+                        $index = Cache::get($key, []);
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Si el store no soporta locks o algo falla, fallback al comportamiento actual
+                self::build($user_id, $provider_id, $actualizar_otro_proveedor);
+                $index = Cache::get($key, []);
+            }
         }
 
         $index = is_array($index) ? $index : [];
@@ -451,66 +495,110 @@ class ArticleIndexCache
     public static function add($article)
     {
         $key = "article_index_user_{$article->user_id}";
-        $index = Cache::get($key);
 
-
-        // Log::info('Llego a add: ');
-        // Log::info($article->id);
+        // Usar índice en RAM (memoizado) para NO tocar cache en cada fila
+        $index = self::get_index((int)$article->user_id);
 
         $article_id = $article->fake_id;
 
-        // if (!$index) {
-        //     self::build($article->user_id);
-        //     $index = Cache::get($key);
-        // }
-
         if ($article_id) {
-            $index['ids'][$article_id] = $article_id;
+            $index['ids'][(string)$article_id] = $article_id;
         }
-        if ($article->bar_code) {
-            $index['bar_codes'][$article->bar_code] = $article_id;
+        if (!empty($article->bar_code)) {
+            $index['bar_codes'][(string)$article->bar_code] = $article_id;
         }
-        if ($article->sku) {
-            $index['skus'][$article->sku] = $article_id;
+        if (!empty($article->sku)) {
+            $index['skus'][(string)$article->sku] = $article_id;
         }
 
-        // if ($article->provider_code) {
-        //     $index['provider_codes'][$article->provider_code] = $article_id;
-        // }
-        if ($article->provider_code) {
+        if (!is_null($article->provider_code) && !is_null($article->provider_id)) {
+            $prov_id = (string)$article->provider_id;
+            $prov_code = (string)$article->provider_code;
 
-            // if (config('app.CODIGOS_DE_PROVEEDOR_REPETIDOS')) {
-
-            //     if (!isset($index['provider_codes'][$article->provider_id][$article->provider_code])) {
-            //         $index['provider_codes'][$article->provider_id][$article->provider_code] = [];
-            //     }
-                
-            //     $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article_id;
-            // } else {
-            //     $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article_id;
-            // }
-
-
-            if (!isset($index['provider_codes'][$article->provider_id][$article->provider_code])) {
-                $index['provider_codes'][$article->provider_id][$article->provider_code] = [];
+            if (!isset($index['provider_codes'][$prov_id])) {
+                $index['provider_codes'][$prov_id] = [];
             }
-            
-            $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article_id;
-        }
-        
-        if ($article->name) {
-            $index['names'][strtolower(trim($article->name))] = $article_id;
+            if (!isset($index['provider_codes'][$prov_id][$prov_code])) {
+                $index['provider_codes'][$prov_id][$prov_code] = [];
+            }
+            $index['provider_codes'][$prov_id][$prov_code][] = $article_id;
         }
 
-        // Log::info('Se agrego al cache: ');
-        // Log::info($article->toArray());
+        if (!empty($article->name)) {
+            $index['names'][strtolower(trim((string)$article->name))] = $article_id;
+        }
 
-
-        Cache::put($key, $index, now()->addMinutes(30));
-
+        // Guardamos en RAM y marcamos como "dirty" SOLO si querés persistir.
+        // OJO: para fake articles NO conviene persistir a cache compartido entre workers.
         self::$runtime_index_by_key[$key] = $index;
         self::$runtime_loaded_by_key[$key] = true;
+
+        // NO Cache::put acá.
     }
+
+    // public static function add($article)
+    // {
+    //     $key = "article_index_user_{$article->user_id}";
+    //     $index = Cache::get($key);
+
+
+    //     // Log::info('Llego a add: ');
+    //     // Log::info($article->id);
+
+    //     $article_id = $article->fake_id;
+
+    //     // if (!$index) {
+    //     //     self::build($article->user_id);
+    //     //     $index = Cache::get($key);
+    //     // }
+
+    //     if ($article_id) {
+    //         $index['ids'][$article_id] = $article_id;
+    //     }
+    //     if ($article->bar_code) {
+    //         $index['bar_codes'][$article->bar_code] = $article_id;
+    //     }
+    //     if ($article->sku) {
+    //         $index['skus'][$article->sku] = $article_id;
+    //     }
+
+    //     // if ($article->provider_code) {
+    //     //     $index['provider_codes'][$article->provider_code] = $article_id;
+    //     // }
+    //     if ($article->provider_code) {
+
+    //         // if (config('app.CODIGOS_DE_PROVEEDOR_REPETIDOS')) {
+
+    //         //     if (!isset($index['provider_codes'][$article->provider_id][$article->provider_code])) {
+    //         //         $index['provider_codes'][$article->provider_id][$article->provider_code] = [];
+    //         //     }
+                
+    //         //     $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article_id;
+    //         // } else {
+    //         //     $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article_id;
+    //         // }
+
+
+    //         if (!isset($index['provider_codes'][$article->provider_id][$article->provider_code])) {
+    //             $index['provider_codes'][$article->provider_id][$article->provider_code] = [];
+    //         }
+            
+    //         $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article_id;
+    //     }
+        
+    //     if ($article->name) {
+    //         $index['names'][strtolower(trim($article->name))] = $article_id;
+    //     }
+
+    //     // Log::info('Se agrego al cache: ');
+    //     // Log::info($article->toArray());
+
+
+    //     Cache::put($key, $index, now()->addMinutes(30));
+
+    //     self::$runtime_index_by_key[$key] = $index;
+    //     self::$runtime_loaded_by_key[$key] = true;
+    // }
 
     public static function update(Article $article, $codigos_proveedor_repetidos)
     {
@@ -653,10 +741,28 @@ class ArticleIndexCache
             }
         }
 
-        Cache::put($key, $index, now()->addMinutes(30));
+        // Cache::put($key, $index, now()->addMinutes(30));
+        // self::$runtime_index_by_key[$key] = $index;
+        // self::$runtime_loaded_by_key[$key] = true;
 
+        // NO persistimos por cada artículo (carísimo).
         self::$runtime_index_by_key[$key] = $index;
         self::$runtime_loaded_by_key[$key] = true;
+        self::$runtime_dirty_by_key[$key] = true;
+    }
+
+    public static function persist(int $user_id, int $ttl_minutes = 30): void
+    {
+        $key = "article_index_user_{$user_id}";
+
+        if (empty(self::$runtime_loaded_by_key[$key]) || empty(self::$runtime_dirty_by_key[$key])) {
+            return;
+        }
+
+        Cache::put($key, self::$runtime_index_by_key[$key], now()->addMinutes($ttl_minutes));
+
+        // ya persistido
+        self::$runtime_dirty_by_key[$key] = false;
     }
 
     static function limpiar_cache($user_id) {

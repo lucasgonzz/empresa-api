@@ -639,7 +639,7 @@ class SaleHelper extends Controller {
                             $otro_precio['amount'] = 1;
                         }
                         
-                        $fecha_agregado = Self::get_fecha_agregado_for_item($otro_precio, $fecha_agregado_map);
+                        // $fecha_agregado = Self::get_fecha_agregado_for_item($otro_precio, $fecha_agregado_map);
                         Self::attachArticle($sale, $otro_precio, null);
 
                     }

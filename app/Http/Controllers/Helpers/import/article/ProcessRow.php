@@ -50,6 +50,8 @@ class ProcessRow {
     protected $taken_slugs = [];
     protected $slug_next_index = [];
 
+    protected $provider_relations_buffer = []; // [article_id][provider_id] => pivot_data
+
 
     /**
      * Constructor: recibe los datos necesarios para procesar las filas
@@ -624,7 +626,7 @@ class ProcessRow {
             return;
         }
 
-        Log::info('attach_provider');
+        // Log::info('attach_provider');
         
         if (
             $this->son_varios_articulos($articulo_ya_creado)
@@ -673,14 +675,18 @@ class ProcessRow {
                 'cost'          => isset($data['cost']) ? $data['cost'] : null,
             ];
 
-            Log::info('Se adjunta relacion con provider a '.$articulo_ya_creado->name. ' a provider_id: '.$provider_id);
+            // ⚡️ Performance: no hacemos DB write por fila.
+            // Guardamos para upsert masivo al final del chunk.
+            $this->buffer_provider_relation((int)$articulo_ya_creado->id, (int)$provider_id, $pivot_data);
+
+            // Log::info('Se adjunta relacion con provider a '.$articulo_ya_creado->name. ' a provider_id: '.$provider_id);
             // Log::info('provider_id '.$provider_id);
             // Log::info('pivot_data '.$pivot_data);
 
             // ✅ 1 sola operación: inserta o actualiza pivot sin hacer exists() antes
-            $articulo_ya_creado->providers()->syncWithoutDetaching([
-                $provider_id => $pivot_data
-            ]);
+            // $articulo_ya_creado->providers()->syncWithoutDetaching([
+            //     $provider_id => $pivot_data
+            // ]);
         } else {
 
             // Log::info('NO Se adjunta relacion con provider');
@@ -846,7 +852,7 @@ class ProcessRow {
         $repetido = false;
 
         // Aseguramos boolean real por si el .env viene como string
-        $codigos_repetidos = $this->codigos_proveedor_repetidos;
+        $codigos_repetidos = $this->permitir_provider_code_repetido;
 
         // 1) Coincidencia por ID
         if (!empty($data['id'])) {
@@ -1048,9 +1054,10 @@ class ProcessRow {
                     $stock_addresses = $this->obtener_stock_addresses($row, $articulo_ya_creado);
                 
                 } else {
-
+                    Log::info('comparando stock existente de '.$articulo_ya_creado->stock.' con excel de '.$excel_stock);
                     if ($articulo_ya_creado->stock != $excel_stock) {
                         $stock_global = $excel_stock - $articulo_ya_creado->stock;
+                        Log::info('nuevo stock_global: '.$stock_global);
                     }
                 }
 
@@ -1654,6 +1661,22 @@ class ProcessRow {
 
     function get_articles_repetidos() {
         return $this->articles_repetidos;
+    }
+
+    public function buffer_provider_relation(int $article_id, int $provider_id, array $pivot_data): void
+    {
+        if (!isset($this->provider_relations_buffer[$article_id])) {
+            $this->provider_relations_buffer[$article_id] = [];
+        }
+
+        // última fila gana (si viene repetido en el excel)
+        $this->provider_relations_buffer[$article_id][$provider_id] = $pivot_data;
+        Log::info('Se agregao al buffer');
+    }
+
+    public function get_provider_relations_buffer(): array
+    {
+        return $this->provider_relations_buffer;
     }
 
     /**

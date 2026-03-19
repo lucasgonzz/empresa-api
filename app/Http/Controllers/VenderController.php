@@ -46,8 +46,6 @@ class VenderController extends Controller
         } else {
 
             $article = $article->where('bar_code', $code);
-
-            
         }
 
         $article = $article->withAll()
@@ -208,7 +206,8 @@ class VenderController extends Controller
                                 }
                             }
                         })
-                    ->with(['article_variants', 'images', 'price_types', 'addresses', 'price_type_monedas', 'article_price_ranges', 'provider']);
+                    ->withAll();
+                    // ->with(['article_variants', 'images', 'price_types', 'addresses', 'price_type_monedas', 'article_price_ranges', 'provider']);
 
         if ($category_id) {
             Log::info('category_id');
@@ -232,71 +231,74 @@ class VenderController extends Controller
 
         $results = $articles;
 
-        // foreach ($articles as $article) {
+        if (UserHelper::hasExtencion('article_variants')) {
+            
+            foreach ($articles as $article) {
 
-        //     // Detectar qué palabras de la búsqueda coincidieron con el nombre o código del artículo
-        //     $matched_keywords = collect($keywords)->filter(function ($word) use ($article) {
-        //         return str_contains(
-        //                            mb_strtolower($article->name ?? '', 'UTF-8'),
-        //                            mb_strtolower($word, 'UTF-8')
-        //                        ) ||
-        //                        str_contains(
-        //                            mb_strtolower($article->provider_code ?? '', 'UTF-8'),
-        //                            mb_strtolower($word, 'UTF-8')
-        //                        ) ||
-        //                        str_contains(
-        //                            mb_strtolower($article->bar_code ?? '', 'UTF-8'),
-        //                            mb_strtolower($word, 'UTF-8')
-        //                        );
-        //     })->values();
+                // Detectar qué palabras de la búsqueda coincidieron con el nombre o código del artículo
+                $matched_keywords = collect($keywords)->filter(function ($word) use ($article) {
+                    return str_contains(
+                                       mb_strtolower($article->name ?? '', 'UTF-8'),
+                                       mb_strtolower($word, 'UTF-8')
+                                   ) ||
+                                   str_contains(
+                                       mb_strtolower($article->provider_code ?? '', 'UTF-8'),
+                                       mb_strtolower($word, 'UTF-8')
+                                   ) ||
+                                   str_contains(
+                                       mb_strtolower($article->bar_code ?? '', 'UTF-8'),
+                                       mb_strtolower($word, 'UTF-8')
+                                   );
+                })->values();
 
-        //     // Palabras restantes para buscar dentro de variant_description
-        //     $remaining_keywords = array_diff($keywords, $matched_keywords->toArray());
+                // Palabras restantes para buscar dentro de variant_description
+                $remaining_keywords = array_diff($keywords, $matched_keywords->toArray());
 
-        //     // Si el artículo tiene variantes
-        //     if ($article->article_variants->count() > 0) {
+                // Si el artículo tiene variantes
+                if ($article->article_variants->count() > 0) {
 
-        //         Log::info('Buscando variantes');
+                    Log::info('Buscando variantes');
 
-        //         // Filtrar variantes que coincidan con todas las palabras restantes
-        //         $matching_variants = $article->article_variants->filter(function ($variant) use ($remaining_keywords) {
-        //             foreach ($remaining_keywords as $word) {
-        //                 if (!str_contains(
-        //                         mb_strtolower($variant->variant_description ?? '', 'UTF-8'),
-        //                         mb_strtolower($word, 'UTF-8')
-        //                     )) {
-        //                     return false;
-        //                 }
-        //             }
-        //             return true;
-        //         });
+                    // Filtrar variantes que coincidan con todas las palabras restantes
+                    $matching_variants = $article->article_variants->filter(function ($variant) use ($remaining_keywords) {
+                        foreach ($remaining_keywords as $word) {
+                            if (!str_contains(
+                                    mb_strtolower($variant->variant_description ?? '', 'UTF-8'),
+                                    mb_strtolower($word, 'UTF-8')
+                                )) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    });
 
-        //         if ($matching_variants->count() > 0) {
-        //             foreach ($matching_variants as $variant) {
-        //                 $results->push((object)[
-        //                     'is_variant'            => true,
-        //                     'id'                    => $variant->article->id,
-        //                     'variant_id'            => $variant->id,
-        //                     'variant_description'   => $variant->variant_description,
-        //                     'final_price'           => $this->get_variant_price($variant),
-        //                     'price_types'           => $article->price_types,
-        //                     'bar_code'              => $variant->bar_code,
-        //                     'name'                  => $article->name. ' '.$variant->variant_description,
-        //                     'article'               => $article,
-        //                     'images'                => $this->get_variant_images($variant),
-        //                     'addresses'             => $variant->addresses,
-        //                 ]);
-        //             }
-        //         }
+                    if ($matching_variants->count() > 0) {
+                        foreach ($matching_variants as $variant) {
+                            $results->push((object)[
+                                'is_variant'            => true,
+                                'id'                    => $variant->article->id,
+                                'variant_id'            => $variant->id,
+                                'variant_description'   => $variant->variant_description,
+                                'final_price'           => $this->get_variant_price($variant),
+                                'price_types'           => $article->price_types,
+                                'bar_code'              => $variant->bar_code,
+                                'name'                  => $article->name. ' '.$variant->variant_description,
+                                'article'               => $article,
+                                'images'                => $this->get_variant_images($variant),
+                                'addresses'             => $variant->addresses,
+                            ]);
+                        }
+                    }
 
-        //     } else {
-        //         // Si no tiene variantes, y al menos una keyword matcheó → agregar el artículo
-        //         if ($matched_keywords->isNotEmpty()) {
-        //             $article->is_variant = false;
-        //             $results->push($article);
-        //         }
-        //     }
-        // }
+                } else {
+                    // Si no tiene variantes, y al menos una keyword matcheó → agregar el artículo
+                    if ($matched_keywords->isNotEmpty()) {
+                        $article->is_variant = false;
+                        $results->push($article);
+                    }
+                }
+            }
+        }
 
         // Paginar manualmente
         $paginated = new LengthAwarePaginator(

@@ -39,7 +39,7 @@ class set_article_address_stock_from_variants extends Command
      * @return int
      */
     public function handle()
-    {
+    {   
 
         $this->set_addresses();
 

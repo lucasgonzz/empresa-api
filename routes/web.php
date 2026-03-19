@@ -13,6 +13,10 @@ Route::get('hola', function() {
     echo 'Hola';
 });
 
+
+Route::get('afip-ticket/consultar-comprobante/{afip_ticket_id}', 'AfipTicketController@consultar_comprobante');
+
+
 // Obtener todos los productos para N8N
 Route::get('/n8n/productos-disponibles', function () {
     // $articles = Article::all();
