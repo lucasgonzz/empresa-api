@@ -14,7 +14,7 @@ class AfipHelper extends Controller {
     public $factura_solo_algunos_metodos_de_pago;
     public $afip_selected_payment_methods;
 
-    function __construct($afip_ticket, $articles = null, $services = null, $user = null, $sale = null, $descriptions = []) {
+    function __construct($afip_ticket, $articles = null, $services = null, $user = null, $sale = null, $descriptions = [], $from_nota_credito = false) {
 
         if (is_null($user)) {
            $this->user = $this->user();
@@ -35,6 +35,9 @@ class AfipHelper extends Controller {
             $articles = $this->sale->articles;
         }
         $this->articles = $articles;
+
+
+        $this->from_nota_credito = $from_nota_credito;
 
 
         // Seteo servicios
@@ -351,23 +354,26 @@ class AfipHelper extends Controller {
             $price -= $price * $this->article->pivot->discount / 100;
             Log::info('quedo en '.$price);
         }
-        foreach ($this->sale->discounts as $discount) {
-            Log::info('restando descouneto de venta de '.$discount->pivot->percentage.' a '.$price);
-            $price -= $price * $discount->pivot->percentage / 100;
-            Log::info('quedo en '.$price);
-        }
 
-        if (!$this->sale->aplicar_recargos_directo_a_items) {
-            
-            foreach ($this->sale->surchages as $surchage) {
-                Log::info('aumentando recargo de venta de '.$surchage->pivot->percentage.' a '.$price);
-                $price += $price * $surchage->pivot->percentage / 100;
+        if (!$this->from_nota_credito) {
+            foreach ($this->sale->discounts as $discount) {
+                Log::info('restando descouneto de venta de '.$discount->pivot->percentage.' a '.$price);
+                $price -= $price * $discount->pivot->percentage / 100;
                 Log::info('quedo en '.$price);
             }
-        }
 
-        if ($this->sale->descuento > 0) {
-            $price -= $price * $this->sale->descuento / 100;
+            if (!$this->sale->aplicar_recargos_directo_a_items) {
+                
+                foreach ($this->sale->surchages as $surchage) {
+                    Log::info('aumentando recargo de venta de '.$surchage->pivot->percentage.' a '.$price);
+                    $price += $price * $surchage->pivot->percentage / 100;
+                    Log::info('quedo en '.$price);
+                }
+            }
+
+            if ($this->sale->descuento > 0) {
+                $price -= $price * $this->sale->descuento / 100;
+            }
         }
         
         return $price;
@@ -381,6 +387,7 @@ class AfipHelper extends Controller {
         // if ($precio_neto_sin_iva || $this->isBoletaA()) {
         if (!$this->exportacion()) {
             if (!is_null($article->iva) && $article->iva->percentage != 'No Gravado' && $article->iva->percentage != 'Exento' && $article->iva->percentage != 0) {
+                
                 return $this->getPriceWithoutIva();
             } 
         } 

@@ -55,6 +55,7 @@ class BudgetController extends Controller
                 'discounts_in_services'     => $request->discounts_in_services,
                 'moneda_id'                 => $request->moneda_id,
                 'valor_dolar'               => $request->valor_dolar,
+                // 'omitir_en_cuenta_corriente'        => $request->omitir_en_cuenta_corriente,
                 'employee_id'               => $this->userId(false),
                 'user_id'                   => $this->userId(),
             ]);
@@ -117,6 +118,7 @@ class BudgetController extends Controller
         $model->total                     = $request->total;
         $model->budget_status_id          = $request->budget_status_id;
         $model->address_id                = $request->address_id;
+        // $model->omitir_en_cuenta_corriente                = $request->omitir_en_cuenta_corriente;
 
         $model->surchages_in_services     = $request->surchages_in_services;
         $model->discounts_in_services     = $request->discounts_in_services;

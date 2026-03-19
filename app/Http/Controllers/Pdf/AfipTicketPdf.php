@@ -32,7 +32,7 @@ class AfipTicketPdf extends fpdf {
 
 		$this->sale = $this->afip_ticket->sale_nota_credito;
 
-    	$this->afip_helper = new AfipHelper($this->afip_ticket, $current_acount->articles, $current_acount->services, null, $this->sale, $this->model->nota_credito_descriptions);
+    	$this->afip_helper = new AfipHelper($this->afip_ticket, $current_acount->articles, $current_acount->services, null, $this->sale, $this->model->nota_credito_descriptions, true);
 		
 		$this->afip_information = $this->afip_ticket->afip_information;
 
@@ -308,6 +308,9 @@ class AfipTicketPdf extends fpdf {
 
 
         $p = Numbers::price($this->afip_helper->getArticlePrice($this->sale, $item), true);
+        // if ($item->is_description) {
+        // 	dd($p);
+        // }
         if ($this->afip_ticket->cbte_letra == 'E') {
         	$p = Numbers::price($this->afip_helper->getArticlePrice($this->sale, $item), true, $this->sale->moneda_id);
         }

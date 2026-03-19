@@ -16,9 +16,94 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
     public $models = null;
     public $archivo_base = false;
 
+    protected $headings_pre_addresses_cache = null;
+    protected $headings_pre_price_types_cache = null;
+
     function __construct($models, $archivo_base = false) {
         $this->models = $models;
         $this->archivo_base = $archivo_base;
+    }
+
+    protected function get_base_headings(): array
+    {
+        return [
+            
+            // Datos Generales
+            'Numero',
+            'Codigo de barras',
+            'Sku',
+            'Codigo de proveedor',
+            'Nombre',
+            'Proveedor',
+
+
+            // Precio
+            'Moneda',
+            'Costo',
+            'Descuentos',
+            'Recargos',
+            'Descuentos montos',
+            'Recargos montos',
+            'Iva',
+            'Aplicar Iva',
+            'Margen de ganancia',
+            'Precio',
+            'Precio Final',
+
+            // Categoria
+            'Categoria',
+            'Sub Categoria',
+            'Marca',
+            'Descripcion',
+            'Unidad medida',
+            'U individuales',
+
+            // Stock
+            'Stock actual',
+            'Stock minimo',
+        ];
+    }
+
+    protected function get_headings_pre_addresses(): array
+    {
+        if (!is_null($this->headings_pre_addresses_cache)) {
+            return $this->headings_pre_addresses_cache;
+        }
+
+        $headings = $this->get_base_headings();
+
+        // $headings = ExportHelper::set_unidades_individuales($headings);
+
+        $headings = ExportHelper::set_props_autopartes($headings);
+        
+        $headings = ExportHelper::set_propiedades_de_distribuidora($headings);
+
+        $this->headings_pre_addresses_cache = $headings;
+
+        return $headings;
+    }
+
+    protected function get_headings_pre_price_types(): array
+    {
+        if (!is_null($this->headings_pre_price_types_cache)) {
+            return $this->headings_pre_price_types_cache;
+        }
+
+        $headings = $this->get_base_headings();
+
+        // $headings = ExportHelper::set_unidades_individuales($headings);
+
+        $headings = ExportHelper::set_props_autopartes($headings);
+        
+        $headings = ExportHelper::set_propiedades_de_distribuidora($headings);
+        
+        $headings = ExportHelper::setAddressesHeadings($headings);
+        
+        $headings = ExportHelper::setPropertyTypesHeadings($headings);
+
+        $this->headings_pre_price_types_cache = $headings;
+
+        return $headings;
     }
 
     public function map($row): array
@@ -65,11 +150,20 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
 
         $map = ExportHelper::map_propiedades_de_distribuidora($map, $article);
 
+        $addresses = ExportHelper::getAddresses();
+        if (count($addresses) >= 1) {
+            $map = ExportHelper::unset_map_columns_by_titles(
+                $map,
+                $this->get_headings_pre_addresses(),
+                ['Stock actual', 'Stock minimo']
+            );
+        }
 
         // Si es variante, completamos columnas extras
         if ($row->is_variant && $row->variant) {
             // $variant = $row->variant;
             // Por ejemplo, índice 20: Talle, 21: Color, 22: Stock variante, 23+: stock por depósito
+     
             $map = ExportHelper::map_variant_stock_addresses($map, $row);
 
             $map = ExportHelper::map_property_types($map, $row);
@@ -84,8 +178,28 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             }
         }
 
+        $price_types = ExportHelper::getPriceTypes();
+        if (count($price_types) >= 1) {
 
-        $map = ExportHelper::mapPriceTypes($map, $article);
+            // 1) sacar columnas viejas (ya lo hacés)
+            $map = ExportHelper::unset_map_columns_by_titles(
+                $map,
+                $this->get_headings_pre_price_types(),
+                ['Margen de ganancia', 'Precio', 'Precio Final']
+            );
+
+            // 2) insertar valores en la MISMA posición que headings (después de Aplicar Iva)
+            $headings_pre_price_types = $this->get_headings_pre_price_types();
+            $aplicar_iva_index = array_search('Aplicar Iva', $headings_pre_price_types);
+
+            $values = ExportHelper::get_price_types_values_in_order($article);
+
+            // insertar después de aplicar_iva
+            array_splice($map, $aplicar_iva_index + 1, 0, $values);
+
+        }
+
+        // $map = ExportHelper::mapPriceTypes($map, $article);
         $map = ExportHelper::mapPreciosBlanco($map, $article);
         $map = ExportHelper::mapDates($map, $article);
         return $map;
@@ -157,42 +271,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
 
     public function headings(): array
     {
-        $headings = [
-            
-            // Datos Generales
-            'Numero',
-            'Codigo de barras',
-            'Sku',
-            'Codigo de proveedor',
-            'Nombre',
-            'Proveedor',
-
-
-            // Precio
-            'Moneda',
-            'Costo',
-            'Descuentos',
-            'Recargos',
-            'Descuentos montos',
-            'Recargos montos',
-            'Iva',
-            'Aplicar Iva',
-            'Margen de ganancia',
-            'Precio',
-            'Precio Final',
-
-            // Categoria
-            'Categoria',
-            'Sub Categoria',
-            'Marca',
-            'Descripcion',
-            'Unidad medida',
-            'U individuales',
-
-            // Stock
-            'Stock actual',
-            'Stock minimo',
-        ];
+        $headings = $this->get_base_headings();
         
         // $headings = ExportHelper::set_unidades_individuales($headings);
 

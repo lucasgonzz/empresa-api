@@ -25,7 +25,7 @@ use Illuminate\Support\Facades\Schema;
 
 class ActualizarBBDD {
 
-    function __construct($articulos_para_crear_CACHE, $articulos_para_actualizar_CACHE, $user, $auth_user_id, $codigos_proveedor_repetidos, $chunk_number) {
+    function __construct($articulos_para_crear_CACHE, $articulos_para_actualizar_CACHE, $user, $auth_user_id, $codigos_proveedor_repetidos, $chunk_number, $provider_buffer) {
         
         Log::info('');
         Log::info('********* ActualizarBBDD ************');
@@ -33,16 +33,24 @@ class ActualizarBBDD {
 
         Log::info('articulos_para_crear_CACHE:');
         Log::info('Cantidad: '.count($articulos_para_crear_CACHE));
-        Log::info($articulos_para_crear_CACHE);
+
+        if (config('app.APP_ENV') == 'local') {
+            Log::info($articulos_para_crear_CACHE);
+        }
 
         Log::info('articulos_para_actualizar_CACHE:');
         Log::info('Cantidad: '.count($articulos_para_actualizar_CACHE));
-        // Log::info($articulos_para_actualizar_CACHE);
+
+        if (config('app.APP_ENV') == 'local') {
+            Log::info($articulos_para_actualizar_CACHE);
+        }
 
         $this->user                                 = $user;
         $this->auth_user_id                         = $auth_user_id;
         $this->codigos_proveedor_repetidos          = $codigos_proveedor_repetidos;
         $this->chunk_number                         = $chunk_number.'-'.time(); 
+
+        $this->provider_buffer                      = $provider_buffer;
 
 
         $this->articulos_para_crear_CACHE           = $articulos_para_crear_CACHE;
@@ -248,6 +256,10 @@ class ActualizarBBDD {
 
 
         $this->guardar_variantes_desde_cache_simple();
+
+
+
+        $this->upsert_provider_relations($this->provider_buffer);
 
 
         $this->actualizar_cache();
@@ -681,7 +693,7 @@ class ActualizarBBDD {
                 if (!$article_model) continue;
 
                 if (!empty($article_cache['stock_global'])) {
-                    // Log::info('Act stock global de '.$article_model->name);
+                    // Log::info('Set stock global de '.$article_model->name);
                     $this->guardar_stock_movement_global($article_model, $article_cache['stock_global']);
                 } else {
                     // Log::info('Act stock por direcciones de '.$article_model->name);
@@ -707,10 +719,10 @@ class ActualizarBBDD {
                 if (!$article) continue;
 
                 if (!empty($article_cache['stock_global'])) {
-                    // Log::info('Act stock global de '.$article->name);
-                    $this->guardar_stock_movement_global($article, $article_cache['stock_global']);
+                    Log::info('Act stock global de '.$article->name);
+                    $this->guardar_stock_movement_global($article, $article_cache['stock_global']['__diff__stock']['new']);
                 } else {
-                    // Log::info('Act stock por direcciones de '.$article->name);
+                    Log::info('Act stock por direcciones de '.$article->name);
                     $this->guardar_stock_movement_addresses($article, $article_cache['stock_addresses']);
                 }
                 
@@ -735,6 +747,8 @@ class ActualizarBBDD {
     }
 
     function guardar_stock_movement_global($article, $amount) {
+
+        Log::info('guardar_stock_movement_global amount: '.$amount);
 
         $data = [];
 
@@ -1739,6 +1753,38 @@ class ActualizarBBDD {
     }
 
 
+    // function actualizar_cache() {
+    //     $this->iniciar();
+
+    //     Log::info('');
+    //     Log::info('');
+    //     Log::info('actualizar_cache');
+    //     Log::info('');
+
+    //     $index = ArticleIndexCache::get($this->user->id);
+    //     Log::info('El cache esta asi:');
+    //     Log::info(count($index['ids']).' ids');
+    //     Log::info(count($index['bar_codes']).' bar_codes');
+    //     Log::info(count($index['skus']).' skus');
+    //     Log::info(count($index['provider_codes']).' provider_codes');
+    //     Log::info(count($index['names']).' names');
+    //     Log::info('');
+
+    //     foreach ($this->articulos_creados_models as $article) {
+    //         // Log::info('Entro con '.$article->id);
+    //         ArticleIndexCache::update($article, $this->codigos_proveedor_repetidos);
+    //     }
+
+    //     foreach ($this->articulos_actualizados_models as $article) {
+    //         ArticleIndexCache::update($article, $this->codigos_proveedor_repetidos);
+    //     }
+    //     Log::info('');
+    //     Log::info('');
+    //     Log::info('');
+
+    //     $this->terminar('Actualizar Cache');
+    // }
+
     function actualizar_cache() {
         $this->iniciar();
 
@@ -1747,7 +1793,9 @@ class ActualizarBBDD {
         Log::info('actualizar_cache');
         Log::info('');
 
-        $index = ArticleIndexCache::get($this->user->id);
+        // Importante: usar el índice memoizado (RAM) y evitar get/put repetidos
+        $index = ArticleIndexCache::get_index($this->user->id);
+
         Log::info('El cache esta asi:');
         Log::info(count($index['ids']).' ids');
         Log::info(count($index['bar_codes']).' bar_codes');
@@ -1757,13 +1805,16 @@ class ActualizarBBDD {
         Log::info('');
 
         foreach ($this->articulos_creados_models as $article) {
-            // Log::info('Entro con '.$article->id);
             ArticleIndexCache::update($article, $this->codigos_proveedor_repetidos);
         }
 
         foreach ($this->articulos_actualizados_models as $article) {
             ArticleIndexCache::update($article, $this->codigos_proveedor_repetidos);
         }
+
+        // ✅ Persistimos UNA sola vez (en vez de miles de veces)
+        ArticleIndexCache::persist($this->user->id, 30);
+
         Log::info('');
         Log::info('');
         Log::info('');
@@ -1771,5 +1822,46 @@ class ActualizarBBDD {
         $this->terminar('Actualizar Cache');
     }
 
+
+    protected function upsert_provider_relations(array $buffer, int $chunk_size = 2000): void
+    {
+        if (empty($buffer)) {
+            return;
+        }
+
+        Log::info('upsert_provider_relations para buffer:');
+        if (config('app.APP_ENV') == 'local') {
+            Log::info($buffer);
+        }
+
+        // ✅ OJO: ajustá el nombre real de la tabla pivot si es distinto.
+        // Comúnmente: article_provider, article_provider, article_provider_relation, etc.
+        $pivot_table = 'article_provider';
+
+        $rows = [];
+        $now = now();
+
+        foreach ($buffer as $article_id => $providers) {
+            foreach ($providers as $provider_id => $pivot_data) {
+                $rows[] = [
+                    'article_id'    => (int)$article_id,
+                    'provider_id'   => (int)$provider_id,
+                    'provider_code' => $pivot_data['provider_code'] ?? null,
+                    'cost'          => $pivot_data['cost'] ?? null,
+                    'created_at'    => $now,
+                    'updated_at'    => $now,
+                ];
+            }
+        }
+
+        // Upsert por tandas para no armar un query gigante
+        foreach (array_chunk($rows, $chunk_size) as $chunk) {
+            \DB::table($pivot_table)->upsert(
+                $chunk,
+                ['article_id', 'provider_id'],
+                ['provider_code', 'cost', 'updated_at']
+            );
+        }
+    }
     
 }

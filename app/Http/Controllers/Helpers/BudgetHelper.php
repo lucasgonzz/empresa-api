@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\SaleController;
@@ -58,6 +59,7 @@ class BudgetHelper {
 	            'save_current_acount' 	=> Self::get_guardar_cuenta_corriente($budget),
 	            'to_check'				=> UserHelper::hasExtencion('check_sales') ? 1 : 0,
 	            'terminada'				=> UserHelper::hasExtencion('check_sales') ? 0 : 1,
+                'omitir_en_cuenta_corriente'        => $budget->omitir_en_cuenta_corriente,
 	        ]);
 	        Self::attachSaleArticles($sale, $budget, $previus_articles);
 
@@ -72,6 +74,11 @@ class BudgetHelper {
 	        }
 
 	        SaleTotalesHelper::set_total_cost($sale);
+
+
+	        $sale->load('articles');
+		    $h = new ArticlePurchaseHelper();
+		    $h->set_article_purcase($sale);
 
         	$ct->sendAddModelNotification('Sale', $sale->id, false);
 		}

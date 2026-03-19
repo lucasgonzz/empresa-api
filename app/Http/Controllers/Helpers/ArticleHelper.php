@@ -98,8 +98,8 @@ class ArticleHelper {
             is_null($article->cost)
             && is_null($article->price)
             && (
-                !UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')
-                && !UserHelper::hasExtencion('ventas_en_dolares')
+                !UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)
+                && !UserHelper::hasExtencion('ventas_en_dolares', $user)
             )
         ) {
 
@@ -171,8 +171,8 @@ class ArticleHelper {
                 || $article->price == ''
             )
             || (
-                UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')
-                && UserHelper::hasExtencion('ventas_en_dolares')
+                UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)
+                && UserHelper::hasExtencion('ventas_en_dolares', $user)
             )
         ) {
 

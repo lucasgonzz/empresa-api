@@ -51,7 +51,7 @@ class set_sub_total_sales extends Command
 
         $this->info(count($sales). ' ventas');
 
-
+        $processed_count = 0;
 
         foreach ($sales as $sale) {
 
@@ -61,9 +61,20 @@ class set_sub_total_sales extends Command
                 $this->comment($sale->num.' sub total mal, reportar a Lucas');
             }
 
+
+
             $sale->sub_total = $sub_total;
             $sale->timestamps = false;
             $sale->save();
+
+
+            $processed_count++;
+
+            // cada 10 ventas procesadas
+            if (($processed_count % 30) === 0) {
+                $this->comment('Listo venta id '.$sale->id);
+            }
+
         }
 
         $this->info('Listo :)');

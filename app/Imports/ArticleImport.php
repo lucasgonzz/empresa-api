@@ -174,36 +174,40 @@ class ArticleImport implements ToCollection
         // Log::info('entro a collection, rows:');
         // Log::info($rows);
 
-        $this->iniciar();
-        Log::info('cacheando articulos');
 
         $rows_observations = [];
 
-        $text = 'Cacheo de articulos';
         
-        if ($this->chunk_number == 1) {
-            $duracion_cacheo = ArticleIndexCache::build(
-                $this->user->id,
-                $this->provider_id ?? null,
-                (bool)$this->actualizar_articulos_de_otro_proveedor,
-            );
-            // $duracion_cacheo = number_format($duracion_cacheo, 2, '.', '');
-        } else {
-            $text .= '. Ya estaba cacheado';
-            Log::info('Ya estaban cacheados');
-        }
+        // $text = 'Cacheo de articulos';
+        // if ($this->chunk_number == 1) {
+        //     $duracion_cacheo = ArticleIndexCache::build(
+        //         $this->user->id,
+        //         $this->provider_id ?? null,
+        //         (bool)$this->actualizar_articulos_de_otro_proveedor,
+        //     );
+        //     // $duracion_cacheo = number_format($duracion_cacheo, 2, '.', '');
+        // } else {
+        //     $text .= '. Ya estaba cacheado';
+        //     Log::info('Ya estaban cacheados');
+        // }
+
+
+        // ✅ En paralelo: NO asumimos nada por chunk_number.
+        // Siempre pedimos el índice: si no existe, get_index() lo construye con lock.
+        // $article_index = ArticleIndexCache::get_index(
+        //     $this->user->id,
+        //     $this->provider_id ? (int)$this->provider_id : null,
+        //     (bool)$this->actualizar_articulos_de_otro_proveedor
+        // );
         
-        $this->terminar($text);
-
-        Log::info('articulos cacheados');
-
-
+        $this->iniciar();
 
         $article_index = ArticleIndexCache::get_index(
             $this->user->id,
             $this->provider_id ? (int)$this->provider_id : null,
             (bool)$this->actualizar_articulos_de_otro_proveedor
         );
+        $this->terminar('Obtener cacheo de articulos');
 
         $this->process_row->set_article_index($article_index);
 
@@ -370,12 +374,13 @@ class ArticleImport implements ToCollection
 
         $articulosParaCrear = $this->process_row->getArticulosParaCrear();
         $articulosParaActualizar = $this->process_row->getArticulosParaActualizar();
+        $provider_buffer  = $this->process_row->get_provider_relations_buffer();
 
 
         try {
 
             $this->iniciar();
-            $actualizar_bbdd = new ActualizarBBDD($articulosParaCrear, $articulosParaActualizar, $this->user, $this->auth_user_id, $this->permitir_provider_code_repetido, $this->chunk_number);
+            $actualizar_bbdd = new ActualizarBBDD($articulosParaCrear, $articulosParaActualizar, $this->user, $this->auth_user_id, $this->permitir_provider_code_repetido, $this->chunk_number, $provider_buffer);
             $observations = $actualizar_bbdd->get_observations();
 
             foreach ($observations as $observation) {

@@ -419,7 +419,7 @@ class PdfHelper {
 		return $start;
 	}
 
-	static function tableHeader($instance, $fields, $size = 12, $margen = 2) {
+	static function tableHeader($instance, $fields, $size = 10, $margen = 2) {
 		$instance->SetFont('Arial', 'B', $size);
 		$instance->x = 5;
 		$instance->y += $margen;
