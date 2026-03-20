@@ -110,7 +110,7 @@ class DatabaseSeeder extends Seeder
             } else if ($for_user == 'golo_norte') {
 
                 $this->call(ArticleSeeder::class);
-                // $this->call(ComboSeeder::class);
+                $this->call(ComboSeeder::class);
                 $this->call(CategoryPriceTypeRangeSeeder::class);
                 $this->call(ArticlePriceTypeGroupSeeder::class);
 

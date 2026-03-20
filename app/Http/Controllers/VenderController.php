@@ -170,6 +170,8 @@ class VenderController extends Controller
 
         $keywords = explode(' ', trim($request->query_value));
 
+        $search_descripcion_en_vender = UserHelper::hasExtencion('search_descripcion_en_vender');
+
         $category_id = $request->category_id;
         $stock_option = $request->stock_option;
 
@@ -180,14 +182,22 @@ class VenderController extends Controller
         // 1. Buscar todos los artículos cuyo name o provider_code coincidan con alguna palabra
         $articles = Article::where('status', 'active')
                         ->where('user_id', $this->userId())
-                        ->where(function ($query_builder) use ($keywords, $from_provider_order) {
+                        ->where(function($q) {
+                            $q->where('es_insumo', 0)
+                                ->orWhereNull('es_insumo');
+                        })
+                        ->where(function ($query_builder) use ($keywords, $from_provider_order, $search_descripcion_en_vender) {
                             if (count($keywords) === 1) {
                                 $keyword = $keywords[0];
 
-                                $query_builder->where(function ($q) use ($keyword, $from_provider_order) {
+                                $query_builder->where(function ($q) use ($keyword, $from_provider_order, $search_descripcion_en_vender) {
                                     $q->where('name', 'LIKE', "%$keyword%")
-                                      ->orWhere('provider_code', 'LIKE', "%$keyword%")
-                                      ->orWhereRaw('LOWER(descripcion) LIKE ?', ['%' . mb_strtolower($keyword) . '%']);
+                                      ->orWhere('provider_code', 'LIKE', "%$keyword%");
+
+                                      if ($search_descripcion_en_vender) {
+
+                                        $q->orWhereRaw('LOWER(descripcion) LIKE ?', ['%' . mb_strtolower($keyword) . '%']);
+                                      }
 
                                       Log::info('Buscando por descripcion: '.$keyword);
 
@@ -198,10 +208,14 @@ class VenderController extends Controller
                                 });
                             } else {
                                 foreach ($keywords as $keyword) {
-                                    $query_builder->where(function ($q) use ($keyword) {
+                                    $query_builder->where(function ($q) use ($keyword, $search_descripcion_en_vender) {
                                         $q->where('name', 'LIKE', "%$keyword%")
-                                            ->orWhere('provider_code', 'LIKE', "%$keyword%")
-                                          ->orWhere('descripcion', 'LIKE', "%$keyword%");
+                                            ->orWhere('provider_code', 'LIKE', "%$keyword%");
+
+                                        if ($search_descripcion_en_vender) {
+
+                                          $q->orWhere('descripcion', 'LIKE', "%$keyword%");
+                                        }
                                     });
                                 }
                             }

@@ -290,7 +290,7 @@ class ProcessRow {
                 $data[$prop_to_add['prop_key']] = $excel_value;
             
             } else {
-                // Log::info('Columna ignorada '.$prop_to_add['excel_column']);
+                // $this->log('Columna ignorada '.$prop_to_add['excel_column']);
             }
 
         }
@@ -384,14 +384,14 @@ class ProcessRow {
             if (!is_null($variant_payload)) {
 
                 $this->attach_variant_to_existing_article($data, $variant_payload);
-                // Log::info('Fila repetida tratada como VARIANTE del artículo base');
+                // $this->log('Fila repetida tratada como VARIANTE del artículo base');
                 return;
             }
             $this->articles_repetidos++;
-            Log::info('SE OMITIO EN PROCES ROW (fila repetida sin propiedades de variante)');
+            // $this->log('SE OMITIO EN PROCES ROW (fila repetida sin propiedades de variante)');
             return;
         } else {
-            // Log::info('No esta aun en el excel');
+            // $this->log('No esta aun en el excel');
         }
         $this->terminar('Chequear si estaba repetida la fila');
 
@@ -414,27 +414,26 @@ class ProcessRow {
         );
         $this->terminar('find en cache');
 
-        Log::info('articulo encontrado:');
+        $this->log('articulo encontrado:');
 
-        // Log::info('Se llamo a find article');
         if ($articulo_ya_creado instanceof \App\Models\Article) {
 
-            Log::info($articulo_ya_creado->name);
+            $this->log($articulo_ya_creado->name);
         } else if ($this->son_varios_articulos($articulo_ya_creado)) {
 
-            Log::info('Macheo con '.count($articulo_ya_creado).' articulos:');
+            $this->log('Macheo con '.count($articulo_ya_creado).' articulos:');
 
             foreach ($articulo_ya_creado as $article) {
-                Log::info($article->name);
+                $this->log($article->name);
             }
         } else {
-            Log::info('No hubo mach');
+            $this->log('No hubo mach');
         }
 
         // if (!is_null($articulo_ya_creado)) {
-        //     Log::info('No es null');
+        //     $this->log('No es null');
         // } else {
-        //     Log::info('Es null');
+        //     $this->log('Es null');
 
         // }
 
@@ -446,7 +445,7 @@ class ProcessRow {
         }
 
         // if ($articulo_ya_creado instanceof \App\Models\Article) {
-        //     Log::info('Es instancia de Artlce');
+        //     $this->log('Es instancia de Artlce');
         // }
 
         if (
@@ -454,7 +453,7 @@ class ProcessRow {
             || $this->son_varios_articulos($articulo_ya_creado)
         ) {
 
-            Log::info('Articulo ya creado');
+            $this->log('Articulo ya creado');
 
             $this->iniciar();
             $this->attach_provider($articulo_ya_creado, $data, $provider_id);
@@ -468,7 +467,6 @@ class ProcessRow {
 
                     if (!$this->omitir_por_pertencer_a_otro_proveedor($_articulo_ya_creado, $provider_id)) {
 
-                        // Log::info('procesando articulo con provider_code repetido:');
                         $this->iniciar();
                         
                         $this->procesar_articulo_ya_creado($_articulo_ya_creado, $data, $row);
@@ -494,7 +492,7 @@ class ProcessRow {
 
         } else if ($this->create_and_edit) {
 
-            Log::info('El articulo NO existia');
+            $this->log('El articulo NO existia');
             // Si no existe, lo agregamos a los artículos para crear
             
             /* 
@@ -550,8 +548,8 @@ class ProcessRow {
 
             $data['fake_id'] = 'fake_' . uniqid(); // ID temporal único
 
-            // Log::info('data[id]: ');
-            // Log::info($data['id']);
+            // $this->log('data[id]: ');
+            // $this->log($data['id']);
 
             $this->articulosParaCrear[] = $data;
 
@@ -614,19 +612,19 @@ class ProcessRow {
 
     function add_article_match() {
         $this->articles_match++;
-        // Log::info('articles_match: '.$this->articles_match);
+        // $this->log('articles_match: '.$this->articles_match);
     }
 
     function attach_provider($articulo_ya_creado, $data, $provider_id) {
 
-        // Log::info('attach_provider');
+        // $this->log('attach_provider');
 
         if (!$provider_id) {
-            // Log::info('no entro a attach_provider');
+            // $this->log('no entro a attach_provider');
             return;
         }
 
-        // Log::info('attach_provider');
+        // $this->log('attach_provider');
         
         if (
             $this->son_varios_articulos($articulo_ya_creado)
@@ -639,19 +637,19 @@ class ProcessRow {
             $this->update_provider_relation($articulo_ya_creado, $data, $provider_id);
         }
 
-        // Log::info('articulo_ya_creado: ');
-        // Log::info($articulo_ya_creado->toArray());
+        // $this->log('articulo_ya_creado: ');
+        // $this->log($articulo_ya_creado->toArray());
     }
 
     function son_varios_articulos($articulo_ya_creado) {
-        // Log::info('son_varios_articulos: '.$articulo_ya_creado instanceof Collection);
+        // $this->log('son_varios_articulos: '.$articulo_ya_creado instanceof Collection);
         if ($articulo_ya_creado instanceof Collection) {
-            // Log::info('hay '.count($articulo_ya_creado));
+            // $this->log('hay '.count($articulo_ya_creado));
             if (count($articulo_ya_creado) >= 1) {
                 return true;
             }
         }
-        Log::info('No son varios articulos');
+        $this->log('No son varios articulos');
         return false;
         // return $articulo_ya_creado instanceof Collection;
     }
@@ -661,9 +659,9 @@ class ProcessRow {
 
         $epsilon = 0.01; // ajustalo según tu caso (p.ej. centavos: 0.01 / 0.001)
 
-        // Log::info('update_provider_relation, data:');
-        // Log::info($data);
-        // Log::info('actual cost: '.$articulo_ya_creado->cost);
+        // $this->log('update_provider_relation, data:');
+        // $this->log($data);
+        // $this->log('actual cost: '.$articulo_ya_creado->cost);
 
         if (
             isset($data['cost'])
@@ -679,9 +677,9 @@ class ProcessRow {
             // Guardamos para upsert masivo al final del chunk.
             $this->buffer_provider_relation((int)$articulo_ya_creado->id, (int)$provider_id, $pivot_data);
 
-            // Log::info('Se adjunta relacion con provider a '.$articulo_ya_creado->name. ' a provider_id: '.$provider_id);
-            // Log::info('provider_id '.$provider_id);
-            // Log::info('pivot_data '.$pivot_data);
+            // $this->log('Se adjunta relacion con provider a '.$articulo_ya_creado->name. ' a provider_id: '.$provider_id);
+            // $this->log('provider_id '.$provider_id);
+            // $this->log('pivot_data '.$pivot_data);
 
             // ✅ 1 sola operación: inserta o actualiza pivot sin hacer exists() antes
             // $articulo_ya_creado->providers()->syncWithoutDetaching([
@@ -689,7 +687,7 @@ class ProcessRow {
             // ]);
         } else {
 
-            // Log::info('NO Se adjunta relacion con provider');
+            // $this->log('NO Se adjunta relacion con provider');
         }
         
 
@@ -773,7 +771,7 @@ class ProcessRow {
 
         if (!empty($cambios)) {
 
-            // Log::info('SI Hubo Cambios');
+            // $this->log('SI Hubo Cambios');
 
             $cambios['id'] = $articulo_ya_creado->id;
 
@@ -785,8 +783,8 @@ class ProcessRow {
             //     ImportChangeRecorder::logUpdated($this->import_history_id, $articulo_ya_creado->id, $cambios);
             // }
         }  else {
-            // Log::info('');
-            // Log::info('NO HUBO CAMBIOS');
+            // $this->log('');
+            // $this->log('NO HUBO CAMBIOS');
         }
 
         // return $cambios;
@@ -801,7 +799,7 @@ class ProcessRow {
             $moneda == 'USD'
             || $moneda == 'usd'
         ) {
-            Log::info('Costo en dolares');
+            $this->log('Costo en dolares');
             $cost_in_dollars = 1;
         }
         return $cost_in_dollars;
@@ -828,7 +826,7 @@ class ProcessRow {
             }
 
             if (!$ya_en_para_crear) {
-                // Log::info('Se va a chequear si ya esta para actualizar dentro de '.count($this->articulosParaActualizar).' articulosParaActualizar');
+                // $this->log('Se va a chequear si ya esta para actualizar dentro de '.count($this->articulosParaActualizar).' articulosParaActualizar');
                 foreach ($this->articulosParaActualizar as $index => $art) {
 
                     if ($this->esta_repetido($data, $art)) {
@@ -858,7 +856,7 @@ class ProcessRow {
         if (!empty($data['id'])) {
 
             if (isset($art['id']) && $art['id'] === $data['id']) {
-                // Log::info('Ya esta para crear, id: '.$art['id'].' = '.$data['id']);
+                // $this->log('Ya esta para crear, id: '.$art['id'].' = '.$data['id']);
                 return true;
             }
             return false;
@@ -868,7 +866,7 @@ class ProcessRow {
         if (!empty($data['bar_code'])) {
 
             if (isset($art['bar_code']) && $art['bar_code'] === $data['bar_code']) {
-                // Log::info('Ya esta para crear, bar_code: '.$art['bar_code'].' = '.$data['bar_code']);
+                // $this->log('Ya esta para crear, bar_code: '.$art['bar_code'].' = '.$data['bar_code']);
                 return true;
             }
             return false;
@@ -878,7 +876,7 @@ class ProcessRow {
         if (!empty($data['provider_code']) && !$codigos_repetidos) {
 
             if (!empty($art['provider_code']) && $art['provider_code'] === $data['provider_code']) {
-                // Log::info('Ya esta para crear, provider_code: '.$art['provider_code'].' = '.$data['provider_code']);
+                // $this->log('Ya esta para crear, provider_code: '.$art['provider_code'].' = '.$data['provider_code']);
                 return true;
             }
             return false;
@@ -897,23 +895,23 @@ class ProcessRow {
                     // Si ambos tienen provider_code y SON IGUALES => repetido = true
                     if (!empty($data['provider_code']) && !empty($art['provider_code'])) {
                         if ($art['provider_code'] === $data['provider_code']) {
-                            Log::info('Ya esta para crear, name+provider_code: '.$art['name'].' / '.$art['provider_code'].' = '.$data['name'].' / '.$data['provider_code']);
+                            $this->log('Ya esta para crear, name+provider_code: '.$art['name'].' / '.$art['provider_code'].' = '.$data['name'].' / '.$data['provider_code']);
                             return true;
                         } else {
                             // Mismo nombre pero distinto provider_code => NO repetido
-                            Log::info('Mismo name pero distinto provider_code con repetidos habilitados: '.$art['name'].' / '.$art['provider_code'].' != '.$data['name'].' / '.$data['provider_code']);
+                            $this->log('Mismo name pero distinto provider_code con repetidos habilitados: '.$art['name'].' / '.$art['provider_code'].' != '.$data['name'].' / '.$data['provider_code']);
                             return false;
                         }
                     }
 
                     // Si falta alguno de los provider_code, no podemos garantizar que no esté repetido.
                     // Por seguridad, consideramos repetido (conservador).
-                    Log::info('Name coincide pero falta provider_code para contrastar con repetidos habilitados. Se marca como repetido por seguridad: '.$art['name'].' = '.$data['name']);
+                    $this->log('Name coincide pero falta provider_code para contrastar con repetidos habilitados. Se marca como repetido por seguridad: '.$art['name'].' = '.$data['name']);
                     return true;
 
                 } else {
                     // Si NO se permiten repetidos de provider_code, con que coincida el nombre basta.
-                    Log::info('Ya esta para crear, name: '.$art['name'].' = '.$data['name']);
+                    $this->log('Ya esta para crear, name: '.$art['name'].' = '.$data['name']);
                     return true;
                 }
             }
@@ -936,7 +934,7 @@ class ProcessRow {
                 $key == 'provider_id'
                 && !$this->actualizar_proveedor
             ) {
-                // Log::info('No se agrego provider_id porque actualizar_proveedor: '.$this->actualizar_proveedor);
+                // $this->log('No se agrego provider_id porque actualizar_proveedor: '.$this->actualizar_proveedor);
                 continue;
             }
 
@@ -948,7 +946,7 @@ class ProcessRow {
             if (!array_key_exists($key, $existing->getAttributes())) {
                 if (!is_null($new)) {
                     $modified[$key] = $new;
-                    Log::info('Agregando a la fuerza '.$key.' con el valor: '.$new);  
+                    $this->log('Agregando a la fuerza '.$key.' con el valor: '.$new);  
                 } 
                 continue;
             }
@@ -1003,7 +1001,7 @@ class ProcessRow {
     static function get_number($number, $decimales = 2) {
         // 1. Si es null o solo espacios vacíos, retorna null
         if (is_null($number) || (is_string($number) && trim($number) === '')) {
-            // \Log::info('get_number Retornando null');
+            // \$this->log('get_number Retornando null');
             return null;
         }
 
@@ -1012,7 +1010,7 @@ class ProcessRow {
 
         // 3. Si no es numérico, retornar null
         if (!is_numeric($normalized)) {
-            // \Log::info("get_number Valor no numérico: '$number'");
+            // \$this->log("get_number Valor no numérico: '$number'");
             return null;
         }
 
@@ -1054,10 +1052,10 @@ class ProcessRow {
                     $stock_addresses = $this->obtener_stock_addresses($row, $articulo_ya_creado);
                 
                 } else {
-                    Log::info('comparando stock existente de '.$articulo_ya_creado->stock.' con excel de '.$excel_stock);
+                    $this->log('comparando stock existente de '.$articulo_ya_creado->stock.' con excel de '.$excel_stock);
                     if ($articulo_ya_creado->stock != $excel_stock) {
                         $stock_global = $excel_stock - $articulo_ya_creado->stock;
-                        Log::info('nuevo stock_global: '.$stock_global);
+                        $this->log('nuevo stock_global: '.$stock_global);
                     }
                 }
 
@@ -1132,7 +1130,7 @@ class ProcessRow {
                 || !is_null($max_excel)
             ) {
 
-                Log::info('Hay info en la columna '.$address->street);
+                $this->log('Hay info en la columna '.$address->street);
 
                 $address_article = [
                     'address_id'    => $address->id,
@@ -1141,8 +1139,8 @@ class ProcessRow {
                     'amount'        => null,
                 ];
 
-                Log::info($address->street.' min: '.$min_excel);
-                Log::info($address->street.' max: '.$max_excel);
+                $this->log($address->street.' min: '.$min_excel);
+                $this->log($address->street.' max: '.$max_excel);
 
                 if (!is_null($articulo_ya_creado) && $articulo_ya_creado instanceof \App\Models\Article) {
 
@@ -1160,7 +1158,7 @@ class ProcessRow {
                 // Ojo aca
                 if (!is_null($amount_excel)) {
 
-                    Log::info('Agregando '.$amount_excel.' a la direccion '.$address->street);
+                    $this->log('Agregando '.$amount_excel.' a la direccion '.$address->street);
 
                     $amount_excel = (float)$amount_excel;
 
@@ -1168,7 +1166,7 @@ class ProcessRow {
                     // $diferencia = $amount_excel - $stock_actual_en_address;
 
                     // if ($diferencia != 0) {
-                    //     Log::info('Hay una diferencia de '.$diferencia);
+                    //     $this->log('Hay una diferencia de '.$diferencia);
                     //     // $stock_addresses[] = [
                     //     //     'address_id'    => $address->id,
                     //     //     'amount'        => $diferencia,
@@ -1177,19 +1175,19 @@ class ProcessRow {
                     //     $address_article['amount'] = $diferencia;
                     // }
                 } else {
-                    Log::info('No se agrego amount a la direccion '.$address->street);
+                    $this->log('No se agrego amount a la direccion '.$address->street);
                 }
 
                 $stock_addresses[] = $address_article;
             } else {
-                Log::info('No hay nada en '.$address->street);
-                Log::info($column_min.' min: '.$min_excel);
-                Log::info($column_max.' max: '.$max_excel);
+                $this->log('No hay nada en '.$address->street);
+                $this->log($column_min.' min: '.$min_excel);
+                $this->log($column_max.' max: '.$max_excel);
             }
         }
 
-        // Log::info('stock_addresses:');
-        // Log::info($stock_addresses);
+        // $this->log('stock_addresses:');
+        // $this->log($stock_addresses);
 
         return $stock_addresses;
         // if ($set_stock_from_addresses) {
@@ -1309,7 +1307,7 @@ class ProcessRow {
 
 
     private function obtener_price_types($row, $articulo_ya_creado = null) {
-        // Log::info('obtener_price_types: '.UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $this->user));
+        // $this->log('obtener_price_types: '.UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $this->user));
         $price_types_data = [];
 
         if (
@@ -1351,9 +1349,9 @@ class ProcessRow {
                 $row_final_price_name = $this->get_price_type_row_name('$_final_', $price_type);
                 $final_price = ImportHelper::getColumnValue($row, $row_final_price_name, $this->columns);
 
-                Log::info('setear: '.$setear);
-                Log::info('percentage: '.$percentage);
-                Log::info('final_price: '.$final_price);
+                $this->log('setear: '.$setear);
+                $this->log('percentage: '.$percentage);
+                $this->log('final_price: '.$final_price);
 
 
                 /*
@@ -1377,13 +1375,13 @@ class ProcessRow {
 
                     if ($price_type_ya_relacionado) {
 
-                        Log::info('YA estaba relacionado con price_type');
+                        $this->log('YA estaba relacionado con price_type');
                         
                         if (
                             $price_type_ya_relacionado->pivot->percentage != $percentage
                             && !$setear
                         ) {
-                            Log::info('Entro con percentage');    
+                            $this->log('Entro con percentage');    
                             $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage);
 
                         } else if (
@@ -1391,17 +1389,17 @@ class ProcessRow {
                             && $setear
                         ) {
 
-                            Log::info('Entro con final_price');    
+                            $this->log('Entro con final_price');    
                             $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, null, $final_price);
 
                         } else {
 
-                            Log::info('No entro con ninguno');    
+                            $this->log('No entro con ninguno');    
                         }
 
                     } else {
 
-                        Log::info('No estaba relacionado con price_type');
+                        $this->log('No estaba relacionado con price_type');
 
                         $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price);
 
@@ -1414,7 +1412,7 @@ class ProcessRow {
 
             }
         } else {
-            // Log::info('Se omitieron price_types');
+            // $this->log('Se omitieron price_types');
         }
 
         return $price_types_data;
@@ -1491,7 +1489,7 @@ class ProcessRow {
         $aplicar_iva = 1;
 
         $iva_excel = ImportHelper::getColumnValue($row, 'aplicar_iva', $this->columns);
-        // Log::info('get_aplicar_iva: '.$iva_excel);
+        // $this->log('get_aplicar_iva: '.$iva_excel);
         if (
             $iva_excel == 'No'
             || $iva_excel == 'no'
@@ -1512,7 +1510,7 @@ class ProcessRow {
 
     //     $brand_id = LocalImportHelper::get_bran_id($brand_excel, $this->ct, $this->user);
 
-    //     // Log::info('brand_id para article num: '.$row[0].' = '.$brand_id);
+    //     // $this->log('brand_id para article num: '.$row[0].' = '.$brand_id);
 
     //     return $brand_id;
     // }
@@ -1671,7 +1669,7 @@ class ProcessRow {
 
         // última fila gana (si viene repetido en el excel)
         $this->provider_relations_buffer[$article_id][$provider_id] = $pivot_data;
-        Log::info('Se agregao al buffer');
+        $this->log('Se agregao al buffer');
     }
 
     public function get_provider_relations_buffer(): array
@@ -1845,8 +1843,8 @@ class ProcessRow {
 
     // private function purge_zero_stock_diffs(array $stock_addresses): array
     // {
-    //     Log::info('purge_zero_stock_diffs:');
-    //     Log::info($stock_addresses);
+    //     $this->log('purge_zero_stock_diffs:');
+    //     $this->log($stock_addresses);
     //     $out = [];
     //     foreach ($stock_addresses as $sa) {
 
@@ -1863,7 +1861,7 @@ class ProcessRow {
     {
         $out = [];
 
-        // Log::info('stock addresses:');
+        // $this->log('stock addresses:');
         foreach ($stock_addresses as $sa) {
 
             $address_id = isset($sa['address_id']) ? $sa['address_id'] : null;
@@ -1894,28 +1892,28 @@ class ProcessRow {
             $diff_min = $old_min !== $new_min;
             $diff_max = $old_max !== $new_max;
 
-            // Log::info('');
-            // Log::info('');
+            // $this->log('');
+            // $this->log('');
             if ($existing) {
-                // Log::info($existing->street.':');
+                // $this->log($existing->street.':');
             }
 
-            // Log::info('actual:');
-            // Log::info('stock: '.$old_amount);
-            // Log::info('min: '.$old_min);
-            // Log::info('max: '.$old_max);
+            // $this->log('actual:');
+            // $this->log('stock: '.$old_amount);
+            // $this->log('min: '.$old_min);
+            // $this->log('max: '.$old_max);
 
-            // Log::info('');
-            // Log::info('nuevo:');
-            // Log::info('stock: '.$new_amount);
-            // Log::info('min: '.$new_min);
-            // Log::info('max: '.$new_max);
+            // $this->log('');
+            // $this->log('nuevo:');
+            // $this->log('stock: '.$new_amount);
+            // $this->log('min: '.$new_min);
+            // $this->log('max: '.$new_max);
 
-            // Log::info('');
-            // Log::info('diff:');
-            // Log::info('stock: '.$diff_amount);
-            // Log::info('min: '.$diff_min);
-            // Log::info('max: '.$diff_max);
+            // $this->log('');
+            // $this->log('diff:');
+            // $this->log('stock: '.$diff_amount);
+            // $this->log('min: '.$diff_min);
+            // $this->log('max: '.$diff_max);
 
             // Si no hay cambios, continuar
             if (!$diff_amount && !$diff_min && !$diff_max) {
@@ -1963,8 +1961,8 @@ class ProcessRow {
             $out[] = $sa_out;
         }
 
-        // Log::info('Out:');
-        // Log::info($out);
+        // $this->log('Out:');
+        // $this->log($out);
 
         return $out;
     }
@@ -1973,8 +1971,8 @@ class ProcessRow {
     {
         if (!$article || empty($price_types_data)) return [];
 
-        // Log::info('filter_only_changed_price_types, price_types_data:');
-        // Log::info($price_types_data);
+        // $this->log('filter_only_changed_price_types, price_types_data:');
+        // $this->log($price_types_data);
 
         $current = [];
         foreach ($article->price_types as $pt) {
@@ -1988,8 +1986,8 @@ class ProcessRow {
             ];
         }
 
-        // Log::info('current:');
-        // Log::info($current);
+        // $this->log('current:');
+        // $this->log($current);
 
         $only_changed = [];
         foreach ($price_types_data as $row_pt) {
@@ -2015,7 +2013,7 @@ class ProcessRow {
             if ($changed) {
                 $only_changed[] = array_merge($row_pt, $diff);
             } else {
-                // Log::info('No cambio el precio');
+                // $this->log('No cambio el precio');
             }
         }
 
@@ -2152,8 +2150,8 @@ class ProcessRow {
 
         if ($article) {
             $article->load('article_surchages');
-            // Log::info('article_surchages:');
-            // Log::info($article->article_surchages);
+            // $this->log('article_surchages:');
+            // $this->log($article->article_surchages);
         }
 
         if ($article && $article->article_surchages) {
@@ -2219,6 +2217,12 @@ class ProcessRow {
         }
 
         return true;
+    }
+
+    function log($text) {
+        if (config('app.APP_ENV') == 'local') {
+            Log::info($text);
+        }
     }
 
 }

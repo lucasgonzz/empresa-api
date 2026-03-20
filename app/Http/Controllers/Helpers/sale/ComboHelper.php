@@ -49,9 +49,9 @@ class ComboHelper {
 				}
 			}
 
-			if (!is_null($previus_combo)) {
+			if (!is_null($finded_combo)) {
 
-				$amount -= (int)$previus_combo->pivot->amount;
+				$amount -= (int)$finded_combo->pivot->amount;
 			}
 		}
 

@@ -87,7 +87,10 @@ class AfipTicketPdf extends fpdf {
 		$this->cantidad_articulos_de_esta_venta = count($this->model->articles);
 
         foreach ($this->model->articles as $article) {
-            $this->add_item($article);
+
+        	if ($article->pivot->amount > 0) {
+            	$this->add_item($article);
+        	}
         }	
 
         foreach ($this->model->services as $service) {

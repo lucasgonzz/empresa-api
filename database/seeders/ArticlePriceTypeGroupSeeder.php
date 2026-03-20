@@ -23,7 +23,7 @@ class ArticlePriceTypeGroupSeeder extends Seeder
                         'name'  => 'Fanta 1',
                     ],
                     [   
-                        'name'  => 'Lima limon 1',
+                        'name'  => 'Coca Cola 2L 1',
                     ],
                 ],
             ]

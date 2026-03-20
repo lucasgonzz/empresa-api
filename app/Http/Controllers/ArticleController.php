@@ -52,7 +52,11 @@ class ArticleController extends Controller
     function index(Request $request) {
         $models = Article::where('user_id', $this->userId())
                             // ->where('id', 0)
-                            ->where('status', 'active');
+                            ->where('status', 'active')
+                            ->where(function($q) {
+                                $q->where('es_insumo', 0)
+                                    ->orWhereNull('es_insumo');
+                            });
 
         $updated_after = $request->input('updated_after');
 
@@ -191,6 +195,7 @@ class ArticleController extends Controller
         $model->meli_descripcion                    = $request->meli_descripcion;
 
         $model->plu                                 = $request->plu;
+        $model->es_insumo                           = $request->es_insumo;
 
         $model->user_id                           = $this->userId();
         if (isset($request->status)) {
@@ -364,6 +369,7 @@ class ArticleController extends Controller
 
 
         $model->plu                                 = $request->plu;
+        $model->es_insumo                           = $request->es_insumo;
 
         
         $model->name = ucfirst($request->name);
@@ -708,8 +714,11 @@ class ArticleController extends Controller
                                         
         $models = Article::where('user_id', $this->userId())
                             ->orderBy('id', 'DESC')
+                            ->where(function($q) {
+                                $q->where('es_insumo', 0)
+                                    ->orWhereNull('es_insumo');
+                            })
                             // ->orderBy('updated_at', 'DESC')
-                            ->take(30)
                             ->withAll()
                             ->get();
 

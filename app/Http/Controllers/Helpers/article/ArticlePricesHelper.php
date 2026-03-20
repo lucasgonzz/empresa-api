@@ -82,14 +82,16 @@ class ArticlePricesHelper {
                     
                     $price = $cost + ($cost * $percentage / 100);
 
-                    $final_price = Self::aplicar_iva($article, $price, $user);
+                    // $final_price = Self::aplicar_iva($article, $price, $user);
 
                     $article->price_types()->syncWithoutDetaching($price_type->id);
 
+                    $final_price = ArticleHelper::redondear($price, $user)['price'];
+
                     $article->price_types()->updateExistingPivot($price_type->id, [
                         'percentage'    => $percentage,
-                        'price'         => ArticleHelper::redondear($price, $user),
-                        'final_price'   => ArticleHelper::redondear($price, $user),
+                        'price'         => $price,
+                        'final_price'   => $final_price,
                     ]);
                 } else {
 

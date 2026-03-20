@@ -314,6 +314,9 @@ class SearchController extends Controller
 
         if ($model_name_param == 'article') {
 
+            Log::info('used_filters:');
+            Log::info($used_filters);
+
             FilterHistoryService::log_action([
                 'user_id'             => $this->userId(true),
                 'auth_user_id'        => $this->userId(false),
@@ -321,7 +324,7 @@ class SearchController extends Controller
                 'model_name'          => 'article',
                 'filtrados_count'     => count($models),
                 'afectados_count'     => 0,
-                'used_filters'        => empty($used_filters) ? null : $used_filters,
+                'used_filters'        => $used_filters,
             ]);
         }
 
