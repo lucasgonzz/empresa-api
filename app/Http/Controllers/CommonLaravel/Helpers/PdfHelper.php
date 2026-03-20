@@ -14,12 +14,17 @@ use Illuminate\Support\Facades\Log;
 class PdfHelper {
 
 	static function header($instance, $data) {
-		Self::logo($instance, $data);
+
+		$user = UserHelper::getFullModel();
+
+		$alto_imagen = $user->pdf_image_size;
+		
+		Self::logo($instance, $data, $alto_imagen);
 		Self::title($instance, $data['title']);
 		Self::numeroFecha($instance, $data);
-		Self::commerceInfo($instance, $data);
+		Self::commerceInfo($instance, $data, $alto_imagen);
 		
-		Self::commerceInfoLine($instance);
+		Self::commerceInfoLine($instance, $alto_imagen);
 
 		Self::extra_info($instance, $data);
 
@@ -58,12 +63,14 @@ class PdfHelper {
 				$instance->Cell(30, $height, $value, $instance->b, 1, 'L');
 			}
 
-			$instance->y += 2;
 		}
+		$instance->y += 2;
 	}
 
 	function simpleHeader($instance, $data) {
         $user = UserHelper::getFullModel();
+
+        $alto_imagen = 55;
 
 		if ($user->header_articulos_pdf) {
 
@@ -71,7 +78,7 @@ class PdfHelper {
 	    		$instance->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 2, 2, 45, 45);
 	    	} else {
 	    		if (!is_null($user->image_url) && GeneralHelper::file_exists_2($user->image_url)) {
-	    			$instance->Image($user->image_url, 2, 2, 45, 45);
+	    			$instance->Image($user->image_url, 2, 2, $alto_imagen, $alto_imagen);
 	    		}
 	    	}
 
@@ -84,7 +91,8 @@ class PdfHelper {
 			$instance->SetFont('Arial', '', 14);
 			$instance->Cell(80, 8, date('d/m/Y'), $instance->b, 0, 'R');
 
-			$instance->y = 50;
+			$instance->y += $alto_imagen;
+			$instance->y += 5;
 		} else {
 			$instance->y = 2;
 		}
@@ -92,16 +100,16 @@ class PdfHelper {
 		Self::tableHeader($instance, $data['fields']);
 	}
 
-	static function logo($instance, $data) {
+	static function logo($instance, $data, $alto_imagen) {
         // Logo
 
         $user = $data['user'];
         $logo_url = $user->image_url;
         if (!is_null($logo_url)) {
         	if (config('app.APP_ENV') == 'local') {
-        		$instance->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', 5, 5, 40, 25);
+        		$instance->Image('https://img.freepik.com/vector-gratis/ilustracion-banner-sello-circulo_53876-28480.jpg', 5, 5, $alto_imagen, $alto_imagen);
         	} else if (GeneralHelper::file_exists_2($logo_url)) {
-	        	$instance->Image($logo_url, 5, 5, 25, 25);
+	        	$instance->Image($logo_url, 5, 5, $alto_imagen, $alto_imagen);
         	}
         }
 		
@@ -109,22 +117,27 @@ class PdfHelper {
 
 		// Razon social
 		$instance->y = 5;
+
+		if ($alto_imagen > 40) {
+			$instance->y += 10;
+		}
 		
-		$instance->x = 35;
+		$start_x = $alto_imagen + 5;
+		$instance->x = $start_x;
 		$instance->Cell(40, 5, $user->company_name, $instance->b, 1, 'L');	
 
 		// Condicion IVA
 		if (!is_null($user->afip_information) && !is_null($user->afip_information->iva_condition)) {
-			$instance->x = 35;
+			$instance->x = $start_x;
 			$instance->Cell(40, 5, $user->afip_information->iva_condition->name, $instance->b, 1, 'L');
 
-			$instance->x = 35;
+			$instance->x = $start_x;
 			$instance->Cell(40, 5, 'CUIT: '.$user->afip_information->cuit, $instance->b, 1, 'L');
 		}
 
 		// Sitio Web
 		if (!is_null($user->online)) {
-			$instance->x = 35;
+			$instance->x = $start_x;
 			$instance->SetFont('Arial', 'B', 10);
 			$instance->Cell(10, 5, 'Web: ', $instance->b, 0, 'L');
 
@@ -136,7 +149,7 @@ class PdfHelper {
 
 		// Telefono
 		if (!is_null($user->phone)) {
-			$instance->x = 35;
+			$instance->x = $start_x;
 			$instance->SetFont('Arial', 'B', 10);
 			$instance->Cell(8, 5, 'Tel: ', $instance->b, 0, 'L');
 
@@ -152,10 +165,6 @@ class PdfHelper {
 		    	false
 		    );
 		}
-		// $instance->Line(5, 5, 101, 5);
-		// $instance->Line(101, 5, 101, 45);
-		// $instance->Line(101, 45, 5, 45);
-		// $instance->Line(5, 45, 5, 5);
 	}
 
 	static function firma($instance) {
@@ -222,10 +231,15 @@ class PdfHelper {
 		$instance->Line($start_x, $finish_y, $start_x, $start_y);
 	}
 
-	static function commerceInfo($instance, $data) {
+	static function commerceInfo($instance, $data, $alto_imagen) {
 		$user = $data['user'];
 
 		$instance->y += 5;
+
+		if ($alto_imagen > 40) {
+			$instance->y += 10;
+		}
+
 		$start_y = $instance->y;
 
 		// Direccion
@@ -284,12 +298,15 @@ class PdfHelper {
 
 	}
 
-	static function commerceInfoLine($instance) {
+	static function commerceInfoLine($instance, $alto_imagen) {
 
 		$y_de_abajo = $instance->y;
 
-		if ($y_de_abajo < 30) {
-			$y_de_abajo = 30;
+		// Margenes
+		$alto_imagen += 5;
+
+		if ($y_de_abajo < $alto_imagen) {
+			$y_de_abajo = $alto_imagen;
 		}
 
 		// Arriba
@@ -307,7 +324,7 @@ class PdfHelper {
 		// Linea del medio
 		$instance->Line(105, 20, 105, $y_de_abajo);
 
-		$instance->y += 3;
+		$instance->y = $alto_imagen;
 	}
 
 	static function modelInfo($instance, $data) {

@@ -411,6 +411,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Varios precios por articulo en VENDER',
                 'slug' => 'varios_precios',
             ],
+            [
+                'name' => 'Buscar por descripcion en VENDER',
+                'slug' => 'search_descripcion_en_vender',
+            ],
 
         ];
         foreach ($extencions as $extencion) {

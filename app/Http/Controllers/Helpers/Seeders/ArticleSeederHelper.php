@@ -106,6 +106,7 @@ class ArticleSeederHelper {
         $created_article = Article::create([
             // 'num'                   => $num,
             // 'bar_code'              => $article['name'].rand(99999, 9999999),
+            'es_insumo'             => isset($article['es_insumo']) ? $article['es_insumo'] : null,
             'bar_code'              => isset($article['bar_code']) ? $article['bar_code'] : null,
             'provider_code'         => isset($article['provider_code']) ? $article['provider_code'] : null,
             'name'                  => isset($article['name']) ? $article['name'] : null,

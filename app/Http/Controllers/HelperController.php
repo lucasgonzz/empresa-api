@@ -77,6 +77,30 @@ class HelperController extends Controller
         $this->{$method}($param, $param_2);
     }
 
+    function articles_golonorte() {
+        $articles = Article::orderBy('id', 'ASC')
+                            ->get();
+
+        $user = User::find(env('USER_ID'));
+
+        $index = 0;
+
+        foreach ($articles as $article) {
+            $index++;
+            if ($index <= 10) {
+                continue;
+            }
+            $costo_original = (float)$article->cost / 1.05;
+            $article->cost = $costo_original;
+            $article->timestamps = false;
+            $article->save();
+
+            ArticleHelper::setFinalPrice($article, $user->id, $user, $user->id);
+            echo 'Listo '.$article->name.' <br>';
+        }
+        echo 'LISTO';
+    }
+
     function articulos_san_blas() {
         $guidoli = 4;
         $durol = 56;

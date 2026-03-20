@@ -436,7 +436,7 @@ class ArticleHelper {
         ];
     }
 
-    static function redondear($price, $user, $des) {
+    static function redondear($price, $user, $des = []) {
 
         if ($user->redondear_miles_en_vender) {
             $price = round($price / 1000) * 1000;

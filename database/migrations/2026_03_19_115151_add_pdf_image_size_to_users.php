@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class AddIndiceToArticleProvider extends Migration
+class AddPdfImageSizeToUsers extends Migration
 {
     /**
      * Run the migrations.
@@ -13,8 +13,8 @@ class AddIndiceToArticleProvider extends Migration
      */
     public function up()
     {
-        Schema::table('article_provider', function (Blueprint $table) {
-            // $table->unique(['article_id', 'provider_id'], 'uniq_article_provider');
+        Schema::table('users', function (Blueprint $table) {
+            $table->integer('pdf_image_size')->default(30);
         });
     }
 
@@ -25,8 +25,8 @@ class AddIndiceToArticleProvider extends Migration
      */
     public function down()
     {
-        Schema::table('article_provider', function (Blueprint $table) {
-            // $table->dropUnique('uniq_article_provider');
+        Schema::table('users', function (Blueprint $table) {
+            //
         });
     }
 }

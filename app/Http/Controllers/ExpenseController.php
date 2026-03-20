@@ -103,24 +103,24 @@ class ExpenseController extends Controller
         $model->created_at                            = $request->created_at;
         $model->save();
         
-        $model->payment_methods()->detach();
+        // $model->payment_methods()->detach();
         
-        foreach ($request->payment_methods as $payment_method) {
-            if (!is_null($payment_method['amount'])) {
-                $amount = $payment_method['amount'];
-                $caja_id = null;
-                if (isset($payment_method['caja_id']) && $payment_method['caja_id'] != 0) {
-                    $caja_id = $payment_method['caja_id'];
-                }
+        // foreach ($request->payment_methods as $payment_method) {
+        //     if (!is_null($payment_method['amount'])) {
+        //         $amount = $payment_method['amount'];
+        //         $caja_id = null;
+        //         if (isset($payment_method['caja_id']) && $payment_method['caja_id'] != 0) {
+        //             $caja_id = $payment_method['caja_id'];
+        //         }
                 
-                $model->payment_methods()->attach($payment_method['id'],[
-                    'amount'    => $amount,
-                    'caja_id'   => $caja_id,
-                ]);
-            }
-        }
+        //         $model->payment_methods()->attach($payment_method['id'],[
+        //             'amount'    => $amount,
+        //             'caja_id'   => $caja_id,
+        //         ]);
+        //     }
+        // }
 
-        ExpenseCajaHelper::editar_movimiento_caja($model);
+        // ExpenseCajaHelper::editar_movimiento_caja($model);
 
         return response()->json(['model' => $this->fullModel('Expense', $model->id)], 200);
     }

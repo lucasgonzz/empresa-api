@@ -32,6 +32,7 @@ class HT5ProductionSeeder extends Seeder
         $articles = [
             [
                 'name'  => 'Corte Tela 40x50cm',
+                'es_insumo' => 1,
                 'addresses' => [
                     [
                         'name'      => 'Tucuman',
@@ -45,6 +46,7 @@ class HT5ProductionSeeder extends Seeder
             ],
             [
                 'name'  => 'Bolsa 40x50cm',
+                'es_insumo' => 1,
                 'addresses' => [
                     [
                         'name'      => 'Tucuman',

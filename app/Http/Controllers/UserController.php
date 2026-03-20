@@ -102,6 +102,7 @@ class UserController extends Controller
         $model->address_company                 = $request->address_company;
         $model->all_addresses_in_sale_pdf       = $request->all_addresses_in_sale_pdf;
         $model->mostrar_vendedor_en_venta_pdf   = $request->mostrar_vendedor_en_venta_pdf;
+        $model->pdf_image_size                  = $request->pdf_image_size;
 
 
 
