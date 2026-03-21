@@ -593,6 +593,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('c-a-payment-method-type', 'CAPaymentMethodTypeController');
 
 
+
+
+    Route::resource('sale-status', 'SaleStatusController');
+
+
 });
 
 
