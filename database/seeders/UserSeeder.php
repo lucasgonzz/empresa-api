@@ -152,6 +152,7 @@ class UserSeeder extends Seeder
                 'cajas',
                 'production',
                 'productionV2',
+                'ventas_con_estados',
                 // 'ventas_con_fecha_de_entrega',
                 // 'road_map_detalle_por_articulos_y_no_por_venta',
                 // 'online',

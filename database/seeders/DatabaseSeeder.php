@@ -201,6 +201,7 @@ class DatabaseSeeder extends Seeder
                 $this->call(RecipeRouteTypeSeeder::class);
                 $this->call(OrderProductionStatusSeeder::class);
                 $this->call(HT5ProductionSeeder::class);
+                $this->call(SaleStatusSeeder::class);
                 
             } else {
 

@@ -167,6 +167,7 @@ class SaleController extends Controller
                 'valor_dolar'                       => $request->valor_dolar,
                 'incoterms'                         => $request->incoterms,
                 'aplicar_recargos_directo_a_items'  => $request->aplicar_recargos_directo_a_items,
+                'sale_status_id'                    => $request->sale_status_id,
                 'descuento'                         => round($request->descuento, 2, PHP_ROUND_HALF_UP),
                 'user_id'                           => $this->userId(),
             ]);
@@ -290,6 +291,7 @@ class SaleController extends Controller
             $model->fecha_entrega                       = $request->fecha_entrega;
             
             $model->aplicar_recargos_directo_a_items    = $request->aplicar_recargos_directo_a_items;
+            $model->sale_status_id                      = $request->sale_status_id;
 
             // $model->valor_dolar                         = $request->valor_dolar;
             
