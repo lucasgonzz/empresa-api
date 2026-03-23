@@ -24,7 +24,7 @@ class ClientExport implements FromCollection, WithHeadings, WithMapping
             GeneralHelper::getRelation($client, 'iva_condition'),
             $client->razon_social,
             $client->cuit,
-            $client->saldo,
+            $client->saldo_pesos,
             $client->description,
             GeneralHelper::getRelation($client, 'seller'),
             GeneralHelper::getRelation($client, 'price_type'),
