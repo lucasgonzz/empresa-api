@@ -45,12 +45,12 @@ class SaleController extends Controller
 {
 
 
-    public function index($from_depositos, $from_date = null, $until_date = null) {
+    public function index($modulo, $from_date = null, $until_date = null) {
         $models = Sale::where('user_id', $this->userId())
                         ->orderBy('created_at', 'DESC')
                         ->withAll();
 
-        if ($from_depositos) {
+        if ($modulo == 'por_entregar') {
 
             $models = $models->where(function($query) {
                                     $query->where('to_check', 1)
@@ -58,11 +58,18 @@ class SaleController extends Controller
                                           ->orWhere('confirmed', 1);
                                 })->where('terminada', 0);
 
-            Log::info('NO tiene que estar terminada');
-        } else {
+        } else if ($modulo == 'por_estado') {
             
-            $models = $models->where('terminada', 1);
-            Log::info('tiene que estar terminada');
+            $models = $models->whereNotNull('sale_status_id')
+                                ->where('sale_status_id', '!=', 0);
+                                
+        } else if ($modulo == 'ventas') {
+
+            $models = $models->where('terminada', 1)
+                            ->where(function ($q) {
+                                $q->whereNull('sale_status_id')
+                                    ->orWhere('sale_status_id', 0);
+                            });
         }
 
         if (!is_null($from_date)) {
