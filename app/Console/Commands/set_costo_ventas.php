@@ -14,7 +14,7 @@ class set_costo_ventas extends Command
      *
      * user_id: opcional (se usa si no existe config('app.USER_ID'))
      */
-    protected $signature = 'set_costo_ventas {user_id?} {--solo_ventas_de_hoy}';
+    protected $signature = 'set_costo_ventas {from_sale_id?} {user_id?} {--solo_ventas_de_hoy}';
 
     /**
      * The console command description.
@@ -64,6 +64,10 @@ class set_costo_ventas extends Command
 
         if ($this->option('solo_ventas_de_hoy')) {
             $sales_query->where('created_at', '>=', Carbon::today()->startOfDay());
+        }
+
+        if ($this->argument('from_sale_id')) {
+            $sales_query->where('id', '>=', $this->argument('from_sale_id'));
         }
 
         $processed_sales = 0;
@@ -136,16 +140,18 @@ class set_costo_ventas extends Command
                 $sale->save();
             }
 
-            // Liberación de memoria
-            unset($sale);
-            gc_collect_cycles();
 
             if ($processed_sales % 200 === 0) {
                 $this->info(
                     'Procesadas ' . $processed_sales . ' ventas. Memoria MB: ' .
                     round(memory_get_usage(true) / 1024 / 1024, 2)
                 );
+                $this->comment('Ultimo id procesado: '.$sale->id);
             }
+
+            // Liberación de memoria
+            unset($sale);
+            gc_collect_cycles();
         }
 
         $this->info('Termino. Ventas procesadas: ' . $processed_sales);
