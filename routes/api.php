@@ -477,6 +477,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     Route::resource('column-position', 'ColumnPositionController');
+    Route::get('table-column-preference/{model_name}/{preference_type}', 'TableColumnPreferenceController@show')
+        ->where('preference_type', 'table|search');
+    Route::put('table-column-preference/{model_name}/{preference_type}', 'TableColumnPreferenceController@update')
+        ->where('preference_type', 'table|search');
+
+    Route::resource('table-column-preferences', 'TableColumnPreferenceCrudController');
 
     Route::resource('price-type-surchage', 'PriceTypeSurchageController');
 
