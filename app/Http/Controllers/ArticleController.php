@@ -720,6 +720,7 @@ class ArticleController extends Controller
                             })
                             // ->orderBy('updated_at', 'DESC')
                             ->withAll()
+                            ->take(50)
                             ->get();
 
 
