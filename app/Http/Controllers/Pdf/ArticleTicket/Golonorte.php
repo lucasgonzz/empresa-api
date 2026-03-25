@@ -27,8 +27,11 @@ class Golonorte {
 
 	function print() {
 
+		$this->instance->x = 0;
+		$this->instance->y = 0;
+
 		foreach ($this->articles as $article) {
-			
+
 			if ($this->instance->x == 0) {
 				$this->start_x = 0;
 
@@ -211,7 +214,7 @@ class Golonorte {
 
 		$this->instance->Cell(3, $alto/1.5, '$', $this->border, 0, 'L');
 
-		$this->instance->SetFont('Arial', 'B', 52);
+		$this->instance->SetFont('Arial', 'B', 48);
 		$this->instance->Cell($this->ancho_precio_principal-3, $alto, Numbers::price($article_price_type->pivot->price), $this->border, 0, 'L');
 
 
