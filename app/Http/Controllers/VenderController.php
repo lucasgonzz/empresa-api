@@ -160,6 +160,10 @@ class VenderController extends Controller
                             ->withAll()
                             ->first();
 
+        if ($article && $article->unidad_medida_id != 2) {
+            $amount /= 1000;
+        }
+
         return [
             'article'     => $article,
             'amount'      => $amount,

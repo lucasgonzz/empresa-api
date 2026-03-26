@@ -28,6 +28,8 @@ class DatabaseSeeder extends Seeder
 
         if (env('FOR_SERVER') == 'la_barraca') {
             $this->call(UserSeeder::class);
+            $this->call(SheetTypeSeeder::class);
+            $this->call(PdfColumnProfileSeeder::class);
             $this->call(ExtencionSeeder::class);
             $this->call(PermissionSeeder::class);
             // $this->call(FeaturesSeeder::class);
@@ -325,6 +327,9 @@ class DatabaseSeeder extends Seeder
         $this->call(ConceptoMovimientoCajaSeeder::class);
 
         $this->call(AfipTipoComprobanteSeeder::class);
+        $this->call(SheetTypeSeeder::class);
+        $this->call(PdfColumnOptionSeeder::class);
+        $this->call(PdfColumnProfileSeeder::class);
     }
 
     function article_variants() {

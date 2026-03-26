@@ -281,7 +281,10 @@ class CurrentAcountHelper {
             $nota_credito->articles()->detach();
             foreach ($items as $item) {
                 if (isset($item['is_article'])) {
-                    if (isset($item['unidades_devueltas'])) {
+                    if (
+                        isset($item['unidades_devueltas'])
+                        && (float)$item['unidades_devueltas'] > 0
+                    ) {
 
                         $cost = $item['costo_real'];
 

@@ -18,6 +18,9 @@ class PdfHelper {
 		$user = UserHelper::getFullModel();
 
 		$alto_imagen = $user->pdf_image_size;
+
+		$table_size = isset($data['table_size']) ? $data['table_size'] : 10;
+		$table_margen = isset($data['table_margen']) ? $data['table_margen'] : 2;
 		
 		Self::logo($instance, $data, $alto_imagen);
 		Self::title($instance, $data['title']);
@@ -35,7 +38,9 @@ class PdfHelper {
 		}
 
 		if (isset($data['right_info'])) {
-			Self::right_info($instance, $data, $res['y_final']);
+			// dd($res['y_final']);
+			// Self::right_info($instance, $data, 70);
+			Self::right_info($instance, $data, $res['y_final'], $res['y_inicio']);
 		}
 
 		if (isset($data['client_description'])) {
@@ -43,7 +48,7 @@ class PdfHelper {
 		}
 
 		if (isset($data['fields'])) {
-			Self::tableHeader($instance, $data['fields']);
+			Self::tableHeader($instance, $data['fields'], $table_size, $table_margen);
 		}
 	}
 
@@ -436,7 +441,7 @@ class PdfHelper {
 		return $start;
 	}
 
-	static function tableHeader($instance, $fields, $size = 10, $margen = 2) {
+	static function tableHeader($instance, $fields, $size, $margen) {
 		$instance->SetFont('Arial', 'B', $size);
 		$instance->x = 5;
 		$instance->y += $margen;
@@ -562,7 +567,7 @@ class PdfHelper {
 		y_final_model_info es el valor final de y luego de mostrar todas las model_props,
 		uso el mismo valor para que las lineas de la caja de right_info sea del mismo tamaño
 	*/
-	static function right_info($instance, $data, $y_final_model_info, $start_y = 32){
+	static function right_info($instance, $data, $y_final_model_info, $start_y){
 
 		$instance->y = $start_y;
 		$instance->SetFont('Arial', 'B', 10);

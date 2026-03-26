@@ -22,6 +22,7 @@ use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Helpers\sale\SaleNotaCreditoAfipHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Http\Controllers\Pdf\EtiquetaEnvioPdf;
+use App\Http\Controllers\Pdf\NewSalePdf;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
 use App\Http\Controllers\Pdf\SaleDeliveredArticlesPdf;
 use App\Http\Controllers\Pdf\SalePdf;
@@ -418,21 +419,20 @@ class SaleController extends Controller
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
     }
 
-    function pdf($id, $with_prices, $with_costs, $precios_netos, $confirmed = 0) {
+    function pdf(Request $request, $id, $with_prices, $with_costs, $precios_netos, $confirmed = 0) {
         $sale = Sale::find($id);
 
-        
-        $user = User::where('id', $sale->user_id)
-                            ->with('extencions')
-                            ->first();
 
-        SaleHelper::setPrinted($this, $sale, $confirmed, $user);
-        $pdf = new SalePdf($sale, $user, (boolean)$with_prices, (boolean)$with_costs, (boolean)$precios_netos);
+        // SaleHelper::setPrinted($this, $sale, $confirmed, $user);
+        $profile_id = $request->query('pdf_column_profile_id');
+        $afip_ticket_id = $request->query('afip_ticket_id');
+        $pdf = new NewSalePdf($sale, $profile_id, $afip_ticket_id);
     }
 
-    function afipTicketA4Pdf($id) {
+    function afipTicketA4Pdf(Request $request, $id) {
         $afip_ticket = AfipTicket::find($id);
-        $pdf = new SaleAfipTicketPdf($afip_ticket);
+        $profile_id = $request->query('pdf_column_profile_id');
+        $pdf = new SaleAfipTicketPdf($afip_ticket, $profile_id);
     }
 
     function deliveredArticlesPdf($id) {

@@ -13,18 +13,20 @@ use App\Http\Controllers\Helpers\PdfPrintArticles;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\SalePdfHelper;
+use App\Http\Controllers\Pdf\Afip\TicketInfoHelper;
 use App\Http\Controllers\Pdf\AfipQrPdf;
 use App\Models\Article;
 use App\Models\Client;
 use App\Models\Impression;
 use App\Models\Sale;
+use App\Services\PdfColumnService;
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 // Este se usa para las ventas
 class SaleAfipTicketPdf extends fpdf {
 
-	function __construct($afip_ticket) {
+	function __construct($afip_ticket, $pdf_column_profile_id = null) {
 		parent::__construct();
 		$this->SetAutoPageBreak(true, 1);
 		$this->afip_ticket = $afip_ticket;
@@ -33,7 +35,16 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->borders = 'B';
         $this->printing_duplicate = false;
         $this->user = $this->sale->user;
-        $this->afip_helper = new AfipHelper($this->afip_ticket, null, null, $this->user);
+        /**
+         * Helper compartido para lógica fiscal AFIP reutilizable entre PDFs.
+         */
+        $this->ticket_info_helper = new TicketInfoHelper($this->afip_ticket, $this->user);
+        $this->afip_helper = $this->ticket_info_helper->afip_helper();
+		$this->pdf_column_profile = PdfColumnService::get_profile_for_print(
+			$this->user->id,
+			'sale',
+			$pdf_column_profile_id
+		);
 
 		$widths = [];
 		$widths['codigo'] = 23;
@@ -63,6 +74,19 @@ class SaleAfipTicketPdf extends fpdf {
 
 
 		$this->widths = $widths;
+
+		if ($this->pdf_column_profile && is_array($this->pdf_column_profile->columns)) {
+			$total_width = collect($this->pdf_column_profile->columns)
+				->filter(function ($column) {
+					return !empty($column['visible']);
+				})
+				->sum(function ($column) {
+					return (int) ($column['width'] ?? 0);
+				});
+			if ($total_width > 0) {
+				$this->margins = (210 - $total_width) / 2;
+			}
+		}
 
 		// Se setean los magenes
 		$this->margins = (210 - array_sum($widths)) / 2;
@@ -343,40 +367,8 @@ class SaleAfipTicketPdf extends fpdf {
 	}
 
 	function printImportes() {
-
-		$importes = $this->afip_helper->getImportes();
-		if ($this->afip_ticket->cbte_letra == 'A' || $this->afip_ticket->cbte_letra == 'B') {
-
-			$this->x = 125;
-			$this->y += 5;
-			$this->SetFont('Arial', 'B', 9);
-
-			$this->Cell(40, 5, 'Importe Neto Gravado: ', 1, 0, 'L');
-			$this->Cell(40, 5, '$'.Numbers::price($importes['gravado']), 1, 1, 'L');
-
-			foreach ($importes['ivas'] as $iva => $importe) {
-				if ($importe['Importe'] > 0) {
-					$this->x = 125;
-					$this->Cell(40, 5, 'IVA '.$iva.'%: ', 1, 0, 'L');
-					$this->Cell(40, 5, '$'.Numbers::price($importe['Importe']), 1, 1, 'L');
-				}
-			}
-			
-		} else {
-			$this->y += 5;
-		}
-
-		$this->SetFont('Arial', 'B', 12);
-		$this->x = 125;
-		$this->Cell(40, 7, 'Importe Total: ', 1, 0, 'L');
-
-		$importe = Numbers::price($importes['total'], true);
-
-		if ($this->afip_ticket->cbte_letra == 'E') {
-			$importe = Numbers::price($this->sale->total, true, $this->sale->moneda_id);
-		} 
-		
-		$this->Cell(40, 7, $importe, 1, 0, 'L');
+		$this->y += 5;
+		$this->ticket_info_helper->print_iva_and_totals($this, $this->sale);
 	}
 
 	function printLine() {
@@ -409,24 +401,7 @@ class SaleAfipTicketPdf extends fpdf {
 	}
 
 	function printAfipData() {
-		// Page
-		$this->y += 12;
-		$this->x = 55;
-		$this->Cell(100, 5, 'Pág. '.$this->num_page, 0, 0, 'C');
-		// Cae
-		$this->y += 5;
-		$this->x = 105;
-		$this->SetFont('Arial', 'B', 10);
-		$this->Cell(50, 5, 'CAE N°:', 0, 0, 'R');
-		$this->SetFont('Arial', '', 10);
-		$this->Cell(50, 5, $this->afip_ticket->cae, 0, 0, 'L');
-		// Cae vencimiento
-		$this->y += 5;
-		$this->x = 105;
-		$this->SetFont('Arial', 'B', 10);
-		$this->Cell(50, 5, 'Fecha de Vto. de CAE:', 0, 0, 'R');
-		$this->SetFont('Arial', '', 10);
-		$this->Cell(50, 5, $this->getCaeExpiredAt(), 0, 0, 'L');
+		$this->ticket_info_helper->print_fiscal_footer($this, $this->num_page);
 	}
 
 	function getCaeExpiredAt() {
@@ -436,13 +411,7 @@ class SaleAfipTicketPdf extends fpdf {
 	}
 
 	function printQR() {
-
-		if (config('app.APP_ENV') == 'local') return;
-
-		$pdf = new AfipQrPdf($this, $this->afip_ticket, false);
-		$pdf->printQr();
-
-		$this->y -= 40;
+		$this->ticket_info_helper->print_qr_and_arca_footer($this);
 	}
 
 	function reset() {
@@ -730,6 +699,11 @@ class SaleAfipTicketPdf extends fpdf {
 	}
 	
 	function printArticle($article) {
+		if ($this->pdf_column_profile && is_array($this->pdf_column_profile->columns)) {
+			$this->printArticleFromProfile($article);
+			return;
+		}
+
 	    $this->SetArticleConf();
     	$this->setFont('Arial', '', 8);
     	
@@ -795,6 +769,60 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->y = $y_2;
         // $this->y += 6;
     }
+
+	function printArticleFromProfile($article) {
+		$this->SetArticleConf();
+		$this->setFont('Arial', '', 8);
+
+		$columns = collect($this->pdf_column_profile->columns)
+			->filter(function ($column) {
+				return !empty($column['visible']);
+			})
+			->sortBy('order')
+			->values()
+			->all();
+
+		$row_height = 6;
+		foreach ($columns as $column) {
+			$text = (string) $this->get_profile_column_value($column, $article);
+			$width = (int) ($column['width'] ?? 0);
+			if (!empty($column['wrap_content']) && $width > 0) {
+				$lines = $this->NbLines($width, $text);
+				$estimated = max(1, $lines) * 6;
+				if ($estimated > $row_height) {
+					$row_height = $estimated;
+				}
+			}
+		}
+
+		foreach ($columns as $column) {
+			$width = (int) ($column['width'] ?? 0);
+			$text = (string) $this->get_profile_column_value($column, $article);
+			$current_x = $this->x;
+			$current_y = $this->y;
+			if (!empty($column['wrap_content'])) {
+				$this->MultiCell($width, 6, $text, 0, 'L', false);
+				$this->x = $current_x + $width;
+				$this->y = $current_y;
+			} else {
+				$this->Cell($width, $row_height, $text, 0, 0, 'L');
+			}
+		}
+		$this->y += $row_height;
+	}
+
+	function get_profile_column_value($column, $article) {
+		$resolver = $column['value_resolver'] ?? null;
+		return PdfColumnService::resolve_value($resolver, [
+			'item' => $article,
+			'sale' => $this->sale,
+			'afip_helper' => $this->afip_helper,
+			'numbers' => Numbers::class,
+			'general_helper' => GH::class,
+			'user_helper' => UserHelper::class,
+			'user' => $this->user,
+		]);
+	}
 
     function tipo_factura() {
     	return $this->afip_ticket->cbte_tipo == $cbte_tipo;
@@ -1140,6 +1168,27 @@ class SaleAfipTicketPdf extends fpdf {
 	}
 
 	function printTableHeader() {
+		if ($this->pdf_column_profile && is_array($this->pdf_column_profile->columns)) {
+			$this->SetX(5);
+			$this->SetFont('Arial', 'B', 9, 'L');
+			$columns = collect($this->pdf_column_profile->columns)
+				->filter(function ($column) {
+					return !empty($column['visible']);
+				})
+				->sortBy('order')
+				->values()
+				->all();
+
+			foreach ($columns as $column) {
+				$label = $column['label'] ?? $column['key'];
+				$width = (int) ($column['width'] ?? 0);
+				$this->Cell($width, 5, $label, 1, 0, 'L');
+			}
+			$this->SetLineWidth(.6);
+			$this->y += 5;
+			return;
+		}
+
 		// $this->SetY(70);
 		$this->SetX(5);
 		$this->SetFont('Arial', 'B', 9, 'L');
@@ -1202,5 +1251,54 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->AliasNbPages();
 		$this->SetY(-30);
 		// $this->Write(5,'Hoja '.$this->num_PageNo().'/{nb}');
+	}
+
+	function NbLines($w, $txt) {
+		$cw = &$this->CurrentFont['cw'];
+		if ($w == 0) {
+			$w = $this->w - $this->rMargin - $this->x;
+		}
+		$wmax = ($w - 2 * $this->cMargin) * 1000 / $this->FontSize;
+		$s = str_replace("\r", '', (string) $txt);
+		$nb = strlen($s);
+		if ($nb > 0 && $s[$nb - 1] == "\n") {
+			$nb--;
+		}
+		$sep = -1;
+		$i = 0;
+		$j = 0;
+		$l = 0;
+		$nl = 1;
+		while ($i < $nb) {
+			$c = $s[$i];
+			if ($c == "\n") {
+				$i++;
+				$sep = -1;
+				$j = $i;
+				$l = 0;
+				$nl++;
+				continue;
+			}
+			if ($c == ' ') {
+				$sep = $i;
+			}
+			$l += $cw[$c] ?? 0;
+			if ($l > $wmax) {
+				if ($sep == -1) {
+					if ($i == $j) {
+						$i++;
+					}
+				} else {
+					$i = $sep + 1;
+				}
+				$sep = -1;
+				$j = $i;
+				$l = 0;
+				$nl++;
+			} else {
+				$i++;
+			}
+		}
+		return $nl;
 	}
 }

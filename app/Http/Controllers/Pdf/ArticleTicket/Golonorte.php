@@ -153,7 +153,7 @@ class Golonorte {
 		if (
 			!is_null($range->min)
 			&& $range->min > 1
-			&& $article_price_type->pivot->price 
+			&& $article_price_type->pivot->final_price 
 			&& !$article_price_type->ocultar_al_publico
 		) {
 
@@ -182,7 +182,6 @@ class Golonorte {
 			$this->instance->x += $this->ancho_precio_principal;
 			$this->instance->x += 2;
 
-
 			$alto = 10;
 			$this->instance->SetFont('Arial', 'B', 12);
 
@@ -192,7 +191,7 @@ class Golonorte {
 			$this->instance->y += 1;
 
 			$this->instance->SetFont('Arial', 'B', 27);
-			$this->instance->Cell($this->ancho_rango, $alto, Numbers::price($article_price_type->pivot->price), $this->border, 1, 'L');
+			$this->instance->Cell($this->ancho_rango, $alto, Numbers::price($article_price_type->pivot->final_price), $this->border, 1, 'L');
 
 			// $this->instance->y += 3;
 		
@@ -215,7 +214,7 @@ class Golonorte {
 		$this->instance->Cell(3, $alto/1.5, '$', $this->border, 0, 'L');
 
 		$this->instance->SetFont('Arial', 'B', 48);
-		$this->instance->Cell($this->ancho_precio_principal-3, $alto, Numbers::price($article_price_type->pivot->price), $this->border, 0, 'L');
+		$this->instance->Cell($this->ancho_precio_principal-3, $alto, Numbers::price($article_price_type->pivot->final_price), $this->border, 0, 'L');
 
 
 

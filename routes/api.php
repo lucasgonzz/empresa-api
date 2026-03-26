@@ -483,6 +483,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
         ->where('preference_type', 'table|search');
 
     Route::resource('table-column-preferences', 'TableColumnPreferenceCrudController');
+    Route::get('pdf-column-options', 'PdfColumnOptionController@index');
+    Route::get('pdf-column-options/{id}', 'PdfColumnOptionController@show');
+    Route::resource('pdf-column-profiles', 'PdfColumnProfileController');
 
     Route::resource('price-type-surchage', 'PriceTypeSurchageController');
 
