@@ -216,9 +216,21 @@ class AfipHelper extends Controller {
         } else {
 
             $total_a_facturar = $this->sale->total;
+            
 
             if (!is_null($this->afip_ticket->facturar_importe_personalizado)) {
                 $total_a_facturar = $this->afip_ticket->facturar_importe_personalizado;
+            } 
+
+            if (
+                $this->from_nota_credito
+                && count($this->articles) >= 1
+            ) {
+                $total_a_facturar = 0;
+                foreach ($this->articles as $article) {
+                    $total_article = (float)$article->pivot->price * (float)$article->pivot->amount;
+                    $total_a_facturar += $total_article;
+                }
             } 
 
             if (
@@ -227,7 +239,7 @@ class AfipHelper extends Controller {
             ) {
                 $total_a_facturar *= (float)$this->sale->valor_dolar;
             }
-            
+
             $total              = $total_a_facturar;
             $gravado            = $total_a_facturar;
         }
@@ -406,6 +418,13 @@ class AfipHelper extends Controller {
             $price = $this->article->price;
         } else {
             $price = $this->article->pivot->price;
+        }
+
+        if (
+            $this->sale->moneda_id == 2
+            && $this->sale->valor_dolar
+        ) {
+            $price *= $this->sale->valor_dolar;
         }
 
         return $price;

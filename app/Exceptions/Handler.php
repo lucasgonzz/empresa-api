@@ -7,6 +7,7 @@ use App\Mail\ErrorHandler;
 use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Validation\ValidationException;
 use Throwable;
 
 class Handler extends ExceptionHandler
@@ -46,5 +47,20 @@ class Handler extends ExceptionHandler
                 Mail::to('lucasgonzalez5500@gmail.com')->send(new ErrorHandler($owner_user, $auth_user, $e));
             }
         });
+    }
+
+    /**
+     * Convierte una ValidationException en JSON con mensaje traducido (locale de la app, p. ej. español).
+     *
+     * @param \Illuminate\Http\Request $request Solicitud actual.
+     * @param \Illuminate\Validation\ValidationException $exception Excepción de validación.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    protected function invalidJson($request, ValidationException $exception)
+    {
+        return response()->json([
+            'message' => __('validation.invalid_data'),
+            'errors' => $exception->errors(),
+        ], $exception->status);
     }
 }

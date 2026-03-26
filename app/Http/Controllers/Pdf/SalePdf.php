@@ -328,6 +328,7 @@ class SalePdf extends fpdf {
 		}
 	}
 
+
 	function observations() {
 		if (!is_null($this->sale->observations)) {
 			$this->SetFont('Arial', '', 14);

@@ -336,7 +336,7 @@ class BudgetPdf extends fpdf {
 
 		    	// $text .= ' (Ahorro $' . Numbers::price($diferencia) . ')';
 
-				$this->Cell(100, 7, $text, 0, 1, 'L');
+				$this->Cell(200, 7, $text, 0, 1, 'R');
 		    }
 
 		    $this->SetFont('Arial', '', 10);
@@ -344,12 +344,12 @@ class BudgetPdf extends fpdf {
 		    foreach ($this->budget->discounts as $discount) {
 				
 		    	$this->x = 5;
-				$this->Cell(100, 7, '- '.$discount->pivot->percentage.'% '.$discount->name, 0, 1, 'L');
+				$this->Cell(200, 7, '- '.$discount->pivot->percentage.'% '.$discount->name, 0, 1, 'R');
 		    }
 		    foreach ($this->budget->surchages as $surchage) {
 
 		    	$this->x = 5;
-				$this->Cell(100, 7, '+ '.$surchage->pivot->percentage.'% '.$surchage->name, 0, 1, 'L');
+				$this->Cell(200, 7, '+ '.$surchage->pivot->percentage.'% '.$surchage->name, 0, 1, 'R');
 		    }
 
 		}
@@ -362,7 +362,7 @@ class BudgetPdf extends fpdf {
 		    $this->x = 5;
 		    $this->SetFont('Arial', 'B', 14);
 			// $this->Cell(200, 10, 'Total: $'. Numbers::price($this->budget->total), 0, 1, 'R');
-			$this->Cell(100, 10, 'Total: $'. Numbers::price(BudgetHelper::getTotal($this->budget)), 0, 1, 'L');
+			$this->Cell(200, 10, 'Total: $'. Numbers::price(BudgetHelper::getTotal($this->budget)), 0, 1, 'R');
 		}
 	}
 

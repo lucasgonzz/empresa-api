@@ -51,7 +51,6 @@ class TableColumnPreferenceCrudController extends Controller
             'columns.*.order' => 'required|integer',
             'columns.*.width' => 'nullable|integer|min:40|max:1200',
             'columns.*.wrap_content' => 'nullable|boolean',
-            'columns.*.fade_when_truncated' => 'nullable|boolean',
         ]);
 
         $model = TableColumnPreference::create([
@@ -100,7 +99,6 @@ class TableColumnPreferenceCrudController extends Controller
             'columns.*.order' => 'required_with:columns|integer',
             'columns.*.width' => 'nullable|integer|min:40|max:1200',
             'columns.*.wrap_content' => 'nullable|boolean',
-            'columns.*.fade_when_truncated' => 'nullable|boolean',
         ]);
 
         $fillable = $request->only(['model_name', 'preference_type', 'columns']);

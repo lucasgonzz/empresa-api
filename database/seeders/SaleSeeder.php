@@ -32,6 +32,58 @@ class SaleSeeder extends Seeder
 
         // $this->venta_sin_confirmar_a_fin_de_mes();
 
+        $this->venta_con_muchos_articulos();
+
+    }
+
+    function venta_con_muchos_articulos() {
+        $data = [
+            'num'               => 999999,
+            'address_id'        => 1,
+            'employee_id'       => null,
+            'client_id'         => 1,
+            'created_at'        => Carbon::now(),
+            'user_id'           => config('app.USER_ID'),
+            'terminada'         => 1,
+            'confirmed'         => 1,
+            'moneda_id'         => 1,
+            'save_current_acount'=> 1,
+            'total'             => 100000,
+            'sub_total'             => 100000,
+        ];
+        
+        $created_sale = Sale::create($data);
+
+        $price_vender = 10;
+        $sale = [
+            'client_id'         => 1,
+            'articles'          => [],
+            'payment_methods'   => [
+                [
+                    'id'        => rand(1,2),
+                    'amount'    => $price_vender / 4,
+                ],
+                [
+                    'id'        => rand(3,5),
+                    'amount'    => ($price_vender / 4) * 2,
+                ],
+                [
+                    'id'        => 5,
+                    'amount'    => $price_vender / 4,
+                ],
+            ],
+        ];
+
+        for ($article_id =1; $article_id  < 50; $article_id++) { 
+            $sale['articles'][] = [
+                'id'            => $article_id,
+                'price_vender'  => $price_vender,
+                'cost'          => $price_vender / 2,
+                'amount'        => 1,
+            ];
+        }
+
+        SaleHelper::attachProperies($created_sale, SaleSeederHelper::setRequest($sale));
     }
 
 

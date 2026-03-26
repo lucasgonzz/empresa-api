@@ -39,7 +39,6 @@ class TableColumnPreferenceController extends Controller
             'columns.*.order' => 'required|integer',
             'columns.*.width' => 'nullable|integer|min:40|max:1200',
             'columns.*.wrap_content' => 'nullable|boolean',
-            'columns.*.fade_when_truncated' => 'nullable|boolean',
         ]);
 
         $columns = collect($request->columns)
@@ -50,7 +49,6 @@ class TableColumnPreferenceController extends Controller
                     'order' => (int) $item['order'],
                     'width' => isset($item['width']) ? (int) $item['width'] : null,
                     'wrap_content' => isset($item['wrap_content']) ? (bool) $item['wrap_content'] : false,
-                    'fade_when_truncated' => isset($item['fade_when_truncated']) ? (bool) $item['fade_when_truncated'] : true,
                 ];
             })
             ->sortBy('order')

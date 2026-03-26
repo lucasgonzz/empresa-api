@@ -16,16 +16,12 @@ class MODEL_NAMESeeder extends Seeder
     {
         $models = [
             [
-                'name'  => '',
+                'name'          => '',
+                'otro_dato'     => '',
             ],
             [
-                'name'  => '',
-            ],
-            [
-                'name'  => '',
-            ],
-            [
-                'name'  => '',
+                'name'          => '',
+                'otro_dato'     => '',
             ],
         ];
 

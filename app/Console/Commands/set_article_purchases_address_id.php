@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Models\Address;
 use App\Models\Sale;
 use Illuminate\Console\Command;
 
@@ -40,6 +41,13 @@ class set_article_purchases_address_id extends Command
     {
 
         $user_id = config('app.USER_ID');
+
+        $addresses = Address::where('user_id', $user_id)->get();
+
+        if (count($addresses) <= 0) {
+            $this->info('No hay sucursales, comando terminado correctamente');
+            return;
+        }
         // if (!$user_id) {
         //     $user_id = $this->argument('user_id');
         // }

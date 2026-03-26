@@ -288,7 +288,7 @@ class AfipNotaCreditoHelper
         // Log::info('services para obtener importes:');
         // Log::info($this->nota_credito->services);
 
-        $afip_helper = new AfipHelper($this->afip_ticket, $this->nota_credito->articles, $this->nota_credito->services, null, null, $this->nota_credito->nota_credito_descriptions);
+        $afip_helper = new AfipHelper($this->afip_ticket, $this->nota_credito->articles, $this->nota_credito->services, null, null, $this->nota_credito->nota_credito_descriptions, true);
         $importes = $afip_helper->getImportes();
         $today = date('Ymd');
         $moneda_id = 'PES';
