@@ -8,6 +8,7 @@ use App\Models\Address;
 use App\Models\Caja;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\DefaultPaymentMethodCaja;
+use App\Models\Moneda;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Log;
@@ -21,7 +22,7 @@ class CajaSeeder extends Seeder
      */
     public function run() {
 
-        $this->una_caja_por_cada_empleado_y_cada_sucursal();
+        $this->una_caja_por_cada_empleado_cada_sucursal_y_cada_moneda();
 
         // $this->una_caja_para_cada_direccion_y_por_cada_metodo_de_pago();
     }
@@ -110,73 +111,91 @@ class CajaSeeder extends Seeder
         }
     }
 
-    public function una_caja_por_cada_empleado_y_cada_sucursal()
+    public function una_caja_por_cada_empleado_cada_sucursal_y_cada_moneda()
     {
         $models = [
             [
                 'name'    => 'Caja Fuerte',
+                'moneda_id' => 1,
                 'user_id'   => config('app.USER_ID')
             ],
         ];
 
-        $this->addresses = Address::where('user_id', config('app.USER_ID'))
-                                ->get();
-
         $employees = User::where('owner_id', config('app.USER_ID'))
                                     ->get();
 
+        $monedas = Moneda::all();
 
-        foreach ($employees as $employee) {
+        foreach ($monedas as $moneda) {
+            // code...
+            foreach ($employees as $employee) {
 
-            $models[] = [
-                // 'name'      => $address->street.' efectivo',
-                'name'      => 'Efectivo '.$employee->name,
-                'employee_id'   => $employee->id,
-                'address_id'    => $employee->address_id,
-                'user_id'   => config('app.USER_ID'),
-                'saldo'     => 10000,
-                'default_payment_method_caja' => [
-                    'payment_method_id'     => 3,
-                    'address_id'            => $employee->address_id,
-                ],
-            ];
-            
-            $models[] = [
-                'employee_id'   => $employee->id,
-                'name'      => 'Debitos '.$employee->name,
-                'address_id'    => $employee->address_id,
-                'user_id'   => config('app.USER_ID'),
-                'saldo'     => 10000,
-                'default_payment_method_caja' => [
-                    'payment_method_id'     => 2,
-                    'address_id'            => $employee->address_id,
-                ],
-            ];
-            
-            $models[] = [
-                'employee_id'   => $employee->id,
-                'name'      => 'Tarjetas '.$employee->name,
-                'address_id'    => $employee->address_id,
-                'user_id'   => config('app.USER_ID'),
-                'saldo'     => 10000,
-                'default_payment_method_caja' => [
-                    'payment_method_id'     => 5,
-                    'address_id'            => $employee->address_id,
-                ],
-            ];
-            
-            $models[] = [
-                'employee_id'   => $employee->id,
-                'name'      => 'Transferencias '.$employee->name,
-                'address_id'    => $employee->address_id,
-                'user_id'   => config('app.USER_ID'),
-                'saldo'     => 10000,
-                'default_payment_method_caja' => [
-                    'payment_method_id'     => 4,
-                    'address_id'            => $employee->address_id,
-                ],
-            ];
+                $models[] = [
+                    'moneda_id' => $moneda->id,
+                    'name'      => 'Efectivo',
+                    // 'employee_id'   => $employee->id,
+                    'address_id'    => $employee->address_id,
+                    'user_id'   => config('app.USER_ID'),
+                    'saldo'     => 10000,
+                    'default_payment_method_caja' => [
+                        'payment_method_id'     => 3,
+                        'address_id'            => $employee->address_id,
+                    ],
+                    'user_con_acceso'   => [
+                        $employee->id,
+                    ],
+                ];
+                
+                $models[] = [
+                    'moneda_id' => $moneda->id,
+                    // 'employee_id'   => $employee->id,
+                    'name'      => 'Debitos',
+                    'address_id'    => $employee->address_id,
+                    'user_id'   => config('app.USER_ID'),
+                    'saldo'     => 10000,
+                    'default_payment_method_caja' => [
+                        'payment_method_id'     => 2,
+                        'address_id'            => $employee->address_id,
+                    ],
+                    'user_con_acceso'   => [
+                        $employee->id,
+                    ],
+                ];
+                
+                $models[] = [
+                    'moneda_id' => $moneda->id,
+                    // 'employee_id'   => $employee->id,
+                    'name'      => 'Tarjetas',
+                    'address_id'    => $employee->address_id,
+                    'user_id'   => config('app.USER_ID'),
+                    'saldo'     => 10000,
+                    'default_payment_method_caja' => [
+                        'payment_method_id'     => 5,
+                        'address_id'            => $employee->address_id,
+                    ],
+                    'user_con_acceso'   => [
+                        $employee->id,
+                    ],
+                ];
+                
+                $models[] = [
+                    'moneda_id' => $moneda->id,
+                    // 'employee_id'   => $employee->id,
+                    'name'      => 'Transferencias',
+                    'address_id'    => $employee->address_id,
+                    'user_id'   => config('app.USER_ID'),
+                    'saldo'     => 10000,
+                    'default_payment_method_caja' => [
+                        'payment_method_id'     => 4,
+                        'address_id'            => $employee->address_id,
+                    ],
+                    'user_con_acceso'   => [
+                        $employee->id,
+                    ],
+                ];
+            }
         }
+
 
         $num = 1;
 
@@ -185,6 +204,7 @@ class CajaSeeder extends Seeder
             $model_to_create = [];
             $model_to_create['num'] = $num;
             $model_to_create['name'] = $model['name'];
+            $model_to_create['moneda_id'] = $model['moneda_id'];
             $model_to_create['address_id'] = $model['address_id'] ?? null;
             $model_to_create['user_id'] = $model['user_id'];
 
@@ -200,6 +220,12 @@ class CajaSeeder extends Seeder
             
             $caja = Caja::create($model_to_create);
             $num++;
+
+            if (isset($model['user_con_acceso'])) {
+                foreach ($model['user_con_acceso'] as $user_id) {
+                    $caja->users()->attach($user_id);
+                }
+            }
 
             $this->set_metodos_de_pago_disponibles($caja, $model);
 

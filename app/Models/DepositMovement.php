@@ -10,7 +10,7 @@ class DepositMovement extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        $q->with('articles.article_variants');
+        $q->with('articles.article_variants', 'articles.addresses');
     }
 
     function articles() {

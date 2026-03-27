@@ -23,20 +23,31 @@ class PdfHelper {
 		$table_margen = isset($data['table_margen']) ? $data['table_margen'] : 2;
 		
 		Self::logo($instance, $data, $alto_imagen);
+
+		// Cuadradito central (donde va "A", "B", "C", "X", "NC", etc)
 		Self::title($instance, $data['title']);
+
+
 		Self::numeroFecha($instance, $data);
+
+		// Cuadrante derecho (fecha, sucursales, etc)
 		Self::commerceInfo($instance, $data, $alto_imagen);
 		
+
 		Self::commerceInfoLine($instance, $alto_imagen);
+
 
 		Self::extra_info($instance, $data);
 
+
+		// Cuadrante izquierdo abajo del logo, info del cliente o proveedor
 		$res = Self::modelInfo($instance, $data);
 
 		if (isset($data['current_acount'])) {
 			Self::currentAcountInfo($instance, $data['current_acount'], $data['client_id'], $data['compra_actual'], $res['y_inicio'], $data['user']);
 		}
 
+		// 
 		if (isset($data['right_info'])) {
 			// dd($res['y_final']);
 			// Self::right_info($instance, $data, 70);
@@ -54,7 +65,6 @@ class PdfHelper {
 
 	static function extra_info($instance, $data) {
 		if (isset($data['extra_info'])) {
-
 			$height = 5;
 
 			foreach ($data['extra_info'] as $text => $value) {
@@ -267,16 +277,6 @@ class PdfHelper {
 
 
 		} 
-		// else if (count($user->addresses) >= 1) {
-		// 	$address = $user->addresses[0];
-		// 	$instance->x = 105;
-		// 	$instance->SetFont('Arial', 'B', 10);
-		// 	$instance->Cell(12, 5, 'Direc: ', $instance->b, 0, 'L');
-
-		// 	$address_text = "{$address->street} {$address->street_number}, {$address->city}, {$address->province}";
-		// 	$instance->SetFont('Arial', '', 10);
-		// 	$instance->Cell(88, 5, $address_text, $instance->b, 0, 'L');
-		// }
 
 		// Correo
 		$instance->x = 105;
@@ -286,6 +286,7 @@ class PdfHelper {
 		$instance->Cell(88, 5, $user->email, $instance->b, 1, 'L');
 
 		$instance->y += 2;
+		// dd($instance->y);
 	}
 
 	static function print_address($instance, $address_text, $print_title_direc) {
@@ -329,16 +330,19 @@ class PdfHelper {
 		// Linea del medio
 		$instance->Line(105, 20, 105, $y_de_abajo);
 
-		$instance->y = $alto_imagen;
+		$instance->y = $y_de_abajo;
 	}
 
 	static function modelInfo($instance, $data) {
 		$y_inicio = $instance->y;
+		// dd($instance->y);
 		$y_final = null;
 
 		if (isset($data['model_info']) && !is_null($data['model_info'])) {
 		    $instance->x = 5;
 		    $start_y = $instance->y;
+			// $start_y += 40;
+
 		    $index = 1;
 		    foreach ($data['model_props'] as $prop) {
 		    	if ($index == 1) {
@@ -441,7 +445,7 @@ class PdfHelper {
 		return $start;
 	}
 
-	static function tableHeader($instance, $fields, $size, $margen) {
+	static function tableHeader($instance, $fields, $size = 10, $margen = 2) {
 		$instance->SetFont('Arial', 'B', $size);
 		$instance->x = 5;
 		$instance->y += $margen;

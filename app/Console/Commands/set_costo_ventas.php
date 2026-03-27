@@ -141,7 +141,7 @@ class set_costo_ventas extends Command
             }
 
 
-            if ($processed_sales % 200 === 0) {
+            if ($processed_sales % 100 === 0) {
                 $this->info(
                     'Procesadas ' . $processed_sales . ' ventas. Memoria MB: ' .
                     round(memory_get_usage(true) / 1024 / 1024, 2)

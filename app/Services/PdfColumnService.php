@@ -75,6 +75,14 @@ class PdfColumnService
                 ],
 
                 [
+                    'name'              => 'Costo',
+                    'label'                => 'Costo',
+                    'value_resolver'               => 'item_cost',
+                    'default_width'                => 15,
+                    'allow_wrap_content'               => false
+                ],
+
+                [
                     'name'              => 'Precio sin IVA',
                     'label'                => 'Pre s/IVA',
                     'value_resolver'               => 'item_price_without_iva',
@@ -212,6 +220,8 @@ class PdfColumnService
                 return $item->name ?? '';
             case 'item_amount':
                 return isset($item->pivot->amount) ? $numbers::price($item->pivot->amount) : '';
+            case 'item_cost':
+                return isset($item->pivot->cost) ? $numbers::price($item->pivot->cost) : '';
             case 'item_discount_percentage':
                 return isset($item->pivot->discount) ? $item->pivot->discount : '';
             case 'item_discount_total':

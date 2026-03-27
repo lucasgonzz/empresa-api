@@ -60,6 +60,10 @@ class PdfColumnProfileController extends Controller
             'sheet_type_id' => $request->sheet_type_id,
             'is_afip_ticket' => (bool) $request->input('is_afip_ticket', false),
             'show_totals_on_each_page' => (bool) $request->input('show_totals_on_each_page', false),
+            /**
+             * Texto libre del pie de página; null si no se envía.
+             */
+            'footer_text' => $request->input('footer_text') ?: null,
         ]);
 
         GeneralHelper::attachModels(
@@ -107,6 +111,7 @@ class PdfColumnProfileController extends Controller
             'sheet_type_id',
             'is_afip_ticket',
             'show_totals_on_each_page',
+            'footer_text',
         ]);
         $model->update($fillable);
 
@@ -149,6 +154,7 @@ class PdfColumnProfileController extends Controller
             'sheet_type_id' => 'tipo de hoja',
             'is_afip_ticket' => 'perfil fiscal AFIP',
             'show_totals_on_each_page' => 'mostrar totales en cada hoja',
+            'footer_text' => 'pie de página',
             'pdf_column_options' => 'opciones de columnas',
             'pdf_column_options.*.id' => 'opción de columna',
             'pdf_column_options.*.pivot.visible' => 'visible',
@@ -178,6 +184,7 @@ class PdfColumnProfileController extends Controller
             'sheet_type_id' => ['nullable', 'integer', Rule::exists('sheet_types', 'id')],
             'is_afip_ticket' => ['sometimes', 'boolean'],
             'show_totals_on_each_page' => ['sometimes', 'boolean'],
+            'footer_text' => ['nullable', 'string', 'max:2000'],
             'pdf_column_options' => ['required', 'array', 'min:1'],
             'pdf_column_options.*.id' => [
                 'required',
@@ -215,6 +222,7 @@ class PdfColumnProfileController extends Controller
             'sheet_type_id' => ['sometimes', 'nullable', 'integer', Rule::exists('sheet_types', 'id')],
             'is_afip_ticket' => ['sometimes', 'boolean'],
             'show_totals_on_each_page' => ['sometimes', 'boolean'],
+            'footer_text' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'pdf_column_options' => ['sometimes', 'array'],
             'pdf_column_options.*.id' => [
                 'required_with:pdf_column_options',
