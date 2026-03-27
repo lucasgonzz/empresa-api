@@ -18,7 +18,7 @@ class iniciar_credit_accounts extends Command
      *
      * @var string
      */
-    protected $signature = 'iniciar_credit_accounts {user_id?}';
+    protected $signature = 'iniciar_credit_accounts {client_id?}';
 
     /**
      * The console command description.
@@ -47,15 +47,9 @@ class iniciar_credit_accounts extends Command
     {
 
 
-        $this->user_id = $this->argument('user_id');
-        
-        if (!$this->user_id) {
+        $this->user_id = config('app.USER_ID');
+        $this->info('USER_ID: '.config('app.USER_ID'));
 
-            $this->user_id = config('app.USER_ID');
-            $this->info('USER_ID: '.config('app.USER_ID'));
-        }
-
-        
         $this->iniciar_clientes();
 
         $this->iniciar_providers();
@@ -128,8 +122,12 @@ class iniciar_credit_accounts extends Command
 
     function iniciar_clientes() {
         $clients = Client::where('user_id', $this->user_id)
-                            ->withTrashed()
-                            ->get();
+                            ->orderBy('id', 'ASC')
+                            ->withTrashed();
+        if ($this->argument('client_id')) {
+            $clients->where('id', '>=', $this->argument('client_id'));
+        }
+        $clients = $clients->get();
 
         foreach ($clients as $client) {
             
@@ -151,7 +149,7 @@ class iniciar_credit_accounts extends Command
                 $this->vincular_current_acounts('client', $client_original, 2);            
             }
 
-            $this->comment('Cliente '.$client->name.' ok');
+            $this->comment('Cliente '.$client->id.' ok');
 
         }
         $this->info('*******************');

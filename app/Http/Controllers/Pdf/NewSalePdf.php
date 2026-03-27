@@ -41,6 +41,11 @@ class NewSalePdf extends fpdf
          * Flag para controlar impresión de totales por cada página.
          */
         $this->show_totals_on_each_page = $this->pdf_column_profile ? (bool) $this->pdf_column_profile->show_totals_on_each_page : false;
+        /**
+         * Texto libre del pie de página; se renderiza con MultiCell debajo de los totales.
+         * Sigue la misma regla de visibilidad que show_totals_on_each_page.
+         */
+        $this->footer_text = $this->pdf_column_profile ? ($this->pdf_column_profile->footer_text ?: '') : '';
 
         /**
          * Comprobante AFIP solicitado para impresión fiscal.
@@ -142,21 +147,28 @@ class NewSalePdf extends fpdf
     }
 
     /**
-     * Footer simplificado con total general.
+     * Footer con total general y pie de página opcional.
+     * Cuando hay footer_text, reposiciona Y para que ambos bloques quepan en la página.
      */
     public function Footer()
     {
         if (!$this->is_afip_ticket && $this->should_print_totals_in_footer()) {
+
+            $this->y += 5;
+
             $this->x = $this->start_x;
             $this->SetFont('Arial', 'B', 12);
             $this->Cell(200, 10, 'Total: '.Numbers::price($this->sale->total, true, $this->sale->moneda_id), $this->b, 1, 'R');
+            $this->print_footer_text_block();
         }
 
         /**
-         * En perfiles fiscales se imprime bloque AFIP/ARCA en el pie.
+         * En perfiles fiscales se imprime bloque AFIP/ARCA en el pie,
+         * seguido del texto de pie de página si está configurado.
          */
         if ($this->is_afip_ticket && $this->ticket_info_helper && $this->ticket_info_helper->has_afip_context() && $this->should_print_totals_in_footer()) {
             $this->ticket_info_helper->print_iva_and_totals($this, $this->sale);
+            $this->print_footer_text_block();
             $this->ticket_info_helper->print_qr_and_arca_footer($this);
             $this->ticket_info_helper->print_fiscal_footer($this, $this->PageNo());
         }
@@ -277,7 +289,13 @@ class NewSalePdf extends fpdf
          * para el bloque de totales/fiscal.
          */
         if ($this->show_totals_on_each_page) {
-            return 230;
+
+            if ($this->afip_ticket) {
+                return 210;
+
+            } else {
+                return 260;
+            }
         }
 
         /**
@@ -285,6 +303,7 @@ class NewSalePdf extends fpdf
          * en páginas intermedias evitando bloques vacíos.
          */
         return 285;
+
     }
 
     /**
@@ -409,6 +428,32 @@ class NewSalePdf extends fpdf
     }
 
     /**
+     * Imprime el texto del pie de página debajo de los totales si está configurado.
+     * Usa MultiCell para soporte de texto largo en múltiples líneas.
+     * No imprime nada si footer_text está vacío.
+     *
+     * @return void
+     */
+    private function print_footer_text_block(): void
+    {
+        if (!$this->footer_text) {
+            return;
+        }
+        /**
+         * Pequeña separación visual respecto al bloque de totales.
+         */
+        if ($this->afip_ticket) {
+
+            // $this->y -= 20;
+        } else {
+            $this->y += 1;
+        }
+        $this->x = $this->start_x;
+        $this->SetFont('Arial', '', 9);
+        $this->MultiCell(200, 5, $this->footer_text, $this->b, 'L', false);
+    }
+
+    /**
      * Acorta texto al ancho de celda usando puntos suspensivos si es necesario.
      */
     private function truncate_text_to_width($text, $width)
@@ -485,20 +530,26 @@ class NewSalePdf extends fpdf
          * Con flag desactivado, el bloque de totales se imprime
          * únicamente al final del documento (última página).
          */
-        if (! $this->is_afip_ticket) {
+        if (!$this->is_afip_ticket) {
             $this->y += 5;
             $this->x = $this->start_x;
             $this->SetFont('Arial', 'B', 12);
             $this->Cell(200, 10, 'Total: '.Numbers::price($this->sale->total, true, $this->sale->moneda_id), $this->b, 1, 'R');
+            /**
+             * Texto de pie de página debajo del total en la última hoja.
+             */
+            $this->print_footer_text_block();
             return;
         }
 
         /**
          * En perfil fiscal se reutiliza el mismo bloque AFIP/ARCA
          * pero solo en la última página cuando el flag está desactivado.
+         * El texto de pie de página va debajo del bloque fiscal.
          */
         if ($this->ticket_info_helper && $this->ticket_info_helper->has_afip_context()) {
             $this->ticket_info_helper->print_iva_and_totals($this, $this->sale);
+            $this->print_footer_text_block();
             $this->ticket_info_helper->print_qr_and_arca_footer($this);
             $this->ticket_info_helper->print_fiscal_footer($this, $this->PageNo());
         }

@@ -40,6 +40,14 @@ class DeleteController extends Controller
         if (count($models) > 300) {
             $send_notification = false;
         }
+        
+        if ($model_name == 'article') {
+            $cantidad_articles = Article::where('user_id', $this->userId())->count();
+            if ($cantidad_articles == count($models)) {
+                Log::info('Se interrumpio eliminado, eran todos los articulos');
+                return;
+            }
+        }
 
         $eliminados = 0;
         foreach ($models as $model) {

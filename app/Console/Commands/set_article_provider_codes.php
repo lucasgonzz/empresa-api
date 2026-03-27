@@ -12,7 +12,7 @@ class set_article_provider_codes extends Command
      *
      * @var string
      */
-    protected $signature = 'set_article_provider_codes {user_id} {article_id?}';
+    protected $signature = 'set_article_provider_codes {article_id?}';
 
     /**
      * The console command description.
@@ -38,17 +38,22 @@ class set_article_provider_codes extends Command
      */
     public function handle()
     {
-        $articles = Article::where('user_id', $this->argument('user_id'))
+        $user_id = config('app.USER_ID');
+        if (!$user_id) {
+            $this->comment('No hay user_id definido en el .env. Comando cancelado');
+            return;
+        }
+        $articles = Article::where('user_id', $user_id)
                             ->whereDoesntHave('providers')
                             ->orWhereHas('providers', function ($query) {
                                 $query->whereNull('article_provider.provider_code')
                                       ->orWhere('article_provider.provider_code', '');
                             })
-                            ->orderBy('id', 'DESC');
+                            ->orderBy('id', 'ASC');
 
         if (!is_null($this->argument('article_id'))) {
 
-            $articles->where('id', '<', $this->argument('article_id'));
+            $articles->where('id', '>', $this->argument('article_id'));
         }
         $articles = $articles->get();
 
