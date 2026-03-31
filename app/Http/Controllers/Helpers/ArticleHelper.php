@@ -98,7 +98,7 @@ class ArticleHelper {
             is_null($article->cost)
             && is_null($article->price)
             && (
-                !UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)
+                !UserHelper::uses_listas_de_precio($user)
                 && !UserHelper::hasExtencion('ventas_en_dolares', $user)
             )
         ) {
@@ -171,7 +171,7 @@ class ArticleHelper {
                 || $article->price == ''
             )
             || (
-                UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)
+                UserHelper::uses_listas_de_precio($user)
                 && UserHelper::hasExtencion('ventas_en_dolares', $user)
             )
         ) {
@@ -203,7 +203,7 @@ class ArticleHelper {
 
                 // Respeta la lógica de cotización si aplica (dólares)
                 if (
-                    !UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)
+                    !UserHelper::uses_listas_de_precio($user)
                     || !UserHelper::hasExtencion('ventas_en_dolares', $user)
                 ) {
                     $res = Self::cotizar($article, $user, $final_price, $des);
@@ -234,7 +234,7 @@ class ArticleHelper {
                 $final_price = $cost;
 
                 if (
-                    UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)
+                    UserHelper::uses_listas_de_precio($user)
                     && UserHelper::hasExtencion('ventas_en_dolares', $user)
                 ) {
 
@@ -256,9 +256,9 @@ class ArticleHelper {
                 // }
 
 
-                if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $user)) {
+                if (UserHelper::uses_listas_de_precio($user)) {
 
-                    Log::info('articulo_margen_de_ganancia_segun_lista_de_precios');
+                    Log::info('uses_listas_de_precio');
                     
                     // ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $final_price, $user, $price_types);
 

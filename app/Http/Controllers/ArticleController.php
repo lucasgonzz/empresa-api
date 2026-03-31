@@ -49,6 +49,8 @@ use Maatwebsite\Excel\Facades\Excel;
 
 class ArticleController extends Controller
 {
+
+    // Se usa para descargar los articulos para modo offline
     function index(Request $request) {
         $models = Article::where('user_id', $this->userId())
                             // ->where('id', 0)
@@ -71,12 +73,44 @@ class ArticleController extends Controller
         }
         $models = $models->orderBy('created_at', 'DESC')
                             ->withAll()
-                            ->paginate(200);
+                            ->paginate(500);
+
+        return response()->json(['models' => $models], 200);
+    }
+
+    /**
+     * Devuelve únicamente artículos marcados como insumos.
+     *
+     * Se usa en Producción V2 para seleccionar insumos sin mezclar con el listado general.
+     *
+     * @param  \Illuminate\Http\Request  $request Request HTTP (opcional: updated_after).
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function get_insumos(Request $request) {
+        // Query base: insumos activos del usuario autenticado.
+        $models = Article::where('user_id', $this->userId())
+                            ->where('status', 'active')
+                            ->where('es_insumo', 1)
+                            ->orderBy('created_at', 'DESC')
+                            ->withAll()
+                            ->paginate(500);
 
         return response()->json(['models' => $models], 200);
     }
 
     function index_deleted(Request $request) {
+
+        /**
+         * Define cantidad de registros por página para sincronización offline.
+         * Se limita para evitar requests demasiado pesadas en catálogos grandes.
+         */
+        $per_page = (int) $request->input('per_page', 500);
+        if ($per_page <= 0) {
+            $per_page = 500;
+        }
+        if ($per_page > 2000) {
+            $per_page = 2000;
+        }
 
         $updated_after = $request->input('updated_after');
 
@@ -91,8 +125,8 @@ class ArticleController extends Controller
             $models = $models->where('deleted_at', '>=', $updated_after);
         }
         
-        $models = $models->orderBy('created_at', 'DESC')
-                            ->get();
+        $models = $models->orderBy('deleted_at', 'DESC')
+                            ->paginate($per_page);
 
         return response()->json(['models' => $models], 200);
     }

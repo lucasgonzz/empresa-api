@@ -15,8 +15,6 @@ use App\Notifications\ImportStatusNotification;
 use Carbon\Carbon;
 use Illuminate\Bus\Batchable;
 use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldBeUnique;
-use Illuminate\Contracts\Queue\ShouldBeUniqueUntilProcessing;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
@@ -28,7 +26,7 @@ use Maatwebsite\Excel\Excel as ExcelFormat;
 use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Support\Facades\DB;
 
-class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
+class ProcessArticleChunk implements ShouldQueue
 {
     use Batchable, Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
@@ -109,6 +107,17 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
             if ($this->import_status->status == 'fallo') {
                 return;
             }
+
+            /*
+                Feedback inmediato al usuario:
+                - Apenas arranca cualquier chunk, marcamos el import como "en_proceso" (si corresponde).
+                - El pasaje a "completado" se resuelve al final del chunk, luego de incrementar contadores.
+            */
+            $this->set_import_history_status_at_chunk_start();
+            $this->set_import_status_at_chunk_start();
+
+            // Notifico inmediatamente para que el usuario vea el status sin esperar a que termine el chunk
+            $this->notificar_import_status();
             
             // ArticleImportHistory es la clase que guarda toda la info del chunk, cada ArticleImportHistory reprecenta a un chunk
             $this->crear_article_import_result();
@@ -138,14 +147,18 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
             $this->guardar_tiempos_de_ejecucion_en_article_import_result($observations);
 
             $this->update_import_status();
+            $this->update_import_history();
 
+            /*
+                Notificación final:
+                - Se emite luego de persistir contadores/status en ImportStatus e ImportHistory,
+                  para que el usuario reciba el estado final con propiedades actualizadas.
+            */
             $inicio_noti = microtime(true);
             $this->notificar_import_status();
             $fin = microtime(true);
             $dur = $fin - $inicio_noti;
             $this->add_observation('notificar_import_status en '.number_format($dur, 2, '.', '').' seg');
-
-            $this->update_import_history();
 
             // $this->guardar_tiempos_de_ejecucion($inicio, $observations);
 
@@ -232,34 +245,6 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         return $chunkRows;
     }
 
-    // function get_row_from_csv() {
-        
-    //     $chunkRows = [];
-
-    //     $file_path = $this->csv_path;
-    //     // $file_path = storage_path('app/' . $this->csv_path);
-
-    //     Log::warning("Abriendo y leyendo archivo CSV.");
-    //     // Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Abriendo y leyendo archivo CSV.");
-    //     if (($handle = fopen($file_path, "r")) !== FALSE) {
-    //         $currentRow = 1;
-    //         while (($data = fgetcsv($handle, 0, ",")) !== FALSE) {
-    //             if ($currentRow >= $this->start_row && $currentRow <= $this->finish_row) {
-    //                 $chunkRows[] = $data;
-    //             }
-    //             if ($currentRow > $this->finish_row) {
-    //                 break;
-    //             }
-    //             $currentRow++;
-    //         }
-    //         fclose($handle);
-    //     }
-    //     Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Archivo CSV leído y cerrado.");
-
-    //     Log::warning("Job [{$this->batchId()}] PID: " . getmypid() . " - Invocando lógica de importación (importer->collection).");
-
-    //     return $chunkRows;
-    // }
 
     function crear_article_import_result() {
 
@@ -366,7 +351,7 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
                 'articles_repetidos' => DB::raw('articles_repetidos + ' . (int) $this->import_result->articles_repetidos),
             ]);
 
-        // Traigo el estado actualizado y seteo status correctamente
+        // Traigo el estado actualizado y seteo status correctamente (luego de incrementar contadores)
         $import_status = ImportStatus::select('id', 'processed_chunks', 'total_chunks', 'status')
             ->find($this->import_status_id);
 
@@ -389,46 +374,69 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
         $this->add_observation('update_import_status en ' . number_format($dur, 2, '.', '') . ' seg');
     }
 
-    // function update_import_status() {
-    //     $inicio = microtime(true);
-    //     $this->import_status->processed_chunks++;
-    //     $this->import_status->articles_match        += $this->import_result->articles_match;
-    //     $this->import_status->created_models        += $this->import_result->created_count;
-    //     $this->import_status->updated_models        += $this->import_result->updated_count;
-    //     $this->import_status->filas_procesadas      += $this->import_result->filas_procesadas;
-    //     $this->import_status->articles_repetidos    += $this->import_result->articles_repetidos;
+    /**
+     * Setea el status de la importación al comienzo del chunk para dar feedback inmediato.
+     * - Si aún no terminó, lo pasa a "en_proceso".
+     * - Si ya estaba terminado (por cualquier motivo), mantiene/ajusta a "completado".
+     *
+     * Importante: no incrementa contadores; solo gestiona `status`.
+     */
+    private function set_import_status_at_chunk_start(): void
+    {
+        // Traigo el estado actualizado para decidir el status de forma consistente
+        $import_status = ImportStatus::select('id', 'processed_chunks', 'total_chunks', 'status')
+            ->find($this->import_status_id);
 
-    //     Log::info('import_result->articles_match: '.$this->import_result->articles_match);
-        
-    //     // Use >= as a safeguard in case of concurrent increments
-    //     if ($this->import_status && $this->import_status->processed_chunks >= $this->import_status->total_chunks) {
-    //         $this->import_status->status = 'completado';
-    //     } else if ($this->import_status && $this->import_status->processed_chunks >= 1) {
-    //         $this->import_status->status = 'en_proceso';
-    //     }
-    //     $this->import_status->save();
-        
-    //     // Notify the user with the fresh status
-    //     // $notification = new ImportStatusNotification($this->import_status, $this->user->id);
-    //     // Log::warning("Job [{$this->batchId()}] Dispatching notification for chunk #{$this->chunk_number}.");
-    //     // $this->user->notify($notification);
-    //     // Log::warning("Job [{$this->batchId()}] Dispatched notification for chunk #{$this->chunk_number}.");
-      
-    //     // fuerza a PHP a soltar buffers y sockets
-    //     if (function_exists('fastcgi_finish_request')) {
-    //       fastcgi_finish_request();
-    //     }
+        if (!$import_status) {
+            return;
+        }
 
-    //     // paranoia sana
-    //     flush();
-    //     gc_collect_cycles();
-    //     $this->import_status->save();
+        // Defino el nuevo status según progreso actual (sin sumar el chunk en curso)
+        $new_status = 'en_proceso';
 
-    //     $fin = microtime(true);
-    //     $dur = $fin - $inicio;
-    //     $this->add_observation('update_import_status en '.number_format($dur, 2, '.', '').' seg');
+        if ((int) $import_status->processed_chunks >= (int) $import_status->total_chunks) {
+            $new_status = 'completado';
+        }
 
-    // }
+        if ($import_status->status !== $new_status) {
+            ImportStatus::where('id', $this->import_status_id)->update([
+                'status' => $new_status,
+            ]);
+        }
+    }
+
+    /**
+     * Setea el status del historial de importación al comienzo del chunk.
+     * - Si aún no terminó, lo pasa a "en_proceso".
+     * - Si ya estaba terminado (por cualquier motivo), mantiene/ajusta a "terminado".
+     *
+     * Importante: no incrementa contadores; solo gestiona `status`.
+     * No se notifica al usuario desde acá (la notificación inmediata es solo para ImportStatus).
+     */
+    private function set_import_history_status_at_chunk_start(): void
+    {
+        // Traigo el estado actualizado para decidir el status de forma consistente
+        $import_history = ImportHistory::select('id', 'processed_chunks', 'total_chunks', 'status')
+            ->find($this->import_history_id);
+
+        if (!$import_history) {
+            return;
+        }
+
+        // Defino el nuevo status según progreso actual (sin sumar el chunk en curso)
+        $new_status = 'en_proceso';
+
+        if ((int) $import_history->processed_chunks >= (int) $import_history->total_chunks) {
+            $new_status = 'terminado';
+        }
+
+        if ($import_history->status !== $new_status) {
+            ImportHistory::where('id', $this->import_history_id)->update([
+                'status' => $new_status,
+            ]);
+        }
+    }
+
 
     function notificar_import_status() {
         broadcast(
@@ -492,37 +500,6 @@ class ProcessArticleChunk implements ShouldQueue, ShouldBeUniqueUntilProcessing
             }
         }
 
-        // $inicio = microtime(true);
-
-        // $this->import_history->created_models       += $this->import_result->created_count;
-        // $this->import_history->updated_models       += $this->import_result->updated_count;
-        // $this->import_history->articles_match       += $this->import_result->articles_match;
-        // $this->import_history->filas_procesadas     += $this->import_result->filas_procesadas;
-        // $this->import_history->articles_repetidos   += $this->import_result->articles_repetidos;
-        // $this->import_history->processed_chunks++;
-
-        // $this->import_history->status           = 'en_proceso';
-        // $this->import_history->save();
-
-        // // Esto no lo hago mas ya que guardo esos datos unicamente en ArticleImportResult (donde guardo la info de cada chunk)
-        // // 4) Adjuntar relaciones al ImportHistory definitivo
-        // // if (!empty($this->created_ids)) {
-        // //     $this->import_history->articulos_creados()->syncWithoutDetaching($this->created_ids);
-        // // }
-
-        // // if (!empty($this->updated_props_by_article)) {
-        // //     $pivot_data = [];
-        // //     foreach ($this->updated_props_by_article as $this->article_id => $this->props_array) {
-        // //         $pivot_data[$this->article_id] = [
-        // //             'updated_props' => json_encode($this->props_array, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION),
-        // //         ];
-        // //     }
-        // //     $this->import_history->articulos_actualizados()->syncWithoutDetaching($pivot_data);
-        // // }
-
-        // $fin = microtime(true);
-        // $dur = $fin - $inicio;
-        // $this->add_observation('update_import_history en '.number_format($dur, 2, '.', '').' seg');
     }
 
     function guardar_tiempos_de_ejecucion_en_article_import_result($observations) {

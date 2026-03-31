@@ -26,6 +26,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Papelera
     Route::get('papelera/{model_name}', 'PapeleraController@index');
     Route::put('papelera/restaurar/{model_name}/{model_id}', 'PapeleraController@restaurar');
+    Route::post('papelera/restaurar-lote/{model_name}', 'PapeleraController@restaurar_lote');
+    Route::post('papelera/restaurar-filtrados/{model_name}', 'PapeleraController@restaurar_filtrados');
     
     // User
     Route::get('user', 'CommonLaravel\AuthController@get_user');
@@ -160,6 +162,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
 
+    // Insumos (Producción V2)
+    // Importante: esta ruta debe ir ANTES del resource para que no la capture `article/{id}` (show)
+    Route::get('article/get-insumos', 'ArticleController@get_insumos');
 
     Route::resource('article', 'ArticleController')->except(['index']);
     Route::get('article/index/from-status', 'ArticleController@index');

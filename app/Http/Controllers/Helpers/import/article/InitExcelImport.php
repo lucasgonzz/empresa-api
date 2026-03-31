@@ -77,19 +77,37 @@ class InitExcelImport
         $this->crear_import_status();
         $this->crear_import_history();
         $this->armar_jobs_de_chunks();
-        $this->mandar_batch();
+
+        /*
+         * Selecciona la estrategia de despacho según la variable VPS del .env:
+         *   - true  (VPS con Redis + Supervisor): batch paralelo, aprovecha múltiples workers.
+         *   - false (hosting sin Redis/Supervisor): chain secuencial, compatible con cron queue:work.
+         */
+        if (config('app.VPS')) {
+            $this->mandar_batch();
+        } else {
+            $this->mandar_chain();
+        }
 
         return [
             'hubo_un_error' => false,
         ];
     }
 
+    /**
+     * Despacha todos los chunks como un batch paralelo usando la conexión configurada en QUEUE_CONNECTION.
+     * Requiere Redis (o database con tabla job_batches) y workers persistentes (Supervisor).
+     * Al completarse el batch, dispara FinalizeArticleImport.
+     */
     function mandar_batch()
     {
+        // Usa la conexión configurada en el entorno (redis en VPS, database en hosting)
+        $queue_connection = config('queue.default');
+
         Bus::batch($this->jobs)
             ->name('import_history_' . $this->import_history->id)
-            ->onConnection('redis')   // <-- clave
-            ->onQueue('default')      // <-- clave
+            ->onConnection($queue_connection)
+            ->onQueue('default')
             ->then(function (Batch $batch) {
 
                 Log::info('BATCH THEN ejecutado', [
@@ -115,6 +133,25 @@ class InitExcelImport
                 );
             })
             ->dispatch();
+    }
+
+    /**
+     * Despacha los chunks como una cadena secuencial (Bus::chain).
+     * Compatible con driver database y cron-based queue workers.
+     * Agrega FinalizeArticleImport al final de la cadena para que se ejecute
+     * una vez que todos los chunks hayan sido procesados.
+     */
+    function mandar_chain()
+    {
+        // Agrega el job de finalización al final de la cadena secuencial
+        $jobs = $this->jobs;
+        $jobs[] = new FinalizeArticleImport(
+            $this->user->id,
+            $this->import_history->id,
+            $this->import_status->id
+        );
+
+        Bus::chain($jobs)->dispatch();
     }
 
     function calcular_chunck()

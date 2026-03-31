@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Controller;
+use App\Models\Article;
 use App\Services\Filter\FilterHistoryService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;

@@ -40,7 +40,14 @@ class check_to_pay_id_de_ventas_eliminadas extends Command
      */
     public function handle()
     {
+        $user_id = config('app.USER_ID');
+
+        if (!$user_id) {
+            $this->comment('No hay user_id');
+            return;
+        }
         $pagos = CurrentAcount::whereNotNull('to_pay_id')
+                                ->where('user_id', $user_id)
                                 ->get();
 
         $this->info(count($pagos).' pagos');
@@ -50,9 +57,17 @@ class check_to_pay_id_de_ventas_eliminadas extends Command
 
             if (!$debito) {
                 if ($pago->client) {
+                    if (!$pago->credit_account_id) {
+                        $this->comment('ERROR: Pago id '.$pago->id.' del cliente '.$pago->client->name.' no tiene credit_account_id');
+                        continue;
+                    }
 
                     $this->comment('Se corrigio pago del cliente '.$pago->client->name);
                 } else if ($pago->provider) {
+                    if (!$pago->credit_account_id) {
+                        $this->comment('ERROR: Pago id '.$pago->id.' del proveedor '.$pago->provider->name.' no tiene credit_account_id');
+                        continue;
+                    }
                     $this->comment('Se corrigio pago del proveedor '.$pago->provider->name);
                 }
 

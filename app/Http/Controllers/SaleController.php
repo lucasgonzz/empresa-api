@@ -176,6 +176,10 @@ class SaleController extends Controller
                 'incoterms'                         => $request->incoterms,
                 'aplicar_recargos_directo_a_items'  => $request->aplicar_recargos_directo_a_items,
                 'sale_status_id'                    => $request->sale_status_id,
+                // Si no se envía el campo, se asume true (comportamiento por defecto: descontar stock)
+                'discount_stock'                    => !is_null($request->discount_stock) ? $request->discount_stock : 1,
+                // Si no se envía el campo, se asume true (comportamiento por defecto: precios con IVA).
+                'iva_aplicado'                      => !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1,
                 'descuento'                         => round($request->descuento, 2, PHP_ROUND_HALF_UP),
                 'user_id'                           => $this->userId(),
             ]);
@@ -259,7 +263,9 @@ class SaleController extends Controller
             SaleHelper::detachItems($model, $sale_modification);
             
             $previus_client_id                          = $model->client_id;
-            
+
+            // Guardamos el valor anterior de discount_stock antes de modificar el modelo
+            $old_discount_stock = $model->discount_stock;
             
             $model->actualizandose_por_id               = null;
            
@@ -301,6 +307,27 @@ class SaleController extends Controller
             $model->aplicar_recargos_directo_a_items    = $request->aplicar_recargos_directo_a_items;
             $model->sale_status_id                      = $request->sale_status_id;
 
+            /*
+             * discount_stock solo puede activarse, nunca desactivarse una vez que ya fue activado.
+             * Si ya estaba en 1 (ya se descontó stock), ignoramos el valor enviado por el front.
+             */
+            if (!$old_discount_stock) {
+                $model->discount_stock = !is_null($request->discount_stock) ? $request->discount_stock : 1;
+            }
+            
+            /*
+             * iva_aplicado puede activarse y desactivarse libremente en una actualización.
+             * Si no viene en el request, se preserva el comportamiento por defecto (1).
+             */
+            $model->iva_aplicado = !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1;
+
+            /*
+             * Flag para indicar que discount_stock se activa por primera vez en esta actualización.
+             * En ese caso el stock debe descontarse por la cantidad total actual (no la diferencia),
+             * ya que antes no se había descontado stock para esta venta.
+             */
+            $se_activando_discount_stock = !$old_discount_stock && $model->discount_stock;
+
             // $model->valor_dolar                         = $request->valor_dolar;
             
             $model->employee_id                         = SaleHelper::getEmployeeId($request);
@@ -309,7 +336,7 @@ class SaleController extends Controller
             
             $model->save();
 
-            SaleHelper::attachProperies($model, $request, false, $previus_articles, $previus_combos, $previus_promos, $sale_modification, $se_esta_confirmando);
+            SaleHelper::attachProperies($model, $request, false, $previus_articles, $previus_combos, $previus_promos, $sale_modification, $se_esta_confirmando, $se_activando_discount_stock);
 
             $model->updated_at = Carbon::now();
             $model->save();

@@ -12,7 +12,8 @@ class DeleteSaleHelper {
 
 	static function regresar_stock($sale) {
 
-        if (!$sale->to_check && !$sale->checked) {
+        // Solo se revierte el stock si la venta estaba configurada para descontarlo
+        if (!$sale->to_check && !$sale->checked && $sale->discount_stock) {
 
             foreach ($sale->articles as $article) {
                 if (!is_null($article->stock)) {

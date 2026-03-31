@@ -10,8 +10,11 @@ use App\Jobs\ProcessSetFinalPrices;
 use App\Models\OnlineConfiguration;
 use App\Models\User;
 use App\Models\UserConfiguration;
+use App\Models\Article;
+use App\Models\PriceType;
 use App\Notifications\GlobalNotification;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
@@ -49,7 +52,13 @@ class UserController extends Controller
     }
 
     function update(Request $request, $id) {
+        /** @var User|null $model Usuario autenticado (puede ser owner o empleado). */
         $model = Auth()->user();
+        
+        /** @var User|null $owner_user Usuario dueño (owner) al que se le aplica el flag listas_de_precio. */
+        // El flag listas_de_precio vive en el usuario dueño (owner). El auth_user puede ser empleado.
+        $owner_user = $model->owner_id ? User::find($model->owner_id) : $model;
+        $current_lists_de_precio = (int) ($owner_user ? (bool) $owner_user->listas_de_precio : false);
 
         $current_dolar                          = $model->dollar;
         $current_iva_included                   = $model->iva_included;
@@ -96,6 +105,10 @@ class UserController extends Controller
         $model->show_stock_min_al_iniciar       = $request->show_stock_min_al_iniciar;
         $model->show_afip_errors_al_iniciar     = $request->show_afip_errors_al_iniciar;
         $model->usar_articles_cache             = $request->usar_articles_cache;
+        /**
+         * Flag para habilitar/deshabilitar trabajo offline en frontend.
+         */
+        $model->sync_offline_articles           = $request->sync_offline_articles;
         $model->clave_eliminar_article          = $request->clave_eliminar_article;
         $model->img_auto_timeout                = $request->img_auto_timeout;
 
@@ -103,12 +116,27 @@ class UserController extends Controller
         $model->all_addresses_in_sale_pdf       = $request->all_addresses_in_sale_pdf;
         $model->mostrar_vendedor_en_venta_pdf   = $request->mostrar_vendedor_en_venta_pdf;
         $model->pdf_image_size                  = $request->pdf_image_size;
+        /**
+         * Permite `provider_code` repetido en artículos.
+         * Esta configuración se usa desde el front solo por el owner, por eso se persiste en el auth_user.
+         */
+        if ($request->has('usa_provider_codes_repetidos')) {
+            $model->usa_provider_codes_repetidos = (bool) $request->usa_provider_codes_repetidos;
+        }
 
 
 
         $model->save();
 
+        if ($owner_user && $request->has('listas_de_precio')) {
+            $owner_user->listas_de_precio = (bool) $request->listas_de_precio;
+            $owner_user->save();
+        }
+       
+
         UserHelper::set_sessions($model);
+
+        $this->check_update_articles_price_types_relations_on_lists_de_precio($owner_user, $current_lists_de_precio);
 
         $this->check_actualizar_articulos($model, $current_dolar, $current_iva_included, $current_percentage_gain, $current_cotizar_precios_en_dolares);
 
@@ -117,6 +145,96 @@ class UserController extends Controller
         // $this->actualizar_empleados($model);
 
         return response()->json(['model' => $model], 200);
+    }
+
+    /**
+     * Si el usuario dueño cambia el flag `listas_de_precio`, sincroniza las relaciones en `article_price_type`
+     * y dispara recálculo para que `final_price` quede consistente.
+     *
+     * - 0 -> 1: crea (o completa) relaciones para todos los artículos actuales contra todos los `price_types`
+     *   creados por el dueño, setea el porcentaje por defecto del `price_type` cuando exista.
+     * - 1 -> 0: elimina relaciones de artículos contra los `price_types` del dueño.
+     *
+     * @param User|null $owner_user Usuario dueño (owner) al que se le aplica el flag.
+     * @param int $current_lists_de_precio Valor previo antes de guardar.
+     * @return void
+     */
+    function check_update_articles_price_types_relations_on_lists_de_precio($owner_user, $current_lists_de_precio) {
+        if (!$owner_user) {
+            return;
+        }
+
+        $new_lists_de_precio = (int) ($owner_user->listas_de_precio ? 1 : 0);
+        $current_lists_de_precio = (int) ($current_lists_de_precio ? 1 : 0);
+
+        if ($new_lists_de_precio === $current_lists_de_precio) {
+            return;
+        }
+
+        $price_types = PriceType::where('user_id', $owner_user->id)
+            ->orderBy('position', 'ASC')
+            ->get(['id', 'percentage', 'setear_precio_final', 'incluir_en_lista_de_precios_de_excel']);
+
+        $price_type_ids = $price_types->pluck('id')->values()->all();
+        $articles_chunk_size = 200;
+
+        // 0 -> 1
+        if ($current_lists_de_precio === 0 && $new_lists_de_precio === 1) {
+            $pivot_table = 'article_price_type';
+            $now = now();
+
+            // Inserta relaciones por chunk para evitar queries y payloads gigantes.
+            Article::where('user_id', $owner_user->id)
+                ->select('id')
+                ->chunk($articles_chunk_size, function ($articles_chunk) use ($price_types, $pivot_table, $now, $articles_chunk_size) {
+
+                    if ($price_types->isEmpty()) {
+                        return;
+                    }
+
+                    $rows = [];
+
+                    foreach ($articles_chunk as $article) {
+                        foreach ($price_types as $price_type) {
+                            $rows[] = [
+                                'article_id' => (int) $article->id,
+                                'price_type_id' => (int) $price_type->id,
+                                // Por defecto, seteamos el porcentaje del price_type. Si el usuario no completó
+                                // percentage en el price_type, quedará null y el cálculo lo normaliza en 0.
+                                'percentage' => $price_type->percentage,
+                                'final_price' => null,
+                                'previus_final_price' => null,
+                                'incluir_en_excel_para_clientes' => (int) ($price_type->incluir_en_lista_de_precios_de_excel ? 1 : 0),
+                                'setear_precio_final' => (int) ($price_type->setear_precio_final ? 1 : 0),
+                                'created_at' => $now,
+                                'updated_at' => $now,
+                            ];
+                        }
+                    }
+
+                    if (count($rows)) {
+                        DB::table($pivot_table)->insertOrIgnore($rows);
+                    }
+                });
+
+            // Recalcula precios para que `final_price` refleje listas activadas.
+            ProcessSetFinalPrices::dispatch($owner_user->id);
+            return;
+        }
+
+        // 1 -> 0
+        if ($current_lists_de_precio === 1 && $new_lists_de_precio === 0) {
+            if (!empty($price_type_ids)) {
+                DB::table('article_price_type')
+                    ->join('articles', 'articles.id', '=', 'article_price_type.article_id')
+                    ->where('articles.user_id', $owner_user->id)
+                    ->whereIn('article_price_type.price_type_id', $price_type_ids)
+                    ->delete();
+            }
+
+            // Recalcula precios para que `final_price` deje de depender de los price_types.
+            ProcessSetFinalPrices::dispatch($owner_user->id);
+        }
     }
 
     function set_img_auto_timeout($value) {

@@ -297,10 +297,12 @@ class ProcessRow {
         $this->terminar('set props_to_add');
 
 
-        $this->iniciar();
-        $iva_id = $this->get_iva_id($row);
-        $data['iva_id'] = $iva_id;
-        $this->terminar('set iva_id');
+        if (!ImportHelper::isIgnoredColumn('iva', $this->columns)) {
+            $this->iniciar();
+            $iva_id = $this->get_iva_id($row);
+            $data['iva_id'] = $iva_id;
+            $this->terminar('set iva_id');
+        }
 
 
 
@@ -323,30 +325,30 @@ class ProcessRow {
 
 
 
-        $this->iniciar();
         if (!ImportHelper::isIgnoredColumn('moneda', $this->columns)) {
+            $this->iniciar();
             $data['cost_in_dollars'] = $this->get_cost_in_dollars($row);
+            $this->terminar('moneda');
         }
-        $this->terminar('moneda');
 
-        $this->iniciar();
         if (!ImportHelper::isIgnoredColumn('aplicar_iva', $this->columns)) {
+            $this->iniciar();
             $data['aplicar_iva'] = $this->get_aplicar_iva($row);
+            $this->terminar('aplicar_iva');
         }
-        $this->terminar('moneda');
 
-        $this->iniciar();
         if (!ImportHelper::isIgnoredColumn('marca', $this->columns)) {
+            $this->iniciar();
             $brand_id = ImportHelper::getColumnValue($row, 'marca', $this->columns);
             $data['brand_id'] = $this->get_brand_id($row);
+            $this->terminar('brand_id');
         }
-        $this->terminar('brand_id');
 
-        $this->iniciar();
         if (!ImportHelper::isIgnoredColumn('unidad_medida', $this->columns)) {
+            $this->iniciar();
             $data['unidad_medida_id'] = $this->get_unidad_medida_id($row);
+            $this->terminar('unidad_medida_id');
         }
-        $this->terminar('unidad_medida_id');
 
 
         $this->iniciar();
@@ -1307,11 +1309,11 @@ class ProcessRow {
 
 
     private function obtener_price_types($row, $articulo_ya_creado = null) {
-        // $this->log('obtener_price_types: '.UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $this->user));
+        // $this->log('obtener_price_types: '.UserHelper::uses_listas_de_precio($this->user));
         $price_types_data = [];
 
         if (
-            UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $this->user)
+            UserHelper::uses_listas_de_precio($this->user)
             && $this->se_importaron_price_types
         ) {
 
@@ -2029,6 +2031,15 @@ class ProcessRow {
 
         $diffs = [];
 
+
+        // Si se ignoraron ambos columnas de descuentos, se turna empty para que no modifique en la bbdd
+        if (
+            ImportHelper::isIgnoredColumn('descuentos', $this->columns)
+            && ImportHelper::isIgnoredColumn('descuentos_montos', $this->columns)
+        ) {
+            return $diffs;
+        }
+
         // Parsear las cadenas del Excel
         $new_percents = [];
         if ($discounts_percent_str) {
@@ -2096,6 +2107,15 @@ class ProcessRow {
         $surchages_amount_str = ImportHelper::getColumnValue($row, 'recargos_montos', $this->columns);
 
         $diffs = [];
+
+
+        // Si se ignoraron ambos columnas de recargos, se turna empty para que no modifique en la bbdd
+        if (
+            ImportHelper::isIgnoredColumn('recargos', $this->columns)
+            && ImportHelper::isIgnoredColumn('recargos_montos', $this->columns)
+        ) {
+            return $diffs;
+        }
 
         // 🔹 1. Parsear nuevos valores del Excel
         $new_percents = [];

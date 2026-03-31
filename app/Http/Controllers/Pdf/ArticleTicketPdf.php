@@ -200,7 +200,15 @@ class ArticleTicketPdf extends fpdf {
 		$this->y = $this->start_y;
 
 		$this->SetFont('Arial', 'B', 33);
+
 		$this->Cell($width, 13, '$'.Numbers::price($article->final_price), $this->b, 1, 'R');
+	}
+
+	function get_price() {
+
+		if (UserHelper::uses_listas_de_precio($this->user)) {
+			
+		}
 	}
 
 	function print_bar_code($article) {
