@@ -39,7 +39,7 @@ class ArticleSeeder extends Seeder
         'martillo' => 'http://empresa.local:8000/storage/martillo.jpg',
     ];
 
-    public $repetir_articlulos = 10;
+    public $repetir_articlulos = 50;
 
     public function run()
     {
@@ -90,12 +90,6 @@ class ArticleSeeder extends Seeder
 
             foreach ($articles as $article) {
 
-                // if (
-                //     !isset($article['bar_code'])
-                //     || strlen($article['bar_code']) < 4
-                // ) {
-                //     $article['bar_code'] = $num;
-                // } 
                 $article['bar_code'] .= $num;
 
                 $article['provider_code'] = $num.'/'.$article['provider_code'];
@@ -103,6 +97,8 @@ class ArticleSeeder extends Seeder
                 $article['name'] .= ' '.$num_article;
 
                 $num++;
+
+                $article = $this->add_price_types($article);
 
                 $art = $helper->crear_article($article, $days);
 
@@ -131,11 +127,27 @@ class ArticleSeeder extends Seeder
         }
     }
 
+    function add_price_types($article) {
+
+        if (count($this->price_types) >= 1) {
+
+            $article['price_types'] = [];
+            foreach ($this->price_types as $price_type) {
+                $article['price_types'][] = [
+                    'id'            => $price_type->id,
+                    'percentage'    => $price_type->percentage,
+                ];
+            }
+        }
+
+        return $article;
+    }
+
     function crear_price_type_monedas($art) {
 
         $price_type_monedas = [];
 
-        for ($moneda_id=1; $moneda_id <3 ; $moneda_id++) { 
+        for ($moneda_id=1; $moneda_id <= 2 ; $moneda_id++) { 
 
             foreach ($this->price_types as $price_type) {
                 $price_type_monedas[] = [

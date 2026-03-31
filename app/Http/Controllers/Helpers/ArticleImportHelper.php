@@ -403,7 +403,7 @@ class ArticleImportHelper {
 			$column_position++;
 		}
 
-		if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
+		if (UserHelper::uses_listas_de_precio()) {
 
 			$price_types = PriceType::where('user_id', UserHelper::userId())
 									->orderBy('position', 'ASC')

@@ -12,7 +12,10 @@ use Illuminate\Support\Facades\Log;
 
 class SearchController extends Controller
 {
-    function search(Request $request, $model_name_param, $_filters = null, $paginate = 0, $return_used_filters = false) {
+    /**
+     * @param bool $return_raw_models Si true (solo uso interno), devuelve la colección/paginador sin armar JSON ni log de historial.
+     */
+    function search(Request $request, $model_name_param, $_filters = null, $paginate = 0, $return_used_filters = false, $return_raw_models = false) {
         $model_name = GeneralHelper::getModelName($model_name_param);
         $models = $model_name::where('user_id', $this->userId());
 
@@ -303,10 +306,20 @@ class SearchController extends Controller
         $models = $models->withAll()
                         ->orderBy('created_at', 'DESC');
         if ($paginate) {
-            // $models = $models->paginate(5);
-            $models = $models->paginate(50);
+            $per_page = (int) $request->input('per_page', 5);
+            if ($per_page < 1) {
+                $per_page = 5;
+            }
+            if ($per_page > 200) {
+                $per_page = 200;
+            }
+            $models = $models->paginate($per_page);
         } else {
             $models = $models->get();
+        }
+
+        if ($return_raw_models) {
+            return $models;
         }
 
         // Log::info('Resultado de la busqueda: '.count($models).' modelos');

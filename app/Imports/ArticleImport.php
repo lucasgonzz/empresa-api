@@ -630,7 +630,7 @@ class ArticleImport implements ToCollection
 
     function aplicar_price_types($row) {
 
-        if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios', $this->user)) {
+        if (UserHelper::uses_listas_de_precio($this->user)) {
 
             $price_types = [];
 

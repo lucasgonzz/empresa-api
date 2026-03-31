@@ -154,6 +154,14 @@ class ArticleSeederHelper {
                                     ]);
         }
 
+        if (isset($article['price_types'])) {
+            foreach ($article['price_types'] as $price_type) {
+                $created_article->price_types()->attach($price_type['id'], [
+                    'percentage'    => $price_type['percentage'],
+                ]);
+            }
+        }
+
         if (
             isset($article['addresses'])
             || isset($article['set_stock'])

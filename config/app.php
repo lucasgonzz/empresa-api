@@ -242,5 +242,7 @@ return [
     'APP_ENV'                                   => env('APP_ENV', 'production'),
     'APP_URL'                                   => env('APP_URL'),
     'FOR_USER'                                  => env('FOR_USER'),
+    'VPS'                                       => env('VPS', false),
+
 
 ];

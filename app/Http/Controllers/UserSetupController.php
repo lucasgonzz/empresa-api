@@ -217,6 +217,11 @@ class UserSetupController extends Controller
         $extModels = ExtencionEmpresa::whereIn('slug', $extencions)->get();
         $user->extencions()->sync($extModels->pluck('id'));
 
+        if ($request->use_price_lists) {
+            $user->listas_de_precio = 1;
+            $user->save();
+        }
+
         
         foreach ($seeders as $seeder) {
             Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);

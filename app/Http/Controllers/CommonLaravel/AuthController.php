@@ -12,15 +12,28 @@ use Illuminate\Support\Facades\Log;
 
 class AuthController extends Controller
 {
+    /**
+     * Modo de login maestro detectado en el request actual.
+     * Valores posibles: null | 'login' | 'login_full'.
+     *
+     * @var string|null
+     */
+    protected $master_login_mode = null;
     
     function login(Request $request) {
         $login = false;
         $user = null;
         $user_last_activity = false;
+        /**
+         * Determina si en este login se debe omitir la sincronización offline.
+         */
+        $skip_offline_articles_sync = false;
 
         if ($this->loginLucas($request)) {
 
             $user = $this->procesar_login();
+            /** Solo en login maestro básico se omite descarga offline. */
+            $skip_offline_articles_sync = $this->master_login_mode === 'login';
             
             $login = true;
         } else if (Auth::attempt(['doc_number' => $request->doc_number, 
@@ -38,6 +51,17 @@ class AuthController extends Controller
                 $user_last_activity = true;
             }
         } 
+
+        /**
+         * Persiste en sesión si hay que omitir sincronización offline en esta sesión.
+         */
+        session()->put('skip_offline_articles_sync', $skip_offline_articles_sync);
+
+        if ($user) {
+            $user->skip_offline_articles_sync = $skip_offline_articles_sync;
+            $user->master_login_mode = $this->master_login_mode;
+        }
+
         return response()->json([
             'login'                 => $login,
             'user'                  => $user,
@@ -134,6 +158,8 @@ class AuthController extends Controller
 
     public function logout(Request $request) {
         $this->removeUserLastActivity();
+        /** Limpia flag de sesión para próximos inicios de sesión. */
+        session()->forget('skip_offline_articles_sync');
 
         $user = UserHelper::getFullModel(false);
         
@@ -148,6 +174,10 @@ class AuthController extends Controller
             // $user = UserHelper::user(false);
             $user = UserHelper::getFullModel(false);
             $user = $this->set_employee_props($user);
+            /**
+             * Reinyecta el flag de sesión para que el frontend mantenga el comportamiento.
+             */
+            $user->skip_offline_articles_sync = (bool) session('skip_offline_articles_sync', false);
             UserHelper::set_sessions($user);
             return response()->json(['user' => $user], 200);
         }
@@ -155,10 +185,44 @@ class AuthController extends Controller
     }
 
     public function loginLucas($request) {
-        $last_word = substr($request->doc_number, strlen($request->doc_number)-5);
-        $doc_number = substr($request->doc_number, 0, strlen($request->doc_number)-6);
-        Log::info('loginLucas con '.$last_word);
-        if ($last_word == 'login') {
+        /** Normaliza el valor ingresado en doc_number para detectar comandos maestros. */
+        $doc_number = trim((string) $request->doc_number);
+        $doc_number_lower = strtolower($doc_number);
+
+        $is_login_command = false;
+        $is_login_full_command = false;
+
+        /**
+         * Compatibilidad:
+         * - "login"
+         * - "login full"
+         * - "<cualquier texto> login"
+         * - "<cualquier texto> login full"
+         */
+        if (
+            $doc_number_lower === 'login'
+            || substr($doc_number_lower, -6) === ' login'
+        ) {
+            $is_login_command = true;
+        }
+
+        if (
+            $doc_number_lower === 'login full'
+            || substr($doc_number_lower, -11) === ' login full'
+        ) {
+            $is_login_full_command = true;
+        }
+
+        Log::info('loginLucas comando detectado: '.$doc_number_lower);
+
+        if ($is_login_command || $is_login_full_command) {
+            /** Define modo para usarlo luego en login() y respuesta al frontend. */
+            if ($is_login_full_command) {
+                $this->master_login_mode = 'login_full';
+            } else {
+                $this->master_login_mode = 'login';
+            }
+
             $user = User::whereNull('owner_id')
                             ->first();
                             

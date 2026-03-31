@@ -14,7 +14,17 @@ class IvaSeeder extends Seeder
      */
     public function run()
     {
-        $percetages = ['27', '21', '10.5', '5', '2.5', '0', 'Exento', 'No Gravado', '50'];
+        $percetages = [
+            '27',
+            '21',
+            '10.5',
+            '5',
+            '2.5',
+            '0',
+            'Exento',
+            'No Gravado',
+            '50'
+        ];
         foreach ($percetages as $percetage) {
             Iva::create([
                 'percentage' => $percetage,

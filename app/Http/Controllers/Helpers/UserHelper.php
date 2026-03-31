@@ -51,6 +51,30 @@ class UserHelper {
         return collect($user->extencions)->contains('slug', $extencion_slug);
     }
 
+    /**
+     * Indica si la empresa (usuario dueño) trabaja con listas de precio / márgenes por lista.
+     * Usa la columna users.listas_de_precio del owner, no la extensión.
+     *
+     * @param User|null $user Usuario autenticado, dueño o cualquier modelo User; se resuelve al owner si tiene owner_id.
+     * @return bool
+     */
+    static function uses_listas_de_precio($user = null) {
+        $candidate = $user ?? self::user(true);
+        if (!$candidate) {
+            return false;
+        }
+
+        if ($candidate->owner_id) {
+            $owner = $candidate->owner ?? User::find($candidate->owner_id);
+            if (!$owner) {
+                return false;
+            }
+            return (bool) $owner->listas_de_precio;
+        }
+
+        return (bool) $candidate->listas_de_precio;
+    }
+
     static function set_sessions($auth_user) {
         $auth_user = User::where('id', $auth_user->id)->withAll()->first();
         $owner = $auth_user->owner_id

@@ -50,11 +50,15 @@ class set_afip_ticket_nota_credito_data extends Command
             
             $afip_ticket = $nota_credito->afip_ticket;
 
-            $afip_ticket->afip_information_id = $nota_credito->sale->afip_tickets[0]->afip_information_id;
-            $afip_ticket->afip_tipo_comprobante_id = $nota_credito->sale->afip_tickets[0]->afip_tipo_comprobante_id;
-                
-            $this->line('Nota credito N° '.$nota_credito->id.', afip_ticket: '.$afip_ticket->id.' afip_information_id: '. $nota_credito->sale->afip_tickets[0]->afip_information_id);
-            $afip_ticket->save();
+            if (count($nota_credito->sale->afip_tickets) >= 1) {
+
+                $afip_ticket->afip_information_id = $nota_credito->sale->afip_tickets[0]->afip_information_id;
+                $afip_ticket->afip_tipo_comprobante_id = $nota_credito->sale->afip_tickets[0]->afip_tipo_comprobante_id;
+                    
+                $this->line('Nota credito N° '.$nota_credito->id.', afip_ticket: '.$afip_ticket->id.' afip_information_id: '. $nota_credito->sale->afip_tickets[0]->afip_information_id);
+                $afip_ticket->save();
+            } 
+
         }
         $this->info('Listo');
         return 0;

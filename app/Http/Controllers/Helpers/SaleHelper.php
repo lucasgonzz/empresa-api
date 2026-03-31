@@ -213,7 +213,7 @@ class SaleHelper extends Controller {
         return null;
     }
 
-    static function attachProperies($model, $request, $from_store = true, $previus_articles = null, $previus_combos = null, $previus_promos = null, $sale_modification = null, $se_esta_confirmando_por_primera_vez = false) {
+    static function attachProperies($model, $request, $from_store = true, $previus_articles = null, $previus_combos = null, $previus_promos = null, $sale_modification = null, $se_esta_confirmando_por_primera_vez = false, $se_activando_discount_stock = false) {
 
         Log::info('attachProperies');
 
@@ -227,7 +227,7 @@ class SaleHelper extends Controller {
             $fecha_agregado_by_article_id = Self::get_fecha_agregado_map_for_normal_articles($request->items, $previus_articles);
         }
 
-        Self::attachArticles($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez, $fecha_agregado_by_article_id);
+        Self::attachArticles($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez, $fecha_agregado_by_article_id, $se_activando_discount_stock);
         
         Log::info('1');
 
@@ -245,9 +245,11 @@ class SaleHelper extends Controller {
                 * Si la venta ya esta confirmada
                 y no es que se esta confirmando por primera vez
                 (osea ya estaba confirmada antes de actualizarce)
-                Recien ahi veo si se elimino algun articulo para regresar al stock
+                Recien ahi veo si se elimino algun articulo para regresar al stock.
+                Tampoco se revisa si se esta activando discount_stock por primera vez,
+                ya que en ese caso los articulos previos nunca tuvieron stock descontado.
             */
-            if (!$model->to_check && !$model->checked && !$se_esta_confirmando_por_primera_vez) {
+            if (!$model->to_check && !$model->checked && !$se_esta_confirmando_por_primera_vez && !$se_activando_discount_stock) {
 
                 UpdateHelper::check_articulos_eliminados($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
             }
@@ -624,7 +626,7 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function attachArticles($sale, $articles, $previus_articles, $se_esta_confirmando_por_primera_vez, $fecha_agregado_by_article_id = []) {
+    static function attachArticles($sale, $articles, $previus_articles, $se_esta_confirmando_por_primera_vez, $fecha_agregado_by_article_id = [], $se_activando_discount_stock = false) {
         
         foreach ($articles as $article) {
             if (isset($article['is_article'])) {
@@ -662,7 +664,17 @@ class SaleHelper extends Controller {
                 }
 
 
-                if (!$sale->to_check && !$sale->checked && Self::usa_stock($article)) {
+                /*
+                 * Se descuenta stock solo si:
+                 * - la venta no está en modo depósito (to_check / checked)
+                 * - la venta tiene activado discount_stock
+                 * - el artículo maneja stock
+                 *
+                 * Cuando se activa discount_stock por primera vez en una actualización,
+                 * se combina con se_esta_confirmando_por_primera_vez para que ArticleHelper
+                 * descuente la cantidad total actual (no la diferencia con artículos previos).
+                 */
+                if (!$sale->to_check && !$sale->checked && $sale->discount_stock && Self::usa_stock($article)) {
 
                     $amount = Self::getAmount($sale, $article);
 
@@ -671,9 +683,13 @@ class SaleHelper extends Controller {
                     } else {
                         $article_variant_id = null;
                     }
+
+                    // Si se activa discount_stock por primera vez, tratar como primera confirmación
+                    // para que se use la cantidad total y no la diferencia con artículos previos
+                    $es_primer_descuento = $se_esta_confirmando_por_primera_vez || $se_activando_discount_stock;
                     
                     // if ($amount > 0) {
-                        ArticleHelper::discountStock($article['id'], $amount, $sale, $previus_articles, $se_esta_confirmando_por_primera_vez, $article_variant_id);
+                        ArticleHelper::discountStock($article['id'], $amount, $sale, $previus_articles, $es_primer_descuento, $article_variant_id);
                     // }
                 }
 

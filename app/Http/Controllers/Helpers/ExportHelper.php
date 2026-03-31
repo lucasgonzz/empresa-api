@@ -174,7 +174,7 @@ class ExportHelper {
 
 		if (count($price_types) >= 1) {
 
-			if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
+			if (UserHelper::uses_listas_de_precio()) {
 
 				if (UserHelper::hasExtencion('ventas_en_dolares')) {
 
@@ -383,7 +383,7 @@ class ExportHelper {
 				
 				// dd($price_type->name);
 
-				if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
+				if (UserHelper::uses_listas_de_precio()) {
 
 					array_splice($headings, $aplicar_iva_index, 0, '$ Final '.$price_type->name);
 					array_splice($headings, $aplicar_iva_index, 0, '% '.$price_type->name);
@@ -644,7 +644,7 @@ class ExportHelper {
 
 		$price_types = $price_types->reverse();
 
-		if (UserHelper::hasExtencion('articulo_margen_de_ganancia_segun_lista_de_precios')) {
+		if (UserHelper::uses_listas_de_precio()) {
 
 			if (UserHelper::hasExtencion('ventas_en_dolares')) {
 

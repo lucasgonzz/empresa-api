@@ -742,6 +742,10 @@ class UserSeeder extends Seeder
                                                     ->first();
                         $user->extencions()->attach($extencion->id);
                     }
+                    if (in_array('articulo_margen_de_ganancia_segun_lista_de_precios', $model['extencions'], true)) {
+                        $user->listas_de_precio = 1;
+                        $user->save();
+                    }
                 }
                 
                 Log::info('env user_Id: '.config('app.USER_ID'));
