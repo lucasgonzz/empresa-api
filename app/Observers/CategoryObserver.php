@@ -11,6 +11,7 @@ class CategoryObserver
     {
 
         if (env('USA_TIENDA_NUBE', false)) {
+            // 
             // solo si cambió el nombre (o si cambiás la condición, ej. slug)
             if ($category->wasChanged('name')) {
                 $svc = app(TiendaNubeCategoryService::class);
