@@ -88,9 +88,11 @@ class BudgetPdf extends fpdf {
 			'date'				=> $this->budget->created_at,
 			'address'			=> $address,
 			'title' 			=> 'Presupuesto',
+			'title_font_size'	=> 12,
 			'model_info'		=> $this->budget->client,
 			'model_props' 		=> $this->getModelProps(),
 			'fields' 			=> $this->getFields(),
+			'titulo'			=> $this->user->company_name,
 		];
 
 		if ($this->budget->employee) {

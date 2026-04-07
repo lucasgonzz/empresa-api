@@ -22,10 +22,11 @@ class PdfHelper {
 		$table_size = isset($data['table_size']) ? $data['table_size'] : 10;
 		$table_margen = isset($data['table_margen']) ? $data['table_margen'] : 2;
 		
+		// Cuadrante izquierdo
 		Self::logo($instance, $data, $alto_imagen);
 
 		// Cuadradito central (donde va "A", "B", "C", "X", "NC", etc)
-		Self::title($instance, $data['title']);
+		Self::title($instance, $data);
 
 
 		Self::numeroFecha($instance, $data);
@@ -130,16 +131,15 @@ class PdfHelper {
 		
 		$instance->SetFont('Arial', 'B', 9);
 
-		// Razon social
+		// Titulo
 		$instance->y = 5;
-
 		if ($alto_imagen > 40) {
 			$instance->y += 10;
 		}
 		
 		$start_x = $alto_imagen + 5;
 		$instance->x = $start_x;
-		$instance->Cell(40, 5, $user->company_name, $instance->b, 1, 'L');	
+		$instance->Cell(40, 5, $data['titulo'], $instance->b, 1, 'L');	
 
 		// Condicion IVA
 		if (!is_null($user->afip_information) && !is_null($user->afip_information->iva_condition)) {
@@ -214,16 +214,19 @@ class PdfHelper {
 		$instance->Cell(85, 5, 'Pag '.$instance->PageNo(), $instance->b, 0, 'R');
 	}
 
-	static function title($instance, $title) {
+	static function title($instance, $data) {
 		
-		if (is_null($title)) {
-			$title = 'X';
-			$instance->SetFont('Arial', 'B', 30);
-			$height = 15;
-		} else {
-			$instance->SetFont('Arial', 'B', 12);
-			$height = 5;
+		$font_size = 30;
+		if (isset($data['title_font_size'])) {
+			$font_size = $data['title_font_size'];
 		}
+		
+		$height = 15;
+		if (isset($data['title_height'])) {
+			$height = $data['title_height'];
+		}
+		
+		$instance->SetFont('Arial', 'B', $font_size);
 
 		$start_y = 5;
 		$start_x = 90;
@@ -233,7 +236,7 @@ class PdfHelper {
 	    $instance->MultiCell(
 			$width, 
 			$height, 
-			$title, 
+			$data['title'], 
 	    	$instance->b, 
 	    	'C', 
 	    	false

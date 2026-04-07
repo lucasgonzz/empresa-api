@@ -24,6 +24,16 @@ class PriceTypeController extends Controller
     }
 
     public function store(Request $request) {
+        /**
+         * Array de notificaciones para devolver al frontend en respuestas exitosas.
+         *
+         * Se usa como feedback inmediato cuando la creación de un price_type dispara el recálculo masivo
+         * en background (queue).
+         *
+         * @var array<int, array{message:string,type:string}>
+         */
+        $notifications = [];
+
         $model = PriceType::create([
             'num'                   => $this->num('price_types'),
             'name'                  => $request->name,
@@ -39,8 +49,17 @@ class PriceTypeController extends Controller
             'user_id'               => $this->userId(),
         ]);
 
-        // Solo aplica el nuevo tipo de precio a artículos existentes cuando el usuario lo pidió.
-        $this->agregar_a_articulos_existentes($model, $request);
+        if ($this->user()->listas_de_precio) {
+            // Solo aplica el nuevo tipo de precio a artículos existentes cuando el usuario lo pidió.
+            $this->agregar_a_articulos_existentes($model, $request);
+
+            // Feedback inmediato: el recálculo se ejecuta en segundo plano y puede demorar.
+            $notifications[] = [
+                'message' => 'Se inició la actualización de precios en segundo plano. Te avisaremos cuando termine.',
+                'type'    => 'info',
+            ];
+        }
+
 
         $this->sendAddModelNotification('price_type', $model->id);
 
@@ -49,7 +68,10 @@ class PriceTypeController extends Controller
         GeneralHelper::attachModels($model, 'categories', $request->categories, ['percentage']);
         GeneralHelper::attachModels($model, 'sub_categories', $request->sub_categories, ['percentage']);
 
-        return response()->json(['model' => $this->fullModel('PriceType', $model->id)], 201);
+        return response()->json([
+            'model' => $this->fullModel('PriceType', $model->id),
+            'notifications' => $notifications,
+        ], 201);
     }  
 
     /**

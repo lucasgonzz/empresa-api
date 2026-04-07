@@ -8,6 +8,12 @@ class AfipTicket extends Model
 {
     protected $guarded = [];
     // protected $dates = ['cae_expired_at'];
+    protected $casts = [
+        /**
+         * Cast del snapshot de IVA para facilitar consumo desde PDF sin parseo manual repetido.
+         */
+        'iva_detalle_enviado_json' => 'array',
+    ];
 
     // Venta a la que pertenece la factura
     function sale() {

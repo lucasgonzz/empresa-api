@@ -77,6 +77,31 @@ class HelperController extends Controller
         $this->{$method}($param, $param_2);
     }
 
+    function saldos_clintes() {
+        $clients = Client::where('user_id', config('app.USER_ID'))->get();
+
+        foreach ($clients as $client) {
+            $credit_account_pesos = CreditAccount::where('model_name', 'client')
+                                                    ->where('model_id', $client->id)
+                                                    ->where('moneda_id', 1)
+                                                    ->first();
+
+            if ($credit_account_pesos) {
+                $ultimo = CurrentAcount::where('credit_account_id', $credit_account_pesos->id)
+                                            ->orderBy('id', 'DESC')
+                                            ->first();
+
+                if ($ultimo) {
+                    $client->saldo_pesos = $ultimo->saldo;
+                    $client->save(); 
+                    echo $client->name.' ok con saldo de '.$client->saldo_pesos.' <br>';
+                } else {
+                    echo 'No hay cuenta para '.$client->name.' <br>';
+                }
+            }
+        }
+    }
+
     function articles_golonorte() {
         $articles = Article::orderBy('id', 'ASC')
                             ->get();

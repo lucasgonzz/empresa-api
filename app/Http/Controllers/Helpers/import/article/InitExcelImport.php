@@ -18,6 +18,9 @@ use Throwable;
 
 class InitExcelImport
 {
+    /**
+     * Almacena los offsets de inicio por chunk para lectura eficiente del CSV.
+     */
     protected $chunk_offsets = [];
 
     function importar($data)
@@ -44,6 +47,20 @@ class InitExcelImport
         $this->chunkSize    = config('app.ARTICLE_EXCEL_CHUNK_SIZE');
         $this->start        = $this->start_row;
         $this->jobs         = [];
+
+        /*
+         * Antes de preparar archivos y crear estados, validamos que el usuario
+         * no tenga otra importación activa para evitar procesos solapados.
+         */
+        $importacion_en_curso = $this->tiene_importacion_en_curso();
+        if ($importacion_en_curso) {
+            return [
+                'hubo_un_error' => true,
+                'message' => 'Ya hay una importación en curso. Esperá a que termine para iniciar una nueva.',
+                'info_to_show' => [],
+                'functions_to_execute' => [],
+            ];
+        }
 
         $csv_ok = $this->armar_archivo_csv();
 
@@ -92,6 +109,22 @@ class InitExcelImport
         return [
             'hubo_un_error' => false,
         ];
+    }
+
+    /**
+     * Verifica si el usuario ya tiene una importación activa.
+     *
+     * @return bool true si existe una importación en preparación o en proceso.
+     */
+    function tiene_importacion_en_curso()
+    {
+        /*
+         * Filtra por usuario y por estados activos para bloquear el inicio
+         * de nuevas importaciones mientras haya una ejecución vigente.
+         */
+        return ImportHistory::where('user_id', $this->user->id)
+            ->whereIn('status', ['en_preparacion', 'en_proceso'])
+            ->exists();
     }
 
     /**

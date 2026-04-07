@@ -3,10 +3,12 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Models\ImportHistory;
 use App\Models\ImportStatus;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -14,7 +16,6 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
-use Carbon\Carbon;
 
 class FinalizeArticleImport implements ShouldQueue
 {
@@ -76,10 +77,13 @@ class FinalizeArticleImport implements ShouldQueue
 
         Log::info('Se envio notificacion');
 
-        Artisan::call('set_article_address_stock_from_variants', [
-            'user_id' => $user->id
-        ]);
+        if (UserHelper::hasExtencion('article_variants', $user)) {
+            Artisan::call('set_article_address_stock_from_variants', [
+                'user_id' => $user->id
+            ]);
+        }
 
         ArticleIndexCache::limpiar_cache($user->id);
+        Log::info('Se limpio cache');
     }
 }

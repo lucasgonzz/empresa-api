@@ -543,11 +543,11 @@ class ArticleController extends Controller
         
         if ($result['hubo_un_error']) {
             return response()->json([
-                'hubo_un_error' => true,
-                'message' => $result['message'] ?? 'Ocurrió un error al preparar la importación.',
-                'info_to_show'  => $result['info_to_show'],
-                'functions_to_execute'  => $result['functions_to_execute'],
-            ], 500);
+                // 'hubo_un_error' => true,
+                'message'       => $result['message'] ?? 'Ocurrió un error al preparar la importación.',
+                // 'info_to_show'  => $result['info_to_show'],
+                // 'functions_to_execute'  => $result['functions_to_execute'],
+            ], 409);
         } else {
             return response(null, 200);
         }

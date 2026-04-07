@@ -304,6 +304,12 @@ class AfipWsfeHelper extends Controller
             }
             $invoice['FeCAEReq']['FeDetReq']['FECAEDetRequest']['Iva'] = $ivas;
         }
+
+        /**
+         * Persistimos snapshot de importes enviados para reutilizar en impresión de comprobante
+         * sin volver a calcular montos.
+         */
+        $this->persist_importes_enviados($importes, $invoice);
         
         Log::info('invoice:');
         Log::info((array)$invoice);
@@ -366,6 +372,33 @@ class AfipWsfeHelper extends Controller
         }
 
 
+    }
+
+    /**
+     * Guarda en el ticket AFIP los importes exactos enviados en FECAESolicitar.
+     *
+     * @param array $importes Importes calculados previamente.
+     * @param array $invoice Payload final armado para AFIP.
+     * @return void
+     */
+    function persist_importes_enviados($importes, $invoice) {
+        /**
+         * Nodo fiscal concreto utilizado para enviar el comprobante.
+         */
+        $request_data = $invoice['FeCAEReq']['FeDetReq']['FECAEDetRequest'];
+        /**
+         * Detalle de IVA enviado por alícuota; puede ser null cuando no corresponde.
+         */
+        $iva_detalle_enviado = isset($request_data['Iva']) ? $request_data['Iva'] : [];
+
+        $this->afip_ticket->update([
+            'imp_total_enviado' => $request_data['ImpTotal'],
+            'imp_tot_conc_enviado' => $request_data['ImpTotConc'],
+            'imp_neto_enviado' => $request_data['ImpNeto'],
+            'imp_op_ex_enviado' => $request_data['ImpOpEx'],
+            'imp_iva_enviado' => $request_data['ImpIVA'],
+            'iva_detalle_enviado_json' => $iva_detalle_enviado,
+        ]);
     }
 
     function save_importe_0() {

@@ -225,9 +225,10 @@ class TicketInfoHelper
         }
 
         /**
-         * Importes calculados por helper AFIP para consistencia fiscal.
+         * Importes fiscales preferentemente persistidos al autorizar.
+         * Si no existen (tickets legacy), se mantiene fallback a recálculo.
          */
-        $importes = $this->afip_helper->getImportes();
+        $importes = $this->get_importes_for_pdf();
 
         $pdf->SetFont('Arial', 'B', 9);
         $pdf->x = 125;
@@ -263,6 +264,90 @@ class TicketInfoHelper
             $formatted_total = Numbers::price($sale->total, true, $sale->moneda_id);
         }
         $pdf->Cell(40, 7, $formatted_total, 1, 1, 'L');
+    }
+
+    /**
+     * Obtiene importes para render fiscal del PDF.
+     *
+     * @return array
+     */
+    protected function get_importes_for_pdf(): array
+    {
+        /**
+         * Si hay snapshot persistido en AFIP ticket, se usa como fuente principal.
+         */
+        if (!is_null($this->afip_ticket->imp_total_enviado)) {
+            /**
+             * Mapa de alícuotas con el mismo formato esperado por el renderer.
+             */
+            $ivas = [];
+            /**
+             * Detalle de IVA persistido (array por cast o JSON legacy como string).
+             */
+            $detalle = $this->afip_ticket->iva_detalle_enviado_json;
+            if (is_string($detalle)) {
+                $decoded = json_decode($detalle, true);
+                if (is_array($decoded)) {
+                    $detalle = $decoded;
+                } else {
+                    $detalle = [];
+                }
+            }
+            if (!is_array($detalle)) {
+                $detalle = [];
+            }
+
+            foreach ($detalle as $iva_row) {
+                if (!isset($iva_row['Id'])) {
+                    continue;
+                }
+                $iva_label = $this->iva_id_to_label((int) $iva_row['Id']);
+                if ($iva_label === null) {
+                    continue;
+                }
+                $ivas[$iva_label] = [
+                    'BaseImp' => isset($iva_row['BaseImp']) ? (float) $iva_row['BaseImp'] : 0,
+                    'Importe' => isset($iva_row['Importe']) ? (float) $iva_row['Importe'] : 0,
+                    'Id' => (int) $iva_row['Id'],
+                ];
+            }
+
+            return [
+                'gravado' => (float) $this->afip_ticket->imp_neto_enviado,
+                'neto_no_gravado' => (float) $this->afip_ticket->imp_tot_conc_enviado,
+                'exento' => (float) $this->afip_ticket->imp_op_ex_enviado,
+                'iva' => (float) $this->afip_ticket->imp_iva_enviado,
+                'ivas' => $ivas,
+                'total' => (float) $this->afip_ticket->imp_total_enviado,
+            ];
+        }
+
+        return $this->afip_helper->getImportes();
+    }
+
+    /**
+     * Convierte Id de alícuota AFIP al texto de porcentaje usado en renderer.
+     *
+     * @param int $iva_id
+     * @return string|null
+     */
+    protected function iva_id_to_label(int $iva_id): ?string
+    {
+        /** @var array $map Mapeo AFIP Id -> etiqueta alícuota. */
+        $map = [
+            6 => '27',
+            5 => '21',
+            4 => '10.5',
+            8 => '5',
+            9 => '2.5',
+            3 => '0',
+        ];
+
+        if (!isset($map[$iva_id])) {
+            return null;
+        }
+
+        return $map[$iva_id];
     }
 
     /**

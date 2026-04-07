@@ -27,8 +27,15 @@ class ArticleClientsExport implements FromCollection, WithHeadings, WithMapping,
         $this->columnas_cambio_precio = [];
     }
 
+    /**
+     * Arma cada fila del archivo de exportacion de articulos para clientes.
+     *
+     * @param  object  $article Articulo con sus precios y datos de presentacion.
+     * @return array            Fila final que se escribira en el Excel.
+     */
     public function map($article): array
     {
+        // Base comun de columnas descriptivas del articulo.
         $map = [
             $article->num,
             $article->bar_code,
@@ -41,7 +48,22 @@ class ArticleClientsExport implements FromCollection, WithHeadings, WithMapping,
         if (count($this->price_types) >= 1) {
             $map = ArticleClientsExportHelper::map_price_types($map, $article, $this->price_type_id);
         } else {
+            // Precio final actual utilizado para el calculo de variacion.
+            $final_price = (float) $article->final_price;
+            // Precio final anterior tomado como base para el porcentaje.
+            $previus_final_price = (float) $article->previus_final_price;
+            // Variacion porcentual formateada para exportar sin riesgo de division por cero.
+            $price_variation_percentage = '';
+
+            // Si existe base valida, se calcula la diferencia relativa entre precio actual y anterior.
+            if ($previus_final_price != 0.0) {
+                $difference_percentage = (($final_price - $previus_final_price) / $previus_final_price) * 100;
+                $price_variation_percentage = round($difference_percentage, 2) . '%';
+            }
+
             $map[] = $article->final_price;
+            $map[] = $article->previus_final_price;
+            $map[] = $price_variation_percentage;
         }
 
         return $map;
@@ -102,6 +124,8 @@ class ArticleClientsExport implements FromCollection, WithHeadings, WithMapping,
         } else {
 
             $headings[] = 'Precio';
+            $headings[] = 'Precio anterior';
+            $headings[] = 'Variacion %';
         }
         
         return $headings;

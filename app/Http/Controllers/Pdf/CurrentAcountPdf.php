@@ -72,6 +72,8 @@ class CurrentAcountPdf extends fpdf {
 			// 'date'				=> $this->models[]->created_at,
 			'date_formated'		=> date('d/m/y'),
 			'title' 			=> 'Cuenta corriente',
+			'title_font_size'	=> 12,
+			'title_height'		=> 5,
 			'model_info'		=> $this->models[0]->client,
 			'model_props' 		=> $this->getModelProps(),
 			'fields' 			=> $this->getFields(),

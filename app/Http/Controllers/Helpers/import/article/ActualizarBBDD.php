@@ -133,6 +133,17 @@ class ActualizarBBDD {
         // Actualizar artículos existentes por lote con SQL crudo
         if (!empty($this->articulos_para_actualizar_CACHE)) {
 
+            /*
+                Varias filas del mismo chunk pueden generar múltiples entradas para el mismo article id
+                (cada fila compara contra el estado en BD al inicio del chunk). El UPDATE armado abajo
+                usa CASE id WHEN ... THEN ... acumulando un WHEN por fila: en SQL gana el PRIMER WHEN
+                que coincide para cada id, no el último. Por eso hay que fusionar por id con regla
+                "última fila gana" antes de construir el SQL.
+            */
+            $this->articulos_para_actualizar_CACHE = $this->merge_articulos_para_actualizar_ultima_fila_gana(
+                $this->articulos_para_actualizar_CACHE
+            );
+
             $this->set_articulos_actualizados_models();
 
             
@@ -1311,6 +1322,47 @@ class ActualizarBBDD {
     //     $this->terminar('Set articulos_creados en '.number_format($dur, 2, '.', '').' seg'); 
     //     $this->log('se seteo articulos_creados_models con '.count($this->articulos_creados_models).' articulos');
     // }
+
+    /**
+     * Reduce el cache de actualización cuando el mismo `id` aparece más de una vez en el chunk.
+     * La última entrada del Excel debe prevalecer (misma semántica que procesar fila a fila contra BD).
+     *
+     * @param array $rows lista de arrays provenientes de ProcessRow / articulosParaActualizar
+     * @return array filas únicas por id, en orden de primera aparición del id
+     */
+    protected function merge_articulos_para_actualizar_ultima_fila_gana(array $rows): array
+    {
+        // mapa id => fila acumulada; order conserva ids en orden de aparición
+        $by_id = [];
+        $order = [];
+
+        foreach ($rows as $row) {
+
+            if (!is_array($row) || empty($row['id'])) {
+                continue;
+            }
+
+            $id = $row['id'];
+
+            if (!isset($by_id[$id])) {
+
+                $by_id[$id] = $row;
+                $order[] = $id;
+            } else {
+
+                // Claves posteriores pisan las anteriores (última fila gana)
+                $by_id[$id] = array_merge($by_id[$id], $row);
+            }
+        }
+
+        $merged = [];
+
+        foreach ($order as $id) {
+            $merged[] = $by_id[$id];
+        }
+
+        return $merged;
+    }
 
     function set_articulos_actualizados_models() {
 

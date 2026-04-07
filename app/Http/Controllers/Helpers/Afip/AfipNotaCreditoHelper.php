@@ -33,6 +33,8 @@ class AfipNotaCreditoHelper
         $this->afip_ticket = $afip_ticket;
         $this->sale = $afip_ticket->sale;
         $this->nota_credito = $nota_credito;
+
+        $this->nota_credito->load(['discounts', 'surchages']);
         
         $this->testing = true;
 
@@ -254,6 +256,7 @@ class AfipNotaCreditoHelper
                 ];
 
                 $this->update_afip_ticket($data);
+
             }
             
         } else {
@@ -288,8 +291,9 @@ class AfipNotaCreditoHelper
         // Log::info('services para obtener importes:');
         // Log::info($this->nota_credito->services);
 
-        $afip_helper = new AfipHelper($this->afip_ticket, $this->nota_credito->articles, $this->nota_credito->services, null, null, $this->nota_credito->nota_credito_descriptions, true);
+        $afip_helper = new AfipHelper($this->afip_ticket, $this->nota_credito->articles, $this->nota_credito->services, null, null, $this->nota_credito->nota_credito_descriptions, $this->nota_credito);
         $importes = $afip_helper->getImportes();
+
         $today = date('Ymd');
         $moneda_id = 'PES';
         $iva_receptor = CondicionIvaReceptorHelper::get_iva_receptor($this->sale);
@@ -388,6 +392,8 @@ class AfipNotaCreditoHelper
                 ];
 
                 $this->update_afip_ticket($data);
+
+                $this->update_sale_total_facturado($data);
             }
 
         } else {
@@ -496,6 +502,11 @@ class AfipNotaCreditoHelper
         ]);
     }
 
+    function update_sale_total_facturado($data) {
+        Log::info('Restando total_facturado de '.$data['importe_total']);
+        $this->sale->total_facturado -= (float)$data['importe_total'];
+        $this->sale->save();
+    }
 
     function update_afip_ticket($data) {
             

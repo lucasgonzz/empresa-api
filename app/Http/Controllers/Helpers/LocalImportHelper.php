@@ -46,7 +46,7 @@ class LocalImportHelper {
                     'saldo'     => $saldo_inicial,
                 ]);
 
-                $model->saldo = $saldo_inicial;
+                $model->saldo_pesos = $saldo_inicial;
                 $model->save();
             }
         }
