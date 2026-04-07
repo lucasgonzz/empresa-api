@@ -16,7 +16,7 @@ class CategoryObserver
                 $svc = app(TiendaNubeCategoryService::class);
                 $svc->syncRootCategory($category);
             }
-        }
+        } 
     }
 
     // Opcional: al crear, asegurarla ya en TN
