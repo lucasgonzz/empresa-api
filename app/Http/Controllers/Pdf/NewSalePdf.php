@@ -33,6 +33,12 @@ class NewSalePdf extends fpdf
         $this->sale = $sale;
         $this->user = $user;
         $this->total_sale = 0;
+
+        $this->total_articles = 0;
+        $this->total_promocion_vinotecas = 0;
+        $this->total_combos = 0;
+        $this->total_services = 0;
+
         /**
          * Flag para decidir si este perfil imprime comprobante fiscal AFIP.
          */
@@ -41,6 +47,13 @@ class NewSalePdf extends fpdf
          * Flag para controlar impresión de totales por cada página.
          */
         $this->show_totals_on_each_page = $this->pdf_column_profile ? (bool) $this->pdf_column_profile->show_totals_on_each_page : false;
+        /**
+         * Flag para controlar visibilidad del total general en el pie del PDF.
+         * Default true para mantener comportamiento en perfiles legacy.
+         */
+        $this->show_total_in_footer = $this->pdf_column_profile
+            ? $this->normalize_boolean($this->pdf_column_profile->show_total_in_footer, true)
+            : true;
         /**
          * Texto libre del pie de página; se renderiza con MultiCell debajo de los totales.
          * Sigue la misma regla de visibilidad que show_totals_on_each_page.
@@ -132,6 +145,11 @@ class NewSalePdf extends fpdf
             $data['model_info']     = $this->sale->client;
             $data['model_props']    = $this->getModelProps();
             $data['fields']         = $this->getFields();
+            $data['titulo']         = $this->user->company_name;
+        } else if ($this->afip_ticket) {
+            $data['title']          = $this->afip_ticket->cbte_letra;
+            $data['num']            = $this->afip_ticket->cbte_numero;
+            $data['titulo']         = $this->afip_ticket->afip_information->razon_social;
         }
         
         PdfHelper::header($this, $data);
@@ -146,6 +164,16 @@ class NewSalePdf extends fpdf
 
     }
 
+    // function getNumCbte() {
+    //     $letras_faltantes = 8 - strlen($this->afip_ticket->cbte_numero);
+    //     $cbte_numero = '';
+    //     for ($i=0; $i < $letras_faltantes; $i++) { 
+    //         $cbte_numero .= '0'; 
+    //     }
+    //     $cbte_numero  .= $this->afip_ticket->cbte_numero;
+    //     return $cbte_numero;
+    // }
+
     /**
      * Footer con total general y pie de página opcional.
      * Cuando hay footer_text, reposiciona Y para que ambos bloques quepan en la página.
@@ -157,8 +185,14 @@ class NewSalePdf extends fpdf
             $this->y += 5;
 
             $this->x = $this->start_x;
-            $this->SetFont('Arial', 'B', 12);
-            $this->Cell(200, 10, 'Total: '.Numbers::price($this->sale->total, true, $this->sale->moneda_id), $this->b, 1, 'R');
+            /**
+             * Total general visible/oculto según configuración del perfil.
+             */
+            if ($this->should_print_total_in_footer()) {
+
+                $this->SetFont('Arial', 'B', 12);
+                $this->Cell(200, 10, 'Total: '.Numbers::price($this->sale->total, true, $this->sale->moneda_id), $this->b, 1, 'R');
+            }
             $this->print_footer_text_block();
         }
 
@@ -167,10 +201,165 @@ class NewSalePdf extends fpdf
          * seguido del texto de pie de página si está configurado.
          */
         if ($this->is_afip_ticket && $this->ticket_info_helper && $this->ticket_info_helper->has_afip_context() && $this->should_print_totals_in_footer()) {
-            $this->ticket_info_helper->print_iva_and_totals($this, $this->sale);
+            /**
+             * En perfiles fiscales, el bloque IVA/totales se considera "total" del footer.
+             */
+            if ($this->should_print_total_in_footer()) {
+                $this->ticket_info_helper->print_iva_and_totals($this, $this->sale);
+            }
             $this->print_footer_text_block();
             $this->ticket_info_helper->print_qr_and_arca_footer($this);
             $this->ticket_info_helper->print_fiscal_footer($this, $this->PageNo());
+        }
+    }
+
+    function descuentos_y_recargos() {
+
+        $this->total_bruto = $this->total_articles + $this->total_combos + $this->total_promocion_vinotecas + $this->total_services;
+        $this->discounts();
+        $this->surchages();
+
+    }
+
+
+
+    function discounts() {
+        if (count($this->sale->discounts) >= 1) {
+
+            $this->y += 5;
+
+            $this->SetFont('Arial', 'B', 9);
+
+
+            foreach ($this->sale->discounts as $discount) {
+                
+                $total_descuento = 0;
+                
+                $this->x = $this->start_x;
+                
+                $monto_descuento = $this->total_articles * floatval($discount->pivot->percentage) / 100;
+                $this->total_articles -= $monto_descuento;
+                $total_descuento += $monto_descuento;
+
+                $monto_descuento = $this->total_combos * floatval($discount->pivot->percentage) / 100;
+                $this->total_combos -= $monto_descuento;
+                $total_descuento += $monto_descuento;
+
+                $monto_descuento = $this->total_promocion_vinotecas * floatval($discount->pivot->percentage) / 100;
+                $this->total_promocion_vinotecas -= $monto_descuento;
+                $total_descuento += $monto_descuento;
+
+                if ($this->sale->discounts_in_services) {
+                    
+                    $monto_descuento = $this->total_services * floatval($discount->pivot->percentage) / 100;
+                    $this->total_services -= $monto_descuento;
+                    $total_descuento += $monto_descuento;
+                }
+
+                $this->total_bruto -= $total_descuento;
+
+                $text = 'Menos '.Numbers::price($total_descuento, true, $this->sale->moneda_id).' ('.$discount->pivot->percentage.'% '.$discount->name.') = '.Numbers::price($this->total_bruto, true);
+
+                $this->Cell(
+                    200, 
+                    7, 
+                    $text, 
+                    $this->b, 
+                    1, 
+                    'R'
+                );
+            }
+            if (count($this->sale->services) > 0) {
+                $this->x = $this->start_x;
+                if ($this->sale->discounts_in_services) {
+                    $text = 'Se aplican descuentos a los servicios';
+                } else {
+                    $text = 'No se aplican descuentos a los servicios';
+                }
+                $this->Cell(
+                    200, 
+                    7, 
+                    $text, 
+                    $this->b, 
+                    1, 
+                    'R'
+                );
+            } 
+        }
+    }
+
+    function surchages() {
+        if (
+            count($this->sale->surchages) >= 1
+            && !$this->sale->aplicar_recargos_directo_a_items
+        ) {
+            $this->SetFont('Arial', '', 9);
+            // $total_articles = $this->total_articles;
+            // $total_services = $this->total_services;
+            // $total_combos = $this->total_combos;
+            // dd($total_combos);
+
+
+            foreach ($this->sale->surchages as $surchage) {
+                $this->x = $this->start_x;
+                
+                $total_recargo = 0;
+
+
+                $monto_recargo = $this->total_articles * floatval($surchage->pivot->percentage) / 100;
+                $this->total_articles += $monto_recargo;
+                $total_recargo += $monto_recargo;
+
+
+                $monto_recargo = $this->total_combos * floatval($surchage->pivot->percentage) / 100;
+                $this->total_combos += $monto_recargo;
+                $total_recargo += $monto_recargo;
+
+                $monto_recargo = $this->total_promocion_vinotecas * floatval($surchage->pivot->percentage) / 100;
+                $this->total_promocion_vinotecas += $monto_recargo;
+                $total_recargo += $monto_recargo;
+
+                // dd($this->sale->discounts_in_services);
+                if ($this->sale->surchages_in_services) {
+                    
+                    $monto_recargo = $this->total_services * floatval($surchage->pivot->percentage) / 100;
+                    $this->total_services += $monto_recargo;
+                    $total_recargo += $monto_recargo;
+                // dd($total_recargo);
+                }
+
+                // $total_with_discounts = $this->total_articles + $this->total_services + $this->total_combos + $this->total_promocion_vinotecas;
+
+                $this->total_bruto += $total_recargo;
+
+                $text = 'Mas '.Numbers::price($total_recargo, true, $this->sale->moneda_id).' ('.$surchage->pivot->percentage.'% '.$surchage->name.') = '.Numbers::price($this->total_bruto, true);
+
+                $this->Cell(
+                    200, 
+                    7, 
+                    $text, 
+                    $this->b, 
+                    1, 
+                    'R'
+                );
+
+            }
+            if (count($this->sale->services) > 0) {
+                $this->x = $this->start_x;
+                if ($this->sale->surchages_in_services) {
+                    $text = 'Se aplican recargos a los servicios';
+                } else {
+                    $text = 'No se aplican recargos a los servicios';
+                }
+                $this->Cell(
+                    200, 
+                    7, 
+                    $text, 
+                    $this->b, 
+                    1, 
+                    'R'
+                );
+            } 
         }
     }
 
@@ -205,15 +394,19 @@ class NewSalePdf extends fpdf
     {
         $items = [];
         foreach ($this->sale->articles as $item) {
+            $item->is_article = true;
             $items[] = $item;
         }
         foreach ($this->sale->combos as $item) {
+            $item->is_combo = true;
             $items[] = $item;
         }
         foreach ($this->sale->promocion_vinotecas as $item) {
+            $item->is_promocion_vinotecas = true;
             $items[] = $item;
         }
         foreach ($this->sale->services as $item) {
+            $item->is_service = true;
             $items[] = $item;
         }
         return $items;
@@ -236,6 +429,8 @@ class NewSalePdf extends fpdf
         $this->SetFont('Arial', '', 8);
         $this->x = $this->start_x;
         $row_height = $this->line_height;
+
+        $this->sumar_totales($item);
 
         foreach ($this->profile_columns as $column) {
             $value = (string) $this->get_profile_column_value($column, $index, $item);
@@ -275,6 +470,38 @@ class NewSalePdf extends fpdf
         $this->x = $start_x;
         $this->y = $start_y + $row_height;
         $this->Line($start_x, $this->y, 210 - $start_x, $this->y);
+    }
+
+    function sumar_totales($item) {
+
+        if ($item->is_article) {
+
+            $this->total_articles += $this->sub_total($item);
+
+        } else if ($item->is_combo) {
+
+            $this->total_combos += $this->sub_total($item);
+
+        } else if ($item->is_promocion_vinotecas) {
+
+            $this->total_promocion_vinotecas += $this->sub_total($item);
+
+        } else if ($item->is_service) {
+            
+            $this->total_services += $this->sub_total($item);
+
+        }
+    }
+
+    function sub_total($item) {
+
+        $amount = $item->pivot->amount;
+        
+        $total = $item->pivot->price * $amount;
+        if (!is_null($item->pivot->discount)) {
+            $total -= $total * ($item->pivot->discount / 100);
+        }
+        return $total;
     }
 
     /**
@@ -506,6 +733,39 @@ class NewSalePdf extends fpdf
     }
 
     /**
+     * Define si el bloque de total general debe imprimirse en el pie del PDF.
+     * Aplica tanto a perfiles comerciales (Total) como a perfiles fiscales (IVA/totales).
+     *
+     * @return bool
+     */
+    private function should_print_total_in_footer(): bool
+    {
+        return (bool) $this->show_total_in_footer;
+    }
+
+    /**
+     * Normaliza booleanos que pueden venir como 0/"0"/false desde DB.
+     * Evita el problema de `(bool) "0"` en PHP.
+     *
+     * @param mixed $value
+     * @param bool $default
+     * @return bool
+     */
+    private function normalize_boolean($value, bool $default = false): bool
+    {
+        if ($value === null) {
+            return $default;
+        }
+        if ($value === true || $value === 1 || $value === '1') {
+            return true;
+        }
+        if ($value === false || $value === 0 || $value === '0' || $value === '') {
+            return false;
+        }
+        return (bool) $value;
+    }
+
+    /**
      * En multipágina y flag desactivado, escribe total solo al cierre en última hoja.
      *
      * @return void
@@ -516,6 +776,39 @@ class NewSalePdf extends fpdf
          * Si corresponde imprimir en cada página, el Footer ya se encarga.
          */
         if ($this->show_totals_on_each_page) {
+            return;
+        }
+
+        /**
+         * Si el perfil desactivó el total en el pie, no se imprime ni siquiera en la última hoja.
+         * Sin embargo, si hay texto de pie configurado, se imprime igualmente al final para no perderlo.
+         */
+        if (! $this->should_print_total_in_footer()) {
+            if (! $this->footer_text) {
+                return;
+            }
+            /**
+             * Reserva espacio y genera salto de página si no entra el bloque final.
+             */
+            if ($this->y >= 275) {
+                $this->AddPage();
+            }
+            /**
+             * En perfil comercial, solo se imprime el texto libre.
+             */
+            if (! $this->is_afip_ticket) {
+                $this->y += 5;
+                $this->print_footer_text_block();
+                return;
+            }
+            /**
+             * En perfil fiscal, se mantiene QR/pie fiscal aunque se oculten totales.
+             */
+            if ($this->ticket_info_helper && $this->ticket_info_helper->has_afip_context()) {
+                $this->print_footer_text_block();
+                $this->ticket_info_helper->print_qr_and_arca_footer($this);
+                $this->ticket_info_helper->print_fiscal_footer($this, $this->PageNo());
+            }
             return;
         }
 
@@ -531,6 +824,9 @@ class NewSalePdf extends fpdf
          * únicamente al final del documento (última página).
          */
         if (!$this->is_afip_ticket) {
+
+            $this->descuentos_y_recargos();
+
             $this->y += 5;
             $this->x = $this->start_x;
             $this->SetFont('Arial', 'B', 12);
@@ -548,6 +844,9 @@ class NewSalePdf extends fpdf
          * El texto de pie de página va debajo del bloque fiscal.
          */
         if ($this->ticket_info_helper && $this->ticket_info_helper->has_afip_context()) {
+
+            $this->descuentos_y_recargos();
+            
             $this->ticket_info_helper->print_iva_and_totals($this, $this->sale);
             $this->print_footer_text_block();
             $this->ticket_info_helper->print_qr_and_arca_footer($this);

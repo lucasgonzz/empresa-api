@@ -22,7 +22,6 @@ class User extends Authenticatable
 
     protected $casts = [
         'email_verified_at' => 'datetime',
-        'listas_de_precio'  => 'boolean',
     ];
     
     protected $dates = ['expired_at', 'payment_expired_at', 'last_activity'];

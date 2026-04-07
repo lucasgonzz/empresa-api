@@ -12,7 +12,7 @@ class Article extends Model
     
     protected $guarded = [];
 
-    protected $dates = ['stock_updated_at'];
+    protected $dates = ['stock_updated_at', 'final_price_updated_at'];
 
     // protected $appends = ['costo_real'];
 

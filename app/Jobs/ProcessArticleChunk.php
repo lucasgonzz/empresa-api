@@ -520,8 +520,8 @@ class ProcessArticleChunk implements ShouldQueue
         // Log::info($article_import_observations);
 
         usort($rows_observations, function ($a, $b) {
-            $total_a = $a['duration'];
-            $total_b = $b['duration'];
+            $total_a = isset($a['duration']) ? $a['duration'] : 0;
+            $total_b = isset($b['duration']) ? $b['duration'] : 0;
 
             // Orden descendente (más lento primero)
             return $total_b <=> $total_a;
@@ -532,7 +532,7 @@ class ProcessArticleChunk implements ShouldQueue
 
             $insert_data[] = [
                 'article_import_result_id'  => $this->import_result->id,
-                'duration'                  => $row_observations['duration'],
+                'duration'                  => isset($row_observations['duration']) ? $row_observations['duration'] : 0,
                 'fila'                      => $row_observations['fila'],
                 'procesos'                  => json_encode($row_observations['procesos']),
             ];
@@ -546,8 +546,8 @@ class ProcessArticleChunk implements ShouldQueue
         ArticleImportResultObservation::insert($insert_data); 
 
         usort($article_import_observations['procesos'], function ($a, $b) {
-            $total_a = $a['duration'];
-            $total_b = $b['duration'];
+            $total_a = isset($a['duration']) ? $a['duration'] : 0;
+            $total_b = isset($b['duration']) ? $b['duration'] : 0;
 
             // Orden descendente (más lento primero)
             return $total_b <=> $total_a;

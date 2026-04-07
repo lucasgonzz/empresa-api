@@ -245,6 +245,12 @@ class PdfColumnService
                 }
                 return $numbers::price($total, true, $sale ? $sale->moneda_id : null);
             case 'item_price_without_iva':
+                /**
+                 * Prioriza valor persistido en pivot para evitar recálculo posterior.
+                 */
+                if (isset($item->pivot->price_sin_iva) && !is_null($item->pivot->price_sin_iva)) {
+                    return $numbers::price($item->pivot->price_sin_iva, true, $sale ? $sale->moneda_id : null);
+                }
                 if ($afip_helper && $sale) {
                     return $numbers::price($afip_helper->getArticlePrice($sale, $item), true, $sale->moneda_id ?? null);
                 }
@@ -253,6 +259,17 @@ class PdfColumnService
                 }
                 return '';
             case 'item_subtotal_without_iva':
+                /**
+                 * Si existe snapshot unitario sin IVA en pivot, se usa para subtotal.
+                 */
+                if (
+                    isset($item->pivot->price_sin_iva)
+                    && !is_null($item->pivot->price_sin_iva)
+                    && isset($item->pivot->amount)
+                ) {
+                    $subtotal_sin_iva = (float) $item->pivot->price_sin_iva * (float) $item->pivot->amount;
+                    return $numbers::price($subtotal_sin_iva, true, $sale ? $sale->moneda_id : null);
+                }
                 if ($afip_helper) {
                     return $numbers::price($afip_helper->subTotal($item), true, $sale ? $sale->moneda_id : null);
                 }

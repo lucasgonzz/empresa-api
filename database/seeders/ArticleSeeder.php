@@ -39,7 +39,7 @@ class ArticleSeeder extends Seeder
         'martillo' => 'http://empresa.local:8000/storage/martillo.jpg',
     ];
 
-    public $repetir_articlulos = 50;
+    public $repetir_articlulos = 9;
 
     public function run()
     {

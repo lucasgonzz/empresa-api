@@ -33,6 +33,12 @@ class ArticleTicketPdf extends fpdf {
 		$this->barcodeGenerator = new DNS1D();
 		$this->bar_code_img_width = $this->ticket_w - 15;
 
+		/*
+			* price_type_id (opcional) para imprimir el precio final según una lista de precios específica.
+			* Se recibe como query param en el endpoint del PDF: ?price_type_id=ID
+		*/
+		$this->price_type_id = request()->query('price_type_id');
+
 		$this->setArticles($ids);
 		
 		$this->user = UserHelper::getFullModel();
@@ -201,13 +207,28 @@ class ArticleTicketPdf extends fpdf {
 
 		$this->SetFont('Arial', 'B', 33);
 
-		$this->Cell($width, 13, '$'.Numbers::price($article->final_price), $this->b, 1, 'R');
+		$this->Cell($width, 13, '$'.Numbers::price($this->get_price($article)), $this->b, 1, 'R');
 	}
 
-	function get_price() {
+	function get_price($article) {
 
 		if (UserHelper::uses_listas_de_precio($this->user)) {
-			
+			/*
+				* Si el usuario trabaja con listas de precios y se indicó un `price_type_id`,
+				* devolvemos el `final_price` desde el pivot de la relación `price_types`.
+				* Si no se encuentra la relación, caemos al `final_price` general del artículo.
+			*/
+			if (!is_null($this->price_type_id) && $this->price_type_id !== '') {
+				$price_type = $article->price_types()
+									->where('price_type_id', $this->price_type_id)
+									->first();
+				if (!is_null($price_type) && isset($price_type->pivot) && isset($price_type->pivot->final_price)) {
+					return $price_type->pivot->final_price;
+				}
+			}
+			return $article->final_price;
+		} else {
+			return $article->final_price;
 		}
 	}
 

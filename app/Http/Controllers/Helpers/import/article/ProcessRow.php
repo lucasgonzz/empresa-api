@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\article\ImportChangeRecorder;
 use App\Models\Address;
+use App\Models\Article;
 use App\Models\ArticlePropertyType;
 use App\Models\ArticlePropertyValue;
 use App\Models\Brand;
@@ -30,6 +31,8 @@ class ProcessRow {
     protected $ct;
     protected $provider_id;
     protected $articles_match = 0;
+    protected $articulos_repetidos = 0;
+    
     protected $articles_repetidos = 0;
     protected $articulosParaActualizar = [];
     protected $articulosParaCrear = [];
@@ -390,7 +393,7 @@ class ProcessRow {
                 return;
             }
             $this->articles_repetidos++;
-            // $this->log('SE OMITIO EN PROCES ROW (fila repetida sin propiedades de variante)');
+            $this->log('SE OMITIO EN PROCES ROW (fila repetida sin propiedades de variante)');
             return;
         } else {
             // $this->log('No esta aun en el excel');
@@ -406,7 +409,7 @@ class ProcessRow {
             $data,
             $this->article_index,
             $this->user->id,
-            $provider_id,
+            $this->provider_id,
             
             $this->permitir_provider_code_repetido,
             $this->permitir_provider_code_repetido_en_multi_providers,
@@ -455,6 +458,27 @@ class ProcessRow {
             || $this->son_varios_articulos($articulo_ya_creado)
         ) {
 
+            /*
+                Artículo aún no persistido en BD: el índice devolvió el modelo fake registrado en RAM.
+                No debe pasar por attach_provider ni procesar_articulo_ya_creado (id null / pivot).
+            */
+            if (
+                !$this->son_varios_articulos($articulo_ya_creado)
+                && $articulo_ya_creado instanceof Article
+                && $this->is_pending_create_fake_article($articulo_ya_creado)
+            ) {
+
+                $this->add_article_match();
+
+                $this->iniciar();
+                $this->merge_fila_en_articulo_para_crear_pendiente($articulo_ya_creado, $data, $row);
+                $this->terminar('actualizar articulo pendiente de creacion (fake_id)');
+
+                $this->sumar_durations();
+
+                return $this->observations;
+            }
+
             $this->log('Articulo ya creado');
 
             $this->iniciar();
@@ -465,7 +489,21 @@ class ProcessRow {
             if ($this->son_varios_articulos($articulo_ya_creado)) {
 
                 foreach ($articulo_ya_creado as $_articulo_ya_creado) {
+
+                    if ($this->is_pending_create_fake_article($_articulo_ya_creado)) {
+
+                        $this->add_article_match();
+
+                        $this->iniciar();
+                        $this->merge_fila_en_articulo_para_crear_pendiente($_articulo_ya_creado, $data, $row);
+                        $this->terminar('actualizar articulo pendiente de creacion (fake_id), coleccion');
+
+                        continue;
+                    }
+
                     $this->add_article_match();
+
+                    $this->articulos_repetidos++;
 
                     if (!$this->omitir_por_pertencer_a_otro_proveedor($_articulo_ya_creado, $provider_id)) {
 
@@ -564,6 +602,23 @@ class ProcessRow {
             // $fakeArticle->fake_id = $data['id'];
 
             ArticleIndexCache::add($fakeArticle);
+
+            /*
+                IMPORTANTE:
+                - `ArticleIndexCache::add()` actualiza el índice memoizado en RAM (static runtime_*),
+                  pero `ProcessRow` busca usando el snapshot `$this->article_index`.
+                - Si no refrescamos este snapshot, la siguiente fila puede NO detectar el artículo "fake"
+                  recién agregado.
+                - Esto NO impacta en rendimiento porque `get_index()` retorna desde RAM (no Redis)
+                  cuando ya está cargado para este user.
+            */
+            // provider_id puede ser null dependiendo del flujo de importación.
+            $provider_id_for_index = !is_null($this->provider_id) ? (int)$this->provider_id : null;
+            $this->article_index = ArticleIndexCache::get_index(
+                (int)$this->user->id,
+                $provider_id_for_index,
+                $this->actualizar_articulos_de_otro_proveedor
+            );
             $this->terminar('crear: add cache');
         }
 
@@ -617,6 +672,148 @@ class ProcessRow {
         // $this->log('articles_match: '.$this->articles_match);
     }
 
+    /**
+     * Indica si el modelo es un artículo pendiente de INSERT (fake_id) en la cola de creación.
+     *
+     * @param mixed $articulo instancia evaluada
+     * @return bool
+     */
+    protected function is_pending_create_fake_article($articulo): bool
+    {
+        if (!($articulo instanceof Article)) {
+            return false;
+        }
+
+        $fake_id = $articulo->getAttribute('fake_id');
+
+        return is_string($fake_id) && str_starts_with($fake_id, 'fake_');
+    }
+
+    /**
+     * Combina datos de la fila actual sobre la entrada ya encolada en articulosParaCrear (mismo fake_id).
+     * Actualiza índice en RAM: remueve claves viejas del fake y vuelve a registrar el modelo.
+     *
+     * @param Article $articulo_fake modelo devuelto por el índice (MISMO proceso)
+     * @param array $data datos armados desde la fila actual
+     * @param array $row fila CSV/Excel
+     */
+    protected function merge_fila_en_articulo_para_crear_pendiente(Article $articulo_fake, array $data, $row): void
+    {
+        $fake_id = $articulo_fake->getAttribute('fake_id');
+
+        if (!is_string($fake_id) || $fake_id === '') {
+            return;
+        }
+
+        $idx_en_cola = null;
+
+        foreach ($this->articulosParaCrear as $idx => $art_en_cola) {
+
+            if (!empty($art_en_cola['fake_id']) && $art_en_cola['fake_id'] === $fake_id) {
+                $idx_en_cola = $idx;
+                break;
+            }
+        }
+
+        if ($idx_en_cola === null) {
+
+            $this->log('merge_fila_en_articulo_para_crear_pendiente: no se encontro fake_id en articulosParaCrear');
+
+            return;
+        }
+
+        $merged = $this->articulosParaCrear[$idx_en_cola];
+
+        foreach ($data as $key => $value) {
+            $merged[$key] = $value;
+        }
+
+        $merged['fake_id'] = $fake_id;
+
+        /*
+            Base coherente con lo ya acumulado en cola + fila actual, para difs de precios/desc/stock.
+        */
+        $baseline_para_diffs = new Article($merged);
+
+        $this->iniciar();
+        $price_types_data = $this->obtener_price_types($row, $baseline_para_diffs);
+        $merged['price_types_data'] = $price_types_data;
+        $this->terminar('merge pendiente: obtener_price_types');
+
+
+        $this->iniciar();
+        $discounts_diff = $this->get_discounts_diff($baseline_para_diffs, $row);
+
+        if (!empty($discounts_diff)) {
+            $merged['discounts'] = $discounts_diff;
+        } else {
+            unset($merged['discounts']);
+        }
+
+        $this->terminar('merge pendiente: discounts_diff');
+
+
+        $this->iniciar();
+        $surchages_diff = $this->get_surchages_diff($baseline_para_diffs, $row);
+
+        if (!empty($surchages_diff)) {
+            $merged['surchages'] = $surchages_diff;
+        } else {
+            unset($merged['surchages']);
+        }
+
+        $this->terminar('merge pendiente: surchages_diff');
+
+
+        $this->iniciar();
+        $stock = $this->obtener_stock($row, $baseline_para_diffs);
+        $this->terminar('merge pendiente: obtener_stock');
+
+
+        $this->iniciar();
+
+        unset($merged['stock_global']);
+        unset($merged['stock_addresses']);
+
+        if (!is_null($stock['stock_global'])) {
+            $merged['stock_global'] = $stock['stock_global'];
+        } else if (count($stock['stock_addresses']) > 0) {
+            $merged['stock_addresses'] = $stock['stock_addresses'];
+        }
+
+        $this->terminar('merge pendiente: stock');
+
+
+        $this->iniciar();
+
+        if (isset($merged['slug'])) {
+            $merged['slug'] = $this->unique_slug((string) $merged['name']);
+        }
+
+        $this->terminar('merge pendiente: slug');
+
+
+        if (!isset($merged['variants_data']) || !is_array($merged['variants_data'])) {
+            $merged['variants_data'] = [];
+        }
+
+        $this->articulosParaCrear[$idx_en_cola] = $merged;
+
+        ArticleIndexCache::remove_fake_from_runtime_index((int) $this->user->id, $fake_id);
+
+        $nuevo_fake_article = new Article($merged);
+
+        ArticleIndexCache::add($nuevo_fake_article);
+
+        $provider_id_for_index = !is_null($this->provider_id) ? (int) $this->provider_id : null;
+
+        $this->article_index = ArticleIndexCache::get_index(
+            (int) $this->user->id,
+            $provider_id_for_index,
+            $this->actualizar_articulos_de_otro_proveedor
+        );
+    }
+
     function attach_provider($articulo_ya_creado, $data, $provider_id) {
 
         // $this->log('attach_provider');
@@ -633,9 +830,19 @@ class ProcessRow {
         ) {
 
             foreach ($articulo_ya_creado as $article) {
+
+                if ($this->is_pending_create_fake_article($article)) {
+                    continue;
+                }
+
                 $this->update_provider_relation($article, $data, $provider_id);
             }
         } else {
+
+            if ($this->is_pending_create_fake_article($articulo_ya_creado)) {
+                return;
+            }
+
             $this->update_provider_relation($articulo_ya_creado, $data, $provider_id);
         }
 
@@ -651,7 +858,7 @@ class ProcessRow {
                 return true;
             }
         }
-        $this->log('No son varios articulos');
+        // $this->log('No son varios articulos');
         return false;
         // return $articulo_ya_creado instanceof Collection;
     }

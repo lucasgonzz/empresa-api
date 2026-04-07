@@ -6,8 +6,8 @@ use App\Models\Article;
 use App\Models\User;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Collection;
 
 class ArticleIndexCache
 {
@@ -22,6 +22,175 @@ class ArticleIndexCache
     protected static $runtime_index_by_key = [];
     protected static $runtime_loaded_by_key = [];
     protected static $runtime_dirty_by_key = [];
+    protected static $log_activado = false;
+
+    /**
+     * Registro en RAM de modelos Article "fake" pendientes de persistir (por user_id y fake_id).
+     * Permite que find_with_index devuelva el mismo artículo aún sin fila en BD (whereIn(id) vacío).
+     *
+     * Estructura: [user_id][fake_id] => Article
+     */
+    protected static $runtime_fake_articles = [];
+
+
+    /**
+     * Devuelve un Article fake registrado vía add() para este usuario, o null.
+     *
+     * @param int $user_id dueño del índice / artículo
+     * @param string $fake_id identificador tipo fake_*
+     * @return Article|null
+     */
+    public static function get_runtime_fake_article(int $user_id, string $fake_id): ?Article
+    {
+        if ($fake_id === '' || !str_starts_with($fake_id, 'fake_')) {
+            return null;
+        }
+
+        if (empty(self::$runtime_fake_articles[$user_id][$fake_id])) {
+            return null;
+        }
+
+        return self::$runtime_fake_articles[$user_id][$fake_id];
+    }
+
+    /**
+     * Quita un fake_id del registro en RAM (tras merge o al reemplazar por artículo real).
+     *
+     * @param int $user_id
+     * @param string $fake_id
+     */
+    public static function forget_runtime_fake_article(int $user_id, string $fake_id): void
+    {
+        unset(self::$runtime_fake_articles[$user_id][$fake_id]);
+    }
+
+    /**
+     * Arma una colección mezclando artículos de BD (ids numéricos) y modelos fake registrados en RAM.
+     *
+     * @param array $article_ids ids del índice (enteros o strings fake_*)
+     * @param array $relations relaciones eager para consulta Eloquent
+     * @param int $user_id usuario del índice
+     * @return Collection de Article
+     */
+    protected static function collection_from_index_article_ids(array $article_ids, array $relations, int $user_id): Collection
+    {
+        // ids que existen en tabla articles vs pendientes de crear en este proceso
+        $db_ids = [];
+        $fake_ids_ordered = [];
+
+        foreach ($article_ids as $raw_id) {
+
+            $as_string = (string) $raw_id;
+
+            if (str_starts_with($as_string, 'fake_')) {
+
+                $fake_ids_ordered[$as_string] = true;
+            } else {
+
+                $db_ids[] = $raw_id;
+            }
+        }
+
+        $out = collect();
+
+        if (count($db_ids) > 0) {
+            $out = $out->merge(Article::with($relations)->whereIn('id', $db_ids)->get());
+        }
+
+        foreach (array_keys($fake_ids_ordered) as $fid) {
+
+            $fake_model = self::get_runtime_fake_article($user_id, $fid);
+
+            if ($fake_model instanceof Article) {
+                $out->push($fake_model);
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Elimina del índice runtime todas las entradas que apuntan a un fake_id concreto
+     * (bar_code, sku, name, provider_codes, ids). Sirve antes de re-add tras merge de fila.
+     *
+     * @param int $user_id
+     * @param string $fake_id
+     */
+    public static function remove_fake_from_runtime_index(int $user_id, string $fake_id): void
+    {
+        $key = "article_index_user_{$user_id}";
+
+        if (empty(self::$runtime_loaded_by_key[$key]) || empty(self::$runtime_index_by_key[$key])) {
+            return;
+        }
+
+        $index = self::$runtime_index_by_key[$key];
+
+        unset($index['ids'][$fake_id]);
+
+        foreach ($index['bar_codes'] as $bc => $fid) {
+
+            if ((string) $fid === $fake_id) {
+                unset($index['bar_codes'][$bc]);
+            }
+        }
+
+        foreach ($index['skus'] as $sku => $fid) {
+
+            if ((string) $fid === $fake_id) {
+                unset($index['skus'][$sku]);
+            }
+        }
+
+        foreach ($index['names'] as $name_key => $fid) {
+
+            if ((string) $fid === $fake_id) {
+                unset($index['names'][$name_key]);
+            }
+        }
+
+        foreach ($index['provider_codes'] as $p_id => $codes) {
+
+            if (!is_array($codes)) {
+                continue;
+            }
+
+            foreach ($codes as $pc => $entry) {
+
+                if (is_array($entry)) {
+
+                    $filtered = [];
+
+                    foreach ($entry as $id_val) {
+
+                        if ((string) $id_val !== $fake_id) {
+                            $filtered[] = $id_val;
+                        }
+                    }
+
+                    if (count($filtered) === 0) {
+                        unset($index['provider_codes'][$p_id][$pc]);
+                    } else {
+                        $index['provider_codes'][$p_id][$pc] = $filtered;
+                    }
+                } else {
+
+                    if ((string) $entry === $fake_id) {
+                        unset($index['provider_codes'][$p_id][$pc]);
+                    }
+                }
+            }
+
+            if (isset($index['provider_codes'][$p_id]) && count($index['provider_codes'][$p_id]) === 0) {
+                unset($index['provider_codes'][$p_id]);
+            }
+        }
+
+        self::$runtime_index_by_key[$key] = $index;
+
+        self::forget_runtime_fake_article($user_id, $fake_id);
+    }
+
 
     public static function build($user_id, $provider_id, $actualizar_articulos_de_otro_proveedor)
     {
@@ -30,18 +199,18 @@ class ArticleIndexCache
         $user = User::find($user_id);
         $key = "article_index_user_{$user_id}";
 
-        $provider_codes_desde_pivot_table = false;
+        // $provider_codes_desde_pivot_table = false;
 
         // $guardar_precio_de_otros_proveedores = config('app.GUARDAR_PRECIO_DE_OTROS_PROVEEDORES');
         $guardar_precio_de_otros_proveedores = true;
 
-        $filtrar_por_proveedor = (
-            $provider_id
-            && !$actualizar_articulos_de_otro_proveedor
-        );
+        // $filtrar_por_proveedor = (
+        //     $provider_id
+        //     && !$actualizar_articulos_de_otro_proveedor
+        // );
 
-        // Lo pongo siempre en false para que machee todos los productos y deje siempre registro de a que precio lo tiene este proveedor
-        $filtrar_por_proveedor = false;
+        // // Lo pongo siempre en false para que machee todos los productos y deje siempre registro de a que precio lo tiene este proveedor
+        // $filtrar_por_proveedor = false;
 
         $index = [
             'ids' => [],
@@ -56,9 +225,9 @@ class ArticleIndexCache
             ->select(['id', 'bar_code', 'sku', 'name', 'provider_code', 'provider_id'])
             ->orderBy('id');
 
-        if ($filtrar_por_proveedor) {
-            $article_query->where('provider_id', $provider_id);
-        }
+        // if ($filtrar_por_proveedor) {
+        //     $article_query->where('provider_id', $provider_id);
+        // }
 
         $article_query->chunkById(2000, function ($articles) use (&$index) {
 
@@ -78,6 +247,10 @@ class ArticleIndexCache
                 // Log::info('provider_code: '.$article->provider_code);
                 // Log::info('provider_id: '.$article->provider_id);
 
+
+                /*
+                    Solo se tienen en cuenta los articulos que tienen codigo de proveedor y que pertenecen a un proveedor
+                */
                 // if (!$provider_codes_desde_pivot_table) {
                     if (
                         !is_null($article->provider_code)
@@ -104,60 +277,6 @@ class ArticleIndexCache
             }
         });
 
-        if ($provider_codes_desde_pivot_table) {
-            
-            // 2) provider_codes desde pivot con JOIN (sin cargar relaciones en memoria)
-            $pivot_query = DB::table('article_provider')
-                ->join('articles', 'articles.id', '=', 'article_provider.article_id')
-                ->where('articles.user_id', $user_id)
-                ->whereNull('articles.deleted_at') // ✅ clave: excluye eliminados en JOIN
-                ->whereNotNull('article_provider.provider_code')
-                ->select([
-                    'article_provider.provider_id',
-                    'article_provider.provider_code',
-                    'article_provider.article_id',
-                ])
-                ->orderBy('article_provider.article_id');
-
-            if ($filtrar_por_proveedor) {
-                $pivot_query->where('articles.provider_id', $provider_id);
-            }
-
-            $pivot_query->chunk(5000, function ($rows) use (&$index, $codigos_proveedor_repetidos) {
-                foreach ($rows as $row) {
-                    $prov_id = (int) $row->provider_id;
-                    $prov_code = trim((string) $row->provider_code);
-                    $article_id = (int) $row->article_id;
-
-                    if ($prov_code === '') {
-                        continue;
-                    }
-                    
-                    if (!isset($index['provider_codes'][$prov_id][$prov_code])) {
-                        $index['provider_codes'][$prov_id][$prov_code] = [];
-                    }
-                    $index['provider_codes'][$prov_id][$prov_code][] = $article_id;
-
-                    // if ($codigos_proveedor_repetidos) {
-                    //     if (!isset($index['provider_codes'][$prov_id][$prov_code])) {
-                    //         $index['provider_codes'][$prov_id][$prov_code] = [];
-                    //     }
-                    //     $index['provider_codes'][$prov_id][$prov_code][] = $article_id;
-                    // } else {
-                    //     if (!isset($index['provider_codes'][$prov_id][$prov_code])) {
-                    //         $index['provider_codes'][$prov_id][$prov_code] = [$article_id];
-                    //     } else {
-                    //         // por si aparecen duplicados inesperados, lo convertimos a array
-                    //         if (!is_array($index['provider_codes'][$prov_id][$prov_code])) {
-                    //             $index['provider_codes'][$prov_id][$prov_code] = [$index['provider_codes'][$prov_id][$prov_code]];
-                    //         }
-                    //         $index['provider_codes'][$prov_id][$prov_code][] = $article_id;
-                    //     }
-                    // }
-                }
-            });
-        }
-
         Cache::put($key, $index, now()->addMinutes(60));
 
         $duracion = microtime(true) - $inicio;
@@ -170,102 +289,6 @@ class ArticleIndexCache
         return $duracion;
     }
 
-
-    // Tengq ue modificar para que si son muuuchos productos guard solo los del proveedor
-    // public static function build($user_id, $provider_id, $no_actualizar_otro_proveedor) 
-    // {
-
-    //     $inicio = microtime(true);
-
-    //     $user = User::find($user_id);
-
-    //     $key = "article_index_user_{$user_id}";
-
-    //     $articles = Article::where('user_id', $user_id)
-    //         ->with(['providers' => function ($q) {
-    //             $q->select('providers.id');
-    //         }])
-    //         ->select(['id', 'bar_code', 'sku', 'name']);
-
-    //     $guardar_precio_de_otros_proveedores = config('app.GUARDAR_PRECIO_DE_OTROS_PROVEEDORES');
-
-    //     if (
-    //         !$user->comparar_precios_de_proveedores_en_excel
-    //         && $provider_id
-    //         && $no_actualizar_otro_proveedor
-    //         && !$guardar_precio_de_otros_proveedores
-    //     ) {
-    //         $articles->where('provider_id', $provider_id);
-    //     }
-
-    //     $articles = $articles->get();
-
-    //     $index = [
-    //         'ids' => [],
-    //         'bar_codes' => [],
-    //         'skus'      => [],
-    //         'provider_codes' => [], // provider_id -> provider_code -> article_id
-    //         'names' => [],
-    //     ];
-
-    //     foreach ($articles as $article) {
-    //         $index['ids'][$article->id] = $article->id;
-
-    //         if (!empty($article->bar_code)) {
-    //             $index['bar_codes'][$article->bar_code] = $article->id;
-    //         }
-
-    //         if (!empty($article->sku)) {
-    //             $index['skus'][$article->sku] = $article->id;
-    //         }
-
-    //         if (!empty($article->name)) {
-    //             $index['names'][strtolower(trim($article->name))] = $article->id;
-    //         }
-
-    //         foreach ($article->providers as $provider) {
-
-    //             if (!empty($provider->pivot->provider_code)) {
-                
-    //                 $prov_id = $provider->id;
-                
-    //                 $prov_code = $provider->pivot->provider_code;
-    //                 $prov_code = trim($prov_code);
-
-    //                 if (!isset($index['provider_codes'][$prov_id][$prov_code])) {
-    //                     $index['provider_codes'][$prov_id][$prov_code] = [];
-    //                 }
-
-    //                 $index['provider_codes'][$prov_id][$prov_code][] = $article->id;
-    //             }
-    //         }
-    //     }
-
-    //     Cache::put($key, $index, now()->addMinutes(60));
-    //     Log::info("ArticleIndexCache::build -> total artículos: " . count($articles));
-
-
-    //     $fin = microtime(true);
-
-    //     $duracion = $fin - $inicio;
-
-    //     Log::info('Duración total cachear los articulos ' . $duracion . ' seg');
-
-    //     if (config('app.APP_ENV' 'local') {
-    //         // Log::info('');
-    //         // Log::info('**********************');
-    //         // Log::info('cache en memoria:');
-    //         // Log::info(Self::get($user_id));
-    //         // Log::info('');
-    //         // Log::info('');
-    //     } else {
-    //         // Log::info('cache en memoria:');
-    //         // Log::info(count(Self::get($user_id)['ids']).' articulos del provider_id '.$provider_id);
-    //         // Log::info(Self::get($user_id));
-    //     }
-
-    //     return $duracion;
-    // }
 
     /**
      * Devuelve el índice cacheado (vacío si no existe).
@@ -348,6 +371,11 @@ class ArticleIndexCache
         return $index;
     }
 
+    static function log($text) {
+        if (config('app.APP_ENV') == 'local' || self::$log_activado) {
+            Log::info($text);
+        }
+    }
 
     public static function find_with_index(
         array $data,
@@ -365,7 +393,7 @@ class ArticleIndexCache
             $index = self::get_index($user_id, $provider_id);
         }
 
-        Log::info('find_with_index');
+        Self::log('find_with_index');
 
         $relations = [
             'price_types',
@@ -377,34 +405,46 @@ class ArticleIndexCache
 
         $article_id = null;
 
+        if (isset($index['provider_codes'][$provider_id][$data['provider_code']])) {
+            
+            Self::log('provider_code del provider_id: '.$provider_id);
+            Self::log($index['provider_codes'][$provider_id][$data['provider_code']]);
+        }
+
         // 1) ID
         if (!empty($data['id']) && isset($index['ids'][(string)$data['id']])) {
+            Self::log('Buscando por id '.$data['id']);
             $article_id = $index['ids'][(string)$data['id']];
         }
 
         // 2) bar_code
         elseif (!empty($data['bar_code']) && isset($index['bar_codes'][(string)$data['bar_code']])) {
+            Self::log('Buscando por bar_code '.$data['bar_code']);
             $article_id = $index['bar_codes'][(string)$data['bar_code']];
         }
 
         // 3) sku
         elseif (!empty($data['sku']) && isset($index['skus'][(string)$data['sku']])) {
+            Self::log('Buscando por sku '.$data['sku']);
             $article_id = $index['skus'][(string)$data['sku']];
         }
 
         // 4) provider_code
         elseif (!empty($data['provider_code'])) {
 
-            Log::info('Buscando por provider_code');
+            Self::log('Buscando por provider_code '.$data['provider_code']);
 
             $provider_code = trim((string)$data['provider_code']);
             if ($provider_code === '') {
                 return null;
             }
 
-            // Si se permiten repetidos pero NO querés sincronizar por provider_code => modo crear
+            /* 
+                Si se permiten repetidos y NO querés sincronizar por provider_code => modo crear
+                Entonces, siempre que se busque por provider_code, se retorna siempre null, para que si o si cree el articulo 
+            */
             if ($permitir_provider_code_repetido && !$actualizar_por_provider_code) {
-                Log::info(1);
+                Self::log('Retornando NULL porque: permitir_provider_code_repetido = false y actualizar_por_provider_code = false');
                 return null;
             }
 
@@ -412,18 +452,23 @@ class ArticleIndexCache
 
             // Si hay provider_id, primero miramos en ese provider
             if (!is_null($provider_id) && isset($index['provider_codes'][(int)$provider_id][$provider_code])) {
-                Log::info(2);
+                Self::log('Buscando en los provider codes del provider_id de la importacion: '.$provider_id);
                 $article_ids = array_merge($article_ids, Arr::wrap($index['provider_codes'][(int)$provider_id][$provider_code]));
             }
 
             // ¿Incluimos otros proveedores?
             if ($actualizar_articulos_de_otro_proveedor) {
-                Log::info(3);
+                Self::log('Buscando dentro de los otros proveedores');
                 foreach ($index['provider_codes'] as $p_id => $codes) {
+
+                    // Saletamos los articulos del provider_id, ya que ese ya se busco en el paso anterior
                     if (!is_null($provider_id) && (int)$p_id === (int)$provider_id) {
                         continue;
                     }
+
                     if (isset($codes[$provider_code])) {
+
+                        // Agregamos los articulos que tengan el provider_code y pertenecen a otro proveedor
                         $article_ids = array_merge($article_ids, Arr::wrap($codes[$provider_code]));
                     }
                 }
@@ -432,14 +477,20 @@ class ArticleIndexCache
             $article_ids = array_values(array_unique($article_ids));
 
             if (!empty($article_ids)) {
+
+                // Si se permiten codigos repetidos, se retorna un array
                 if ($permitir_provider_code_repetido) {
-                    Log::info(4);
-                    // Repetidos + sync: actualizar TODOS
-                    return Article::with($relations)->whereIn('id', $article_ids)->get();
+                    Self::log('Retornando array de articles porque se permiten provider_codes repetidos');
+                    // Repetidos + sync: mezcla BD + artículos fake pendientes (ids fake_* no existen en articles)
+                    return self::collection_from_index_article_ids($article_ids, $relations, $user_id);
+                } else {
+
+                    Self::log('Retornando un unico article porque no se permtien provider_codes repetidos');
+                    // Un solo resultado: primero intentamos resolver ids mixtos (BD + fake en RAM)
+                    $resolved = self::collection_from_index_article_ids($article_ids, $relations, $user_id);
+
+                    return $resolved->first();
                 }
-                // No repetidos: actualizar 1
-                Log::info(6);
-                return Article::with($relations)->whereIn('id', $article_ids)->first();
             }
 
             return null;
@@ -458,13 +509,26 @@ class ArticleIndexCache
             return null;
         }
 
-        // REGRA actualizar_proveedor:
+        // REGLA actualizar_proveedor:
         // si el artículo no pertenece al provider actual y NO querés actualizar proveedor => no lo uses
-        if (!is_null($provider_id) && !$actualizar_proveedor) {
-            $prov_map = $index['article_providers'][$article_id] ?? [];
-            if (!isset($prov_map[(int)$provider_id])) {
-                return null;
-            }
+        // if (
+        //     !$actualizar_proveedor
+        //     && !is_null($article_provider_id)
+        // ) {
+
+        //     $prov_map = $index['article_providers'][$article_id] ?? [];
+
+        //     if (!isset($prov_map[(int)$provider_id])) {
+        //         return null;
+        //     }
+        // }
+
+        // Puede ser id numérico (BD) o fake_* (pendiente de insert en el mismo import)
+        if (is_string($article_id) && str_starts_with((string) $article_id, 'fake_')) {
+
+            $from_ram = self::get_runtime_fake_article($user_id, (string) $article_id);
+
+            return $from_ram;
         }
 
         return Article::with($relations)->find($article_id);
@@ -502,6 +566,22 @@ class ArticleIndexCache
         $article_id = $article->fake_id;
 
         if ($article_id) {
+
+            // Referencia al modelo fake para find_with_index / whereIn no aplica en BD
+            if (
+                is_string($article_id)
+                && str_starts_with($article_id, 'fake_')
+            ) {
+
+                $uid = (int) $article->user_id;
+
+                if (!isset(self::$runtime_fake_articles[$uid])) {
+                    self::$runtime_fake_articles[$uid] = [];
+                }
+
+                self::$runtime_fake_articles[$uid][(string) $article_id] = $article;
+            }
+
             $index['ids'][(string)$article_id] = $article_id;
         }
         if (!empty($article->bar_code)) {
@@ -512,15 +592,20 @@ class ArticleIndexCache
         }
 
         if (!is_null($article->provider_code) && !is_null($article->provider_id)) {
+
+            // Esto podria causar un error
             $prov_id = (string)$article->provider_id;
+            
             $prov_code = (string)$article->provider_code;
 
             if (!isset($index['provider_codes'][$prov_id])) {
                 $index['provider_codes'][$prov_id] = [];
             }
+
             if (!isset($index['provider_codes'][$prov_id][$prov_code])) {
                 $index['provider_codes'][$prov_id][$prov_code] = [];
             }
+            
             $index['provider_codes'][$prov_id][$prov_code][] = $article_id;
         }
 
@@ -536,69 +621,6 @@ class ArticleIndexCache
         // NO Cache::put acá.
     }
 
-    // public static function add($article)
-    // {
-    //     $key = "article_index_user_{$article->user_id}";
-    //     $index = Cache::get($key);
-
-
-    //     // Log::info('Llego a add: ');
-    //     // Log::info($article->id);
-
-    //     $article_id = $article->fake_id;
-
-    //     // if (!$index) {
-    //     //     self::build($article->user_id);
-    //     //     $index = Cache::get($key);
-    //     // }
-
-    //     if ($article_id) {
-    //         $index['ids'][$article_id] = $article_id;
-    //     }
-    //     if ($article->bar_code) {
-    //         $index['bar_codes'][$article->bar_code] = $article_id;
-    //     }
-    //     if ($article->sku) {
-    //         $index['skus'][$article->sku] = $article_id;
-    //     }
-
-    //     // if ($article->provider_code) {
-    //     //     $index['provider_codes'][$article->provider_code] = $article_id;
-    //     // }
-    //     if ($article->provider_code) {
-
-    //         // if (config('app.CODIGOS_DE_PROVEEDOR_REPETIDOS')) {
-
-    //         //     if (!isset($index['provider_codes'][$article->provider_id][$article->provider_code])) {
-    //         //         $index['provider_codes'][$article->provider_id][$article->provider_code] = [];
-    //         //     }
-                
-    //         //     $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article_id;
-    //         // } else {
-    //         //     $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article_id;
-    //         // }
-
-
-    //         if (!isset($index['provider_codes'][$article->provider_id][$article->provider_code])) {
-    //             $index['provider_codes'][$article->provider_id][$article->provider_code] = [];
-    //         }
-            
-    //         $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article_id;
-    //     }
-        
-    //     if ($article->name) {
-    //         $index['names'][strtolower(trim($article->name))] = $article_id;
-    //     }
-
-    //     // Log::info('Se agrego al cache: ');
-    //     // Log::info($article->toArray());
-
-
-    //     Cache::put($key, $index, now()->addMinutes(30));
-
-    //     self::$runtime_index_by_key[$key] = $index;
-    //     self::$runtime_loaded_by_key[$key] = true;
-    // }
 
     public static function update(Article $article, $codigos_proveedor_repetidos)
     {
@@ -620,9 +642,12 @@ class ArticleIndexCache
         if (!empty($article->bar_code)) {
 
             if (isset($index['bar_codes'][$article->bar_code]) &&
-                str_starts_with($index['bar_codes'][$article->bar_code], 'fake_')) {
+                str_starts_with((string) $index['bar_codes'][$article->bar_code], 'fake_')) {
 
-                unset($index['ids'][$index['bar_codes'][$article->bar_code]]);
+                $fake_id_bar = (string) $index['bar_codes'][$article->bar_code];
+
+                self::forget_runtime_fake_article((int) $article->user_id, $fake_id_bar);
+                unset($index['ids'][$fake_id_bar]);
                 unset($index['bar_codes'][$article->bar_code]);
                 $fake_eliminado = true;
                 // Log::info('Se elimino del cache bar_code: '.$article->bar_code);
@@ -635,9 +660,12 @@ class ArticleIndexCache
             if (!empty($article->sku)) {
 
                 if (isset($index['skus'][$article->sku]) &&
-                    str_starts_with($index['skus'][$article->sku], 'fake_')) {
+                    str_starts_with((string) $index['skus'][$article->sku], 'fake_')) {
 
-                    unset($index['ids'][$index['skus'][$article->sku]]);
+                    $fake_id_sku = (string) $index['skus'][$article->sku];
+
+                    self::forget_runtime_fake_article((int) $article->user_id, $fake_id_sku);
+                    unset($index['ids'][$fake_id_sku]);
                     unset($index['skus'][$article->sku]);
                     $fake_eliminado = true;
                     // Log::info('Se elimino del cache sku: '.$article->sku);
@@ -663,17 +691,32 @@ class ArticleIndexCache
                     $entry = $index['provider_codes'][$prov_id][$prov_code];
 
                     if (is_array($entry)) {
-                        // múltiples ids → eliminar solo fakes iguales al real keys
-                        $index['provider_codes'][$prov_id][$prov_code] = array_filter($entry, function($id) {
-                            return !str_starts_with($id, 'fake_');
-                        });
+                        // múltiples ids → eliminar solo fakes; liberar registro en RAM por cada fake
+                        foreach ($entry as $id_en_entry) {
+
+                            if (str_starts_with((string) $id_en_entry, 'fake_')) {
+                                self::forget_runtime_fake_article((int) $article->user_id, (string) $id_en_entry);
+                            }
+                        }
+
+                        $sin_fakes = array_values(array_filter($entry, function ($id) {
+                            return !str_starts_with((string) $id, 'fake_');
+                        }));
+
+                        if (count($sin_fakes) === 0) {
+                            unset($index['provider_codes'][$prov_id][$prov_code]);
+                        } else {
+                            $index['provider_codes'][$prov_id][$prov_code] = $sin_fakes;
+                        }
                         
                         // Log::info('Se eliminaron del cache los provider_code: '.$prov_code);
                         $fake_eliminado = true;
 
                     } else {
                         // single id
-                        if (str_starts_with($entry, 'fake_')) {
+                        if (str_starts_with((string) $entry, 'fake_')) {
+
+                            self::forget_runtime_fake_article((int) $article->user_id, (string) $entry);
                             unset($index['provider_codes'][$prov_id][$prov_code]);
                             unset($index['ids'][$entry]);
 
@@ -691,9 +734,12 @@ class ArticleIndexCache
             // c) Si existe fake en names
             if (!empty($article->name)) {
                 if (isset($index['names'][$name_key]) &&
-                    str_starts_with($index['names'][$name_key], 'fake_')) {
+                    str_starts_with((string) $index['names'][$name_key], 'fake_')) {
 
-                    unset($index['ids'][$index['names'][$name_key]]);
+                    $fake_id_name = (string) $index['names'][$name_key];
+
+                    self::forget_runtime_fake_article((int) $article->user_id, $fake_id_name);
+                    unset($index['ids'][$fake_id_name]);
                     unset($index['names'][$name_key]);
                     // Log::info('Se elimino del cache name: '.$name_key);
                 }
@@ -775,6 +821,7 @@ class ArticleIndexCache
 
         unset(self::$runtime_index_by_key[$cache_key]);
         unset(self::$runtime_loaded_by_key[$cache_key]);
+        unset(self::$runtime_fake_articles[(int) $user_id]);
     }
 
 }

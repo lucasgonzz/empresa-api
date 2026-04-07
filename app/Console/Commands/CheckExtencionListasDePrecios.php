@@ -70,8 +70,7 @@ class CheckExtencionListasDePrecios extends Command
         $actualizados = User::whereIn('id', $owner_ids_list)
             ->where(function ($query) {
                 $query->whereNull('listas_de_precio')
-                    ->orWhere('listas_de_precio', 0)
-                    ->orWhere('listas_de_precio', false);
+                    ->orWhere('listas_de_precio', 0);
             })
             ->update(['listas_de_precio' => 1]);
 

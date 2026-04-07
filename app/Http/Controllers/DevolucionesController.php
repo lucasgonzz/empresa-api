@@ -62,8 +62,10 @@ class DevolucionesController extends Controller
                 $request->descriptions,
             );
 
-            GeneralHelper::attachModels($nota_credito, 'discounts', $request->discounts, ['percentage']);
-            GeneralHelper::attachModels($nota_credito, 'surchages', $request->surchages, ['percentage']);
+            $discounts = $this->set_pivot_percentage($request, 'discounts');
+            $surchages = $this->set_pivot_percentage($request, 'surchages');
+            GeneralHelper::attachModels($nota_credito, 'discounts', $discounts, ['percentage']);
+            GeneralHelper::attachModels($nota_credito, 'surchages', $surchages, ['percentage']);
 
             if (
                 $request->sale_id
@@ -98,6 +100,19 @@ class DevolucionesController extends Controller
         }
 
 
+    }
+
+    function set_pivot_percentage($request, $relation) {
+        $models = [];
+        foreach ($request->{$relation} as $model) {
+            $models[] = [
+                'id'    => $model['id'],
+                'pivot' => [
+                    'percentage'    => $model['percentage'],
+                ]
+            ];
+        }
+        return $models;
     }
 
     function get_moneda_id($request) {

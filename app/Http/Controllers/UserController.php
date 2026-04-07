@@ -60,6 +60,16 @@ class UserController extends Controller
         $owner_user = $model->owner_id ? User::find($model->owner_id) : $model;
         $current_lists_de_precio = (int) ($owner_user ? (bool) $owner_user->listas_de_precio : false);
 
+        /**
+         * Array de notificaciones para devolver al frontend en respuestas exitosas.
+         *
+         * - Se usa para feedback inmediato cuando se encola un recálculo masivo de precios.
+         * - Formato esperado por el interceptor del frontend: array de objetos con `message` y `type`.
+         *
+         * @var array<int, array{message:string,type:string}>
+         */
+        $notifications = [];
+
         $current_dolar                          = $model->dollar;
         $current_iva_included                   = $model->iva_included;
         $current_percentage_gain                = $model->percentage_gain;
@@ -129,7 +139,7 @@ class UserController extends Controller
         $model->save();
 
         if ($owner_user && $request->has('listas_de_precio')) {
-            $owner_user->listas_de_precio = (bool) $request->listas_de_precio;
+            $owner_user->listas_de_precio = (int) $request->listas_de_precio;
             $owner_user->save();
         }
        
@@ -138,13 +148,22 @@ class UserController extends Controller
 
         $this->check_update_articles_price_types_relations_on_lists_de_precio($owner_user, $current_lists_de_precio);
 
-        $this->check_actualizar_articulos($model, $current_dolar, $current_iva_included, $current_percentage_gain, $current_cotizar_precios_en_dolares);
+        // Si se encola recálculo masivo de precios, devolvemos feedback inmediato al usuario.
+        if ($this->check_actualizar_articulos($model, $current_dolar, $current_iva_included, $current_percentage_gain, $current_cotizar_precios_en_dolares)) {
+            $notifications[] = [
+                'message' => 'Se inició la actualización de precios en segundo plano. Te avisaremos cuando termine.',
+                'type'    => 'info',
+            ];
+        }
 
         $model = UserHelper::getFullModel();
 
         // $this->actualizar_empleados($model);
 
-        return response()->json(['model' => $model], 200);
+        return response()->json([
+            'model' => $model,
+            'notifications' => $notifications,
+        ], 200);
     }
 
     /**
@@ -267,6 +286,19 @@ class UserController extends Controller
         ]));
     }
 
+    /**
+     * Detecta cambios de configuración que requieren recálculo masivo de precios y encola el proceso.
+     *
+     * Nota: el recálculo se ejecuta en segundo plano vía queue, por eso este método devuelve un boolean
+     * para que el controller pueda retornar feedback inmediato al frontend (campo `notifications`).
+     *
+     * @param User $model Usuario autenticado.
+     * @param mixed $current_dolar Valor previo de dólar.
+     * @param mixed $current_iva_included Valor previo de iva_included.
+     * @param mixed $current_percentage_gain Valor previo de percentage_gain.
+     * @param mixed $current_cotizar_precios_en_dolares Valor previo de cotizar_precios_en_dolares.
+     * @return bool true si se encoló un recálculo; false si no hubo cambios relevantes.
+     */
     function check_actualizar_articulos($model, $current_dolar, $current_iva_included, $current_percentage_gain, $current_cotizar_precios_en_dolares) {
 
         if (
@@ -281,6 +313,7 @@ class UserController extends Controller
             Log::info($model->cotizar_precios_en_dolares.' | '.$current_cotizar_precios_en_dolares);
             Log::info('Hubo cambios en propiedades de user');
 
+            /** @var bool $from_dolar Indica si el recálculo se disparó por cambio de dólar (optimiza query en job). */
             $from_dolar = false;
 
             if ($model->dollar != $current_dolar) {
@@ -288,7 +321,9 @@ class UserController extends Controller
             }
 
             ProcessSetFinalPrices::dispatch(UserHelper::userId(), null, null, $from_dolar);
+            return true;
         }
+        return false;
     }
 
     function updatePassword(Request $request) {

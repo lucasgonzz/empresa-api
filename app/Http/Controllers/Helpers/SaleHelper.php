@@ -38,6 +38,7 @@ use App\Models\Commissioner;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Discount;
+use App\Models\Iva;
 use App\Models\Sale;
 use App\Models\SaleType;
 use App\Models\SellerCommission;
@@ -288,6 +289,39 @@ class SaleHelper extends Controller {
         $h->set_article_purcase($model);
 
         SaleTotalesHelper::set_total_cost($model);
+
+        /**
+         * Se recalcula y persiste la ganancia final de la venta
+         * luego de actualizar el costo total.
+         */
+        Self::set_sale_ganancia($model);
+    }
+
+    /**
+     * Calcula y persiste la ganancia total de la venta.
+     *
+     * @param \App\Models\Sale $sale
+     * @return \App\Models\Sale
+     */
+    static function set_sale_ganancia($sale) {
+        /** Total final de la venta usado para el calculo. */
+        $total_sale = is_null($sale->total) ? null : (float) $sale->total;
+
+        /** Costo total de la venta usado para el calculo. */
+        $total_cost = is_null($sale->total_cost) ? null : (float) $sale->total_cost;
+
+        /**
+         * Ganancia persistida.
+         * Si falta alguno de los dos valores base, se mantiene en null.
+         */
+        $sale_ganancia = is_null($total_sale) || is_null($total_cost) ? null : $total_sale - $total_cost;
+
+        /** Se guarda sin timestamps para mantener el comportamiento actual del helper. */
+        $sale->ganancia = $sale_ganancia;
+        $sale->timestamps = false;
+        $sale->save();
+
+        return $sale;
     }
 
     // Chequeo que no falten articulos como le suele pasar a Pack
@@ -714,6 +748,10 @@ class SaleHelper extends Controller {
         $amount = Self::getAmount($sale, $article);
         $cost = Self::getCost($sale, $article);
         $price = $article['price_vender'];
+        /**
+         * Precio unitario sin IVA persistido para uso posterior en PDF sin recálculo.
+         */
+        $price_sin_iva = Self::get_price_sin_iva($article, $price);
 
         $ganancia = (float)$price - (float)$cost;
 
@@ -722,6 +760,7 @@ class SaleHelper extends Controller {
             'ganancia'              => $ganancia * $amount,
             'cost'                  => $cost,
             'price'                 => $price,
+            'price_sin_iva'         => $price_sin_iva,
             'returned_amount'       => Self::getReturnedAmount($article),
             'delivered_amount'      => $delivered_amount,
             'discount'              => Self::getDiscount($article),
@@ -744,8 +783,13 @@ class SaleHelper extends Controller {
     static function updateItemsPrices($sale, $items) {
         foreach ($items as $item) {
             if (isset($item['is_article']) && $item['price_vender'] != '') {
+                /**
+                 * Recalcula precio sin IVA cada vez que se actualiza precio de artículo.
+                 */
+                $price_sin_iva = Self::get_price_sin_iva($item, $item['price_vender']);
                 $sale->articles()->updateExistingPivot($item['id'], [
                                                         'price' => $item['price_vender'],
+                                                        'price_sin_iva' => $price_sin_iva,
                                                     ]);
             } else if (isset($item['is_service']) && $item['price_vender'] != '') {
                 $service = Service::find($item['id']);
@@ -756,6 +800,54 @@ class SaleHelper extends Controller {
                                                     ]);
             }
         }
+    }
+
+    /**
+     * Obtiene precio unitario sin IVA para persistir en article_sale.
+     *
+     * @param array $article_data Datos de artículo recibidos desde request/flujo interno.
+     * @param float|int|string $price_with_iva Precio unitario con IVA.
+     * @return float
+     */
+    static function get_price_sin_iva($article_data, $price_with_iva) {
+        /**
+         * Se parsea como float para normalizar entradas string provenientes de formularios.
+         */
+        $price_with_iva = (float) $price_with_iva;
+        /**
+         * Valor por defecto cuando no se logra resolver IVA del artículo.
+         */
+        $iva_percentage = 21;
+
+        if (isset($article_data['iva']) && isset($article_data['iva']['percentage'])) {
+            $iva_percentage = $article_data['iva']['percentage'];
+        } else if (isset($article_data['iva_id']) && !is_null($article_data['iva_id'])) {
+            $iva_model = Iva::find($article_data['iva_id']);
+            if (!is_null($iva_model)) {
+                $iva_percentage = $iva_model->percentage;
+            }
+        } else if (isset($article_data['id'])) {
+            $article_model = Article::find($article_data['id']);
+            if (!is_null($article_model) && !is_null($article_model->iva_id)) {
+                $iva_model = Iva::find($article_model->iva_id);
+                if (!is_null($iva_model)) {
+                    $iva_percentage = $iva_model->percentage;
+                }
+            }
+        }
+
+        /**
+         * Si la condición IVA no es numérica gravada, se conserva precio original.
+         */
+        if (
+            $iva_percentage === 'No Gravado'
+            || $iva_percentage === 'Exento'
+            || (float) $iva_percentage == 0
+        ) {
+            return round($price_with_iva, 2);
+        }
+
+        return round($price_with_iva / (((float) $iva_percentage / 100) + 1), 2);
     }
 
     static function attachPromocionVinotecas($sale, $promocion_vinotecas, $previus_promos) {

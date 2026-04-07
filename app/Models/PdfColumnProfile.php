@@ -32,6 +32,10 @@ class PdfColumnProfile extends Model
         'is_default' => 'boolean',
         'is_afip_ticket' => 'boolean',
         'show_totals_on_each_page' => 'boolean',
+        /**
+         * Flag de visibilidad del total general en el pie del PDF.
+         */
+        'show_total_in_footer' => 'boolean',
         'margin_mm' => 'integer',
     ];
 

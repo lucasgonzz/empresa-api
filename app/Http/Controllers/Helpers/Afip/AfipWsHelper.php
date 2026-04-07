@@ -16,7 +16,7 @@ class AfipWsHelper {
         if ($cbte_tipo == 6 || $cbte_tipo == 8 || $cbte_tipo == 206) {
             return 'B';
         }
-        if ($cbte_tipo == 11 || $cbte_tipo == 211) {
+        if ($cbte_tipo == 11 || $cbte_tipo == 13 || $cbte_tipo == 211) {
             return 'C';
         }
         if ($cbte_tipo == 51) {
