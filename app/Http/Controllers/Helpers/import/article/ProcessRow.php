@@ -421,6 +421,23 @@ class ProcessRow {
 
         $this->log('articulo encontrado:');
 
+        /**
+         * Marcador especial devuelto por ArticleIndexCache cuando el provider_code
+         * existe en otro proveedor y la configuración impide actualizarlo.
+         * En este caso no se debe crear ni actualizar.
+         */
+        $provider_code_bloqueado_en_otro_proveedor = (
+            is_array($articulo_ya_creado)
+            && !empty($articulo_ya_creado['__provider_code_blocked_by_other_provider'])
+        );
+
+        if ($provider_code_bloqueado_en_otro_proveedor) {
+            $this->log('No hubo mach (bloqueado por provider_code existente en otro proveedor)');
+            $this->articles_repetidos++;
+            $this->sumar_durations();
+            return $this->observations;
+        }
+
         if ($articulo_ya_creado instanceof \App\Models\Article) {
 
             $this->log($articulo_ya_creado->name);
@@ -2277,8 +2294,10 @@ class ProcessRow {
             }
         }
 
-        // Comparar porcentajes
-        if ($discounts_percent_str) {
+        // Comparar porcentajes: si la columna está mapeada (no ignorada), siempre comparar aunque esté vacía.
+        // Celda vacía + old con valores → diff con new:[] → dispara el borrado del descuento %.
+        // Si la columna está ignorada se omite para no tocar datos existentes.
+        if (!ImportHelper::isIgnoredColumn('descuentos', $this->columns)) {
 
             if ($old_percents != $new_percents) {
                 $diffs[] = [
@@ -2291,8 +2310,9 @@ class ProcessRow {
             }
         }
 
-        // Comparar montos
-        if ($discounts_amount_str) {
+        // Comparar montos: misma lógica que porcentajes.
+        // Celda vacía + old con valores → diff → borra los montos existentes.
+        if (!ImportHelper::isIgnoredColumn('descuentos_montos', $this->columns)) {
 
             if ($old_amounts != $new_amounts) {
                 $diffs[] = [
@@ -2316,7 +2336,7 @@ class ProcessRow {
         $diffs = [];
 
 
-        // Si se ignoraron ambos columnas de recargos, se turna empty para que no modifique en la bbdd
+        // Si se ignoraron ambos columnas de recargos, se retorna empty para que no modifique en la bbdd
         if (
             ImportHelper::isIgnoredColumn('recargos', $this->columns)
             && ImportHelper::isIgnoredColumn('recargos_montos', $this->columns)
