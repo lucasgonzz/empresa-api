@@ -440,40 +440,84 @@ class ArticleIndexCache
             }
 
             /* 
-                Si se permiten repetidos y NO querés sincronizar por provider_code => modo crear
+                Si se permiten repetidos, NO querés sincronizar por provider_code => modo crear, y permitir codigos repetidos en multi proveedores = true
                 Entonces, siempre que se busque por provider_code, se retorna siempre null, para que si o si cree el articulo 
             */
-            if ($permitir_provider_code_repetido && !$actualizar_por_provider_code) {
-                Self::log('Retornando NULL porque: permitir_provider_code_repetido = false y actualizar_por_provider_code = false');
+            if (
+                $permitir_provider_code_repetido 
+                && !$actualizar_por_provider_code
+                && $permitir_provider_code_repetido_en_multi_providers
+            ) {
+                Self::log('Retornando NULL porque: permitir_provider_code_repetido = true y actualizar_por_provider_code = false');
                 return null;
             }
 
-            $article_ids = [];
+            /**
+             * IDs encontrados dentro del provider seleccionado en la importación.
+             * Se usa para decidir actualización normal.
+             */
+            $article_ids_same_provider = [];
+
+            /**
+             * IDs encontrados en otros providers (distintos al de la importación).
+             * Se usa para bloquear creación cuando no se permite actualizar otros providers.
+             */
+            $article_ids_other_providers = [];
 
             // Si hay provider_id, primero miramos en ese provider
             if (!is_null($provider_id) && isset($index['provider_codes'][(int)$provider_id][$provider_code])) {
-                Self::log('Buscando en los provider codes del provider_id de la importacion: '.$provider_id);
-                $article_ids = array_merge($article_ids, Arr::wrap($index['provider_codes'][(int)$provider_id][$provider_code]));
+                Self::log('Buscando en los provider_codes del provider_id: '.$provider_id);
+                $article_ids_same_provider = array_merge($article_ids_same_provider, Arr::wrap($index['provider_codes'][(int)$provider_id][$provider_code]));
             }
 
-            // ¿Incluimos otros proveedores?
-            if ($actualizar_articulos_de_otro_proveedor) {
-                Self::log('Buscando dentro de los otros proveedores');
-                foreach ($index['provider_codes'] as $p_id => $codes) {
+            // Siempre detectamos matches en otros proveedores para aplicar regla de bloqueo de creación.
+            foreach ($index['provider_codes'] as $p_id => $codes) {
 
-                    // Saletamos los articulos del provider_id, ya que ese ya se busco en el paso anterior
-                    if (!is_null($provider_id) && (int)$p_id === (int)$provider_id) {
-                        continue;
-                    }
+                // Salteamos provider actual; ese ya se evaluó arriba.
+                if (!is_null($provider_id) && (int)$p_id === (int)$provider_id) {
+                    continue;
+                }
 
-                    if (isset($codes[$provider_code])) {
-
-                        // Agregamos los articulos que tengan el provider_code y pertenecen a otro proveedor
-                        $article_ids = array_merge($article_ids, Arr::wrap($codes[$provider_code]));
-                    }
+                if (isset($codes[$provider_code])) {
+                    $article_ids_other_providers = array_merge($article_ids_other_providers, Arr::wrap($codes[$provider_code]));
                 }
             }
 
+            $article_ids_same_provider = array_values(array_unique($article_ids_same_provider));
+            $article_ids_other_providers = array_values(array_unique($article_ids_other_providers));
+
+            /**
+             * Regla de bloqueo:
+             * - Si no hay match en provider actual
+             * - Pero sí existe el provider_code en otro provider
+             * - Y NO se permite actualizar artículos de otro proveedor
+             * - Y NO se permiten codigos de proveedor repetidos en distintos proveedores
+             * => No se debe crear ni actualizar.
+             *
+             * Se devuelve un marcador explícito para que ProcessRow diferencie este caso de "no hubo match".
+             */
+            if (
+                empty($article_ids_same_provider)
+                && !empty($article_ids_other_providers)
+                && !$actualizar_articulos_de_otro_proveedor
+                && !$permitir_provider_code_repetido_en_multi_providers
+            ) {
+                Self::log('Bloqueado por provider_code existente en otro proveedor');
+
+                return [
+                    '__provider_code_blocked_by_other_provider' => true,
+                    'provider_code' => $provider_code,
+                    'provider_id' => $provider_id,
+                    'matched_other_provider_ids' => $article_ids_other_providers,
+                ];
+            }
+
+            $article_ids = $article_ids_same_provider;
+
+            // Solo si está habilitado, incorporamos los matches de otros providers para actualizar.
+            if ($actualizar_articulos_de_otro_proveedor) {
+                $article_ids = array_merge($article_ids, $article_ids_other_providers);
+            }
             $article_ids = array_values(array_unique($article_ids));
 
             if (!empty($article_ids)) {

@@ -534,7 +534,7 @@ class ProcessArticleChunk implements ShouldQueue
                 'article_import_result_id'  => $this->import_result->id,
                 'duration'                  => isset($row_observations['duration']) ? $row_observations['duration'] : 0,
                 'fila'                      => $row_observations['fila'],
-                'procesos'                  => json_encode($row_observations['procesos']),
+                'procesos'                  => isset($row_observations['procesos']) ? json_encode($row_observations['procesos']) : null,
             ];
         }
 
