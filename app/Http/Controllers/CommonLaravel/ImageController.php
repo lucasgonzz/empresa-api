@@ -105,11 +105,15 @@ class ImageController extends Controller
 
 
         if ($model_name == 'article') {
-            $model = Article::find($model_id);
-            ProductService::add_article_to_sync($model);
+            $article = Article::find($model_id);
 
-            $tn = new TiendaNubeProductImageService();
-            $tn->delete_image_from_article($model, $image);
+            if ($article) {
+                
+                ProductService::add_article_to_sync($article);
+
+                $tn = new TiendaNubeProductImageService();
+                $tn->delete_image_from_article($article, $image);
+            }
         }
 
         

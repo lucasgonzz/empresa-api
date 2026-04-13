@@ -1111,6 +1111,7 @@ class PerformanceHelper
                 $this->total_devolucion += $nota_de_credito->haber;
 
             } else if ($moneda_id == 2) {
+                // Aca tengo que dividir por la cotizacion
                 $this->total_devolucion_usd += $nota_de_credito->haber;
             }
 

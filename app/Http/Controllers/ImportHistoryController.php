@@ -13,6 +13,7 @@ class ImportHistoryController extends Controller
                                 ->where('model_name', $model_name)
                                 ->orderBy('id', 'DESC')
                                 ->with('chunks.article_import_result_observations')
+                                ->take(10)
                                 ->get();
 
         return response()->json(['models' => $models], 200);

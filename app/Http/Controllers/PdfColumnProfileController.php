@@ -60,6 +60,8 @@ class PdfColumnProfileController extends Controller
             'sheet_type_id' => $request->sheet_type_id,
             'is_afip_ticket' => (bool) $request->input('is_afip_ticket', false),
             'show_totals_on_each_page' => (bool) $request->input('show_totals_on_each_page', false),
+            'show_comissions' => (bool) $request->input('show_comissions', false),
+            'show_total_costs' => (bool) $request->input('show_total_costs', false),
             /**
              * Texto libre del pie de página; null si no se envía.
              */
@@ -116,8 +118,11 @@ class PdfColumnProfileController extends Controller
             'sheet_type_id',
             'is_afip_ticket',
             'show_totals_on_each_page',
+            'show_comissions',
+            'show_total_costs',
             'footer_text',
             'show_total_in_footer',
+            'use_current_date',
         ]);
         $model->update($fillable);
 
@@ -160,6 +165,8 @@ class PdfColumnProfileController extends Controller
             'sheet_type_id' => 'tipo de hoja',
             'is_afip_ticket' => 'perfil fiscal AFIP',
             'show_totals_on_each_page' => 'mostrar totales en cada hoja',
+            'show_comissions' => 'mostrar comisiones',
+            'show_total_costs' => 'mostrar total costos',
             'footer_text' => 'pie de página',
             'show_total_in_footer' => 'mostrar total en el pie',
             'pdf_column_options' => 'opciones de columnas',
@@ -191,6 +198,8 @@ class PdfColumnProfileController extends Controller
             'sheet_type_id' => ['nullable', 'integer', Rule::exists('sheet_types', 'id')],
             'is_afip_ticket' => ['sometimes', 'boolean'],
             'show_totals_on_each_page' => ['sometimes', 'boolean'],
+            'show_comissions' => ['sometimes', 'boolean'],
+            'show_total_costs' => ['sometimes', 'boolean'],
             'footer_text' => ['nullable', 'string', 'max:2000'],
             'show_total_in_footer' => ['sometimes', 'boolean'],
             'pdf_column_options' => ['required', 'array', 'min:1'],
@@ -230,6 +239,8 @@ class PdfColumnProfileController extends Controller
             'sheet_type_id' => ['sometimes', 'nullable', 'integer', Rule::exists('sheet_types', 'id')],
             'is_afip_ticket' => ['sometimes', 'boolean'],
             'show_totals_on_each_page' => ['sometimes', 'boolean'],
+            'show_comissions' => ['sometimes', 'boolean'],
+            'show_total_costs' => ['sometimes', 'boolean'],
             'footer_text' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'show_total_in_footer' => ['sometimes', 'boolean'],
             'pdf_column_options' => ['sometimes', 'array'],

@@ -14,19 +14,39 @@ class Numbers {
         return round($num, 2, PHP_ROUND_HALF_UP);
     }
 
+	/**
+	 * Formatea un precio para mostrar en pantalla.
+	 * 
+	 * Para moneda_id = 2 (USD) siempre se muestran dos decimales,
+	 * sin importar si los centavos son '00' o si el precio no tiene punto decimal.
+	 * Para el resto de monedas, los decimales se omiten cuando son '00'.
+	 * 
+	 * @param string|float $price      Precio a formatear
+	 * @param bool         $con_signo  Si es true y no hay moneda_id, antepone '$'
+	 * @param int|null     $moneda_id  1 = ARS, 2 = USD
+	 * @return string Precio formateado
+	 */
 	static function price($price, $con_signo = false, $moneda_id = null) {
+		/* Verificar si el precio ya trae separador decimal */
 		$pos = strpos($price, '.');
 		if ($pos != false) {
+			/* Extraer parte entera y centavos */
 			$centavos = explode('.', $price)[1];
 			$new_price = explode('.', $price)[0];
-			if ($centavos != '00') {
+			/* Mostrar decimales si los centavos no son '00' o si es moneda USD */
+			if ($centavos != '00' || $moneda_id == 2) {
 				$new_price += ".$centavos";
 				$result = number_format($price, 2, ',', '.');
 			} else {
 				$result = number_format($new_price, 0, '', '.');			
 			}
 		} else {
-			$result = number_format($price, 0, '', '.');
+			/* Si es USD, forzar siempre dos decimales aunque el precio sea entero */
+			if ($moneda_id == 2) {
+				$result = number_format($price, 2, ',', '.');
+			} else {
+				$result = number_format($price, 0, '', '.');
+			}
 		}
 
         if ($moneda_id) {

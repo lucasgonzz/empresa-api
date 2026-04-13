@@ -52,9 +52,9 @@ class CheckInventoryLinkages extends Command
         // if (config('app.APP_ENV') == 'production') {
         //     $company_name = 'Fenix';
         // } 
-        $company_name = 'Fenix';
+        $user_id = 2;
 
-        $user = User::where('company_name', $company_name)
+        $user = User::where('id', $user_id)
                         ->first();
 
         if (is_null($user)) {

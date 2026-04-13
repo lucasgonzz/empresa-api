@@ -66,7 +66,10 @@ class TicketInfoHelper
         /**
          * Se restringe a tickets de la venta para evitar cruces inválidos.
          */
-        return $sale->afip_tickets()->where('id', $afip_ticket_id)->first();
+        return $sale->afip_tickets()
+                    ->where('id', $afip_ticket_id)
+                    ->withAll()
+                    ->first();
     }
 
     /**

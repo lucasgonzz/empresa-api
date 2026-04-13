@@ -182,6 +182,8 @@ class SaleController extends Controller
                 'iva_aplicado'                      => !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1,
                 'descuento'                         => round($request->descuento, 2, PHP_ROUND_HALF_UP),
                 'user_id'                           => $this->userId(),
+                // Array de descripciones del cálculo del precio final, serializado como JSON desde el frontend
+                'price_description'                 => $request->price_description,
             ]);
 
             if (is_null($model->price_type_id)) {
@@ -244,6 +246,7 @@ class SaleController extends Controller
 
         DB::beginTransaction();
         
+        Log::info('Se va a actualizar venta id: '.$id);
         try {
 
             $model = Sale::where('id', $id)
@@ -327,6 +330,9 @@ class SaleController extends Controller
              * ya que antes no se había descontado stock para esta venta.
              */
             $se_activando_discount_stock = !$old_discount_stock && $model->discount_stock;
+
+            // Array de descripciones del cálculo del precio final, serializado como JSON desde el frontend
+            $model->price_description                   = $request->price_description;
 
             // $model->valor_dolar                         = $request->valor_dolar;
             

@@ -57,8 +57,8 @@ class InitExcelImport
             return [
                 'hubo_un_error' => true,
                 'message' => 'Ya hay una importación en curso. Esperá a que termine para iniciar una nueva.',
-                'info_to_show' => [],
-                'functions_to_execute' => [],
+                // 'info_to_show' => [],
+                // 'functions_to_execute' => [],
             ];
         }
 

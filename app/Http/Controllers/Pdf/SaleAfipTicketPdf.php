@@ -757,6 +757,7 @@ class SaleAfipTicketPdf extends fpdf {
 
         $p = Numbers::price($this->afip_helper->subTotal($article), true);
         if ($this->afip_ticket->cbte_letra == 'E') {
+        	dd('asd');
         	$p = Numbers::price($this->afip_helper->subTotal($article), true, $this->sale->moneda_id);
         }
 

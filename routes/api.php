@@ -74,6 +74,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Inventory performance
     Route::get('inventory-performance', 'InventoryPerformanceController@index');
 
+    // Inputs Size
+    Route::resource('inputs-size', 'InputsSizeController');
+
     // Afip Tipo Comprobantes
     Route::get('afip-tipo-comprobante', 'AfipTipoComprobanteController@index');
 

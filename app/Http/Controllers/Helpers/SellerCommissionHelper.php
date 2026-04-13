@@ -20,7 +20,7 @@ class SellerCommissionHelper {
         }
         $seller_commissions = SellerCommission::where('sale_id', $current_acount->sale_id)
                                                 ->get();
-        Log::info($seller_commissions);
+        // Log::info($seller_commissions);
         foreach ($seller_commissions as $seller_commission) {
             // Log::info('seller_commission id: '.$seller_commission->id);
             // Log::info('seller_commission status: '.$seller_commission->status);

@@ -33,6 +33,8 @@ class UserSeeder extends Seeder
         $ct = new Controller();
         $models = [
             [
+                'default_api_version'           => 'http://empresa.local:8080',
+                'inputs_size_id'                => 1,
                 'id'                            => config('app.USER_ID'),
                 'name'                          => 'Lucas',
                 'use_archivos_de_intercambio'   => 0,
@@ -89,7 +91,6 @@ class UserSeeder extends Seeder
             $models[0]['iva_included'] = 1;
             $models[0]['iva_condition_id'] = 2;
             $models[0]['doc_number'] = '34702455';
-            $models[0]['default_version'] = 'https://renacer.comerciocity.com';
 
             $models[0]['extencions'] = [
 
@@ -112,8 +113,6 @@ class UserSeeder extends Seeder
             $models[0]['doc_number'] = '42385504';
             $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
             
-            // $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
-            $models[0]['default_version'] = null;
 
             $models[0]['extencions'] = [
 
@@ -138,8 +137,6 @@ class UserSeeder extends Seeder
             $models[0]['doc_number'] = '42385504';
             $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
             
-            // $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
-            $models[0]['default_version'] = null;
 
             $models[0]['extencions'] = [
 
@@ -166,7 +163,6 @@ class UserSeeder extends Seeder
             $models[0]['iva_condition_id'] = 1;
             $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
             
-            $models[0]['default_version'] = null;
 
             $models[0]['extencions'] = [
 
@@ -194,8 +190,6 @@ class UserSeeder extends Seeder
             $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
 
             
-            // $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
-            $models[0]['default_version'] = null;
 
             $models[0]['extencions'] = [
 
@@ -226,8 +220,6 @@ class UserSeeder extends Seeder
             $models[0]['comparar_precios_de_proveedores_en_excel'] = 1;
 
             
-            // $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
-            $models[0]['default_version'] = null;
 
             $models[0]['extencions'] = [
 
@@ -258,8 +250,6 @@ class UserSeeder extends Seeder
             $models[0]['doc_number'] = '1234';
             $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
             
-            // $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
-            $models[0]['default_version'] = null;
 
             $models[0]['extencions'] = [
 
@@ -284,8 +274,6 @@ class UserSeeder extends Seeder
             $models[0]['company_name'] = 'Autopartes Boxes';
             $models[0]['iva_included'] = 0;
             $models[0]['iva_condition_id'] = 1;
-            // $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
-            $models[0]['default_version'] = null;
 
             $models[0]['extencions'] = [
 
@@ -309,7 +297,6 @@ class UserSeeder extends Seeder
             $models[0]['doc_number'] = '34505584';
             $models[0]['iva_included'] = 0;
             $models[0]['iva_condition_id'] = 2;
-            $models[0]['default_version'] = 'https://electro-lacarra.comerciocity.com';
 
             $models[0]['extencions'] = [
 
@@ -530,7 +517,6 @@ class UserSeeder extends Seeder
 
             $models[0]['comision_funcion'] = 'truvari';
             $models[0]['venta_terminada_comision_funcion'] = 'truvari';
-            $models[0]['default_version'] = 'https://truvari.comerciocity.com';
             $models[0]['google_custom_search_api_key'] = 'AIzaSyDSOX6FoW1AWN1w7ArrV_OYrrlDxMGIhuE';
             
             $models[0]['default_article_iva_id'] = 6;
@@ -681,6 +667,7 @@ class UserSeeder extends Seeder
         foreach ($models as $model) {
             $user = User::create([
                 'id'                            => isset($model['id']) ? $model['id'] : null, 
+                'inputs_size_id'                => isset($model['inputs_size_id']) ? $model['inputs_size_id'] : 1, 
                 'api_url'                       => 'http://empresa.local:8000',
                 'name'                          => $model['name'], 
                 'phone'                         => $model['phone'], 

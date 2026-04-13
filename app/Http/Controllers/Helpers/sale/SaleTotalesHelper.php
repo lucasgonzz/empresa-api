@@ -16,7 +16,7 @@ class SaleTotalesHelper {
 
 				if (!is_null($article->pivot->cost)) {
 
-					$total += $article->pivot->cost * $article->pivot->amount;		
+					$total += (float)$article->pivot->cost * (float)$article->pivot->amount;		
 				}
 			}
 
