@@ -104,6 +104,9 @@ class UserController extends Controller
         $model->header_articulos_pdf            = $request->header_articulos_pdf;
         $model->default_version                 = $request->default_version;
         $model->estable_version                 = $request->estable_version;
+        $model->api_url                         = $request->default_version
+                                                    ? 'api-' . $request->default_version
+                                                    : null;
 
         $model->text_omitir_cc                  = $request->text_omitir_cc;
         $model->percentage_gain                  = $request->percentage_gain;
@@ -126,6 +129,7 @@ class UserController extends Controller
         $model->all_addresses_in_sale_pdf       = $request->all_addresses_in_sale_pdf;
         $model->mostrar_vendedor_en_venta_pdf   = $request->mostrar_vendedor_en_venta_pdf;
         $model->pdf_image_size                  = $request->pdf_image_size;
+        $model->inputs_size_id                  = $request->inputs_size_id;
         /**
          * Permite `provider_code` repetido en artículos.
          * Esta configuración se usa desde el front solo por el owner, por eso se persiste en el auth_user.

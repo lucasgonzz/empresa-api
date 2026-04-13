@@ -88,12 +88,24 @@ class CurrentAcountController extends Controller
 
         if (!$pago->is_provisorio) {
 
+            // Calcular el saldo que genera este pago y persistirlo
+            // Se resta el haber al saldo previo de la cuenta corriente
             $pago->saldo = CurrentAcountHelper::getSaldo($request->credit_account_id, $pago) - (float)$request->haber;
+            $pago->save();
 
-            $pago_helper = new CurrentAcountPagoHelper($request->credit_account_id, $request->model_name, $request->model_id, $pago);
-            $pago_helper->init();
-            
-            CurrentAcountHelper::check_saldos_y_pagos($request->credit_account_id);
+            if (!$request->current_date) {
+                // Pago con fecha pasada: el recálculo completo ya se encarga
+                // de recalcular saldos e imputar todos los pagos (incluyendo este)
+                Log::info('Chequeando cuenta corriente entera');
+                CurrentAcountHelper::check_saldos_y_pagos($request->credit_account_id);
+            } else {
+                // Pago con fecha actual: solo imputar el nuevo pago a los débitos pendientes
+                // No hace falta recalcular toda la cuenta corriente
+                Log::info('NO se chequeo cuenta corriente entera');
+                $pago_helper = new CurrentAcountPagoHelper($request->credit_account_id, $request->model_name, $request->model_id, $pago);
+                $pago_helper->init();
+            }
+
 
             CurrentAcountCuotaHelper::pagar_cuota($pago, $request);
         }

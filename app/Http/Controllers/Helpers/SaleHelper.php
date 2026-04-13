@@ -909,7 +909,31 @@ class SaleHelper extends Controller {
                                         ->where('moneda_id', $sale->moneda_id)
                                         ->first();
 
-            CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
+            if (!is_null($credit_account)) {
+                $sale_current_acount = CurrentAcount::where('sale_id', $sale->id)
+                                                    ->where('credit_account_id', $credit_account->id)
+                                                    ->whereNull('haber')
+                                                    ->first();
+
+                $has_movimientos_posteriores = !is_null($sale_current_acount)
+                    && CurrentAcount::where('credit_account_id', $credit_account->id)
+                                    ->where('id', '!=', $sale_current_acount->id)
+                                    ->where(function ($q) use ($sale_current_acount) {
+                                        $q->where('created_at', '>', $sale_current_acount->created_at)
+                                          ->orWhere(function ($q2) use ($sale_current_acount) {
+                                              $q2->where('created_at', '=', $sale_current_acount->created_at)
+                                                 ->where('id', '>', $sale_current_acount->id);
+                                          });
+                                    })
+                                    ->exists();
+
+                if ($has_movimientos_posteriores) {
+                    Log::info('Recalculando saldos');
+                    CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
+                } else {
+                    Log::info('No se van a recalcular saldos');
+                }
+            }
         }
 
     }

@@ -32,10 +32,16 @@ class PdfColumnProfile extends Model
         'is_default' => 'boolean',
         'is_afip_ticket' => 'boolean',
         'show_totals_on_each_page' => 'boolean',
+        'show_comissions' => 'boolean',
+        'show_total_costs' => 'boolean',
         /**
          * Flag de visibilidad del total general en el pie del PDF.
          */
         'show_total_in_footer' => 'boolean',
+        /**
+         * Flag para imprimir la fecha actual en lugar de la fecha del comprobante.
+         */
+        'use_current_date' => 'boolean',
         'margin_mm' => 'integer',
     ];
 

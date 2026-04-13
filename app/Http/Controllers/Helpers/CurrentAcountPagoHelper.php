@@ -24,36 +24,83 @@ class CurrentAcountPagoHelper {
     public $sin_pagar;
     public $sin_pagar_index;
 
-    function __construct($credit_account_id, $model_name, $model_id, $pago) {
+    /** Instancia de CreditAccount asociada a este procesamiento */
+    public $credit_account;
+
+    /** Monto pendiente del débito actual (debe - pagandose) */
+    public $debe;
+
+    /**
+     * Colección de débitos pendientes cargada en memoria al inicio.
+     * Se consume con shift() para evitar un query por iteración en setSinPagar().
+     *
+     * @var \Illuminate\Support\Collection
+     */
+    public $debitos_pendientes;
+
+    /**
+     * Constructor del helper de imputación de pagos.
+     *
+     * @param int $credit_account_id  ID de la cuenta corriente
+     * @param string $model_name      Tipo de modelo: 'client' o 'provider'
+     * @param int $model_id           ID del cliente o proveedor
+     * @param CurrentAcount $pago     Movimiento de tipo haber (pago) recién creado
+     * @param CreditAccount|null $credit_account  Instancia ya cargada para evitar query extra
+     */
+    function __construct($credit_account_id, $model_name, $model_id, $pago, $credit_account = null) {
         Log::info('-------------');
         Log::info('procesando '.$pago->detalle);
         $this->model_name = $model_name;
         $this->model_id = $model_id;
 
-        $this->credit_account = CreditAccount::find($credit_account_id);
+        // Reusar la instancia ya cargada si se pasó como parámetro (evita query extra en checkPagos)
+        $this->credit_account = $credit_account ?? CreditAccount::find($credit_account_id);
 
         $this->pago = $pago;
         $this->fondos = $pago->haber;
         $this->sin_pagar = null;
         $this->sin_pagar_index = 0;
+
+        // Cargar todos los débitos pendientes de una sola vez en memoria
+        // para evitar hacer 1 query por cada débito procesado en setSinPagar()
+        $this->debitos_pendientes = CurrentAcount::where('credit_account_id', $this->credit_account->id)
+                                                 ->whereIn('status', ['sin_pagar', 'pagandose'])
+                                                 ->orderBy('created_at', 'ASC')
+                                                 ->get();
+
         $this->setSinPagar();
     }
 
+    /**
+     * Determina el próximo débito a procesar.
+     * Si el pago tiene to_pay_id y es la primera llamada, usa ese débito específico.
+     * En los demás casos consume el primer débito pendiente de la colección en memoria.
+     */
     function setSinPagar() {
 
         $this->sin_pagar_index++;
 
         if (!is_null($this->pago->to_pay_id) && is_null($this->sin_pagar)) {
 
-            $this->sin_pagar = CurrentAcount::find($this->pago->to_pay_id);
+            // Buscar el débito dirigido dentro de la colección en memoria
+            $found = $this->debitos_pendientes->firstWhere('id', $this->pago->to_pay_id);
+
+            if ($found) {
+                // Removerlo de la colección para no procesarlo de nuevo en las iteraciones siguientes
+                $this->debitos_pendientes = $this->debitos_pendientes
+                                                ->reject(function ($d) { return $d->id == $this->pago->to_pay_id; })
+                                                ->values();
+                $this->sin_pagar = $found;
+            } else {
+                // No estaba en los pendientes (puede ser un débito ya pagado o de otro estado)
+                $this->sin_pagar = CurrentAcount::find($this->pago->to_pay_id);
+            }
 
             Log::info('con to_pay_id '.$this->pago->to_pay_id);
         } else {
 
-            $this->sin_pagar = CurrentAcount::where('credit_account_id', $this->credit_account->id)
-                                            ->whereIn('status', ['sin_pagar', 'pagandose'])
-                                            ->orderBy('created_at', 'ASC')
-                                            ->first();
+            // Tomar el siguiente débito pendiente de la colección en memoria (FIFO)
+            $this->sin_pagar = $this->debitos_pendientes->shift();
 
         }
 

@@ -405,11 +405,11 @@ class ArticleIndexCache
 
         $article_id = null;
 
-        if (isset($index['provider_codes'][$provider_id][$data['provider_code']])) {
+        // if (!empty($data['provider_code']) && isset($index['provider_codes'][$provider_id][$data['provider_code']])) {
             
-            Self::log('provider_code del provider_id: '.$provider_id);
-            Self::log($index['provider_codes'][$provider_id][$data['provider_code']]);
-        }
+        //     Self::log('provider_code del provider_id: '.$provider_id);
+        //     Self::log($index['provider_codes'][$provider_id][$data['provider_code']]);
+        // }
 
         // 1) ID
         if (!empty($data['id']) && isset($index['ids'][(string)$data['id']])) {
@@ -432,13 +432,13 @@ class ArticleIndexCache
         // 4) provider_code
         elseif (!empty($data['provider_code'])) {
 
-            Self::log('Buscando por provider_code '.$data['provider_code']);
 
             $provider_code = trim((string)$data['provider_code']);
             if ($provider_code === '') {
                 return null;
             }
 
+            Self::log('Buscando por provider_code '.$data['provider_code']);
             /* 
                 Si se permiten repetidos, NO querés sincronizar por provider_code => modo crear, y permitir codigos repetidos en multi proveedores = true
                 Entonces, siempre que se busque por provider_code, se retorna siempre null, para que si o si cree el articulo 
@@ -485,6 +485,19 @@ class ArticleIndexCache
 
             $article_ids_same_provider = array_values(array_unique($article_ids_same_provider));
             $article_ids_other_providers = array_values(array_unique($article_ids_other_providers));
+
+            /*
+             * Cuando no hay proveedor seleccionado (provider_id = 0 o null),
+             * la distinción "mismo proveedor / otro proveedor" no aplica.
+             * Todos los matches se tratan como "mismo proveedor" para que el
+             * artículo se encuentre y se pueda actualizar normalmente.
+             */
+            if (is_null($provider_id) || (int)$provider_id === 0) {
+                $article_ids_same_provider = array_values(array_unique(
+                    array_merge($article_ids_same_provider, $article_ids_other_providers)
+                ));
+                $article_ids_other_providers = [];
+            }
 
             /**
              * Regla de bloqueo:

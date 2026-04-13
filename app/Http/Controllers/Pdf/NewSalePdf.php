@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Pdf;
 use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Pdf\Afip\TicketInfoHelper;
 use App\Models\Address;
@@ -48,6 +49,18 @@ class NewSalePdf extends fpdf
          */
         $this->show_totals_on_each_page = $this->pdf_column_profile ? (bool) $this->pdf_column_profile->show_totals_on_each_page : false;
         /**
+         * Flag para mostrar tabla de comisiones en bloque de footer.
+         */
+        $this->show_comissions = $this->pdf_column_profile
+            ? $this->normalize_boolean($this->pdf_column_profile->show_comissions, false)
+            : false;
+        /**
+         * Flag para mostrar total costos en bloque de footer.
+         */
+        $this->show_total_costs = $this->pdf_column_profile
+            ? $this->normalize_boolean($this->pdf_column_profile->show_total_costs, false)
+            : false;
+        /**
          * Flag para controlar visibilidad del total general en el pie del PDF.
          * Default true para mantener comportamiento en perfiles legacy.
          */
@@ -59,6 +72,14 @@ class NewSalePdf extends fpdf
          * Sigue la misma regla de visibilidad que show_totals_on_each_page.
          */
         $this->footer_text = $this->pdf_column_profile ? ($this->pdf_column_profile->footer_text ?: '') : '';
+        /**
+         * Cuando es true, el header imprime la fecha actual del servidor
+         * en lugar de la fecha en que se creó el comprobante.
+         * Default false para mantener comportamiento legacy.
+         */
+        $this->use_current_date = $this->pdf_column_profile
+            ? (bool) $this->pdf_column_profile->use_current_date
+            : false;
 
         /**
          * Comprobante AFIP solicitado para impresión fiscal.
@@ -133,7 +154,6 @@ class NewSalePdf extends fpdf
     {
         $data = [
             'num' => $this->sale->num,
-            'date' => $this->sale->created_at,
             'title' => null,
             // 'fields' => $this->getFields(),
             'address' => $this->get_address(),
@@ -141,15 +161,35 @@ class NewSalePdf extends fpdf
             'table_margen' => 2,
         ];
 
+        /**
+         * Fecha a imprimir en el header: fecha actual si use_current_date está activo,
+         * o la fecha del comprobante (Sale o AfipTicket) en caso contrario.
+         */
+        $print_date = $this->use_current_date ? now() : null;
+
         if (!$this->is_afip_ticket) {
             $data['model_info']     = $this->sale->client;
             $data['model_props']    = $this->getModelProps();
             $data['fields']         = $this->getFields();
             $data['titulo']         = $this->user->company_name;
+            $data['date']           = $print_date ?? $this->sale->created_at;
         } else if ($this->afip_ticket) {
             $data['title']          = $this->afip_ticket->cbte_letra;
-            $data['num']            = $this->afip_ticket->cbte_numero;
+            $data['num']            = $this->getPuntoVenta() .' - '. $this->getNumCbte();
             $data['titulo']         = $this->afip_ticket->afip_information->razon_social;
+            $data['date']           = $print_date ?? $this->afip_ticket->created_at;
+            $data['afip_ticket']    = $this->afip_ticket;
+        }
+
+        
+        if (
+            UserHelper::hasExtencion('vendedor_en_sale_pdf', $this->user)
+            && $this->sale->employee
+        ) {
+            
+            $data['extra_info'] = [
+                'Vendedor'  => $this->sale->employee->name
+            ];
         }
         
         PdfHelper::header($this, $data);
@@ -164,15 +204,28 @@ class NewSalePdf extends fpdf
 
     }
 
-    // function getNumCbte() {
-    //     $letras_faltantes = 8 - strlen($this->afip_ticket->cbte_numero);
-    //     $cbte_numero = '';
-    //     for ($i=0; $i < $letras_faltantes; $i++) { 
-    //         $cbte_numero .= '0'; 
-    //     }
-    //     $cbte_numero  .= $this->afip_ticket->cbte_numero;
-    //     return $cbte_numero;
-    // }
+    
+
+
+    function getPuntoVenta() {
+        $letras_faltantes = 5 - strlen($this->afip_ticket->punto_venta);
+        $punto_venta = '';
+        for ($i=0; $i < $letras_faltantes; $i++) { 
+            $punto_venta .= '0'; 
+        }
+        $punto_venta  .= $this->afip_ticket->punto_venta;
+        return $punto_venta;
+    }
+
+    function getNumCbte() {
+        $letras_faltantes = 8 - strlen($this->afip_ticket->cbte_numero);
+        $cbte_numero = '';
+        for ($i=0; $i < $letras_faltantes; $i++) { 
+            $cbte_numero .= '0'; 
+        }
+        $cbte_numero  .= $this->afip_ticket->cbte_numero;
+        return $cbte_numero;
+    }
 
     /**
      * Footer con total general y pie de página opcional.
@@ -193,6 +246,7 @@ class NewSalePdf extends fpdf
                 $this->SetFont('Arial', 'B', 12);
                 $this->Cell(200, 10, 'Total: '.Numbers::price($this->sale->total, true, $this->sale->moneda_id), $this->b, 1, 'R');
             }
+            $this->print_optional_footer_extras();
             $this->print_footer_text_block();
         }
 
@@ -207,6 +261,7 @@ class NewSalePdf extends fpdf
             if ($this->should_print_total_in_footer()) {
                 $this->ticket_info_helper->print_iva_and_totals($this, $this->sale);
             }
+            $this->print_optional_footer_extras();
             $this->print_footer_text_block();
             $this->ticket_info_helper->print_qr_and_arca_footer($this);
             $this->ticket_info_helper->print_fiscal_footer($this, $this->PageNo());
@@ -517,12 +572,15 @@ class NewSalePdf extends fpdf
          */
         if ($this->show_totals_on_each_page) {
 
-            if ($this->afip_ticket) {
-                return 210;
+            $base_limit_y = $this->afip_ticket ? 210 : 260;
+            /**
+             * Reserva extra cuando el perfil agrega comisiones/costos y/o texto libre
+             * en cada pie para evitar superposición con filas de ítems.
+             */
+            $extra_reserved_height = $this->estimate_optional_footer_extras_height()
+                + $this->estimate_footer_text_height();
 
-            } else {
-                return 260;
-            }
+            return max(120, $base_limit_y - $extra_reserved_height);
         }
 
         /**
@@ -531,6 +589,68 @@ class NewSalePdf extends fpdf
          */
         return 285;
 
+    }
+
+    /**
+     * Estima altura dinámica del bloque de texto libre del footer.
+     *
+     * @return int
+     */
+    private function estimate_footer_text_height(): int
+    {
+        if (! $this->footer_text) {
+            return 0;
+        }
+
+        /**
+         * Replica spacing de print_footer_text_block():
+         * +1 en no fiscal y 5 por cada línea de MultiCell.
+         */
+        $spacing = $this->afip_ticket ? 0 : 1;
+        $lines = $this->NbLines(200, (string) $this->footer_text);
+
+        return $spacing + (max(1, $lines) * 5);
+    }
+
+    /**
+     * Estima altura adicional consumida por comisiones/costos en el footer.
+     *
+     * @return int
+     */
+    private function estimate_optional_footer_extras_height(): int
+    {
+        $height = 0;
+
+        if ($this->show_comissions && count($this->sale->seller_commissions) > 0) {
+            /**
+             * Tabla de comisiones:
+             * - header "Comisiones" = 5
+             * - cada comisión = 5
+             * - separación final = 2
+             */
+            $height += 5 + (count($this->sale->seller_commissions) * 5) + 2;
+        }
+
+        if ($this->show_total_costs) {
+            $height += 7;
+        }
+
+        return $height;
+    }
+
+    /**
+     * Límite Y para decidir salto en última página según altura estimada del pie final.
+     *
+     * @param bool $with_total_block true si se imprimirá total/IVA en el pie final.
+     * @return int
+     */
+    private function get_last_page_footer_break_limit_y(bool $with_total_block): int
+    {
+        $base_limit_y = $with_total_block ? 265 : 275;
+        $extra_reserved_height = $this->estimate_optional_footer_extras_height()
+            + $this->estimate_footer_text_height();
+
+        return max(120, $base_limit_y - $extra_reserved_height);
     }
 
     /**
@@ -681,6 +801,62 @@ class NewSalePdf extends fpdf
     }
 
     /**
+     * Imprime bloque de comisiones de la venta en el footer cuando está habilitado.
+     *
+     * @return void
+     */
+    private function print_commissions_block(): void
+    {
+        if (! $this->show_comissions || count($this->sale->seller_commissions) < 1) {
+            return;
+        }
+
+        $this->x = $this->start_x;
+        $this->SetFont('Arial', '', 9);
+        $this->Cell(65, 5, 'Comisiones: ', 1, 1, 'L');
+        foreach ($this->sale->seller_commissions as $commission) {
+            $this->x = $this->start_x;
+            $this->Cell(40, 5, $commission->seller->name.' '.$commission->percentage.'%', 1, 0, 'L');
+            $this->Cell(25, 5, '$'.Numbers::price($commission->debe), 1, 1, 'L');
+        }
+        $this->y += 2;
+    }
+
+    /**
+     * Imprime total de costos en el footer cuando está habilitado.
+     *
+     * @return void
+     */
+    private function print_total_costs_block(): void
+    {
+        if (! $this->show_total_costs) {
+            return;
+        }
+
+        $this->x = $this->start_x;
+        $this->SetFont('Arial', 'B', 12);
+        $this->Cell(
+            100,
+            7,
+            'Costos: $'.Numbers::price(SaleHelper::getTotalCostSale($this->sale)),
+            $this->b,
+            1,
+            'L'
+        );
+    }
+
+    /**
+     * Agrupa bloques opcionales del footer para reutilizar en todos los escenarios.
+     *
+     * @return void
+     */
+    private function print_optional_footer_extras(): void
+    {
+        $this->print_commissions_block();
+        $this->print_total_costs_block();
+    }
+
+    /**
      * Acorta texto al ancho de celda usando puntos suspensivos si es necesario.
      */
     private function truncate_text_to_width($text, $width)
@@ -790,7 +966,7 @@ class NewSalePdf extends fpdf
             /**
              * Reserva espacio y genera salto de página si no entra el bloque final.
              */
-            if ($this->y >= 275) {
+            if ($this->y >= $this->get_last_page_footer_break_limit_y(false)) {
                 $this->AddPage();
             }
             /**
@@ -798,6 +974,7 @@ class NewSalePdf extends fpdf
              */
             if (! $this->is_afip_ticket) {
                 $this->y += 5;
+                $this->print_optional_footer_extras();
                 $this->print_footer_text_block();
                 return;
             }
@@ -805,6 +982,7 @@ class NewSalePdf extends fpdf
              * En perfil fiscal, se mantiene QR/pie fiscal aunque se oculten totales.
              */
             if ($this->ticket_info_helper && $this->ticket_info_helper->has_afip_context()) {
+                $this->print_optional_footer_extras();
                 $this->print_footer_text_block();
                 $this->ticket_info_helper->print_qr_and_arca_footer($this);
                 $this->ticket_info_helper->print_fiscal_footer($this, $this->PageNo());
@@ -815,7 +993,7 @@ class NewSalePdf extends fpdf
         /**
          * Reserva espacio y genera salto de página si no entra el bloque final.
          */
-        if ($this->y >= 265) {
+        if ($this->y >= $this->get_last_page_footer_break_limit_y(true)) {
             $this->AddPage();
         }
 
@@ -831,6 +1009,7 @@ class NewSalePdf extends fpdf
             $this->x = $this->start_x;
             $this->SetFont('Arial', 'B', 12);
             $this->Cell(200, 10, 'Total: '.Numbers::price($this->sale->total, true, $this->sale->moneda_id), $this->b, 1, 'R');
+            $this->print_optional_footer_extras();
             /**
              * Texto de pie de página debajo del total en la última hoja.
              */
@@ -848,6 +1027,7 @@ class NewSalePdf extends fpdf
             $this->descuentos_y_recargos();
             
             $this->ticket_info_helper->print_iva_and_totals($this, $this->sale);
+            $this->print_optional_footer_extras();
             $this->print_footer_text_block();
             $this->ticket_info_helper->print_qr_and_arca_footer($this);
             $this->ticket_info_helper->print_fiscal_footer($this, $this->PageNo());

@@ -19,6 +19,7 @@ use App\Http\Controllers\Helpers\RecipeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\article\ResetStockHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
+use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Jobs\ProcessCheckInventoryLinkages;
 use App\Jobs\ProcessCheckSaldos;
@@ -75,6 +76,19 @@ class HelperController extends Controller
 
     function callMethod($method, $param = null, $param_2 = null) {
         $this->{$method}($param, $param_2);
+    }
+
+    function sales_costos_2r() {
+        $sales = Sale::orderBy('id', 'DESC')
+                        ->get();
+
+        foreach ($sales as $sale) {
+            
+            SaleTotalesHelper::set_total_cost($sale);
+
+            echo 'Listo venta '.$sale->id. ' <br>';
+        }
+        echo 'termino';
     }
 
     function saldos_clintes() {

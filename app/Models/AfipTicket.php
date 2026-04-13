@@ -15,6 +15,10 @@ class AfipTicket extends Model
         'iva_detalle_enviado_json' => 'array',
     ];
 
+    function scopeWithAll($q) {
+        $q->with('afip_information', 'afip_tipo_comprobante');
+    }
+
     // Venta a la que pertenece la factura
     function sale() {
         return $this->belongsTo(Sale::class);

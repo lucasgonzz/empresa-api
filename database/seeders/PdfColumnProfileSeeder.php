@@ -2,7 +2,7 @@
 
 namespace Database\Seeders;
 
-use App\Models\PdfColumnOption;
+use App\Http\Controllers\Helpers\Seeders\PdfColumnProfileSeederHelper;
 use App\Models\PdfColumnProfile;
 use App\Models\SheetType;
 use Illuminate\Database\Seeder;
@@ -80,49 +80,11 @@ class PdfColumnProfileSeeder extends Seeder
                 ]
             );
 
-            /**
-             * Opciones visibles por defecto para el perfil actual.
-             */
-            $visible_option_names = $model['options'];
-
-            /**
-             * Se cargan TODAS las opciones del modelo para que el usuario pueda
-             * activar luego desde Vue las que inicialmente queden ocultas.
-             */
-            $options = PdfColumnOption::where('model_name', $model['model_name'])
-                                    ->orderBy('order')
-                                    ->get();
-
-            $sync = [];
-            $columns = [];
-            foreach ($options as $index => $option) {
-                /**
-                 * Solo quedan visibles por defecto los names definidos en `options`.
-                 */
-                $is_visible = in_array($option->name, $visible_option_names, true);
-
-                $sync[$option->id] = [
-                    'visible'      => $is_visible,
-                    'order'        => $index,
-                    'width'        => (int) $option->default_width,
-                    'wrap_content' => false,
-                ];
-
-                $columns[] = [
-                    'option_id'      => $option->id,
-                    'name'           => $option->name,
-                    'label'          => $option->label,
-                    'value_resolver' => $option->value_resolver,
-                    'visible'        => $is_visible,
-                    'order'          => $index,
-                    'width'          => (int) $option->default_width,
-                    'wrap_content'   => false,
-                ];
-            }
-
-            $profile->pdf_column_options()->sync($sync);
-            $profile->columns = $columns;
-            $profile->save();
+            PdfColumnProfileSeederHelper::assign_profile_options(
+                $profile,
+                $model['model_name'],
+                $model['options']
+            );
         }
     }
 }

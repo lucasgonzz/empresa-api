@@ -35,7 +35,7 @@ class PdfHelper {
 		Self::commerceInfo($instance, $data, $alto_imagen);
 		
 
-		Self::commerceInfoLine($instance, $alto_imagen);
+		$y_final_commerce_line = Self::commerceInfoLine($instance, $alto_imagen);
 
 
 		Self::extra_info($instance, $data);
@@ -62,6 +62,10 @@ class PdfHelper {
 		if (isset($data['fields'])) {
 			Self::tableHeader($instance, $data['fields'], $table_size, $table_margen);
 		}
+
+		return [
+			'y_final_commerce_line'	=> $y_final_commerce_line,
+		];
 	}
 
 	static function extra_info($instance, $data) {
@@ -142,12 +146,26 @@ class PdfHelper {
 		$instance->Cell(40, 5, $data['titulo'], $instance->b, 1, 'L');	
 
 		// Condicion IVA
-		if (!is_null($user->afip_information) && !is_null($user->afip_information->iva_condition)) {
+
+		$afip_information = null;
+
+		if (
+			isset($data['afip_ticket'])
+		) {
+			$afip_information = $data['afip_ticket']->afip_information;
+		} else if (!is_null($user->afip_information) && !is_null($user->afip_information->iva_condition)) {
+			$afip_information = $user->afip_information;
+		}
+
+		if ($afip_information) {
 			$instance->x = $start_x;
-			$instance->Cell(40, 5, $user->afip_information->iva_condition->name, $instance->b, 1, 'L');
+			$instance->Cell(40, 5, $afip_information->iva_condition->name, $instance->b, 1, 'L');
 
 			$instance->x = $start_x;
-			$instance->Cell(40, 5, 'CUIT: '.$user->afip_information->cuit, $instance->b, 1, 'L');
+			$instance->Cell(40, 5, 'CUIT: '.$afip_information->cuit, $instance->b, 1, 'L');
+
+			$instance->x = $start_x;
+			$instance->Cell(40, 5, 'IIBB: '.$afip_information->ingresos_brutos, $instance->b, 1, 'L');
 		}
 
 		// Sitio Web
@@ -334,6 +352,8 @@ class PdfHelper {
 		$instance->Line(105, 20, 105, $y_de_abajo);
 
 		$instance->y = $y_de_abajo;
+
+		return $y_de_abajo;
 	}
 
 	static function modelInfo($instance, $data) {

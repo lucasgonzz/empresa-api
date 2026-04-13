@@ -71,6 +71,7 @@ class CurrentAcountPdf extends fpdf {
 			// 'num' 				=> $this->budget->num,
 			// 'date'				=> $this->models[]->created_at,
 			'date_formated'		=> date('d/m/y'),
+			'titulo' 			=> $this->user->company_name,
 			'title' 			=> 'Cuenta corriente',
 			'title_font_size'	=> 12,
 			'title_height'		=> 5,
@@ -81,7 +82,8 @@ class CurrentAcountPdf extends fpdf {
 
 		$data['user'] = $this->user;
 
-		PdfHelper::header($this, $data);
+		$res = PdfHelper::header($this, $data);
+		$this->y_final_commerce_line = $res['y_final_commerce_line'];
 	}
 
 	function Footer() {
@@ -91,7 +93,9 @@ class CurrentAcountPdf extends fpdf {
 	function saldo_actual() {
 		if ($this->credit_account) {
 
-			$this->y = 32;
+			$this->y = $this->y_final_commerce_line;
+			$this->y += 2;
+
 			$this->x = 105;
 			$this->SetFont('Arial', 'B', 16);
 
@@ -168,7 +172,7 @@ class CurrentAcountPdf extends fpdf {
 
 					$width_name = $this->getFields()['Fecha'] +$this->getFields()['Detalle'] + $this->getFields()['Debe'];
                     
-                    $name_with_amount = StringHelper::short($article->name, 60) . ' ('. $article->pivot->amount .')';
+                    $name_with_amount = StringHelper::short($article->name, 60) . ' ('. Numbers::price($article->pivot->amount) .')';
 
                     $this->Cell($width_name, 5, '    - '. $name_with_amount, $this->b, 0, 'L');
 
@@ -215,7 +219,7 @@ class CurrentAcountPdf extends fpdf {
 					$this->SetX($detalle_col_x);
                     
 					$width_name = $this->getFields()['Fecha'] + $this->getFields()['Detalle'] + $this->getFields()['Debe'] + $this->getFields()['Haber'];
-                    $name_with_amount = StringHelper::short($service->name, 60) . ' ('. $service->pivot->amount .')';
+                    $name_with_amount = StringHelper::short($service->name, 60) . ' ('. Numbers::price($service->pivot->amount) .')';
 
                     $this->Cell($width_name, 5, '    - '.$name_with_amount, $this->b, 0, 'L');
 

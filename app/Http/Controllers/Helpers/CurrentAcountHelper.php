@@ -560,20 +560,18 @@ class CurrentAcountHelper {
                                 ->where($credit_account->model_name.'_id', $credit_account->model_id)
                                 ->get();
 
-        // if ($model_name == 'client') {
-        //     $debitos = $debitos->where('client_id', $model_id);
-        // } else {
-        //     $debitos = $debitos->where('provider_id', $model_id);
-        // }
-        // $debitos = $debitos->get();
+        $debito_ids = $debitos->pluck('id');
 
-        foreach ($debitos as $debito) {
-            $debito->pagado_por()->detach();
-            $debito->pagandose = 0;
-            $debito->status = 'sin_pagar';
-            $debito->save();
-            // echo 'Se puso sin pagar debito de '.$debito->debe.' </br>';
-        }
+        // Eliminar todas las imputaciones existentes de estos débitos en un solo query
+        // (reemplaza el detach() individual por cada débito)
+        DB::table('pagado_por')->whereIn('debe_id', $debito_ids)->delete();
+
+        // Resetear todos los débitos a sin_pagar en un solo UPDATE masivo
+        // (reemplaza el save() individual por cada débito)
+        CurrentAcount::whereIn('id', $debito_ids)->update([
+            'pagandose' => 0,
+            'status'    => 'sin_pagar',
+        ]);
 
         $pagos = CurrentAcount::orderBy('created_at', 'ASC')
                                     ->where('is_provisorio', 0)
@@ -582,16 +580,11 @@ class CurrentAcountHelper {
                                     ->where($credit_account->model_name.'_id', $credit_account->model_id)
                                     ->get();
 
-        // if ($model_name == 'client') {
-        //     $pagos = $pagos->where('client_id', $model_id);
-        // } else {
-        //     $pagos = $pagos->where('provider_id', $model_id);
-        // }
-        // $pagos = $pagos->get();
-
         foreach ($pagos as $pago) {
-            $pago->pagando_a()->detach();
-            $pago_helper = new CurrentAcountPagoHelper($credit_account_id, $credit_account->model_name, $credit_account->model_id, $pago);
+            // El detach de pagando_a es un no-op: ya se eliminaron todas las filas
+            // de pagado_por en el batch delete anterior (por debe_id)
+            // Se pasa $credit_account para evitar un CreditAccount::find por cada pago
+            $pago_helper = new CurrentAcountPagoHelper($credit_account_id, $credit_account->model_name, $credit_account->model_id, $pago, $credit_account);
             $pago_helper->init();
         }
 

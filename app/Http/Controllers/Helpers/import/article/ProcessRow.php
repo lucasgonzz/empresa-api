@@ -260,10 +260,6 @@ class ProcessRow {
                 'excel_column'  => 'descripcion',
                 'prop_key'      => 'descripcion',
             ],
-            [
-                'excel_column'  => 'descripcion',
-                'prop_key'      => 'descripcion',
-            ],
         ];
         
         $this->iniciar();

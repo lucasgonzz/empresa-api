@@ -12,7 +12,11 @@ class ImportHelper {
 			&& $row[$columns[$key]] !== ''
 			&& $row[$columns[$key]] !== -1
 		) {
-			return trim($row[$columns[$key]]);
+			$value = (string) $row[$columns[$key]];
+			$value = str_replace("\xEF\xBB\xBF", '', $value);
+			$value = trim($value);
+			$value = trim($value, '"');
+			return trim($value);
 		}
 		return null;
 	}

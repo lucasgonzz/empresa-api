@@ -330,6 +330,8 @@ class DatabaseSeeder extends Seeder
         $this->call(SheetTypeSeeder::class);
         $this->call(PdfColumnOptionSeeder::class);
         $this->call(PdfColumnProfileSeeder::class);
+        $this->call(PdfColumnProfileComisionesSeeder::class);
+        $this->call(InputsSizeSeeder::class);
     }
 
     function article_variants() {
