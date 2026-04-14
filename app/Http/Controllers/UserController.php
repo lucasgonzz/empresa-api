@@ -196,20 +196,28 @@ class UserController extends Controller
 
         $price_types = PriceType::where('user_id', $owner_user->id)
             ->orderBy('position', 'ASC')
-            ->get(['id', 'percentage', 'setear_precio_final', 'incluir_en_lista_de_precios_de_excel']);
+            ->get(['id', 'percentage', 'setear_precio_final', 'incluir_en_lista_de_precios_de_excel', 'position']);
+
+        $last_position = PriceType::where('user_id', $owner_user->id)
+                                ->orderBy('position', 'DESC')
+                                ->first()->position;
+
+        Log::info('Last position: '.$last_position);
 
         $price_type_ids = $price_types->pluck('id')->values()->all();
         $articles_chunk_size = 200;
 
         // 0 -> 1
         if ($current_lists_de_precio === 0 && $new_lists_de_precio === 1) {
+
+            Log::info('Agregando listas de precio');
             $pivot_table = 'article_price_type';
             $now = now();
 
             // Inserta relaciones por chunk para evitar queries y payloads gigantes.
             Article::where('user_id', $owner_user->id)
-                ->select('id')
-                ->chunk($articles_chunk_size, function ($articles_chunk) use ($price_types, $pivot_table, $now, $articles_chunk_size) {
+                ->select('id', 'percentage_gain')
+                ->chunk($articles_chunk_size, function ($articles_chunk) use ($price_types, $pivot_table, $now, $articles_chunk_size, $last_position) {
 
                     if ($price_types->isEmpty()) {
                         return;
@@ -218,13 +226,26 @@ class UserController extends Controller
                     $rows = [];
 
                     foreach ($articles_chunk as $article) {
+
+
                         foreach ($price_types as $price_type) {
+
+                            $percentage = $price_type->percentage;
+
+                            // Log::info('comparando '.(int)$price_type->position.' con '.(int)$last_position);
+                            // Log::info((int)$price_type->position == (int)$last_position);
+
+                            if ((int)$price_type->position == (int)$last_position) {
+                                $percentage = $article->percentage_gain;
+                                // Log::info('se va a usar percentage de article: '.$percentage);
+                            }
+                            
                             $rows[] = [
                                 'article_id' => (int) $article->id,
                                 'price_type_id' => (int) $price_type->id,
                                 // Por defecto, seteamos el porcentaje del price_type. Si el usuario no completó
                                 // percentage en el price_type, quedará null y el cálculo lo normaliza en 0.
-                                'percentage' => $price_type->percentage,
+                                'percentage' => $percentage,
                                 'final_price' => null,
                                 'previus_final_price' => null,
                                 'incluir_en_excel_para_clientes' => (int) ($price_type->incluir_en_lista_de_precios_de_excel ? 1 : 0),
@@ -247,6 +268,7 @@ class UserController extends Controller
 
         // 1 -> 0
         if ($current_lists_de_precio === 1 && $new_lists_de_precio === 0) {
+            Log::info('Quitando listas de precio');
             if (!empty($price_type_ids)) {
                 DB::table('article_price_type')
                     ->join('articles', 'articles.id', '=', 'article_price_type.article_id')

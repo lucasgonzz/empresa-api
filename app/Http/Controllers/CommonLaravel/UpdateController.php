@@ -146,6 +146,17 @@ class UpdateController extends Controller
                         //     'type'      => $form['type'],
                         // ];
                         // Log::info('Se seteo '.$form['key'].' de '.$model->name.', quedo en '.$model->{$form['key']});
+                    } else if ($form['type'] == 'checkbox' && array_key_exists('value', $form) && $form['value'] !== '') {
+                        /**
+                         * En checkbox el frontend envía:
+                         * - '' => No modificar
+                         * - 1  => Activar
+                         * - 0  => Desactivar
+                         * Solo se aplica cuando el valor no es cadena vacía.
+                         */
+                        $model->{$form['key']} = (int) $form['value'];
+                        $model->save();
+                        $afectados++;
                     }
                 }
                 if ($model_name == 'article') {

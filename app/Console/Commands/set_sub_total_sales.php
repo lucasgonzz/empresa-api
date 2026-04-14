@@ -13,7 +13,7 @@ class set_sub_total_sales extends Command
      *
      * @var string
      */
-    protected $signature = 'set_sub_total_sales {sale_id?}';
+    protected $signature = 'set_sub_total_sales {user_id?} {sale_id?}';
 
     /**
      * The console command description.
@@ -39,7 +39,18 @@ class set_sub_total_sales extends Command
      */
     public function handle()
     {
-        $sales = Sale::where('user_id', config('app.USER_ID'))
+
+        $user_id = config('app.USER_ID');
+        
+        $param_user_id = $this->argument('user_id');
+        
+        if ($param_user_id) {
+            $user_id = $param_user_id;
+        }
+        
+        $this->info('USER_ID: '.$user_id);
+
+        $sales = Sale::where('user_id', $user_id)
                         ->orderBy('id', 'ASC');
         
         $sale_id = $this->argument('sale_id');

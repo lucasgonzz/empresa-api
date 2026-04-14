@@ -129,7 +129,9 @@ class CurrentAcountPdf extends fpdf {
 	function printModel($model) {
 		$this->x = 5;
 		$this->Cell($this->getFields()['Fecha'], $this->line_height, date_format($model->created_at, 'd/m/y'), $this->b, 0, 'L');
-		$detalle = $model->detalle; // Initialize the main detail text.
+		// Texto principal de la columna detalle para la fila de la cuenta corriente.
+		$detalle = $model->detalle;
+		// Moneda usada para formatear importes de la fila y de sus subitems.
 		$moneda_id = null;
 		if ($this->credit_account) {
 			$moneda_id = $this->credit_account->moneda_id;
@@ -146,12 +148,37 @@ class CurrentAcountPdf extends fpdf {
 			}
 		}
 
+		// Y inicial de la fila principal (fecha/detalle/debe/haber/saldo/descripcion).
 		$y_1 = $this->y;
 		
 		// $detalle_col_x = 5 + $this->getFields()['Fecha'];
 		// $this->SetX($detalle_col_x);
 
 		$this->MultiCell($this->getFields()['Detalle'], $this->line_height, $detalle, $this->b, 'L', false);
+
+		// Y final de la celda detalle de la fila principal.
+		$y_after_main_detail = $this->y;
+		// Se vuelve al inicio de la fila para imprimir debe/haber/saldo en la misma linea.
+		$this->y = $y_1;
+		$this->x = PdfHelper::getWidthUntil('Detalle', $this->getFields());
+
+		// Importes de la fila principal.
+		$debe = $model->debe ? Numbers::price($model->debe, true, $moneda_id) : '';
+		$haber = $model->haber ? Numbers::price($model->haber, true, $moneda_id) : '';
+		$this->Cell($this->getFields()['Debe'], $this->line_height, $debe, $this->b, 0, 'L');
+		$this->Cell($this->getFields()['Haber'], $this->line_height, $haber, $this->b, 0, 'L');
+		$this->Cell($this->getFields()['Saldo'], $this->line_height, Numbers::price($model->saldo, true, $moneda_id), $this->b, 0, 'L');
+
+		$this->MultiCell($this->getFields()['Descripcion'], $this->line_height, $model->description, $this->b, 'L', false);
+		// Y final de la descripcion para calcular la altura real de la fila principal.
+		$y_after_description = $this->y;
+
+		// Posicion inicial para imprimir subitems debajo de la fila principal.
+		if ($y_after_main_detail > $y_after_description) {
+			$this->y = $y_after_main_detail;
+		} else {
+			$this->y = $y_after_description;
+		}
 
         if ($this->printType == 'details') {
             $articles_to_show = [];
@@ -216,7 +243,7 @@ class CurrentAcountPdf extends fpdf {
 
                 foreach ($services_to_show as $service) {
 					// reseteo la posicion x para mantener los articulos alineados
-					$this->SetX($detalle_col_x);
+					$this->x = 5;
                     
 					$width_name = $this->getFields()['Fecha'] + $this->getFields()['Detalle'] + $this->getFields()['Debe'] + $this->getFields()['Haber'];
                     $name_with_amount = StringHelper::short($service->name, 60) . ' ('. Numbers::price($service->pivot->amount) .')';
@@ -236,27 +263,6 @@ class CurrentAcountPdf extends fpdf {
                 // $this->Cell($this->getFields()['Detalle'], 2, '', $this->b, 1, 'L');
             }
         }
-		
-		$y_2 = $this->y;
-		$this->y = $y_1;
-
-		$this->x = PdfHelper::getWidthUntil('Detalle', $this->getFields());
-
-		$debe = $model->debe ? Numbers::price($model->debe, true, $moneda_id) : '';
-		$haber = $model->haber ? Numbers::price($model->haber, true, $moneda_id) : '';
-		$this->Cell($this->getFields()['Debe'], $this->line_height, $debe, $this->b, 0, 'L');
-		$this->Cell($this->getFields()['Haber'], $this->line_height, $haber, $this->b, 0, 'L');
-		$this->Cell($this->getFields()['Saldo'], $this->line_height, Numbers::price($model->saldo, true, $moneda_id), $this->b, 0, 'L');
-
-		$this->MultiCell($this->getFields()['Descripcion'], $this->line_height, $model->description, $this->b, 'L', false);
-		$y_3 = $this->y;
-
-		// Setea Y para la proxima fila para estar debajo de la mas alta, detalle o descripcion
-		if ($y_2 > $y_3) {
-			$this->y = $y_2;
-		} else {
-			$this->y = $y_3;
-		}
 
 		$this->Line(5, $this->y, 205, $this->y);
 	}

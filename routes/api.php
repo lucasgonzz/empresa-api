@@ -246,6 +246,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('sale-modifications/{sale_id}', 'SaleModificationController@index');
 
+    // Adjuntos por ítem de venta
+    Route::post('sale-article-attachment', 'SaleArticleAttachmentController@store');
+    Route::get('sale-article-attachment/by-sale/{sale_id}', 'SaleArticleAttachmentController@by_sale');
+    Route::get('sale-article-attachment/file/{id}', 'SaleArticleAttachmentController@show_file');
+    Route::delete('sale-article-attachment/{id}', 'SaleArticleAttachmentController@destroy');
+
 
     // Movimientos de depositos
     Route::resource('deposit-movement', 'DepositMovementController');
@@ -426,6 +432,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('/import-history/updated-models/{id}', 'ImportHistoryController@updated_models');
     Route::get('/import-history/created-models/{id}', 'ImportHistoryController@created_models');
     Route::get('/import-history/chunks/{import_history_id}', 'ImportHistoryController@chunks');
+    Route::post('/import-history/rollback/{import_history_id}', 'ImportHistoryController@rollback');
 
     Route::get('/online-price-type', 'OnlinePriceTypeController@index');
 

