@@ -90,8 +90,11 @@ class CurrentAcountController extends Controller
 
             // Calcular el saldo que genera este pago y persistirlo
             // Se resta el haber al saldo previo de la cuenta corriente
-            $pago->saldo = CurrentAcountHelper::getSaldo($request->credit_account_id, $pago) - (float)$request->haber;
+            $saldo = CurrentAcountHelper::getSaldo($request->credit_account_id, $pago) - (float)$request->haber;
+            $pago->saldo = $saldo;
             $pago->save();
+            // Sincroniza saldo de la cuenta corriente y saldo por moneda en el model asociado.
+            CurrentAcountHelper::update_credit_account_saldo($request->credit_account_id);
 
             if (!$request->current_date) {
                 // Pago con fecha pasada: el recálculo completo ya se encarga

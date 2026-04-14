@@ -14,6 +14,9 @@ Route::get('hola', function() {
 });
 
 
+Route::get('/import-history/rollback/{import_history_id}', 'ImportHistoryController@rollback');
+
+
 Route::get('afip-ticket/consultar-comprobante/{afip_ticket_id}', 'AfipTicketController@consultar_comprobante');
 
 
@@ -410,6 +413,7 @@ Route::get('/provider-orders/export/{id}', function ($id) {
 });
 
 Route::get('sales/excel/export/{from_date}/{until_date?}', 'SaleController@excel_export');
+Route::get('sales/excel/breakdown-export/{from_date}/{until_date?}', 'SaleController@excel_breakdown_export');
 
 
 

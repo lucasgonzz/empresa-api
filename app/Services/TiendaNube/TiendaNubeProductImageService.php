@@ -66,7 +66,7 @@ class TiendaNubeProductImageService extends BaseTiendaNubeService
 
     public function delete_image_from_article(Article $article, Image $image): void
     {
-        if (empty($article->tienda_nube_image_id) || empty($image->tiendanube_image_id)) {
+        if (empty($image->tiendanube_image_id)) {
             return; // Nada que eliminar
         }
 

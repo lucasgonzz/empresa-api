@@ -64,6 +64,7 @@ class NotaCreditoPdf extends fpdf {
 			'num' 				=> $this->model->num_receipt,
 			'date'				=> $this->model->created_at,
 			'title' 			=> 'Nota de Credito',
+			'titulo'			=> $this->model->user->company_name,
 			'title_font_size'	=> 12,
 			'title_height'		=> 5,
 			'model_info'		=> $this->model->client,

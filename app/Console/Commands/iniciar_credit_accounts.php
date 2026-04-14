@@ -18,7 +18,7 @@ class iniciar_credit_accounts extends Command
      *
      * @var string
      */
-    protected $signature = 'iniciar_credit_accounts {client_id?}';
+    protected $signature = 'iniciar_credit_accounts {user_id?} {client_id?}';
 
     /**
      * The console command description.
@@ -48,7 +48,14 @@ class iniciar_credit_accounts extends Command
 
 
         $this->user_id = config('app.USER_ID');
-        $this->info('USER_ID: '.config('app.USER_ID'));
+
+        $param_user_id = $this->argument('user_id');
+        
+        if ($param_user_id) {
+            $this->user_id = $param_user_id;
+        }
+        
+        $this->info('USER_ID: '.$this->user_id);
 
         $this->iniciar_clientes();
 

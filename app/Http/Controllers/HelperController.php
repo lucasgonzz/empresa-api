@@ -78,6 +78,31 @@ class HelperController extends Controller
         $this->{$method}($param, $param_2);
     }
 
+    function check_costos_sales() {
+        $sales = Sale::orderBy('id', 'DESC')
+                        ->take(1000)
+                        ->get();
+
+        foreach ($sales as $sale) {
+            $total_cost = 0;
+
+            foreach ($sale->articles as $article) {
+                
+                $total_cost_article = (float)$article->pivot->cost * (float)$article->pivot->amount;
+
+                $total_cost += $total_cost_article;
+            }
+
+            $sale->total_cost = $total_cost;
+            $sale->timestamps = false;
+            $sale->save();
+
+            echo 'Total para venta '.$sale->id.': '.Numbers::price($total_cost, true);
+            echo '<br>';
+        }
+        echo 'Listo';
+    }
+
     function sales_costos_2r() {
         $sales = Sale::orderBy('id', 'DESC')
                         ->get();
@@ -1119,6 +1144,27 @@ class HelperController extends Controller
             $article->timestamps = false;
             $article->save();
         }
+        echo 'Listo';
+    }
+
+    /**
+     * Marca como insumo todos los artículos cuyo SKU comienza con "INS".
+     *
+     * @return void
+     */
+    function set_articles_es_insumo_by_sku_ins_prefix() {
+        // Obtiene la cantidad de artículos a actualizar para informar resultado.
+        $articles_to_update_count = Article::where('sku', 'like', 'INS%')
+                                            ->count();
+
+        // Aplica actualización masiva para marcar artículos como insumo.
+        $updated_articles_count = Article::where('sku', 'like', 'INS%')
+                                        ->update([
+                                            'es_insumo' => 1,
+                                        ]);
+
+        echo 'Articulos encontrados: '.$articles_to_update_count.' <br>';
+        echo 'Articulos actualizados: '.$updated_articles_count.' <br>';
         echo 'Listo';
     }
 

@@ -13,7 +13,7 @@ class set_article_purchases_address_id extends Command
      *
      * @var string
      */
-    protected $signature = 'set_article_purchases_address_id {sale_id?}';
+    protected $signature = 'set_article_purchases_address_id {user_id?} {sale_id?}';
 
     /**
      * The console command description.
@@ -41,6 +41,14 @@ class set_article_purchases_address_id extends Command
     {
 
         $user_id = config('app.USER_ID');
+
+        $param_user_id = $this->argument('user_id');
+        
+        if ($param_user_id) {
+            $user_id = $param_user_id;
+        }
+
+        $this->info('USER_ID: '.$user_id);
 
         $addresses = Address::where('user_id', $user_id)->get();
 

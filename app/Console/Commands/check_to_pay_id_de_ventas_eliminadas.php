@@ -14,7 +14,7 @@ class check_to_pay_id_de_ventas_eliminadas extends Command
      *
      * @var string
      */
-    protected $signature = 'check_to_pay_id_de_ventas_eliminadas';
+    protected $signature = 'check_to_pay_id_de_ventas_eliminadas {user_id?}';
 
     /**
      * The console command description.
@@ -42,10 +42,15 @@ class check_to_pay_id_de_ventas_eliminadas extends Command
     {
         $user_id = config('app.USER_ID');
 
-        if (!$user_id) {
-            $this->comment('No hay user_id');
-            return;
+        $param_user_id = $this->argument('user_id');
+        
+        if ($param_user_id) {
+            $user_id = $param_user_id;
         }
+        
+        $this->info('USER_ID: '.$user_id);
+
+
         $pagos = CurrentAcount::whereNotNull('to_pay_id')
                                 ->where('user_id', $user_id)
                                 ->get();

@@ -191,6 +191,14 @@ class NewSalePdf extends fpdf
                 'Vendedor'  => $this->sale->employee->name
             ];
         }
+
+        if (!is_null($this->sale->client) && $this->sale->save_current_acount && !is_null($this->sale->current_acount)) {
+            $data = array_merge($data, [
+                'current_acount'    => $this->sale->current_acount,
+                'client_id'         => $this->sale->client_id,
+                'compra_actual'     => $this->sale->total,
+            ]);
+        }
         
         PdfHelper::header($this, $data);
         /**
@@ -271,8 +279,27 @@ class NewSalePdf extends fpdf
     function descuentos_y_recargos() {
 
         $this->total_bruto = $this->total_articles + $this->total_combos + $this->total_promocion_vinotecas + $this->total_services;
-        $this->discounts();
-        $this->surchages();
+
+        if ($this->total_bruto != $this->sale->total) {
+
+            $this->y += 2;
+
+            $text = 'Sub Total: '.Numbers::price($this->total_bruto, true, $this->sale->moneda_id);
+
+            $this->SetFont('Arial', 'B', 12);
+            $this->Cell(
+                200, 
+                7, 
+                $text, 
+                $this->b, 
+                1, 
+                'R'
+            );
+
+            $this->discounts();
+            $this->surchages();
+        }
+
 
     }
 
@@ -811,6 +838,8 @@ class NewSalePdf extends fpdf
             return;
         }
 
+        $total = (float)$this->sale->total;
+
         $this->x = $this->start_x;
         $this->SetFont('Arial', '', 9);
         $this->Cell(65, 5, 'Comisiones: ', 1, 1, 'L');
@@ -818,8 +847,14 @@ class NewSalePdf extends fpdf
             $this->x = $this->start_x;
             $this->Cell(40, 5, $commission->seller->name.' '.$commission->percentage.'%', 1, 0, 'L');
             $this->Cell(25, 5, '$'.Numbers::price($commission->debe), 1, 1, 'L');
+            $total -= (float)$commission->debe;
         }
         $this->y += 2;
+
+        $this->x = $this->start_x;
+        $this->SetFont('Arial', 'B', 12);
+        $this->Cell(25, 5, 'Total menos comisiones: '.Numbers::price($total, true), 0, 1, 'L');
+
     }
 
     /**

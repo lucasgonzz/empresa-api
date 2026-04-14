@@ -29,7 +29,8 @@ class SetFinalPricesNotificationHelper
         // Botón único de cierre en el modal de notificación global.
         $functions_to_execute = [
             [
-                'btn_text'      => 'Entendido',
+                'btn_text'      => 'Aceptar',
+                'function_name' => 'update_articles_after_import',
                 'btn_variant'   => 'primary',
             ],
         ];

@@ -66,7 +66,7 @@ class ProcessArchivoDeIntercambioProductos implements ShouldQueue
                     'provider_code'         => $data[0],
                     'name'                  => utf8_encode($data[1]),
                     'category_id'           => $category_id,
-                    'stock'                 => GeneralHelper::get_decimal_value($data[9]),
+                    // 'stock'                 => GeneralHelper::get_decimal_value($data[9]),
                     'bar_code'              => $data[11],
                     'stock_min'             => GeneralHelper::get_decimal_value($data[13]),
                 ];

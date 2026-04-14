@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exports\SalesBreakdownExport;
 use App\Exports\SalesFullExport;
 use App\Http\Controllers\AfipWsController;
 use App\Http\Controllers\CommissionController;
@@ -604,6 +605,28 @@ class SaleController extends Controller
         $models = $models->get();
 
         return Excel::download(new SalesFullExport($models), 'ventas_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
+
+    }
+
+    function excel_breakdown_export($from_date, $until_date = null) {
+
+        $models = Sale::where('user_id', $this->userId())
+                        ->with(['articles', 'client', 'employee'])
+                        ->orderBy('created_at', 'DESC');
+
+        if (!is_null($from_date)) {
+
+            if (!is_null($until_date)) {
+                $models = $models->whereDate('created_at', '>=', $from_date)
+                                ->whereDate('created_at', '<=', $until_date);
+            } else {
+                $models = $models->whereDate('created_at', $from_date);
+            }
+
+        }
+        $models = $models->get();
+
+        return Excel::download(new SalesBreakdownExport($models), 'ventas_desglosado_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
 
     }
 

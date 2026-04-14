@@ -419,6 +419,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Ventas con estados',
                 'slug' => 'ventas_con_estados',
             ],
+            [
+                'name' => 'Adjuntar archivos a articulos en las ventas',
+                'slug' => 'adjuntar_archivos_en_vantas',
+            ],
 
         ];
         foreach ($extencions as $extencion) {

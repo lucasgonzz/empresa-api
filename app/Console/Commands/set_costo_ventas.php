@@ -14,7 +14,7 @@ class set_costo_ventas extends Command
      *
      * user_id: opcional (se usa si no existe config('app.USER_ID'))
      */
-    protected $signature = 'set_costo_ventas {from_sale_id?} {user_id?} {--solo_ventas_de_hoy}';
+    protected $signature = 'set_costo_ventas {user_id?} {from_sale_id?} {--solo_ventas_de_hoy}';
 
     /**
      * The console command description.
@@ -38,12 +38,12 @@ class set_costo_ventas extends Command
 
         $user_id = null;
 
-        if (!is_null($configured_user_id) && $configured_user_id !== '') {
-            $user_id = (int) $configured_user_id;
-            $this->info('Usando user_id desde config(app.USER_ID): ' . $user_id);
-        } else if (!is_null($argument_user_id) && $argument_user_id !== '') {
+        if (!is_null($argument_user_id) && $argument_user_id !== '') {
             $user_id = (int) $argument_user_id;
             $this->info('Usando user_id desde parametro: ' . $user_id);
+        } else if (!is_null($configured_user_id) && $configured_user_id !== '') {
+            $user_id = (int) $configured_user_id;
+            $this->info('Usando user_id desde config(app.USER_ID): ' . $user_id);
         } else {
             $this->error('No se puede continuar: no esta definido config(app.USER_ID) y no pasaste el parametro {user_id}.');
             $this->line('Ejemplo: php artisan set_costo_ventas 123');

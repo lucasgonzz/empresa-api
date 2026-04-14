@@ -46,9 +46,9 @@ class NewPagoPdf extends fpdf {
 
         $datos = [
             'titulo' => $titulo,
-            'condicion_iva' => $this->user->afip_information->iva_condition->name,
-            'empresa_nombre' => $this->user->afip_information->razon_social,
-            'direccion_line' => $this->user->afip_information->domicilio_comercial,
+            'condicion_iva' => $this->user->afip_information ? $this->user->afip_information->iva_condition->name : '',
+            'empresa_nombre' => $this->user->afip_information ? $this->user->afip_information->razon_social : '',
+            'direccion_line' => $this->user->afip_information ? $this->user->afip_information->domicilio_comercial : '',
             // 'localidad' => 'CERRITO',
             'telefono' => $this->user->phone,
             'email' => $this->user->email,
@@ -56,7 +56,7 @@ class NewPagoPdf extends fpdf {
             'tipo' => $titulo,
             'numero' => 'Nº '.$model->num_receipt,
             'fecha' => $model->created_at->format('d/m/Y'),
-            'cuit' => $this->user->afip_information->cuit,
+            'cuit' => $this->user->afip_information ? $this->user->afip_information->cuit : '',
             'señor' => $this->model->name,
             'domicilio_cliente' => $this->model->address,
             'localidad_cliente' => $localidad_cliente,
