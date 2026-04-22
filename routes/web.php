@@ -3,6 +3,8 @@
 use App\Models\Article;
 use App\Services\MercadoLibre\CategoryService;
 use App\Services\MercadoLibre\SetearCategoryNameService;
+use Carbon\Carbon;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
 
@@ -21,21 +23,44 @@ Route::get('afip-ticket/consultar-comprobante/{afip_ticket_id}', 'AfipTicketCont
 
 
 // Obtener todos los productos para N8N
-Route::get('/n8n/productos-disponibles', function () {
-    // $articles = Article::all();
-    $articles = Article::select('id', 'name', 'final_price', 'descripcion')
-                        ->with('category:name') // importante: optimizamos la carga
-                        ->take(10000)
-                        ->get()
-                        ->map(function ($article) {
-                            return [
-                                'id' => $article->id,
-                                'name' => $article->name,
-                                'final_price' => $article->final_price,
-                                'descripcion' => $article->descripcion,
-                                'categoria' => $article->category->name ?? null,
-                            ];
-                        });
+Route::get('/n8n/productos-disponibles/{last_updated?}', function ($last_updated = null) {
+    $query = Article::select('id', 'name', 'final_price', 'descripcion', 'stock')
+                    ->with(['category:name', 'addresses:id,street', 'images']); // importante: optimizamos la carga
+
+
+    // echo('last_updated: '.$last_updated);
+    if (!is_null($last_updated)) {
+        try {
+            $parsed_last_updated = Carbon::createFromFormat('Y-m-d H:i:s', $last_updated);
+            $query->where('updated_at', '>=', $parsed_last_updated);
+        } catch (\Exception $e) {
+            // Si el formato es inválido, no aplicamos filtro por updated_at.
+        }
+    }
+
+    $articles = $query->get()
+                      ->map(function ($article) {
+                          return [
+                              'id' => $article->id,
+                              'name' => $article->name,
+                              'final_price' => $article->final_price,
+                              'descripcion' => $article->descripcion,
+                              'stock' => $article->stock,
+                              'categoria' => $article->category->name ?? null,
+                              'addresses' => $article->addresses->map(function ($address) {
+                                  return [
+                                      'name' => $address->street,
+                                      'stock' => $address->pivot->amount ?? null,
+                                  ];
+                              })->values(),
+                              // 'images' => $article->images,
+                              'images' => $article->images->map(function ($image) {
+                                  return [
+                                      'hosting_url' => $image->hosting_url,
+                                  ];
+                              })->values(),
+                          ];
+                      });
     return response()->json(['articles' => $articles]);
 });
 // https://api-masquito.comerciocity.com/public/n8n/productos-disponibles
@@ -360,7 +385,7 @@ Route::get('home/clients', 'HomeController@clients');
 
 
 // PDF
-Route::get('sale/pdf/{id}/{with_prices}/{with_costs}/{precios_netos}/{confirmed?}', 'SaleController@pdf');
+Route::get('sale/pdf/{id}', 'SaleController@pdf');
 Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
 Route::get('sale/ticket-raw/{id}', 'SaleController@ticketRaw');
 Route::get('sale/sale-ticket-pdf/{id}', 'SaleController@saleTicketPdf');

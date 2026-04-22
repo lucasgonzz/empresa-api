@@ -464,6 +464,13 @@ class PermissionSeeder extends Seeder
                 'en'          => 'payment_plan.update',
             ],
 
+
+            [
+                'singular'      => 'Prohibir cambiar la lista de precios en VENDER',
+                'plural'        => 'Vender',
+                'en'            => 'vender.prohibir_camibar_lista_de_precios',
+            ],
+
         ];
         foreach ($permissions as $permission) {
             PermissionEmpresa::create([

@@ -114,7 +114,7 @@ class ProviderOrderController extends Controller
 
         $helper = new NewProviderOrderHelper($model, $request->articles, $ya_se_actualizo_stock);
         
-        $helper->attach_articles();
+        $helper->attach_articles(true);
         
         ModoFacturacionHelper::check_modo_facturacion($model, $helper);
 
@@ -177,16 +177,56 @@ class ProviderOrderController extends Controller
         $provider_order = ProviderOrder::find($request->provider_order_id);
 
 
+        $import_type        = $request->input('import_type', 'pedido');
+        $overwrite_articles = $request->boolean('overwrite_articles', false);
+
         Excel::import(new ProviderOrderArticleImport(
             $columns,
-            $request->start_row, 
+            $request->start_row,
             $request->finish_row,
             $user,
             $provider_order,
+            $import_type,
+            $overwrite_articles,
         ), $archivo_excel_path);
-        
+
         // ProcessProviderOrderArticleImport::dispatch($columns, $request->start_row, $request->finish_row, $owner, $provider_order, $archivo_excel_path);
 
+        if ($import_type === 'recibido') {
+            $diff = $this->calculate_received_diff($provider_order);
+            return response()->json(['diff' => $diff], 200);
+        }
+
         return response(null, 200);
+    }
+
+    private function calculate_received_diff($provider_order) {
+
+        $provider_order->load('articles');
+
+        return $provider_order->articles->map(function ($article) {
+            $amount   = $article->pivot->amount;
+            $received = $article->pivot->received;
+            $diff     = $received - $amount;
+
+            if ($received == $amount) {
+                $status = 'completo';
+            } elseif ($received == 0) {
+                $status = 'no_recibido';
+            } elseif ($received > $amount) {
+                $status = 'exceso';
+            } else {
+                $status = 'parcial';
+            }
+
+            return [
+                'id'       => $article->id,
+                'name'     => $article->name,
+                'pedida'   => $amount,
+                'recibida' => $received,
+                'diff'     => $diff,
+                'status'   => $status,
+            ];
+        })->values();
     }
 }

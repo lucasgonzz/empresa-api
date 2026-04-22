@@ -436,6 +436,14 @@ class ArticleHelper {
         ];
     }
 
+    /**
+     * Aplica reglas de redondeo del usuario sobre un precio.
+     *
+     * @param float|int $price Precio base a redondear.
+     * @param \App\Models\User $user Usuario autenticado con flags de redondeo.
+     * @param array $des Descripciones acumuladas de cada transformación.
+     * @return array{price:float|int,des:array}
+     */
     static function redondear($price, $user, $des = []) {
 
         if ($user->redondear_miles_en_vender) {
@@ -452,17 +460,17 @@ class ArticleHelper {
             }
         }
 
-        if (env('REDONDEAR_PRECIOS_EN_DECENAS', false)) {
+        if ($user->redondear_precios_en_decenas) {
             $price = round($price, -1);
             $des[] = 'Redondeando por decenas = '.Numbers::price($price, true);
         }
 
-        if (env('REDONDEAR_DE_A_50', false)) {
+        if ($user->redondear_de_a_50) {
             $price = ceil($price / 50) * 50;
             $des[] = 'Redondeando de a 50 = '.Numbers::price($price, true);
         }
 
-        if (env('REDONDEAR_PRECIOS_EN_CENTAVOS', false)) {
+        if ($user->redondear_precios_en_centavos) {
             $price = round($price);
             $des[] = 'Redondeando centavos = '.Numbers::price($price, true);
         }

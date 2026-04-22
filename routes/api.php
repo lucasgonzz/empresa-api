@@ -64,6 +64,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
     Route::get('update-feature', 'UpdateFeatureController@index');
 
+    // Notificaciones de versión sincronizadas desde admin-api (por usuario autenticado).
+    Route::get('synced-version-notification/pending', 'SyncedVersionNotificationController@pending');
+    Route::post('synced-version-notification/{id}/mark-read', 'SyncedVersionNotificationController@markRead');
+
     Route::get('online-template', 'OnlineTemplateController@index');
 
     Route::get('concepto-stock-movement', 'ConceptoStockMovementController@index');
@@ -559,6 +563,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('article-ubication/article/{article_id}', 'ArticleUbicationController@update_article');
 
     Route::resource('stock-suggestion', 'StockSuggestionController');
+    Route::post('stock-suggestion/{id}/create-deposit-movement', 'StockSuggestionController@create_deposit_movement');
     Route::post('stock-suggestion-article', 'StockSuggestionArticleController@ver_por_deposito');
 
 
@@ -628,3 +633,15 @@ Route::middleware(['auth:sanctum'])->group(function() {
 // Plans
 Route::get('plan', 'PlanController@index');
 Route::get('plan-feature', 'PlanFeatureController@index');
+
+// Sincronización entrante desde admin-api central:
+// - publish-version: publicación de versión + notificaciones
+// - demo-setup:      disparo remoto del setup de demo
+// - user-setup:      disparo remoto del setup del sistema real (cliente que ya compró)
+Route::middleware('admin.api.key')
+    ->prefix('admin-sync')
+    ->group(function () {
+        Route::post('publish-version', 'AdminSync\\PublishVersionController@store');
+        Route::post('demo-setup', 'AdminSync\\DemoSetupController@store');
+        Route::post('user-setup', 'AdminSync\\UserSetupController@store');
+    });

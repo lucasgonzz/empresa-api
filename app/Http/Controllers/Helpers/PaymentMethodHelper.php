@@ -20,6 +20,10 @@ class PaymentMethodHelper {
                 $cuota_id 			= isset($payment_method['cuota_id']) ? $payment_method['cuota_id'] : null;
                 $caja_id 			= null;
 
+                if (!isset($payment_method['current_acount_payment_method_id'])) {
+                    return;
+                }
+
                 $payment_method_model = CurrentAcountPaymentMethod::find($payment_method['current_acount_payment_method_id']);
 
                 if (

@@ -45,12 +45,10 @@ class AfipImportesCalculator
             $total = $result['total'];
 
             if ($afip_helper->afip_ticket->afip_information->iva_condition->name == 'Exento') {
-
-                $gravado = $result['gravado'];
-            } else {
-                $exento = $result['gravado'];
-                
-            }
+                $exento = 0;
+            } 
+            
+            $gravado = $result['gravado'];
         }
 
         /** @var float $neto_no_gravado Redondeo para salida consistente con cálculos históricos. */

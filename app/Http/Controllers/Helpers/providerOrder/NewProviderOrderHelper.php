@@ -474,28 +474,47 @@ class NewProviderOrderHelper {
         $this->ivas = Iva::all();
     }
 
-    function attach_articles() {
+    function attach_articles(bool $overwrite_articles = false) {
 
-        $this->provider_order->articles()->sync([]);
+        $syncData = [];
 
         foreach ($this->new_articles as $new_article) {
             
-            $this->provider_order->articles()->attach($new_article['id'], [
+            // Solo seteamos en la pivot las props cuyo valor venga distinto de `null`,
+            // para evitar sobrescribir columnas con `null` cuando se actualizan artículos.
+            $pivotData = [];
+            $pivotKeys = [
+                'cost',
+                'amount',
+                'received',
+                'price',
+                'discount',
+                'notes',
+                'iva_id',
+                'cost_in_dollars',
+                'amount_pedida',
+                'update_provider',
+            ];
 
-                'cost'              => GeneralHelper::getPivotValue($new_article, 'cost'),
-                'amount'            => GeneralHelper::getPivotValue($new_article, 'amount'),
-                'price'             => GeneralHelper::getPivotValue($new_article, 'price'),
-                'discount'          => GeneralHelper::getPivotValue($new_article, 'discount'),
-                'notes'             => GeneralHelper::getPivotValue($new_article, 'notes'),
-                'iva_id'            => GeneralHelper::getPivotValue($new_article, 'iva_id'),
-                'cost_in_dollars'   => GeneralHelper::getPivotValue($new_article, 'cost_in_dollars'),
-                'amount_pedida'   => GeneralHelper::getPivotValue($new_article, 'amount_pedida'),
-                'update_provider'   => GeneralHelper::getPivotValue($new_article, 'update_provider'),
-            ]);
+            foreach ($pivotKeys as $pivotKey) {
+                $value = GeneralHelper::getPivotValue($new_article, $pivotKey);
+                if (!is_null($value)) {
+                    $pivotData[$pivotKey] = $value;
+                }
+            }
 
-            $this->update_article($new_article);
+            $syncData[$new_article['id']] = $pivotData;
         }
 
+        if ($overwrite_articles) {
+            $this->provider_order->articles()->sync($syncData);
+        } else {
+            $this->provider_order->articles()->syncWithoutDetaching($syncData);
+        }
+
+        foreach ($this->new_articles as $new_article) {
+            $this->update_article($new_article);
+        }
     }
 
     function update_article($new_article) {
@@ -533,7 +552,7 @@ class NewProviderOrderHelper {
     }
 
     function update_article_provider($article, $new_article) {
-        if ($new_article['pivot']['update_provider']) {
+        if (isset($new_article['pivot']['update_provider']) && (bool)$new_article['pivot']['update_provider']) {
             
             $article->provider_id = $this->provider_order->provider_id;
             $article->timestamps = false;
@@ -580,7 +599,9 @@ class NewProviderOrderHelper {
 
     function save_stock_movement($article, $new_article) {
 
-        $amount = $new_article['pivot']['amount'];
+        $amount = (isset($new_article['pivot']['received']) && $new_article['pivot']['received'] > 0)
+            ? $new_article['pivot']['received']
+            : $new_article['pivot']['amount'];
 
         if ($amount != '' 
             && !is_null($amount)

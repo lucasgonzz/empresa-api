@@ -212,18 +212,49 @@ class Controller extends BaseController
         // Auth()->user()->notify(new UpdateModels($model_name, $check_added_by, $for_user_id));
     }
 
+    /**
+     * Obtiene el siguiente número correlativo para una tabla filtrada por una columna (p. ej. user_id).
+     * Usa bloqueo pesimista para evitar duplicados si dos peticiones calculan el correlativo a la vez.
+     *
+     * @param string $table Nombre de la tabla.
+     * @param int|null $user_id Id de usuario explícito para resolver el propietario (owner).
+     * @param string $prop_to_check Columna de filtro (por defecto user_id).
+     * @param mixed $prop_value Valor del filtro; si es null se usa el owner vía userId().
+     * @return int Siguiente número (1 si no hay filas previas con num válido).
+     */
     function num($table, $user_id = null, $prop_to_check = 'user_id', $prop_value = null) {
         if (is_null($prop_value)) {
             $prop_value = $this->userId(true, $user_id);
         }
-        $last = DB::table($table)
-                    ->where($prop_to_check, $prop_value)
-                    ->orderBy('num', 'DESC')
-                    ->first();
-        if (is_null($last) || is_null($last->num)) {
-            return 1;
+
+        // Cálculo del correlativo dentro de transacción con FOR UPDATE para serializar lecturas concurrentes.
+        $resolver = function () use ($table, $prop_to_check, $prop_value) {
+            // Si el correlativo es por usuario, bloqueamos la fila en users: con tabla vacía el SELECT del
+            // máximo no bloquea ninguna fila y dos hilos podrían obtener 1 a la vez.
+            if ($prop_to_check === 'user_id' && ! is_null($prop_value)) {
+                DB::table('users')->where('id', $prop_value)->lockForUpdate()->first();
+            }
+
+            $last = DB::table($table)
+                ->where($prop_to_check, $prop_value)
+                ->orderBy('num', 'DESC')
+                ->lockForUpdate()
+                ->first();
+
+            if (is_null($last) || is_null($last->num)) {
+                return 1;
+            }
+
+            return $last->num + 1;
+        };
+
+        // Si ya hay transacción abierta (p. ej. SaleController::store), no anidamos otra: los bloqueos
+        // se liberan al hacer commit de la transacción exterior.
+        if (DB::transactionLevel() > 0) {
+            return $resolver();
         }
-        return $last->num + 1;
+
+        return DB::transaction($resolver);
     }
 
     function createIfNotExist($table, $prop_name, $prop_value, $data_to_insert, $from_user = true, $user_id = false) {

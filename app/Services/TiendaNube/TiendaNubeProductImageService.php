@@ -66,18 +66,26 @@ class TiendaNubeProductImageService extends BaseTiendaNubeService
 
     public function delete_image_from_article(Article $article, Image $image): void
     {
-        if (empty($image->tiendanube_image_id)) {
+        Log::info('tienda_nube_image_id: '.$image->tienda_nube_image_id);
+        Log::info('article tiendanube_product_id: '.$article->tiendanube_product_id);
+        if (empty($image->tienda_nube_image_id)) {
+            Log::info('No se elimino imagen');
             return; // Nada que eliminar
         }
 
-        $endpoint = "/{$this->store_id}/products/{$article->tienda_nube_image_id}/images/{$image->tiendanube_image_id}";
+        if (empty($article->tiendanube_product_id)) {
+            throw new \InvalidArgumentException("El artículo no tiene tiendanube_product_id.");
+        }
+
+        $endpoint = "/{$this->store_id}/products/{$article->tiendanube_product_id}/images/{$image->tienda_nube_image_id}";
         $response = $this->http()->delete($endpoint);
 
         if ($response->failed()) {
             throw new \RuntimeException("Error al eliminar imagen de Tienda Nube: " . $response->body());
         }
 
-        $image->tiendanube_image_id = null;
+        Log::info('Se elimino imagen');
+        $image->tienda_nube_image_id = null;
         $image->save();
     }
 }

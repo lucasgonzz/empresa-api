@@ -10,6 +10,7 @@ use App\Http\Controllers\CurrentAcountController;
 use App\Http\Controllers\Helpers\Afip\MakeAfipTicket;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CajaHelper;
+use App\Http\Controllers\Helpers\ComercioCityMailHelper;
 use App\Http\Controllers\Helpers\CurrentAcountDeleteSaleHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\SaleChartHelper;
@@ -185,6 +186,7 @@ class SaleController extends Controller
                 'user_id'                           => $this->userId(),
                 // Array de descripciones del cálculo del precio final, serializado como JSON desde el frontend
                 'price_description'                 => $request->price_description,
+                'send_mail'                         => !is_null($request->send_mail) ? (bool) $request->send_mail : false,
             ]);
 
             if (is_null($model->price_type_id)) {
@@ -228,6 +230,8 @@ class SaleController extends Controller
             // }
 
             DB::commit();
+
+            ComercioCityMailHelper::new_sale($model);
 
             return response()->json(['model' => $this->fullModel('Sale', $model->id)], 201);
 
@@ -335,6 +339,8 @@ class SaleController extends Controller
             // Array de descripciones del cálculo del precio final, serializado como JSON desde el frontend
             $model->price_description                   = $request->price_description;
 
+            $model->send_mail                           = !is_null($request->send_mail) ? (bool) $request->send_mail : false;
+
             // $model->valor_dolar                         = $request->valor_dolar;
             
             $model->employee_id                         = SaleHelper::getEmployeeId($request);
@@ -363,6 +369,9 @@ class SaleController extends Controller
             $sale_modification->save();
 
             DB::commit();
+
+            ComercioCityMailHelper::new_sale($model, true);
+
             return response()->json(['model' => $this->fullModel('Sale', $model->id)], 200);
         
         } catch(\Throwable $e) {
@@ -453,7 +462,7 @@ class SaleController extends Controller
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
     }
 
-    function pdf(Request $request, $id, $with_prices, $with_costs, $precios_netos, $confirmed = 0) {
+    function pdf(Request $request, $id) {
         $sale = Sale::find($id);
 
 

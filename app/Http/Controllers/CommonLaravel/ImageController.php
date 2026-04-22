@@ -103,16 +103,20 @@ class ImageController extends Controller
         $image_name = $array[count($array)-1];
 
 
-
+        Log::info('model_name: '.$model_name);
         if ($model_name == 'article') {
             $article = Article::find($model_id);
 
             if ($article) {
+                Log::info('Llamando a TiendaNubeProductImageService');
+
                 
                 ProductService::add_article_to_sync($article);
 
                 $tn = new TiendaNubeProductImageService();
                 $tn->delete_image_from_article($article, $image);
+            } else {
+                Log::info('No se llamo a TiendaNubeProductImageService');
             }
         }
 

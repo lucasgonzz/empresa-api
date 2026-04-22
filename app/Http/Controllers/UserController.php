@@ -74,6 +74,9 @@ class UserController extends Controller
         $current_iva_included                   = $model->iva_included;
         $current_percentage_gain                = $model->percentage_gain;
         $current_cotizar_precios_en_dolares     = $model->cotizar_precios_en_dolares;
+        $current_redondear_precios_en_decenas   = (int) $model->redondear_precios_en_decenas;
+        $current_redondear_de_a_50              = (int) $model->redondear_de_a_50;
+        $current_redondear_precios_en_centavos  = (int) $model->redondear_precios_en_centavos;
 
         $model->name                            = $request->name;
         $model->doc_number                      = $request->doc_number;
@@ -100,13 +103,21 @@ class UserController extends Controller
         $model->sale_ticket_description          = $request->sale_ticket_description;
         $model->siempre_omitir_en_cuenta_corriente          = $request->siempre_omitir_en_cuenta_corriente;
         $model->redondear_centenas_en_vender          = $request->redondear_centenas_en_vender;
+        $model->redondear_precios_en_decenas          = $request->redondear_precios_en_decenas;
+        $model->redondear_de_a_50                     = $request->redondear_de_a_50;
+        $model->redondear_precios_en_centavos         = $request->redondear_precios_en_centavos;
         
         $model->header_articulos_pdf            = $request->header_articulos_pdf;
         $model->default_version                 = $request->default_version;
         $model->estable_version                 = $request->estable_version;
-        $model->api_url                         = $request->default_version
-                                                    ? 'api-' . $request->default_version
-                                                    : null;
+
+        if ($request->default_version) {
+            $api_url = str_replace('https://', 'https://api-', $request->default_version);
+            if (!config('app.VPS') && config('app.APP_ENV') == 'production') {
+                $api_url .= '/public';
+            }
+            $model->api_url  = $api_url;
+        }
 
         $model->text_omitir_cc                  = $request->text_omitir_cc;
         $model->percentage_gain                  = $request->percentage_gain;
@@ -153,7 +164,18 @@ class UserController extends Controller
         $this->check_update_articles_price_types_relations_on_lists_de_precio($owner_user, $current_lists_de_precio);
 
         // Si se encola recálculo masivo de precios, devolvemos feedback inmediato al usuario.
-        if ($this->check_actualizar_articulos($model, $current_dolar, $current_iva_included, $current_percentage_gain, $current_cotizar_precios_en_dolares)) {
+        if (
+            $this->check_actualizar_articulos(
+                $model,
+                $current_dolar,
+                $current_iva_included,
+                $current_percentage_gain,
+                $current_cotizar_precios_en_dolares,
+                $current_redondear_precios_en_decenas,
+                $current_redondear_de_a_50,
+                $current_redondear_precios_en_centavos
+            )
+        ) {
             $notifications[] = [
                 'message' => 'Se inició la actualización de precios en segundo plano. Te avisaremos cuando termine.',
                 'type'    => 'info',
@@ -323,20 +345,38 @@ class UserController extends Controller
      * @param mixed $current_iva_included Valor previo de iva_included.
      * @param mixed $current_percentage_gain Valor previo de percentage_gain.
      * @param mixed $current_cotizar_precios_en_dolares Valor previo de cotizar_precios_en_dolares.
+     * @param int $current_redondear_precios_en_decenas Valor previo del flag redondear_precios_en_decenas.
+     * @param int $current_redondear_de_a_50 Valor previo del flag redondear_de_a_50.
+     * @param int $current_redondear_precios_en_centavos Valor previo del flag redondear_precios_en_centavos.
      * @return bool true si se encoló un recálculo; false si no hubo cambios relevantes.
      */
-    function check_actualizar_articulos($model, $current_dolar, $current_iva_included, $current_percentage_gain, $current_cotizar_precios_en_dolares) {
+    function check_actualizar_articulos(
+        $model,
+        $current_dolar,
+        $current_iva_included,
+        $current_percentage_gain,
+        $current_cotizar_precios_en_dolares,
+        $current_redondear_precios_en_decenas,
+        $current_redondear_de_a_50,
+        $current_redondear_precios_en_centavos
+    ) {
 
         if (
             $model->dollar != $current_dolar
             || $model->iva_included != $current_iva_included
             || $model->percentage_gain != $current_percentage_gain
             || $model->cotizar_precios_en_dolares != $current_cotizar_precios_en_dolares
+            || (int) $model->redondear_precios_en_decenas !== (int) $current_redondear_precios_en_decenas
+            || (int) $model->redondear_de_a_50 !== (int) $current_redondear_de_a_50
+            || (int) $model->redondear_precios_en_centavos !== (int) $current_redondear_precios_en_centavos
         ) {
             Log::info($model->dollar.' | '.$current_dolar);
             Log::info($model->iva_included.' | '.$current_iva_included);
             Log::info($model->percentage_gain.' | '.$current_percentage_gain);
             Log::info($model->cotizar_precios_en_dolares.' | '.$current_cotizar_precios_en_dolares);
+            Log::info((int) $model->redondear_precios_en_decenas.' | '.(int) $current_redondear_precios_en_decenas);
+            Log::info((int) $model->redondear_de_a_50.' | '.(int) $current_redondear_de_a_50);
+            Log::info((int) $model->redondear_precios_en_centavos.' | '.(int) $current_redondear_precios_en_centavos);
             Log::info('Hubo cambios en propiedades de user');
 
             /** @var bool $from_dolar Indica si el recálculo se disparó por cambio de dólar (optimiza query en job). */

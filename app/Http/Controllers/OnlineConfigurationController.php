@@ -28,8 +28,10 @@ class OnlineConfigurationController extends Controller
         $model->facebook                        = $request->facebook;                     
         $model->quienes_somos                   = $request->quienes_somos;                     
         $model->default_article_image_url       = $request->default_article_image_url;                     
+        $model->logo_url                        = $request->logo_url;                     
         $model->mensaje_contacto                = $request->mensaje_contacto;                     
         $model->show_articles_without_images    = $request->show_articles_without_images;
+        $model->text_precio_pausado             = $request->text_precio_pausado;
         $model->save_sale_after_finish_order    = $request->save_sale_after_finish_order;
                              
         $model->show_articles_without_stock     = $request->show_articles_without_stock;
@@ -45,10 +47,13 @@ class OnlineConfigurationController extends Controller
         $model->cantidad_tarjetas_en_escritorio               = $request->cantidad_tarjetas_en_escritorio;
 
 
-        $model->titulo_quienes_somos               = $request->titulo_quienes_somos;                     
-        $model->default_amount_add_to_cart               = $request->default_amount_add_to_cart;       
-        $model->pedir_barrio_al_registrarse               = $request->pedir_barrio_al_registrarse;       
-        $model->logear_cliente_al_registrar               = $request->logear_cliente_al_registrar;       
+        $model->titulo_quienes_somos                = $request->titulo_quienes_somos;                     
+        $model->default_amount_add_to_cart          = $request->default_amount_add_to_cart;       
+        $model->pedir_barrio_al_registrarse         = $request->pedir_barrio_al_registrarse;       
+        $model->logear_cliente_al_registrar         = $request->logear_cliente_al_registrar;       
+        $model->auto_scroll_home                    = $request->auto_scroll_home;       
+        $model->auto_scroll_home_init               = $request->auto_scroll_home_init;       
+        $model->auto_scroll_home_interval           = $request->auto_scroll_home_interval;       
         
         $model->save();
         $this->sendAddModelNotification('OnlineConfiguration', $model->id);

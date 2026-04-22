@@ -175,6 +175,7 @@ class ArticleController extends Controller
         $model->stock_min                         = $request->stock_min;
         $model->online                            = $request->online;
         $model->in_offer                          = $request->in_offer;
+        $model->precio_pausado                    = $request->precio_pausado;
         $model->default_in_vender                 = $request->default_in_vender;
         $model->personalizar_price_en_vender                 = $request->personalizar_price_en_vender;
 
@@ -343,6 +344,7 @@ class ArticleController extends Controller
         $model->stock_min                         = $request->stock_min;
         $model->online                            = $request->online;
         $model->in_offer                          = $request->in_offer;
+        $model->precio_pausado                    = $request->precio_pausado;
         $model->default_in_vender                 = $request->default_in_vender;
         $model->personalizar_price_en_vender                 = $request->personalizar_price_en_vender;
         

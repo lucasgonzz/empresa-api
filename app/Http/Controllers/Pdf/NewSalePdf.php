@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Pdf\Afip\TicketInfoHelper;
 use App\Models\Address;
+use App\Models\User;
 use App\Services\PdfColumnService;
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
@@ -21,7 +22,7 @@ class NewSalePdf extends fpdf
     public function __construct($sale, $pdf_column_profile_id, $afip_ticket_id)
     {
 
-        $user = UserHelper::user();
+        $user = User::find($sale->user_id);
         $this->pdf_column_profile = PdfColumnService::get_profile_for_print($user->id, 'sale', $pdf_column_profile_id);
         $this->profile_columns = $this->get_profile_columns();
 
@@ -192,7 +193,12 @@ class NewSalePdf extends fpdf
             ];
         }
 
-        if (!is_null($this->sale->client) && $this->sale->save_current_acount && !is_null($this->sale->current_acount)) {
+        if (
+            !$this->is_afip_ticket
+            && !is_null($this->sale->client) 
+            && $this->sale->save_current_acount 
+            && !is_null($this->sale->current_acount)
+        ) {
             $data = array_merge($data, [
                 'current_acount'    => $this->sale->current_acount,
                 'client_id'         => $this->sale->client_id,

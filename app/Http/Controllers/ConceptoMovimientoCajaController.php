@@ -18,9 +18,9 @@ class ConceptoMovimientoCajaController extends Controller
 
     public function store(Request $request) {
         $model = ConceptoMovimientoCaja::create([
-            'num'                   => $this->num('ConceptoMovimientoCaja'),
+            // 'num'                   => $this->num('ConceptoMovimientoCaja'),
             'name'                  => $request->name,
-            'user_id'               => $this->userId(),
+            // 'user_id'               => $this->userId(),
         ]);
         $this->sendAddModelNotification('ConceptoMovimientoCaja', $model->id);
         return response()->json(['model' => $this->fullModel('ConceptoMovimientoCaja', $model->id)], 201);
