@@ -24,6 +24,7 @@ class AuthController extends Controller
         $login = false;
         $user = null;
         $user_last_activity = false;
+        $user_last_activity_wait_minutes = 0;
         /**
          * Determina si en este login se debe omitir la sincronización offline.
          */
@@ -47,6 +48,8 @@ class AuthController extends Controller
 
                 Log::info("Usuario {$user->name}, doc: {$user->doc_number} entro desde: ".$request->header('referer'));
             } else {
+                $user_last_activity_wait_minutes = $this->getUserLastActivityWaitMinutes(Auth()->user());
+                Auth::logout();
                 Log::info('no paso user_last_activity');
                 $user_last_activity = true;
             }
@@ -66,6 +69,7 @@ class AuthController extends Controller
             'login'                 => $login,
             'user'                  => $user,
             'user_last_activity'    => $user_last_activity,
+            'user_last_activity_wait_minutes' => $user_last_activity_wait_minutes,
         ], 200);
     }
 
@@ -275,13 +279,12 @@ class AuthController extends Controller
     }
 
     function checkUserLastActivity() {
-        return true;
         if (class_exists('App\Http\Controllers\Helpers\AuthHelper')) {
             $auth_helper = new \App\Http\Controllers\Helpers\AuthHelper();
             if (method_exists($auth_helper, 'checkUserLastActivity')) {
                 return $auth_helper->checkUserLastActivity();
             }
-        } 
+        }
         return true;
     }
 
@@ -292,6 +295,21 @@ class AuthController extends Controller
                 return $auth_helper->removeUserLastActivity(Auth()->user());
             }
         } 
+    }
+
+    function getUserLastActivityWaitMinutes($user = null) {
+        if (!$user) {
+            return 0;
+        }
+
+        if (class_exists('App\Http\Controllers\Helpers\AuthHelper')) {
+            $auth_helper = new \App\Http\Controllers\Helpers\AuthHelper();
+            if (method_exists($auth_helper, 'get_remaining_wait_minutes')) {
+                return $auth_helper->get_remaining_wait_minutes($user);
+            }
+        }
+
+        return 0;
     }
 
 }

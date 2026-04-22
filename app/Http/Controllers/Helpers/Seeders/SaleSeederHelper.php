@@ -46,6 +46,7 @@ class SaleSeederHelper {
         $request->current_acount_payment_method_id = null;
         $request->discount_amount = null;
         $request->discount_percentage = null;
+        $request->current_acount_payment_method_id = null;
         $request->client_id = $sale['client_id'];
 
         foreach ($sale['articles'] as $article) {

@@ -90,7 +90,7 @@ class UserSeeder extends Seeder
             $models[0]['company_name'] = 'Renacer Joyas y Perfumes';
             $models[0]['iva_included'] = 1;
             $models[0]['iva_condition_id'] = 2;
-            $models[0]['doc_number'] = '34702455';
+            // $models[0]['doc_number'] = '34702455';
 
             $models[0]['extencions'] = [
 
@@ -110,7 +110,7 @@ class UserSeeder extends Seeder
             $models[0]['company_name'] = '3d Tisk';
             $models[0]['iva_included'] = 0;
             $models[0]['iva_condition_id'] = 1;
-            $models[0]['doc_number'] = '42385504';
+            // $models[0]['doc_number'] = '42385504';
             $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
             
 
@@ -134,7 +134,7 @@ class UserSeeder extends Seeder
             $models[0]['company_name'] = 'HT5 Store';
             $models[0]['iva_included'] = 0;
             $models[0]['iva_condition_id'] = 1;
-            $models[0]['doc_number'] = '42385504';
+            // $models[0]['doc_number'] = '42385504';
             $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
             
 
@@ -187,7 +187,7 @@ class UserSeeder extends Seeder
             $models[0]['company_name'] = 'San blas';
             $models[0]['iva_included'] = 0;
             $models[0]['iva_condition_id'] = 1;
-            $models[0]['doc_number'] = '1234';
+            // $models[0]['doc_number'] = '1234';
             $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
 
             
@@ -216,7 +216,7 @@ class UserSeeder extends Seeder
             $models[0]['company_name'] = 'San blas';
             $models[0]['iva_included'] = 0;
             $models[0]['iva_condition_id'] = 1;
-            $models[0]['doc_number'] = '1234';
+            // $models[0]['doc_number'] = '1234';
             $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
             $models[0]['comparar_precios_de_proveedores_en_excel'] = 1;
 
@@ -248,7 +248,7 @@ class UserSeeder extends Seeder
             // $models[0]['cotizar_precios_en_dolares'] = 0;
             $models[0]['iva_included'] = 0;
             $models[0]['iva_condition_id'] = 1;
-            $models[0]['doc_number'] = '1234';
+            // $models[0]['doc_number'] = '1234';
             $models[0]['info_afip_del_primer_punto_de_venta'] = 1;
             
 
@@ -295,7 +295,7 @@ class UserSeeder extends Seeder
 
             $models[0]['name'] = 'Maxi';
             $models[0]['company_name'] = 'Electro lacarra';
-            $models[0]['doc_number'] = '34505584';
+            // $models[0]['doc_number'] = '34505584';
             $models[0]['iva_included'] = 0;
             $models[0]['iva_condition_id'] = 2;
 
@@ -711,7 +711,7 @@ class UserSeeder extends Seeder
                 'default_article_iva_id'                 => isset($model['default_article_iva_id']) ? $model['default_article_iva_id'] : null,
                 'dias_alertar_empleados_ventas_no_cobradas'        => 1,
                 'dias_alertar_administradores_ventas_no_cobradas'  => 1,
-                'default_version'               => null,
+                'default_version'               => 'http://empresa.local:8080',
                 // 'default_version'               => env('APP_ENV') == 'local' ? 'http://empresa.local:8080' : $model['default_version'],
                 'estable_version'               => null,
                 'google_cuota'                 => isset($model['google_cuota']) ? $model['google_cuota'] : null,

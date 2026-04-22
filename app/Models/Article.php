@@ -14,6 +14,15 @@ class Article extends Model
 
     protected $dates = ['stock_updated_at', 'final_price_updated_at'];
 
+    /**
+     * Casts: precio_pausado indica mostrar texto de tienda en lugar del importe.
+     *
+     * @var array<string, string>
+     */
+    protected $casts = [
+        'precio_pausado' => 'boolean',
+    ];
+
     // protected $appends = ['costo_real'];
 
     function scopeWithAll($query) {

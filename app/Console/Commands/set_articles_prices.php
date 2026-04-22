@@ -46,7 +46,6 @@ class set_articles_prices extends Command
             $user_id = $this->argument('user_id');
         }
 
-
         $user = User::find($user_id);
 
         $articles = Article::where('user_id', $user_id)

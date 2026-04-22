@@ -442,7 +442,7 @@ class AfipTicketPdf extends fpdf {
 		$this->SetX(6);
 		// $this->SetFont('Arial', 'B', 9);
 		// $this->Cell(23,12,'Razón Social:',0,0,'L');
-		$this->SetFont('Arial', 'B', 20);
+		$this->SetFont('Arial', 'B', 15);
 	    $this->MultiCell( 
 			90, 
 			6, 

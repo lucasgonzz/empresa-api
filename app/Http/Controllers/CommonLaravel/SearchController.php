@@ -284,8 +284,19 @@ class SearchController extends Controller
                         && isset($filter['checkbox'])
                         && $filter['checkbox'] != -1
                     ) {
-                        
-                        $models = $models->where($filter['key'], $filter['checkbox']);
+                        // Clave del filtro (columna booleana/tinyint). Valor pedido por el cliente (1/0, true/false, '0', etc.).
+                        $checkboxKey = $filter['key'];
+                        $checkboxVal = $filter['checkbox'];
+
+                        // Desactivado: en SQL `col = 0` no coincide con NULL; tratamos NULL como desactivado igual que 0/false.
+                        if (in_array($checkboxVal, [0, false, '0'], true)) {
+                            $models = $models->where(function ($subquery) use ($checkboxKey) {
+                                $subquery->whereNull($checkboxKey)
+                                    ->orWhere($checkboxKey, 0);
+                            });
+                        } else {
+                            $models = $models->where($checkboxKey, $checkboxVal);
+                        }
 
                         $used_filters[] = [
                             'key'       => $filter['key'],

@@ -32,4 +32,8 @@ class DepositMovement extends Model
     function employee() {
         return $this->belongsTo(User::class, 'employee_id');
     }
+
+    function stock_suggestion() {
+        return $this->belongsTo(StockSuggestion::class);
+    }
 }

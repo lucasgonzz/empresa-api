@@ -19,6 +19,7 @@ class ChequeHelper {
             'fecha_emision'             => $payment_method['fecha_emision'] ?? null,
             'fecha_pago'                => $payment_method['fecha_pago'] ?? null,
             'es_echeq'                  => $payment_method['es_echeq'] ?? 0,
+            'notes'                     => $payment_method['notes'] ?? 0,
 
             // Tipo de cheque: recibido (de cliente) o emitido (a proveedor)
             'tipo'                      => Self::get_tipo($model, $from_expense),
