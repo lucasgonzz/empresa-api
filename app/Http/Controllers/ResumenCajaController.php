@@ -68,6 +68,8 @@ class ResumenCajaController extends Controller
                         ->get();
 
         $sales_cc = Sale::where('user_id', $this->userId())
+                        /** Excluye ventas contenedoras de facturación: no son ventas reales. */
+                        ->soloVentasReales()
                         ->where('employee_id', $request->employee_id)
                         ->where('created_at', '>=', $desde)
                         ->where('created_at', '<=' ,$hasta)

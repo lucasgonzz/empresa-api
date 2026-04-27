@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Models\SyncedVersion;
 use App\Models\SyncedVersionNotification;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
@@ -13,6 +14,7 @@ class AdminSyncHelper
      * Aplica una versión publicada por el admin-api al almacenamiento local.
      * Idempotente por uuid: se puede re-publicar la misma versión sin duplicar
      * ni resetear lecturas (synced_version_notification_reads queda intacto).
+     * Además propaga el texto de versión a todos los usuarios (users.version_name).
      *
      * @param array $versionPayload ['uuid','version','title','description','published_at']
      * @param array $notificationsPayload [['uuid','title','body','sort_order','is_active'], ...]
@@ -55,7 +57,13 @@ class AdminSyncHelper
                 );
             }
 
+            $versionLabel = $versionPayload['version'] ?? null;
+            if ($versionLabel !== null && $versionLabel !== '') {
+                User::query()->update(['version_name' => (string) $versionLabel]);
+            }
+
             return $synced_version->fresh('notifications');
         });
     }
 }
+

@@ -423,6 +423,14 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Adjuntar archivos a articulos en las ventas',
                 'slug' => 'adjuntar_archivos_en_vantas',
             ],
+            [
+                'name' => 'Chat de soporte',
+                'slug' => 'support_chat',
+            ],
+            [
+                'name' => 'Consolidar ventas en una unica factura',
+                'slug' => 'consolidar_ventas_en_factura',
+            ],
 
         ];
         foreach ($extencions as $extencion) {

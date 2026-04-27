@@ -79,12 +79,12 @@ class AfipItemCalculator
             /** @var float $monto_iva IVA total por cantidad del ítem actual. */
             $monto_iva = $this->monto_iva_del_precio() * $this->get_article_amount();
 
-            if (
-                $this->afip_helper->sale->moneda_id == 2
-                && !is_null($this->afip_helper->sale->valor_dolar)
-            ) {
-                $monto_iva *= (float) $this->afip_helper->sale->valor_dolar;
-            }
+            // if (
+            //     $this->afip_helper->sale->moneda_id == 2
+            //     && !is_null($this->afip_helper->sale->valor_dolar)
+            // ) {
+            //     $monto_iva *= (float) $this->afip_helper->sale->valor_dolar;
+            // }
 
             return $monto_iva;
         }
@@ -106,13 +106,13 @@ class AfipItemCalculator
             $importe = $this->monto_iva_del_precio() * $this->get_article_amount();
             $base_imp = $this->get_price_without_iva() * $this->get_article_amount();
 
-            if (
-                $this->afip_helper->sale->moneda_id == 2
-                && !is_null($this->afip_helper->sale->valor_dolar)
-            ) {
-                $importe *= (float) $this->afip_helper->sale->valor_dolar;
-                $base_imp *= (float) $this->afip_helper->sale->valor_dolar;
-            }
+            // if (
+            //     $this->afip_helper->sale->moneda_id == 2
+            //     && !is_null($this->afip_helper->sale->valor_dolar)
+            // ) {
+            //     $importe *= (float) $this->afip_helper->sale->valor_dolar;
+            //     $base_imp *= (float) $this->afip_helper->sale->valor_dolar;
+            // }
         }
 
         return ['Importe' => round($importe, 2), 'BaseImp' => round($base_imp, 2)];
@@ -126,7 +126,9 @@ class AfipItemCalculator
      */
     public function get_price_without_iva($with_discount = true)
     {
-        /** @var float $price Precio base sobre el que se descompone IVA. */
+        /** @var float $price Precio base sobre el que se descompone IVA.
+         * get_article_price_raw ya me lo da cotizado
+         *  */
         $price = $with_discount ? $this->get_article_price_with_discounts() : $this->get_article_price_raw();
 
         if (
@@ -343,14 +345,14 @@ class AfipItemCalculator
             /** @var float $gravado Base imponible total para cantidad actual. */
             $gravado = $this->get_price_without_iva() * $this->get_article_amount();
 
-            if (
-                $this->afip_helper->sale->moneda_id == 2
-                && !is_null($this->afip_helper->sale->valor_dolar)
-            ) {
-                Log::info('Venta en dolares, multiplicando ' . $gravado . ' * ' . $this->afip_helper->sale->valor_dolar);
-                $gravado *= (float) $this->afip_helper->sale->valor_dolar;
-                Log::info('QUedo en ' . $gravado);
-            }
+            // if (
+            //     $this->afip_helper->sale->moneda_id == 2
+            //     && !is_null($this->afip_helper->sale->valor_dolar)
+            // ) {
+            //     Log::info('Venta en dolares, multiplicando ' . $gravado . ' * ' . $this->afip_helper->sale->valor_dolar);
+            //     $gravado *= (float) $this->afip_helper->sale->valor_dolar;
+            //     Log::info('QUedo en ' . $gravado);
+            // }
 
             return $gravado;
         }

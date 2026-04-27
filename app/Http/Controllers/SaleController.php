@@ -21,6 +21,7 @@ use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComis
 use App\Http\Controllers\Helpers\sale\AcopioHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
+use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
 use App\Http\Controllers\Helpers\sale\SaleNotaCreditoAfipHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Http\Controllers\Pdf\EtiquetaEnvioPdf;
@@ -50,6 +51,8 @@ class SaleController extends Controller
 
     public function index($modulo, $from_date = null, $until_date = null) {
         $models = Sale::where('user_id', $this->userId())
+                        /** Excluye ventas contenedoras de facturación del listado general de ventas. */
+                        // ->soloVentasReales()
                         ->orderBy('created_at', 'DESC')
                         ->withAll();
 
@@ -103,6 +106,8 @@ class SaleController extends Controller
 
     public function por_entregar($from_depositos, $from_date = null) {
         $models = Sale::where('user_id', $this->userId())
+                        /** Las consolidadas nunca tienen pendientes de entrega: siempre terminadas. */
+                        ->soloVentasReales()
                         ->orderBy('created_at', 'DESC')
                         ->withAll()
                         ->where('terminada', 0)
@@ -187,6 +192,8 @@ class SaleController extends Controller
                 // Array de descripciones del cálculo del precio final, serializado como JSON desde el frontend
                 'price_description'                 => $request->price_description,
                 'send_mail'                         => !is_null($request->send_mail) ? (bool) $request->send_mail : false,
+                // Log detallado de acciones en vender serializado desde frontend.
+                'log'                               => $request->log,
             ]);
 
             if (is_null($model->price_type_id)) {
@@ -340,6 +347,8 @@ class SaleController extends Controller
             $model->price_description                   = $request->price_description;
 
             $model->send_mail                           = !is_null($request->send_mail) ? (bool) $request->send_mail : false;
+            // Log detallado de acciones en vender serializado desde frontend.
+            $model->log                                 = $request->log;
 
             // $model->valor_dolar                         = $request->valor_dolar;
             
@@ -599,6 +608,8 @@ class SaleController extends Controller
     function excel_export($from_date, $until_date = null) {
 
         $models = Sale::where('user_id', $this->userId())
+                        /** Excluye ventas contenedoras de facturación del export Excel. */
+                        ->soloVentasReales()
                         ->orderBy('created_at', 'DESC');
 
         if (!is_null($from_date)) {
@@ -620,6 +631,8 @@ class SaleController extends Controller
     function excel_breakdown_export($from_date, $until_date = null) {
 
         $models = Sale::where('user_id', $this->userId())
+                        /** Excluye ventas contenedoras de facturación del export desglosado. */
+                        ->soloVentasReales()
                         ->with(['articles', 'client', 'employee'])
                         ->orderBy('created_at', 'DESC');
 
@@ -657,5 +670,79 @@ class SaleController extends Controller
         $sale->is_cerrada = 1;
         $sale->save();
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
+    }
+
+    /**
+     * Lista las ventas de un cliente que son elegibles para ser consolidadas.
+     * Respeta los mismos filtros que el usuario aplicaría manualmente.
+     *
+     * Query params:
+     *   - client_id (requerido)
+     *   - from (opcional, Y-m-d)
+     *   - until (opcional, Y-m-d)
+     *
+     * @param  Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function ventasPorConsolidar(Request $request) {
+        /** Ventas elegibles: terminadas, sin CAE, sin consolidación previa, del cliente indicado. */
+        $ventas = ConsolidarFacturacionHelper::ventas_por_consolidar(
+            (int) $request->client_id,
+            $this->userId(),
+            $request->from,
+            $request->until
+        );
+
+        return response()->json(['models' => $ventas], 200);
+    }
+
+    /**
+     * Crea la venta consolidada para facturación agrupando las ventas indicadas
+     * y dispara el comprobante AFIP sobre ella.
+     *
+     * Request body esperado:
+     *   - client_id                  (int, requerido)
+     *   - sale_ids                   (array de ints, requerido)
+     *   - afip_information_id        (int, requerido)
+     *   - afip_tipo_comprobante_id   (int, requerido)
+     *   - agrupar_items              (bool, opcional, default false)
+     *   - afip_fecha_emision         (string Y-m-d, opcional)
+     *   - monto_a_facturar           (float, opcional)
+     *   - forma_de_pago              (string, opcional)
+     *   - permiso_existente          (string, opcional)
+     *   - incoterms                  (string, opcional)
+     *
+     * @param  Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function consolidarFacturacion(Request $request) {
+        try {
+            /** Construye el array de datos AFIP extra a partir del request. */
+            $afip_data = [
+                'afip_fecha_emision'             => $request->afip_fecha_emision,
+                'monto_a_facturar'               => $request->monto_a_facturar,
+                'forma_de_pago'                  => $request->forma_de_pago,
+                'permiso_existente'              => $request->permiso_existente,
+                'incoterms'                      => $request->incoterms,
+            ];
+
+            /** Llamada con argumentos posicionales (compatible con PHP 7.3; los nombres solo existen desde PHP 8.0). */
+            $venta_consolidada = ConsolidarFacturacionHelper::consolidar(
+                (array) $request->sale_ids,
+                (int) $request->client_id,
+                $this->userId(),
+                (int) $request->afip_information_id,
+                (int) $request->afip_tipo_comprobante_id,
+                (bool) ($request->agrupar_items ?? false),
+                $afip_data,
+                true
+            );
+
+            return response()->json(['model' => $this->fullModel('Sale', $venta_consolidada->id)], 201);
+
+        } catch (\Throwable $e) {
+            Log::error('consolidarFacturacion error: ' . $e->getMessage());
+            return response()->json(['error' => true, 'message' => $e->getMessage()], 422);
+        }
     }
 }

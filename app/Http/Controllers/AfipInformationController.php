@@ -18,10 +18,12 @@ class AfipInformationController extends Controller
     }
 
     public function store(Request $request) {
+        /** Persiste configuración AFIP incluyendo nombre opcional del dueño. */
         $model = AfipInformation::create([
             // 'num'                       => $this->num('afip_information'),
             'iva_condition_id'          => $request->iva_condition_id,
             'razon_social'              => $request->razon_social,
+            'owner_name'                => $request->owner_name,
             'domicilio_comercial'       => $request->domicilio_comercial,
             'cuit'                      => $request->cuit,
             'ingresos_brutos'           => $request->ingresos_brutos,
@@ -44,6 +46,7 @@ class AfipInformationController extends Controller
         $model = AfipInformation::find($id);
         $model->iva_condition_id          = $request->iva_condition_id;
         $model->razon_social              = $request->razon_social;
+        $model->owner_name                = $request->owner_name;
         $model->domicilio_comercial       = $request->domicilio_comercial;
         $model->cuit                      = $request->cuit;
         $model->ingresos_brutos           = $request->ingresos_brutos;

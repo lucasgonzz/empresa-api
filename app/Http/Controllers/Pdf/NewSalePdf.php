@@ -177,7 +177,7 @@ class NewSalePdf extends fpdf
         } else if ($this->afip_ticket) {
             $data['title']          = $this->afip_ticket->cbte_letra;
             $data['num']            = $this->getPuntoVenta() .' - '. $this->getNumCbte();
-            $data['titulo']         = $this->afip_ticket->afip_information->razon_social;
+            $data['titulo']         = $this->get_titulo();
             $data['date']           = $print_date ?? $this->afip_ticket->created_at;
             $data['afip_ticket']    = $this->afip_ticket;
         }
@@ -195,6 +195,7 @@ class NewSalePdf extends fpdf
 
         if (
             !$this->is_afip_ticket
+            && $this->show_total_in_footer
             && !is_null($this->sale->client) 
             && $this->sale->save_current_acount 
             && !is_null($this->sale->current_acount)
@@ -218,8 +219,13 @@ class NewSalePdf extends fpdf
 
     }
 
-    
-
+    function get_titulo() {
+        $titulo = $this->afip_ticket->afip_information->razon_social;
+        if ($this->afip_ticket->afip_information->owner_name && $this->afip_ticket->afip_information->owner_name != '') {
+            $titulo .= ' - '.$this->afip_ticket->afip_information->owner_name;
+        } 
+        return $titulo;
+    }
 
     function getPuntoVenta() {
         $letras_faltantes = 5 - strlen($this->afip_ticket->punto_venta);
@@ -695,6 +701,7 @@ class NewSalePdf extends fpdf
             'item' => $item,
             'index' => $index,
             'sale' => $this->sale,
+            'afip_ticket' => $this->afip_ticket,
             'afip_helper' => $this->afip_helper,
             'numbers' => Numbers::class,
             'general_helper' => GeneralHelper::class,

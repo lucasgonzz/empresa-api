@@ -518,6 +518,8 @@ class PerformanceHelper
 
     function set_sales() {
         $this->sales = Sale::where('user_id', $this->user_id)
+                            /** Excluye ventas contenedoras de facturación: no son ventas reales. */
+                            ->soloVentasReales()
                             ->where(function ($query) {
 
                                 $query->where(function ($subQuery) {
@@ -1048,7 +1050,24 @@ class PerformanceHelper
 
                     $suma_payment_methods += $total;
 
+                    if (!isset($this->ingresos_cuenta_corriente[$payment_method->id])) {
+                        $this->ingresos_cuenta_corriente[$payment_method->id] = [
+                            'id'        => $payment_method->id,
+                            'nombre'    => $payment_method->name,
+                            'total'     => 0,
+                        ];
+                    } 
+
                     $this->ingresos_cuenta_corriente[$payment_method->id]['total'] += $total;
+
+                    if (!isset($this->users_payment_methods[$employee_id])) {
+                        
+                        $this->users_payment_methods[$employee_id] = [
+                            'user_id'           => $employee_id,
+                            'total_vendido'     => 0,
+                            'payment_methods'   => $this->get_payment_methods(),
+                        ];
+                    }
 
                     $this->users_payment_methods[$employee_id]['payment_methods'][$payment_method->id]['total'] += $total;
                 } 
@@ -1295,6 +1314,8 @@ class PerformanceHelper
 
     function get_ventas_del_dia() {
         return Sale::where('user_id', $this->user_id)
+                            /** Excluye ventas contenedoras de facturación: no son ventas reales. */
+                            ->soloVentasReales()
                             ->whereDate('created_at', Carbon::today())
                             ->get();
     }

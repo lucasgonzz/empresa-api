@@ -44,16 +44,28 @@ class AfipTicketController extends Controller
 
     function problemas_al_facturar() {
 
+        /** Obtiene el usuario autenticado para filtrar ventas propias. */
         $user_id = $this->userId();
 
+        /** Acumula ventas con problemas de facturación sin duplicados. */
         $errores_de_facturacion = [];
+
+        /** Guarda los IDs de ventas ya agregadas para evitar duplicados. */
+        $sale_ids_agregados = [];
         
         $afip_tickets_con_errores = AfipTicket::where(function($q) {
                                                 $q->whereNull('cae')
                                                     ->orWhere('cae', '');
                                             })
                                             ->whereHas('sale', function($q2) use($user_id) {
-                                                $q2->where('user_id', $user_id);
+                                                $q2->where('user_id', $user_id)
+                                                   /**
+                                                    * Excluye ventas individuales que ya fueron incluidas en una consolidación
+                                                    * de facturación: su comprobante se emite a través de la venta consolidada.
+                                                    * Las propias ventas contenedoras (is_consolidacion_facturacion=1) sí
+                                                    * deben aparecer aquí si su ticket AFIP tiene problemas.
+                                                    */
+                                                   ->whereNull('consolidacion_facturacion_id');
                                             })
                                             ->with('sale.afip_tickets.afip_observations', 'sale.afip_tickets.afip_errors')
                                             ->orderBy('created_at', 'DESC')
@@ -61,90 +73,14 @@ class AfipTicketController extends Controller
 
         foreach ($afip_tickets_con_errores as $afip_ticket) {
 
+            /** Si la venta ya fue agregada, evita volver a incluirla. */
+            if (in_array($afip_ticket->sale_id, $sale_ids_agregados)) {
+                continue;
+            }
+
             $errores_de_facturacion[] = $afip_ticket->sale;
+            $sale_ids_agregados[] = $afip_ticket->sale_id;
         }
-
-        return response()->json(['models' => $errores_de_facturacion], 200);
-
-
-
-
-
-
-
-        $sales_with_afip_errors = Sale::where('user_id', $this->userId())
-                            ->with('address')
-                            ->with('employee')
-                            ->whereHas('afip_tickets', function($query) {
-                                $query->whereNull('cae');
-                            })
-                            ->with('afip_tickets.afip_errors', 'afip_tickets.afip_observations')
-                            ->orderBy('created_at', 'DESC');
-
-        if (!$this->is_admin()) {
-            $sales_with_afip_errors = $sales_with_afip_errors->where('employee_id', $this->userId(false));
-        }
-
-        $sales_with_afip_errors = $sales_with_afip_errors->get();
-
-        $sales_with_afip_observations = Sale::where('user_id', $this->userId())
-                            ->with('address')
-                            ->whereHas('afip_tickets', function($query) {
-                                $query->has('afip_errors')
-                                        ->orHas('afip_observations');
-                            })
-                            ->with('afip_tickets.afip_errors', 'afip_tickets.afip_observations')
-                            ->whereHas('afip_observations')
-                            ->with('employee')
-                            ->orderBy('created_at', 'ASC');
-
-        if (!$this->is_admin()) {
-            $sales_with_afip_observations = $sales_with_afip_observations->where('employee_id', $this->userId(false));
-        }
-
-        $sales_with_afip_observations = $sales_with_afip_observations->get();
-
-        $errores_de_facturacion = [];
-
-        // Log::info('sales_with_afip_errors:');
-        // Log::info($sales_with_afip_errors);
-        
-        // Log::info('sales_with_afip_observations:');
-        // Log::info($sales_with_afip_observations);
-
-        foreach ($sales_with_afip_errors as $sale_afip_error) {
-
-            foreach ($sale_afip_error->afip_tickets as $afip_ticket) {
-
-                if (
-                    is_null($afip_ticket->cae)
-                    || $afip_ticket->cae == ''
-                ) {
-
-                    $errores_de_facturacion[] = $sale_afip_error;
-                }
-            }
-            
-        }
-
-        foreach ($sales_with_afip_observations as $sale_afip_obs) {
-            
-            foreach ($sale_afip_error->afip_tickets as $afip_ticket) {
-
-                if (
-                    is_null($afip_ticket->cae)
-                    || $afip_ticket->cae == ''
-                ) {
-
-                    if (!collect($errores_de_facturacion)->pluck('id')->contains($afip_ticket->id)) {
-                        $errores_de_facturacion[] = $sale_afip_obs;
-                    }
-                }
-            }
-        }
-
-        Log::info('errores_de_facturacion');
-        Log::info($errores_de_facturacion);
 
         return response()->json(['models' => $errores_de_facturacion], 200);
     }       

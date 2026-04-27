@@ -470,6 +470,16 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'Vender',
                 'en'            => 'vender.prohibir_camibar_lista_de_precios',
             ],
+            [
+                'singular'      => 'Ver chats de otros usuarios',
+                'plural'        => 'Soporte',
+                'en'            => 'support.see_other_users_chats',
+            ],
+            [
+                'singular'      => 'Ver chats del dueño',
+                'plural'        => 'Soporte',
+                'en'            => 'support.see_owner_chats',
+            ],
 
         ];
         foreach ($permissions as $permission) {

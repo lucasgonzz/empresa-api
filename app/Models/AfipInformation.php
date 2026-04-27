@@ -4,6 +4,11 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 
+/**
+ * Modelo de configuración fiscal AFIP por usuario.
+ *
+ * @property string|null $owner_name Nombre opcional del dueño para cabecera de factura.
+ */
 class AfipInformation extends Model
 {
     protected $guarded = [];
