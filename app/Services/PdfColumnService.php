@@ -234,6 +234,9 @@ class PdfColumnService
                 if (! isset($item->pivot->price)) {
                     return '';
                 }
+                if (isset($context['afip_ticket'])) {
+                    return $numbers::price($item->pivot->price, true);
+                }
                 return $numbers::price($item->pivot->price, true, $sale ? $sale->moneda_id : null);
             case 'item_subtotal':
                 if (! isset($item->pivot->price) || ! isset($item->pivot->amount)) {
@@ -243,19 +246,24 @@ class PdfColumnService
                 if (! is_null($item->pivot->discount ?? null)) {
                     $total -= $total * ($item->pivot->discount / 100);
                 }
+
+                if (isset($context['afip_ticket'])) {
+                    return $numbers::price($total, true);
+                }
+
                 return $numbers::price($total, true, $sale ? $sale->moneda_id : null);
             case 'item_price_without_iva':
                 /**
                  * Prioriza valor persistido en pivot para evitar recálculo posterior.
                  */
                 if (isset($item->pivot->price_sin_iva) && !is_null($item->pivot->price_sin_iva)) {
-                    return $numbers::price($item->pivot->price_sin_iva, true, $sale ? $sale->moneda_id : null);
+                    return $numbers::price($item->pivot->price_sin_iva, true);
                 }
                 if ($afip_helper && $sale) {
-                    return $numbers::price($afip_helper->getArticlePrice($sale, $item), true, $sale->moneda_id ?? null);
+                    return $numbers::price($afip_helper->getArticlePrice($sale, $item), true);
                 }
                 if (isset($item->pivot->price)) {
-                    return $numbers::price($item->pivot->price, true, $sale ? $sale->moneda_id : null);
+                    return $numbers::price($item->pivot->price, true);
                 }
                 return '';
             case 'item_subtotal_without_iva':

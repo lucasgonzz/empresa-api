@@ -11,7 +11,8 @@ class CreateSyncedVersionNotificationReadsTable extends Migration
         Schema::create('synced_version_notification_reads', function (Blueprint $table) {
             $table->id();
             $table->unsignedBigInteger('synced_version_notification_id');
-            $table->unsignedBigInteger('user_id');
+            // Debe coincidir con users.id (increments = unsigned int), no con bigInteger.
+            $table->unsignedInteger('user_id');
             $table->timestamp('read_at');
             $table->timestamp('synced_to_admin_at')->nullable();
             $table->timestamps();

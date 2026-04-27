@@ -13,6 +13,14 @@ class Sale extends Model
     
     protected $dates = ['fecha_entrega'];
 
+    /**
+     * Casts de atributos serializados para exponer tipos consistentes en API.
+     */
+    protected $casts = [
+        // Bitácora detallada de auditoría enviada desde el módulo vender.
+        'log' => 'array',
+    ];
+
     public function current_acount_payment_methods(){
         return $this->belongsToMany(CurrentAcountPaymentMethod::class)->withPivot('amount', 'discount_percentage', 'discount_amount', 'caja_id', 'amount_cotizado', 'cotizacion', 'moneda_id', 'cuota_id');
     }
@@ -160,6 +168,41 @@ class Sale extends Model
 
     public function seller() {
         return $this->belongsTo(Seller::class);
+    }
+
+    /**
+     * Relación hacia la venta consolidada que agrupa esta venta original.
+     * Nulo si la venta no fue incluida en ninguna consolidación de facturación.
+     */
+    public function consolidacion_facturacion() {
+        return $this->belongsTo(Sale::class, 'consolidacion_facturacion_id');
+    }
+
+    /**
+     * Ventas individuales (originales) que fueron agrupadas bajo esta venta consolidada.
+     * Solo aplica cuando is_consolidacion_facturacion = 1.
+     */
+    public function ventas_consolidadas() {
+        return $this->hasMany(Sale::class, 'consolidacion_facturacion_id');
+    }
+
+    /**
+     * Scope: excluye las ventas contenedoras de facturación de los reportes de ventas reales.
+     * Usar en todos los queries que calculen totales, rendimiento, caja o performance.
+     */
+    public function scopeSoloVentasReales($query) {
+        return $query->where(function($q) {
+            $q->whereNull('is_consolidacion_facturacion')
+              ->orWhere('is_consolidacion_facturacion', 0);
+        });
+    }
+
+    /**
+     * Scope: incluye solo las ventas que son contenedoras de facturación AFIP.
+     * Útil para listar consolidaciones emitidas.
+     */
+    public function scopeConsolidacionesFacturacion($query) {
+        return $query->where('is_consolidacion_facturacion', 1);
     }
 
 }

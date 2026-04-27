@@ -150,6 +150,8 @@ class ReporteController extends Controller
             while ($mes_inicio->lte($mes_fin)) {
 
                 $sales = Sale::where('user_id', $this->userId())
+                                /** Excluye ventas contenedoras de facturación: no son ventas reales. */
+                                ->soloVentasReales()
                                 ->whereDate('created_at', '>=', $mes_inicio)
                                 ->whereDate('created_at', '<=', $mes_inicio->addMonth())
                                 ->where('terminada', 1)
@@ -216,6 +218,8 @@ class ReporteController extends Controller
 
     function get_ventas_del_dia() {
         return Sale::where('user_id', $this->userId())
+                            /** Excluye ventas contenedoras de facturación: no son ventas reales. */
+                            ->soloVentasReales()
                             ->whereDate('created_at', Carbon::today())
                             ->get();
     }

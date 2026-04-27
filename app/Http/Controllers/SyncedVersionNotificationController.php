@@ -17,7 +17,9 @@ class SyncedVersionNotificationController extends Controller
             return response()->json(['models' => []], 200);
         }
 
-        $models = SyncedVersionNotification::whereHas('synced_version', function ($query) {
+        // synced_version: etiqueta de versión (p. ej. 1.0.4) para el header del modal en el SPA
+        $models = SyncedVersionNotification::query()
+            ->whereHas('synced_version', function ($query) {
                 $query->where('is_current', true);
             })
             ->where('is_active', true)
@@ -26,6 +28,7 @@ class SyncedVersionNotificationController extends Controller
                     ->from('synced_version_notification_reads')
                     ->where('user_id', $user_id);
             })
+            ->with('synced_version')
             ->orderBy('sort_order')
             ->get();
 

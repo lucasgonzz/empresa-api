@@ -68,6 +68,14 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('synced-version-notification/pending', 'SyncedVersionNotificationController@pending');
     Route::post('synced-version-notification/{id}/mark-read', 'SyncedVersionNotificationController@markRead');
 
+    // Soporte tipo chat para clientes del sistema.
+    Route::get('support-ticket', 'SupportTicketController@index');
+    Route::get('support-ticket/{id}', 'SupportTicketController@show');
+    Route::put('support-ticket/{id}', 'SupportTicketController@update');
+    Route::post('support-message', 'SupportMessageController@store');
+    Route::post('support-message/{id}/mark-read', 'SupportMessageController@mark_read');
+    Route::post('support-message/typing', 'SupportMessageController@typing');
+
     Route::get('online-template', 'OnlineTemplateController@index');
 
     Route::get('concepto-stock-movement', 'ConceptoStockMovementController@index');
@@ -299,6 +307,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Afip tickets
     Route::post('afip-ticket', 'SaleController@makeAfipTicket');
     Route::get('afip/get-importes/{sale_id}', 'AfipTicketController@get_importes');
+
+    // Consolidación de ventas para facturación
+    Route::get('sales/por-consolidar', 'SaleController@ventasPorConsolidar');
+    Route::post('sales/consolidar-facturacion', 'SaleController@consolidarFacturacion');
 
     // Article Performance
     Route::get('article-performance/{article_id}', 'ArticlePerformanceController@index');
@@ -644,4 +656,9 @@ Route::middleware('admin.api.key')
         Route::post('publish-version', 'AdminSync\\PublishVersionController@store');
         Route::post('demo-setup', 'AdminSync\\DemoSetupController@store');
         Route::post('user-setup', 'AdminSync\\UserSetupController@store');
+        Route::post('support/messages', 'AdminSync\\SupportMessageController@store');
+        Route::post('support/messages/read', 'AdminSync\\SupportMessageController@mark_read');
+        Route::post('support/typing', 'AdminSync\\SupportTypingController@store');
+        Route::post('support/tickets', 'AdminSync\\SupportTicketController@store');
+        Route::put('support/tickets/{ticket_uuid}', 'AdminSync\\SupportTicketController@update');
     });

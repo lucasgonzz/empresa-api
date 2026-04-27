@@ -45,6 +45,8 @@ class ArticlePerformanceController extends Controller
         $this->articulos_vendidos = [];
 
         Sale::where('user_id', $user->id)
+                        /** Excluye ventas contenedoras de facturación: no son ventas reales. */
+                        ->soloVentasReales()
                         ->whereDate('created_at', '>=', $start_date)
                         ->whereDate('created_at', '<=', $end_date)
                         ->chunk(100, function($sales) {

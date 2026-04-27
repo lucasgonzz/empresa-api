@@ -238,7 +238,7 @@ class UserController extends Controller
 
             // Inserta relaciones por chunk para evitar queries y payloads gigantes.
             Article::where('user_id', $owner_user->id)
-                ->select('id', 'percentage_gain')
+                ->select('id', 'percentage_gain', 'cost', 'final_price')
                 ->chunk($articles_chunk_size, function ($articles_chunk) use ($price_types, $pivot_table, $now, $articles_chunk_size, $last_position) {
 
                     if ($price_types->isEmpty()) {
@@ -253,13 +253,21 @@ class UserController extends Controller
                         foreach ($price_types as $price_type) {
 
                             $percentage = $price_type->percentage;
+                            $final_price = null;
 
-                            // Log::info('comparando '.(int)$price_type->position.' con '.(int)$last_position);
-                            // Log::info((int)$price_type->position == (int)$last_position);
+                            $setear_precio_final = $price_type->setear_precio_final;
 
                             if ((int)$price_type->position == (int)$last_position) {
-                                $percentage = $article->percentage_gain;
-                                // Log::info('se va a usar percentage de article: '.$percentage);
+
+                                if (!is_null($article->cost) && !is_null($article->percentage_gain)) {
+                                    $percentage = $article->percentage_gain;
+                                } else if (!is_null($article->final_price)) {
+                                    $percentage = null;
+                                    $final_price = (float)$article->final_price;
+                                    $setear_precio_final = 1;
+                                    // Log::info('usando precio manual para la lista '.$price_type->name.' de '.$final_price);
+                                }
+                                // Log::info('last_position de article: '.$article->name);
                             }
                             
                             $rows[] = [
@@ -268,10 +276,10 @@ class UserController extends Controller
                                 // Por defecto, seteamos el porcentaje del price_type. Si el usuario no completó
                                 // percentage en el price_type, quedará null y el cálculo lo normaliza en 0.
                                 'percentage' => $percentage,
-                                'final_price' => null,
+                                'final_price' => $final_price,
                                 'previus_final_price' => null,
                                 'incluir_en_excel_para_clientes' => (int) ($price_type->incluir_en_lista_de_precios_de_excel ? 1 : 0),
-                                'setear_precio_final' => (int) ($price_type->setear_precio_final ? 1 : 0),
+                                'setear_precio_final' => (int) $setear_precio_final,
                                 'created_at' => $now,
                                 'updated_at' => $now,
                             ];

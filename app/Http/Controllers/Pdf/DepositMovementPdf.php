@@ -45,6 +45,8 @@ class DepositMovementPdf extends fpdf {
 			'num' 				=> $this->deposit_movement->num,
 			'date'				=> $this->deposit_movement->created_at,
 			'title' 			=> 'Mov. Depositos',
+			'titulo' 			=> 'Mov. Depositos',
+			'title_font_size'	=> 10,
 			'fields' 			=> $this->getFields(),
 		];
 		$data['user'] = $this->user;

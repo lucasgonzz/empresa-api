@@ -15,6 +15,8 @@ class SaleChartHelper {
 		$articulos = [];
 
 		$sales = Sale::where('user_id', $instace->userId())
+						/** Excluye ventas contenedoras de facturación: no son ventas reales. */
+						->soloVentasReales()
 						->where('created_at', '>=', $from)
 						->where('created_at', '<=', $until)
 						->get();

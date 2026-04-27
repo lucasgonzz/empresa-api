@@ -15,7 +15,8 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule)
     {
-        // $schedule->command('inspire')->hourly();
+        // Reintenta cada 5 minutos los mensajes de soporte no sincronizados a admin-api.
+        $schedule->command('support:retry-pending-syncs')->everyFiveMinutes();
     }
 
     /**

@@ -23,19 +23,18 @@ class PdfHelper {
 		$table_margen = isset($data['table_margen']) ? $data['table_margen'] : 2;
 		
 		// Cuadrante izquierdo
-		Self::logo($instance, $data, $alto_imagen);
+		$y_final_izquierda = Self::cuadrante_izquierdo($instance, $data, $alto_imagen);
 
 		// Cuadradito central (donde va "A", "B", "C", "X", "NC", etc)
 		Self::title($instance, $data);
 
-
 		Self::numeroFecha($instance, $data);
 
 		// Cuadrante derecho (fecha, sucursales, etc)
-		Self::commerceInfo($instance, $data, $alto_imagen);
+		$y_final_derecha = Self::cuadrante_derecho($instance, $data, $alto_imagen);
 		
 
-		$y_final_commerce_line = Self::commerceInfoLine($instance, $alto_imagen);
+		$y_final_commerce_line = Self::commerceInfoLine($instance, $alto_imagen, $y_final_izquierda, $y_final_derecha);
 
 
 		Self::extra_info($instance, $data);
@@ -120,9 +119,9 @@ class PdfHelper {
 		Self::tableHeader($instance, $data['fields']);
 	}
 
-	static function logo($instance, $data, $alto_imagen) {
-        // Logo
-
+	static function cuadrante_izquierdo($instance, $data, $alto_imagen) {
+        
+        // Logo imagen
         $user = $data['user'];
         $logo_url = $user->image_url;
         if (!is_null($logo_url)) {
@@ -133,19 +132,33 @@ class PdfHelper {
         	}
         }
 		
-		$instance->SetFont('Arial', 'B', 9);
 
 		// Titulo
-		$instance->y = 5;
-		if ($alto_imagen > 40) {
-			$instance->y += 10;
+
+		if (isset($data['titulo'])) {
+			
+			$instance->SetFont('Arial', 'B', 11);
+
+			$instance->y = 5;
+			if ($alto_imagen > 40) {
+				$instance->y += 10;
+			}
+			
+			$start_x = $alto_imagen + 5;
+			$instance->x = $start_x;
+		    $instance->MultiCell(
+				55, 
+				5, 
+				$data['titulo'], 
+		    	$instance->b, 
+		    	'L', 
+		    	false
+		    );
 		}
-		
-		$start_x = $alto_imagen + 5;
-		$instance->x = $start_x;
-		$instance->Cell(40, 5, $data['titulo'], $instance->b, 1, 'L');	
+
 
 		// Condicion IVA
+		$instance->SetFont('Arial', 'B', 9);
 
 		$afip_information = null;
 
@@ -198,6 +211,8 @@ class PdfHelper {
 		    	false
 		    );
 		}
+
+		return $instance->y;
 	}
 
 	static function firma($instance) {
@@ -267,7 +282,7 @@ class PdfHelper {
 		$instance->Line($start_x, $finish_y, $start_x, $start_y);
 	}
 
-	static function commerceInfo($instance, $data, $alto_imagen) {
+	static function cuadrante_derecho($instance, $data, $alto_imagen) {
 		$user = $data['user'];
 
 		$instance->y += 5;
@@ -307,7 +322,7 @@ class PdfHelper {
 		$instance->Cell(88, 5, $user->email, $instance->b, 1, 'L');
 
 		$instance->y += 2;
-		// dd($instance->y);
+		return $instance->y;
 	}
 
 	static function print_address($instance, $address_text, $print_title_direc) {
@@ -325,9 +340,12 @@ class PdfHelper {
 
 	}
 
-	static function commerceInfoLine($instance, $alto_imagen) {
+	static function commerceInfoLine($instance, $alto_imagen, $y_final_izquierda, $y_final_derecha) {
 
-		$y_de_abajo = $instance->y;
+		$y_de_abajo = $y_final_izquierda;
+		if ($y_final_derecha > $y_final_izquierda) {
+			$y_de_abajo = $y_final_derecha;
+		}
 
 		// Margenes
 		$alto_imagen += 5;

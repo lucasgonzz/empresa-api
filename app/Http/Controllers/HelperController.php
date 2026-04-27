@@ -1712,13 +1712,15 @@ class HelperController extends Controller
         echo 'Termino';
     }
 
-    function check_totales_diferentes($company_name) {
+    function check_totales_diferentes($x_ventas_para_atras) {
 
-        $user = User::where('company_name', $company_name)
+        $user = User::where('id', config('app.USER_ID'))
                         ->first();
 
         $sales = Sale::where('user_id', $user->id)
-                        ->orderBy('created_at', 'ASC')
+                        ->orderBy('id', 'DESC')
+                        // ->whereDate('created_at', '>=', Carbon::today()->startOfMonth())
+                        ->take($x_ventas_para_atras)
                         ->get();
 
         $delta = 0.00001;

@@ -35,6 +35,8 @@ class CajaReportsHelper {
 		}
 
 		$sales = Sale::where('user_id', $instance->userId())
+                        /** Excluye ventas contenedoras de facturación: no son ventas reales. */
+                        ->soloVentasReales()
                         ->orderBy('created_at', 'ASC')
                         ->where('terminada', 1);
         if ($until_date != 0) {
