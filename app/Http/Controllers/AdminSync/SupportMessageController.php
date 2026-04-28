@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\AdminSync;
 
+use App\Events\SupportMessageRead;
 use App\Events\SupportMessageReceived;
 use App\Http\Controllers\Controller;
 use App\Models\SupportMessage;
@@ -93,6 +94,13 @@ class SupportMessageController extends Controller
         }
         $message->read_at = $request->input('read_at') ?: now();
         $message->save();
+
+        // Aviso en tiempo real al usuario (canal support.user.*) de que su mensaje fue visto en admin.
+        // El evento resuelve el user_id vía sender_user_id o, en su defecto, ticket.user_id.
+        $updated = SupportMessage::where('id', $message->id)->withAll()->first();
+        if (!is_null($updated) && $updated->sender_type === 'user') {
+            event(new SupportMessageRead($updated->id));
+        }
 
         return response()->json(['ok' => true], 200);
     }

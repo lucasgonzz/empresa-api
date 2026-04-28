@@ -18,6 +18,7 @@ class SupportTicketController extends Controller
         // Trae historial completo ordenado por último movimiento.
         $models = SupportTicket::where('user_id', $user_id)
             ->withAll()
+            ->withUnreadMessagesCount()
             ->orderBy('id', 'desc')
             ->get();
 
@@ -36,6 +37,7 @@ class SupportTicketController extends Controller
         $model = SupportTicket::where('id', $id)
             ->where('user_id', $user_id)
             ->withAll()
+            ->withUnreadMessagesCount()
             ->firstOrFail();
 
         return response()->json(['model' => $model], 200);
@@ -69,7 +71,14 @@ class SupportTicketController extends Controller
 
         $ticket->save();
 
-        return response()->json(['model' => $ticket->load('messages.attachments')], 200);
+        $ticket->loadCount([
+            'messages as unread_messages_count' => function ($sub) {
+                $sub->where('sender_type', 'admin')->whereNull('read_at');
+            },
+        ]);
+        $ticket->load('messages.attachments');
+
+        return response()->json(['model' => $ticket], 200);
     }
 }
 
