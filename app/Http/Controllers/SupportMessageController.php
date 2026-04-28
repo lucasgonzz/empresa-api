@@ -73,13 +73,13 @@ class SupportMessageController extends Controller
             ]);
         }
 
-        // Recarga mensaje con relaciones antes de emitir evento y responder.
+        // Recarga mensaje con relaciones antes de sincronizar, emitir y responder.
         $message = SupportMessage::where('id', $message->id)->withAll()->first();
-
-        // Emite evento realtime para refrescar chat local en empresa-spa.
-        event(new SupportMessageReceived($message->id, $user_id));
-        // Dispara sincronización best-effort hacia admin-api.
+        // Primero hacia admin-api: al responder OK, persiste synced_to_admin_at.
         SupportSyncHelper::sync_message_to_admin($message);
+        $message = SupportMessage::where('id', $message->id)->withAll()->first();
+        // Pusher y respuesta del POST llevan doble check cuando el remoto aceptó el mensaje.
+        event(new SupportMessageReceived($message->id, $user_id));
 
         return response()->json(['model' => $message], 201);
     }

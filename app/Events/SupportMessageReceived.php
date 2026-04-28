@@ -34,10 +34,28 @@ class SupportMessageReceived implements ShouldBroadcastNow
      */
     public function __construct(int $support_message_id, int $user_id)
     {
-        // Recupera mensaje con relaciones completas para render inmediato en SPA.
+        // Recupera mensaje con relaciones completas para render inmediato en SPA (ticket para bandeja vía Pusher).
         $this->message = SupportMessage::where('id', $support_message_id)->withAll()->first();
+        if (!is_null($this->message)) {
+            self::prepareMessageAndTicketForClient($this->message);
+        }
         // Define canal de soporte por usuario.
         $this->channel_name = 'support.user.' . $user_id;
+    }
+
+    /**
+     * Carga ticket y contador de no leídos (mensajes admin sin read_at) para badge en empresa-spa.
+     */
+    private static function prepareMessageAndTicketForClient(SupportMessage $message): void
+    {
+        $message->loadMissing('ticket');
+        if ($message->ticket) {
+            $message->ticket->loadCount([
+                'messages as unread_messages_count' => function ($sub) {
+                    $sub->where('sender_type', 'admin')->whereNull('read_at');
+                },
+            ]);
+        }
     }
 
     /**
@@ -57,12 +75,19 @@ class SupportMessageReceived implements ShouldBroadcastNow
     }
 
     /**
-     * Payload enviado al frontend.
+     * Payload enviado a Pusher: array (no modelo suelto) para que vayan anidadas
+     * message.ticket.unread_messages_count (el badge de empresa-spa depende de ello).
      */
     public function broadcastWith()
     {
+        if (is_null($this->message)) {
+            return [
+                'message' => null,
+            ];
+        }
+
         return [
-            'message' => $this->message,
+            'message' => $this->message->toArray(),
         ];
     }
 }

@@ -50,6 +50,19 @@ class SupportTicket extends Model
     }
 
     /**
+     * Expone unread_messages_count: mensajes del operador (admin) aún sin leer (read_at nulo).
+     * Vista usuario empresa: "recibidos" = quien responde desde admin-spa.
+     */
+    public function scopeWithUnreadMessagesCount($query)
+    {
+        return $query->withCount([
+            'messages as unread_messages_count' => function ($sub) {
+                $sub->where('sender_type', 'admin')->whereNull('read_at');
+            },
+        ]);
+    }
+
+    /**
      * Relación con el usuario dueño del ticket.
      */
     public function user()
