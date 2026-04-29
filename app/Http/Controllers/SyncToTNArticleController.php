@@ -23,7 +23,7 @@ class SyncToTNArticleController extends Controller
             }
         }
 
-        $models = $models->get();
+        $models = $models->paginate(50);
         return response()->json(['models' => $models], 200);
     }
 
@@ -32,5 +32,20 @@ class SyncToTNArticleController extends Controller
         ImageController::deleteModelImages($model);
         $model->delete();
         return response(null);
+    }
+
+    /**
+     * Devuelve la cantidad de sincronizaciones con estado 'error' para el usuario actual.
+     * Usado por el frontend para mostrar el badge de errores en el menú de Tienda Nube.
+     *
+     * @return \Illuminate\Http\JsonResponse { count: int }
+     */
+    public function failed_count() {
+        /* Contar registros con status 'error' del usuario autenticado */
+        $count = SyncToTNArticle::where('user_id', $this->userId())
+                    ->where('status', 'error')
+                    ->count();
+
+        return response()->json(['count' => $count], 200);
     }
 }

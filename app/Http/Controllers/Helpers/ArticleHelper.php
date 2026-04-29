@@ -342,6 +342,13 @@ class ArticleHelper {
             // Log::info('Aplicando recargos despues del margen de ganancia');
         }
 
+        if (!$user->aplicar_iva_al_costo) {
+            
+            $res = ArticlePricesHelper::aplicar_iva($article, $final_price, $user, $des);
+            $final_price = $res['price'];
+            $des   = $res['des'];
+        }
+
         $res = Self::redondear($final_price, $user, $des);
         $final_price = $res['price'];
         $des = $res['des'];
@@ -426,9 +433,12 @@ class ArticleHelper {
         $price = $res['price'];
         $des   = $res['des'];
 
-        $res = ArticlePricesHelper::aplicar_iva($article, $price, $user, $des);
-        $price = $res['price'];
-        $des   = $res['des'];
+        if ($user->aplicar_iva_al_costo) {
+
+            $res = ArticlePricesHelper::aplicar_iva($article, $price, $user, $des);
+            $price = $res['price'];
+            $des   = $res['des'];
+        }
 
         return [
             'price' => $price,

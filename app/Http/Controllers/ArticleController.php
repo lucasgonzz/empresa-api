@@ -31,6 +31,7 @@ use App\Imports\ArticleImport;
 use App\Imports\LocationImport;
 use App\Imports\ProvinciaImport;
 use App\Jobs\ProcessArticleImport;
+use App\Jobs\ProcessArticleExportJob;
 use App\Jobs\ProcessDeleteArticleFromTiendaNube;
 use App\Jobs\ProcessSyncArticleToTiendaNube;
 use App\Jobs\SyncProductToMercadoLibre;
@@ -557,20 +558,38 @@ class ArticleController extends Controller
     }
 
     function export(Request $request) {
-        $models = null;
+        /**
+         * Lista final de IDs de artículos a exportar.
+         * Se calcula en request y se procesa el archivo dentro del job.
+         */
+        $article_ids = [];
+
         if ($request->has('filters')) {
+            // Filtros serializados que llegan desde frontend para el exportado.
             $jsonData = $request->query('filters');
             $filters = json_decode($jsonData, true);
 
             $search_ct = new SearchController();
             $models = $search_ct->search($request, 'article', $filters);
-        } else if ($request->has('articles_id')) {
 
+            // Se extraen solo IDs para evitar serializar modelos completos al job.
+            $article_ids = $models->pluck('id')->toArray();
+        } else if ($request->has('articles_id')) {
+            // IDs seleccionados manualmente desde listado.
             $ids = explode('-', $request->query('articles_id'));
-            $models = Article::find($ids);
+            $article_ids = array_map('intval', $ids);
         }
-        
-        return Excel::download(new ArticleExport($models), 'comerciocity-articulos_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
+
+        // Se encola la exportación para liberar el request HTTP rápidamente.
+        ProcessArticleExportJob::dispatch(
+            $this->userId(),
+            $this->userId(false),
+            $article_ids
+        );
+
+        return response()->json([
+            'message' => 'La exportacion de articulos se esta procesando',
+        ], 200);
     }
 
     function clientsExport($price_type_id = null) {
@@ -579,7 +598,7 @@ class ArticleController extends Controller
     }
 
     function baseExport() {
-        return Excel::download(new ArticleExport(null, true), 'base-comerciocity-articulos.xlsx');
+        return Excel::download(new ArticleExport(null, $this->userId(), true), 'base-comerciocity-articulos.xlsx');
     }
 
     function providersHistory($article_id) {

@@ -126,6 +126,33 @@ class TiendaNubeCategoryService extends BaseTiendaNubeService
     }
 
     /**
+     * Elimina una categoría raíz de Tienda Nube si tiene ID asignado.
+     * Si TN devuelve 404, se ignora (ya no existe en TN).
+     *
+     * @param Category $cat Categoría a eliminar.
+     * @return void
+     */
+    public function deleteRootCategory(Category $cat): void
+    {
+        /* Si la categoría nunca fue sincronizada con TN, no hay nada que eliminar */
+        if (empty($cat->tiendanube_category_id)) {
+            return;
+        }
+
+        $endpoint = "/{$this->store_id}/categories/{$cat->tiendanube_category_id}";
+        $resp     = $this->http()->delete($endpoint);
+
+        /* 404 significa que TN ya no la tiene; se acepta como estado limpio */
+        if ($resp->failed() && $resp->status() !== 404) {
+            throw new \RuntimeException('No se pudo eliminar Category en TN: ' . $resp->body());
+        }
+
+        /* Limpiamos el ID local para evitar referencias huérfanas */
+        $cat->tiendanube_category_id = null;
+        $cat->save();
+    }
+
+    /**
      * Sincroniza una SubCategory:
      * - Garantiza el parent en TN
      * - Si no existe en TN: la crea

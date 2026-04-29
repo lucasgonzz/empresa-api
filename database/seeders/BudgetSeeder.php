@@ -30,7 +30,7 @@ class BudgetSeeder extends Seeder
             $budget = Budget::create($model);
 
             $articles = Article::where('user_id', config('app.USER_ID'))
-                            ->take(3)
+                            ->take(30)
                             ->get();
 
             $articles_ = [];

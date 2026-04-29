@@ -182,7 +182,7 @@ class BudgetPdf extends fpdf {
 			} else {
 				$this->AddPage();
 				$this->x = 5;
-				$this->y = 55;
+				$this->y = 65;
 				$this->printArticle($article);
 			}
 		}
@@ -194,7 +194,7 @@ class BudgetPdf extends fpdf {
 			} else {
 				$this->AddPage();
 				$this->x = 5;
-				$this->y = 55;
+				$this->y = 65;
 				$this->printArticle($promo);
 			}
 		}
@@ -206,7 +206,7 @@ class BudgetPdf extends fpdf {
 			} else {
 				$this->AddPage();
 				$this->x = 5;
-				$this->y = 55;
+				$this->y = 65;
 				$this->printArticle($service);
 			}
 		}

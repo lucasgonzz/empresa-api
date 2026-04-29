@@ -41,4 +41,28 @@ class TiendaNubeCategoryImageService extends BaseTiendaNubeService
             throw new \RuntimeException("Error al subir imagen a Tienda Nube: " . $response->body());
         }
     }
+
+    /**
+     * Elimina la imagen de una categoría en Tienda Nube enviando image = null.
+     * Si la categoría no tiene ID de TN asignado, no hace nada.
+     *
+     * @param Category|SubCategory $cat Categoría cuya imagen se quiere borrar.
+     * @return void
+     */
+    public function delete_category_image($cat): void
+    {
+        /* Si la categoría nunca se sincronizó con TN, no hay imagen que eliminar */
+        if (empty($cat->tiendanube_category_id)) {
+            return;
+        }
+
+        /* Enviar image: null limpia la imagen en TN */
+        $payload  = ['image' => null];
+        $endpoint = "/{$this->store_id}/categories/{$cat->tiendanube_category_id}";
+        $response = $this->http()->put($endpoint, $payload);
+
+        if ($response->failed()) {
+            throw new \RuntimeException("Error al eliminar imagen de categoría en Tienda Nube: " . $response->body());
+        }
+    }
 }

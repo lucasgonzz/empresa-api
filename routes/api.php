@@ -213,6 +213,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Descripcion del precio final
     Route::get('/article/final-price-description/{id}', 'ArticleController@get_final_price_description');
     
+    // Exportar Excel
+    Route::get('article/excel/export', 'ArticleController@export');
+
 
 
     // Vender
@@ -581,6 +584,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     Route::get('sync-to-tn-article/from-date/{from_date?}/{until_date?}', 'SyncToTNArticleController@index');
+    Route::get('sync-to-tn-article/failed-count', 'SyncToTNArticleController@failed_count');
 
 
     Route::resource('article-price-range', 'ArticlePriceRangeController');

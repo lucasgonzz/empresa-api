@@ -317,7 +317,7 @@ class SearchController extends Controller
         $models = $models->withAll()
                         ->orderBy('created_at', 'DESC');
         if ($paginate) {
-            $per_page = (int) $request->input('per_page', 5);
+            $per_page = (int) $request->input('per_page', 50);
             if ($per_page < 1) {
                 $per_page = 5;
             }

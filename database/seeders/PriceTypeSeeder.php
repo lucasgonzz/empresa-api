@@ -307,6 +307,14 @@ class PriceTypeSeeder extends Seeder
                 'position'      => 3,
                 'user_id'       => config('app.USER_ID'),
             ],
+            [
+                'num'           => 4,
+                'name'          => 'Tienda Nube',
+                'percentage'    => 50,
+                'position'      => 4,
+                'se_usa_en_tienda_nube' => 1,
+                'user_id'       => config('app.USER_ID'),
+            ],
             
         ];
         foreach ($models as $model) {

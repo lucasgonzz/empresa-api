@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Models\ArticleDiscount;
 use App\Models\ArticleDiscountBlanco;
 use App\Models\ArticleSurchage;
@@ -177,6 +178,13 @@ class ArticlePricesHelper {
                 } else {
 
                     $final_price = $cost + ($cost * (float)$percentage / 100);
+
+                    if (!$user->aplicar_iva_al_costo) {
+                        
+                        $res = ArticlePricesHelper::aplicar_iva($article, $final_price, $user, []);
+                        $final_price = $res['price'];
+                        // $des   = $res['des'];
+                    }
 
                 }
             } 

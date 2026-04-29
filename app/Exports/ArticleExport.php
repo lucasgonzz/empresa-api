@@ -2,26 +2,34 @@
 
 namespace App\Exports;
 
-use App\Models\Article;
 use App\Http\Controllers\Helpers\ExportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Models\Article;
+use App\Models\User;
+use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Concerns\FromCollection;
 use Maatwebsite\Excel\Concerns\WithHeadings;
 use Maatwebsite\Excel\Concerns\WithMapping;
-use Illuminate\Support\Facades\Log;
 
 class ArticleExport implements FromCollection, WithHeadings, WithMapping
 {
 
     public $models = null;
+    public $user_id = null;
     public $archivo_base = false;
 
     protected $headings_pre_addresses_cache = null;
     protected $headings_pre_price_types_cache = null;
 
-    function __construct($models, $archivo_base = false) {
+    function __construct($models, $user_id, $archivo_base = false) {
         $this->models = $models;
+        $this->user_id = $user_id;
         $this->archivo_base = $archivo_base;
+
+        $this->user = User::find($user_id);
+
+        Log::info('user_id: '.$user_id);
+        Log::info('user name: '.$this->user->name);
     }
 
     protected function get_base_headings(): array
@@ -173,7 +181,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             // Si no es variante, rellenar con valores vacíos en esas columnas
             $map = ExportHelper::mapAddresses($map, $article);
 
-            if (UserHelper::hasExtencion('article_variants')) {
+            if (UserHelper::hasExtencion('article_variants', $this->user)) {
                 $map = ExportHelper::map_property_types_vacios($map);
             }
         }
@@ -242,7 +250,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
         } else if (!is_null($this->models)) {
             $articles = $this->models;
         } else {
-            $articles = Article::where('user_id', UserHelper::userId())
+            $articles = Article::where('user_id', $this->user->id)
                             ->where('status', 'active')
                             ->with('iva')
                             ->with('article_discounts')
