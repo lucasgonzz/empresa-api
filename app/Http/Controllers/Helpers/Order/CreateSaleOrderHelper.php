@@ -97,11 +97,16 @@ class CreateSaleOrderHelper {
 
         $terminada = Self::is_terminada($order, $to_check);
 
+        /**
+         * discount_stock en el INSERT: si solo existiera default en BD, Eloquent no lo hidrataría
+         * en el modelo y attachArticles no descontaría stock (quedaría null en memoria).
+         */
         $sale = Sale::create([
             'user_id'               => $order->user_id,
             'buyer_id'              => $order->buyer_id,
             'client_id'             => $client_id,
             'to_check'              => $to_check,
+            'discount_stock'        => 1,
             'terminada'             => $terminada,
             'terminada_at'          => $terminada ? Carbon::now() : null,
             'num'                   => $num,

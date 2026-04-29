@@ -179,6 +179,9 @@ class PdfHelper {
 
 			$instance->x = $start_x;
 			$instance->Cell(40, 5, 'IIBB: '.$afip_information->ingresos_brutos, $instance->b, 1, 'L');
+
+			$instance->x = $start_x;
+			$instance->Cell(40, 5, 'Inicio actividades: '.$afip_information->inicio_actividades->format('d/m/Y'), $instance->b, 1, 'L');
 		}
 
 		// Sitio Web

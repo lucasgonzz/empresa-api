@@ -431,6 +431,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Consolidar ventas en una unica factura',
                 'slug' => 'consolidar_ventas_en_factura',
             ],
+            [
+                'name' => 'Ocultar opciones de aplicar IVA y descontar stock en VENDER',
+                'slug' => 'hide_iva_and_discount_stock_in_vender',
+            ],
 
         ];
         foreach ($extencions as $extencion) {

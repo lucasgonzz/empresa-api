@@ -708,7 +708,11 @@ class SaleHelper extends Controller {
                  * se combina con se_esta_confirmando_por_primera_vez para que ArticleHelper
                  * descuente la cantidad total actual (no la diferencia con artículos previos).
                  */
-                if (!$sale->to_check && !$sale->checked && $sale->discount_stock && Self::usa_stock($article)) {
+
+                Log::info('to_check: '.(bool)$sale->to_check);
+                Log::info('checked: '.(bool)$sale->checked);
+                Log::info('discount_stock: '.(bool)$sale->discount_stock);
+                if (!(bool)$sale->to_check && !(bool)$sale->checked && (bool)$sale->discount_stock && Self::usa_stock($article)) {
 
                     $amount = Self::getAmount($sale, $article);
 
@@ -725,6 +729,8 @@ class SaleHelper extends Controller {
                     // if ($amount > 0) {
                         ArticleHelper::discountStock($article['id'], $amount, $sale, $previus_articles, $es_primer_descuento, $article_variant_id);
                     // }
+                } else {
+                    Log::info('No se desconto stock para article_id '.$article['id']);
                 }
 
                 Self::check_que_este_el_articulos($sale, $article);
@@ -736,7 +742,10 @@ class SaleHelper extends Controller {
     static function usa_stock($article) {
         $_article = Article::find($article['id']);
         if (!is_null($_article)) {
+            // Log::info('article stock: '.$_article->stock);
             return !is_null($_article->stock);
+        } else {
+            // Log::info('No se encontro article id '.$article['id']);
         }
         return false;
     }

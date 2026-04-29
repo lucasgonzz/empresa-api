@@ -20,17 +20,22 @@ class TiendaNubeOrderService extends BaseTiendaNubeService
             'url' => "/{$this->store_id}/orders"
         ]);
 
-        $response = $this->http()->get("/{$this->store_id}/orders", [
+        // Un solo intento: evita que retry(3) de http() dispare throw() ante 404 de TN (sin pedidos).
+        $response = $this->http_without_throw_on_error_status()->get("/{$this->store_id}/orders", [
             'page' => 1,
         ]);
 
         if ($response->status() === 404) {
-            // No hay pedidos en la tienda: devolvemos arreglo vacío
-            Log::info('No hay pedidos en Tienda Nube (404 Last page is 0)');
+            // TN: sin órdenes suele responder 404 con description "Last page is 0".
+            Log::info('No hay pedidos en Tienda Nube (404 o listado vacío).');
             return [];
         }
 
         if (!$response->successful()) {
+            Log::warning('Tienda Nube orders: respuesta no exitosa al sincronizar.', [
+                'status' => $response->status(),
+                'body'   => $response->body(),
+            ]);
             return [];
         }
 
@@ -50,6 +55,7 @@ class TiendaNubeOrderService extends BaseTiendaNubeService
                 'customer_name' => $orden_data['billing_address']['name'] ?? null,
                 'total'         => $orden_data['total'],
                 'data'          => json_encode($orden_data),
+                'address_id'    => 0,
                 'payment_status'          => $this->traducir_payment_status($orden_data['payment_status']),
                 'tienda_nube_order_status_id' => 1,
                 'user_id'       => UserHelper::userId(),

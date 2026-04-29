@@ -6,6 +6,7 @@ use App\Services\MercadoLibre\SetearCategoryNameService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 
 // consultar_comprobante($afip_ticket_id)
@@ -249,6 +250,17 @@ Route::get('/imported-files/{path}', function ($path) {
     return response()->file($full_path);
 })->where('path', '.*');
 
+Route::get('/exported-files/{path}', function ($path) {
+    // Se expone archivo exportado para descarga desde notificación global.
+    $full_path = storage_path('app/exported-files/' . $path);
+
+    if (!file_exists($full_path)) {
+        abort(404);
+    }
+
+    return response()->download($full_path);
+})->where('path', '.*');
+
 
 
 Route::get('/afip-get-data', function () {
@@ -426,7 +438,6 @@ Route::get('/current-acount/pdf/{id}', 'CurrentAcountController@pdf');
 Route::get('order/pdf/{id}/', 'OrderController@pdf');
 
 // Excel
-Route::get('article/excel/export', 'ArticleController@export');
 Route::get('article-clients/excel/export/{price_type_id?}', 'ArticleController@clientsExport');
 Route::get('article-base/excel/export', 'ArticleController@baseExport');
 Route::get('client/excel/export', 'ClientController@export');

@@ -77,6 +77,7 @@ class UserController extends Controller
         $current_redondear_precios_en_decenas   = (int) $model->redondear_precios_en_decenas;
         $current_redondear_de_a_50              = (int) $model->redondear_de_a_50;
         $current_redondear_precios_en_centavos  = (int) $model->redondear_precios_en_centavos;
+        $current_aplicar_iva_al_costo           = (int) $model->aplicar_iva_al_costo;
 
         $model->name                            = $request->name;
         $model->doc_number                      = $request->doc_number;
@@ -141,6 +142,8 @@ class UserController extends Controller
         $model->mostrar_vendedor_en_venta_pdf   = $request->mostrar_vendedor_en_venta_pdf;
         $model->pdf_image_size                  = $request->pdf_image_size;
         $model->inputs_size_id                  = $request->inputs_size_id;
+        $model->aplicar_iva_al_costo                  = $request->aplicar_iva_al_costo;
+
         /**
          * Permite `provider_code` repetido en artículos.
          * Esta configuración se usa desde el front solo por el owner, por eso se persiste en el auth_user.
@@ -173,7 +176,8 @@ class UserController extends Controller
                 $current_cotizar_precios_en_dolares,
                 $current_redondear_precios_en_decenas,
                 $current_redondear_de_a_50,
-                $current_redondear_precios_en_centavos
+                $current_redondear_precios_en_centavos,
+                $current_aplicar_iva_al_costo
             )
         ) {
             $notifications[] = [
@@ -366,7 +370,8 @@ class UserController extends Controller
         $current_cotizar_precios_en_dolares,
         $current_redondear_precios_en_decenas,
         $current_redondear_de_a_50,
-        $current_redondear_precios_en_centavos
+        $current_redondear_precios_en_centavos,
+        $current_aplicar_iva_al_costo
     ) {
 
         if (
@@ -377,6 +382,8 @@ class UserController extends Controller
             || (int) $model->redondear_precios_en_decenas !== (int) $current_redondear_precios_en_decenas
             || (int) $model->redondear_de_a_50 !== (int) $current_redondear_de_a_50
             || (int) $model->redondear_precios_en_centavos !== (int) $current_redondear_precios_en_centavos
+            || (int) $model->aplicar_iva_al_costo !== (int) $current_aplicar_iva_al_costo
+
         ) {
             Log::info($model->dollar.' | '.$current_dolar);
             Log::info($model->iva_included.' | '.$current_iva_included);
@@ -385,6 +392,7 @@ class UserController extends Controller
             Log::info((int) $model->redondear_precios_en_decenas.' | '.(int) $current_redondear_precios_en_decenas);
             Log::info((int) $model->redondear_de_a_50.' | '.(int) $current_redondear_de_a_50);
             Log::info((int) $model->redondear_precios_en_centavos.' | '.(int) $current_redondear_precios_en_centavos);
+            Log::info((int) $model->aplicar_iva_al_costo.' | '.(int) $current_aplicar_iva_al_costo);
             Log::info('Hubo cambios en propiedades de user');
 
             /** @var bool $from_dolar Indica si el recálculo se disparó por cambio de dólar (optimiza query en job). */

@@ -38,4 +38,25 @@ abstract class BaseTiendaNubeService
             ->timeout(60)
             ->retry(3, 500);
     }
+
+    /**
+     * Cliente HTTP con un solo intento y sin lanzar RequestException ante 4xx/5xx.
+     *
+     * Motivo: con retry(n>1) el PendingRequest de Laravel llama a throw() en respuestas
+     * no exitosas; Tienda Nube devuelve 404 "Last page is 0" cuando no hay órdenes,
+     * y ese caso debe tratarse como lista vacía, no como error fatal.
+     *
+     * @return \Illuminate\Http\Client\PendingRequest
+     */
+    protected function http_without_throw_on_error_status()
+    {
+        return Http::withHeaders([
+                'Authentication' => 'bearer ' . $this->access_token,
+                'User-Agent'     => $this->user_agent,
+                'Accept'         => 'application/json',
+            ])
+            ->baseUrl($this->base_url)
+            ->timeout(60)
+            ->retry(1, 0);
+    }
 }

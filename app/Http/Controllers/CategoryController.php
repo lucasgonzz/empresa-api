@@ -11,6 +11,7 @@ use App\Models\Article;
 use App\Models\Category;
 use App\Models\SubCategory;
 use App\Services\TiendaNube\TiendaNubeCategoryImageService;
+use App\Services\TiendaNube\TiendaNubeCategoryService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -41,6 +42,8 @@ class CategoryController extends Controller
 
         SetPriceTypesHelper::set_rangos($model);
 
+        /* Crear o actualizar la categoría en TN antes de subir la imagen */
+        $this->sync_category_to_tienda_nube($model);
         $this->check_tienda_nube_image($model);
 
         return response()->json(['model' => $this->fullModel('Category', $model->id)], 201);
@@ -66,7 +69,9 @@ class CategoryController extends Controller
         PriceTypeHelper::update_article_prices($model);
 
         $this->check_percetange_gain($model, $previus_percentage_gain);
-        
+
+        /* Sincronizar el nombre actualizado de la categoría en TN antes de subir la imagen */
+        $this->sync_category_to_tienda_nube($model);
         $this->check_tienda_nube_image($model);
         
         return response()->json(['model' => $this->fullModel('Category', $model->id)], 200);
@@ -76,6 +81,10 @@ class CategoryController extends Controller
         $model = Category::find($id);
         $this->detachArticlesCategory($model);
         $this->deleteSubCategories($model);
+
+        /* Intentar eliminar la categoría en TN antes de borrarla localmente */
+        $this->delete_category_from_tienda_nube($model);
+
         $model->delete();
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('Category', $model->id);
@@ -117,6 +126,52 @@ class CategoryController extends Controller
             Log::info($category->toArray());
             $tn = new TiendaNubeCategoryImageService();
             $tn->upload_category_image($category);
+        }
+    }
+
+    /**
+     * Sincroniza la categoría (nombre) a Tienda Nube creándola o actualizándola.
+     * Hace refresh del modelo después de la sincronización para obtener el tiendanube_category_id asignado.
+     * Los errores se loguean y no interrumpen el flujo principal.
+     *
+     * @param Category $category Categoría a sincronizar.
+     * @return void
+     */
+    function sync_category_to_tienda_nube($category) {
+        /* Solo sincronizar si la integración con TN está habilitada */
+        if (!env('USA_TIENDA_NUBE', false)) {
+            return;
+        }
+
+        try {
+            $tn = new TiendaNubeCategoryService();
+            $tn->syncRootCategory($category);
+
+            /* Recargar el modelo para que el rest del flujo vea el tiendanube_category_id actualizado */
+            $category->refresh();
+        } catch (\Exception $e) {
+            Log::error('Error al sincronizar categoría con Tienda Nube: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Elimina la categoría de Tienda Nube si tiene ID asignado.
+     * Los errores se loguean y no interrumpen el flujo principal.
+     *
+     * @param Category $category Categoría a eliminar de TN.
+     * @return void
+     */
+    function delete_category_from_tienda_nube($category) {
+        /* Solo sincronizar si la integración con TN está habilitada */
+        if (!env('USA_TIENDA_NUBE', false)) {
+            return;
+        }
+
+        try {
+            $tn = new TiendaNubeCategoryService();
+            $tn->deleteRootCategory($category);
+        } catch (\Exception $e) {
+            Log::error('Error al eliminar categoría en Tienda Nube: ' . $e->getMessage());
         }
     }
 }

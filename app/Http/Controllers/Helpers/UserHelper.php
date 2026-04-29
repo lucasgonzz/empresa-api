@@ -48,6 +48,9 @@ class UserHelper {
 
     static function hasExtencion($extencion_slug, $user = null) {
         $user = $user ?? self::user();
+        if (is_null($user)) {
+            return false;
+        }
         return collect($user->extencions)->contains('slug', $extencion_slug);
     }
 

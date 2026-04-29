@@ -52,6 +52,7 @@ class TiendaNubeOrderController extends Controller
 
         $model->notes                = $request->notes;
         $model->tienda_nube_order_status_id                = $request->tienda_nube_order_status_id;
+        $model->address_id           = $request->address_id;
         
         $model->save();
 
