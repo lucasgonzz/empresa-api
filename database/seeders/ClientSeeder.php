@@ -46,6 +46,7 @@ class ClientSeeder extends Seeder
                 'num'                   => 2,
                 'name'                  => 'Marcos Perez',
                 'address'               => 'Martin Fierro 23 - Gualeguay, Entre Rios',
+                'email'                 => 'lucasgonzalez210200@gmail.com',
                 'cuit'                  => '20242112025',
                 'phone'                 => '3444622139',
                 'razon_social'          => 'MARCOS SRL', 

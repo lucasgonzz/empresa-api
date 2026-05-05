@@ -57,6 +57,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             'Margen de ganancia',
             'Precio',
             'Precio Final',
+            'Precio Final Anterior',
 
             // Categoria
             'Categoria',
@@ -139,6 +140,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $article->percentage_gain,
             $article->price,
             $article->final_price,
+            $article->previus_final_price,
 
             !is_null($article->category) ? $article->category->name : '',
             !is_null($article->sub_category) ? $article->sub_category->name : '',

@@ -26,13 +26,17 @@ class UserPaymentExpiredAtController extends Controller
 
         $request->validate([
             'payment_expired_at'    => ['required', 'date'],
+            'precio_plan'           => ['required', 'numeric', 'min:0'],
             'precio_por_cuenta'     => ['required', 'numeric', 'min:0'],
             'precio_ecommerce'      => ['nullable', 'numeric', 'min:0'],
             'precio_mercado_libre'  => ['nullable', 'numeric', 'min:0'],
             'precio_tienda_nube'    => ['nullable', 'numeric', 'min:0'],
         ]);
 
-        // Precio base por cuenta
+        // Monto fijo base del plan (sistema), antes de cuentas y módulos
+        $precio_plan = $request->precio_plan;
+
+        // Precio por cada usuario empleado
         $precio_por_cuenta = $request->precio_por_cuenta;
 
         // Precios individuales por servicio; si vienen vacíos se guardan como null
@@ -41,8 +45,8 @@ class UserPaymentExpiredAtController extends Controller
         $precio_mercado_libre   = $request->filled('precio_mercado_libre')  ? $request->precio_mercado_libre  : null;
         $precio_tienda_nube     = $request->filled('precio_tienda_nube')    ? $request->precio_tienda_nube    : null;
 
-        // Cuentas base: dueño (1) + cantidad de empleados
-        $cuentas_base = $user->employees->count() + 1;
+        // Cuentas base: solo cantidad de empleados (el dueño se cobra en precio_plan)
+        $cuentas_base = $user->employees->count();
 
         // Ecommerce: +1 si tiene la propiedad 'online' seteada con una URL
         $cuentas_ecommerce = !empty($user->online) ? 1 : 0;
@@ -61,13 +65,15 @@ class UserPaymentExpiredAtController extends Controller
         $precio_mercado_libre_efectivo  = $precio_mercado_libre  ?? $precio_por_cuenta;
         $precio_tienda_nube_efectivo    = $precio_tienda_nube    ?? $precio_por_cuenta;
 
-        // Total mensualidad sumando cada concepto con su precio correspondiente
-        $total_mensualidad = ($precio_por_cuenta            * $cuentas_base)
+        // Total mensualidad: plan base (dueño) + empleados + módulos ecommerce/ML/TN
+        $total_mensualidad = $precio_plan
+                           + ($precio_por_cuenta            * $cuentas_base)
                            + ($precio_ecommerce_efectivo    * $cuentas_ecommerce)
                            + ($precio_mercado_libre_efectivo * $cuentas_mercado_libre)
                            + ($precio_tienda_nube_efectivo  * $cuentas_tienda_nube);
 
         $user->payment_expired_at   = $request->payment_expired_at;
+        $user->precio_plan          = $precio_plan;
         $user->precio_por_cuenta    = $precio_por_cuenta;
         $user->precio_ecommerce     = $precio_ecommerce;
         $user->precio_mercado_libre = $precio_mercado_libre;

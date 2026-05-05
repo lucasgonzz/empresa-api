@@ -4,9 +4,11 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\Budget\BudgetDuplicarHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Pdf\BudgetPdf;
 use App\Models\Budget;
 use Illuminate\Http\Request;
@@ -48,6 +50,9 @@ class BudgetController extends Controller
                 'finish_at'                 => $request->finish_at,
                 'observations'              => $request->observations,
                 'price_type_id'             => $request->price_type_id,
+                'sale_status_id'            => $request->sale_status_id,
+                'discount_stock'            => !is_null($request->discount_stock) ? $request->discount_stock : 1,
+                'iva_aplicado'              => !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1,
                 'total'                     => $request->total,
                 'budget_status_id'          => $request->budget_status_id,
                 'address_id'                => $request->address_id,
@@ -105,6 +110,59 @@ class BudgetController extends Controller
         }
     }  
 
+    /**
+     * Duplica un presupuesto existente (mismo usuario) en uno nuevo en estado sin confirmar.
+     *
+     * @param int|string $id Identificador del presupuesto origen.
+     * @return \Illuminate\Http\JsonResponse Modelo creado o error 500.
+     */
+    public function duplicate($id) {
+
+        if (!UserHelper::hasExtencion('duplicar_presupuestos')) {
+            return response()->json(['error' => true, 'message' => 'No autorizado'], 403);
+        }
+
+        DB::beginTransaction();
+
+        try {
+
+            /** Origen con el mismo criterio de carga que el listado / alta. */
+            $source = Budget::withAll()->find($id);
+            if (is_null($source)) {
+                throw new Exception('Presupuesto no encontrado');
+            }
+
+            $model = BudgetDuplicarHelper::duplicate($source, $this);
+
+            $this->sendAddModelNotification('Budget', $model->id);
+
+            $total_helper = (int) BudgetHelper::getTotal($model);
+            $total_budget = (int) $model->total;
+
+            $diferencia = abs($total_helper - $total_budget);
+
+            if ($diferencia > 3) {
+                Log::info('Total mal para presupuesto duplicado '.$model->id);
+                Log::info('total_helper: '.$total_helper);
+                Log::info('total_budget: '.$total_budget);
+
+                throw new Exception('El total del presupuesto no corresponde con los productos ingresados');
+            }
+
+            DB::commit();
+
+            return response()->json(['model' => $this->fullModel('Budget', $model->id)], 201);
+
+        } catch (\Throwable $e) {
+
+            DB::rollBack();
+
+            Log::info($e);
+
+            return response()->json(['error' => true, 'message' => $e->getMessage()], 500);
+        }
+    }
+
     public function show($id) {
         return response()->json(['model' => $this->fullModel('Budget', $id)], 200);
     }
@@ -123,6 +181,9 @@ class BudgetController extends Controller
         $model->surchages_in_services     = $request->surchages_in_services;
         $model->discounts_in_services     = $request->discounts_in_services;
         $model->moneda_id                 = $request->moneda_id;
+        $model->sale_status_id            = $request->sale_status_id;
+        $model->discount_stock            = !is_null($request->discount_stock) ? $request->discount_stock : $model->discount_stock;
+        $model->iva_aplicado              = !is_null($request->iva_aplicado) ? $request->iva_aplicado : $model->iva_aplicado;
 
         $model->save();
         GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);

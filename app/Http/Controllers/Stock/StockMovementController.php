@@ -122,7 +122,7 @@ class StockMovementController extends Controller
             'created_at'                => $this->get_created_at($segundos_para_agregar),
         ]);
 
-        // Log::info('stock_movement->observations: '.$stock_movement->observations);
+        Log::info('stock_movement->observations: '.$stock_movement->observations);
 
         $stock_movement = SetConcepto::set_concepto($stock_movement, $data);
 

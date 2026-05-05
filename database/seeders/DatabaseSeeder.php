@@ -31,6 +31,8 @@ class DatabaseSeeder extends Seeder
             $this->call(SheetTypeSeeder::class);
             $this->call(PdfColumnProfileSeeder::class);
             $this->call(ExtencionSeeder::class);
+            $this->call(ExtencionDuplicarPresupuestosSeeder::class);
+            $this->call(ExtencionEnviarMailClientesSeeder::class);
             $this->call(PermissionSeeder::class);
             // $this->call(FeaturesSeeder::class);
             // $this->call(PlansSeeder::class);
@@ -299,6 +301,8 @@ class DatabaseSeeder extends Seeder
         $this->call(CheckStatusSeeder::class);
         $this->call(OnlineTemplateSeeder::class);
         $this->call(ExtencionSeeder::class);
+        $this->call(ExtencionDuplicarPresupuestosSeeder::class);
+        $this->call(ExtencionEnviarMailClientesSeeder::class);
         $this->call(ConceptoStockMovementSeeder::class);
         $this->call(UnidadMedidaSeeder::class);
         $this->call(PermissionSeeder::class);

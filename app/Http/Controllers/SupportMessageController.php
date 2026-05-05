@@ -75,10 +75,14 @@ class SupportMessageController extends Controller
 
         // Recarga mensaje con relaciones antes de sincronizar, emitir y responder.
         $message = SupportMessage::where('id', $message->id)->withAll()->first();
-        // Primero hacia admin-api: al responder OK, persiste synced_to_admin_at.
-        SupportSyncHelper::sync_message_to_admin($message);
+        // Sincroniza hacia admin-api; si falla HTTP o configuración, queda marcado como no recibido en central.
+        $sync_ok = SupportSyncHelper::sync_message_to_admin($message);
+        if (!$sync_ok) {
+            $message->remote_delivery_status = 'not_received';
+            $message->save();
+        }
         $message = SupportMessage::where('id', $message->id)->withAll()->first();
-        // Pusher y respuesta del POST llevan doble check cuando el remoto aceptó el mensaje.
+        // Pusher y respuesta del POST incluyen estado de entrega remota para la UI.
         event(new SupportMessageReceived($message->id, $user_id));
 
         return response()->json(['model' => $message], 201);
@@ -104,6 +108,29 @@ class SupportMessageController extends Controller
         SupportSyncHelper::sync_read_to_admin($message);
 
         return response()->json(['ok' => true], 200);
+    }
+
+    /**
+     * Reintenta enviar a admin-api un mensaje del usuario ya persistido que falló en sincronización.
+     *
+     * @param int|string $id Id del mensaje local.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function retry_remote_sync($id)
+    {
+        $user_id = $this->userId(false);
+        $message = SupportMessage::where('id', $id)
+            ->where('sender_type', 'user')
+            ->whereHas('ticket', function ($query) use ($user_id) {
+                $query->where('user_id', $user_id);
+            })
+            ->firstOrFail();
+
+        SupportSyncHelper::sync_message_to_admin($message);
+
+        $model = $this->fullModel('SupportMessage', $message->id);
+
+        return response()->json(['model' => $model], 200);
     }
 
     /**

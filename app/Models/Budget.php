@@ -10,8 +10,9 @@ class Budget extends Model
 
     protected $dates = ['start_at', 'finish_at'];
 
+
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'client.credit_accounts.moneda', 'articles.article_variants', 'budget_status', 'discounts', 'surchages', 'price_type', 'services', 'promocion_vinotecas');
+        $query->with('client.iva_condition', 'client.price_type', 'client.credit_accounts.moneda', 'articles.article_variants', 'budget_status', 'discounts', 'surchages', 'price_type', 'sale_status', 'services', 'promocion_vinotecas');
         // $query->with('client.iva_condition', 'client.price_type', 'articles', 'budget_status', 'optional_order_production_statuses');
     }
 
@@ -41,6 +42,13 @@ class Budget extends Model
 
     function price_type() {
         return $this->belongsTo(PriceType::class);
+    }
+
+    /**
+     * Estado de venta asociado; se replica en la Sale al confirmar el presupuesto.
+     */
+    function sale_status() {
+        return $this->belongsTo(SaleStatus::class);
     }
 
     function budget_status() {

@@ -422,6 +422,7 @@ Route::get('article/tickets-pdf/{ids}', 'ArticleController@ticketsPdf');
 Route::get('article/bar-codes-pdf/{ids}', 'ArticleController@barCodePdf');
 Route::get('article/bar-codes-etiquetas-pdf/{ids}', 'ArticleController@barCodeEtiquetasPdf');
 Route::get('article/list-pdf/{ids}', 'ArticleController@listPdf');
+Route::get('article/article-offer-pdf/{article_pdf_id}/{ids}', 'ArticleController@articleOfferSheetPdf');
 Route::get('article/pdf-personalizado', 'ArticleController@pdfPersonalizado');
 
 

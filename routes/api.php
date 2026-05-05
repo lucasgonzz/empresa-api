@@ -73,6 +73,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('support-ticket/{id}', 'SupportTicketController@show');
     Route::put('support-ticket/{id}', 'SupportTicketController@update');
     Route::post('support-message', 'SupportMessageController@store');
+    Route::post('support-message/{id}/retry-remote-sync', 'SupportMessageController@retry_remote_sync');
     Route::post('support-message/{id}/mark-read', 'SupportMessageController@mark_read');
     Route::post('support-message/typing', 'SupportMessageController@typing');
 
@@ -128,6 +129,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Observaciones para pdf de articulos
     Route::resource('article-pdf-observation', 'ArticlePdfObservationController');
+
+    // Plantillas de PDF de ofertas (media página A4)
+    Route::resource('article-pdf', 'ArticlePdfController');
 
 
 
@@ -231,6 +235,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('price-change/{article_id}', 'PriceChangeController@index');
 
+    Route::put('sale/{sale_id}/delivery-info', 'SaleController@update_delivery_info');
+    Route::post('sale/{sale_id}/send-client-mail', 'SaleController@send_client_mail');
+    Route::post('sale/send-client-mail-bulk', 'SaleController@send_client_mail_bulk');
+    Route::put('sale/{sale_id}/etiqueta-sender', 'SaleController@update_etiqueta_sender');
+    Route::resource('sale-sender-info', 'SaleSenderInfoController')->except(['create', 'edit']);
     Route::resource('sale', 'SaleController');
     Route::get('sale/from-date/{modulo}/{from_date?}/{until_date?}', 'SaleController@index');
     Route::put('sale/update-prices/{id}', 'SaleController@updatePrices');
@@ -382,6 +391,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('surchage', 'SurchageController');
     Route::post('service', 'ServiceController@store');
     // Route::resource('budget', 'BudgetController')->except(['index']);
+    Route::post('budget/{id}/duplicate', 'BudgetController@duplicate');
     Route::resource('budget', 'BudgetController');
     Route::get('budget/from-date/{from_date}/{until_date?}', 'BudgetController@index');
     Route::resource('budget-status', 'BudgetStatusController');

@@ -17,10 +17,15 @@ class ComercioCityMailHelper
      * Envía al cliente un correo por nueva venta registrada.
      *
      * No hace nada si la venta no tiene cliente o el cliente no tiene email.
+     *
+     * @param Sale $sale Venta con relaciones cargables (client, moneda, user para links).
+     * @param bool $updated Si true, asunto y textos de "venta actualizada".
+     * @param bool $force_send Si true, envía aunque send_mail sea false (reenvío / envío manual desde listado).
+     * @return void
      */
-    public static function new_sale(Sale $sale, $updated = false)
+    public static function new_sale(Sale $sale, $updated = false, $force_send = false)
     {
-        if (!$sale->send_mail) {
+        if (!$force_send && !$sale->send_mail) {
             return;
         }
 

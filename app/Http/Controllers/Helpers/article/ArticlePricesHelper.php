@@ -243,7 +243,7 @@ class ArticlePricesHelper {
             
             $article->load('iva');
 
-            if (!$user->iva_included && Self::hasIva($article)) {
+            if (Self::hasIva($article)) {
 
                 // Log::info('iva: '.$article->iva->percentage);
 
