@@ -110,7 +110,7 @@ class ProcessArticleExportJob implements ShouldQueue
             Excel::store(new ArticleExport($models, $this->owner_user_id), $relative_path);
 
             // Link público para descarga directa desde la notificación global.
-            $api_url = config('app.API_URL');
+            $api_url = config('app.APP_URL');
             if (
                 config('app.APP_ENV') == 'production' 
                 && !config('app.VPS')

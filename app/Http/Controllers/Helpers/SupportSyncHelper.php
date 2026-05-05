@@ -82,9 +82,10 @@ class SupportSyncHelper
             // Ejecuta envío HTTP hacia admin-api con payload + adjuntos.
             $response = $request->post(rtrim($admin_url, '/') . '/api/inbound/support/messages', $payload);
 
-            // Si fue exitoso, marca timestamp de sincronización.
+            // Si fue exitoso, marca timestamp de sincronización y limpia fallo previo.
             if ($response->successful()) {
                 $message->synced_to_admin_at = now();
+                $message->remote_delivery_status = null;
                 $message->save();
                 return true;
             }

@@ -5,6 +5,11 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
+/**
+ * Venta del sistema (remito / facturación asociada).
+ *
+ * @property int|null $dias_alerta_venta_no_cobrada_personalizado Días hasta mostrar alerta de cobro pendiente; null usa la jerarquía global de usuarios.
+ */
 class Sale extends Model
 {
     use SoftDeletes;
@@ -50,7 +55,7 @@ class Sale extends Model
     }
 
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'client.credit_accounts', 'buyer.comercio_city_client', 'articles.article_variants', 'articles.price_types', 'articles.addresses', 'impressions', 'discounts', 'surchages', 'afip_tickets.afip_errors', 'afip_tickets.afip_observations', 'nota_credito_afip_tickets', 'afip_tickets.nota_credito_afip.afip_errors', 'combos.articles', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'afip_observations', 'current_acount', 'current_acount_payment_methods', 'price_type', 'sale_modifications', 'seller_commissions', 'promocion_vinotecas.articles', 'afip_information.iva_condition', 'meli_order')
+        $query->with('client.iva_condition', 'client.price_type', 'client.credit_accounts', 'client.location.provincia', 'buyer.comercio_city_client', 'articles.article_variants', 'articles.price_types', 'articles.addresses', 'impressions', 'discounts', 'surchages', 'afip_tickets.afip_errors', 'afip_tickets.afip_observations', 'nota_credito_afip_tickets', 'afip_tickets.nota_credito_afip.afip_errors', 'combos.articles', 'order.cupon', 'services', 'employee', 'budget.articles', 'budget.client', 'budget.discounts', 'budget.surchages', 'current_acount_payment_method', 'order_production.client', 'order_production.articles', 'afip_errors', 'afip_observations', 'current_acount', 'current_acount_payment_methods', 'price_type', 'sale_modifications', 'sale_delivery_info', 'sale_sender_info', 'seller_commissions', 'promocion_vinotecas.articles', 'afip_information.iva_condition', 'meli_order')
         ->withCount('sale_modifications');
     }
 
@@ -60,6 +65,20 @@ class Sale extends Model
 
     function sale_modifications() {
         return $this->hasMany(SaleModification::class);
+    }
+
+    /**
+     * Datos de envío personalizados para la etiqueta; opcional (1:1).
+     */
+    public function sale_delivery_info() {
+        return $this->hasOne(SaleDeliveryInfo::class);
+    }
+
+    /**
+     * Remitente preferido para la etiqueta (cabecera del negocio en el PDF).
+     */
+    public function sale_sender_info() {
+        return $this->belongsTo(SaleSenderInfo::class);
     }
 
     public function price_type() {

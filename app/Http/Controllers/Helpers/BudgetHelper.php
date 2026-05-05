@@ -55,6 +55,10 @@ class BudgetHelper {
 	            'discounts_in_services'	=> $budget->discounts_in_services,
 	            'surchages_in_services'	=> $budget->surchages_in_services,
             	'price_type_id'         => Self::get_price_type_id($budget),
+            	'sale_status_id'        => $budget->sale_status_id,
+            	// Misma semántica que en SaleController: si no viene definido en el presupuesto, descontar stock por defecto.
+            	'discount_stock'        => !is_null($budget->discount_stock) ? ($budget->discount_stock ? 1 : 0) : 1,
+            	'iva_aplicado'          => !is_null($budget->iva_aplicado) ? ($budget->iva_aplicado ? 1 : 0) : 1,
             	'employee_id'           => SaleHelper::getEmployeeId(),
 	            'save_current_acount' 	=> Self::get_guardar_cuenta_corriente($budget),
 	            'to_check'				=> UserHelper::hasExtencion('check_sales') ? 1 : 0,
@@ -136,7 +140,8 @@ class BudgetHelper {
 			Log::info('sale articles:');
 			Log::info($sale->articles);
 
-			if (!$has_extencion_check_sales) {
+			// Solo descontar stock de artículos si la venta lleva discount_stock (como en flujo de SaleHelper).
+			if (!$has_extencion_check_sales && (bool) $sale->discount_stock) {
 
             	ArticleHelper::discountStock($article->id, $article->pivot->amount, $sale, [], false, null);
 			}
@@ -157,7 +162,9 @@ class BudgetHelper {
 				'amount'	=> $promo->pivot->amount,
 			];
 
-            PromocionVinotecaHelper::discount_stock_promocion_vinoteca($sale, $promo_array);
+			if ((bool) $sale->discount_stock) {
+				PromocionVinotecaHelper::discount_stock_promocion_vinoteca($sale, $promo_array);
+			}
 		}
 	}
 

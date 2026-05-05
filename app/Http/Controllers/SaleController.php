@@ -17,6 +17,7 @@ use App\Http\Controllers\Helpers\SaleChartHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\SaleProviderOrderHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComisionesHelper;
 use App\Http\Controllers\Helpers\sale\AcopioHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
@@ -33,6 +34,8 @@ use App\Http\Controllers\Pdf\SaleTicketPdf;
 use App\Http\Controllers\Pdf\SaleTicketRaw;
 use App\Http\Controllers\SellerCommissionController;
 use App\Models\AfipTicket;
+use App\Models\SaleDeliveryInfo;
+use App\Models\SaleSenderInfo;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
@@ -149,6 +152,9 @@ class SaleController extends Controller
 
         try {
 
+            /** Checkbox "Enviar correo" en vender: sin extensión no se persiste ni se encola mail. */
+            $can_enviar_mail_a_clientes = UserHelper::hasExtencion('enviar_mail_a_clientes');
+
             $model = Sale::create([
                 'num'                               => $this->num('sales'),
                 'client_id'                         => $request->client_id,
@@ -191,9 +197,11 @@ class SaleController extends Controller
                 'user_id'                           => $this->userId(),
                 // Array de descripciones del cálculo del precio final, serializado como JSON desde el frontend
                 'price_description'                 => $request->price_description,
-                'send_mail'                         => !is_null($request->send_mail) ? (bool) $request->send_mail : false,
+                'send_mail'                         => $can_enviar_mail_a_clientes && !is_null($request->send_mail) ? (bool) $request->send_mail : false,
                 // Log detallado de acciones en vender serializado desde frontend.
                 'log'                               => $request->log,
+                // Umbral opcional de días para alertas de cobro (null => reglas globales de usuario).
+                'dias_alerta_venta_no_cobrada_personalizado' => $this->normalized_dias_alerta_venta_no_cobrada_personalizado($request),
             ]);
 
             if (is_null($model->price_type_id)) {
@@ -260,6 +268,9 @@ class SaleController extends Controller
         
         Log::info('Se va a actualizar venta id: '.$id);
         try {
+
+            /** Misma regla que en store: send_mail solo si el comercio tiene la extensión. */
+            $can_enviar_mail_a_clientes = UserHelper::hasExtencion('enviar_mail_a_clientes');
 
             $model = Sale::where('id', $id)
                             ->with('articles')
@@ -346,9 +357,17 @@ class SaleController extends Controller
             // Array de descripciones del cálculo del precio final, serializado como JSON desde el frontend
             $model->price_description                   = $request->price_description;
 
-            $model->send_mail                           = !is_null($request->send_mail) ? (bool) $request->send_mail : false;
+            /** Sin extensión no se altera send_mail (no borrar histórico en ventas ya marcadas). */
+            if ($can_enviar_mail_a_clientes) {
+                $model->send_mail = !is_null($request->send_mail) ? (bool) $request->send_mail : false;
+            }
             // Log detallado de acciones en vender serializado desde frontend.
             $model->log                                 = $request->log;
+
+            // Umbral opcional de días para alertas de cobro (solo si el cliente envía la clave; permite limpiar con null).
+            if ($request->exists('dias_alerta_venta_no_cobrada_personalizado')) {
+                $model->dias_alerta_venta_no_cobrada_personalizado = $this->normalized_dias_alerta_venta_no_cobrada_personalizado($request);
+            }
 
             // $model->valor_dolar                         = $request->valor_dolar;
             
@@ -379,7 +398,10 @@ class SaleController extends Controller
 
             DB::commit();
 
-            ComercioCityMailHelper::new_sale($model, true);
+            /** Misma regla que el checkbox en vender: sin extensión no se encola correo aunque send_mail siga en true. */
+            if ($can_enviar_mail_a_clientes) {
+                ComercioCityMailHelper::new_sale($model, true);
+            }
 
             return response()->json(['model' => $this->fullModel('Sale', $model->id)], 200);
         
@@ -559,7 +581,10 @@ class SaleController extends Controller
                         //     });
                         //     // $query->where('saldo', '>', 300);
                         // })
-                        ->whereDate('created_at', '<=', Carbon::today()->subDays($dias));
+                        ->whereRaw(
+                            'DATE(`sales`.`created_at`) <= DATE_SUB(CURDATE(), INTERVAL COALESCE(`sales`.`dias_alerta_venta_no_cobrada_personalizado`, ?) DAY)',
+                            [$dias]
+                        );
 
         if ($ver_solo_las_ventas_suyas) {
             $sales = $sales->where('employee_id', $user->id);
@@ -652,9 +677,228 @@ class SaleController extends Controller
 
     }
 
-    function etiqueta_envio($sale_id) {
-        $sale = Sale::find($sale_id);
-        new EtiquetaEnvioPdf($sale);
+    function etiqueta_envio(Request $request, $sale_id) {
+        $sender_id = $request->query('sale_sender_info_id');
+        if ($sender_id === null || $sender_id === '') {
+            abort(404, 'Falta sale_sender_info_id');
+        }
+
+        $sale = Sale::where('user_id', $this->userId())
+            ->where('id', $sale_id)
+            ->with(['client.location.provincia', 'sale_delivery_info'])
+            ->first();
+
+        if (is_null($sale)) {
+            abort(404);
+        }
+
+        $sender = SaleSenderInfo::where('user_id', $this->userId())
+            ->where('id', $sender_id)
+            ->first();
+
+        if (is_null($sender)) {
+            abort(404);
+        }
+
+        new EtiquetaEnvioPdf($sale, $sender);
+    }
+
+    /**
+     * Guarda el remitente elegido para recordarlo en la próxima etiqueta.
+     *
+     * @param Request $request Body opcional: sale_sender_info_id (nullable para limpiar).
+     * @param int|string $sale_id Id de venta.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function update_etiqueta_sender(Request $request, $sale_id)
+    {
+        $sale = Sale::where('user_id', $this->userId())
+            ->where('id', $sale_id)
+            ->first();
+
+        if (is_null($sale)) {
+            return response()->json(['error' => true, 'message' => 'Venta no encontrada'], 404);
+        }
+
+        $sale->sale_sender_info_id = $request->input('sale_sender_info_id');
+        $sale->save();
+
+        return response()->json(['model' => $this->fullModel('Sale', $sale_id)], 200);
+    }
+
+    /**
+     * Upsert de datos de envío para la etiqueta (SaleDeliveryInfo 1:1).
+     * Solo ventas del usuario actual (owner).
+     *
+     * @param Request $request Campos: first_name, last_name, phone, dni, cuit, locality, province, postal_code, email (opcionales).
+     * @param int|string $sale_id Id de la venta.
+     * @return \Illuminate\Http\JsonResponse Venta completa con sale_delivery_info.
+     */
+    function update_delivery_info(Request $request, $sale_id)
+    {
+        $sale = Sale::where('user_id', $this->userId())
+            ->where('id', $sale_id)
+            ->first();
+
+        if (is_null($sale)) {
+            return response()->json(['error' => true, 'message' => 'Venta no encontrada'], 404);
+        }
+
+        SaleDeliveryInfo::updateOrCreate(
+            ['sale_id' => $sale->id],
+            [
+                'first_name' => $request->input('first_name'),
+                'last_name' => $request->input('last_name'),
+                'phone' => $request->input('phone'),
+                'dni' => $request->input('dni'),
+                'cuit' => $request->input('cuit'),
+                'locality' => $request->input('locality'),
+                'province' => $request->input('province'),
+                'postal_code' => $request->input('postal_code'),
+                'email' => $request->input('email'),
+            ]
+        );
+
+        return response()->json(['model' => $this->fullModel('Sale', $sale_id)], 200);
+    }
+
+    /**
+     * Encola el mismo correo de notificación de venta que al crear el registro (ComercioCityMailHelper::new_sale).
+     * Requiere cliente con email válido. Marca send_mail en la venta para alinear el listado con el distintivo de correo.
+     *
+     * @param int|string $sale_id Id de la venta del usuario autenticado.
+     * @return \Illuminate\Http\JsonResponse Venta completa vía fullModel o error 404/422.
+     */
+    function send_client_mail($sale_id)
+    {
+        if (!UserHelper::hasExtencion('enviar_mail_a_clientes')) {
+            return response()->json(['error' => true, 'message' => 'No autorizado'], 403);
+        }
+
+        /** Venta propia del usuario actual (mismo criterio que update_delivery_info). */
+        $sale = Sale::where('user_id', $this->userId())
+            ->where('id', $sale_id)
+            ->first();
+
+        if (is_null($sale)) {
+            return response()->json(['error' => true, 'message' => 'Venta no encontrada'], 404);
+        }
+
+        /** Validación + encolado + persistencia send_mail (misma lógica que el envío masivo por id). */
+        $error_message = $this->try_queue_sale_client_mail($sale);
+        if ($error_message !== null) {
+            return response()->json(['error' => true, 'message' => $error_message], 422);
+        }
+
+        return response()->json(['model' => $this->fullModel('Sale', $sale_id)], 200);
+    }
+
+    /**
+     * Encola el correo de notificación para cada venta indicada (ids únicos del usuario actual).
+     * Las que fallen (sin cliente, mail inválido, etc.) se listan en failures sin abortar el resto.
+     *
+     * Request body: sale_ids (array de enteros).
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\JsonResponse models: fullModel por cada éxito; failures: { sale_id, message }[]
+     */
+    function send_client_mail_bulk(Request $request)
+    {
+        if (!UserHelper::hasExtencion('enviar_mail_a_clientes')) {
+            return response()->json(['error' => true, 'message' => 'No autorizado'], 403);
+        }
+
+        /** Lista de ids enviada desde el SPA (selección múltiple en listado de ventas). */
+        $ids = $request->input('sale_ids');
+        if (!is_array($ids)) {
+            return response()->json(['error' => true, 'message' => 'sale_ids debe ser un array'], 422);
+        }
+
+        /** Normaliza a enteros positivos y elimina duplicados. */
+        $sale_ids = [];
+        foreach ($ids as $raw) {
+            $id = (int) $raw;
+            if ($id > 0) {
+                $sale_ids[] = $id;
+            }
+        }
+        $sale_ids = array_values(array_unique($sale_ids));
+
+        if (count($sale_ids) === 0) {
+            return response()->json(['error' => true, 'message' => 'Indique al menos una venta'], 422);
+        }
+
+        /** Ventas del usuario: una query por id (volumen típico de selección manual es bajo). */
+        $user_id = $this->userId();
+        $models = [];
+        $failures = [];
+
+        foreach ($sale_ids as $sale_id) {
+            $sale = Sale::where('user_id', $user_id)
+                ->where('id', $sale_id)
+                ->first();
+
+            if (is_null($sale)) {
+                $failures[] = [
+                    'sale_id' => $sale_id,
+                    'message' => 'Venta no encontrada',
+                ];
+                continue;
+            }
+
+            $error_message = $this->try_queue_sale_client_mail($sale);
+            if ($error_message !== null) {
+                $failures[] = [
+                    'sale_id' => $sale_id,
+                    'message' => $error_message,
+                ];
+                continue;
+            }
+
+            $models[] = $this->fullModel('Sale', $sale_id);
+        }
+
+        return response()->json([
+            'models' => $models,
+            'failures' => $failures,
+        ], 200);
+    }
+
+    /**
+     * Encola ComercioCityMailHelper::new_sale para una venta ya resuelta al usuario.
+     *
+     * @param Sale $sale Instancia persistida (user_id ya verificado en el llamador).
+     * @return string|null Mensaje de error para API/toast, o null si se encoló el mail y se guardó send_mail.
+     */
+    protected function try_queue_sale_client_mail(Sale $sale): ?string
+    {
+        $sale->loadMissing('client', 'user', 'moneda');
+
+        /** Cliente obligatorio para destinatario del correo. */
+        $client = $sale->client;
+        if (!$client) {
+            return 'La venta no tiene cliente asociado';
+        }
+
+        /** Email del cliente: mismo criterio que el helper (vacío o inválido → no envío). */
+        $email_raw = $client->email;
+        if ($email_raw === null || trim((string) $email_raw) === '') {
+            return 'El cliente no tiene correo electrónico';
+        }
+
+        $email = trim((string) $email_raw);
+        if (filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+            return 'Correo del cliente no válido';
+        }
+
+        /** Igual que en store() tras commit: notificación estándar de nueva venta (no modo "actualizada"). */
+        ComercioCityMailHelper::new_sale($sale, false, true);
+
+        /** Persiste el flag para que el listado muestre el mismo estado que el checkbox / badge de envío. */
+        $sale->send_mail = true;
+        $sale->save();
+
+        return null;
     }
 
     function unidades_entregadas(Request $request, $sale_id) {
@@ -744,5 +988,26 @@ class SaleController extends Controller
             Log::error('consolidarFacturacion error: ' . $e->getMessage());
             return response()->json(['error' => true, 'message' => $e->getMessage()], 422);
         }
+    }
+
+    /**
+     * Normaliza el campo opcional de días hasta alertar cobro sin pagar (vender).
+     * Si la clave no viene en el request, devuelve null (solo tiene sentido en store cuando no existe la clave).
+     * Valores vacíos o null explícito => sin umbral personalizado (usa reglas globales en alertas).
+     *
+     * @param Request $request Request con posible `dias_alerta_venta_no_cobrada_personalizado`.
+     * @return int|null Entero >= 0 o null.
+     */
+    protected function normalized_dias_alerta_venta_no_cobrada_personalizado(Request $request)
+    {
+        if (!$request->exists('dias_alerta_venta_no_cobrada_personalizado')) {
+            return null;
+        }
+        $raw_value = $request->input('dias_alerta_venta_no_cobrada_personalizado');
+        if ($raw_value === '' || $raw_value === null) {
+            return null;
+        }
+
+        return max(0, (int) $raw_value);
     }
 }

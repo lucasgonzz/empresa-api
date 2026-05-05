@@ -2,27 +2,25 @@
 
 namespace App\Http\Controllers\Pdf; 
 
-use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
-use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
-use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
-use App\Http\Controllers\CommonLaravel\Helpers\StringHelper;
-use App\Http\Controllers\Helpers\BudgetHelper;
-use App\Http\Controllers\Helpers\ImageHelper;
+use App\Http\Controllers\Helpers\SaleDeliveryInfoHelper;
 use App\Http\Controllers\Helpers\UserHelper;
-use App\Models\Article;
-use Illuminate\Support\Facades\Log;
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class EtiquetaEnvioPdf extends fpdf {
 
-	function __construct($sale) {
+	/**
+	 * @param \App\Models\Sale $sale Venta con cliente y datos de envío.
+	 * @param \App\Models\SaleSenderInfo $sender Remitente (negocio) para la cabecera derecha.
+	 */
+	function __construct($sale, $sender) {
 		parent::__construct();
 		$this->SetAutoPageBreak(true, 1);
 		$this->b = 1;
 		$this->line_height = 10;
 
 		$this->sale = $sale;
+		$this->sender = $sender;
 
 		$this->user = UserHelper::getFullModel();
 		$this->AddPage();
@@ -50,80 +48,66 @@ class EtiquetaEnvioPdf extends fpdf {
 
         $this->y = 20;
 
+		// Cabecera derecha: datos del negocio (SaleSenderInfo); localidad y provincia son texto libre.
+		$sender_locality = (string) ($this->sender->localidad ?? '');
+		$sender_province = (string) ($this->sender->provincia ?? '');
+		$sender_postal = (string) ($this->sender->postal_code ?? '');
+
         $this->x = 105;
-		$this->Cell(100, $this->line_height, 'Mail: 2r.racing.p@gmail.com', $this->b, 1, 'L');
-		
+		$this->Cell(100, $this->line_height, 'Nombre: '.$this->sender->name, $this->b, 1, 'L');
+
         $this->x = 105;
-		$this->Cell(100, $this->line_height, 'Cuit: 33716718919', $this->b, 1, 'L');
-		
+		$this->Cell(100, $this->line_height, 'Mail: '.($this->sender->mail ?? ''), $this->b, 1, 'L');
+
         $this->x = 105;
-		$this->Cell(100, $this->line_height, 'Codigo Postal: 1846', $this->b, 1, 'L');
-		
+		$this->Cell(100, $this->line_height, 'Cuit: '.($this->sender->cuit ?? ''), $this->b, 1, 'L');
+
         $this->x = 105;
-		$this->Cell(100, $this->line_height, 'Localidad: Adrogue', $this->b, 1, 'L');
+		$this->Cell(100, $this->line_height, 'Codigo Postal: '.$sender_postal, $this->b, 1, 'L');
+
+        $this->x = 105;
+		$this->Cell(100, $this->line_height, 'Localidad: '.$sender_locality, $this->b, 1, 'L');
+
+		$this->x = 105;
+		$this->Cell(100, $this->line_height, 'Provincia: '.$sender_province, $this->b, 1, 'L');
 		
 		
 
 
-		// Datos de envio
+		// Datos de envío: cliente + overrides SaleDeliveryInfo (si existen).
+		$delivery = SaleDeliveryInfoHelper::resolved_for_etiqueta_pdf($this->sale);
 
 		// Izquierda
 		$this->SetFont('Arial', 'B', 12);
 
-		$this->y = 80;
+		$this->y = 90;
 		$this->x = 5;
 
-		$this->Cell(100, $this->line_height, 'Nombre: '.explode(' ', $this->sale->client->name)[0], $this->b, 1, 'L');
-		
-		$this->x = 5;
-		$this->Cell(100, $this->line_height, 'Apellido: '.explode(' ', $this->sale->client->name)[1], $this->b, 1, 'L');
-		
-		$this->x = 5;
-		$this->Cell(100, $this->line_height, 'Tel/Cel: '.$this->sale->client->phone, $this->b, 1, 'L');
-		
-		$this->x = 5;
-		$this->Cell(100, $this->line_height, 'DNI: '.$this->sale->client->dni ?? $this->sale->client->cuit, $this->b, 1, 'L');
+		$this->Cell(100, $this->line_height, 'Nombre: '.$delivery['first_name'], $this->b, 1, 'L');
 
+		$this->x = 5;
+		$this->Cell(100, $this->line_height, 'Apellido: '.$delivery['last_name'], $this->b, 1, 'L');
 
+		$this->x = 5;
+		$this->Cell(100, $this->line_height, 'Tel/Cel: '.$delivery['phone'], $this->b, 1, 'L');
+
+		$this->x = 5;
+		$this->Cell(100, $this->line_height, 'DNI: '.$delivery['document'], $this->b, 1, 'L');
 
 		// Derecha
-
-		$this->y = 80;
+		$this->y = 90;
 		$this->x = 105;
 
-		$this->Cell(100, $this->line_height, 'Localidad: '.optional($this->sale->client->location)->name ?? '', $this->b, 1, 'L');
-		
-
-
+		$this->Cell(100, $this->line_height, 'Localidad: '.$delivery['locality'], $this->b, 1, 'L');
 
 		$this->x = 105;
-
-		$provincia = '';
-		if (
-			!is_null($this->sale->client->location)
-			&& !is_null($this->sale->client->location->provincia)
-		) {
-			$provincia = $this->sale->client->location->provincia->name;
-		}
-
-		$this->Cell(100, $this->line_height, 'Provincia: '.$provincia, $this->b, 1, 'L');
-		
-
+		$this->Cell(100, $this->line_height, 'Provincia: '.$delivery['province'], $this->b, 1, 'L');
 
 		$this->x = 105;
+		$this->Cell(100, $this->line_height, 'Código Postal: '.$delivery['postal_code'], $this->b, 1, 'L');
 
-		$codigo = '';
-
-		if (
-			!is_null($this->sale->client->location)
-			&& !is_null($this->sale->client->location->codigo_postal)
-		) {
-			$codigo = $this->sale->client->location->codigo_postal;
-		}
-		$this->Cell(100, $this->line_height, 'Código Postal: '.$codigo, $this->b, 1, 'L');
-		
 		$this->x = 105;
-		$this->Cell(100, $this->line_height, 'Mail: '.$this->sale->client->email, $this->b, 1, 'L');
+		$this->Cell(100, $this->line_height, 'Mail: '.$delivery['email'], $this->b, 1, 'L');
 	}
 
 }

@@ -23,7 +23,7 @@ use App\Http\Controllers\Helpers\article\UpdateVariantsStockHelper;
 use App\Http\Controllers\Helpers\import\article\InitExcelImport;
 use App\Http\Controllers\Pdf\ArticleBarCodePdf;
 use App\Http\Controllers\Pdf\ArticleListPdf;
-use App\Http\Controllers\Pdf\ArticlePdf;
+use App\Http\Controllers\Pdf\ArticleOfferSheetPdf;
 use App\Http\Controllers\Pdf\ArticlePdf\TruvariArticleListPdf;
 use App\Http\Controllers\Pdf\ArticleTicketPdf;
 use App\Http\Controllers\Pdf\ArticleTicket\ArticleBarCodeEtiquetasPdf;
@@ -33,6 +33,7 @@ use App\Imports\ProvinciaImport;
 use App\Jobs\ProcessArticleImport;
 use App\Jobs\ProcessArticleExportJob;
 use App\Jobs\ProcessDeleteArticleFromTiendaNube;
+use App\Models\ArticlePdf as ArticlePdfLayout;
 use App\Jobs\ProcessSyncArticleToTiendaNube;
 use App\Jobs\SyncProductToMercadoLibre;
 use App\Models\Article;
@@ -203,6 +204,7 @@ class ArticleController extends Controller
 
         $model->unidades_individuales              = $request->unidades_individuales;
         $model->unidad_medida_id                   = $request->unidad_medida_id;
+        $model->medida                             = $request->medida;
         $model->omitir_en_lista_pdf                = $request->omitir_en_lista_pdf;
 
 
@@ -360,6 +362,7 @@ class ArticleController extends Controller
 
         $model->unidades_individuales               = $request->unidades_individuales;
         $model->unidad_medida_id                    = $request->unidad_medida_id;
+        $model->medida                              = $request->medida;
         $model->omitir_en_lista_pdf                 = $request->omitir_en_lista_pdf;
 
 
@@ -708,6 +711,22 @@ class ArticleController extends Controller
 
     function listPdf($ids) {
         new ArticleListPdf($ids);
+    }
+
+    /**
+     * PDF de ofertas (media página A4 por artículo) según plantilla `article_pdfs` del usuario autenticado.
+     *
+     * @param int    $article_pdf_id ID de la plantilla.
+     * @param string $ids            IDs de artículos separados por guión.
+     * @return void
+     */
+    function articleOfferSheetPdf($article_pdf_id, $ids)
+    {
+        $layout = ArticlePdfLayout::where('user_id', $this->userId())
+            ->where('id', $article_pdf_id)
+            ->firstOrFail();
+
+        new ArticleOfferSheetPdf($layout, $ids);
     }
 
     function pdfPersonalizado() {

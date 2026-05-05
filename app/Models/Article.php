@@ -14,6 +14,15 @@ class Article extends Model
 
     protected $dates = ['stock_updated_at', 'final_price_updated_at'];
 
+    /**
+     * Casts: medida es la magnitud del contenido (ej. 2.5) para la unidad_medida elegida.
+     *
+     * @var array<string, string>
+     */
+    protected $casts = [
+        'medida' => 'decimal:4',
+    ];
+
     // protected $appends = ['costo_real'];
 
     function scopeWithAll($query) {

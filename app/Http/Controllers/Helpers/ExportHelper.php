@@ -369,10 +369,12 @@ class ExportHelper {
 			$margen_ganancia_index = array_search('Margen de ganancia', $headings);
 			$precio_index = array_search('Precio', $headings);
 			$precio_final_index = array_search('Precio Final', $headings);
+			$precio_final_anterior_index = array_search('Precio Final Anterior', $headings);
 
 			unset($headings[$margen_ganancia_index]);
 			unset($headings[$precio_index]);
 			unset($headings[$precio_final_index]);
+			unset($headings[$precio_final_anterior_index]);
 
 			$aplicar_iva_index = array_search('Aplicar Iva', $headings);
 

@@ -20,7 +20,7 @@ class cargar_inventario_a_tienda_nube extends Command
      *
      * @var string
      */
-    protected $description = 'Command description';
+    protected $description = 'Crea para cada articulo (con disponible_tienda_nube=true) una sincronizacion de articulo hacia tienda nube pendiente, para luego correr sync_articles_to_tienda_nube y subirlos';
 
     /**
      * Create a new command instance.

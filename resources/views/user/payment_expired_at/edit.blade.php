@@ -201,6 +201,22 @@
                 Total a pagar
             </h2>
 
+            <label for="precio_plan">Precio base del plan (sistema)</label>
+            <input
+                type="number"
+                id="precio_plan"
+                name="precio_plan"
+                value="{{ old('precio_plan', $user->precio_plan ?? 0) }}"
+                step="0.01"
+                min="0"
+                required
+            >
+
+            <div class="hint">
+                Monto fijo mensual por el sistema (se guarda en <strong>precio_plan</strong>).
+                Al total se suma <strong>precio_por_cuenta</strong> por cada empleado y los módulos de ecommerce.
+            </div>
+
             <label for="precio_por_cuenta">Total a pagar por cuenta</label>
             <input
                 type="number"
@@ -222,7 +238,8 @@
                  * Cálculo del total de cuentas y mensualidad.
                  *
                  * Se suman los siguientes conceptos:
-                 *   - Cuentas base: el dueño + todos los empleados (precio_por_cuenta c/u)
+                 *   - precio_plan: monto fijo base del sistema
+                 *   - Cuentas base: todos los empleados (precio_por_cuenta c/u)
                  *   - Ecommerce: +1 si el usuario tiene la propiedad 'online' seteada
                  *   - Mercado Libre: +1 si tiene la extensión 'mercado_libre'
                  *   - Tienda Nube: +1 si tiene la extensión 'usa_tienda_nube'
@@ -231,8 +248,14 @@
                  * o precio_por_cuenta como fallback.
                  */
 
-                // Cuentas base: dueño (1) + cantidad de empleados
-                $cuentas_base = count($user->employees) + 1;
+                // Valor de precio plan mostrado (old() mantiene el dato si falla la validación)
+                $precio_plan_val = (float) old('precio_plan', $user->precio_plan ?? 0);
+
+                // Precio por cuenta del formulario (alineado con filas del desglose)
+                $precio_por_cuenta_val = (float) old('precio_por_cuenta', $user->precio_por_cuenta);
+
+                // Cuentas base: solo empleados (el dueño se contempla en precio_plan)
+                $cuentas_base = count($user->employees);
 
                 // Ecommerce: la propiedad 'online' contiene una URL si está activo, o null si no
                 $tiene_ecommerce = !empty($user->online);
@@ -249,13 +272,14 @@
                 $tiene_tienda_nube = in_array('usa_tienda_nube', $slugs_extenciones);
                 $cuentas_tienda_nube = $tiene_tienda_nube ? 1 : 0;
 
-                // Precio efectivo de cada servicio: el individual si está seteado, sino precio_por_cuenta
-                $precio_ecommerce_efectivo      = $user->precio_ecommerce      ?? $user->precio_por_cuenta;
-                $precio_mercado_libre_efectivo  = $user->precio_mercado_libre  ?? $user->precio_por_cuenta;
-                $precio_tienda_nube_efectivo    = $user->precio_tienda_nube    ?? $user->precio_por_cuenta;
+                // Precio efectivo de cada servicio: el individual si está seteado, sino precio_por_cuenta del formulario
+                $precio_ecommerce_efectivo      = $user->precio_ecommerce      ?? $precio_por_cuenta_val;
+                $precio_mercado_libre_efectivo  = $user->precio_mercado_libre  ?? $precio_por_cuenta_val;
+                $precio_tienda_nube_efectivo    = $user->precio_tienda_nube    ?? $precio_por_cuenta_val;
 
-                // Total mensualidad sumando cada concepto con su precio correspondiente
-                $total_mensualidad = ($user->precio_por_cuenta           * $cuentas_base)
+                // Total mensualidad: plan + cuentas + módulos (se persiste en total_mensualidad)
+                $total_mensualidad = $precio_plan_val
+                                   + ($precio_por_cuenta_val              * $cuentas_base)
                                    + ($precio_ecommerce_efectivo          * $cuentas_ecommerce)
                                    + ($precio_mercado_libre_efectivo      * $cuentas_mercado_libre)
                                    + ($precio_tienda_nube_efectivo        * $cuentas_tienda_nube);
@@ -268,7 +292,7 @@
                 id="precio_ecommerce"
                 name="precio_ecommerce"
                 value="{{ old('precio_ecommerce', $user->precio_ecommerce) }}"
-                placeholder="Por defecto: precio por cuenta (${{ number_format($user->precio_por_cuenta, 0, '', '.') }})"
+                placeholder="Por defecto: precio por cuenta (${{ number_format($precio_por_cuenta_val, 0, '', '.') }})"
                 step="0.01"
                 min="0"
             >
@@ -279,7 +303,7 @@
                 id="precio_mercado_libre"
                 name="precio_mercado_libre"
                 value="{{ old('precio_mercado_libre', $user->precio_mercado_libre) }}"
-                placeholder="Por defecto: precio por cuenta (${{ number_format($user->precio_por_cuenta, 0, '', '.') }})"
+                placeholder="Por defecto: precio por cuenta (${{ number_format($precio_por_cuenta_val, 0, '', '.') }})"
                 step="0.01"
                 min="0"
             >
@@ -290,7 +314,7 @@
                 id="precio_tienda_nube"
                 name="precio_tienda_nube"
                 value="{{ old('precio_tienda_nube', $user->precio_tienda_nube) }}"
-                placeholder="Por defecto: precio por cuenta (${{ number_format($user->precio_por_cuenta, 0, '', '.') }})"
+                placeholder="Por defecto: precio por cuenta (${{ number_format($precio_por_cuenta_val, 0, '', '.') }})"
                 step="0.01"
                 min="0"
             >
@@ -309,12 +333,20 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {{-- Cuentas base: dueño + empleados --}}
+                    {{-- Precio fijo base del plan (sistema); no es cobro por cuenta --}}
                     <tr class="active-row">
-                        <td>Dueño + empleados</td>
-                        <td>${{ number_format($user->precio_por_cuenta, 0, '', '.') }}</td>
+                        <td>Precio base plan (sistema)</td>
+                        <td>${{ number_format($precio_plan_val, 0, '', '.') }}</td>
+                        <td>—</td>
+                        <td>${{ number_format($precio_plan_val, 0, '', '.') }}</td>
+                    </tr>
+
+                    {{-- Cuentas base: empleados --}}
+                    <tr class="active-row">
+                        <td>Empleados</td>
+                        <td>${{ number_format($precio_por_cuenta_val, 0, '', '.') }}</td>
                         <td>{{ $cuentas_base }}</td>
-                        <td>${{ number_format($user->precio_por_cuenta * $cuentas_base, 0, '', '.') }}</td>
+                        <td>${{ number_format($precio_por_cuenta_val * $cuentas_base, 0, '', '.') }}</td>
                     </tr>
 
                     {{-- Ecommerce (solo si tiene 'online' seteado) --}}
@@ -368,7 +400,9 @@
                 <tfoot>
                     <tr class="total-row">
                         <td colspan="2">Total mensualidad</td>
-                        <td>{{ $cuentas_base + $cuentas_ecommerce + $cuentas_mercado_libre + $cuentas_tienda_nube }} cuentas</td>
+                        <td>
+                            Plan + {{ $cuentas_base + $cuentas_ecommerce + $cuentas_mercado_libre + $cuentas_tienda_nube }} cuentas / módulos
+                        </td>
                         <td>${{ number_format($total_mensualidad, 0, '', '.') }}</td>
                     </tr>
                 </tfoot>
