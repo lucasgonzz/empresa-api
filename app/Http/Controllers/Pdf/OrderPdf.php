@@ -61,9 +61,12 @@ class OrderPdf extends fpdf {
 			'num' 				=> $this->model->num,
 			'date'				=> $this->model->created_at,
 			'title' 			=> 'Pedido Online',
+			'title_font_size'	=> 10,
+			'titulo'			=> $this->user->company_name,
 			'model_info'		=> !is_null($this->model->buyer->client) ? $this->model->buyer->client : $this->model->buyer,
 			'model_props' 		=> $this->getModelProps(),
 			'fields' 			=> $this->getFields(),
+			'user'				=> $this->user,
 		];
 		PdfHelper::header($this, $data);
 	}
@@ -95,7 +98,7 @@ class OrderPdf extends fpdf {
 
 		$this->SetFont('Arial', 'B', 14);
 
-		$this->Cell(200, $this->line_height, 'Total: $'.Numbers::price($this->total_order), $this->b, 1, 'L');
+		$this->Cell(200, $this->line_height, 'Total: $'.Numbers::price($this->total_order), $this->b, 1, 'R');
 	}
 
 	function printDescription() {

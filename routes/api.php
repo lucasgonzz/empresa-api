@@ -70,6 +70,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Soporte tipo chat para clientes del sistema.
     Route::get('support-ticket', 'SupportTicketController@index');
+    Route::post('support-ticket', 'SupportTicketController@store');
     Route::get('support-ticket/{id}', 'SupportTicketController@show');
     Route::put('support-ticket/{id}', 'SupportTicketController@update');
     Route::post('support-message', 'SupportMessageController@store');
@@ -119,6 +120,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Repartidores 
     Route::resource('dealer', 'DealerController');
+
+    // Catálogo global de plataformas (credenciales de app Comercio City; solo listado para selects)
+    Route::resource('platform', 'PlatformController')->only(['index']);
+
+    // Conectores OAuth (Mercado Libre, Tienda Nube)
+    Route::resource('platform-connector', 'PlatformConnectorController');
 
     // Comisiones por ventas termiandas 
     Route::resource('venta-terminada-commission', 'VentaTerminadaCommissionController');
@@ -362,8 +369,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('order/update-status/{order_id}', 'OrderController@updateStatus');
     Route::put('order/cancel/{order_id}', 'OrderController@cancel');
 
+    Route::get('meli-order-status', 'MeliOrderStatusController@index');
     Route::get('meli-order/from-date/{from_date?}/{until_date?}', 'MeLiOrderController@index');
     Route::post('meli-order/create-sale/{id}', 'MeLiOrderController@create_sale');
+    Route::resource('meli-order', 'MeLiOrderController')->except(['index', 'create', 'edit']);
 
 
     Route::resource('order-status', 'OrderStatusController');
@@ -656,6 +665,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
 });
 
 
+// Callback público Mercado Libre (notificaciones); sin auth Sanctum.
+Route::post('meli/notifications', 'MeLiOrderController@receive_notification');
+
+
 // Plans
 Route::get('plan', 'PlanController@index');
 Route::get('plan-feature', 'PlanFeatureController@index');
@@ -664,12 +677,17 @@ Route::get('plan-feature', 'PlanFeatureController@index');
 // - publish-version: publicación de versión + notificaciones
 // - demo-setup:      disparo remoto del setup de demo
 // - user-setup:      disparo remoto del setup del sistema real (cliente que ya compró)
+// demo-setup y user-setup sin middleware para integración directa desde admin-api sin API key.
+Route::prefix('admin-sync')
+    ->group(function () {
+        Route::post('demo-setup', 'AdminSync\\DemoSetupController@store');
+        Route::post('user-setup', 'AdminSync\\UserSetupController@store');
+    });
+
 Route::middleware('admin.api.key')
     ->prefix('admin-sync')
     ->group(function () {
         Route::post('publish-version', 'AdminSync\\PublishVersionController@store');
-        Route::post('demo-setup', 'AdminSync\\DemoSetupController@store');
-        Route::post('user-setup', 'AdminSync\\UserSetupController@store');
         Route::post('support/messages', 'AdminSync\\SupportMessageController@store');
         Route::post('support/messages/read', 'AdminSync\\SupportMessageController@mark_read');
         Route::post('support/typing', 'AdminSync\\SupportTypingController@store');

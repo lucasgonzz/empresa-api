@@ -15,10 +15,12 @@ class CreateSaleOrderHelper {
             $from_tienda_nube
             || $from_meli
             || (
-                $order->order_status->name == 'Confirmado' 
-               && Self::saveSaleAfterFinishOrder() 
+                $order->order_status->name != 'Sin confirmar' 
+                && Self::saveSaleAfterFinishOrder() 
             )
         ) {
+
+            Log::info('Entro a save sale');
 
             $to_check = UserHelper::hasExtencion('check_sales', $user);
             

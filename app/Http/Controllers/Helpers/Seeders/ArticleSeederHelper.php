@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\Seeders;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\article\ArticlePriceTypeMonedaHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Address;
 use App\Models\Article;
@@ -21,6 +22,7 @@ class ArticleSeederHelper {
 
     function __construct() {
         $this->addresses = Address::all();
+        $this->price_types = PriceType::all();
     }
 	   
     function set_provider($created_article, $article) {
@@ -176,7 +178,7 @@ class ArticleSeederHelper {
 
         if (
             config('app.FOR_USER') == 'feito'
-            && isset($article['variants'])
+            // && isset($article['variants'])
         ) {
             return;
         }
@@ -186,28 +188,26 @@ class ArticleSeederHelper {
         $data['model_id'] = $created_article->id;
         $data['provider_id'] = $created_article->provider_id;
 
-        if (isset($article['addresses'])) {
+        if (count($this->addresses) >= 1) {
 
             $segundos = 0;
 
-            foreach ($article['addresses'] as $address) {
+            foreach ($this->addresses as $address) {
             
-                $data['to_address_id'] = $address['id'];
-                $data['amount'] = $address['amount'];
+                $data['to_address_id'] = $address->id;
+                $data['amount'] = 100;
                 $data['concepto_stock_movement_name'] = 'Creacion de deposito';
 
                 $ct->crear($data, false, null, null, $segundos);
                 $segundos += 5;
             }
 
-            foreach ($article['addresses'] as $address) {
+            foreach ($this->addresses as $address) {
 
-                if (isset($address['min'])) {
-                    $created_article->addresses()->updateExistingPivot($address['id'], [
-                        'stock_min'   => $address['min'],
-                        'stock_max'   => $address['max'],
-                    ]);
-                }
+                $created_article->addresses()->updateExistingPivot($address->id, [
+                    'stock_min'   => 50,
+                    'stock_max'   => 120,
+                ]);
             }
 
 
@@ -241,18 +241,78 @@ class ArticleSeederHelper {
         return null;
     }
 
+    /**
+     * Resuelve subcategoria por nombre; si el payload incluye category_name, acota por categoria padre.
+     * Evita ambiguedad cuando el mismo nombre de subcategoria existe bajo distintas categorias.
+     *
+     * @param array<string,mixed> $article Payload de articulo del seeder (category_name, sub_category_name).
+     * @return int|null
+     */
     function getSubcategoryId($article) {
-        if (isset($article['sub_category_name'])) {
-            $sub_category = SubCategory::where('user_id', config('app.USER_ID'))
-                                        ->where('name', $article['sub_category_name'])
-                                        ->first();
+        if (!isset($article['sub_category_name'])) {
+            return null;
+        }
 
-            if ($sub_category) {
+        /** Query base: usuario y nombre de subcategoria. */
+        $query = SubCategory::where('user_id', config('app.USER_ID'))
+            ->where('name', $article['sub_category_name']);
 
-                return $sub_category->id;
+        /**
+         * Si se indico categoria padre, filtrar por su id para matchear el par categoria/sub correcto.
+         */
+        if (isset($article['category_name'])) {
+            $category = Category::where('user_id', config('app.USER_ID'))
+                ->where('name', $article['category_name'])
+                ->first();
+            if (!is_null($category)) {
+                $query->where('category_id', $category->id);
             }
         }
+
+        $sub_category = $query->first();
+
+        if ($sub_category) {
+            return $sub_category->id;
+        }
+
         return null;
+    }
+
+    function add_price_types($article) {
+
+        if (count($this->price_types) >= 1) {
+
+            $article['price_types'] = [];
+            foreach ($this->price_types as $price_type) {
+                $article['price_types'][] = [
+                    'id'            => $price_type->id,
+                    'percentage'    => $price_type->percentage,
+                ];
+            }
+        }
+
+        return $article;
+    }
+
+    function crear_price_type_monedas($art) {
+
+        $price_type_monedas = [];
+
+        for ($moneda_id=1; $moneda_id <= 2 ; $moneda_id++) { 
+
+            foreach ($this->price_types as $price_type) {
+                $price_type_monedas[] = [
+                    'price_type_id' => $price_type->id,
+                    'moneda_id' => $moneda_id,
+                    'setear_precio_final'   => 0,
+                    'final_price'   => null,
+                    'percentage'    => $price_type->id * 20,
+                ];    
+            }
+        }
+        
+        ArticlePriceTypeMonedaHelper::attach_price_type_monedas($art, $price_type_monedas, $this->user);
+
     }
 
 }

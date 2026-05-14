@@ -21,6 +21,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComisionesHelper;
 use App\Http\Controllers\Helpers\sale\AcopioHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
+use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
 use App\Http\Controllers\Helpers\sale\SaleNotaCreditoAfipHelper;
@@ -412,8 +413,29 @@ class SaleController extends Controller
         } 
     }
 
-    public function destroy($id) {
+    public function destroy(Request $request, $id) {
         $model = Sale::find($id);
+
+        /** Si el cliente pidió compensar caja, se valida que todas las cajas involucradas estén abiertas antes de tocar la venta. */
+        $compensar_caja = $request->boolean('compensar_caja');
+        /** Helper reutilizable para verificación y movimientos compensatorios al borrar. */
+        $helper_caja_compensacion = new DeleteCajaCompensacionHelper();
+        if ($compensar_caja) {
+            $model->loadMissing('current_acount_payment_methods');
+            $cajas_cerradas = $helper_caja_compensacion->verificar_cajas_abiertas($model->current_acount_payment_methods);
+            if (count($cajas_cerradas)) {
+                return response()->json([
+                    'message' => 'Las siguientes cajas están cerradas: '.implode(', ', $cajas_cerradas).'. Debe abrirlas para poder eliminar la venta y compensar caja.',
+                ], 422);
+            }
+        }
+
+        /** Copia en memoria de métodos de pago para compensar luego del soft delete sin depender de reconsultas. */
+        $payment_methods_para_compensacion = null;
+        if ($compensar_caja) {
+            $payment_methods_para_compensacion = $model->current_acount_payment_methods;
+        }
+
         Log::info('Se quiere eliminar sale N° '.$model->num.'. id: '.$model->id.'. Por el empleado: '.Auth()->user()->name.', doc: '.Auth()->user()->doc_number);
         if (!is_null($model->client)) {
             Log::info('Y pertenece al cliente '.$model->client->name);
@@ -450,6 +472,15 @@ class SaleController extends Controller
             }
         }
         $model->delete();
+
+        if ($compensar_caja && ! is_null($payment_methods_para_compensacion) && $payment_methods_para_compensacion->count()) {
+            $helper_caja_compensacion->crear_movimientos_compensacion(
+                $payment_methods_para_compensacion,
+                DeleteCajaCompensacionHelper::MODEL_TYPE_SALE,
+                null,
+                'Eliminación de venta N° '.$model->num
+            );
+        }
 
         $this->sendDeleteModelNotification('sale', $model->id);
 

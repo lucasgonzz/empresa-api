@@ -12,6 +12,11 @@ use Illuminate\Http\Request;
 class CajaController extends Controller
 {
 
+    /**
+     * Listado de cajas del comercio (dueño) con relaciones cargadas.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function index() {
         $models = Caja::where('user_id', $this->userId())
                             ->orderBy('created_at', 'DESC')
@@ -20,6 +25,12 @@ class CajaController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
+    /**
+     * Crea la caja y persiste pivots: `users` (operación / vender) y `treasury_users` (visibilidad en tesorería).
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function store(Request $request) {
         $model = Caja::create([
             'num'                   => $this->num('cajas'),
@@ -34,6 +45,8 @@ class CajaController extends Controller
         // GeneralHelper::attachModels($model, 'current_acount_payment_methods', $request->current_acount_payment_methods);
 
         GeneralHelper::attachModels($model, 'users', $request->users);
+
+        GeneralHelper::attachModels($model, 'treasury_users', $request->input('treasury_users') ?? []);
         
         $this->sendAddModelNotification('Caja', $model->id);
         return response()->json(['model' => $this->fullModel('Caja', $model->id)], 201);
@@ -43,6 +56,13 @@ class CajaController extends Controller
         return response()->json(['model' => $this->fullModel('Caja', $id)], 200);
     }
 
+    /**
+     * Actualiza datos de la caja y sincroniza pivots, incluido `treasury_users` (lista vacía limpia la tabla pivot).
+     *
+     * @param \Illuminate\Http\Request $request
+     * @param int|string $id
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function update(Request $request, $id) {
         $model = Caja::find($id);
         $model->name                = $request->name;
@@ -55,6 +75,8 @@ class CajaController extends Controller
         GeneralHelper::attachModels($model, 'current_acount_payment_methods', $request->current_acount_payment_methods);
 
         GeneralHelper::attachModels($model, 'users', $request->users);
+
+        GeneralHelper::attachModels($model, 'treasury_users', $request->input('treasury_users') ?? []);
         
         $this->sendAddModelNotification('Caja', $model->id);
         return response()->json(['model' => $this->fullModel('Caja', $model->id)], 200);

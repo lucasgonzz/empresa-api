@@ -2,7 +2,6 @@
 
 namespace App\Services\TiendaNube;
 
-use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\PriceType;
 use App\Services\TiendaNube\BaseTiendaNubeService;
@@ -20,15 +19,19 @@ class TiendaNubeProductService extends BaseTiendaNubeService
     protected $price_types;
     protected TiendaNubeCategoryService $categoryService;
 
-    public function __construct(?TiendaNubeCategoryService $categoryService = null)
+    /**
+     * @param TiendaNubeCategoryService|null $categoryService Servicio de categorías inyectable (tests).
+     * @param int|null $user_id Usuario dueño de artículos / conector TN.
+     */
+    public function __construct(?TiendaNubeCategoryService $categoryService = null, $user_id = null)
     {
-        parent::__construct();
+        parent::__construct($user_id);
 
         // cacheá las listas de precio del usuario, si tu lógica lo requiere
-        $this->price_types = PriceType::where('user_id', UserHelper::userId())->get();
+        $this->price_types = PriceType::where('user_id', $this->tn_context_user_id)->get();
 
         // inyección opcional: si no viene, se crea
-        $this->categoryService = $categoryService ?? new TiendaNubeCategoryService();
+        $this->categoryService = $categoryService ?? new TiendaNubeCategoryService($user_id);
     }
 
     /** Crea o actualiza el producto en TN según si ya tiene tiendanube_product_id */
@@ -40,10 +43,12 @@ class TiendaNubeProductService extends BaseTiendaNubeService
             $article = $this->crear($article);
         }
 
-        $service = new TiendaNubeProductDescriptionService();
+        $uid = $article->user_id ?? $this->tn_context_user_id;
+
+        $service = new TiendaNubeProductDescriptionService($uid);
         $service->update_descriptions($article);
 
-        $service = new TiendaNubeImageService();
+        $service = new TiendaNubeImageService($uid);
 
         if (env('CARGAR_IMAGENES_DE_ARTICULOS_A_TIENDA_NUBE', false)) {
             foreach ($article->images as $image) {
@@ -149,7 +154,8 @@ class TiendaNubeProductService extends BaseTiendaNubeService
 
     function update_images($article) {
 
-        $tn_image = new TiendaNubeProductImageService();
+        $uid = $article->user_id ?? $this->tn_context_user_id;
+        $tn_image = new TiendaNubeProductImageService($uid);
         $tn_image->sync_images_for_article($article);
     }
 

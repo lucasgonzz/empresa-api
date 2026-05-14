@@ -78,7 +78,7 @@ class DatabaseSeeder extends Seeder
                     $this->call(ArticleSeeder::class);
                     $this->call(PromocionVinotecaSeeder::class);
                 }
-                $this->call(DeliveryDaySeeder::class);
+                // $this->call(DeliveryDaySeeder::class);
                 $this->call(ArticlePdfObservationSeeder::class);
 
             } else if ($for_user == 'colman') {
@@ -222,7 +222,9 @@ class DatabaseSeeder extends Seeder
             $this->call(ChequeSeeder::class);
             $this->call(CajaSeeder::class);
             $this->call(TurnoCajaSeeder::class);
+            $this->call(FerreteriaArticlesSeeder::class);
 
+            $this->call(DeliveryDaySeeder::class);
 
             if ($for_user == 'demo') {
                 $this->call(SaleReporteSeeder::class);
@@ -233,12 +235,14 @@ class DatabaseSeeder extends Seeder
                 if (env('APP_ENV') == 'local') {
                     $this->call(SaleRoadMapSeeder::class);
                     $this->call(RoadMapSeeder::class);
-                    $this->call(CartSeeder::class);
+                    // $this->call(CartSeeder::class);
                 }
                 $this->call(VentaTerminadaCommissionSeeder::class);
                 $this->call(PromocionVinotecaCommissionSeeder::class);
                 $this->call(CommissionSeeder::class);
             }
+            
+            $this->call(CartSeeder::class);
 
             // $this->call(SaleDemoSeeder::class);
 
@@ -252,8 +256,8 @@ class DatabaseSeeder extends Seeder
             || config('app.FOR_USER') == 'demo'
         ) {
 
-            $this->call(CategorySeeder::class);
-            $this->call(SubCategorySeeder::class);
+            // $this->call(CategorySeeder::class);
+            // $this->call(SubCategorySeeder::class);
 
             $this->call(CuotaSeeder::class);
 
@@ -277,7 +281,7 @@ class DatabaseSeeder extends Seeder
             $this->call(OrderSeeder::class);
             $this->call(InventoryLinkageScopeSeeder::class);
             
-            $this->call(MessageSeeder::class);
+            // $this->call(MessageSeeder::class);
 
             $this->call(ExpenseCategorySeeder::class);
             $this->call(ExpenseConceptSeeder::class);
@@ -292,6 +296,7 @@ class DatabaseSeeder extends Seeder
 
     function common_seeders() {
         $this->call(SaleChannelSeeder::class);
+        $this->call(PlatformSeeder::class);
         $this->call(MonedaSeeder::class);
         $this->call(MeliListingTypeSeeder::class);
         $this->call(MeliBuyingModeSeeder::class);
@@ -329,6 +334,7 @@ class DatabaseSeeder extends Seeder
         $this->call(UnidadFrecuenciaSeeder::class);
 
         $this->call(ConceptoMovimientoCajaSeeder::class);
+        $this->call(ConceptoMovimientoCajaCompensacionSeeder::class);
 
         $this->call(AfipTipoComprobanteSeeder::class);
         $this->call(SheetTypeSeeder::class);

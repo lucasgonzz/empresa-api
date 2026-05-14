@@ -12,6 +12,14 @@ use Illuminate\Support\Facades\Http;
 class TiendaNubeProductDeleteService extends BaseTiendaNubeService
 {
     /**
+     * @param int|null $user_id Usuario dueño del conector TN.
+     */
+    public function __construct($user_id = null)
+    {
+        parent::__construct($user_id);
+    }
+
+    /**
      * Elimina un producto de Tienda Nube usando su ID remoto.
      */
     public function eliminar_producto(Article $article): bool

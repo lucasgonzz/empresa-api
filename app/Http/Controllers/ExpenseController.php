@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\PaymentMethodHelper;
+use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\expense\ExpenseCajaHelper;
 use App\Models\Expense;
 use Illuminate\Http\Request;
@@ -125,9 +126,38 @@ class ExpenseController extends Controller
         return response()->json(['model' => $this->fullModel('Expense', $model->id)], 200);
     }
 
-    public function destroy($id) {
+    public function destroy(Request $request, $id) {
         $model = Expense::find($id);
+
+        /** Flag enviado desde el modal de confirmación en SPA: compensar movimientos de caja al eliminar. */
+        $compensar_caja = $request->boolean('compensar_caja');
+        /** Helper compartido con ventas y cuenta corriente para validar cajas y generar movimientos inversos. */
+        $helper_caja_compensacion = new DeleteCajaCompensacionHelper();
+        if ($compensar_caja) {
+            $model->loadMissing('current_acount_payment_methods', 'expense_concept');
+            $cajas_cerradas = $helper_caja_compensacion->verificar_cajas_abiertas($model->current_acount_payment_methods);
+            if (count($cajas_cerradas)) {
+                return response()->json([
+                    'message' => 'Las siguientes cajas están cerradas: '.implode(', ', $cajas_cerradas).'. Debe abrirlas para poder eliminar el gasto y compensar caja.',
+                ], 422);
+            }
+        }
+
         ImageController::deleteModelImages($model);
+
+        if ($compensar_caja) {
+            $notas_eliminacion = 'Eliminación de gasto';
+            if (! is_null($model->expense_concept)) {
+                $notas_eliminacion .= ' — '.$model->expense_concept->name;
+            }
+            $helper_caja_compensacion->crear_movimientos_compensacion(
+                $model->current_acount_payment_methods,
+                DeleteCajaCompensacionHelper::MODEL_TYPE_EXPENSE,
+                null,
+                $notas_eliminacion
+            );
+        }
+
         $model->delete();
         $this->sendDeleteModelNotification('Expense', $model->id);
         return response(null);

@@ -44,6 +44,8 @@ class ArticleSeeder extends Seeder
     public function run()
     {
 
+        return;
+
         if (
             env('APP_ENV') == 'local'
             || config('app.FOR_USER') == 'demo'
@@ -98,7 +100,7 @@ class ArticleSeeder extends Seeder
 
                 $num++;
 
-                $article = $this->add_price_types($article);
+                $article = $helper->add_price_types($article);
 
                 $art = $helper->crear_article($article, $days);
 
@@ -116,7 +118,7 @@ class ArticleSeeder extends Seeder
 
                 ArticleHelper::setFinalPrice($art, config('app.USER_ID'));
 
-                $this->crear_price_type_monedas($art);
+                $helper->crear_price_type_monedas($art);
                 
                 $helper->setStockMovement($art, $article);
                 // ArticleHelper::setArticleStockFromAddresses($art);
@@ -125,43 +127,6 @@ class ArticleSeeder extends Seeder
             }
             $num_article++;
         }
-    }
-
-    function add_price_types($article) {
-
-        if (count($this->price_types) >= 1) {
-
-            $article['price_types'] = [];
-            foreach ($this->price_types as $price_type) {
-                $article['price_types'][] = [
-                    'id'            => $price_type->id,
-                    'percentage'    => $price_type->percentage,
-                ];
-            }
-        }
-
-        return $article;
-    }
-
-    function crear_price_type_monedas($art) {
-
-        $price_type_monedas = [];
-
-        for ($moneda_id=1; $moneda_id <= 2 ; $moneda_id++) { 
-
-            foreach ($this->price_types as $price_type) {
-                $price_type_monedas[] = [
-                    'price_type_id' => $price_type->id,
-                    'moneda_id' => $moneda_id,
-                    'setear_precio_final'   => 0,
-                    'final_price'   => null,
-                    'percentage'    => $price_type->id * 20,
-                ];    
-            }
-        }
-        
-        ArticlePriceTypeMonedaHelper::attach_price_type_monedas($art, $price_type_monedas, $this->user);
-
     }
 
     function set_props_vinoteca($created_article, $article) {

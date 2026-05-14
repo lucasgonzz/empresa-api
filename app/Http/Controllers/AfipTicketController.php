@@ -85,6 +85,16 @@ class AfipTicketController extends Controller
         return response()->json(['models' => $errores_de_facturacion], 200);
     }       
 
+    /**
+     * Consulta en ARCA/AFIP un comprobante ya numerado (factura o nota de crédito) y actualiza el ticket local.
+     *
+     * @param int|string $afip_ticket_id ID del registro `AfipTicket`.
+     * @return \Illuminate\Http\JsonResponse Payload con `sale` (modelo venta con relaciones) y `afip_ticket` actualizado.
+     *
+     * Notas:
+     * - Las facturas enlazan la venta en `sale_id`.
+     * - Las notas de crédito AFIP suelen tener `sale_id` nulo y enlazan la venta en `sale_nota_credito_id`.
+     */
     function consultar_comprobante($afip_ticket_id) {
 
         $afip_ticket = AfipTicket::find($afip_ticket_id);
@@ -121,15 +131,37 @@ class AfipTicketController extends Controller
 
         $afip_ticket = AfipTicket::find($afip_ticket_id);
 
+        /** ID de venta para `fullModel`: factura (`sale_id`) o NC AFIP (`sale_nota_credito_id`). */
+        $sale_id_para_full_model = null;
+        if ($afip_ticket) {
+            $sale_id_para_full_model = !is_null($afip_ticket->sale_id)
+                ? $afip_ticket->sale_id
+                : $afip_ticket->sale_nota_credito_id;
+        }
+
         return response()->json([
-            'sale' => $this->fullModel('Sale', $afip_ticket->sale_id),
+            'sale' => $this->fullModel('Sale', $sale_id_para_full_model),
             'afip_ticket'   => $afip_ticket,
         ], 200);
     }
 
+    /**
+     * Elimina un `AfipTicket` (factura o nota de crédito AFIP) y devuelve la venta asociada actualizada.
+     *
+     * @param int|string $id ID del ticket a eliminar.
+     * @return \Illuminate\Http\JsonResponse Respuesta con `sale` recargada vía `fullModel`.
+     */
     function destroy($id) {
         $model = AfipTicket::find($id);
-        $sale_id = $model->sale_id;
+
+        if (!$model) {
+            return response()->json(null, 404);
+        }
+
+        /** ID de venta asociada: factura usa `sale_id`; NC AFIP usa `sale_nota_credito_id`. */
+        $sale_id = !is_null($model->sale_id)
+            ? $model->sale_id
+            : $model->sale_nota_credito_id;
         $model->delete();
         return response()->json(['sale' => $this->fullModel('Sale', $sale_id)], 200);
     }

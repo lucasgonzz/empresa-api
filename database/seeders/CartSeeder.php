@@ -21,7 +21,7 @@ class CartSeeder extends Seeder
                             ->get();
 
         $articles = Article::where('user_id', config('app.USER_ID'))
-                            ->take(10)
+                            ->take(20)
                             ->get();
 
         foreach ($buyers as $buyer) {

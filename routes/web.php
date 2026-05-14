@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\Article;
+use App\Services\PlatformConnector\PlatformConnectorOAuthService;
 use App\Services\MercadoLibre\CategoryService;
 use App\Services\MercadoLibre\SetearCategoryNameService;
 use Carbon\Carbon;
@@ -69,54 +70,14 @@ Route::get('/n8n/productos-disponibles/{last_updated?}', function ($last_updated
 
 
 
-// Paso 1: Redirige al usuario a Mercado Libre para autorizar la app
-Route::get('/mercadolibre/auth', function () {
-    $query = http_build_query([
-        'response_type' => 'code',
-        'client_id' => env('MERCADO_LIBRE_CLIENT_ID'),
-        'redirect_uri' => env('MERCADO_LIBRE_REDIRECT_URI'),
-    ]);
+/**
+ * Callback OAuth Mercado Libre: intercambia `code` y persiste en `platform_connectors` + `mercado_libre_tokens`.
+ * Las credenciales de app viven en el conector (ABM), no en .env.
+ */
+Route::get('/platform-connector/mercadolibre/callback', function (\Illuminate\Http\Request $request) {
+    $service = new PlatformConnectorOAuthService();
 
-    return redirect("https://auth.mercadolibre.com.ar/authorization?$query");
-});
-
-
-
-// Paso 2: Callback de Mercado Libre, recibe el code y solicita el access token
-Route::get('/mercadolibre/callback', function (\Illuminate\Http\Request $request) {
-    $code = $request->query('code');
-
-    echo 'Vinculacion exitosa. Codigo de autorizacion: '.$code;
-    return;
-
-    if (!$code) {
-        return response()->json(['error' => 'No se recibió el parámetro code'], 400);
-    }
-
-    $response = Http::asForm()->post('https://api.mercadolibre.com/oauth/token', [
-        'grant_type' => 'authorization_code',
-        'client_id' => env('MERCADO_LIBRE_CLIENT_ID'),
-        'client_secret' => env('MERCADO_LIBRE_CLIENT_SECRET'),
-        'code' => $code,
-        'redirect_uri' => env('MERCADO_LIBRE_REDIRECT_URI'),
-    ]);
-
-    if (!$response->successful()) {
-        return response()->json([
-            'error' => 'No se pudo obtener el access token',
-            'details' => $response->json()
-        ], 400);
-    }
-
-    $data = $response->json();
-
-    // Mostrar los tokens y datos del usuario de ML
-    return response()->json([
-        'access_token' => $data['access_token'],
-        'refresh_token' => $data['refresh_token'],
-        'expires_in' => $data['expires_in'],
-        'user_id' => $data['user_id'],
-    ]);
+    return $service->handle_mercado_libre_callback($request);
 });
 
 // Para recibir notificaciones desde MercadoLibre
@@ -204,11 +165,14 @@ Route::post('/tiendanube/webhook/customers_data_request', function () {
     return response()->json(['status' => 'ok']);
 });
 
-Route::get('/tiendanube/callback', function(\Illuminate\Http\Request $request) {
-    return response()->json([
-        'code' => $request->query('code'),
-        'state' => $request->query('state')
-    ]);
+/**
+ * Callback OAuth Tienda Nube: intercambia `code` JSON contra `/apps/authorize/token`.
+ * Registrar en la app de TN la URL pública equivalente a esta ruta (p. ej. `.../api/public/platform-connector/tiendanube/callback` según el host).
+ */
+Route::get('/platform-connector/tiendanube/callback', function (\Illuminate\Http\Request $request) {
+    $service = new PlatformConnectorOAuthService();
+
+    return $service->handle_tienda_nube_callback($request);
 });
 
 
@@ -372,6 +336,7 @@ Route::get('set-properties/{company_name}/{for_articles?}', 'HelperController@se
 Route::get('check-images/{company_name}', 'HelperController@checkImages');
 Route::get('clear-order-productions-current-acount/{company_name}', 'HelperController@clearOrderProductionCurrentAcount');
 Route::get('delete-clients', 'HelperController@deleteClients');
+Route::get('release-all-user-sessions', 'HelperController@release_all_user_sessions');
 Route::get('check-budgets-status/{company_name}', 'HelperController@checkBudgetStatus');
 Route::get('clientes-repetidos/{company_name}', 'HelperController@clientesRepetidos');
 Route::get('clients-sellers', 'HelperController@setClientSeller');
@@ -451,6 +416,7 @@ Route::get('/provider-orders/export/{id}', function ($id) {
 
 Route::get('sales/excel/export/{from_date}/{until_date?}', 'SaleController@excel_export');
 Route::get('sales/excel/breakdown-export/{from_date}/{until_date?}', 'SaleController@excel_breakdown_export');
+Route::get('nota-credito/excel/export/{from_date}/{until_date?}', 'NotaCreditoController@excel_export');
 
 
 

@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\AuthController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\UserProfileChangeDescriptionHelper;
 use App\Jobs\ProcessSetFinalPrices;
 use App\Models\OnlineConfiguration;
 use App\Models\User;
@@ -79,6 +80,15 @@ class UserController extends Controller
         $current_redondear_precios_en_centavos  = (int) $model->redondear_precios_en_centavos;
         $current_aplicar_iva_al_costo           = (int) $model->aplicar_iva_al_costo;
 
+        $current_default_version                = (int) $model->default_version;
+
+        /**
+         * Snapshot de atributos rastreados antes de aplicar el request (para armar el detalle del broadcast).
+         *
+         * @var array<string, mixed>
+         */
+        $before_auth_attrs = UserProfileChangeDescriptionHelper::snapshot_tracked_attributes($model);
+
         $model->name                            = $request->name;
         $model->doc_number                      = $request->doc_number;
         $model->dollar                          = $request->dollar;
@@ -143,6 +153,7 @@ class UserController extends Controller
         $model->pdf_image_size                  = $request->pdf_image_size;
         $model->inputs_size_id                  = $request->inputs_size_id;
         $model->aplicar_iva_al_costo                  = $request->aplicar_iva_al_costo;
+        $model->aplicar_descuentos_de_venta_a_costos = $request->aplicar_descuentos_de_venta_a_costos;
 
         /**
          * Permite `provider_code` repetido en artículos.
@@ -166,6 +177,8 @@ class UserController extends Controller
 
         $this->check_update_articles_price_types_relations_on_lists_de_precio($owner_user, $current_lists_de_precio);
 
+        $this->check_cambio_version($model, $current_default_version);
+
         // Si se encola recálculo masivo de precios, devolvemos feedback inmediato al usuario.
         if (
             $this->check_actualizar_articulos(
@@ -188,12 +201,61 @@ class UserController extends Controller
 
         $model = UserHelper::getFullModel();
 
-        // $this->actualizar_empleados($model);
+        /**
+         * Refresca el usuario autenticado desde BD y compara con el snapshot para notificar a otras sesiones.
+         */
+        $auth_after_save = Auth::user();
+        if ($auth_after_save) {
+            $auth_after_save->refresh();
+            $after_auth_attrs = UserProfileChangeDescriptionHelper::snapshot_tracked_attributes($auth_after_save);
+            /** @var int $company_owner_id Id del comercio (mismo que usa Echo en el SPA). */
+            $company_owner_id = $auth_after_save->owner_id ? (int) $auth_after_save->owner_id : (int) $auth_after_save->id;
+            /** @var int|null $listas_after_val Estado actual de listas de precio en el registro del owner. */
+            $listas_after_val = (int) (bool) User::where('id', $company_owner_id)->value('listas_de_precio');
+            /** @var array<int, string> $change_descriptions Líneas para el modal de otras sesiones. */
+            $change_descriptions = UserProfileChangeDescriptionHelper::build_change_descriptions(
+                $before_auth_attrs,
+                $after_auth_attrs,
+                $owner_user ? (int) $current_lists_de_precio : null,
+                $listas_after_val
+            );
+            UserHelper::schedule_company_owner_context_updated_broadcast(
+                $company_owner_id,
+                (int) $auth_after_save->id,
+                $change_descriptions
+            );
+        }
 
         return response()->json([
             'model' => $model,
             'notifications' => $notifications,
         ], 200);
+    }
+
+    function check_cambio_version($model, $current_default_version) {
+        if ($current_default_version != $model->default_version) {
+            /**
+             * Obtiene el owner real de la empresa.
+             * - Si el auth user es empleado, usa su owner.
+             * - Si el auth user es owner, usa su propio id.
+             */
+            $owner_id = $model->owner_id ? $model->owner_id : $model->id;
+
+            /**
+             * Libera sesiones del owner y todos sus empleados para que
+             * puedan iniciar sesión en la nueva versión.
+             */
+            User::where(function ($query) use ($owner_id) {
+                    $query->where('id', $owner_id)
+                        ->orWhere('owner_id', $owner_id);
+                })
+                ->update([
+                    'session_id' => null,
+                    'last_activity' => null,
+                ]);
+
+            Log::info('Se liberaron sesiones por cambio de version para owner_id: '.$owner_id);
+        }
     }
 
     /**

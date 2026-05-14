@@ -3,7 +3,6 @@
 namespace App\Jobs;
 
 use App\Models\Article;
-use App\Models\TiendaNubeStore;
 use App\Services\TiendaNube\TiendaNubeImageService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -28,7 +27,7 @@ class ProcessSyncArticleImageToTiendaNube implements ShouldQueue
 
     public function handle()
     {
-        $service = new TiendaNubeImageService();
+        $service = new TiendaNubeImageService($this->article->user_id);
         $service->subirImagenDeArticulo($this->article, $this->image);
     }
 }

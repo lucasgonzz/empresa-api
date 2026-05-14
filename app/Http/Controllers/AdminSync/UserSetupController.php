@@ -8,8 +8,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Endpoint llamado por admin-api (header X-Admin-Api-Key) cuando desde el
- * panel de Leads se pulsa "Crear sistema real" sobre un Lead ya promovido.
+ * Endpoint llamado por admin-api cuando desde el panel de Leads se ejecuta
+ * user setup (sin autenticación por API key en esta ruta).
  *
  * Equivale al POST del formulario legacy user/setup pero recibe JSON y
  * responde JSON para que admin-api registre el resultado en el Lead.
@@ -27,9 +27,9 @@ class UserSetupController extends Controller
     public function store(Request $request)
     {
         // Precondiciones mínimas requeridas por UserSetupHelper::create_user
-        if (empty($request->input('business_type'))) {
-            return response()->json(['error' => 'business_type is required'], 422);
-        }
+        // if (empty($request->input('business_type'))) {
+        //     return response()->json(['error' => 'business_type is required'], 422);
+        // }
         if (empty($request->input('user_id'))) {
             return response()->json(['error' => 'user_id is required'], 422);
         }

@@ -134,7 +134,7 @@ class ImageController extends Controller
 
                 ProductService::add_article_to_sync($article);
 
-                $tn = new TiendaNubeProductImageService();
+                $tn = new TiendaNubeProductImageService($article->user_id);
                 $tn->delete_image_from_article($article, $image);
 
                 /* Encolar sync de respaldo: si el DELETE directo falló o el artículo tiene más cambios */
@@ -185,7 +185,8 @@ class ImageController extends Controller
         }
 
         try {
-            $tn = new TiendaNubeCategoryImageService();
+            $user_id = isset($category->user_id) ? (int) $category->user_id : (int) $this->userId();
+            $tn = new TiendaNubeCategoryImageService($user_id);
             $tn->upload_category_image($category);
         } catch (\Exception $e) {
             Log::error('Error al subir imagen de categoría a Tienda Nube: ' . $e->getMessage());
@@ -207,7 +208,8 @@ class ImageController extends Controller
         }
 
         try {
-            $tn = new TiendaNubeCategoryImageService();
+            $user_id = isset($category->user_id) ? (int) $category->user_id : (int) $this->userId();
+            $tn = new TiendaNubeCategoryImageService($user_id);
             $tn->delete_category_image($category);
         } catch (\Exception $e) {
             Log::error('Error al eliminar imagen de categoría en Tienda Nube: ' . $e->getMessage());

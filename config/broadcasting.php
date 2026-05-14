@@ -39,10 +39,16 @@ return [
             'options' => [
                 'cluster' => env('PUSHER_APP_CLUSTER'),
                 'useTLS' => true,
-                'curl_options' => [
-                    CURLOPT_SSL_VERIFYHOST => 0,
-                    CURLOPT_SSL_VERIFYPEER => 0,
-                ],
+                /**
+                 * Pusher PHP 7+ usa Guzzle; curl_options no tienen efecto en ese cliente.
+                 * - guzzle_verify: false evita cURL error 60 en Windows/WAMP sin CA bundle (solo desarrollo).
+                 * - guzzle_ca_bundle: ruta a cacert.pem (https://curl.se/ca/cacert.pem) para verificar bien sin desactivar SSL.
+                 */
+                'guzzle_verify' => filter_var(
+                    env('PUSHER_GUZZLE_VERIFY_SSL', env('APP_ENV') === 'production'),
+                    FILTER_VALIDATE_BOOLEAN
+                ),
+                'guzzle_ca_bundle' => env('PUSHER_GUZZLE_CA_BUNDLE', ''),
             ],
         ],
 

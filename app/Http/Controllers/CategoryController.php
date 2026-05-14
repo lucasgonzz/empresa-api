@@ -124,7 +124,7 @@ class CategoryController extends Controller
         ) {
             Log::info('Category recien creada:');
             Log::info($category->toArray());
-            $tn = new TiendaNubeCategoryImageService();
+            $tn = new TiendaNubeCategoryImageService($category->user_id);
             $tn->upload_category_image($category);
         }
     }
@@ -144,7 +144,7 @@ class CategoryController extends Controller
         }
 
         try {
-            $tn = new TiendaNubeCategoryService();
+            $tn = new TiendaNubeCategoryService($category->user_id);
             $tn->syncRootCategory($category);
 
             /* Recargar el modelo para que el rest del flujo vea el tiendanube_category_id actualizado */
@@ -168,7 +168,7 @@ class CategoryController extends Controller
         }
 
         try {
-            $tn = new TiendaNubeCategoryService();
+            $tn = new TiendaNubeCategoryService($category->user_id);
             $tn->deleteRootCategory($category);
         } catch (\Exception $e) {
             Log::error('Error al eliminar categoría en Tienda Nube: ' . $e->getMessage());

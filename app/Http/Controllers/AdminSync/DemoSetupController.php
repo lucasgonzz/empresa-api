@@ -8,8 +8,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Endpoint llamado por admin-api (header X-Admin-Api-Key) cuando desde el
- * panel de Leads se pulsa "Disparar setup demo".
+ * Endpoint llamado por admin-api cuando desde el panel de Leads se pulsa
+ * "Disparar setup demo" (sin autenticación por API key en esta ruta).
  *
  * Replica el mismo comportamiento del form legacy en /demo/setup pero
  * entregando el input como JSON y respondiendo status JSON para que el
@@ -28,9 +28,9 @@ class DemoSetupController extends Controller
     public function store(Request $request)
     {
         // business_type es el único valor obligatorio del flujo original
-        if (empty($request->input('business_type'))) {
-            return response()->json(['error' => 'business_type is required'], 422);
-        }
+        // if (empty($request->input('business_type'))) {
+        //     return response()->json(['error' => 'business_type is required'], 422);
+        // }
 
         try {
             $user = DemoSetupHelper::run($request->all());

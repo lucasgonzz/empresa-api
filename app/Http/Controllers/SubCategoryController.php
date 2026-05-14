@@ -85,7 +85,7 @@ class SubCategoryController extends Controller
             env('USA_TIENDA_NUBE', false)
             && !is_null($model->image_url)
         ) {
-            $tn = new TiendaNubeCategoryImageService();
+            $tn = new TiendaNubeCategoryImageService($model->user_id);
             $tn->upload_category_image($model);
         }
     }

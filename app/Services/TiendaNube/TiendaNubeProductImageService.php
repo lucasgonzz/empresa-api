@@ -9,6 +9,14 @@ use App\Models\Image;
 class TiendaNubeProductImageService extends BaseTiendaNubeService
 {
     /**
+     * @param int|null $user_id Usuario dueño del conector TN.
+     */
+    public function __construct($user_id = null)
+    {
+        parent::__construct($user_id);
+    }
+
+    /**
      * Sube a Tienda Nube todas las imágenes del artículo que aún no tengan tienda_nube_image_id.
      *
      * @param Article $article

@@ -18,9 +18,14 @@ class AdminReportHelper
         $admin_url = config('services.admin_api.url');
         $outbound_key = config('services.admin_api.inbound_key');
         $client_uuid = config('services.admin_api.client_uuid');
+        $require_api_key = (bool) config('services.admin_api.require_api_key', false);
 
-        if (empty($admin_url) || empty($outbound_key) || empty($client_uuid)) {
+        if (empty($admin_url) || empty($client_uuid)) {
             Log::warning('AdminReportHelper: admin_api config incompleta, omitiendo report.');
+            return false;
+        }
+        if ($require_api_key && empty($outbound_key)) {
+            Log::warning('AdminReportHelper: falta inbound_key con ADMIN_SYNC_REQUIRE_API_KEY activo.');
             return false;
         }
 
@@ -41,10 +46,15 @@ class AdminReportHelper
         ];
 
         try {
-            $response = Http::withHeaders([
-                    'X-Admin-Api-Key' => $outbound_key,
-                    'Accept' => 'application/json',
-                ])
+            /**
+             * Headers inbound: clave sólo si está definida (compatibilidad al reactivar middleware en admin-api).
+             */
+            $headers = ['Accept' => 'application/json'];
+            if (! empty($outbound_key)) {
+                $headers['X-Admin-Api-Key'] = $outbound_key;
+            }
+
+            $response = Http::withHeaders($headers)
                 ->timeout(10)
                 ->post(rtrim($admin_url, '/') . '/api/inbound/notification-reads', $payload);
 

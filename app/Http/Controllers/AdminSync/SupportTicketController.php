@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\AdminSync;
 
+use App\Events\SupportTicketUpdated;
 use App\Http\Controllers\Controller;
 use App\Models\SupportTicket;
 use Illuminate\Http\Request;
@@ -30,6 +31,8 @@ class SupportTicketController extends Controller
             'status' => $request->input('status', 'open'),
             'opened_at' => now(),
         ]);
+
+        event(new SupportTicketUpdated((int) $ticket->user_id, (int) $ticket->id));
 
         return response()->json(['model' => $ticket->load('messages.attachments')], 201);
     }
@@ -62,6 +65,8 @@ class SupportTicketController extends Controller
         }
 
         $ticket->save();
+
+        event(new SupportTicketUpdated((int) $ticket->user_id, (int) $ticket->id));
 
         return response()->json(['model' => $ticket->load('messages.attachments')], 200);
     }

@@ -78,6 +78,105 @@ class HelperController extends Controller
         $this->{$method}($param, $param_2);
     }
 
+    /**
+     * Libera el candado de sesión única para todos los usuarios poniendo en null
+     * `session_id` y `last_activity` (mismo criterio que al liberar por owner en UserController).
+     *
+     * Usa el query builder sobre la tabla para no tocar `updated_at` ni disparar eventos de modelo.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function limpiar_sesiones() {
+        /**
+         * Cantidad de filas afectadas en `users` tras el update masivo.
+         */
+        $users_updated = DB::table('users')->update([
+            'session_id' => null,
+            'last_activity' => null,
+        ]);
+
+        echo 'Listo';
+    }
+
+    /**
+     * Corrige costos en `article_sale` para ventas creadas desde una fecha: revierte el efecto de
+     * descuentos y recargos de la venta sobre el costo unitario guardado (misma lógica inversa que
+     * la aplicada en `SaleHelper::getCost` cuando `aplicar_descuentos_de_venta_a_costos` está activo).
+     *
+     * Solo procesa ventas cuyo `user` tiene el flag activo y con al menos un descuento o recargo de venta.
+     * Actualiza `ganancia` en pivote y `total_cost` de la venta (`SaleTotalesHelper::set_total_cost`).
+     *
+     * Ruta típica: `GET helpers/restablecer_costos_articulos_ventas_sin_descuentos_recargos/{from_date}`
+     * con `from_date` en formato `Y-m-d` (inicio del día en app timezone).
+     *
+     * @param string $from_date Fecha mínima de `created_at` de la venta (inclusive desde 00:00:00).
+     * @return void Salida HTML de progreso (echo).
+     */
+    function restablecer_costos_articulos_ventas_sin_descuentos_recargos($from_date) {
+        if ($from_date === null || $from_date === '') {
+            echo '<p>Parámetro requerido: fecha inicial <code>Y-m-d</code> (ej. en la ruta <code>helpers/restablecer_costos_articulos_ventas_sin_descuentos_recargos/2026-05-01</code>).</p>';
+
+            return;
+        }
+
+        /**
+         * Límite inferior de creación de ventas a incluir en el barrido.
+         */
+        $from_carbon = Carbon::parse($from_date)->startOfDay();
+
+        /**
+         * Ventas desde la fecha, con relaciones necesarias para el factor y el flag de usuario.
+         */
+        $sales = Sale::query()
+            ->with(['articles', 'discounts', 'surchages', 'user', 'promocion_vinotecas'])
+            ->where('created_at', '>=', $from_carbon)
+            ->where('user_id', 2)
+            ->where('id', '!=', 315017)
+            ->orderBy('id')
+            ->get();
+
+        /**
+         * Resumen acumulado para la salida.
+         */
+        $sales_touched = 0;
+        $pivot_rows_updated = 0;
+
+        foreach ($sales as $sale) {
+            /**
+             * Resultado de la transacción: datos de actualización o null si la venta no aplicaba.
+             */
+            $sale_outcome = DB::transaction(function () use ($sale) {
+                /**
+                 * Resultado de la restauración de costos en artículos de esta venta.
+                 */
+                $result = SaleHelper::restore_article_pivot_costs_without_sale_discounts($sale);
+
+                if (!is_null($result['reason_skipped'])) {
+                    return null;
+                }
+
+                /**
+                 * Recarga artículos tras `updateExistingPivot` y persiste `total_cost` de la venta.
+                 */
+                $sale->load(['articles', 'promocion_vinotecas']);
+                SaleTotalesHelper::set_total_cost($sale);
+
+                return $result;
+            });
+
+            if (!is_null($sale_outcome)) {
+                $sales_touched++;
+                $pivot_rows_updated += $sale_outcome['articles_updated'];
+            }
+        }
+
+        echo '<p>Desde: ' . htmlspecialchars((string) $from_carbon) . '</p>';
+        echo '<p>Ventas analizadas: ' . $sales->count() . '</p>';
+        echo '<p>Ventas en las que se revirtió dto/rec sobre costos de artículos: ' . $sales_touched . '</p>';
+        echo '<p>Filas pivote artículo-venta actualizadas: ' . $pivot_rows_updated . '</p>';
+        echo '<p>Listo. Si una venta ya había sido corregida manualmente, no ejecutar de nuevo sobre el mismo rango.</p>';
+    }
+
     function check_costos_sales() {
         $sales = Sale::orderBy('id', 'DESC')
                         ->take(1000)
