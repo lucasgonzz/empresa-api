@@ -65,8 +65,13 @@ class UserSeeder extends Seeder
                     'online_price_type_id'          => 3,
                     'register_to_buy'               => 1,
                     'scroll_infinito_en_home'       => 1,
-                    'default_article_image_url'     => 'http://empresa.local:8000/storage/169705209718205.jpg',
+                    'default_article_image_url'     => 'https://api.comerciocity.com/public/storage/comerciocity-logo-cuadrado.webp',
+                    'logo_url'     => 'https://api.comerciocity.com/public/storage/logo-redondo.png',
                     'pausar_tienda_online'          => 0,
+                    'primary_color'                 => '#005FCC',
+                    'secondary_color'               => '#333333',
+                    'text_color'                    => '#EDEDED',
+                    'hover_text_color'              => '#FFFFFF',
                 ],
                 'base_de_datos'                     => 'empresa_prueba_1',
 
@@ -93,6 +98,7 @@ class UserSeeder extends Seeder
             // $models[0]['doc_number'] = '34702455';
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -115,6 +121,7 @@ class UserSeeder extends Seeder
             
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -139,6 +146,7 @@ class UserSeeder extends Seeder
             
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -166,6 +174,7 @@ class UserSeeder extends Seeder
             
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -193,6 +202,7 @@ class UserSeeder extends Seeder
             
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -223,6 +233,7 @@ class UserSeeder extends Seeder
             
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -253,6 +264,7 @@ class UserSeeder extends Seeder
             
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -277,6 +289,7 @@ class UserSeeder extends Seeder
             $models[0]['iva_condition_id'] = 1;
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -300,6 +313,7 @@ class UserSeeder extends Seeder
             $models[0]['iva_condition_id'] = 2;
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -320,6 +334,7 @@ class UserSeeder extends Seeder
             $models[0]['iva_included'] = 0;
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -335,6 +350,7 @@ class UserSeeder extends Seeder
             $models[0]['name'] = 'Colman';
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'budgets',
                 'production',
@@ -361,6 +377,7 @@ class UserSeeder extends Seeder
             $models[0]['ask_amount_in_vender'] = 0;
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'bar_code_scanner',
                 'comerciocity_interno',
@@ -382,6 +399,7 @@ class UserSeeder extends Seeder
             $models[0]['ask_amount_in_vender'] = 0;
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'bar_code_scanner',
                 'forzar_total',
@@ -401,6 +419,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'budgets',
                 'online',
@@ -420,6 +439,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'ask_save_current_acount',
                 'budgets',
@@ -446,6 +466,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'budgets',
                 'bar_code_scanner',
@@ -470,6 +491,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'budgets',
                 'bar_code_scanner',
@@ -493,6 +515,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'budgets',
                 'bar_code_scanner',
@@ -542,6 +565,7 @@ class UserSeeder extends Seeder
             ];
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'ask_save_current_acount',
                 'article.costo_real',
@@ -576,6 +600,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'ask_save_current_acount',
                 'budgets',
@@ -625,6 +650,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'budgets',
                 'bar_code_scanner',
@@ -650,6 +676,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
+                'support_chat',
 
                 'budgets',
                 'bar_code_scanner',
@@ -792,7 +819,8 @@ class UserSeeder extends Seeder
                 if (isset($model['online_configuration'])) {
                     $online_configuration               = $model['online_configuration'];
                     $online_configuration['user_id']    = config('app.USER_ID');
-                    $online_configuration['quienes_somos']    = 'Somos un negocio que se dedica a muchas cosas';
+                    $online_configuration['titulo_quienes_somos']    = 'Quienes somos';
+                    $online_configuration['quienes_somos']    = '<h2>Un equipo cerca tuyo</h2><p>Somos una <strong>pyme ferretera</strong> arraigada en la región: nos mueve el barrio, el obrador y el vecino que arma el trabajo en casa. Trabajamos con <strong>precios competitivos</strong>, stock pensado para lo cotidiano y un equipo que apuesta a la <strong>buena atención</strong>: asesoramiento honesto, respuesta rápida y resolver en el acto lo que hace falta en herramientas, pinturería, electricidad, plomería y más.</p><h2>Precios claros y confianza de verdad</h2><p>No vendemos solo productos: vendemos tranquilidad. Nos ocupamos de orientarte cuando no tenés certeza del repuesto, de recomendar alternativas cuando conviene y de sostener una relación basada en la confianza con mayoristas, cuentas corrientes y vecinos. Esa mezcla de <strong>precio justo</strong>, disponibilidad y trato cercano es lo que nos diferencia día a día.</p><h2>Tu catálogo online y pedidos sin vueltas</h2><p>Nuestra <strong>tienda online</strong> está pensada para ahorrarte tiempo: clientes y cuentas pueden <strong>recorrer el catálogo con rapidez</strong>, comparar referencias y <strong>enviar pedidos de forma práctica</strong>, reduciendo llamadas repetidas y malentendidos en el pedido. Si tu ferretería o casa de materiales vive de la confianza del barrio y querés digitalizar ventas sin complicarte la operación diaria, <strong>un ecommerce como el de ComercioCity</strong> es la herramienta que muchos negocios como el tuyo están buscando para estar a la altura de lo que hoy esperan quienes compran.</p>';
                     $online_configuration['facebook']    = 'htts://facebook.com';
                     $online_configuration['instagram']    = 'htts://instagram.com';
                     $online_configuration['mensaje_contacto']    = 'Comunicate con nosotros';

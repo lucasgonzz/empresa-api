@@ -19,6 +19,14 @@ class AuthController extends Controller
      * @var string|null
      */
     protected $master_login_mode = null;
+
+    /**
+     * Clave de sesión para indicar que el login actual es maestro (loginLucas)
+     * y no debe tomar el lock de sesión única por last_activity/session_id.
+     *
+     * @var string
+     */
+    protected $master_login_bypass_activity_key = 'master_login_bypass_user_last_activity';
     
     function login(Request $request) {
         $login = false;
@@ -31,6 +39,11 @@ class AuthController extends Controller
         $skip_offline_articles_sync = false;
 
         if ($this->loginLucas($request)) {
+            /**
+             * Marca la sesión actual como login maestro para evitar
+             * ocupar el lock de sesión única del usuario.
+             */
+            session()->put($this->master_login_bypass_activity_key, true);
 
             $user = $this->procesar_login();
             /** Solo en login maestro básico se omite descarga offline. */
@@ -39,6 +52,8 @@ class AuthController extends Controller
             $login = true;
         } else if (Auth::attempt(['doc_number' => $request->doc_number, 
                            'password' => $request->password], $request->remember)) {
+            /** Limpia bypass en logins normales. */
+            session()->forget($this->master_login_bypass_activity_key);
             
             if ($this->checkUserLastActivity()) {
 
@@ -161,7 +176,17 @@ class AuthController extends Controller
     // }
 
     public function logout(Request $request) {
-        $this->removeUserLastActivity();
+        /**
+         * Libera el lock de sesión única (last_activity) para que otro
+         * dispositivo pueda iniciar sesión. Aplica también tras login maestro:
+         * el ingreso maestro no ocupa el lock, pero al cerrar sesión se
+         * fuerza la ventana de actividad como vencida en AuthHelper.
+         */
+        if (Auth::check()) {
+            $this->removeUserLastActivity();
+        }
+        /** Limpia flag del bypass para evitar arrastre entre sesiones. */
+        session()->forget($this->master_login_bypass_activity_key);
         /** Limpia flag de sesión para próximos inicios de sesión. */
         session()->forget('skip_offline_articles_sync');
 
@@ -174,6 +199,18 @@ class AuthController extends Controller
     }
 
     public function get_user() {
+        /**
+         * En login maestro se evita escribir last_activity/session_id para que
+         * el acceso de soporte no ocupe la sesión única del usuario.
+         */
+        if ($this->is_master_login_activity_bypass_enabled()) {
+            $user = UserHelper::getFullModel(false);
+            $user = $this->set_employee_props($user);
+            $user->skip_offline_articles_sync = (bool) session('skip_offline_articles_sync', false);
+            UserHelper::set_sessions($user);
+            return response()->json(['user' => $user], 200);
+        }
+
         if ($this->checkUserLastActivity()) {
             // $user = UserHelper::user(false);
             $user = UserHelper::getFullModel(false);
@@ -186,6 +223,15 @@ class AuthController extends Controller
             return response()->json(['user' => $user], 200);
         }
         return response()->json(['user' => null], 403);
+    }
+
+    /**
+     * Informa si la sesión actual está en modo bypass de lock de actividad.
+     *
+     * @return bool
+     */
+    function is_master_login_activity_bypass_enabled() {
+        return (bool) session($this->master_login_bypass_activity_key, false);
     }
 
     public function loginLucas($request) {

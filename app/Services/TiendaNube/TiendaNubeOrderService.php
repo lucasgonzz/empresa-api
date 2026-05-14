@@ -10,6 +10,13 @@ use Illuminate\Support\Facades\Log;
 
 class TiendaNubeOrderService extends BaseTiendaNubeService
 {
+    /**
+     * @param int|null $user_id Usuario dueño del conector TN.
+     */
+    public function __construct($user_id = null)
+    {
+        parent::__construct($user_id);
+    }
 
     public function sincronizar_nuevos_pedidos(): array
     {
@@ -58,6 +65,7 @@ class TiendaNubeOrderService extends BaseTiendaNubeService
                 'address_id'    => 0,
                 'payment_status'          => $this->traducir_payment_status($orden_data['payment_status']),
                 'tienda_nube_order_status_id' => 1,
+                'created_at'    => $order['created_at'],
                 'user_id'       => UserHelper::userId(),
             ]);
 

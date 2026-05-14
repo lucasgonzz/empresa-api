@@ -10,13 +10,23 @@ class MeliOrder extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        $q->with('meli_buyer', 'articles.images', 'tags', 'cancel_detail', 'sale');
+        $q->with('meli_buyer', 'articles.images', 'tags', 'cancel_detail', 'sale', 'meli_order_status');
     }
 
 
     public function sale()
     {
         return $this->hasOne(Sale::class);
+    }
+
+    /**
+     * Estado interno de gestión (pendiente / confirmado → venta).
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
+     */
+    public function meli_order_status()
+    {
+        return $this->belongsTo(MeliOrderStatus::class);
     }
 
     public function meli_buyer()

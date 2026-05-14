@@ -8,6 +8,14 @@ use Illuminate\Support\Facades\Log;
 class TiendaNubeProductDescriptionService extends BaseTiendaNubeService
 {
     /**
+     * @param int|null $user_id Usuario dueño del conector TN.
+     */
+    public function __construct($user_id = null)
+    {
+        parent::__construct($user_id);
+    }
+
+    /**
      * Actualiza la descripción y descripción_html de un producto.
      *
      * @param int   $product_id

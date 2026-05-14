@@ -96,6 +96,8 @@ class ArticlePurchaseController extends Controller
             } else {
 
                 $agrupados[$article_id] = [
+                    'article_id'        => $purchase->article->id, 
+                    'bar_code'          => $purchase->article->bar_code, 
                     'provider_code'     => $purchase->article->provider_code, 
                     'article_name'      => $purchase->article->name, 
                     'category'          => $this->get_relation($purchase, 'category'), 

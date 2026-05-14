@@ -8,21 +8,68 @@ use App\Models\Article;
 use App\Models\ArticlePropertyType;
 use App\Models\PriceType;
 use App\Models\Sale;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
 
 class ExportHelper {
 
+	/**
+	 * Dueño del negocio para la exportación de artículos cuando no hay sesión HTTP (p. ej. job en cola).
+	 * Si es null, se usa UserHelper::user() como antes.
+	 *
+	 * @var User|null
+	 */
+	protected static $article_export_owner_user = null;
+
+	/**
+	 * Fija el usuario dueño para que consultas de PriceType, Address y flags coincidan con ArticleExport.
+	 *
+	 * @param User|null $user Modelo User dueño (mismo id que ArticleExport::$user_id).
+	 * @return void
+	 */
+	static function set_article_export_owner_user($user) {
+		self::$article_export_owner_user = $user;
+	}
+
+	/**
+	 * Limpia el contexto tras generar el Excel para no contaminar otros procesos en el mismo worker.
+	 *
+	 * @return void
+	 */
+	static function clear_article_export_owner_user() {
+		self::$article_export_owner_user = null;
+	}
+
+	/**
+	 * Usuario para extensiones, listas_de_precio y filtros por user_id durante ArticleExport.
+	 *
+	 * @return User|null
+	 */
+	static function article_export_context_user() {
+		return self::$article_export_owner_user ?? UserHelper::user();
+	}
+
+	/**
+	 * Id de usuario dueño para queries de exportación (cola sin sesión).
+	 *
+	 * @return int|string|null
+	 */
+	static function article_export_owner_user_id() {
+		$user = self::article_export_context_user();
+		return $user ? $user->id : UserHelper::userId();
+	}
+
 	static function getPriceTypes() {
-		return PriceType::where('user_id', UserHelper::userId())
+		return PriceType::where('user_id', self::article_export_owner_user_id())
 								->whereNotNull('position')
 								->orderBy('position', 'ASC')
 								->get();
 	}
 
 	static function getAddresses() {
-		return Address::where('user_id', UserHelper::userId())
+		return Address::where('user_id', self::article_export_owner_user_id())
 						->orderBy('id', 'ASC')
 						->get();
 	}
@@ -68,33 +115,46 @@ class ExportHelper {
 		return $map;
 	}
 
+	/**
+	 * Agrega al mapa de exportación el stock por sucursal para una fila de variante.
+	 * Por cada address del usuario se agregan tres columnas: cantidad, mínimo y máximo del pivot variante–dirección.
+	 *
+	 * @param array $map Fila parcial ya armada hasta antes del bloque de stock por sucursal.
+	 * @param object $article Fila exportable con `variant` y relación `addresses` cargada en la variante.
+	 * @return array Misma fila con columnas de stock por sucursal agregadas (o sin cambios si no hay addresses).
+	 */
 	static function map_variant_stock_addresses($map, $article) {
-			
+
+		// Lista de depósitos/sucursales del usuario dueño del export (mismo criterio que headings).
 		$models = Self::getAddresses();
-		if (
-			count($models) >= 1
-		) {
+		if (count($models) >= 1) {
 
 			foreach ($models as $address) {
 
+				// Pivot variante–dirección si existe relación para esa sucursal.
 				$variant_address = $article->variant->addresses->find($address->id);
-				
+
 				if ($variant_address) {
 
 					$map[] = $variant_address->pivot->amount;
+					$map[] = $variant_address->pivot->stock_min;
+					$map[] = $variant_address->pivot->stock_max;
 				} else {
+
+					// Sin fila pivot: dejar celdas vacías para alinear con headings (street, Min, Max).
+					$map[] = '';
+					$map[] = '';
 					$map[] = '';
 				}
 			}
 		}
-
 
 		return $map;
 	}
 
 	static function map_unidades_individuales($map, $article) {
 		
-		if (UserHelper::hasExtencion('articulos_unidades_individuales')) {
+		if (UserHelper::hasExtencion('articulos_unidades_individuales', self::article_export_context_user())) {
 
 			$map[] = $article->unidades_individuales;
 		}
@@ -104,7 +164,7 @@ class ExportHelper {
 
 	static function map_autopartes($map, $article) {
 		
-		if (UserHelper::hasExtencion('autopartes')) {
+		if (UserHelper::hasExtencion('autopartes', self::article_export_context_user())) {
 
 			$map[] = $article->espesor;
 			$map[] = $article->modelo;
@@ -123,7 +183,7 @@ class ExportHelper {
 	}
 
 	static function map_propiedades_de_distribuidora($map, $article) {
-		if (UserHelper::hasExtencion('propiedades_de_distribuidora')) {
+		if (UserHelper::hasExtencion('propiedades_de_distribuidora', self::article_export_context_user())) {
 
 			if (!is_null($article->tipo_envase)) {
 				$map[] = $article->tipo_envase->name;
@@ -174,9 +234,9 @@ class ExportHelper {
 
 		if (count($price_types) >= 1) {
 
-			if (UserHelper::uses_listas_de_precio()) {
+			if (UserHelper::uses_listas_de_precio(self::article_export_context_user())) {
 
-				if (UserHelper::hasExtencion('ventas_en_dolares')) {
+				if (UserHelper::hasExtencion('ventas_en_dolares', self::article_export_context_user())) {
 
 					foreach ($article->price_type_monedas as $price_type_moneda) {
 
@@ -227,7 +287,7 @@ class ExportHelper {
 				}
 
 
-			} else if (UserHelper::hasExtencion('lista_de_precios_por_categoria')) {
+			} else if (UserHelper::hasExtencion('lista_de_precios_por_categoria', self::article_export_context_user())) {
 				
 				// Caso Golo_norte
 
@@ -260,7 +320,7 @@ class ExportHelper {
 	
 	static function mapPreciosBlanco($map, $article) {
 
-		if (UserHelper::hasExtencion('articulos_precios_en_blanco')) {
+		if (UserHelper::hasExtencion('articulos_precios_en_blanco', self::article_export_context_user())) {
 
 			$map[] = $article->discounts_blanco_formated;
 			$map[] = $article->surchages_blanco_formated;
@@ -272,7 +332,7 @@ class ExportHelper {
 	}
 
 	static function set_unidades_individuales($headings) {
-		if (UserHelper::hasExtencion('articulos_unidades_individuales')) {
+		if (UserHelper::hasExtencion('articulos_unidades_individuales', self::article_export_context_user())) {
 
 				$headings[] = 'U Individuales';
 		}
@@ -280,30 +340,56 @@ class ExportHelper {
 		return $headings;
 	}
 
+	/**
+	 * Inserta en los headings las columnas de autopartes justo después de "U individuales".
+	 *
+	 * @param array $headings Encabezados base del Excel de artículos.
+	 * @return array Headings con columnas de autopartes insertadas si aplica la extensión.
+	 */
 	static function set_props_autopartes($headings) {
-		if (UserHelper::hasExtencion('autopartes')) {
+		if (UserHelper::hasExtencion('autopartes', self::article_export_context_user())) {
 
-				$headings[] = 'espesor';
-				$headings[] = 'modelo';
-				$headings[] = 'pastilla';
-				$headings[] = 'diametro';
-				$headings[] = 'litros';
-				// $headings[] = 'descripcion';
-				$headings[] = 'contenido';
-				$headings[] = 'cm3';
-				$headings[] = 'calipers';
-				$headings[] = 'juego';
+			// Posición inmediatamente posterior a "U individuales" para mantener coherencia con el map.
+			$u_individuales_index = array_search('U individuales', $headings);
+			$insert_at = $u_individuales_index !== false ? $u_individuales_index + 1 : count($headings);
+
+			// Nombres de columnas alineados con map_autopartes (orden fijo).
+			$cols = [
+				'espesor',
+				'modelo',
+				'pastilla',
+				'diametro',
+				'litros',
+				'contenido',
+				'cm3',
+				'calipers',
+				'juego',
+			];
+			array_splice($headings, $insert_at, 0, $cols);
 		}
 
 		return $headings;
 	}
 
+	/**
+	 * Inserta headings de distribuidora (tipo envase, contenido, unidades por bulto) antes de "Stock actual".
+	 * Debe ejecutarse después de set_props_autopartes cuando ambas extensiones están activas.
+	 *
+	 * @param array $headings Encabezados del Excel (ya pueden incluir columnas de autopartes).
+	 * @return array Headings con columnas de distribuidora insertadas si aplica la extensión.
+	 */
 	static function set_propiedades_de_distribuidora($headings) {
-		if (UserHelper::hasExtencion('propiedades_de_distribuidora')) {
+		if (UserHelper::hasExtencion('propiedades_de_distribuidora', self::article_export_context_user())) {
 
-				$headings[] = 'Tipo envase';
-				$headings[] = 'Contenido';
-				$headings[] = 'Unidades por bulto';
+			// Bloque de stock global comienza en "Stock actual"; las columnas de distribuidora van antes.
+			$stock_index = array_search('Stock actual', $headings);
+			$insert_at = $stock_index !== false ? $stock_index : count($headings);
+
+			array_splice($headings, $insert_at, 0, [
+				'Tipo envase',
+				'Contenido',
+				'Unidades por bulto',
+			]);
 		}
 		return $headings;
 	}
@@ -349,7 +435,7 @@ class ExportHelper {
 
 	static function setPropertyTypesHeadings($headings) {
 
-		if (UserHelper::hasExtencion('article_variants')) {
+		if (UserHelper::hasExtencion('article_variants', self::article_export_context_user())) {
 			$models = Self::getPropertyTypes();
 			if (count($models) >= 1) {
 				foreach ($models as $property_type) {
@@ -385,7 +471,7 @@ class ExportHelper {
 				
 				// dd($price_type->name);
 
-				if (UserHelper::uses_listas_de_precio()) {
+				if (UserHelper::uses_listas_de_precio(self::article_export_context_user())) {
 
 					array_splice($headings, $aplicar_iva_index, 0, '$ Final '.$price_type->name);
 					array_splice($headings, $aplicar_iva_index, 0, '% '.$price_type->name);
@@ -410,7 +496,7 @@ class ExportHelper {
 
 	static function setPreciosBlancoHeadings($headings) {
 
-		if (UserHelper::hasExtencion('articulos_precios_en_blanco')) {
+		if (UserHelper::hasExtencion('articulos_precios_en_blanco', self::article_export_context_user())) {
 			$headings[] = 'Descuentos EN BLANCO';
 			$headings[] = 'Recargos EN BLANCO';
 			$headings[] = 'Margen de ganancia EN BLANCO';
@@ -646,9 +732,9 @@ class ExportHelper {
 
 		$price_types = $price_types->reverse();
 
-		if (UserHelper::uses_listas_de_precio()) {
+		if (UserHelper::uses_listas_de_precio(self::article_export_context_user())) {
 
-			if (UserHelper::hasExtencion('ventas_en_dolares')) {
+			if (UserHelper::hasExtencion('ventas_en_dolares', self::article_export_context_user())) {
 
 
 				// IMPORTANTÍSIMO: iterar SIEMPRE por $price_types (ordenados por position)
@@ -704,7 +790,7 @@ class ExportHelper {
 		}
 
 		// Otros casos
-		if (UserHelper::hasExtencion('lista_de_precios_por_categoria')) {
+		if (UserHelper::hasExtencion('lista_de_precios_por_categoria', self::article_export_context_user())) {
 
 			$price_types_ordenados = $article->price_types()->orderBy('position', 'ASC')->get();
 			foreach ($price_types_ordenados as $price_type) {

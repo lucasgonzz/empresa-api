@@ -28,8 +28,23 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
 
         $this->user = User::find($user_id);
 
+        // En cola no hay sesión: ExportHelper debe usar el mismo dueño que este Excel (PriceType, Address, listas_de_precio).
+        if ($this->user) {
+            ExportHelper::set_article_export_owner_user($this->user);
+        }
+
         Log::info('user_id: '.$user_id);
-        Log::info('user name: '.$this->user->name);
+        Log::info('user name: '.($this->user ? $this->user->name : 'null'));
+    }
+
+    /**
+     * Libera el contexto estático de ExportHelper al finalizar el ciclo de vida del export.
+     *
+     * @return void
+     */
+    public function __destruct()
+    {
+        ExportHelper::clear_article_export_owner_user();
     }
 
     protected function get_base_headings(): array
@@ -115,10 +130,20 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
         return $headings;
     }
 
+    /**
+     * Mapea una fila (artículo o artículo+variante) al orden de columnas del Excel.
+     * Orden: datos base hasta "U individuales", autopartes, distribuidora, stock global o por sucursal,
+     * tipos de propiedad de variantes, listas de precio (splice), precios en blanco y fechas.
+     *
+     * @param object $row Clon de artículo con flags `is_variant` y `variant` opcional.
+     * @return array Valores de celda en el mismo orden que headings().
+     */
     public function map($row): array
     {
-        $article = $row; // alias más claro
+        // Referencia al modelo base (mismo objeto que $row pero nombre más claro para lectura).
+        $article = $row;
 
+        // Bloque base sin columnas de stock: el stock va después de autopartes/distribuidora o se reemplaza por sucursales.
         $map = [
             $article->id,
             $article->bar_code,
@@ -148,40 +173,34 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $article->descripcion,
             $this->getUnidadMedida($article),
             $article->unidades_individuales,
-            
-            $row->is_variant ? $row->variant->stock : $article->stock,
-            $article->stock_min,
         ];
-
-        // Ahora continuás con los helpers
-        // $map = ExportHelper::map_unidades_individuales($map, $article);
 
         $map = ExportHelper::map_autopartes($map, $article);
 
         $map = ExportHelper::map_propiedades_de_distribuidora($map, $article);
 
+        // Depósitos del usuario: reemplazan "Stock actual" / "Stock minimo" por columnas por sucursal.
         $addresses = ExportHelper::getAddresses();
         if (count($addresses) >= 1) {
-            $map = ExportHelper::unset_map_columns_by_titles(
-                $map,
-                $this->get_headings_pre_addresses(),
-                ['Stock actual', 'Stock minimo']
-            );
+
+            if ($row->is_variant && $row->variant) {
+
+                $map = ExportHelper::map_variant_stock_addresses($map, $row);
+            } else {
+
+                $map = ExportHelper::mapAddresses($map, $article);
+            }
+        } else {
+
+            // Sin sucursales: conservar stock del artículo o stock de la variante en la misma posición que headings.
+            $map[] = $row->is_variant && $row->variant ? $row->variant->stock : $article->stock;
+            $map[] = $article->stock_min;
         }
 
-        // Si es variante, completamos columnas extras
         if ($row->is_variant && $row->variant) {
-            // $variant = $row->variant;
-            // Por ejemplo, índice 20: Talle, 21: Color, 22: Stock variante, 23+: stock por depósito
-     
-            $map = ExportHelper::map_variant_stock_addresses($map, $row);
 
             $map = ExportHelper::map_property_types($map, $row);
-           
-
         } else {
-            // Si no es variante, rellenar con valores vacíos en esas columnas
-            $map = ExportHelper::mapAddresses($map, $article);
 
             if (UserHelper::hasExtencion('article_variants', $this->user)) {
                 $map = ExportHelper::map_property_types_vacios($map);
@@ -192,10 +211,11 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
         if (count($price_types) >= 1) {
 
             // 1) sacar columnas viejas (ya lo hacés)
+            // Debe coincidir con setPriceTypesHeadings: allí se quitan las cuatro columnas de precio "base".
             $map = ExportHelper::unset_map_columns_by_titles(
                 $map,
                 $this->get_headings_pre_price_types(),
-                ['Margen de ganancia', 'Precio', 'Precio Final']
+                ['Margen de ganancia', 'Precio', 'Precio Final', 'Precio Final Anterior']
             );
 
             // 2) insertar valores en la MISMA posición que headings (después de Aplicar Iva)

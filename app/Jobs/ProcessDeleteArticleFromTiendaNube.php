@@ -33,7 +33,7 @@ class ProcessDeleteArticleFromTiendaNube implements ShouldQueue
     {
         if (!$this->article) return;
 
-        $service = new TiendaNubeProductDeleteService();
+        $service = new TiendaNubeProductDeleteService($this->article->user_id);
         $service->eliminar_producto($this->article);
     }
 }

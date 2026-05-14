@@ -13,6 +13,14 @@ use Illuminate\Support\Facades\Log;
 class TiendaNubeImageService extends BaseTiendaNubeService
 {
     /**
+     * @param int|null $user_id Usuario dueño del conector TN.
+     */
+    public function __construct($user_id = null)
+    {
+        parent::__construct($user_id);
+    }
+
+    /**
      * Sube una imagen del artículo a Tienda Nube.
      * - Si el producto no existe aún en TN, lo crea/actualiza antes de subir la imagen
      * - position: 1 => principal; si es null, la API la agrega al final
@@ -25,7 +33,7 @@ class TiendaNubeImageService extends BaseTiendaNubeService
         if (!$article->tiendanube_product_id) {
             // Podés inyectar el ProductService desde afuera si preferís;
             // acá lo instanciamos directo para simplificar.
-            $productService = new TiendaNubeProductService();
+            $productService = new TiendaNubeProductService(null, $article->user_id);
             $productService->crearOActualizarProducto($article);
         }
 

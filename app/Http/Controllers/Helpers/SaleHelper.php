@@ -1118,12 +1118,14 @@ class SaleHelper extends Controller {
             } 
         }
 
-
-        foreach ($sale->discounts as $discount) {
-            $cost -= $cost * $discount->pivot->percentage / 100;
-        }
-        foreach ($sale->surchages as $surchage) {
-            $cost += $cost * $surchage->pivot->percentage / 100;
+        if (!is_null($user) && $user->aplicar_descuentos_de_venta_a_costos) {
+            
+            foreach ($sale->discounts as $discount) {
+                $cost -= $cost * $discount->pivot->percentage / 100;
+            }
+            foreach ($sale->surchages as $surchage) {
+                $cost += $cost * $surchage->pivot->percentage / 100;
+            }
         }
 
         if (
@@ -1135,6 +1137,131 @@ class SaleHelper extends Controller {
         }
 
         return $cost;
+    }
+
+    /**
+     * Calcula el factor multiplicativo que en `getCost` se aplica al costo unitario
+     * cuando el usuario tiene `aplicar_descuentos_de_venta_a_costos`: por cada descuento
+     * de la venta se multiplica por (1 − porcentaje/100) y por cada recargo por (1 + porcentaje/100).
+     *
+     * Equivale al producto de los pasos de los bucles sobre `discounts` y `surchages` en `getCost`.
+     *
+     * @param \App\Models\Sale $sale Venta con relaciones `discounts` y `surchages` cargadas (pivote con `percentage`).
+     * @return float|null Factor (> 0). `null` si el factor sería 0 (p. ej. descuento 100 %), no se puede revertir dividiendo.
+     */
+    static function sale_cost_factor_from_sale_discounts_and_surchages($sale) {
+        /**
+         * Acumulador del factor aplicado al costo antes de persistir en `article_sale.cost`.
+         */
+        $factor = 1.0;
+
+        foreach ($sale->discounts as $discount) {
+            /**
+             * Porcentaje de descuento de venta asociado por pivote.
+             */
+            $percentage = (float) $discount->pivot->percentage;
+            $factor *= (1 - $percentage / 100);
+        }
+
+        foreach ($sale->surchages as $surchage) {
+            /**
+             * Porcentaje de recargo de venta asociado por pivote.
+             */
+            $percentage = (float) $surchage->pivot->percentage;
+            $factor *= (1 + $percentage / 100);
+        }
+
+        if ($factor <= 0) {
+            return null;
+        }
+
+        return $factor;
+    }
+
+    /**
+     * Revierte en la tabla pivote `article_sale` el efecto de descuentos y recargos a nivel venta sobre
+     * el costo unitario guardado (inverso de la rama de `getCost` que aplica porcentajes de la venta).
+     * Recalcula `ganancia` en pivote como (precio unitario − costo unitario) × cantidad, coherente con `attachArticle`.
+     *
+     * No es idempotente: ejecutar dos veces sobre la misma venta volvería a dividir costos ya corregidos.
+     *
+     * @param \App\Models\Sale $sale Venta con `articles`, `discounts`, `surchages` y `user` cargados.
+     * @return array{articles_updated: int, reason_skipped: string|null} Conteo de filas pivote actualizadas o motivo de omisión.
+     */
+    static function restore_article_pivot_costs_without_sale_discounts($sale) {
+        /**
+         * Usuario dueño de la venta; misma referencia que usa `getCost` para el flag de costos.
+         */
+        $user = $sale->user;
+
+        // if (is_null($user) || !(bool) $user->aplicar_descuentos_de_venta_a_costos) {
+        //     return [
+        //         'articles_updated' => 0,
+        //         'reason_skipped' => 'user_missing_or_flag_off',
+        //     ];
+        // }
+
+        /**
+         * Sin descuentos ni recargos de venta, el factor es 1 y no hay nada que revertir a nivel venta.
+         */
+        if ($sale->discounts->isEmpty() && $sale->surchages->isEmpty()) {
+            return [
+                'articles_updated' => 0,
+                'reason_skipped' => 'no_sale_discounts_or_surchages',
+            ];
+        }
+
+        /**
+         * Factor por el que hubo que dividir el costo persistido para obtener el costo “sin” dto/rec de venta.
+         */
+        $factor = Self::sale_cost_factor_from_sale_discounts_and_surchages($sale);
+
+        if (is_null($factor)) {
+            return [
+                'articles_updated' => 0,
+                'reason_skipped' => 'invalid_zero_factor',
+            ];
+        }
+
+        /**
+         * Contador de filas en pivote actualizadas.
+         */
+        $articles_updated = 0;
+
+        foreach ($sale->articles as $article) {
+            /**
+             * Costo unitario actualmente guardado (con dto/rec de venta ya aplicados al crearse, si correspondía).
+             */
+            $stored_unit_cost = (float) $article->pivot->cost;
+
+            /**
+             * Costo unitario restaurado (antes de aplicar porcentajes de la venta al costo).
+             */
+            $restored_unit_cost = $stored_unit_cost / $factor;
+
+            /**
+             * Precio unitario en pivote y cantidad para recalcular ganancia como en `attachArticle`.
+             */
+            $unit_price = (float) $article->pivot->price;
+            $amount = (float) $article->pivot->amount;
+
+            /**
+             * Ganancia total en línea: (precio − costo unitario restaurado) × cantidad.
+             */
+            $ganancia_line = ($unit_price - $restored_unit_cost) * $amount;
+
+            $sale->articles()->updateExistingPivot($article->id, [
+                'cost' => $restored_unit_cost,
+                'ganancia' => $ganancia_line,
+            ]);
+
+            $articles_updated++;
+        }
+
+        return [
+            'articles_updated' => $articles_updated,
+            'reason_skipped' => null,
+        ];
     }
 
     static function getDolar($article, $dolar_blue) {

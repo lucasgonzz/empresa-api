@@ -10,6 +10,23 @@ use Illuminate\Support\Facades\Storage;
 class SupportSyncHelper
 {
     /**
+     * Headers para llamadas a admin-api /api/inbound/*.
+     * Si hay ADMIN_API_OUTBOUND_KEY configurada, se envía X-Admin-Api-Key (útil al reactivar auth en ambos lados).
+     *
+     * @return array<string, string>
+     */
+    private static function admin_inbound_request_headers(): array
+    {
+        $headers = ['Accept' => 'application/json'];
+        $outbound_key = config('services.admin_api.inbound_key');
+        if (! empty($outbound_key)) {
+            $headers['X-Admin-Api-Key'] = $outbound_key;
+        }
+
+        return $headers;
+    }
+
+    /**
      * Envía un mensaje local a admin-api para mantener bandeja central sincronizada.
      *
      * @param SupportMessage $message
@@ -21,10 +38,19 @@ class SupportSyncHelper
         $admin_url = config('services.admin_api.url');
         $outbound_key = config('services.admin_api.inbound_key');
         $client_uuid = config('services.admin_api.client_uuid');
+        /**
+         * Con autenticación por clave activada, inbound_key es obligatoria; si está desactivada (require_api_key false),
+         * alcanza URL + client_uuid para que admin-api resuelva el tenant sin header.
+         */
+        $require_api_key = (bool) config('services.admin_api.require_api_key', false);
 
         // Si falta configuración, evita romper el flujo del usuario.
-        if (empty($admin_url) || empty($outbound_key) || empty($client_uuid)) {
+        if (empty($admin_url) || empty($client_uuid)) {
             Log::warning('SupportSyncHelper: configuración incompleta para sync de soporte.');
+            return false;
+        }
+        if ($require_api_key && empty($outbound_key)) {
+            Log::warning('SupportSyncHelper: falta inbound_key con ADMIN_SYNC_REQUIRE_API_KEY activo.');
             return false;
         }
 
@@ -58,11 +84,8 @@ class SupportSyncHelper
         ];
 
         try {
-            // Crea request base autenticado hacia admin-api.
-            $request = Http::withHeaders([
-                    'X-Admin-Api-Key' => $outbound_key,
-                    'Accept' => 'application/json',
-                ])
+            // Crea request hacia admin-api (header de clave opcional según config).
+            $request = Http::withHeaders(self::admin_inbound_request_headers())
                 ->timeout(10);
 
             // Adjunta archivos binarios para replicar recursos en admin-api.
@@ -106,15 +129,16 @@ class SupportSyncHelper
     {
         $admin_url = config('services.admin_api.url');
         $outbound_key = config('services.admin_api.inbound_key');
-        if (empty($admin_url) || empty($outbound_key)) {
+        $require_api_key = (bool) config('services.admin_api.require_api_key', false);
+        if (empty($admin_url)) {
+            return false;
+        }
+        if ($require_api_key && empty($outbound_key)) {
             return false;
         }
 
         try {
-            $response = Http::withHeaders([
-                    'X-Admin-Api-Key' => $outbound_key,
-                    'Accept' => 'application/json',
-                ])
+            $response = Http::withHeaders(self::admin_inbound_request_headers())
                 ->timeout(10)
                 ->post(rtrim($admin_url, '/') . '/api/inbound/support/messages/read', [
                     'message_uuid' => $message->uuid,
@@ -135,15 +159,16 @@ class SupportSyncHelper
     {
         $admin_url = config('services.admin_api.url');
         $outbound_key = config('services.admin_api.inbound_key');
-        if (empty($admin_url) || empty($outbound_key)) {
+        $require_api_key = (bool) config('services.admin_api.require_api_key', false);
+        if (empty($admin_url)) {
+            return false;
+        }
+        if ($require_api_key && empty($outbound_key)) {
             return false;
         }
 
         try {
-            $response = Http::withHeaders([
-                    'X-Admin-Api-Key' => $outbound_key,
-                    'Accept' => 'application/json',
-                ])
+            $response = Http::withHeaders(self::admin_inbound_request_headers())
                 ->timeout(10)
                 ->post(rtrim($admin_url, '/') . '/api/inbound/support/typing', [
                     'ticket_uuid' => $ticket_uuid,

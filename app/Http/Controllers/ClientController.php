@@ -115,27 +115,59 @@ class ClientController extends Controller
         return str_replace('-', '', $cuit);
     }
 
-    function get_afip_information_by_cuit($cuit) {
-        $ct = new AfipConstanciaInscripcionController();
-        
-        // $data = $ct->get_persona_padron_a13($cuit);
-        $data = $ct->get_constancia_inscripcion($cuit);
+    /**
+     * Consulta AFIP/ARCA por CUIT (11 dígitos) o DNI (7 u 8 dígitos). El parámetro de ruta puede incluir guiones.
+     * Respuesta alineada con el modal del SPA: hubo_un_error, model (cliente existente), afip_data.
+     *
+     * @param string $identifier CUIT o DNI (con o sin separadores en el caso del CUIT).
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function get_afip_information_by_cuit($identifier)
+    {
+        $digits_only = preg_replace('/\D/', '', (string) $identifier);
+
+        $afip_controller = new AfipConstanciaInscripcionController();
+        $data = $afip_controller->resolve_afip_lookup_for_client_modal($digits_only);
 
         if ($data['hubo_un_error']) {
             return response()->json([
-                'hubo_un_error'     => true,
-                'error'             => $data['error'],
-            ]);
-        } else {
-            $client_model = Client::where('user_id', $this->userId())
-                                    ->where('cuit', $cuit)
-                                    ->withAll()
-                                    ->first();
-            return response()->json([
-                'model'  => $client_model,
-                'afip_data'     => $data['afip_data'],
+                'hubo_un_error' => true,
+                'error'         => $data['error'],
             ]);
         }
+
+        $afip_data = $data['afip_data'];
+        $cuit_from_afip = '';
+
+        if (is_array($afip_data) && isset($afip_data['cuit'])) {
+            $cuit_from_afip = $this->getCuit($afip_data['cuit']);
+        }
+
+        $client_model = Client::where('user_id', $this->userId())
+            ->where(function ($query) use ($cuit_from_afip, $digits_only) {
+                $dni_length = strlen($digits_only);
+
+                if ($cuit_from_afip !== '') {
+                    $query->where('cuit', $cuit_from_afip);
+                }
+
+                if ($dni_length >= 7 && $dni_length <= 8) {
+                    if ($cuit_from_afip !== '') {
+                        $query->orWhere('dni', $digits_only);
+                    } else {
+                        $query->where('dni', $digits_only);
+                    }
+                }
+            })
+            ->withAll()
+            ->first();
+
+        return response()->json([
+            'hubo_un_error' => false,
+            'model'         => $client_model,
+            'client_model'  => $client_model,
+            'afip_data'     => $afip_data,
+        ]);
     }
 
     function pdf(Request $request) {

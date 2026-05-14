@@ -133,8 +133,9 @@ class PdfHelper {
         }
 		
 
+		$start_x = $alto_imagen + 5;
+		
 		// Titulo
-
 		if (isset($data['titulo'])) {
 			
 			$instance->SetFont('Arial', 'B', 11);
@@ -144,7 +145,6 @@ class PdfHelper {
 				$instance->y += 10;
 			}
 			
-			$start_x = $alto_imagen + 5;
 			$instance->x = $start_x;
 		    $instance->MultiCell(
 				55, 
@@ -181,7 +181,9 @@ class PdfHelper {
 			$instance->Cell(40, 5, 'IIBB: '.$afip_information->ingresos_brutos, $instance->b, 1, 'L');
 
 			$instance->x = $start_x;
-			$instance->Cell(40, 5, 'Inicio actividades: '.$afip_information->inicio_actividades->format('d/m/Y'), $instance->b, 1, 'L');
+			if (!is_null($afip_information->inicio_actividades)) {
+				$instance->Cell(40, 5, 'Inicio actividades: '.$afip_information->inicio_actividades->format('d/m/Y'), $instance->b, 1, 'L');
+			}
 		}
 
 		// Sitio Web

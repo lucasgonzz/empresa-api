@@ -9,6 +9,14 @@ use Illuminate\Support\Facades\Log;
 class TiendaNubeCategoryImageService extends BaseTiendaNubeService
 {
     /**
+     * @param int|null $user_id Usuario dueño del conector TN.
+     */
+    public function __construct($user_id = null)
+    {
+        parent::__construct($user_id);
+    }
+
+    /**
      * Sube o actualiza la imagen de una categoría en Tienda Nube.
      *
      * @param Category|SubCategory $cat

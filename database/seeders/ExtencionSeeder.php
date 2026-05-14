@@ -435,6 +435,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Ocultar opciones de aplicar IVA y descontar stock en VENDER',
                 'slug' => 'hide_iva_and_discount_stock_in_vender',
             ],
+            [
+                'name' => 'Enviar mail a clientes',
+                'slug' => 'enviar_mail_a_clientes',
+            ],
 
         ];
         foreach ($extencions as $extencion) {

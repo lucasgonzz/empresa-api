@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\SupportTicketHelper;
 use App\Models\SupportTicket;
 use Illuminate\Http\Request;
 
@@ -23,6 +24,29 @@ class SupportTicketController extends Controller
             ->get();
 
         return response()->json(['models' => $models], 200);
+    }
+
+    /**
+     * Obtiene o crea el ticket abierto vigente para una nueva conversación desde empresa-spa.
+     * Reutiliza el ticket abierto existente si ya hay uno (evita hilos duplicados activos).
+     *
+     * @return \Illuminate\Http\JsonResponse Respuesta JSON con `model` del ticket y relaciones estándar.
+     */
+    public function store()
+    {
+        // Usuario autenticado dueño del ticket (no owner delegado).
+        $user_id = $this->userId(false);
+        // Alta lógica centralizada: crea uno nuevo sólo si no hay ningún ticket abierto.
+        $ticket = SupportTicketHelper::get_or_create_open_ticket($user_id);
+
+        // Misma forma que index/show para contadores y mensajes embebidos en listados.
+        $model = SupportTicket::where('id', $ticket->id)
+            ->where('user_id', $user_id)
+            ->withAll()
+            ->withUnreadMessagesCount()
+            ->first();
+
+        return response()->json(['model' => $model], 201);
     }
 
     /**

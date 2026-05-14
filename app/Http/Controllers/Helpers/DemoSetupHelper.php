@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Models\Address;
 use App\Models\AfipInformation;
+use App\Models\Client;
 use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
 use App\Models\PriceType;
@@ -92,6 +94,8 @@ class DemoSetupHelper
             Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);
         }
 
+        self::crear_client_con_mail_del_user_demo($data);
+
         // Reportes pre-calculados que usa el dashboard de ventas
         Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteSeeder', '--force' => true]);
         Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteArticuloSeeder', '--force' => true]);
@@ -103,6 +107,15 @@ class DemoSetupHelper
         self::tienda();
 
         return $user;
+    }
+
+    static function crear_client_con_mail_del_user_demo($data) {
+        $client = Client::create([
+            'name'      => $data['name'],
+            'user_id'   => config('app.USER_ID'),
+        ]);
+        
+        CreditAccountHelper::crear_credit_accounts('client', $client->id);
     }
 
     /**
@@ -117,22 +130,23 @@ class DemoSetupHelper
     {
         return User::create([
             'id'                            => config('app.USER_ID'),
+            'img_auto_timeout'              => 2,
             'api_url'                       => config('app.APP_URL').'/public',
-            'name'                          => $data['user_name'] ?? null,
+            'name'                          => $data['name'] ?? 'Demo',
             'use_archivos_de_intercambio'   => 0,
             'company_name'                  => $data['company_name'] ?? null,
             'image_url'                     => 'https://comerciocity.com/img/logo.95c86b81.jpg',
-            'doc_number'                    => '1234',
+            'doc_number'                    => $data['doc_number'],
             'impresora'                     => 'XP-80',
-            'email'                         => 'lucasgonzalez5500@gmail.com',
+            'email'                         => $data['email'],
             'phone'                         => '3444622139',
-            'sale_ticket_description'       => 'Aca iria alguna aclaracion que quieras hacer',
-            'password'                      => bcrypt('1234'),
+            'sale_ticket_description'       => '--- Aca iria alguna aclaracion que quieras hacer ---',
+            'password'                      => bcrypt($data['doc_number']),
             'visible_password'              => null,
             'dollar'                        => 0,
             'home_position'                 => 1,
             'download_articles'             => 0,
-            'online'                        => 'https://tienda.comerciocity.com',
+            'online'                        => $data['online'],
             'payment_expired_at'            => Carbon::now()->addDays(12),
             'total_a_pagar'                 => 15000,
             'plan_id'                       => null,
@@ -141,8 +155,8 @@ class DemoSetupHelper
             'estable_version'               => null,
             'iva_included'                  => !empty($data['iva_included']) ? 1 : 0,
             'ask_amount_in_vender'          => 1,
-            'redondear_centenas_en_vender'  => !empty($data['redondear_centenas_en_vender']) ? 1 : 0,
-            'siempre_omitir_en_cuenta_corriente' => !empty($data['usan_cuentas_corrientes']) ? 0 : 1,
+            'redondear_centenas_en_vender'  => 0,
+            'siempre_omitir_en_cuenta_corriente' => 0,
             'base_de_datos'                 => 'empresa_prueba_1',
             'google_custom_search_api_key'  => 'AIzaSyCgzE6haVi8uZnenfAvYJO5hn7m7Cl09Gw',
             'google_cuota'                  => 100,
@@ -165,6 +179,7 @@ class DemoSetupHelper
             'budgets',
             'acopios',
             'bar_code_scanner',
+            'enviar_mail_a_clientes',
         ];
     }
 
@@ -220,7 +235,7 @@ class DemoSetupHelper
             'UpdateFeatureSeeder',
             'InventoryLinkageScopeSeeder',
 
-            'MessageSeeder',
+            // 'MessageSeeder',
 
             'ExpenseConceptSeeder',
             'ExpenseSeeder',
@@ -233,6 +248,12 @@ class DemoSetupHelper
             'ProductionBatchStatusSeeder',
             'ProductionBatchMovementTypeSeeder',
             'RecipeRouteTypeSeeder',
+
+            'SheetTypeSeeder',
+            'PdfColumnOptionSeeder',
+            'PdfColumnProfileSeeder',
+            'PdfColumnProfileComisionesSeeder',
+            'InputsSizeSeeder',
         ];
     }
 
@@ -247,23 +268,24 @@ class DemoSetupHelper
     {
         $type = $data['business_type'] ?? null;
 
-        if ($type === 'ropa') {
-            $seeders[] = 'ArticlePropertyTypeSeeder';
-            $seeders[] = 'ArticlePropertyValueSeeder';
-            $seeders[] = 'ArticlePropertySeeder';
-            $seeders[] = 'ArticleVariantSeeder';
-            $seeders[] = 'CategoryIndumentariaSeeder';
-            $seeders[] = 'ArticleIndumentariaSeeder';
-            $extencions[] = 'article_variants';
-        } elseif ($type === 'forrajeria') {
-            $seeders[] = 'CategoryForrajeriaSeeder';
-            $seeders[] = 'ArticleForrajeriaSeeder';
-        } else {
-            $seeders[] = 'CategorySeeder';
-            $seeders[] = 'ArticleSeeder';
-        }
+        // if ($type === 'ropa') {
+        //     $seeders[] = 'ArticlePropertyTypeSeeder';
+        //     $seeders[] = 'ArticlePropertyValueSeeder';
+        //     $seeders[] = 'ArticlePropertySeeder';
+        //     $seeders[] = 'ArticleVariantSeeder';
+        //     $seeders[] = 'CategoryIndumentariaSeeder';
+        //     $seeders[] = 'ArticleIndumentariaSeeder';
+        //     $extencions[] = 'article_variants';
+        // } elseif ($type === 'forrajeria') {
+        //     $seeders[] = 'CategoryForrajeriaSeeder';
+        //     $seeders[] = 'ArticleForrajeriaSeeder';
+        // } else {
+        //     $seeders[] = 'CategorySeeder';
+        //     $seeders[] = 'ArticleSeeder';
+        // }
 
         // Seeder transversal de presupuestos, se encadena al final del bloque de tipo
+        $seeders[] = 'FerreteriaArticlesSeeder';
         $seeders[] = 'BudgetSeeder';
 
         if ($type === 'ferreteria') {
@@ -280,38 +302,47 @@ class DemoSetupHelper
      */
     private static function apply_flag_rules(array $data, array &$extencions, array &$seeders)
     {
-        if (!empty($data['codigos_de_barra_por_defecto'])) {
-            $extencions[] = 'codigos_de_barra_por_defecto';
-        }
-        if (!empty($data['produccion'])) {
-            $extencions[] = 'production';
-            $extencions[] = 'production.production_movement';
-        }
-        if (!empty($data['ventas_con_fecha_de_entrega'])) {
-            $extencions[] = 'ventas_con_fecha_de_entrega';
-        }
+
+        // if (!empty($data['codigos_de_barra_por_defecto'])) {
+        //     $extencions[] = 'codigos_de_barra_por_defecto';
+        // }
+
+        // if (!empty($data['produccion'])) {
+        //     $extencions[] = 'production';
+        //     $extencions[] = 'production.production_movement';
+        // }
+
+        // if (!empty($data['ventas_con_fecha_de_entrega'])) {
+        //     $extencions[] = 'ventas_con_fecha_de_entrega';
+        // }
+
         if (!empty($data['use_deposits'])) {
             $extencions[] = 'deposit_movements';
         }
+        
         if (!empty($data['use_price_lists'])) {
             $extencions[] = 'articulo_margen_de_ganancia_segun_lista_de_precios';
             $extencions[] = 'cambiar_price_type_en_vender';
             $extencions[] = 'cambiar_price_type_en_vender_item_por_item';
         }
-        if (empty($data['usar_codigos_de_barra'])) {
-            $extencions[] = 'no_usar_codigos_de_barra';
-        }
-        if (!empty($data['cajas'])) {
+
+        // if (empty($data['usar_codigos_de_barra'])) {
+        //     $extencions[] = 'no_usar_codigos_de_barra';
+        // }
+
+        // if (!empty($data['cajas'])) {
             $extencions[] = 'cajas';
             $seeders[] = 'CajaSeeder';
-            Log::info('DemoSetupHelper: se agrego caja seeder');
-        }
-        if (!empty($data['consultora_de_precios'])) {
-            $extencions[] = 'consultora_de_precios';
-        }
-        if (!empty($data['imagenes'])) {
+            // Log::info('DemoSetupHelper: se agrego caja seeder');
+        // }
+
+        // if (!empty($data['consultora_de_precios'])) {
+        //     $extencions[] = 'consultora_de_precios';
+        // }
+
+        // if (!empty($data['imagenes'])) {
             $extencions[] = 'imagenes';
-        }
+        // }
     }
 
     /**
@@ -324,12 +355,23 @@ class DemoSetupHelper
             'online_price_type_id'      => 3,
             'register_to_buy'           => 1,
             'scroll_infinito_en_home'   => 1,
-            'default_article_image_url' => 'http://empresa.local:8000/storage/169705209718205.jpg',
             'pausar_tienda_online'      => 0,
             'user_id'                   => config('app.USER_ID'),
             'facebook'                  => 'htts://facebook.com',
             'instagram'                 => 'htts://instagram.com',
             'mensaje_contacto'          => 'Comunicate con nosotros',
+
+
+            'default_article_image_url'     => 'https://api.comerciocity.com/public/storage/comerciocity-logo-cuadrado.webp',
+            'logo_url'                      => 'https://api.comerciocity.com/public/storage/logo-redondo.png',
+            'primary_color'                 => '#005FCC',
+            'secondary_color'               => '#333333',
+            'text_color'                    => '#EDEDED',
+            'hover_text_color'              => '#FFFFFF',
+            'titulo_quienes_somos'              => 'Quienes somos',
+
+            'quienes_somos'                 => '<h2>Un equipo cerca tuyo</h2><p>Somos una <strong>pyme ferretera</strong> arraigada en la región: nos mueve el barrio, el obrador y el vecino que arma el trabajo en casa. Trabajamos con <strong>precios competitivos</strong>, stock pensado para lo cotidiano y un equipo que apuesta a la <strong>buena atención</strong>: asesoramiento honesto, respuesta rápida y resolver en el acto lo que hace falta en herramientas, pinturería, electricidad, plomería y más.</p><h2>Precios claros y confianza de verdad</h2><p>No vendemos solo productos: vendemos tranquilidad. Nos ocupamos de orientarte cuando no tenés certeza del repuesto, de recomendar alternativas cuando conviene y de sostener una relación basada en la confianza con mayoristas, cuentas corrientes y vecinos. Esa mezcla de <strong>precio justo</strong>, disponibilidad y trato cercano es lo que nos diferencia día a día.</p><h2>Tu catálogo online y pedidos sin vueltas</h2><p>Nuestra <strong>tienda online</strong> está pensada para ahorrarte tiempo: clientes y cuentas pueden <strong>recorrer el catálogo con rapidez</strong>, comparar referencias y <strong>enviar pedidos de forma práctica</strong>, reduciendo llamadas repetidas y malentendidos en el pedido. Si tu ferretería o casa de materiales vive de la confianza del barrio y querés digitalizar ventas sin complicarte la operación diaria, <strong>un ecommerce como el de ComercioCity</strong> es la herramienta que muchos negocios como el tuyo están buscando para estar a la altura de lo que hoy esperan quienes compran.</p>',
+
         ];
 
         OnlineConfiguration::create($online_configuration);
@@ -346,9 +388,9 @@ class DemoSetupHelper
             'iva_condition_id'      => 1,
             'razon_social'          => 'Empresa de '.$user->company_name,
             'domicilio_comercial'   => 'Pellegrini 1876',
-            'cuit'                  => '20381712010',
+            'cuit'                  => '20175018841',
             'punto_venta'           => 4,
-            'ingresos_brutos'       => '20381712010',
+            'ingresos_brutos'       => '20175018841',
             'inicio_actividades'    => Carbon::now()->subYears(5),
             'user_id'               => $user->id,
             'description'           => 'Responsable Inscripto',
@@ -358,9 +400,9 @@ class DemoSetupHelper
             'iva_condition_id'      => 2,
             'razon_social'          => 'Empresa de '.$user->company_name,
             'domicilio_comercial'   => 'Pellegrini 1876',
-            'cuit'                  => '20381712010',
-            'punto_venta'           => 4,
-            'ingresos_brutos'       => '20381712010',
+            'cuit'                  => '20423548984',
+            'punto_venta'           => 2,
+            'ingresos_brutos'       => '20423548984',
             'inicio_actividades'    => Carbon::now()->subYears(5),
             'user_id'               => $user->id,
             'description'           => 'Monotributista',

@@ -13,7 +13,7 @@ class TiendaNubeOrderController extends Controller
 
     public function index() {
 
-        $service = new TiendaNubeOrderService();
+        $service = new TiendaNubeOrderService($this->userId());
         $service->sincronizar_nuevos_pedidos();
 
         $models = TiendaNubeOrder::where('user_id', $this->userId())

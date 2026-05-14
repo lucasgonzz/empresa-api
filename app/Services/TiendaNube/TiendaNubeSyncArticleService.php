@@ -53,7 +53,7 @@ class TiendaNubeSyncArticleService
         try {
             $article = $sync->article;
             
-            $service = new TiendaNubeProductService();
+            $service = new TiendaNubeProductService(null, $sync->user_id);
             $service->crearOActualizarProducto($article);
             
 

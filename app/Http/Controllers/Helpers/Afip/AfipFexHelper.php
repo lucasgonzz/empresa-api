@@ -110,6 +110,24 @@ class AfipFexHelper
             $data['items'][] = $item;
         }
 
+
+        foreach ($this->sale->services as $service) {
+            
+            $amount = (float)$service->pivot->amount;
+            $price = (float)$service->pivot->price;
+
+            $item = [];
+            $item['Pro_codigo']         = $service->id;
+            $item['Pro_ds']             = $service->name;
+            $item['Pro_qty']            = $amount;
+            $item['Pro_umed']           = 1; // FEXGetPARAM_UMed 
+            $item['Pro_precio_uni']     = $price;
+            $item['Pro_bonificacion']   = 0;
+            $item['Pro_total_item']     = $price * $amount;
+
+            $data['items'][] = $item;
+        }
+
         $params = Self::get_fex_params($data);
 
         // Log::info('Se va a enviar params:');

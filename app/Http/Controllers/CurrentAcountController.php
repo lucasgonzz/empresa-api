@@ -5,7 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\ClientController;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
-use App\Http\Controllers\Helpers\CurrentAcountDeleteNotaDebitoHelper;
+use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\CurrentAcountDeletePagoHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
@@ -211,8 +211,25 @@ class CurrentAcountController extends Controller
         return response(null, 200);
     }
 
-    function delete($model_name, $id) {
+    function delete(Request $request, $model_name, $id) {
         $current_acount = CurrentAcount::find($id);
+
+        /** Solo aplica a pagos en cuenta corriente con impacto en caja (no a notas de crédito en este alcance). */
+        $compensar_caja = $request->boolean('compensar_caja');
+        /** Helper para validar apertura de cajas y emitir movimientos compensatorios consistentes con ventas/gastos. */
+        $helper_caja_compensacion = new DeleteCajaCompensacionHelper();
+        $metodos_para_compensacion = null;
+
+        if ($compensar_caja && $current_acount->status === 'pago_from_client') {
+            $current_acount->loadMissing('current_acount_payment_methods');
+            $cajas_cerradas = $helper_caja_compensacion->verificar_cajas_abiertas($current_acount->current_acount_payment_methods);
+            if (count($cajas_cerradas)) {
+                return response()->json([
+                    'message' => 'Las siguientes cajas están cerradas: '.implode(', ', $cajas_cerradas).'. Debe abrirlas para poder eliminar el pago y compensar caja.',
+                ], 422);
+            }
+            $metodos_para_compensacion = $current_acount->current_acount_payment_methods;
+        }
 
         if ($current_acount->status == 'pago_from_client' || $current_acount->status == 'nota_credito') {
 
@@ -230,7 +247,22 @@ class CurrentAcountController extends Controller
 
         $credit_account_id = $current_acount->credit_account_id;
 
+        /** Texto de referencia para el movimiento de caja (se conserva antes del delete). */
+        $notas_compensacion = 'Eliminación de pago en cuenta corriente';
+        if (! is_null($current_acount->num_receipt)) {
+            $notas_compensacion .= ' N° '.$current_acount->num_receipt;
+        }
+
         $current_acount->delete();
+
+        if ($compensar_caja && ! is_null($metodos_para_compensacion) && $metodos_para_compensacion->count()) {
+            $helper_caja_compensacion->crear_movimientos_compensacion(
+                $metodos_para_compensacion,
+                DeleteCajaCompensacionHelper::MODEL_TYPE_CURRENT_ACOUNT,
+                $model_name,
+                $notas_compensacion
+            );
+        }
         
         CurrentAcountHelper::checkSaldos($credit_account_id);
         

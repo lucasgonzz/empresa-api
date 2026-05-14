@@ -3,7 +3,6 @@
 namespace App\Jobs;
 
 use App\Models\Article;
-use App\Models\TiendaNubeStore;
 use App\Services\TiendaNube\TiendaNubeProductService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -32,7 +31,7 @@ class ProcessSyncArticleToTiendaNube implements ShouldQueue
 
         Log::info('Handle de ProcessSyncArticleToTiendaNube');
         
-        $service = new TiendaNubeProductService();
+        $service = new TiendaNubeProductService(null, $article->user_id);
         $service->crearOActualizarProducto($article);
     }
 }

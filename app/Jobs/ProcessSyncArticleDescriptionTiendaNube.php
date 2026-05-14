@@ -36,7 +36,7 @@ class ProcessSyncArticleDescriptionTiendaNube implements ShouldQueue
 
         if (is_null($this->article->tiendanube_product_id)) return;
         
-        $service = new TiendaNubeProductDescriptionService();
+        $service = new TiendaNubeProductDescriptionService($this->article->user_id);
         $service->update_descriptions($this->article);
     }
 }

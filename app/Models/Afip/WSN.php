@@ -283,12 +283,17 @@ abstract class WSN extends WS
 
         if ($this->for_constancia_de_inscripcion) {
 
+            // Token común de AFIP + parámetros del método SOAP (idPersona, documento, etc.).
             $datos = array(
                 'token'              => $this->ta_token,
                 'sign'               => $this->ta_sign,
                 'cuitRepresentada'   => $this->ta_cuit,
-                'idPersona'          => $arguments[0]['idPersona'],
             );
+            if (isset($arguments[0]) && is_array($arguments[0])) {
+                foreach ($arguments[0] as $param_key => $param_value) {
+                    $datos[$param_key] = $param_value;
+                }
+            }
 
         } else {
 

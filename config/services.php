@@ -34,11 +34,14 @@ return [
     // - api_key: clave que admin-api envía hacia este cliente (debe coincidir con clients.api_key en admin-api).
     // - inbound_key: clave que este cliente envía hacia admin-api al reportar lecturas (debe coincidir con clients.inbound_api_key en admin-api).
     // - client_uuid: uuid propio de este cliente dentro del admin-api.
+    // - require_api_key: si es false, el middleware admin.api.key no valida X-Admin-Api-Key (solo uso temporal;
+    //   en producción debe ser true). Variable .env: ADMIN_SYNC_REQUIRE_API_KEY.
     'admin_api' => [
-        'url'         => env('ADMIN_API_URL'),
-        'api_key'     => env('ADMIN_API_INBOUND_KEY'),
-        'inbound_key' => env('ADMIN_API_OUTBOUND_KEY'),
-        'client_uuid' => env('ADMIN_API_CLIENT_UUID'),
+        'url'               => env('ADMIN_API_URL'),
+        'api_key'           => env('ADMIN_API_INBOUND_KEY'),
+        'inbound_key'       => env('ADMIN_API_OUTBOUND_KEY'),
+        'client_uuid'       => env('ADMIN_API_CLIENT_UUID'),
+        'require_api_key'   => env('ADMIN_SYNC_REQUIRE_API_KEY', false),
     ],
 
 ];

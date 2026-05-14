@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Events\CompanyOwnerContextUpdated;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
@@ -89,4 +90,29 @@ class UserHelper {
             'owner'     => $owner,
         ]);
     }
+
+    /**
+     * Programa el broadcast inmediatamente después de enviar la respuesta HTTP (sin cola de jobs),
+     * para no demorar el PUT y aun así notificar a Pusher en el mismo request.
+     *
+     * @param int $company_owner_id Id del dueño (canal `global_notification.{id}`).
+     * @param int $updated_by_user_id Usuario que guardó el perfil.
+     * @param array<int, string> $change_descriptions Textos para el modal en otras sesiones; vacío no emite.
+     * @return void
+     */
+    static function schedule_company_owner_context_updated_broadcast($company_owner_id, $updated_by_user_id, array $change_descriptions)
+    {
+        if ($change_descriptions === []) {
+            return;
+        }
+
+        app()->terminating(function () use ($company_owner_id, $updated_by_user_id, $change_descriptions) {
+            try {
+                broadcast(new CompanyOwnerContextUpdated($company_owner_id, $updated_by_user_id, $change_descriptions));
+            } catch (\Throwable $e) {
+                Log::warning('CompanyOwnerContextUpdated broadcast falló: '.$e->getMessage());
+            }
+        });
+    }
 }
+

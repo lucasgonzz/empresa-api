@@ -102,10 +102,15 @@ class UserSetupHelper
      */
     private static function create_user(array $data)
     {
+        /**
+         * Nombre del User: payload suele mandar user_name; si viene vacío, name o contact_name (admin-api).
+         */
+        $display_name = self::resolve_user_display_name_from_setup_data($data);
+
         return User::create([
             'id'                            => $data['user_id'] ?? null,
             'api_url'                       => config('app.APP_URL').'/public',
-            'name'                          => $data['user_name'] ?? null,
+            'name'                          => $display_name,
             'use_archivos_de_intercambio'   => 0,
             'company_name'                  => $data['company_name'] ?? null,
             'image_url'                     => 'https://api-demo.comerciocity.com/public/storage/174292591094040.png',
@@ -138,6 +143,30 @@ class UserSetupHelper
     }
 
     /**
+     * Obtiene el nombre a persistir en users.name desde el payload de user-setup.
+     *
+     * @param array<string, mixed> $data
+     *
+     * @return string
+     */
+    private static function resolve_user_display_name_from_setup_data(array $data)
+    {
+        $candidates = [
+            isset($data['user_name']) ? trim((string) $data['user_name']) : '',
+            isset($data['name']) ? trim((string) $data['name']) : '',
+            isset($data['contact_name']) ? trim((string) $data['contact_name']) : '',
+            isset($data['company_name']) ? trim((string) $data['company_name']) : '',
+        ];
+        foreach ($candidates as $candidate) {
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        return 'Cliente';
+    }
+
+    /**
      * Extensiones de base que todos los sistemas de producción reciben.
      * Son menos que en demo (sin 'online', sin datos de ejemplo).
      *
@@ -148,6 +177,7 @@ class UserSetupHelper
         return [
             'comerciocity_interno',
             'ask_save_current_acount',
+            'enviar_mail_a_clientes',
         ];
     }
 
@@ -197,6 +227,13 @@ class UserSetupHelper
             'ProductionBatchStatusSeeder',
             'ProductionBatchMovementTypeSeeder',
             'RecipeRouteTypeSeeder',
+
+            
+            'SheetTypeSeeder',
+            'PdfColumnOptionSeeder',
+            'PdfColumnProfileSeeder',
+            'PdfColumnProfileComisionesSeeder',
+            'InputsSizeSeeder',
         ];
     }
 

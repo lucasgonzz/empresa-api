@@ -64,14 +64,17 @@ class ChequeController extends Controller
                 continue;
             }
 
-            // Cálculo de estado dinámico
+            // Cálculo de estado dinámico (fecha de cobro = fecha_pago + 30 días).
+            // Importante: el último día hábil del plazo debe incluirse en la ventana de cobro;
+            // si se usa solo lt(fechaVencimiento), el día exacto de vencimiento no entra en ninguna
+            // rama y el cheque desaparece del listado agrupado (off-by-one).
             $fechaPago = Carbon::parse($cheque->fecha_pago);
             $fechaVencimiento = $fechaPago->copy()->addDays(30);
             $diasHastaVencimiento = $hoy->diffInDays($fechaVencimiento, false);
 
             if ($hoy->lt($fechaPago)) {
                 $agrupados[$cheque->tipo]['pendientes'][] = $cheque;
-            } elseif ($hoy->gte($fechaPago) && $hoy->lt($fechaVencimiento)) {
+            } elseif ($hoy->gte($fechaPago) && $hoy->lte($fechaVencimiento)) {
                 if ($diasHastaVencimiento <= $diasProntoAVencer) {
                     $agrupados[$cheque->tipo]['pronto_a_vencerse'][] = $cheque;
                 } else {

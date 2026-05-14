@@ -16,6 +16,14 @@ use Illuminate\Support\Facades\Log;
 class TiendaNubeCategoryService extends BaseTiendaNubeService
 {
     /**
+     * @param int|null $user_id Usuario dueño del conector TN / artículos.
+     */
+    public function __construct($user_id = null)
+    {
+        parent::__construct($user_id);
+    }
+
+    /**
      * Crea/asegura una Category de primer nivel (raíz) en Tienda Nube y devuelve su ID en TN.
      */
     public function ensureRootCategory(Category $cat): int
