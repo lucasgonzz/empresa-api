@@ -6,7 +6,8 @@ use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\Order\CreateSaleOrderHelper;
 use App\Jobs\ProcessMeliOrderNotificationJob;
 use App\Models\MeliOrder;
-use App\Models\MercadoLibreToken;
+use App\Models\PlatformConnector;
+use App\Services\MercadoLibre\ErrorHandler;
 use App\Services\MercadoLibre\OrderDownloaderService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -27,13 +28,20 @@ class MeLiOrderController extends Controller
     {
         if (env('USA_MERCADO_LIBRE', false)) {
             try {
-                $token = MercadoLibreToken::where('user_id', $this->userId())->first();
-                if ($token) {
+                // Credenciales OAuth del tenant: conector ML conectado con access_token vigente.
+                $connector = PlatformConnector::find_connected_mercado_libre_for_user((int) $this->userId());
+                if ($connector && $connector->access_token) {
                     $downloader = new OrderDownloaderService($this->userId());
                     $downloader->get_recent_orders();
                 }
             } catch (\Exception $e) {
                 Log::warning('MeLiOrderController index: no se pudo sincronizar pedidos ML: '.$e->getMessage());
+                ErrorHandler::notify_exception(
+                    (int) $this->userId(),
+                    $e,
+                    'No se pudieron sincronizar pedidos desde Mercado Libre',
+                    true
+                );
             }
         }
 
@@ -78,16 +86,16 @@ class MeLiOrderController extends Controller
                 continue;
             }
 
-            $token = MercadoLibreToken::where('meli_user_id', $meli_user_id)->first();
-            if (!$token) {
-                Log::info('receive_notification: sin token para meli_user_id '.$meli_user_id);
+            $connector = PlatformConnector::find_connected_mercado_libre_by_platform_user_id($meli_user_id);
+            if (!$connector) {
+                Log::info('receive_notification: sin conector ML para platform_user_id '.$meli_user_id);
 
                 continue;
             }
 
             $resource_path = ltrim($resource, '/');
 
-            ProcessMeliOrderNotificationJob::dispatch($token->user_id, $resource_path)->afterResponse();
+            ProcessMeliOrderNotificationJob::dispatch($connector->user_id, $resource_path)->afterResponse();
         }
 
         return response('', 200);

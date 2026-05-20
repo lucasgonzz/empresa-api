@@ -8,7 +8,6 @@ use App\Models\MeliAttributeTag;
 use App\Models\MeliAttributeValue;
 use App\Models\MeliCategory;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Http;
 
 class CategoryService extends MercadoLibreService
 {
@@ -61,7 +60,7 @@ class CategoryService extends MercadoLibreService
     public function fetch_meli_categories(string $query)
     {
 
-        $response = Http::get("https://api.mercadolibre.com/sites/MLA/domain_discovery/search", [
+        $response = $this->meli_http()->get('https://api.mercadolibre.com/sites/MLA/domain_discovery/search', [
             'q' => $query,
         ]);
 

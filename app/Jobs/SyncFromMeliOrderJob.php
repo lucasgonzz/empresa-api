@@ -2,7 +2,9 @@
 
 namespace App\Jobs;
 
+use App\Models\SyncFromMeliOrder;
 use App\Services\MercadoLibre\OrderDownloaderService;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -33,8 +35,18 @@ class SyncFromMeliOrderJob implements ShouldQueue
      */
     public function handle()
     {
-        $service = new OrderDownloaderService();
+        $sync_record = SyncFromMeliOrder::find($this->sync_from_meli_order_id);
+        if (!$sync_record) {
+            return;
+        }
 
-        $service->get_all_orders($this->sync_from_meli_order_id);
+        try {
+            $service = new OrderDownloaderService($sync_record->user_id);
+            $service->get_all_orders($this->sync_from_meli_order_id);
+        } catch (\Exception $e) {
+            Log::error('SyncFromMeliOrderJob: '.$e->getMessage(), [
+                'sync_from_meli_order_id' => $this->sync_from_meli_order_id,
+            ]);
+        }
     }
 }

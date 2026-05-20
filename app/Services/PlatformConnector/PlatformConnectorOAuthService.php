@@ -2,9 +2,9 @@
 
 namespace App\Services\PlatformConnector;
 
-use App\Models\MercadoLibreToken;
 use App\Models\Platform;
 use App\Models\PlatformConnector;
+use App\Services\MercadoLibre\MercadoLibreService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
@@ -16,7 +16,6 @@ use Illuminate\Support\Facades\Log;
  * Responsabilidad:
  * - Intercambiar `code` por tokens según la plataforma.
  * - Actualizar el conector (`status`, tokens, `platform_user_id`).
- * - Para Mercado Libre, mantener compatibilidad persistiendo también `MercadoLibreToken`.
  */
 class PlatformConnectorOAuthService
 {
@@ -40,7 +39,9 @@ class PlatformConnectorOAuthService
                 if (!$platform || empty($platform->client_id) || empty($platform->client_secret)) {
                     throw new \RuntimeException('La plataforma Mercado Libre no tiene client_id o client_secret en catálogo.');
                 }
-                $response = Http::asForm()->post('https://api.mercadolibre.com/oauth/token', [
+                $response = Http::withOptions(MercadoLibreService::http_client_options())
+                    ->asForm()
+                    ->post('https://api.mercadolibre.com/oauth/token', [
                     'grant_type'    => 'authorization_code',
                     'client_id'     => $platform->client_id,
                     'client_secret' => $platform->client_secret,
@@ -59,8 +60,6 @@ class PlatformConnectorOAuthService
                 $connector->status = PlatformConnector::STATUS_CONECTADO;
                 $connector->error_message = null;
                 $connector->save();
-
-                $this->sync_mercado_libre_token_from_connector($connector, $data);
             }
         );
     }
@@ -149,23 +148,4 @@ class PlatformConnectorOAuthService
         );
     }
 
-    /**
-     * Replica tokens de ML en la tabla legacy `mercado_libre_tokens`.
-     *
-     * @param PlatformConnector $connector Conector recién autorizado.
-     * @param array $data Payload JSON del endpoint oauth/token de ML.
-     * @return void
-     */
-    protected function sync_mercado_libre_token_from_connector(PlatformConnector $connector, array $data): void
-    {
-        MercadoLibreToken::updateOrCreate(
-            ['user_id' => $connector->user_id],
-            [
-                'meli_user_id'  => isset($data['user_id']) ? (string) $data['user_id'] : null,
-                'access_token'  => $data['access_token'] ?? null,
-                'refresh_token' => $data['refresh_token'] ?? null,
-                'expires_at'    => Carbon::now()->addSeconds((int) ($data['expires_in'] ?? 0)),
-            ]
-        );
-    }
 }

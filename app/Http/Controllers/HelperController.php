@@ -46,7 +46,7 @@ use App\Models\DepositMovement;
 use App\Models\Image;
 use App\Models\InventoryLinkage;
 use App\Models\MeliOrder;
-use App\Models\MercadoLibreToken;
+use App\Models\PlatformConnector;
 use App\Models\Moneda;
 use App\Models\OnlineConfiguration;
 use App\Models\Order;
@@ -842,18 +842,19 @@ class HelperController extends Controller
     }
 
     function importar_productos_ml() {
+        $platform_connector = PlatformConnector::find_connected_mercado_libre_for_user((int) config('app.USER_ID'));
+        if (!$platform_connector) {
+            echo 'Sin conector de Mercado Libre conectado.';
+
+            return;
+        }
+
         $service = new ProductoDownloaderService(config('app.USER_ID'));
-
-        $token = MercadoLibreToken::where('user_id', config('app.USER_ID'))->first();
-
-        $service->importar_productos($token->meli_user_id);
+        $service->importar_productos('create_only');
     }
 
     function importar_orders_ml() {
         $service = new OrderDownloaderService(config('app.USER_ID'));
-
-        // $token = MercadoLibreToken::where('user_id', config('app.USER_ID'))->first();
-
         $service->get_all_orders();
     }
 

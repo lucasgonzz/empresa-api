@@ -2,10 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Exports\ChequesFilteredExport;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Models\Cheque;
+use Maatwebsite\Excel\Facades\Excel;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\CurrentAcountCurrentAcountPaymentMethod;
@@ -14,6 +16,66 @@ use Illuminate\Http\Request;
 
 class ChequeController extends Controller
 {
+    /**
+     * Descarga un Excel con los cheques indicados por ID (los mismos que muestra el front al filtrar).
+     *
+     * @param \Illuminate\Http\Request $request Query `cheque_ids` (ids separados por guión, ej. 12-45-88).
+     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse
+     */
+    public function excel_export(Request $request)
+    {
+        $cheques = $this->get_cheques_for_excel_export($request);
+
+        return Excel::download(
+            new ChequesFilteredExport($cheques),
+            'cheques_'.date_format(Carbon::now(), 'd-m-y').'.xlsx'
+        );
+    }
+
+    /**
+     * Carga cheques por IDs enviados desde la SPA, respetando owner y orden del listado.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return \Illuminate\Support\Collection
+     */
+    protected function get_cheques_for_excel_export(Request $request)
+    {
+        if (!$request->has('cheque_ids')) {
+            return collect();
+        }
+
+        $raw_ids = explode('-', (string) $request->query('cheque_ids'));
+        $ids = [];
+
+        foreach ($raw_ids as $raw_id) {
+            $id = (int) trim($raw_id);
+            if ($id > 0) {
+                $ids[] = $id;
+            }
+        }
+
+        $ids = array_values(array_unique($ids));
+
+        if (!count($ids)) {
+            return collect();
+        }
+
+        $cheques_by_id = Cheque::where('user_id', $this->userId())
+            ->whereIn('id', $ids)
+            ->withAll()
+            ->get()
+            ->keyBy('id');
+
+        $ordered = collect();
+
+        foreach ($ids as $id) {
+            if (isset($cheques_by_id[$id])) {
+                $ordered->push($cheques_by_id[$id]);
+            }
+        }
+
+        return $ordered;
+    }
 
     function index() {
         $hoy = Carbon::today();

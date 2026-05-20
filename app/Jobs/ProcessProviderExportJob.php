@@ -2,9 +2,8 @@
 
 namespace App\Jobs;
 
-use App\Exports\ArticleExport;
+use App\Exports\ProviderExport;
 use App\Http\Controllers\Helpers\ExportHistoryHelper;
-use App\Models\Article;
 use App\Models\ExportHistory;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
@@ -18,12 +17,12 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Facades\Excel;
 
-class ProcessArticleExportJob implements ShouldQueue
+class ProcessProviderExportJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     /**
-     * Define timeout amplio para exportaciones grandes.
+     * Timeout amplio para exportaciones con muchos registros.
      *
      * @var int
      */
@@ -37,25 +36,18 @@ class ProcessArticleExportJob implements ShouldQueue
     public $tries = 1;
 
     /**
-     * Guarda el usuario owner que recibirá la notificación final.
+     * Usuario owner que recibirá la notificación final.
      *
      * @var int
      */
     protected $owner_user_id;
 
     /**
-     * Guarda el id del usuario autenticado al solicitar la exportación.
+     * Usuario autenticado al solicitar la exportación (restricción de notificación).
      *
      * @var int
      */
     protected $auth_user_id;
-
-    /**
-     * Guarda los ids de artículos a exportar.
-     *
-     * @var array
-     */
-    protected $article_ids;
 
     /**
      * Registro de historial asociado a esta exportación.
@@ -65,23 +57,21 @@ class ProcessArticleExportJob implements ShouldQueue
     protected $export_history_id;
 
     /**
-     * Crea el job de exportación en segundo plano.
+     * Crea el job de exportación de proveedores en segundo plano.
      *
      * @param int $owner_user_id
      * @param int $auth_user_id
-     * @param array $article_ids
      * @param int $export_history_id
      */
-    public function __construct($owner_user_id, $auth_user_id, $article_ids, $export_history_id)
+    public function __construct($owner_user_id, $auth_user_id, $export_history_id)
     {
         $this->owner_user_id = (int) $owner_user_id;
         $this->auth_user_id = (int) $auth_user_id;
-        $this->article_ids = is_array($article_ids) ? $article_ids : [];
         $this->export_history_id = (int) $export_history_id;
     }
 
     /**
-     * Ejecuta la generación de excel, guarda el archivo y notifica resultado.
+     * Genera el excel, actualiza historial y notifica al usuario.
      *
      * @return void
      */
@@ -92,7 +82,7 @@ class ProcessArticleExportJob implements ShouldQueue
         try {
             $owner_user = User::find($this->owner_user_id);
             if (is_null($owner_user)) {
-                Log::warning('ProcessArticleExportJob: owner no encontrado', [
+                Log::warning('ProcessProviderExportJob: owner no encontrado', [
                     'owner_user_id' => $this->owner_user_id,
                 ]);
                 if ($export_history) {
@@ -101,20 +91,12 @@ class ProcessArticleExportJob implements ShouldQueue
                 return;
             }
 
-            $models = null;
-            if (count($this->article_ids)) {
-                $models = Article::where('user_id', $this->owner_user_id)
-                                ->whereIn('id', $this->article_ids)
-                                ->get();
-            }
-
-            $file_name = 'comerciocity-articulos_' . date_format(Carbon::now(), 'd-m-y_H-i-s') . '_' . uniqid() . '.xlsx';
+            $file_name = 'comerciocity-proveedores_' . date_format(Carbon::now(), 'd-m-y_H-i-s') . '_' . uniqid() . '.xlsx';
             $relative_path = 'exported-files/' . $file_name;
 
-            $article_export = new ArticleExport($models, $this->owner_user_id);
-            Excel::store($article_export, $relative_path);
-
-            $exported_count = !is_null($models) ? $models->count() : $article_export->collection()->count();
+            $provider_export = new ProviderExport(null, $this->owner_user_id);
+            $exported_count = $provider_export->collection()->count();
+            Excel::store($provider_export, $relative_path);
 
             $download_link = $export_history
                 ? ExportHistoryHelper::mark_completed($export_history, $file_name, $exported_count)
@@ -132,15 +114,13 @@ class ProcessArticleExportJob implements ShouldQueue
                 [
                     'title' => 'Resultado de la exportacion',
                     'parrafos' => [
-                        !is_null($models)
-                            ? $exported_count . ' articulos exportados'
-                            : 'Exportacion solicitada para todos los articulos (' . $exported_count . ')',
+                        $exported_count . ' proveedores exportados',
                     ],
                 ],
             ];
 
             $owner_user->notify(new GlobalNotification([
-                'message_text' => 'El excel de articulos ya esta listo para descargar',
+                'message_text' => 'El excel de proveedores ya esta listo para descargar',
                 'color_variant' => 'success',
                 'functions_to_execute' => $functions_to_execute,
                 'info_to_show' => $info_to_show,
@@ -148,10 +128,9 @@ class ProcessArticleExportJob implements ShouldQueue
                 'is_only_for_auth_user' => $this->auth_user_id,
             ]));
         } catch (Exception $e) {
-            Log::error('ProcessArticleExportJob: error al generar exportacion', [
+            Log::error('ProcessProviderExportJob: error al generar exportacion', [
                 'owner_user_id' => $this->owner_user_id,
                 'auth_user_id' => $this->auth_user_id,
-                'article_ids_count' => count($this->article_ids),
                 'export_history_id' => $this->export_history_id,
                 'message' => $e->getMessage(),
                 'archivo' => $e->getFile(),
@@ -172,7 +151,7 @@ class ProcessArticleExportJob implements ShouldQueue
                 ];
 
                 $owner_user->notify(new GlobalNotification([
-                    'message_text' => 'No se pudo generar el excel de articulos',
+                    'message_text' => 'No se pudo generar el excel de proveedores',
                     'color_variant' => 'danger',
                     'functions_to_execute' => $functions_to_execute,
                     'info_to_show' => [],

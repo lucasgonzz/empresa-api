@@ -107,6 +107,10 @@ class OrderController extends Controller
          */
         $has_sale = Sale::where('order_id', $model->id)->exists();
 
+        Log::info('prev_status: '.$prev_status->name);
+        Log::info('order_status: '.$model->order_status->name);
+        Log::info('has_sale: '.$has_sale);
+
         /**
          * Solo crear venta en la primera transición desde "Sin confirmar"
          * hacia un estado distinto de "Cancelado" y sin venta previa.

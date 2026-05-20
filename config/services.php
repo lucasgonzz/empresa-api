@@ -44,4 +44,16 @@ return [
         'require_api_key'   => env('ADMIN_SYNC_REQUIRE_API_KEY', false),
     ],
 
+    /**
+     * Cliente HTTP hacia api.mercadolibre.com (Guzzle vía Illuminate\Http\Client).
+     * En Windows/WAMP sin CA bundle suele aparecer cURL error 60; ver .env.example.
+     */
+    'mercadolibre' => [
+        'guzzle_verify' => filter_var(
+            env('MERCADO_LIBRE_GUZZLE_VERIFY_SSL', env('APP_ENV') === 'production'),
+            FILTER_VALIDATE_BOOLEAN
+        ),
+        'guzzle_ca_bundle' => env('MERCADO_LIBRE_GUZZLE_CA_BUNDLE', ''),
+    ],
+
 ];

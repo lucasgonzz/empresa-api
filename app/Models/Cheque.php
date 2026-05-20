@@ -15,7 +15,11 @@ class Cheque extends Model
     ];
 
     function scopeWithAll($q) {
-        $q->with('client', 'provider', 'cobrado_por', 'rechazado_por');
+        $q->with('client', 'provider', 'cobrado_por', 'rechazado_por', 'endosado_a_provider', 'endosado_desde_client');
+    }
+
+    function endosado_desde_client() {
+        return $this->belongsTo(Client::class, 'endosado_desde_client_id');
     }
 
     function current_acount() {

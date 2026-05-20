@@ -26,8 +26,8 @@ class PlatformSeeder extends Seeder
             ['slug' => Platform::SLUG_MERCADO_LIBRE],
             [
                 'name'          => 'Mercado Libre',
-                'client_id'     => '6355072095226922',
-                'client_secret' => 'nHBJ178VU9RTQYzpaGq7hWis37101wM9',
+                'client_id'     => '4899702990695294',
+                'client_secret' => 'gVeYJHqnwrr3BPz7cQTLmygxzURmgLjw',
                 'extra_config'  => null,
             ]
         );

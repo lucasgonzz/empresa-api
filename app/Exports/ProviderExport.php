@@ -11,6 +11,31 @@ use Maatwebsite\Excel\Concerns\WithMapping;
 
 class ProviderExport implements FromCollection, WithHeadings, WithMapping
 {
+    /**
+     * Colección precargada para exportar un subconjunto (null = todos del owner).
+     *
+     * @var \Illuminate\Support\Collection|null
+     */
+    public $models = null;
+
+    /**
+     * ID del usuario owner; en cola no hay sesión.
+     *
+     * @var int|null
+     */
+    public $user_id = null;
+
+    /**
+     * Configura el lote y el dueño de los datos a exportar.
+     *
+     * @param \Illuminate\Support\Collection|null $models
+     * @param int|null $user_id
+     */
+    public function __construct($models = null, $user_id = null)
+    {
+        $this->models = $models;
+        $this->user_id = $user_id;
+    }
 
     public function map($provider): array
     {
@@ -46,11 +71,21 @@ class ProviderExport implements FromCollection, WithHeadings, WithMapping
         ];
     }
 
+    /**
+     * Devuelve los proveedores a exportar (precargados o consulta por owner).
+     *
+     * @return \Illuminate\Support\Collection
+     */
     public function collection()
     {
-        $models = Provider::where('user_id', UserHelper::userId())
+        if (!is_null($this->models)) {
+            return $this->models;
+        }
+
+        $owner_user_id = $this->user_id ? $this->user_id : UserHelper::userId();
+
+        return Provider::where('user_id', $owner_user_id)
                         ->orderBy('created_at', 'DESC')
                         ->get();
-        return $models;
     }
 }

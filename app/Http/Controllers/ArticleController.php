@@ -31,6 +31,7 @@ use App\Imports\ArticleImport;
 use App\Imports\LocationImport;
 use App\Imports\ProvinciaImport;
 use App\Jobs\ProcessArticleImport;
+use App\Http\Controllers\Helpers\ExportHistoryHelper;
 use App\Jobs\ProcessArticleExportJob;
 use App\Jobs\ProcessDeleteArticleFromTiendaNube;
 use App\Models\ArticlePdf as ArticlePdfLayout;
@@ -583,11 +584,17 @@ class ArticleController extends Controller
             $article_ids = array_map('intval', $ids);
         }
 
-        // Se encola la exportación para liberar el request HTTP rápidamente.
+        $export_history = ExportHistoryHelper::create_pending(
+            $this->userId(),
+            $this->userId(false),
+            'article'
+        );
+
         ProcessArticleExportJob::dispatch(
             $this->userId(),
             $this->userId(false),
-            $article_ids
+            $article_ids,
+            $export_history->id
         );
 
         return response()->json([

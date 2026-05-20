@@ -71,7 +71,7 @@ Route::get('/n8n/productos-disponibles/{last_updated?}', function ($last_updated
 
 
 /**
- * Callback OAuth Mercado Libre: intercambia `code` y persiste en `platform_connectors` + `mercado_libre_tokens`.
+ * Callback OAuth Mercado Libre: intercambia `code` y persiste en `platform_connectors`.
  * Las credenciales de app viven en el conector (ABM), no en .env.
  */
 Route::get('/platform-connector/mercadolibre/callback', function (\Illuminate\Http\Request $request) {
@@ -417,6 +417,7 @@ Route::get('/provider-orders/export/{id}', function ($id) {
 Route::get('sales/excel/export/{from_date}/{until_date?}', 'SaleController@excel_export');
 Route::get('sales/excel/breakdown-export/{from_date}/{until_date?}', 'SaleController@excel_breakdown_export');
 Route::get('nota-credito/excel/export/{from_date}/{until_date?}', 'NotaCreditoController@excel_export');
+Route::get('cheque/excel/export', 'ChequeController@excel_export');
 
 
 
