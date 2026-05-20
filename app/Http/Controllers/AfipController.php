@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipSolicitarCaeHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Pdf\Afip\LibroIvaCompraPdf;
+use App\Http\Controllers\Pdf\Afip\LibroIvaVentaPdf;
 use App\Models\AfipTicket;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderAfipTicket;
@@ -296,5 +297,119 @@ class AfipController extends Controller
 
         $pdf = new LibroIvaCompraPdf($comprobantes, $inicioCarbon, $finCarbon);
     }
+
+    /**
+     * Exporta el libro de IVA ventas (débito) en PDF.
+     * Incluye facturas de venta y notas de crédito AFIP del período.
+     *
+     * @param string $inicio Mes inicio (Y-m).
+     * @param string $fin Mes fin (Y-m).
+     */
+    function iva_ventas_pdf($inicio, $fin) {
+
+        $inicioCarbon = Carbon::parse($inicio)->startOfMonth();
+        $finCarbon = Carbon::parse($fin)->endOfMonth();
+
+        $afip_tickets = AfipTicket::whereBetween('created_at', [$inicioCarbon, $finCarbon])
+                                    ->whereNotNull('cae')
+                                    ->where(function ($q) {
+                                        $q->whereHas('sale', function ($sale_q) {
+                                            $sale_q->where('user_id', $this->userId());
+                                        })->orWhereHas('sale_nota_credito', function ($sale_q) {
+                                            $sale_q->where('user_id', $this->userId());
+                                        });
+                                    })
+                                    ->with([
+                                        'sale.client.iva_condition',
+                                        'sale_nota_credito.client.iva_condition',
+                                        'nota_credito',
+                                    ])
+                                    ->orderBy('created_at', 'ASC')
+                                    ->get();
+
+        $comprobantes = [];
+
+        foreach ($afip_tickets as $afip_ticket) {
+
+            if (!$afip_ticket->cae) {
+                continue;
+            }
+
+            $importes = $this->get_importes($afip_ticket);
+
+            $sign = 1;
+            $sale = null;
+            $registrada_at = null;
+
+            if ($afip_ticket->sale) {
+                $sale = $afip_ticket->sale;
+                $registrada_at = $sale->created_at;
+            } else if ($afip_ticket->nota_credito) {
+                $sale = $afip_ticket->sale_nota_credito;
+                $registrada_at = $afip_ticket->nota_credito->created_at;
+                $sign = -1;
+            } else {
+                continue;
+            }
+
+            if (is_null($sale) || is_null($registrada_at)) {
+                continue;
+            }
+
+            $client = $sale->client;
+            $client_name = $client ? $client->name : 'SIN NOMBRE';
+
+            $iva_slug = '';
+            if ($client && $client->iva_condition) {
+                $iva_slug = $client->iva_condition->slug;
+            } else if ($afip_ticket->iva_cliente) {
+                $iva_slug = $afip_ticket->iva_cliente;
+            }
+
+            $doc_res = AfipSolicitarCaeHelper::get_doc_client($sale);
+            $cuit = $doc_res['doc_client'] != 'NR' ? $doc_res['doc_client'] : '';
+
+            $neto = (float) $importes['gravado'] * $sign;
+            $iva_21 = (float) $importes['ivas']['21']['Importe'] * $sign;
+            $iva_10 = (float) $importes['ivas']['10']['Importe'] * $sign;
+            $iva_27 = (float) $importes['ivas']['27']['Importe'] * $sign;
+            $no_gravado = (float) $importes['neto_no_gravado'] * $sign;
+            $total = (float) $importes['total'] * $sign;
+
+            $comprobante = [
+                'issued_at'         => $afip_ticket->created_at,
+                'created_at'        => $registrada_at,
+                'num_comprobante'   => $this->build_num_comprobante_afip($afip_ticket),
+                'cliente'           => StringHelper::short($client_name, 22),
+                'iva'               => $iva_slug,
+                'cuit'              => $cuit,
+                'neto'              => $neto,
+                'iva_27'            => $iva_27 != 0 ? $iva_27 : '',
+                'iva_21'            => $iva_21 != 0 ? $iva_21 : '',
+                'iva_10'            => $iva_10 != 0 ? $iva_10 : '',
+                'no_gravado'        => $no_gravado != 0 ? $no_gravado : '',
+                'per_iibb'          => '',
+                'per_iva'           => '',
+                'total'             => $total,
+            ];
+
+            $comprobantes[] = $comprobante;
+        }
+
+        $pdf = new LibroIvaVentaPdf($comprobantes, $inicioCarbon, $finCarbon);
+    }
+
+    /**
+     * Arma el código visual del comprobante AFIP (letra, punto de venta y número).
+     *
+     * @param AfipTicket $afip_ticket
+     * @return string
+     */
+    function build_num_comprobante_afip($afip_ticket) {
+        $punto_venta = str_pad((string) $afip_ticket->punto_venta, 5, '0', STR_PAD_LEFT);
+        $cbte_numero = str_pad((string) $afip_ticket->cbte_numero, 8, '0', STR_PAD_LEFT);
+        return $afip_ticket->cbte_letra.' '.$punto_venta.'-'.$cbte_numero;
+    }
+
 
 }

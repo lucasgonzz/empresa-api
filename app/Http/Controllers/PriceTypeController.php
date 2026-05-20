@@ -46,6 +46,7 @@ class PriceTypeController extends Controller
             'incluir_en_lista_de_precios_de_excel'    => $request->incluir_en_lista_de_precios_de_excel,
             'setear_precio_final'    => $request->setear_precio_final,
             'se_usa_en_tienda_nube'    => $request->se_usa_en_tienda_nube,
+            'se_usa_en_ml'    => $request->se_usa_en_ml,
             'user_id'               => $this->userId(),
         ]);
 
@@ -113,6 +114,8 @@ class PriceTypeController extends Controller
         $model->incluir_en_lista_de_precios_de_excel  = $request->incluir_en_lista_de_precios_de_excel;
         $model->setear_precio_final  = $request->setear_precio_final;
         $model->se_usa_en_tienda_nube  = $request->se_usa_en_tienda_nube;
+        $model->se_usa_en_ml  = $request->se_usa_en_ml;
+        
         $model->save();
 
         // Solo sincroniza pivots cuando realmente cambia el porcentaje por defecto.

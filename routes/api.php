@@ -224,8 +224,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Descripcion del precio final
     Route::get('/article/final-price-description/{id}', 'ArticleController@get_final_price_description');
     
-    // Exportar Excel
+    // Exportar Excel (procesamiento en cola)
     Route::get('article/excel/export', 'ArticleController@export');
+    Route::get('client/excel/export', 'ClientController@export');
+    Route::get('provider/excel/export', 'ProviderController@export');
 
 
 
@@ -466,6 +468,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('article-purchase', 'ArticlePurchaseController@index');
 
 
+    Route::get('/export-history/{model_name}', 'ExportHistoryController@index');
+
     Route::get('/import-history/{model_name}', 'ImportHistoryController@index');
     Route::get('/import-history/updated-models/{id}', 'ImportHistoryController@updated_models');
     Route::get('/import-history/created-models/{id}', 'ImportHistoryController@created_models');
@@ -586,7 +590,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('sync-to-meli-article/from-date/{from_date?}/{until_date?}', 'SyncToMeliArticleController@index');
     
     Route::get('sync-from-meli-article/from-date/{from_date?}/{until_date?}', 'SyncFromMeliArticleController@index');
+    Route::get('sync-from-meli-article/{id}', 'SyncFromMeliArticleController@show');
     Route::post('sync-from-meli-article', 'SyncFromMeliArticleController@store');
+    Route::delete('sync-from-meli-article/{id}', 'SyncFromMeliArticleController@destroy');
     
     Route::get('sync-from-meli-order/from-date/{from_date?}/{until_date?}', 'SyncFromMeliOrderController@index');
     Route::post('sync-from-meli-order', 'SyncFromMeliOrderController@store');

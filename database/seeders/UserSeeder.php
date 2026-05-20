@@ -40,7 +40,7 @@ class UserSeeder extends Seeder
                 'use_archivos_de_intercambio'   => 0,
                 'company_name'                  => 'Autopartes Boxes',
                 // 'image_url'                     => null,
-                'image_url'                     => env('APP_ENV') == 'local' ? config('app.APP_URL').'/storage/icon.png' : 'https://comerciocity.com/img/logo.95c86b81.jpg',
+                'image_url'                     => env('APP_ENV') == 'local' ? config('app.API_URL').'/storage/icon.png' : 'https://comerciocity.com/img/logo.95c86b81.jpg',
                 'doc_number'                    => '1234',
                 'impresora'                     => 'XP-80',
                 'email'                         => 'lucasgonzalez5500@gmail.com',

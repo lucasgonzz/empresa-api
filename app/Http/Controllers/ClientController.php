@@ -2,7 +2,8 @@
 
 namespace App\Http\Controllers;
 
-use App\Exports\ClientExport;
+use App\Http\Controllers\Helpers\ExportHistoryHelper;
+use App\Jobs\ProcessClientExportJob;
 use App\Http\Controllers\AfipConstanciaInscripcionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
@@ -11,7 +12,6 @@ use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Pdf\ClientsPdf;
 use App\Imports\ClientImport;
 use App\Models\Client;
-use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Maatwebsite\Excel\Facades\Excel;
 
@@ -107,8 +107,27 @@ class ClientController extends Controller
         Excel::import(new ClientImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row), $request->file('models'));
     }
 
+    /**
+     * Encola la exportación de clientes a excel y responde de inmediato al frontend.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
     function export() {
-        return Excel::download(new ClientExport, 'comerciocity-clientes '.date_format(Carbon::now(), 'd-m-y H:m').'.xlsx');
+        $export_history = ExportHistoryHelper::create_pending(
+            $this->userId(),
+            $this->userId(false),
+            'client'
+        );
+
+        ProcessClientExportJob::dispatch(
+            $this->userId(),
+            $this->userId(false),
+            $export_history->id
+        );
+
+        return response()->json([
+            'message' => 'La exportacion de clientes se esta procesando',
+        ], 200);
     }
 
     function getCuit($cuit) {

@@ -7,7 +7,6 @@ use App\Http\Controllers\Helpers\Order\CreateSaleOrderHelper;
 use App\Models\Article;
 use App\Models\MeliBuyer;
 use App\Models\MeliOrder;
-use App\Models\MercadoLibreToken;
 use App\Models\SyncFromMeliOrder;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
@@ -33,7 +32,7 @@ class OrderDownloaderService extends MercadoLibreService
     /** @var bool Indica si falló el lote masivo (solo aplica con syncRecord) */
     public $hubo_error;
 
-    /** @var int Usuario interno dueño del token */
+    /** @var int Usuario interno dueño del conector ML */
     public $user_id;
 
     /** @var User|null */
@@ -57,8 +56,6 @@ class OrderDownloaderService extends MercadoLibreService
 
         $this->user_id = $user_id;
         $this->user = User::find($user_id);
-
-        $this->token = MercadoLibreToken::where('user_id', $user_id)->first();
 
         $this->hubo_error = false;
         $this->syncRecord = null;
@@ -91,7 +88,7 @@ class OrderDownloaderService extends MercadoLibreService
         $this->syncRecord = SyncFromMeliOrder::find($sync_from_meli_order_id);
 
         $orders = $this->make_request('GET', 'orders/search', [
-            'seller' => $this->token->meli_user_id,
+            'seller' => $this->meli_seller_id(),
         ]);
 
         Log::info('orders:');
@@ -124,7 +121,7 @@ class OrderDownloaderService extends MercadoLibreService
         $from_date = $this->resolve_orders_search_from_date();
 
         $query = [
-            'seller' => $this->token->meli_user_id,
+            'seller' => $this->meli_seller_id(),
             'order.status' => 'paid',
             'sort' => 'date_desc',
             'order.date_last_updated.from' => $from_date,
@@ -232,7 +229,7 @@ class OrderDownloaderService extends MercadoLibreService
 
         $this->user->notify(new GlobalNotification([
             'message_text' => 'Error con Sincronizacion ENTRANTE con Mercado Libre',
-            'color_variant' => 'success',
+            'color_variant' => 'danger',
             'functions_to_execute' => $functions_to_execute,
             'info_to_show' => $info_to_show,
             'owner_id' => $this->user->id,
@@ -289,6 +286,10 @@ class OrderDownloaderService extends MercadoLibreService
                 $this->notificacion_error();
             } else {
                 Log::error('OrderDownloaderService sin syncRecord: '.$e->getMessage());
+                $this->notify_meli_exception(
+                    $e,
+                    'Error al procesar pedido de Mercado Libre'
+                );
             }
         }
     }

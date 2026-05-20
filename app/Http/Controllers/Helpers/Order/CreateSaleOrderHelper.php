@@ -16,7 +16,6 @@ class CreateSaleOrderHelper {
             || $from_meli
             || (
                 $order->order_status->name != 'Sin confirmar' 
-                && Self::saveSaleAfterFinishOrder() 
             )
         ) {
 

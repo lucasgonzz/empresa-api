@@ -58,6 +58,56 @@ class PlatformConnector extends Model
     }
 
     /**
+     * Filtra conectores de Mercado Libre en estado conectado.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query Query base.
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeMercadoLibreConnected($query)
+    {
+        return $query
+            ->where('status', self::STATUS_CONECTADO)
+            ->whereHas('platform', function ($platform_query) {
+                $platform_query->where('slug', Platform::SLUG_MERCADO_LIBRE);
+            });
+    }
+
+    /**
+     * Conector ML conectado del usuario del ERP (polling, listados, etc.).
+     *
+     * @param int $user_id Usuario interno dueño del conector.
+     * @return self|null
+     */
+    public static function find_connected_mercado_libre_for_user(int $user_id): ?self
+    {
+        $platform_connector = static::with('platform')
+            ->mercadoLibreConnected()
+            ->where('user_id', $user_id)
+            ->whereNotNull('access_token')
+            ->where('access_token', '!=', '')
+            ->first();
+
+        if (!$platform_connector || empty($platform_connector->platform_user_id)) {
+            return null;
+        }
+
+        return $platform_connector;
+    }
+
+    /**
+     * Conector ML por id de vendedor en Mercado Libre (webhooks `user_id` del payload).
+     *
+     * @param string $platform_user_id Identificador del vendedor en ML (`platform_user_id`).
+     * @return self|null
+     */
+    public static function find_connected_mercado_libre_by_platform_user_id(string $platform_user_id): ?self
+    {
+        return static::mercadoLibreConnected()
+            ->where('platform_user_id', $platform_user_id)
+            ->first();
+    }
+
+    /**
      * Usuario dueño del conector (tenant del ERP).
      *
      * @return BelongsTo

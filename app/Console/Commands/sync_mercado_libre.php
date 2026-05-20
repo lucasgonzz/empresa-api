@@ -46,10 +46,15 @@ class sync_mercado_libre extends Command
 
         $this->info(count($sync_articles).' sincronizaciones');
 
-        $service = new ProductService();
+        $user_id = (int) config('app.USER_ID');
 
         foreach ($sync_articles as $sync) {
-            $service->sync_article($sync);
+            try {
+                $service = new ProductService($user_id);
+                $service->sync_article($sync);
+            } catch (\Exception $e) {
+                $this->error('Sync #'.$sync->id.': '.$e->getMessage());
+            }
         }
 
         return 0;

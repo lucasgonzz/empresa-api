@@ -2,29 +2,26 @@
 
 namespace App\Console\Commands;
 
-use App\Models\MercadoLibreToken;
+use App\Models\PlatformConnector;
 use App\Services\MercadoLibre\ProductoDownloaderService;
 use Illuminate\Console\Command;
 
+/**
+ * Comando legacy: importa publicaciones ML del usuario config('app.USER_ID').
+ */
 class descargar_productos_meli extends Command
 {
     /**
-     * The name and signature of the console command.
-     *
      * @var string
      */
     protected $signature = 'descargar_productos_meli';
 
     /**
-     * The console command description.
-     *
      * @var string
      */
-    protected $description = 'Command description';
+    protected $description = 'Importa artículos desde Mercado Libre (requiere PlatformConnector conectado)';
 
     /**
-     * Create a new command instance.
-     *
      * @return void
      */
     public function __construct()
@@ -33,17 +30,21 @@ class descargar_productos_meli extends Command
     }
 
     /**
-     * Execute the console command.
-     *
      * @return int
      */
     public function handle()
     {
-        $service = new ProductoDownloaderService(config('app.USER_ID'));
+        $user_id = (int) config('app.USER_ID');
+        $platform_connector = PlatformConnector::find_connected_mercado_libre_for_user($user_id);
+        if (!$platform_connector) {
+            $this->error('No hay conector de Mercado Libre conectado para USER_ID='.$user_id);
 
-        $token = MercadoLibreToken::where('user_id', config('app.USER_ID'))->first();
+            return 1;
+        }
 
-        $service->importar_productos($token->meli_user_id);
+        $service = new ProductoDownloaderService($user_id);
+        $service->importar_productos('create_only');
+
         return 0;
     }
 }

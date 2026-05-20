@@ -11,6 +11,31 @@ use Maatwebsite\Excel\Concerns\WithMapping;
 
 class ClientExport implements FromCollection, WithHeadings, WithMapping
 {
+    /**
+     * Colección precargada para exportar un subconjunto (null = todos del owner).
+     *
+     * @var \Illuminate\Support\Collection|null
+     */
+    public $models = null;
+
+    /**
+     * ID del usuario owner; en cola no hay sesión.
+     *
+     * @var int|null
+     */
+    public $user_id = null;
+
+    /**
+     * Configura el lote y el dueño de los datos a exportar.
+     *
+     * @param \Illuminate\Support\Collection|null $models
+     * @param int|null $user_id
+     */
+    public function __construct($models = null, $user_id = null)
+    {
+        $this->models = $models;
+        $this->user_id = $user_id;
+    }
 
     public function map($client): array
     {
@@ -52,13 +77,20 @@ class ClientExport implements FromCollection, WithHeadings, WithMapping
 
 
     /**
-    * @return \Illuminate\Support\Collection
-    */
+     * Devuelve los clientes a exportar (precargados o consulta por owner).
+     *
+     * @return \Illuminate\Support\Collection
+     */
     public function collection()
     {
-        $models = Client::where('user_id', UserHelper::userId())
+        if (!is_null($this->models)) {
+            return $this->models;
+        }
+
+        $owner_user_id = $this->user_id ? $this->user_id : UserHelper::userId();
+
+        return Client::where('user_id', $owner_user_id)
                         ->orderBy('created_at', 'DESC')
                         ->get();
-        return $models;
     }
 }

@@ -2,7 +2,8 @@
 
 namespace App\Http\Controllers;
 
-use App\Exports\ProviderExport;
+use App\Http\Controllers\Helpers\ExportHistoryHelper;
+use App\Jobs\ProcessProviderExportJob;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
@@ -151,8 +152,27 @@ class ProviderController extends Controller
         Excel::import(new ProviderImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row, $request->provider_id), $request->file('models'));
     }
 
+    /**
+     * Encola la exportación de proveedores a excel y responde de inmediato al frontend.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
     function export() {
-        return Excel::download(new ProviderExport, 'comerciocity-proveedores '.date_format(Carbon::now(), 'd-m-y H:m').'.xlsx');
+        $export_history = ExportHistoryHelper::create_pending(
+            $this->userId(),
+            $this->userId(false),
+            'provider'
+        );
+
+        ProcessProviderExportJob::dispatch(
+            $this->userId(),
+            $this->userId(false),
+            $export_history->id
+        );
+
+        return response()->json([
+            'message' => 'La exportacion de proveedores se esta procesando',
+        ], 200);
     }
 
     function hubo_cambios_en_provider_discounts($provider, $should_update_prices) {

@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Services\MercadoLibre\ErrorHandler;
 use App\Services\MercadoLibre\OrderDownloaderService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -52,6 +53,12 @@ class ProcessMeliOrderNotificationJob implements ShouldQueue
                 'user_id' => $this->empresa_user_id,
                 'resource' => $this->resource_path,
             ]);
+            ErrorHandler::notify_exception(
+                $this->empresa_user_id,
+                $e,
+                'Error al procesar notificación de Mercado Libre',
+                true
+            );
         }
     }
 }
