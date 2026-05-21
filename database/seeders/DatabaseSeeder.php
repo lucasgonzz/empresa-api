@@ -319,6 +319,7 @@ class DatabaseSeeder extends Seeder
         $this->call(ProviderOrderStatusSeeder::class);
         $this->call(OnlinePriceTypeSeeder::class);
         $this->call(DepositMovementStatusSeeder::class);
+        $this->call(ArticlePdfSeeder::class);
 
 
         // Estos estaban a lo ultimo

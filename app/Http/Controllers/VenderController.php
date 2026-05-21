@@ -170,7 +170,7 @@ class VenderController extends Controller
         ];
     }
 
-    function search_nombre(Request $request, $from_provider_order = 0) {
+    function search_nombre(Request $request, $from_provider_order_or_recipe = 0) {
 
         $keywords = explode(' ', trim($request->query_value));
 
@@ -185,16 +185,20 @@ class VenderController extends Controller
         $results = collect();
         // 1. Buscar todos los artículos cuyo name o provider_code coincidan con alguna palabra
         $articles = Article::where('status', 'active')
-                        ->where('user_id', $this->userId())
-                        ->where(function($q) {
+                        ->where('user_id', $this->userId());
+
+        if (!$from_provider_order_or_recipe) {
+            $articles->where(function($q) {
                             $q->where('es_insumo', 0)
                                 ->orWhereNull('es_insumo');
-                        })
-                        ->where(function ($query_builder) use ($keywords, $from_provider_order, $search_descripcion_en_vender) {
+                        });
+        } 
+
+        $articles->where(function ($query_builder) use ($keywords, $from_provider_order_or_recipe, $search_descripcion_en_vender) {
                             if (count($keywords) === 1) {
                                 $keyword = $keywords[0];
 
-                                $query_builder->where(function ($q) use ($keyword, $from_provider_order, $search_descripcion_en_vender) {
+                                $query_builder->where(function ($q) use ($keyword, $from_provider_order_or_recipe, $search_descripcion_en_vender) {
                                     $q->where('name', 'LIKE', "%$keyword%")
                                       ->orWhere('provider_code', 'LIKE', "%$keyword%");
 
@@ -205,8 +209,8 @@ class VenderController extends Controller
 
                                       Log::info('Buscando por descripcion: '.$keyword);
 
-                                    if ($from_provider_order) {
-                                        Log::info('from_provider_order '.$keyword);
+                                    if ($from_provider_order_or_recipe) {
+                                        Log::info('from_provider_order_or_recipe '.$keyword);
                                         $q->orWhere('bar_code', $keyword); // sólo búsqueda exacta por código de barras
                                     }
                                 });

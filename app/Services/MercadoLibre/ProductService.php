@@ -2,6 +2,7 @@
 
 namespace App\Services\MercadoLibre;
 
+use App\Http\Controllers\Helpers\ArticlePlatformSyncNotificationHelper;
 use App\Models\Article;
 use App\Models\MeliAttribute;
 use App\Models\SyncToMeliArticle;
@@ -86,6 +87,10 @@ class ProductService extends MercadoLibreService
      */
     public function sync_article(SyncToMeliArticle $sync)
     {
+        // Una sola notificación al fallar la sync (evita duplicar con make_request).
+        $previous_notify_on_api_error = $this->notify_on_api_error;
+        $this->notify_on_api_error = false;
+
         $sync->status = 'en_progreso';
         $sync->attempted_at = now();
         $sync->save();
@@ -129,6 +134,8 @@ class ProductService extends MercadoLibreService
             $sync->synced_at = now();
             $sync->error_message = null;
             $sync->save();
+
+            $this->notify_on_api_error = $previous_notify_on_api_error;
         } catch (\Exception $e) {
             Log::error('Error al sincronizar artículo con MercadoLibre: '.$e->getMessage());
 
@@ -160,10 +167,13 @@ class ProductService extends MercadoLibreService
             $sync->save();
 
             $article_label = $article ? $article->name : ('sync #'.$sync->id);
-            $this->notify_meli_exception(
-                $e,
-                'Error al sincronizar artículo con Mercado Libre: '.$article_label
+            ArticlePlatformSyncNotificationHelper::notify_mercado_libre_sync_failed(
+                (int) $sync->user_id,
+                $article_label,
+                $error_message
             );
+
+            $this->notify_on_api_error = $previous_notify_on_api_error;
         }
     }
 

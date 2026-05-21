@@ -46,23 +46,11 @@ class SupportMessageController extends Controller
             'synced_to_admin_at' => now(),
         ]);
 
-        // Replica metadata de adjuntos recibidos en payload JSON.
-        $attachments = $request->input('attachments', []);
-        if (is_array($attachments)) {
-            foreach ($attachments as $attachment) {
-                SupportMessageAttachment::create([
-                    'support_message_id' => $message->id,
-                    'disk' => $attachment['disk'] ?? 'public',
-                    'path' => $attachment['path'] ?? '',
-                    'mime' => $attachment['mime'] ?? null,
-                    'size' => $attachment['size'] ?? null,
-                ]);
-            }
-        }
-
-        // Guarda archivos adjuntos reales transferidos por multipart.
+        // Archivos binarios del multipart (prioridad sobre metadata remota).
         $attachments_files = $request->file('attachments_files', []);
-        if (is_array($attachments_files)) {
+        $has_uploaded_files = is_array($attachments_files) && count($attachments_files) > 0;
+
+        if ($has_uploaded_files) {
             foreach ($attachments_files as $uploaded_file) {
                 $stored_path = $uploaded_file->store('support_messages/' . $ticket->id, 'public');
                 SupportMessageAttachment::create([
@@ -71,6 +59,21 @@ class SupportMessageController extends Controller
                     'path' => $stored_path,
                     'mime' => $uploaded_file->getMimeType(),
                     'size' => $uploaded_file->getSize(),
+                ]);
+            }
+        } else {
+            // Sin binarios: metadata JSON (multipart) o array (body JSON).
+            $attachments = $this->parse_attachments_input($request->input('attachments', []));
+            foreach ($attachments as $attachment) {
+                if (! is_array($attachment)) {
+                    continue;
+                }
+                SupportMessageAttachment::create([
+                    'support_message_id' => $message->id,
+                    'disk' => $attachment['disk'] ?? 'public',
+                    'path' => $attachment['path'] ?? '',
+                    'mime' => $attachment['mime'] ?? null,
+                    'size' => $attachment['size'] ?? null,
                 ]);
             }
         }
@@ -103,6 +106,29 @@ class SupportMessageController extends Controller
         }
 
         return response()->json(['ok' => true], 200);
+    }
+
+    /**
+     * Normaliza el campo attachments del request (array JSON o string JSON desde multipart).
+     *
+     * @param mixed $raw Valor crudo del request.
+     * @return array<int, array<string, mixed>>
+     */
+    private function parse_attachments_input($raw): array
+    {
+        if (is_string($raw) && $raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+
+            return [];
+        }
+        if (is_array($raw)) {
+            return $raw;
+        }
+
+        return [];
     }
 }
 

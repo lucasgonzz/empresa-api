@@ -144,14 +144,16 @@ class ArticleOfferSheetPdf extends fpdf
         $x0 = 10;
         $full_w = 190;
         $left_w = 92;
-        $right_x = $x0 + $left_w + 6;
-        $right_w = $full_w - $left_w - 6;
+        // $right_x = $x0 + $left_w + 6;
+        // $right_w = $full_w - $left_w - 6;
+        $right_x = 80;
+        $right_w = 125;
 
         if ($slot === 1) {
             $this->draw_horizontal_dashed_line($x0, $x0 + $full_w, $this->page_half_y, 2.2, 1.8);
         }
 
-        $y = $block_top + 2;
+        $y = $block_top + 7;
 
         $this->SetXY($x0, $y);
         $this->SetFont('Arial', 'BI', 35);
@@ -160,12 +162,12 @@ class ArticleOfferSheetPdf extends fpdf
 
         $this->SetX($x0);
         $this->SetFont('Arial', 'B', 25);
-        $this->MultiCell($full_w, 17, $this->to_pdf_text($article->name), $this->b, 'C');
+        $this->MultiCell($full_w, 13, $this->to_pdf_text($article->name), $this->b, 'C');
         $y = $this->GetY() + 2;
 
         $this->SetXY($x0, $y);
-        $this->SetFont('Arial', 'B', 70);
-        $this->Cell($left_w, 20, '$'.Numbers::price($article->final_price), $this->b, 1, 'L');
+        $this->SetFont('Arial', 'B', 55);
+        $this->Cell($left_w, 18, '$'.Numbers::price($article->final_price), $this->b, 1, 'L');
 
         $y_secondary_row = $this->GetY();
 
@@ -183,27 +185,22 @@ class ArticleOfferSheetPdf extends fpdf
 
 
 
-        // Derecha
 
         $y_after_net = $this->GetY();
 
-        $this->SetXY($right_x, $y_secondary_row);
-        $this->SetFont('Arial', '', 15);
-        $medida_txt = $this->format_medida_line($article);
-        $this->MultiCell($right_w, 7, $this->to_pdf_text($medida_txt), $this->b, 'R');
-
+        $this->y -= 15;
         $ref_line = $this->precio_por_unidad_referencia($article);
         if (!is_null($ref_line)) {
             $this->SetX($right_x);
             $this->SetFont('Arial', 'B', 15);
-            $this->MultiCell($right_w, 7, $this->to_pdf_text($ref_line), $this->b, 'R');
+            $this->MultiCell($right_w, 10, $this->to_pdf_text($ref_line), $this->b, 'R');
         }
 
         if ($this->template->mostrar_precio_anterior && !is_null($article->previus_final_price) && $article->previus_final_price > 0) {
             $this->SetX($right_x);
-            $this->SetFont('Arial', '', 15);
+            $this->SetFont('Arial', '', 23);
             $prev = 'Precio anterior: $'.Numbers::price($article->previus_final_price);
-            $this->MultiCell($right_w, 7, $this->to_pdf_text($prev), $this->b, 'R');
+            $this->MultiCell($right_w, 10, $this->to_pdf_text($prev), $this->b, 'R');
         }
 
         $custom = trim((string) $this->template->texto_personalizado);
@@ -228,12 +225,36 @@ class ArticleOfferSheetPdf extends fpdf
             $this->MultiCell($right_w, 7, $fecha, $this->b, 'R');
         }
 
+        $this->print_article_price_ranges($article, $right_w, $right_x);
+
         $this->SetXY($x0, $y_after_net);
         $this->print_first_image($article, $x0, $y_after_net, $left_w);
 
-        $bar_y = $block_top + 118;
+        $bar_y = $block_top + 132;
         $this->print_bar_code_centered($article, $x0, $full_w, $bar_y);
 
+    }
+
+    function print_article_price_ranges($article, $right_w, $right_x) {
+
+        if (count($article->article_price_ranges) >= 1) {
+
+            foreach ($article->article_price_ranges as $price_range) {
+                $text = 'Llevando ';
+                if ($price_range->modo == 'Igual') {
+
+                    $text .= Numbers::price($price_range->amount);
+                } else {
+
+                    $text .= Numbers::price($price_range->amount). ' o mas';
+
+                }
+                $text .= ' = $'.Numbers::price($price_range->price).' cu';
+                $this->SetFont('Arial', 'B', 20);
+                $this->SetX($right_x);
+                $this->MultiCell($right_w, 7, $text, $this->b, 'R');
+            }
+        }
     }
 
     /**
@@ -331,7 +352,7 @@ class ArticleOfferSheetPdf extends fpdf
         }
 
         $img_h = 48;
-        $this->Image($path, $x, $y, 70, 70);
+        $this->Image($path, $x, $y, 60, 60);
         // $this->Image($path, $x, $y, $max_w, $img_h);
         $this->SetY($y + $img_h + 2);
     }
