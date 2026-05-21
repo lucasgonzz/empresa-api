@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ProviderOrderHelper;
+use App\Http\Controllers\Pdf\ProviderOrderPdf;
 use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Imports\ProviderOrderArticleImport;
@@ -198,6 +199,24 @@ class ProviderOrderController extends Controller
         }
 
         return response(null, 200);
+    }
+
+    /**
+     * Genera e imprime el PDF de la compra al proveedor.
+     *
+     * @param int $id ID del ProviderOrder
+     */
+    function pdf($id) {
+        $model = ProviderOrder::where('id', $id)
+            ->where('user_id', $this->userId())
+            ->withAll()
+            ->first();
+
+        if (is_null($model)) {
+            abort(404);
+        }
+
+        new ProviderOrderPdf($model);
     }
 
     private function calculate_received_diff($provider_order) {

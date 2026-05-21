@@ -2,6 +2,7 @@
 
 namespace App\Services\TiendaNube;
 
+use App\Http\Controllers\Helpers\ArticlePlatformSyncNotificationHelper;
 use App\Models\Article;
 use App\Models\SyncToTNArticle;
 use App\Services\TiendaNube\TiendaNubeProductService;
@@ -63,13 +64,13 @@ class TiendaNubeSyncArticleService
             $sync->save();
 
         } catch (\Exception $e) {
-
-
             Log::error('Error al sincronizar artículo con Tienda Nube: ');
             Log::error($e->getMessage());
             Log::error('Trace: ' . $e->getTraceAsString());
-            
+
             $error_message = $e->getMessage();
+            $article = $sync->article ?? null;
+            $article_label = $article ? $article->name : ('sync #'.$sync->id);
 
             $sync->status = 'error';
             $sync->error_message = $error_message;
@@ -77,6 +78,11 @@ class TiendaNubeSyncArticleService
             Log::info('Se marco como fallido');
             $sync->save();
 
+            ArticlePlatformSyncNotificationHelper::notify_tienda_nube_sync_failed(
+                (int) $sync->user_id,
+                $article_label,
+                $error_message
+            );
         }
     }
 }

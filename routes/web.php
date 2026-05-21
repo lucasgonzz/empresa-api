@@ -402,6 +402,7 @@ Route::get('/current-acount/pdf/{credit_account_id}/{months_ago}/{type?}', 'Curr
 Route::get('/current-acount/pdf/{id}', 'CurrentAcountController@pdf');
 
 Route::get('order/pdf/{id}/', 'OrderController@pdf');
+Route::get('provider-order/pdf/{id}', 'ProviderOrderController@pdf');
 
 // Excel
 Route::get('article-clients/excel/export/{price_type_id?}', 'ArticleController@clientsExport');

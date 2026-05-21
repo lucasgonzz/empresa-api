@@ -21,6 +21,14 @@ class MercadoLibreService
     /** @var int Usuario interno dueño del conector (para notificaciones) */
     protected $user_id;
 
+    /**
+     * Si es false, los errores HTTP de make_request no disparan GlobalNotification
+     * (el llamador notifica una sola vez al marcar fallida la sync del artículo).
+     *
+     * @var bool
+     */
+    protected $notify_on_api_error = true;
+
     /** @var string URL base de la API pública de Mercado Libre */
     protected string $base_url = 'https://api.mercadolibre.com/';
 
@@ -152,7 +160,9 @@ class MercadoLibreService
         }
 
         if (!$response->successful()) {
-            ErrorHandler::send_notification($response, $this->user_id);
+            if ($this->notify_on_api_error) {
+                ErrorHandler::send_notification($response, $this->user_id);
+            }
             throw new \Exception('Mercado Libre API error: '.$response->body());
         }
 

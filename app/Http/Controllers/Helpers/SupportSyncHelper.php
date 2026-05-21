@@ -57,7 +57,17 @@ class SupportSyncHelper
         // Carga relaciones mínimas para construir payload robusto.
         $message->loadMissing('ticket', 'attachments', 'sender_user');
 
-        // Arma payload compatible con el endpoint inbound de admin-api.
+        // Metadata de adjuntos (sin binarios).
+        $attachments_meta = $message->attachments->map(function ($attachment) {
+            return [
+                'disk' => $attachment->disk,
+                'path' => $attachment->path,
+                'mime' => $attachment->mime,
+                'size' => $attachment->size,
+            ];
+        })->values()->all();
+
+        // Arma payload compatible con el endpoint inbound de admin-api (campos escalares).
         $payload = [
             'client_uuid' => $client_uuid,
             'ticket_uuid' => optional($message->ticket)->uuid,
@@ -72,15 +82,6 @@ class SupportSyncHelper
             'kind' => $message->kind,
             'body' => $message->body,
             'sent_at' => optional($message->created_at)->toIso8601String(),
-            'attachments' => $message->attachments->map(function ($attachment) {
-                // Serializa metadata de adjuntos para replicación remota.
-                return [
-                    'disk' => $attachment->disk,
-                    'path' => $attachment->path,
-                    'mime' => $attachment->mime,
-                    'size' => $attachment->size,
-                ];
-            })->values()->all(),
         ];
 
         try {
@@ -89,17 +90,36 @@ class SupportSyncHelper
                 ->timeout(10);
 
             // Adjunta archivos binarios para replicar recursos en admin-api.
+            $files_attached = false;
             foreach ($message->attachments as $attachment) {
                 $disk = $attachment->disk ?: 'public';
-                if (Storage::disk($disk)->exists($attachment->path)) {
-                    $file_content = Storage::disk($disk)->get($attachment->path);
-                    $request = $request->attach(
-                        'attachments_files[]',
-                        $file_content,
-                        basename($attachment->path),
-                        ['Content-Type' => $attachment->mime ?: 'application/octet-stream']
-                    );
+                if (! Storage::disk($disk)->exists($attachment->path)) {
+                    Log::warning('SupportSyncHelper: adjunto no encontrado en disco ' . $attachment->path);
+                    continue;
                 }
+                $file_content = Storage::disk($disk)->get($attachment->path);
+                if ($file_content === false || $file_content === '') {
+                    Log::warning('SupportSyncHelper: adjunto vacío o ilegible ' . $attachment->path);
+                    continue;
+                }
+                $request = $request->attach(
+                    'attachments_files[]',
+                    $file_content,
+                    basename($attachment->path) ?: ('attachment_' . $message->id),
+                    ['Content-Type' => $attachment->mime ?: 'application/octet-stream']
+                );
+                $files_attached = true;
+            }
+
+            /**
+             * Multipart + array anidado "attachments" rompe el cliente HTTP de Laravel (Guzzle).
+             */
+            if ($files_attached) {
+                if (count($attachments_meta) > 0) {
+                    $payload['attachments'] = json_encode($attachments_meta);
+                }
+            } else {
+                $payload['attachments'] = $attachments_meta;
             }
 
             // Ejecuta envío HTTP hacia admin-api con payload + adjuntos.

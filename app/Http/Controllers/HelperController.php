@@ -77,6 +77,87 @@ class HelperController extends Controller
     function callMethod($method, $param = null, $param_2 = null) {
         $this->{$method}($param, $param_2);
     }
+    
+
+    /**
+     * Normaliza el campo `name` de todas las categorías:
+     * - reemplaza `@` por `a` si aún quedara alguno;
+     * - deja la primera letra en mayúscula y el resto en minúsculas.
+     *
+     * Solo persiste cuando el nombre resultante difiere del actual. Salida HTML (echo).
+     *
+     * @return void
+     */
+    function corregir_categorias() {
+        /**
+         * Todas las categorías del sistema (Eloquent excluye soft-deleted por defecto).
+         */
+        $categories = Category::orderBy('id', 'asc')->get();
+
+        /**
+         * Contador de filas efectivamente corregidas.
+         */
+        $updated_count = 0;
+
+        foreach ($categories as $category) {
+            /**
+             * Nombre actual tal como está persistido.
+             */
+            $current_name = $category->name;
+
+            if ($current_name === null || $current_name === '') {
+                continue;
+            }
+
+            /**
+             * Nombre normalizado: sin `@`, minúsculas salvo la primera letra.
+             */
+            $new_name = $this->normalize_category_name($current_name);
+
+            // Solo guardar si hubo cambio respecto al valor en base
+            if ($new_name === $current_name) {
+                continue;
+            }
+
+            echo 'Categoría ID '.$category->id.'<br>';
+            echo 'Nombre anterior: '.$current_name.'<br>';
+            echo 'Nombre nuevo: '.$new_name.'<br>';
+
+            $category->name = $new_name;
+            $category->timestamps = false;
+            $category->save();
+
+            $updated_count++;
+            echo 'ACTUALIZADA<br><br>';
+        }
+
+        echo 'Listo. Categorías corregidas: '.$updated_count.' de '.$categories->count();
+    }
+
+    /**
+     * Arma el nombre de categoría normalizado: `@` → `a`, primera letra mayúscula, resto minúsculas.
+     *
+     * @param string $name Nombre original.
+     * @return string Nombre normalizado.
+     */
+    private function normalize_category_name($name) {
+        /**
+         * Texto sin arrobas erróneas y recortado de espacios extremos.
+         */
+        $normalized = trim(str_replace('@', 'a', $name));
+
+        if ($normalized === '') {
+            return $normalized;
+        }
+
+        /**
+         * Todo en minúsculas (UTF-8 para acentos) y luego capitalizar solo el primer carácter.
+         */
+        $lower = mb_strtolower($normalized, 'UTF-8');
+
+        return mb_strtoupper(mb_substr($lower, 0, 1, 'UTF-8'), 'UTF-8')
+            . mb_substr($lower, 1, null, 'UTF-8');
+    }
 
     /**
      * Libera el candado de sesión única para todos los usuarios poniendo en null
