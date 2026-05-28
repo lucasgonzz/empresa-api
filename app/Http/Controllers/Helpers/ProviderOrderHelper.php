@@ -18,13 +18,39 @@ use Illuminate\Support\Facades\Log;
 
 class ProviderOrderHelper {
 
+	/**
+	 * Libera pagos que apuntaban a un débito concreto (to_pay_id) antes de borrar ese débito.
+	 * Mismo criterio que SaleHelper::deleteCurrentAcountFromSale.
+	 *
+	 * @param CurrentAcount $current_acount Débito de cuenta corriente que se va a eliminar
+	 * @return void
+	 */
+	static function liberar_pago_con_to_pay_id($current_acount) {
+		// Pago registrado contra este débito en particular (asignación manual del usuario)
+		$pago = CurrentAcount::where('to_pay_id', $current_acount->id)
+							->first();
+
+		if ($pago) {
+			$pago->to_pay_id = null;
+			$pago->save();
+		}
+	}
+
+	/**
+	 * Elimina el movimiento de cuenta corriente asociado a un pedido a proveedor.
+	 *
+	 * @param ProviderOrder $provider_order Pedido cuyo débito se quita de la cuenta
+	 * @return void
+	 */
 	static function deleteCurrentAcount($provider_order) {
 		$current_acount = CurrentAcount::where('provider_order_id', $provider_order->id)->first();
 		if (!is_null($current_acount)) {
 			Log::info('Eliminando current_acount');
 
 			$credit_account_id = $current_acount->credit_account_id;
-            
+
+			Self::liberar_pago_con_to_pay_id($current_acount);
+
             $current_acount->pagado_por()->detach();
             $current_acount->delete();
 			
@@ -234,6 +260,8 @@ class ProviderOrderHelper {
 			} else {
 				if ($current_acount->provider_id != $provider_order->provider_id) {
 					$previus_current_acount = CurrentAcount::where('provider_order_id', $provider_order->id)->first();
+					Self::liberar_pago_con_to_pay_id($previus_current_acount);
+					$previus_current_acount->pagado_por()->detach();
 					$previus_current_acount->delete();
 					CurrentAcountHelper::checkSaldos('provider', $current_acount->provider_id);
 					Self::createCurrentAcount($provider_order, $total);

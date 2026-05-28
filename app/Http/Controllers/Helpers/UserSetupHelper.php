@@ -307,6 +307,7 @@ class UserSetupHelper
             'scroll_infinito_en_home'   => 1,
             'default_article_image_url' => 'http://empresa.local:8000/storage/169705209718205.jpg',
             'pausar_tienda_online'      => 0,
+            'article_description_font_size' => 16,
             'user_id'                   => config('app.USER_ID'),
             'facebook'                  => 'htts://facebook.com',
             'instagram'                 => 'htts://instagram.com',

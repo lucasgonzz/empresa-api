@@ -535,9 +535,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('column-position', 'ColumnPositionController');
     Route::get('table-column-preference/{model_name}/{preference_type}', 'TableColumnPreferenceController@show')
-        ->where('preference_type', 'table|search');
+        ->where('preference_type', 'table|search|btm_[a-z0-9_]+');
     Route::put('table-column-preference/{model_name}/{preference_type}', 'TableColumnPreferenceController@update')
-        ->where('preference_type', 'table|search');
+        ->where('preference_type', 'table|search|btm_[a-z0-9_]+');
 
     Route::resource('table-column-preferences', 'TableColumnPreferenceCrudController');
     Route::get('pdf-column-options', 'PdfColumnOptionController@index');

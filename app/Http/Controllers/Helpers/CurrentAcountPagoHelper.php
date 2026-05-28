@@ -144,7 +144,10 @@ class CurrentAcountPagoHelper {
         if ($this->fondos > $this->debe || abs($this->fondos - $this->debe) < $delta) {
             $this->sin_pagar->pagandose += $this->debe;
             $this->sin_pagar->status = 'pagado';
-            $this->fondos -= $this->debe;
+            // Redondeamos a 2 decimales para evitar residuos de punto flotante
+            // (ej: 249013.22 - 141481.34 - 107531.88 puede dar ~1e-10 en lugar de 0.00,
+            //  lo que haría que el while vuelva a entrar y cree un pagado_por con monto 0)
+            $this->fondos = Numbers::redondear($this->fondos - $this->debe);
             $this->savePagadoPor($this->debe);
             SellerCommissionHelper::checkCommissionStatus($this->sin_pagar, $this->pago);
             Log::info('Se puso en pagado');

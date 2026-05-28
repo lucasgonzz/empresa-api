@@ -172,7 +172,7 @@ class ArticleHelper {
             )
             || (
                 UserHelper::uses_listas_de_precio($user)
-                && UserHelper::hasExtencion('ventas_en_dolares', $user)
+                // && UserHelper::hasExtencion('ventas_en_dolares', $user)
             )
         ) {
 

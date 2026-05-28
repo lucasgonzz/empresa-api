@@ -34,6 +34,12 @@ class ArticleOfferSheetPdf extends fpdf
     /** @var float Mitad de página A4 vertical (mm), para la línea divisoria entre los dos artículos. */
     protected $page_half_y = 148.5;
 
+    /** @var string|null ID de lista de precios (`?price_type_id=`) para imprimir precios del pivot. */
+    protected $price_type_id;
+
+    /** @var \App\Models\User|null Usuario autenticado (owner) para reglas de listas de precio. */
+    protected $user;
+
     /**
      * @param ArticlePdfTemplate $template Registro de diseño elegido.
      * @param string             $ids      IDs de artículos separados por guión, en el orden deseado.
@@ -45,6 +51,13 @@ class ArticleOfferSheetPdf extends fpdf
         $this->template = $template;
         $this->SetAutoPageBreak(false);
         $this->barcode_generator = new DNS1D();
+
+        /*
+         * Lista de precios opcional (misma convención que `ArticleTicketPdf`).
+         * Query: ?price_type_id=ID
+         */
+        $this->price_type_id = request()->query('price_type_id');
+        $this->user = UserHelper::getFullModel();
 
         $owner_id = UserHelper::userId();
         $this->load_articles_for_user($ids, $owner_id);
@@ -79,12 +92,76 @@ class ArticleOfferSheetPdf extends fpdf
         }
 
         $field_order = implode(',', $id_list);
-        $this->articles = Article::query()
+        $query = Article::query()
             ->where('user_id', $user_id)
             ->whereIn('id', $id_list)
-            ->with(['images', 'category', 'unidad_medida'])
+            ->with(['images', 'category', 'unidad_medida', 'iva']);
+
+        if (!is_null($this->price_type_id) && $this->price_type_id !== '') {
+            $query->with(['price_types']);
+        }
+
+        $this->articles = $query
             ->orderByRaw('FIELD(id, '.$field_order.')')
             ->get();
+    }
+
+    /**
+     * Precio final a imprimir: pivot de `price_types` si hay `price_type_id`, si no `final_price` del artículo.
+     *
+     * @param \App\Models\Article $article
+     * @return float
+     */
+    protected function get_article_final_price($article)
+    {
+        if (UserHelper::uses_listas_de_precio($this->user)) {
+            if (!is_null($this->price_type_id) && $this->price_type_id !== '') {
+                $price_type = $article->price_types
+                    ->firstWhere('id', (int) $this->price_type_id);
+                if (is_null($price_type)) {
+                    $price_type = $article->price_types()
+                        ->where('price_type_id', $this->price_type_id)
+                        ->first();
+                }
+                if (!is_null($price_type) && isset($price_type->pivot->final_price)) {
+                    return (float) $price_type->pivot->final_price;
+                }
+            }
+        }
+
+        return (float) $article->final_price;
+    }
+
+    /**
+     * Precio anterior tachado/referencia: pivot de lista o columna general del artículo.
+     *
+     * @param \App\Models\Article $article
+     * @return float|null
+     */
+    protected function get_article_previus_final_price($article)
+    {
+        if (
+            UserHelper::uses_listas_de_precio($this->user)
+            && !is_null($this->price_type_id)
+            && $this->price_type_id !== ''
+        ) {
+            $price_type = $article->price_types
+                ->firstWhere('id', (int) $this->price_type_id);
+            if (is_null($price_type)) {
+                $price_type = $article->price_types()
+                    ->where('price_type_id', $this->price_type_id)
+                    ->first();
+            }
+            if (!is_null($price_type) && isset($price_type->pivot->previus_final_price)) {
+                return (float) $price_type->pivot->previus_final_price;
+            }
+        }
+
+        if (is_null($article->previus_final_price)) {
+            return null;
+        }
+
+        return (float) $article->previus_final_price;
     }
 
     /**
@@ -155,6 +232,8 @@ class ArticleOfferSheetPdf extends fpdf
 
         $y = $block_top + 7;
 
+        $final_price = $this->get_article_final_price($article);
+
         $this->SetXY($x0, $y);
         $this->SetFont('Arial', 'BI', 35);
         $titulo = $this->template->titulo ?: '';
@@ -167,7 +246,7 @@ class ArticleOfferSheetPdf extends fpdf
 
         $this->SetXY($x0, $y);
         $this->SetFont('Arial', 'B', 55);
-        $this->Cell($left_w, 18, '$'.Numbers::price($article->final_price), $this->b, 1, 'L');
+        $this->Cell($left_w, 18, '$'.Numbers::price($final_price), $this->b, 1, 'L');
 
         $y_secondary_row = $this->GetY();
 
@@ -175,11 +254,10 @@ class ArticleOfferSheetPdf extends fpdf
         $this->SetFont('Arial', '', 12);
         $line_net = 'Precio sin impuestos: ';
 
-        $precio_sin_iva = $article->final_price;
+        $precio_sin_iva = $final_price;
         if (!is_null($article->iva)) {
-            $precio_sin_iva = (float)$article->final_price / (1+((float)$article->iva->percentage / 100));
-            
-        } 
+            $precio_sin_iva = (float) $final_price / (1 + ((float) $article->iva->percentage / 100));
+        }
         $line_net .= '$'.Numbers::price($precio_sin_iva);
         $this->Cell($left_w, 15, $line_net, $this->b, 1, 'L');
 
@@ -189,17 +267,18 @@ class ArticleOfferSheetPdf extends fpdf
         $y_after_net = $this->GetY();
 
         $this->y -= 15;
-        $ref_line = $this->precio_por_unidad_referencia($article);
+        $ref_line = $this->precio_por_unidad_referencia($article, $final_price);
         if (!is_null($ref_line)) {
             $this->SetX($right_x);
             $this->SetFont('Arial', 'B', 15);
             $this->MultiCell($right_w, 10, $this->to_pdf_text($ref_line), $this->b, 'R');
         }
 
-        if ($this->template->mostrar_precio_anterior && !is_null($article->previus_final_price) && $article->previus_final_price > 0) {
+        $previus_final_price = $this->get_article_previus_final_price($article);
+        if ($this->template->mostrar_precio_anterior && !is_null($previus_final_price) && $previus_final_price > 0) {
             $this->SetX($right_x);
             $this->SetFont('Arial', '', 23);
-            $prev = 'Precio anterior: $'.Numbers::price($article->previus_final_price);
+            $prev = 'Precio anterior: $'.Numbers::price($previus_final_price);
             $this->MultiCell($right_w, 10, $this->to_pdf_text($prev), $this->b, 'R');
         }
 
@@ -299,11 +378,12 @@ class ArticleOfferSheetPdf extends fpdf
      * Calcula precio por kilo o litro cuando la unidad lo permite (regla de tres sobre `final_price` y `medida`).
      *
      * @param \App\Models\Article $article
+     * @param float|null          $final_price Precio final ya resuelto (lista o artículo).
      * @return string|null
      */
-    protected function precio_por_unidad_referencia($article)
+    protected function precio_por_unidad_referencia($article, $final_price = null)
     {
-        $final = (float) $article->final_price;
+        $final = (float) ($final_price ?? $this->get_article_final_price($article));
         $medida = (float) $article->medida;
         if ($medida <= 0 || is_null($article->unidad_medida_id) || !$article->unidad_medida) {
             return null;
