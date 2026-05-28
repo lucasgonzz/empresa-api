@@ -38,7 +38,6 @@ class ProviderImport implements ToCollection
             'address'           => 'direccion',
             'location_id'       => 'localidad',
             'email'             => 'email',
-            'iva_condition_id'  => 'condicion_frente_al_iva',
             'razon_social'      => 'razon_social',
             'cuit'              => 'cuit',
             'observations'      => 'observaciones',
@@ -104,8 +103,19 @@ class ProviderImport implements ToCollection
                 $data[$key] = ImportHelper::getColumnValue($row, $value, $this->columns);
             }
         }
-        if (!is_null(ImportHelper::getColumnValue($row, 'condicion_frente_al_iva', $this->columns))) {
-            $data['iva_condition_id'] = $this->ct->getModelBy('iva_conditions', 'name', ImportHelper::getColumnValue($row, 'condicion_frente_al_iva', $this->columns), false, 'id');
+        if (!is_null(ImportHelper::getColumnValueByAliases($row, [
+            'condicion_frente_al_iva',
+            'condicion frente al iva',
+        ], $this->columns))) {
+            $iva_condition_excel = ImportHelper::getColumnValueByAliases($row, [
+                'condicion_frente_al_iva',
+                'condicion frente al iva',
+            ], $this->columns);
+            $iva_condition_id = LocalImportHelper::getIvaConditionId($iva_condition_excel);
+
+            if (!is_null($iva_condition_id)) {
+                $data['iva_condition_id'] = $iva_condition_id;
+            }
         }
         if (!is_null(ImportHelper::getColumnValue($row, 'localidad', $this->columns))) {
             LocalImportHelper::saveLocation(ImportHelper::getColumnValue($row, 'localidad', $this->columns), $this->ct);
