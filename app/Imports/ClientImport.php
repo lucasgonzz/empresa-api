@@ -7,7 +7,6 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
-use App\Http\Controllers\Helpers\import\ClientImportHelper;
 use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\User;
@@ -38,7 +37,9 @@ class ClientImport implements ToCollection {
             'address'                 =>    'direccion',                 
             'email'                   =>    'email',                     
             'razon_social'            =>    'razon_social',             
-            'cuit'                    =>    'cuit',                      
+            'cuit'                    =>    'cuit',
+            'cuil'                    =>    'cuil',
+            'dni'                     =>    'dni',
             'description'             =>    'descripcion',               
         ];       
     }
@@ -97,55 +98,63 @@ class ClientImport implements ToCollection {
     }
 
     function saveModel($row, $client) {
+        $existing_client = !is_null($client);
         $data = [];
         foreach ($this->props_to_set as $key => $value) {
             if (!is_null(ImportHelper::getColumnValue($row, $value, $this->columns))) {
 
-                if ($key == 'cuit') {
-                    $cuit = ImportHelper::getColumnValue($row, $value, $this->columns);
-                    $cuit = str_replace('-', '', $cuit);
+                // CUIT y CUIL se normalizan sin guiones, igual que en ClientController.
+                if ($key == 'cuit' || $key == 'cuil') {
+                    $documento = ImportHelper::getColumnValue($row, $value, $this->columns);
+                    $documento = str_replace('-', '', $documento);
 
-                    $data[$key] = $cuit;
+                    $data[$key] = $documento;
                 } else {
 
                     $data[$key] = ImportHelper::getColumnValue($row, $value, $this->columns);
                 }
             }
         }
-        if (!is_null(ImportHelper::getColumnValue($row, 'condicion_frente_al_iva', $this->columns))) {
-            $data['iva_condition_id'] = $this->ct->getModelBy('iva_conditions', 'name', ImportHelper::getColumnValue($row, 'condicion_frente_al_iva', $this->columns), false, 'id');
+        $iva_condition_excel = ImportHelper::getColumnValueByAliases($row, [
+            'condicion_frente_al_iva',
+            'condicion frente al iva',
+        ], $this->columns);
+
+        if (!is_null($iva_condition_excel)) {
+            $iva_condition_id = LocalImportHelper::getIvaConditionId($iva_condition_excel);
+
+            if (!is_null($iva_condition_id)) {
+                $data['iva_condition_id'] = $iva_condition_id;
+            } else {
+                Log::warning('Importacion clientes: condicion frente al iva no reconocida ['.$iva_condition_excel.']');
+            }
         }
-        if (!is_null(ImportHelper::getColumnValue($row, 'localidad', $this->columns))) {
+        // Provincia y localidad: la localidad se resuelve dentro de su provincia para permitir homónimos.
+        $provincia_name = ImportHelper::getColumnValue($row, 'provincia', $this->columns);
+        $localidad_name = ImportHelper::getColumnValue($row, 'localidad', $this->columns);
+        $provincia_id = null;
 
-            // if (
-            //     config('app.FOR_USER') == 'golo_norte'
-            //     && config('app.APP_ENV') == 'local'
-            // ) {
+        if (!is_null($provincia_name)) {
+            $provincia_id = LocalImportHelper::saveProvincia($provincia_name, $this->ct);
+            $data['provincia_id'] = $provincia_id;
+        }
 
-            //     $res = ClientImportHelper::formateo_golonorte($row, $this->columns);
-
-            //     if ($res['localidad']) {
-            //         $data['address'] = $res['direccion'];
-
-            //         LocalImportHelper::saveLocation($res['localidad'], $this->ct);
-                    
-            //         $data['location_id'] = $this->ct->getModelBy('locations', 'name', $res['localidad'], true, 'id');
-            //     }
-            // } else {
-
-                LocalImportHelper::saveLocation(ImportHelper::getColumnValue($row, 'localidad', $this->columns), $this->ct);
-
-                $data['location_id'] = $this->ct->getModelBy('locations', 'name', ImportHelper::getColumnValue($row, 'localidad', $this->columns), true, 'id');
-            // }
-
+        if (!is_null($localidad_name)) {
+            if (!is_null($provincia_id)) {
+                $data['location_id'] = LocalImportHelper::saveLocationWithProvincia($localidad_name, $provincia_id, $this->ct);
+            } else {
+                LocalImportHelper::saveLocation($localidad_name, $this->ct);
+                $data['location_id'] = $this->ct->getModelBy('locations', 'name', $localidad_name, true, 'id');
+            }
         }
         if (!is_null(ImportHelper::getColumnValue($row, 'vendedor', $this->columns))) {
             LocalImportHelper::saveSeller(ImportHelper::getColumnValue($row, 'vendedor', $this->columns), $this->ct);
             $data['seller_id'] = $this->ct->getModelBy('sellers', 'name', ImportHelper::getColumnValue($row, 'vendedor', $this->columns), true, 'id');
         }
-        if (!is_null(ImportHelper::getColumnValue($row, 'tipo_de_precio', $this->columns))) {
-            LocalImportHelper::savePriceType(ImportHelper::getColumnValue($row, 'tipo_de_precio', $this->columns), $this->ct);
-            $data['price_type_id'] = $this->ct->getModelBy('price_types', 'name', ImportHelper::getColumnValue($row, 'tipo_de_precio', $this->columns), true, 'id');
+        if (!is_null(ImportHelper::getColumnValueByAliases($row, ['tipo_de_precio', 'tipo de precio'], $this->columns))) {
+            $tipo_de_precio = ImportHelper::getColumnValueByAliases($row, ['tipo_de_precio', 'tipo de precio'], $this->columns);
+            LocalImportHelper::savePriceType($tipo_de_precio, $this->ct);
+            $data['price_type_id'] = $this->ct->getModelBy('price_types', 'name', $tipo_de_precio, true, 'id');
         }
         // Log::info('data');
         // Log::info($data);
@@ -168,7 +177,10 @@ class ClientImport implements ToCollection {
 
             Log::info('creando cliente '.$client->name);
         }
-        LocalImportHelper::setSaldoInicial($row, $this->columns, 'client', $client);
+
+        if (!is_null($client)) {
+            LocalImportHelper::procesarSaldoImportacion($row, $this->columns, 'client', $client, $existing_client);
+        }
     }
 
     function isDataUpdated($client, $data) {
@@ -178,8 +190,11 @@ class ClientImport implements ToCollection {
                 (isset($data['email']) && $data['email']                            != $client->email) ||
                 (isset($data['razon_social']) && $data['razon_social']              != $client->razon_social) ||
                 (isset($data['cuit']) && $data['cuit']                              != $client->cuit) ||
+                (isset($data['cuil']) && $data['cuil']                              != $client->cuil) ||
+                (isset($data['dni']) && $data['dni']                                != $client->dni) ||
                 (isset($data['description']) && $data['description']                != $client->description) ||
                 (isset($data['iva_condition_id']) && $data['iva_condition_id']      != $client->iva_condition_id) ||
+                (isset($data['provincia_id']) && $data['provincia_id']              != $client->provincia_id) ||
                 (isset($data['location_id']) && $data['location_id']                != $client->location_id) ||
                 (isset($data['seller_id']) && $data['seller_id']                    != $client->seller_id) ||
                 (isset($data['price_type_id']) && $data['price_type_id']            != $client->price_type_id);

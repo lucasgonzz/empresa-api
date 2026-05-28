@@ -21,6 +21,26 @@ class ImportHelper {
 		return null;
 	}
 
+	/**
+	 * Obtiene el valor de una columna probando varias claves posibles del mapeo.
+	 *
+	 * @param mixed $row Fila del Excel.
+	 * @param array $keys Claves a probar en orden (snake_case o legacy).
+	 * @param array $columns Mapeo de columnas recibido en la importación.
+	 * @return string|null Valor encontrado o null si ninguna clave está mapeada.
+	 */
+	static function getColumnValueByAliases($row, $keys, $columns) {
+		foreach ($keys as $key) {
+			$value = self::getColumnValue($row, $key, $columns);
+
+			if (!is_null($value)) {
+				return $value;
+			}
+		}
+
+		return null;
+	}
+
 	static function usa_columna($value) {
 		return !is_null($value) && $value !== '';
 	}
