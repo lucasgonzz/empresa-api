@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
+use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Services\Filter\FilterHistoryService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -87,6 +88,18 @@ class SearchController extends Controller
                         ];
 
 
+                    } else if ($filter['type'] == 'date') {
+
+                        // Fechas vacías en BD: normalmente NULL (no cadena vacía).
+                        $models = $models->whereNull($filter['key']);
+
+                        $used_filters[] = [
+                            'key'       => $filter['key'],
+                            'operator'  => 'en_blanco',
+                            'value'     => true,
+                            'type'      => $filter['type'],
+                        ];
+
                     } else {
 
                         $models = $models->where(function ($subquery) use ($filter) {
@@ -100,10 +113,54 @@ class SearchController extends Controller
                             'value'     => true,
                             'type'      => $filter['type'],
                         ];
-                        // $models = $models->whereNull($filter['key']);
                     }
 
-                    // Log::info('en_blanco para '.$filter['key']);
+                } else if (isset($filter['no_en_blanco']) && (boolean)$filter['no_en_blanco']) {
+
+                    if ($filter['type'] == 'select'
+                        || $filter['type'] == 'search') {
+
+                        $models = $models->where(function ($subquery) use ($filter) {
+                            $subquery->whereNotNull($filter['key'])
+                                        ->where($filter['key'], '!=', 0);
+                        });
+
+                        $used_filters[] = [
+                            'key'       => $filter['key'],
+                            'operator'  => 'no_en_blanco',
+                            'value'     => true,
+                            'type'      => $filter['type'],
+                        ];
+
+                    } else if ($filter['type'] == 'date') {
+
+                        // Inverso de en_blanco en date: columna con fecha cargada (NOT NULL).
+                        $models = $models->whereNotNull($filter['key']);
+
+                        $used_filters[] = [
+                            'key'       => $filter['key'],
+                            'operator'  => 'no_en_blanco',
+                            'value'     => true,
+                            'type'      => $filter['type'],
+                        ];
+
+                    } else {
+
+                        $models = $models->where(function ($subquery) use ($filter) {
+                            $subquery->whereNotNull($filter['key'])
+                                        ->where($filter['key'], '!=', '');
+                            if ($filter['type'] == 'number') {
+                                $subquery->where($filter['key'], '!=', 0);
+                            }
+                        });
+
+                        $used_filters[] = [
+                            'key'       => $filter['key'],
+                            'operator'  => 'no_en_blanco',
+                            'value'     => true,
+                            'type'      => $filter['type'],
+                        ];
+                    }
 
                 } else if (isset($filter['key'])) {
 
@@ -118,7 +175,27 @@ class SearchController extends Controller
                         $key = 'id';
                     }
 
-                    if ($filter['type'] == 'number') {
+                    /**
+                     * Ventas: filtro por N° de comprobante en afip_tickets (relación hasMany).
+                     * No aplica sobre columna de sales; usa whereHas en afip_tickets.cbte_numero.
+                     */
+                    if ($filter['type'] == 'afip_ticket_cbte_numero'
+                        && $model_name_param == 'sale'
+                        && isset($filter['que_contenga'])
+                        && trim($filter['que_contenga']) != '') {
+
+                        $cbte_numero_search = trim($filter['que_contenga']);
+                        $models = $models->whereHas('afip_tickets', function ($q) use ($cbte_numero_search) {
+                            $q->where('cbte_numero', 'like', '%' . $cbte_numero_search . '%');
+                        });
+
+                        $used_filters[] = [
+                            'key'       => $filter['key'],
+                            'operator'  => 'que_contenga',
+                            'value'     => $filter['que_contenga'],
+                            'type'      => $filter['type'],
+                        ];
+                    } else if ($filter['type'] == 'number') {
                         if (isset($filter['menor_que'])
                             && $filter['menor_que'] != '') {
                             
@@ -316,6 +393,11 @@ class SearchController extends Controller
         }
         $models = $models->withAll()
                         ->orderBy('created_at', 'DESC');
+
+        if ($model_name_param === 'sale') {
+            SaleArticlesEagerLoadHelper::apply_images_if_preferred($models, $this->userId());
+        }
+
         if ($paginate) {
             $per_page = (int) $request->input('per_page', 50);
             if ($per_page < 1) {

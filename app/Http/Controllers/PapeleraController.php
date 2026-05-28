@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\sale\RestoreSaleFromPapeleraHelper;
+use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Models\Sale;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -33,13 +34,18 @@ class PapeleraController extends Controller
             $per_page = 200;
         }
 
-        $paginator = $model_name::query()
+        $query = $model_name::query()
             ->where('user_id', $this->userId())
             ->whereNotNull('deleted_at')
             ->withAll()
             ->withTrashed()
-            ->orderBy('deleted_at', 'DESC')
-            ->paginate($per_page, ['*'], 'page', $page);
+            ->orderBy('deleted_at', 'DESC');
+
+        if ($_model_name === 'sale') {
+            SaleArticlesEagerLoadHelper::apply_images_if_preferred($query, $this->userId());
+        }
+
+        $paginator = $query->paginate($per_page, ['*'], 'page', $page);
 
         return response()->json(['models' => $paginator], 200);
     }

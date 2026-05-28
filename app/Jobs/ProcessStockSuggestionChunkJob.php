@@ -45,8 +45,13 @@ class ProcessStockSuggestionChunkJob implements ShouldQueue
         }
 
         $this->suggestion->increment('processed_chunks');
+        $this->suggestion->refresh();
 
-        if ($this->suggestion->processed_chunks === $this->suggestion->total_chunks) {
+        // >= por si total_chunks se actualizó tarde; > 0 evita marcar terminado sin lotes
+        if (
+            $this->suggestion->total_chunks > 0
+            && $this->suggestion->processed_chunks >= $this->suggestion->total_chunks
+        ) {
             $this->suggestion->status = 'terminado';
             $this->suggestion->save();
             $this->notificacion();
@@ -66,6 +71,10 @@ class ProcessStockSuggestionChunkJob implements ShouldQueue
         $info_to_show = [];
 
         $user = User::find($this->suggestion->user_id);
+
+        if (!$user) {
+            return;
+        }
 
         $user->notify(new GlobalNotification([
             'message_text'              => 'Sugerencia de stock terminada',

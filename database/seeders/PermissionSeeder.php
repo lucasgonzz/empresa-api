@@ -189,6 +189,16 @@ class PermissionSeeder extends Seeder
                 'en'            => 'vender.limpiar_venta',
             ],
             [
+                'singular'      => 'Descontar stock en VENDER',
+                'plural'        => 'Vender',
+                'en'            => 'vender.discount_stock',
+            ],
+            [
+                'singular'      => 'Usar precios con IVA en VENDER',
+                'plural'        => 'Vender',
+                'en'            => 'vender.iva_aplicado',
+            ],
+            [
                 'singular'      => 'Prohibir eliminar articulo de una venta sin autorizacion',
                 'plural'        => 'Vender',
                 'en'            => 'vender.prohibir_eliminar_articulos_de_venta',

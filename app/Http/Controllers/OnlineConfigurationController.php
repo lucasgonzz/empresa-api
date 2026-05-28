@@ -58,6 +58,7 @@ class OnlineConfigurationController extends Controller
         $model->auto_scroll_home                    = $request->auto_scroll_home;       
         $model->auto_scroll_home_init               = $request->auto_scroll_home_init;       
         $model->auto_scroll_home_interval           = $request->auto_scroll_home_interval;       
+        $model->article_description_font_size       = $request->article_description_font_size;
         
         $model->save();
         $this->sendAddModelNotification('OnlineConfiguration', $model->id);

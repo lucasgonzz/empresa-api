@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\DepositMovementHelper;
 use App\Jobs\GenerateStockSuggestionChunksJob;
+use App\Models\Article;
 use App\Models\DepositMovement;
 use App\Models\StockSuggestion;
 use App\Models\StockSuggestionArticle;
@@ -31,7 +32,17 @@ class StockSuggestionController extends Controller
             'user_id'               => $this->userId(),
         ]);
 
-        dispatch(new GenerateStockSuggestionChunksJob($model->id));
+        // Catálogos chicos: procesamiento inmediato (WAMP/local suele no tener queue:work)
+        // Catálogos grandes: cola para no superar timeout HTTP
+        $article_count = Article::count();
+        // Más de 500 artículos: cola + chunks; hasta 500: procesamiento inmediato en la request
+        $sync_article_limit = 500;
+
+        if ($article_count <= $sync_article_limit) {
+            (new GenerateStockSuggestionChunksJob($model->id))->handle();
+        } else {
+            dispatch(new GenerateStockSuggestionChunksJob($model->id));
+        }
 
         return response()->json(['model' => $this->fullModel('StockSuggestion', $model->id)], 201);
     }  
@@ -59,14 +70,16 @@ class StockSuggestionController extends Controller
 
     public function create_deposit_movement(Request $request, $id) {
         Log::info('create_deposit_movement request:', $request->all());
-        $article_ids = $request->input('article_ids', []);
 
-        if (empty($article_ids)) {
-            return response()->json(['message' => 'No se enviaron artículos.'], 422);
+        // IDs de filas stock_suggestion_articles (lo que el usuario seleccionó en pantalla)
+        $stock_suggestion_article_ids = $request->input('stock_suggestion_article_ids', []);
+
+        if (empty($stock_suggestion_article_ids)) {
+            return response()->json(['message' => 'No se enviaron líneas de sugerencia.'], 422);
         }
 
         $suggestion_articles = StockSuggestionArticle::where('stock_suggestion_id', $id)
-            ->whereIn('article_id', $article_ids)
+            ->whereIn('id', $stock_suggestion_article_ids)
             ->get();
 
         // Agrupa los artículos por par único from_address_id / to_address_id

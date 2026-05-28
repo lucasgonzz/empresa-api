@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\User;
 use App\Notifications\AddedModel;
@@ -277,12 +278,12 @@ class Controller extends BaseController
 
     function fullModel($model_name, $id) {
         $model_name = GeneralHelper::getModelName($model_name);
-        $model = $model_name::where('id', $id)
+        $query = $model_name::where('id', $id)
                         ->withAll();
         if ($model_name == 'App\Models\Sale') {
-            $model = $model->withTrashed();
+            $query = $query->withTrashed();
+            SaleArticlesEagerLoadHelper::apply_images_if_preferred($query, $this->userId());
         }
-        $model = $model->first();
-        return $model;
+        return $query->first();
     }
 }

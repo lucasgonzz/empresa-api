@@ -12,6 +12,7 @@ class OnlineConfiguration extends Model
         'auto_scroll_home' => 'integer',
         'auto_scroll_home_init' => 'integer',
         'auto_scroll_home_interval' => 'integer',
+        'article_description_font_size' => 'integer',
     ];
 
     function scopeWithAll($q) {

@@ -20,6 +20,7 @@ use App\Http\Controllers\Helpers\SaleProviderOrderHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComisionesHelper;
 use App\Http\Controllers\Helpers\sale\AcopioHelper;
+use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
@@ -59,6 +60,8 @@ class SaleController extends Controller
                         // ->soloVentasReales()
                         ->orderBy('created_at', 'DESC')
                         ->withAll();
+
+        SaleArticlesEagerLoadHelper::apply_images_if_preferred($models, $this->userId());
 
         if ($modulo == 'por_entregar') {
 
@@ -113,8 +116,11 @@ class SaleController extends Controller
                         /** Las consolidadas nunca tienen pendientes de entrega: siempre terminadas. */
                         ->soloVentasReales()
                         ->orderBy('created_at', 'DESC')
-                        ->withAll()
-                        ->where('terminada', 0)
+                        ->withAll();
+
+        SaleArticlesEagerLoadHelper::apply_images_if_preferred($models, $this->userId());
+
+        $models = $models->where('terminada', 0)
                         ->whereBetween('fecha_entrega', [$from_depositos, $from_date])
                         ->get();
 

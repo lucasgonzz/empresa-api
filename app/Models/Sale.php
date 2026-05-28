@@ -59,6 +59,14 @@ class Sale extends Model
         ->withCount('sale_modifications');
     }
 
+    /**
+     * Imágenes de artículos de la venta (opt-in vía SaleArticlesEagerLoadHelper).
+     */
+    public function scopeWithSaleArticlesImages($query)
+    {
+        return $query->with(['articles.images']);
+    }
+
     function meli_order() {
         return $this->belongsTo(MeliOrder::class);
     }
