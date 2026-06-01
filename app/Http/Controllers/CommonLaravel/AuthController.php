@@ -4,6 +4,7 @@ namespace App\Http\Controllers\CommonLaravel;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\VersionSessionTransferHelper;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -174,6 +175,78 @@ class AuthController extends Controller
     //     // Log::info($auth_user);
     //     // session(['auth_user' => $auth_user, 'owner' => UserHelper::getFullModel()]);
     // }
+
+    /**
+     * Crea un token de un solo uso para iniciar sesión en la versión SPA/API destino
+     * tras un login válido en otra versión (misma base de datos).
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function create_version_session_token(Request $request)
+    {
+        if (!Auth::check()) {
+            return response()->json(['token' => null], 401);
+        }
+
+        /** Usuario autenticado en la versión origen. */
+        $auth_user = Auth::user();
+        $plain_token = VersionSessionTransferHelper::create_for_user($auth_user->id);
+
+        return response()->json(['token' => $plain_token], 200);
+    }
+
+    /**
+     * Consume un token de transferencia e inicia sesión web en la API destino.
+     *
+     * @param Request $request Debe incluir `token` (string).
+     * @return \Illuminate\Http\JsonResponse Misma forma que `login`.
+     */
+    public function login_from_version_session_token(Request $request)
+    {
+        $login = false;
+        $user = null;
+        $user_last_activity = false;
+        $user_last_activity_wait_minutes = 0;
+
+        /** Token enviado por el SPA destino desde el query string. */
+        $plain_token = trim((string) $request->input('token', ''));
+
+        /** Id de usuario asociado al token, o null si expiró o ya se usó. */
+        $user_id = VersionSessionTransferHelper::consume($plain_token);
+
+        if ($user_id) {
+            /** Modelo a autenticar en esta API. */
+            $candidate = User::find($user_id);
+
+            if ($candidate) {
+                session()->forget($this->master_login_bypass_activity_key);
+                session()->forget('skip_offline_articles_sync');
+
+                Auth::login($candidate, false);
+
+                if ($this->checkUserLastActivity()) {
+                    $user = $this->procesar_login();
+                    $login = true;
+                    Log::info(
+                        'Login por transferencia de version para user_id: '.$user_id
+                        .' desde referer: '.$request->header('referer')
+                    );
+                } else {
+                    $user_last_activity_wait_minutes = $this->getUserLastActivityWaitMinutes(Auth::user());
+                    Auth::logout();
+                    $user_last_activity = true;
+                }
+            }
+        }
+
+        return response()->json([
+            'login' => $login,
+            'user' => $user,
+            'user_last_activity' => $user_last_activity,
+            'user_last_activity_wait_minutes' => $user_last_activity_wait_minutes,
+        ], 200);
+    }
 
     public function logout(Request $request) {
         /**

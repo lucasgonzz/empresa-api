@@ -679,10 +679,37 @@ class ArticleController extends Controller
         new ArticleBarCodePdf($ids);
     }
 
-    function barCodeEtiquetasPdf($ids) {
-        // $user = $this->user();
-        // if ($user->)
-        new ArticleBarCodeEtiquetasPdf($ids);
+    function barCodeEtiquetasPdf(Request $request, $ids) {
+        $ancho = $request->query('ancho');
+        $alto = $request->query('alto');
+        $propiedades = null;
+        $propiedades_config_raw = $request->query('propiedades_config');
+
+        if ($propiedades_config_raw) {
+            $decoded = json_decode($propiedades_config_raw, true);
+            if (is_array($decoded)) {
+                $propiedades = $decoded;
+            }
+        }
+
+        if (!is_array($propiedades)) {
+            $propiedades_raw = $request->query('propiedades');
+            if ($propiedades_raw) {
+                $propiedades = array_filter(explode(',', $propiedades_raw));
+            }
+        }
+
+        $codigo_barras_alto = $request->query('codigo_barras_alto');
+        $interlineado = $request->query('interlineado');
+
+        new ArticleBarCodeEtiquetasPdf(
+            $ids,
+            $ancho ? (int) $ancho : null,
+            $alto ? (int) $alto : null,
+            $propiedades,
+            $codigo_barras_alto !== null && $codigo_barras_alto !== '' ? (int) $codigo_barras_alto : null,
+            $interlineado !== null && $interlineado !== '' ? (int) $interlineado : null
+        );
     }
 
     function ticketsPdf($ids) {

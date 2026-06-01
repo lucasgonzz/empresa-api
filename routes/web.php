@@ -181,6 +181,9 @@ Route::get('/platform-connector/tiendanube/callback', function (\Illuminate\Http
 
 Route::post('login', 'CommonLaravel\AuthController@login');
 Route::post('logout', 'CommonLaravel\AuthController@logout');
+Route::post('version-session-token', 'CommonLaravel\AuthController@create_version_session_token')
+    ->middleware('auth');
+Route::post('login-from-version-session-token', 'CommonLaravel\AuthController@login_from_version_session_token');
 
 // Password Reset
 Route::post('/password-reset/send-verification-code',
