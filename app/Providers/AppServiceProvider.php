@@ -8,8 +8,10 @@ use Illuminate\Database\Eloquent\Relations\Relation;
 
 use App\Models\Category;
 use App\Models\SubCategory;
+use App\Models\User;
 use App\Observers\CategoryObserver;
 use App\Observers\SubCategoryObserver;
+use App\Observers\UserEtiquetaMedidaObserver;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -40,5 +42,6 @@ class AppServiceProvider extends ServiceProvider
 
         Category::observe(CategoryObserver::class);
         SubCategory::observe(SubCategoryObserver::class);
+        User::observe(UserEtiquetaMedidaObserver::class);
     }
 }

@@ -175,6 +175,7 @@ class VenderController extends Controller
         $keywords = explode(' ', trim($request->query_value));
 
         $search_descripcion_en_vender = UserHelper::hasExtencion('search_descripcion_en_vender');
+        $search_bar_code_en_vender = UserHelper::hasExtencion('search_bar_code_en_vender');
 
         $category_id = $request->category_id;
         $stock_option = $request->stock_option;
@@ -194,11 +195,11 @@ class VenderController extends Controller
                         });
         } 
 
-        $articles->where(function ($query_builder) use ($keywords, $from_provider_order_or_recipe, $search_descripcion_en_vender) {
+        $articles->where(function ($query_builder) use ($keywords, $from_provider_order_or_recipe, $search_descripcion_en_vender, $search_bar_code_en_vender) {
                             if (count($keywords) === 1) {
                                 $keyword = $keywords[0];
 
-                                $query_builder->where(function ($q) use ($keyword, $from_provider_order_or_recipe, $search_descripcion_en_vender) {
+                                $query_builder->where(function ($q) use ($keyword, $from_provider_order_or_recipe, $search_descripcion_en_vender, $search_bar_code_en_vender) {
                                     $q->where('name', 'LIKE', "%$keyword%")
                                       ->orWhere('provider_code', 'LIKE', "%$keyword%");
 
@@ -209,20 +210,35 @@ class VenderController extends Controller
 
                                       Log::info('Buscando por descripcion: '.$keyword);
 
-                                    if ($from_provider_order_or_recipe) {
-                                        Log::info('from_provider_order_or_recipe '.$keyword);
-                                        $q->orWhere('bar_code', $keyword); // sólo búsqueda exacta por código de barras
+                                    // Búsqueda exacta por código de barra (artículo o variante) si la extensión está habilitada
+                                    // o si el flujo proviene de pedido a proveedor / receta.
+                                    if ($search_bar_code_en_vender || $from_provider_order_or_recipe) {
+                                        if ($from_provider_order_or_recipe) {
+                                            Log::info('from_provider_order_or_recipe '.$keyword);
+                                        }
+
+                                        $q->orWhere('bar_code', $keyword);
+                                        $q->orWhereHas('article_variants', function ($variant_query) use ($keyword) {
+                                            $variant_query->where('bar_code', $keyword);
+                                        });
                                     }
                                 });
                             } else {
                                 foreach ($keywords as $keyword) {
-                                    $query_builder->where(function ($q) use ($keyword, $search_descripcion_en_vender) {
+                                    $query_builder->where(function ($q) use ($keyword, $search_descripcion_en_vender, $search_bar_code_en_vender) {
                                         $q->where('name', 'LIKE', "%$keyword%")
                                             ->orWhere('provider_code', 'LIKE', "%$keyword%");
 
                                         if ($search_descripcion_en_vender) {
 
                                           $q->orWhere('descripcion', 'LIKE', "%$keyword%");
+                                        }
+
+                                        if ($search_bar_code_en_vender) {
+                                            $q->orWhere('bar_code', 'LIKE', "%$keyword%");
+                                            $q->orWhereHas('article_variants', function ($variant_query) use ($keyword) {
+                                                $variant_query->where('bar_code', 'LIKE', "%$keyword%");
+                                            });
                                         }
                                     });
                                 }
@@ -257,20 +273,40 @@ class VenderController extends Controller
             
             foreach ($articles as $article) {
 
-                // Detectar qué palabras de la búsqueda coincidieron con el nombre o código del artículo
-                $matched_keywords = collect($keywords)->filter(function ($word) use ($article) {
-                    return str_contains(
-                                       mb_strtolower($article->name ?? '', 'UTF-8'),
-                                       mb_strtolower($word, 'UTF-8')
-                                   ) ||
-                                   str_contains(
-                                       mb_strtolower($article->provider_code ?? '', 'UTF-8'),
-                                       mb_strtolower($word, 'UTF-8')
-                                   ) ||
-                                   str_contains(
-                                       mb_strtolower($article->bar_code ?? '', 'UTF-8'),
-                                       mb_strtolower($word, 'UTF-8')
-                                   );
+                // Detectar qué palabras de la búsqueda coincidieron con el nombre, código o barcode del artículo/variante
+                $matched_keywords = collect($keywords)->filter(function ($word) use ($article, $search_bar_code_en_vender) {
+                    $word_lower = mb_strtolower($word, 'UTF-8');
+
+                    if (str_contains(
+                            mb_strtolower($article->name ?? '', 'UTF-8'),
+                            $word_lower
+                        ) ||
+                        str_contains(
+                            mb_strtolower($article->provider_code ?? '', 'UTF-8'),
+                            $word_lower
+                        )) {
+                        return true;
+                    }
+
+                    if ($search_bar_code_en_vender) {
+                        if (str_contains(
+                                mb_strtolower($article->bar_code ?? '', 'UTF-8'),
+                                $word_lower
+                            )) {
+                            return true;
+                        }
+
+                        foreach ($article->article_variants as $variant) {
+                            if (str_contains(
+                                    mb_strtolower($variant->bar_code ?? '', 'UTF-8'),
+                                    $word_lower
+                                )) {
+                                return true;
+                            }
+                        }
+                    }
+
+                    return false;
                 })->values();
 
                 // Palabras restantes para buscar dentro de variant_description
@@ -280,6 +316,34 @@ class VenderController extends Controller
                 if ($article->article_variants->count() > 0) {
 
                     Log::info('Buscando variantes');
+
+                    // Coincidencia exacta por barcode de variante: devolver solo esa variante
+                    if ($search_bar_code_en_vender && count($keywords) === 1) {
+                        $keyword = $keywords[0];
+                        $matching_variants_by_bar_code = $article->article_variants->filter(function ($variant) use ($keyword) {
+                            return ($variant->bar_code ?? '') === $keyword;
+                        });
+
+                        if ($matching_variants_by_bar_code->count() > 0) {
+                            foreach ($matching_variants_by_bar_code as $variant) {
+                                $results->push((object)[
+                                    'is_variant'            => true,
+                                    'id'                    => $variant->article->id,
+                                    'variant_id'            => $variant->id,
+                                    'variant_description'   => $variant->variant_description,
+                                    'final_price'           => $this->get_variant_price($variant),
+                                    'price_types'           => $article->price_types,
+                                    'bar_code'              => $variant->bar_code,
+                                    'name'                  => $article->name. ' '.$variant->variant_description,
+                                    'article'               => $article,
+                                    'images'                => $this->get_variant_images($variant),
+                                    'addresses'             => $variant->addresses,
+                                ]);
+                            }
+
+                            continue;
+                        }
+                    }
 
                     // Filtrar variantes que coincidan con todas las palabras restantes
                     $matching_variants = $article->article_variants->filter(function ($variant) use ($remaining_keywords) {

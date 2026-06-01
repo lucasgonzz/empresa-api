@@ -19,6 +19,8 @@ return [
         'api/*', 
         'login',
         'logout',
+        'version-session-token',
+        'login-from-version-session-token',
         'sanctum/csrf-cookie',
         'set-image',
         'password-reset/*',

@@ -470,6 +470,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('/export-history/{model_name}', 'ExportHistoryController@index');
 
+    Route::get('/masive-update/{model_name}', 'MasiveUpdateController@index');
+    Route::get('/masive-update/detail/{id}', 'MasiveUpdateController@show');
+    Route::post('/masive-update/{id}/revert', 'MasiveUpdateController@revert');
+
     Route::get('/import-history/{model_name}', 'ImportHistoryController@index');
     Route::get('/import-history/updated-models/{id}', 'ImportHistoryController@updated_models');
     Route::get('/import-history/created-models/{id}', 'ImportHistoryController@created_models');
@@ -543,6 +547,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('pdf-column-options', 'PdfColumnOptionController@index');
     Route::get('pdf-column-options/{id}', 'PdfColumnOptionController@show');
     Route::resource('pdf-column-profiles', 'PdfColumnProfileController');
+
+    Route::get('etiqueta-medidas', 'EtiquetaMedidaController@index');
+    Route::post('etiqueta-medidas', 'EtiquetaMedidaController@store');
+    Route::delete('etiqueta-medidas/{id}', 'EtiquetaMedidaController@destroy');
 
     Route::resource('price-type-surchage', 'PriceTypeSurchageController');
 
@@ -693,6 +701,7 @@ Route::prefix('admin-sync')
 Route::middleware('admin.api.key')
     ->prefix('admin-sync')
     ->group(function () {
+        Route::put('update-default-version', 'AdminSync\\UpdateDefaultVersionController@update');
         Route::post('publish-version', 'AdminSync\\PublishVersionController@store');
         Route::post('support/messages', 'AdminSync\\SupportMessageController@store');
         Route::post('support/messages/read', 'AdminSync\\SupportMessageController@mark_read');
