@@ -480,6 +480,17 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('/import-history/chunks/{import_history_id}', 'ImportHistoryController@chunks');
     Route::post('/import-history/rollback/{import_history_id}', 'ImportHistoryController@rollback');
 
+    /*
+     * Importación de artículos asistida por Claude IA.
+     * Requiere la extensión "ai_excel_import" habilitada para el usuario.
+     *  - POST /ai-excel-import/analyze : analiza el Excel y devuelve el mapeo de columnas sugerido
+     *  - POST /ai-excel-import/import  : lanza la importación con el mapeo confirmado por el usuario
+     */
+    Route::middleware('check_extencion_empresa:ai_excel_import')->group(function () {
+        Route::post('/ai-excel-import/analyze', 'AiExcelImportController@analyze');
+        Route::post('/ai-excel-import/import',  'AiExcelImportController@import');
+    });
+
     Route::get('/online-price-type', 'OnlinePriceTypeController@index');
 
     Route::resource('/cupon', 'CuponController');

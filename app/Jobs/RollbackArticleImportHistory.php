@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\Article;
+use App\Models\ArticleVariant;
 use App\Models\ImportHistory;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
@@ -120,6 +121,20 @@ class RollbackArticleImportHistory implements ShouldQueue
         $restore_map = [];
 
         /**
+         * Mapa de relaciones a restaurar por artículo actualizado.
+         * Estructura: [ article_id => [ clave_relacion => { old: ..., new: ... } ] ]
+         *
+         * Claves posibles:
+         *  - discounts_percent    → array de porcentajes a restaurar en article_discounts
+         *  - discounts_amount     → array de montos a restaurar en article_discounts
+         *  - surchages_percent    → array de porcentajes a restaurar en article_surchages
+         *  - surchages_amount     → array de montos a restaurar en article_surchages
+         *  - price_type_{id}      → { percentage, final_price } a restaurar en article_price_type
+         *  - provider_pivot       → { provider_code, cost } a restaurar en article_provider
+         */
+        $relations_restore_map = [];
+
+        /**
          * Procesamos chunks de forma ascendente para que, si un mismo campo se
          * modificó múltiples veces, prevalezca el old de la primera mutación.
          */
@@ -155,19 +170,41 @@ class RollbackArticleImportHistory implements ShouldQueue
                     }
 
                     /**
-                     * Extraemos el nombre de columna quitando el prefijo.
+                     * Extraemos el nombre de columna quitando el prefijo __diff__.
                      */
                     $field_name = substr($key, 8);
 
-                    /**
-                     * Ignoramos campos no existentes en articles y diffs que
-                     * no sean escalares para cumplir el alcance acordado.
-                     */
-                    if (!isset($article_columns[$field_name])) {
+                    if (!is_array($value) || !array_key_exists('old', $value)) {
                         continue;
                     }
 
-                    if (!is_array($value) || !array_key_exists('old', $value)) {
+                    /*
+                     * Separamos diffs de columnas directas de la tabla articles
+                     * de diffs de relaciones (que tienen nombres reservados).
+                     */
+                    $is_relation_diff = $this->is_relation_diff_key($field_name);
+
+                    if ($is_relation_diff) {
+                        /*
+                         * Guardamos el primer old de cada relación para restaurar
+                         * el estado previo completo de la importación.
+                         */
+                        if (!isset($relations_restore_map[$article->id])) {
+                            $relations_restore_map[$article->id] = [];
+                        }
+
+                        if (!array_key_exists($field_name, $relations_restore_map[$article->id])) {
+                            $relations_restore_map[$article->id][$field_name] = $value;
+                        }
+
+                        continue;
+                    }
+
+                    /**
+                     * Para columnas directas: ignoramos campos no existentes en articles
+                     * y diffs que no sean escalares.
+                     */
+                    if (!isset($article_columns[$field_name])) {
                         continue;
                     }
 
@@ -202,7 +239,7 @@ class RollbackArticleImportHistory implements ShouldQueue
                                             ->values()
                                             ->all();
 
-        DB::transaction(function () use ($restore_map, $created_article_ids, $import_history) {
+        DB::transaction(function () use ($restore_map, $relations_restore_map, $created_article_ids, $import_history) {
             /**
              * Revertimos columnas directas en artículos actualizados.
              */
@@ -215,21 +252,35 @@ class RollbackArticleImportHistory implements ShouldQueue
             }
 
             /**
-             * Eliminamos artículos creados por la importación.
-             * Se usa delete() para respetar SoftDeletes del modelo Article.
+             * Revertimos relaciones de artículos actualizados usando los diffs guardados.
+             * Cada clave de relación determina qué tabla y qué operación ejecutar.
+             */
+            foreach ($relations_restore_map as $article_id => $relation_diffs) {
+                $this->revert_relations($article_id, $relation_diffs);
+            }
+
+            /**
+             * Para artículos CREADOS: eliminamos todas sus relaciones antes de
+             * eliminar el artículo, para evitar huérfanos o errores de FK.
              */
             if (!empty($created_article_ids)) {
+                $this->delete_created_article_relations($created_article_ids);
+
+                /*
+                 * Eliminamos artículos creados por la importación.
+                 * Se usa delete() para respetar SoftDeletes del modelo Article.
+                 */
                 Article::whereIn('id', $created_article_ids)->delete();
             }
 
             /**
-             * Dejamos trazabilidad básica en observations del historial.
+             * Dejamos trazabilidad en observations del historial con contadores
+             * de relaciones revertidas además de los artículos directos.
              */
-            $rollback_observation = 'Rollback ejecutado. Articulos restaurados: '
-                . count($restore_map)
-                . '. Articulos creados eliminados: '
-                . count($created_article_ids)
-                . '.';
+            $rollback_observation = 'Rollback ejecutado.'
+                . ' Articulos restaurados: ' . count($restore_map) . '.'
+                . ' Relaciones revertidas en: ' . count($relations_restore_map) . ' articulos.'
+                . ' Articulos creados eliminados: ' . count($created_article_ids) . '.';
 
             $import_history->observations = trim(($import_history->observations ?? '') . ' | ' . $rollback_observation);
             $import_history->save();
@@ -277,9 +328,331 @@ class RollbackArticleImportHistory implements ShouldQueue
         }
 
         Log::info('RollbackArticleImportHistory: rollback finalizado', [
-            'import_history_id' => $this->import_history_id,
-            'restored_articles' => count($restore_map),
-            'deleted_created_articles' => count($created_article_ids),
+            'import_history_id'            => $this->import_history_id,
+            'restored_articles'            => count($restore_map),
+            'relations_reverted_articles'  => count($relations_restore_map),
+            'deleted_created_articles'     => count($created_article_ids),
+        ]);
+    }
+
+    /**
+     * Determina si una clave de diff corresponde a una relación y no a una columna directa.
+     *
+     * Las claves de relación tienen nombres reservados que no existen como columnas
+     * en la tabla articles. Usamos prefijos conocidos para identificarlas.
+     *
+     * @param  string $field_name  Nombre del campo sin el prefijo "__diff__"
+     * @return bool
+     */
+    protected function is_relation_diff_key(string $field_name): bool
+    {
+        /*
+         * Claves de relación conocidas y sus prefijos:
+         *   discounts_percent, discounts_amount
+         *   surchages_percent, surchages_amount
+         *   price_type_{id}
+         *   provider_pivot
+         */
+        $relation_prefixes = [
+            'discounts_percent',
+            'discounts_amount',
+            'surchages_percent',
+            'surchages_amount',
+            'price_type_',
+            'provider_pivot',
+        ];
+
+        foreach ($relation_prefixes as $prefix) {
+            if (strpos($field_name, $prefix) === 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Revierte las relaciones de un artículo actualizado usando el mapa de diffs guardado.
+     *
+     * Procesa cada clave de relación y restaura los valores "old" en la tabla correspondiente.
+     *
+     * @param  int   $article_id       ID del artículo a revertir
+     * @param  array $relation_diffs   Mapa de diffs de relaciones [ clave => { old: ..., new: ... } ]
+     * @return void
+     */
+    protected function revert_relations(int $article_id, array $relation_diffs): void
+    {
+        foreach ($relation_diffs as $key => $diff) {
+            $old_value = $diff['old'] ?? null;
+
+            if (is_null($old_value)) {
+                continue;
+            }
+
+            if (strpos($key, 'discounts_percent') === 0) {
+                /*
+                 * Restauramos los porcentajes de descuento eliminando los actuales
+                 * e insertando los valores previos guardados en old.
+                 */
+                $this->restore_discounts_or_surchages(
+                    $article_id,
+                    'article_discounts',
+                    'percentage',
+                    is_array($old_value) ? $old_value : []
+                );
+
+            } elseif (strpos($key, 'discounts_amount') === 0) {
+                /*
+                 * Restauramos los montos de descuento.
+                 */
+                $this->restore_discounts_or_surchages(
+                    $article_id,
+                    'article_discounts',
+                    'amount',
+                    is_array($old_value) ? $old_value : []
+                );
+
+            } elseif (strpos($key, 'surchages_percent') === 0) {
+                /*
+                 * Restauramos los porcentajes de recargo.
+                 */
+                $this->restore_discounts_or_surchages(
+                    $article_id,
+                    'article_surchages',
+                    'percentage',
+                    is_array($old_value) ? $old_value : []
+                );
+
+            } elseif (strpos($key, 'surchages_amount') === 0) {
+                /*
+                 * Restauramos los montos de recargo.
+                 */
+                $this->restore_discounts_or_surchages(
+                    $article_id,
+                    'article_surchages',
+                    'amount',
+                    is_array($old_value) ? $old_value : []
+                );
+
+            } elseif (strpos($key, 'price_type_') === 0) {
+                /*
+                 * El id del price_type viene después del prefijo "price_type_".
+                 * Restauramos percentage y final_price en la pivot article_price_type.
+                 */
+                $price_type_id = (int) substr($key, strlen('price_type_'));
+
+                if ($price_type_id > 0 && is_array($old_value)) {
+                    $this->restore_price_type_pivot($article_id, $price_type_id, $old_value);
+                }
+
+            } elseif ($key === 'provider_pivot') {
+                /*
+                 * Restauramos provider_code y cost en la pivot article_provider.
+                 * El old contiene { provider_id, provider_code, cost }.
+                 */
+                if (is_array($old_value) && isset($old_value['provider_id'])) {
+                    $this->restore_provider_pivot($article_id, $old_value);
+                }
+            }
+        }
+    }
+
+    /**
+     * Restaura los registros de descuento o recargo de un artículo para una columna dada.
+     *
+     * Elimina los registros actuales del tipo indicado (percentage o amount) e inserta
+     * los valores del array old.
+     *
+     * @param  int    $article_id  ID del artículo
+     * @param  string $table       Nombre de la tabla ('article_discounts' o 'article_surchages')
+     * @param  string $column      Columna a restaurar ('percentage' o 'amount')
+     * @param  array  $old_values  Array de valores previos (escalares)
+     * @return void
+     */
+    protected function restore_discounts_or_surchages(
+        int $article_id,
+        string $table,
+        string $column,
+        array $old_values
+    ): void {
+        /*
+         * Eliminamos los registros actuales del tipo indicado para este artículo.
+         * La condición whereNotNull($column) evita tocar registros del otro tipo.
+         */
+        DB::table($table)
+            ->where('article_id', $article_id)
+            ->whereNotNull($column)
+            ->delete();
+
+        if (empty($old_values)) {
+            /* Si no había valores previos, solo limpiamos y listo. */
+            return;
+        }
+
+        /* Insertamos los valores previos como nuevos registros. */
+        $now = now();
+        $insert_rows = [];
+
+        foreach ($old_values as $old_val) {
+            if ($old_val === null || $old_val === '') {
+                continue;
+            }
+
+            $insert_rows[] = [
+                'article_id'  => $article_id,
+                $column       => (float) $old_val,
+                'created_at'  => $now,
+                'updated_at'  => $now,
+            ];
+        }
+
+        if (!empty($insert_rows)) {
+            DB::table($table)->insert($insert_rows);
+        }
+    }
+
+    /**
+     * Restaura los valores de percentage y final_price en la pivot article_price_type.
+     *
+     * @param  int   $article_id     ID del artículo
+     * @param  int   $price_type_id  ID del tipo de precio
+     * @param  array $old_values     Array con claves 'percentage' y/o 'final_price'
+     * @return void
+     */
+    protected function restore_price_type_pivot(int $article_id, int $price_type_id, array $old_values): void
+    {
+        /*
+         * Actualizamos solo si la fila ya existe en la pivot.
+         * Si no existe, no hay estado previo que restaurar.
+         */
+        $exists = DB::table('article_price_type')
+            ->where('article_id', $article_id)
+            ->where('price_type_id', $price_type_id)
+            ->exists();
+
+        if (!$exists) {
+            return;
+        }
+
+        /* Construimos el array de campos a actualizar con los valores old. */
+        $update_data = [];
+
+        if (array_key_exists('percentage', $old_values)) {
+            $update_data['percentage'] = $old_values['percentage'];
+        }
+
+        if (array_key_exists('final_price', $old_values)) {
+            $update_data['final_price'] = $old_values['final_price'];
+        }
+
+        if (!empty($update_data)) {
+            $update_data['updated_at'] = now();
+
+            DB::table('article_price_type')
+                ->where('article_id', $article_id)
+                ->where('price_type_id', $price_type_id)
+                ->update($update_data);
+        }
+    }
+
+    /**
+     * Restaura los valores de provider_code y cost en la pivot article_provider.
+     *
+     * @param  int   $article_id  ID del artículo
+     * @param  array $old_values  Array con claves 'provider_id', 'provider_code', 'cost'
+     * @return void
+     */
+    protected function restore_provider_pivot(int $article_id, array $old_values): void
+    {
+        $provider_id = (int)($old_values['provider_id'] ?? 0);
+
+        if ($provider_id === 0) {
+            return;
+        }
+
+        /* Construimos el array de campos a restaurar. */
+        $update_data = [];
+
+        if (array_key_exists('provider_code', $old_values)) {
+            $update_data['provider_code'] = $old_values['provider_code'];
+        }
+
+        if (array_key_exists('cost', $old_values)) {
+            $update_data['cost'] = $old_values['cost'];
+        }
+
+        if (!empty($update_data)) {
+            $update_data['updated_at'] = now();
+
+            DB::table('article_provider')
+                ->where('article_id', $article_id)
+                ->where('provider_id', $provider_id)
+                ->update($update_data);
+        }
+    }
+
+    /**
+     * Elimina todas las relaciones de los artículos creados por la importación
+     * antes de eliminar los artículos mismos.
+     *
+     * Esto evita huérfanos en tablas relacionadas y garantiza que el rollback
+     * deje la base de datos en estado limpio.
+     *
+     * @param  array $created_article_ids  IDs de artículos creados por la importación
+     * @return void
+     */
+    protected function delete_created_article_relations(array $created_article_ids): void
+    {
+        if (empty($created_article_ids)) {
+            return;
+        }
+
+        /* Descuentos de artículos creados. */
+        DB::table('article_discounts')
+            ->whereIn('article_id', $created_article_ids)
+            ->delete();
+
+        /* Recargos de artículos creados. */
+        DB::table('article_surchages')
+            ->whereIn('article_id', $created_article_ids)
+            ->delete();
+
+        /* Listas de precios (pivot) de artículos creados. */
+        DB::table('article_price_type')
+            ->whereIn('article_id', $created_article_ids)
+            ->delete();
+
+        /* Proveedores (pivot) de artículos creados. */
+        DB::table('article_provider')
+            ->whereIn('article_id', $created_article_ids)
+            ->delete();
+
+        /*
+         * Variantes de artículos creados.
+         * Usamos each() con delete() para que Eloquent dispare los eventos del modelo
+         * y se eliminen en cascada los pivots de article_property_values y addresses
+         * si el modelo ArticleVariant tiene observers o deletes encadenados.
+         */
+        ArticleVariant::whereIn('article_id', $created_article_ids)
+            ->each(function (ArticleVariant $variant) {
+                /*
+                 * Desvinculamos manualmente los pivots de valores de propiedad y
+                 * direcciones antes de eliminar la variante para garantizar limpieza
+                 * independientemente de que el modelo tenga cascades configuradas.
+                 */
+                if (method_exists($variant, 'article_property_values')) {
+                    $variant->article_property_values()->detach();
+                }
+
+                if (method_exists($variant, 'addresses')) {
+                    $variant->addresses()->detach();
+                }
+
+                $variant->delete();
+            });
+
+        Log::info('RollbackArticleImportHistory: relaciones de artículos creados eliminadas', [
+            'created_article_ids_count' => count($created_article_ids),
         ]);
     }
 }
