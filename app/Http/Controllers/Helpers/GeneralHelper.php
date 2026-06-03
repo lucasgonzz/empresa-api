@@ -116,17 +116,87 @@ class GeneralHelper {
 
     static function article_name($article) {
         $name = $article->name;
-        if (!is_null($article->pivot->variant_description)) {
+        if (!is_null($article->pivot) && !is_null($article->pivot->variant_description)) {
             $name .= ' '.$article->pivot->variant_description;
         }
         return $name;
+    }
+
+    /**
+     * Ruta en disco de un archivo servido por /storage/ o /public/storage/ (sin HTTP).
+     *
+     * @param  string|null  $image_url
+     * @return string|null
+     */
+    public static function storage_public_path_from_image_url($image_url)
+    {
+        if (empty($image_url)) {
+            return null;
+        }
+
+        if (preg_match('~[/\\\\](?:public/)?storage/([^/?#]+)~i', $image_url, $matches)) {
+            $local_path = storage_path('app/public/' . $matches[1]);
+            if (file_exists($local_path)) {
+                return $local_path;
+            }
+        }
+
+        if (file_exists($image_url)) {
+            return $image_url;
+        }
+
+        return null;
+    }
+
+    /**
+     * Ruta local usable por FPDF (convierte webp a jpg en storage si hace falta).
+     *
+     * @param  string|null  $image_url
+     * @return string|null
+     */
+    public static function pdf_image_path($image_url)
+    {
+        if (empty($image_url)) {
+            return null;
+        }
+
+        $local_source = self::storage_public_path_from_image_url($image_url);
+        $source_for_read = $local_source ?: $image_url;
+        $basename = basename(parse_url($image_url, PHP_URL_PATH) ?: $image_url);
+        $base_name = pathinfo($basename, PATHINFO_FILENAME);
+        $extension = strtolower(pathinfo($basename, PATHINFO_EXTENSION));
+        $jpg_file_url = storage_path('app/public/' . $base_name . '.jpg');
+
+        if ($extension === 'webp') {
+            if (! file_exists($jpg_file_url)) {
+                try {
+                    $image = @imagecreatefromwebp($source_for_read);
+                    if ($image !== false) {
+                        imagejpeg($image, $jpg_file_url, 100);
+                        imagedestroy($image);
+                    } else {
+                        return $local_source ?: $image_url;
+                    }
+                } catch (\Exception $e) {
+                    return $local_source ?: $image_url;
+                }
+            }
+
+            return $jpg_file_url;
+        }
+
+        if ($local_source) {
+            return $local_source;
+        }
+
+        return self::getJpgImage($image_url);
     }
 
     static function getJpgImage($image_url) {
 
 
         if (!is_null($image_url)) {
-            $array = explode('/', $image_url); 
+            $array = explode('/', $image_url);
             $array_name = end($array);
             $name = explode('.', $array_name)[0];
             $extension = strtolower(pathinfo($array_name, PATHINFO_EXTENSION));
@@ -138,12 +208,14 @@ class GeneralHelper {
                 $jpg_file_url = storage_path('app/public/' . $name . '.jpg');
             }
 
+            $local_source = self::storage_public_path_from_image_url($image_url);
+            $source_for_read = $local_source ?: $image_url;
 
             // Convertir a JPG si la imagen es WEBP
             if ($extension === 'webp') {
                 if (!file_exists($jpg_file_url)) {
                     try {
-                        $image = imagecreatefromwebp($image_url);
+                        $image = @imagecreatefromwebp($source_for_read);
                         if ($image !== false) {
                             imagejpeg($image, $jpg_file_url, 100);
                             imagedestroy($image);
@@ -151,21 +223,25 @@ class GeneralHelper {
                             throw new \Exception("No se pudo crear la imagen desde WEBP.");
                         }
                     } catch (\Exception $e) {
-                        return $image_url; // Devuelve la URL original si falla la conversión
+                        return $local_source ?: $image_url;
                     }
                 }
                 return $jpg_file_url;
             }
 
-            // Si la imagen ya es JPG, simplemente devuelve la URL
-            if (Self::isJpg($image_url)) {
+            if ($local_source) {
+                return $local_source;
+            }
+
+            // Si la imagen ya es JPG en disco, devolver ruta local
+            if (self::isJpg($image_url)) {
                 return $image_url;
             }
         }
         return $image_url;
     }
 
-    function isJpg($file) {
+    public static function isJpg($file) {
         // Verifica que el archivo exista
         if (!file_exists($file)) {
             return false;

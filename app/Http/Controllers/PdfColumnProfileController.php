@@ -49,11 +49,22 @@ class PdfColumnProfileController extends Controller
                 ->update(['is_default' => false]);
         }
 
+        $is_afip_ticket = (bool) $request->input('is_afip_ticket', false);
+        $this->clear_whatsapp_default_flags_on_siblings(
+            $request->model_name,
+            $is_afip_ticket,
+            $request->is_default_whatsapp,
+            $request->is_default_whatsapp_afip,
+            null
+        );
+
         $model = PdfColumnProfile::create([
             'user_id' => $this->userId(),
             'model_name' => $request->model_name,
             'name' => $request->name,
             'is_default' => (bool) $request->is_default,
+            'is_default_whatsapp' => (bool) $request->input('is_default_whatsapp', false),
+            'is_default_whatsapp_afip' => (bool) $request->input('is_default_whatsapp_afip', false),
             'paper_width_mm' => (int) $request->paper_width_mm,
             'printable_width_mm' => (int) $request->printable_width_mm,
             'margin_mm' => (int) $request->input('margin_mm', 5),
@@ -71,6 +82,10 @@ class PdfColumnProfileController extends Controller
              * Default true para compatibilidad con perfiles existentes.
              */
             'show_total_in_footer' => (bool) $request->input('show_total_in_footer', true),
+            /**
+             * URL de imagen de cabecera en cada página del PDF (plantillas de artículos u otras).
+             */
+            'header_image_url' => $request->input('header_image_url') ?: null,
         ]);
 
         GeneralHelper::attachModels(
@@ -108,10 +123,23 @@ class PdfColumnProfileController extends Controller
                 ->update(['is_default' => false]);
         }
 
+        $is_afip_ticket = $request->has('is_afip_ticket')
+            ? (bool) $request->is_afip_ticket
+            : (bool) $model->is_afip_ticket;
+        $this->clear_whatsapp_default_flags_on_siblings(
+            $new_model_name,
+            $is_afip_ticket,
+            $request->is_default_whatsapp,
+            $request->is_default_whatsapp_afip,
+            $model->id
+        );
+
         $fillable = $request->only([
             'model_name',
             'name',
             'is_default',
+            'is_default_whatsapp',
+            'is_default_whatsapp_afip',
             'paper_width_mm',
             'printable_width_mm',
             'margin_mm',
@@ -123,6 +151,7 @@ class PdfColumnProfileController extends Controller
             'footer_text',
             'show_total_in_footer',
             'use_current_date',
+            'header_image_url',
         ]);
         $model->update($fillable);
 
@@ -149,6 +178,38 @@ class PdfColumnProfileController extends Controller
     }
 
     /**
+     * Deja un solo perfil WhatsApp por tipo (remito vs factura ARCA) dentro del mismo model_name.
+     *
+     * @param string $model_name
+     * @param bool $is_afip_ticket Tipo del perfil que se guarda.
+     * @param mixed $wants_remito_whatsapp is_default_whatsapp en el request.
+     * @param mixed $wants_afip_whatsapp is_default_whatsapp_afip en el request.
+     * @param int|null $except_id Id del perfil actual en update.
+     * @return void
+     */
+    protected function clear_whatsapp_default_flags_on_siblings(
+        $model_name,
+        $is_afip_ticket,
+        $wants_remito_whatsapp,
+        $wants_afip_whatsapp,
+        $except_id = null
+    ) {
+        $base_query = PdfColumnProfile::where('user_id', $this->userId())
+            ->where('model_name', $model_name);
+        if ($except_id) {
+            $base_query->where('id', '!=', $except_id);
+        }
+
+        if ($wants_remito_whatsapp && ! $is_afip_ticket) {
+            (clone $base_query)->where('is_afip_ticket', false)->update(['is_default_whatsapp' => false]);
+        }
+
+        if ($wants_afip_whatsapp && $is_afip_ticket) {
+            (clone $base_query)->where('is_afip_ticket', true)->update(['is_default_whatsapp_afip' => false]);
+        }
+    }
+
+    /**
      * Etiquetas en español para sustituir :attribute en mensajes de validación.
      *
      * @return array<string, string>
@@ -159,6 +220,8 @@ class PdfColumnProfileController extends Controller
             'model_name' => 'modelo',
             'name' => 'nombre',
             'is_default' => 'perfil por defecto',
+            'is_default_whatsapp' => 'perfil predeterminado para WhatsApp (remito)',
+            'is_default_whatsapp_afip' => 'perfil predeterminado para WhatsApp (factura ARCA)',
             'paper_width_mm' => 'ancho de hoja (mm)',
             'printable_width_mm' => 'ancho imprimible (mm)',
             'margin_mm' => 'margen lateral (mm)',
@@ -192,6 +255,8 @@ class PdfColumnProfileController extends Controller
             'model_name' => ['required', 'string', 'max:60'],
             'name' => ['required', 'string', 'max:120'],
             'is_default' => ['sometimes', 'boolean'],
+            'is_default_whatsapp' => ['sometimes', 'boolean'],
+            'is_default_whatsapp_afip' => ['sometimes', 'boolean'],
             'paper_width_mm' => ['required', 'integer', 'min:1', 'max:50000'],
             'printable_width_mm' => ['required', 'integer', 'min:1', 'max:50000', 'lte:paper_width_mm'],
             'margin_mm' => ['sometimes', 'integer', 'min:0', 'max:5000'],
@@ -233,6 +298,8 @@ class PdfColumnProfileController extends Controller
             'model_name' => ['sometimes', 'string', 'max:60'],
             'name' => ['sometimes', 'string', 'max:120'],
             'is_default' => ['sometimes', 'boolean'],
+            'is_default_whatsapp' => ['sometimes', 'boolean'],
+            'is_default_whatsapp_afip' => ['sometimes', 'boolean'],
             'paper_width_mm' => ['sometimes', 'integer', 'min:1', 'max:50000'],
             'printable_width_mm' => ['sometimes', 'integer', 'min:1', 'max:50000'],
             'margin_mm' => ['sometimes', 'integer', 'min:0', 'max:5000'],
@@ -371,7 +438,9 @@ class PdfColumnProfileController extends Controller
     /**
      * Calcula ancho útil disponible para columnas visibles en mm.
      *
-     * @param int $printable_width_mm Ancho imprimible total.
+     * Ejemplo A4: imprimible 210, margen 5 por lado → 210 − 10 = 200 mm para columnas.
+     *
+     * @param int $printable_width_mm Ancho imprimible de la hoja (antes de márgenes laterales).
      * @param int $margin_mm Margen por lado (izquierdo y derecho).
      * @return int
      */

@@ -24,6 +24,7 @@ use App\Http\Controllers\Helpers\import\article\InitExcelImport;
 use App\Http\Controllers\Pdf\ArticleBarCodePdf;
 use App\Http\Controllers\Pdf\ArticleListPdf;
 use App\Http\Controllers\Pdf\ArticleOfferSheetPdf;
+use App\Http\Controllers\Pdf\ArticleTablePdf;
 use App\Http\Controllers\Pdf\ArticlePdf\TruvariArticleListPdf;
 use App\Http\Controllers\Pdf\ArticleTicketPdf;
 use App\Http\Controllers\Pdf\ArticleTicket\ArticleBarCodeEtiquetasPdf;
@@ -38,6 +39,7 @@ use App\Models\ArticlePdf as ArticlePdfLayout;
 use App\Jobs\ProcessSyncArticleToTiendaNube;
 use App\Jobs\SyncProductToMercadoLibre;
 use App\Models\Article;
+use App\Models\PdfColumnProfile;
 use App\Models\User;
 use App\Services\MercadoLibre\ProductService;
 use App\Services\Pdf\Catalog\CatalogClassic;
@@ -745,6 +747,69 @@ class ArticleController extends Controller
 
     function listPdf($ids) {
         new ArticleListPdf($ids);
+    }
+
+    /**
+     * PDF tabular de artículos según plantilla PdfColumnProfile (model_name article).
+     * Query: pdf_column_profile_id (requerido), articles_id o filters (como export Excel).
+     * Opcional: price_type_id cuando el dueño usa listas de precio (columna precio final del pivot).
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return void
+     */
+    function tablePdf(Request $request)
+    {
+        $profile_id = (int) $request->query('pdf_column_profile_id');
+        $profile = PdfColumnProfile::where('user_id', $this->userId())
+            ->where('model_name', 'article')
+            ->where('id', $profile_id)
+            ->with(['pdf_column_options' => function ($relation) {
+                $relation->orderByPivot('order', 'asc');
+            }])
+            ->firstOrFail();
+
+        $article_ids = [];
+
+        if ($request->has('articles_id') && $request->query('articles_id') !== '') {
+            $ids = explode('-', $request->query('articles_id'));
+            $article_ids = array_map('intval', $ids);
+        } elseif ($request->has('filters')) {
+            $json_data = $request->query('filters');
+            $filters = json_decode($json_data, true);
+            $search_ct = new SearchController();
+            $models = $search_ct->search($request, 'article', $filters);
+            $article_ids = $models->pluck('id')->toArray();
+        }
+
+        if (! count($article_ids)) {
+            abort(404, 'No hay artículos para generar el PDF');
+        }
+
+        /** Lista de precios opcional para resolver `article_final_price` desde el pivot. */
+        $price_type_id = $request->query('price_type_id');
+
+        $article_with = [
+            'category',
+            'brand',
+            'provider',
+            'iva',
+            'unidad_medida',
+            'images' => function ($query) {
+                $query->orderBy('id', 'asc');
+            },
+        ];
+
+        if (! is_null($price_type_id) && $price_type_id !== '' && UserHelper::uses_listas_de_precio()) {
+            $article_with[] = 'price_types';
+        }
+
+        $articles = Article::where('user_id', $this->userId())
+            ->whereIn('id', $article_ids)
+            ->with($article_with)
+            ->orderBy('created_at', 'DESC')
+            ->get();
+
+        new ArticleTablePdf($profile, $articles);
     }
 
     /**

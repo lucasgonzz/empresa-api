@@ -82,6 +82,13 @@ class ImageController extends Controller
                 if ($request->model_name == 'category' && !is_null($model)) {
                     $this->sync_category_image_to_tienda_nube($model);
                 }
+
+                /**
+                 * Cabecera de plantilla PDF (pdf_column_profiles.header_image_url).
+                 */
+                if ($request->model_name == 'pdf_column_profile' && ! is_null($model) && $prop_name === 'header_image_url') {
+                    // Sin sync externo; solo persistencia en el perfil.
+                }
             } 
         }
         if (isset($request->image_url_to_delete)) {

@@ -31,9 +31,13 @@ class CreditAccountHelper {
 					'saldo'			=> 0,
 					'user_id'		=> $user_id,
 				]);
-				Log::info('Se creo credit_account para '.$model_name.' id: '.$model_id);
+				if (! app()->runningInConsole()) {
+					Log::info('Se creo credit_account para '.$model_name.' id: '.$model_id);
+				}
 			} else {
-				Log::info('Ya habia credit_account');
+				if (! app()->runningInConsole()) {
+					Log::info('Ya habia credit_account');
+				}
 			}
 
 		}

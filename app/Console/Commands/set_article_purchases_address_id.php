@@ -3,28 +3,25 @@
 namespace App\Console\Commands;
 
 use App\Models\Address;
-use App\Models\Sale;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 
+/**
+ * Asigna address_id de cada venta a sus article_purchases (backfill masivo por SQL).
+ */
 class set_article_purchases_address_id extends Command
 {
     /**
-     * The name and signature of the console command.
-     *
      * @var string
      */
     protected $signature = 'set_article_purchases_address_id {user_id?} {sale_id?}';
 
     /**
-     * The console command description.
-     *
      * @var string
      */
-    protected $description = 'Command description';
+    protected $description = 'Copia sales.address_id a article_purchases.address_id por usuario.';
 
     /**
-     * Create a new command instance.
-     *
      * @return void
      */
     public function __construct()
@@ -33,58 +30,69 @@ class set_article_purchases_address_id extends Command
     }
 
     /**
-     * Execute the console command.
+     * Ejecuta un UPDATE masivo (join sales) en lugar de save() fila a fila.
      *
      * @return int
      */
     public function handle()
     {
-
-        $user_id = config('app.USER_ID');
-
-        $param_user_id = $this->argument('user_id');
-        
-        if ($param_user_id) {
-            $user_id = $param_user_id;
+        $user_id = $this->resolve_user_id();
+        if ($user_id === null) {
+            return 1;
         }
 
-        $this->info('USER_ID: '.$user_id);
+        $this->info('USER_ID: ' . $user_id);
 
-        $addresses = Address::where('user_id', $user_id)->get();
-
-        if (count($addresses) <= 0) {
+        $has_addresses = Address::where('user_id', $user_id)->exists();
+        if (! $has_addresses) {
             $this->info('No hay sucursales, comando terminado correctamente');
-            return;
-        }
-        // if (!$user_id) {
-        //     $user_id = $this->argument('user_id');
-        // }
 
-        $sales = Sale::where('user_id', $user_id)
-                        ->orderBy('id', 'ASC');
-
-        $sale_id = $this->argument('sale_id');
-        if ($sale_id) {
-            $sales->where('id', '>', $sale_id);
-            $this->comment('desde el id > '.$sale_id);
-        }
-        $sales = $sales->get();
-
-        $this->info(count($sales).' ventas');
-
-        foreach ($sales as $sale) {
-            
-            foreach ($sale->article_purchases as $article_purchase) {
-                
-                $article_purchase->address_id = $sale->address_id;
-                $article_purchase->timestamps = false;
-                $article_purchase->save();
-            }
-            $this->comment('Listo venta '.$sale->id);
+            return 0;
         }
 
+        $from_sale_id = $this->argument('sale_id');
+        if ($from_sale_id) {
+            $this->comment('Desde venta id > ' . $from_sale_id);
+        }
+
+        $update_query = DB::table('article_purchases')
+            ->join('sales', 'sales.id', '=', 'article_purchases.sale_id')
+            ->where('sales.user_id', $user_id);
+
+        if ($from_sale_id) {
+            $update_query->where('sales.id', '>', (int) $from_sale_id);
+        }
+
+        // Un solo UPDATE con JOIN: evita cargar ventas y N saves en article_purchases.
+        $updated_rows = $update_query->update([
+            'article_purchases.address_id' => DB::raw('sales.address_id'),
+        ]);
+
+        $this->info('Filas actualizadas en article_purchases: ' . $updated_rows);
         $this->info('Termino');
 
         return 0;
+    }
+
+    /**
+     * Resuelve user_id desde argumento o config(app.USER_ID).
+     *
+     * @return int|null
+     */
+    private function resolve_user_id()
+    {
+        $param_user_id = $this->argument('user_id');
+        if ($param_user_id !== null && $param_user_id !== '') {
+            return (int) $param_user_id;
+        }
+
+        $configured_user_id = config('app.USER_ID');
+        if ($configured_user_id !== null && $configured_user_id !== '') {
+            return (int) $configured_user_id;
+        }
+
+        $this->error('Falta user_id (parametro o config app.USER_ID).');
+
+        return null;
     }
 }
