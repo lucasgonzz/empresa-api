@@ -143,7 +143,7 @@ class DemoSetupHelper
             'sale_ticket_description'       => '--- Aca iria alguna aclaracion que quieras hacer ---',
             'password'                      => bcrypt($data['doc_number']),
             'visible_password'              => null,
-            'dollar'                        => 0,
+            'dollar'                        => 1000,
             'home_position'                 => 1,
             'download_articles'             => 0,
             'online'                        => $data['online'],

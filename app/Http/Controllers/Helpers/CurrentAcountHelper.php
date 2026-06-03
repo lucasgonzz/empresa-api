@@ -467,7 +467,9 @@ class CurrentAcountHelper {
 
     static function checkSaldos($credit_account_id, $from_current_acount = null, $mayor_o_igual = false) {
 
-        Log::info('checkSaldos para credit_account id '.$credit_account_id);
+        if (! app()->runningInConsole()) {
+            Log::info('checkSaldos para credit_account id '.$credit_account_id);
+        }
 
         $credit_account = CreditAccount::find($credit_account_id);
 
@@ -488,7 +490,9 @@ class CurrentAcountHelper {
 
         $current_acounts = $current_acounts->get();
 
-        Log::info(count($current_acounts).' movimientos');
+        if (! app()->runningInConsole()) {
+            Log::info(count($current_acounts).' movimientos');
+        }
 
         foreach ($current_acounts as $current_acount) {
 
@@ -515,7 +519,9 @@ class CurrentAcountHelper {
 
         Self::set_model_saldo($credit_account);
 
-        Log::info('Seteando saldo de credit_account id '.$credit_account_id.' con '.$credit_account->saldo);
+        if (! app()->runningInConsole()) {
+            Log::info('Seteando saldo de credit_account id '.$credit_account_id.' con '.$credit_account->saldo);
+        }
 
         return null;
     }
@@ -527,18 +533,24 @@ class CurrentAcountHelper {
         $model = $model_name::find($credit_account->model_id);
 
         if ($model) {
-            
-            Log::info('Se actualizo saldo de '.$model->name);
+
+            if (! app()->runningInConsole()) {
+                Log::info('Se actualizo saldo de '.$model->name);
+
+                if ($credit_account->moneda_id == 1) {
+                    Log::info('saldo_pesos: '.$credit_account->saldo);
+                } else if ($credit_account->moneda_id == 2) {
+                    Log::info('saldo_dolares: '.$credit_account->saldo);
+                }
+            }
 
             if ($credit_account->moneda_id == 1) {
                 
                 $model->saldo_pesos = $credit_account->saldo;
-                Log::info('saldo_pesos: '.$credit_account->saldo);
 
             } else if ($credit_account->moneda_id == 2) {
 
                 $model->saldo_dolares = $credit_account->saldo;
-                Log::info('saldo_dolares: '.$credit_account->saldo);
             }
 
             $model->save();
@@ -550,7 +562,9 @@ class CurrentAcountHelper {
 
     static function checkPagos($credit_account_id) {
 
-        Log::info('checkPagos');
+        if (! app()->runningInConsole()) {
+            Log::info('checkPagos');
+        }
 
         $credit_account = CreditAccount::find($credit_account_id);
             
