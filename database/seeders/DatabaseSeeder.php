@@ -310,6 +310,8 @@ class DatabaseSeeder extends Seeder
         $this->call(ExtencionSeeder::class);
         $this->call(ExtencionDuplicarPresupuestosSeeder::class);
         $this->call(ExtencionEnviarMailClientesSeeder::class);
+        /* Extensión para la importación de artículos asistida por Claude IA. */
+        $this->call(ExtencionEmpresaAiExcelImportSeeder::class);
         $this->call(ConceptoStockMovementSeeder::class);
         $this->call(UnidadMedidaSeeder::class);
         $this->call(PermissionSeeder::class);
