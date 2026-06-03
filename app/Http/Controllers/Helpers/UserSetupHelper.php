@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
 use App\Models\User;
@@ -54,6 +55,11 @@ class UserSetupHelper
         // Crear el usuario dueño del sistema con sus datos reales
         $user = self::create_user($data);
 
+        /**
+         * PdfColumnProfileSeeder y otros seeders usan config('app.USER_ID'); alinear con el owner nuevo.
+         */
+        config(['app.USER_ID' => $user->id]);
+
         // Extensiones y seeders se arman dinámicamente según los flags del form
         $extencions = self::base_extencions();
         $seeders = self::base_seeders();
@@ -85,10 +91,23 @@ class UserSetupHelper
             Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);
         }
 
+        self::assign_pdf_whatsapp_defaults_for_owner($user->id);
+
         // Tienda online por defecto para que el sistema tenga URL pública
         self::tienda();
 
         return $user;
+    }
+
+    /**
+     * Marca perfiles Remito y Factura comun como predeterminados para WhatsApp del owner.
+     *
+     * @param int $owner_id
+     * @return void
+     */
+    private static function assign_pdf_whatsapp_defaults_for_owner($owner_id)
+    {
+        PdfColumnProfileWhatsappDefaultHelper::apply_whatsapp_defaults_for_owner($owner_id, false);
     }
 
     /**

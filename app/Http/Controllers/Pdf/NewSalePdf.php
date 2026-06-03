@@ -23,7 +23,16 @@ class NewSalePdf extends fpdf
     {
 
         $user = User::find($sale->user_id);
-        $this->pdf_column_profile = PdfColumnService::get_profile_for_print($user->id, 'sale', $pdf_column_profile_id);
+        /**
+         * Con afip_ticket_id solo perfiles fiscales; sin factura solo remito/venta.
+         */
+        $only_afip_ticket_profile = $afip_ticket_id ? true : false;
+        $this->pdf_column_profile = PdfColumnService::get_profile_for_print(
+            $user->id,
+            'sale',
+            $pdf_column_profile_id,
+            $only_afip_ticket_profile
+        );
         $this->profile_columns = $this->get_profile_columns();
 
         parent::__construct();
@@ -155,7 +164,7 @@ class NewSalePdf extends fpdf
     {
         $data = [
             'num' => $this->sale->num,
-            'title' => null,
+            'title' => 'X',
             // 'fields' => $this->getFields(),
             'address' => $this->get_address(),
             'user' => $this->user,

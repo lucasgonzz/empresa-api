@@ -59,14 +59,44 @@ class GeneralHelper {
         return $number;
     }
     
-    function file_exists_2($filePath) {
-        $file_headers = @get_headers($filePath);
-        if(str_contains($file_headers[0], '404 Not Found')) {
-            $exists = false;
-        } else {
-            $exists = true;
+    /**
+     * Comprueba si una imagen existe: primero en storage local; HTTP solo para URLs externas.
+     *
+     * @param  string  $filePath  URL o ruta de archivo
+     * @return bool
+     */
+    public static function file_exists_2($filePath)
+    {
+        if (empty($filePath)) {
+            return false;
         }
-        return $exists;
+
+        $local_path = \App\Http\Controllers\Helpers\GeneralHelper::storage_public_path_from_image_url($filePath);
+        if ($local_path) {
+            return true;
+        }
+
+        if (@file_exists($filePath)) {
+            return true;
+        }
+
+        if (! preg_match('#^https?://#i', $filePath)) {
+            return false;
+        }
+
+        $context = stream_context_create([
+            'http' => ['timeout' => 3],
+            'ssl' => ['verify_peer' => false, 'verify_peer_name' => false],
+        ]);
+        $file_headers = @get_headers($filePath, 0, $context);
+        if (! is_array($file_headers) || ! isset($file_headers[0])) {
+            return false;
+        }
+        if (str_contains($file_headers[0], '404 Not Found')) {
+            return false;
+        }
+
+        return true;
     }
     
     static function attachModels($model, $relation_name, $relation_models, $pivot_values = null, $from_pivot_prop = true) {

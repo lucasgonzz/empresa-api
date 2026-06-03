@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - develop
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.message, '[release:')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extraer version del commit
+        id: version
+        run: |
+          MSG="${{ github.event.head_commit.message }}"
+          VERSION=$(echo "$MSG" | grep -oP '(?<=\[release:)[^\]]+')
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Merge develop a master
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git checkout master
+          git merge develop --no-ff -m "chore: release v${{ steps.version.outputs.VERSION }}"
+          git push origin master
+
+      - name: Crear tag y release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          name: v${{ steps.version.outputs.VERSION }}
+          generate_release_notes: true
+          target_commitish: master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -30,6 +30,14 @@ class PdfColumnProfile extends Model
     protected $casts = [
         'columns' => 'array',
         'is_default' => 'boolean',
+        /**
+         * Perfil predeterminado para enlaces de comprobante enviados por WhatsApp (remitos).
+         */
+        'is_default_whatsapp' => 'boolean',
+        /**
+         * Perfil predeterminado para WhatsApp cuando la venta tiene factura ARCA.
+         */
+        'is_default_whatsapp_afip' => 'boolean',
         'is_afip_ticket' => 'boolean',
         'show_totals_on_each_page' => 'boolean',
         'show_comissions' => 'boolean',

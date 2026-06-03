@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Helpers\CreditAccountHelper;
+use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Models\Address;
 use App\Models\AfipInformation;
 use App\Models\Client;
@@ -51,6 +52,11 @@ class DemoSetupHelper
         // Crear el usuario "dueño" del sistema con datos mayormente de demo
         $user = self::create_demo_user($data);
 
+        /**
+         * Seeders y modelos auxiliares usan config('app.USER_ID'); debe coincidir con el owner creado.
+         */
+        config(['app.USER_ID' => $user->id]);
+
         // Puntos de venta de AFIP (RRII + Monotributo) asociados al user
         self::puntos_de_venta_afip($user);
 
@@ -94,6 +100,8 @@ class DemoSetupHelper
             Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);
         }
 
+        self::assign_pdf_whatsapp_defaults_for_owner($user->id);
+
         self::crear_client_con_mail_del_user_demo($data);
 
         // Reportes pre-calculados que usa el dashboard de ventas
@@ -107,6 +115,17 @@ class DemoSetupHelper
         self::tienda();
 
         return $user;
+    }
+
+    /**
+     * Marca perfiles Remito y Factura comun como predeterminados para WhatsApp del owner.
+     *
+     * @param int $owner_id
+     * @return void
+     */
+    private static function assign_pdf_whatsapp_defaults_for_owner($owner_id)
+    {
+        PdfColumnProfileWhatsappDefaultHelper::apply_whatsapp_defaults_for_owner($owner_id, false);
     }
 
     static function crear_client_con_mail_del_user_demo($data) {

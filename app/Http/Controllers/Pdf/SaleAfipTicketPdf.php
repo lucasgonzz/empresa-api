@@ -43,7 +43,8 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->pdf_column_profile = PdfColumnService::get_profile_for_print(
 			$this->user->id,
 			'sale',
-			$pdf_column_profile_id
+			$pdf_column_profile_id,
+			true
 		);
 
 		$widths = [];
