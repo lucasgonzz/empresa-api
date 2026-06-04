@@ -29,6 +29,7 @@ class ArticleImportHelper {
         	],
         ];
 
+        /* Compatibilidad con global-notification y modal dedicado article_import_result. */
         $info_to_show = [
         	[
         		'title'		=> 'Resultado de la operacion',
@@ -37,9 +38,15 @@ class ArticleImportHelper {
         			$import_history->created_models. ' articulos creados',
         			$import_history->articles_match. ' articulos macheados',
         			$import_history->updated_models. ' articulos actualizados',
-        			// $import_history->articles_repetidos. ' articulos repetidos',
         		],
         	],
+        ];
+
+        $import_stats = [
+            'filas_procesadas'       => (int) $import_history->filas_procesadas,
+            'articulos_creados'      => (int) $import_history->created_models,
+            'articulos_macheados'    => (int) $import_history->articles_match,
+            'articulos_actualizados' => (int) $import_history->updated_models,
         ];
 
         $user->notify(new GlobalNotification([
@@ -49,6 +56,8 @@ class ArticleImportHelper {
         	'info_to_show'				=> $info_to_show,
         	'owner_id'					=> $user->id,
         	'is_only_for_auth_user'		=> false,
+        	'notification_modal'		=> 'article_import_result',
+        	'import_stats'				=> $import_stats,
         	])
     	);
 
@@ -91,6 +100,8 @@ class ArticleImportHelper {
         	'info_to_show'				=> $info_to_show,
         	'owner_id'					=> $user->id,
         	'is_only_for_auth_user'		=> false,
+        	'notification_modal'		=> 'article_import_result',
+        	'import_stats'				=> null,
         	])
     	);
     	Log::info('SE ENVIO NOTIFICACION DE ERROR');

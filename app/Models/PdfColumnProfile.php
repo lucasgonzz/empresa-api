@@ -51,6 +51,10 @@ class PdfColumnProfile extends Model
          */
         'use_current_date' => 'boolean',
         'margin_mm' => 'integer',
+        /**
+         * Tamaño de letra uniforme (pt) para encabezados de columnas en PDF tabular de artículos.
+         */
+        'table_header_font_size' => 'integer',
     ];
 
     /**
@@ -59,7 +63,7 @@ class PdfColumnProfile extends Model
     public function pdf_column_options()
     {
         return $this->belongsToMany(PdfColumnOption::class, 'pdf_column_option_profile')
-            ->withPivot(['visible', 'order', 'width', 'wrap_content'])
+            ->withPivot(['visible', 'order', 'width', 'wrap_content', 'font_size', 'text_align'])
             ->withTimestamps();
     }
 

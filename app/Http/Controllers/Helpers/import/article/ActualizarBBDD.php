@@ -25,7 +25,17 @@ use Illuminate\Support\Facades\Schema;
 
 class ActualizarBBDD {
 
-    function __construct($articulos_para_crear_CACHE, $articulos_para_actualizar_CACHE, $user, $auth_user_id, $codigos_proveedor_repetidos, $chunk_number, $provider_buffer) {
+    /**
+     * @param array       $articulos_para_crear_CACHE
+     * @param array       $articulos_para_actualizar_CACHE
+     * @param mixed       $user
+     * @param int         $auth_user_id
+     * @param mixed       $codigos_proveedor_repetidos
+     * @param string      $chunk_number
+     * @param array       $provider_buffer
+     * @param int|null    $import_history_id  ID del historial para trackear diffs de relaciones (rollback)
+     */
+    function __construct($articulos_para_crear_CACHE, $articulos_para_actualizar_CACHE, $user, $auth_user_id, $codigos_proveedor_repetidos, $chunk_number, $provider_buffer, $import_history_id = null) {
         
         $this->log('');
         $this->log('********* ActualizarBBDD ************');
@@ -52,9 +62,25 @@ class ActualizarBBDD {
 
         $this->provider_buffer                      = $provider_buffer;
 
+        /*
+         * ID del historial de importación para registrar diffs de relaciones.
+         * Si es null, no se trackean relaciones (comportamiento silencioso).
+         */
+        $this->import_history_id                    = $import_history_id;
 
         $this->articulos_para_crear_CACHE           = $articulos_para_crear_CACHE;
         $this->articulos_para_actualizar_CACHE      = $articulos_para_actualizar_CACHE;
+
+        /*
+         * Mapa article_id => referencia al array del cache de actualización.
+         * Permite fusionar diffs de relaciones en updated_props antes de persistir el chunk.
+         */
+        $this->articulos_para_actualizar_by_id      = [];
+        foreach ($this->articulos_para_actualizar_CACHE as $index => $article_row) {
+            if (!empty($article_row['id'])) {
+                $this->articulos_para_actualizar_by_id[(int) $article_row['id']] = &$this->articulos_para_actualizar_CACHE[$index];
+            }
+        }
 
         $this->articulos_creados_models = [];
         $this->articulos_actualizados_models = [];
@@ -390,6 +416,19 @@ class ActualizarBBDD {
 
             // Solo eliminar % cuando hay diff de ese tipo; si cambió solo el monto, los % se preservan.
             if ($this->cache_has_diff_of_type($article_cache, 'discounts', '%')) {
+
+                /*
+                 * Capturamos el estado previo en DB antes del DELETE para el rollback.
+                 */
+                $this->track_discounts_or_surchages_relation_diff(
+                    $article_id,
+                    $article_cache,
+                    'discounts',
+                    'discounts_percent',
+                    'article_discounts',
+                    'percentage'
+                );
+
                 $articles_id_para_eliminarles_descuentos[] = $article_id;
             }
 
@@ -457,6 +496,16 @@ class ActualizarBBDD {
 
             // Solo eliminar amount cuando hay diff de ese tipo; si cambió solo el %, los montos se preservan.
             if ($this->cache_has_diff_of_type($article_cache, 'discounts', 'amount')) {
+
+                $this->track_discounts_or_surchages_relation_diff(
+                    $article_id,
+                    $article_cache,
+                    'discounts',
+                    'discounts_amount',
+                    'article_discounts',
+                    'amount'
+                );
+
                 $articles_id_para_eliminarles_descuentos[] = $article_id;
             }
 
@@ -524,6 +573,16 @@ class ActualizarBBDD {
 
             // Solo eliminar % cuando hay diff de ese tipo; si cambió solo el monto, los % se preservan.
             if ($this->cache_has_diff_of_type($article_cache, 'surchages', '%')) {
+
+                $this->track_discounts_or_surchages_relation_diff(
+                    $article_id,
+                    $article_cache,
+                    'surchages',
+                    'surchages_percent',
+                    'article_surchages',
+                    'percentage'
+                );
+
                 $articles_id_para_eliminarles_descuentos[] = $article_id;
             }
 
@@ -587,6 +646,16 @@ class ActualizarBBDD {
 
             // Solo eliminar amount cuando hay diff de ese tipo; si cambió solo el %, los montos se preservan.
             if ($this->cache_has_diff_of_type($article_cache, 'surchages', 'amount')) {
+
+                $this->track_discounts_or_surchages_relation_diff(
+                    $article_id,
+                    $article_cache,
+                    'surchages',
+                    'surchages_amount',
+                    'article_surchages',
+                    'amount'
+                );
+
                 $articles_id_para_eliminarles_descuentos[] = $article_id;
             }
 
@@ -937,6 +1006,16 @@ class ActualizarBBDD {
                 $incluir = $this->get_incluir_en_excel_para_clientes($price_type);
 
                 $setear_precio_final = $this->get_setear_precio_final($price_type);
+
+                /*
+                 * Registramos el diff de la pivot price_type antes de aplicar el UPDATE masivo.
+                 */
+                $this->track_price_type_relation_diff(
+                    $article_id,
+                    (int) $price_type['id'],
+                    $percentage,
+                    $final_price
+                );
 
                 $percentage = ($percentage === '' || is_null($percentage)) ? 'NULL' : $percentage;
                 $final_price = ($final_price === '' || is_null($final_price)) ? 'NULL' : $final_price;
@@ -1927,6 +2006,18 @@ class ActualizarBBDD {
 
         foreach ($buffer as $article_id => $providers) {
             foreach ($providers as $provider_id => $pivot_data) {
+
+                /*
+                 * Solo trackeamos pivots de artículos actualizados (no creados).
+                 */
+                if (isset($this->articulos_para_actualizar_by_id[(int) $article_id])) {
+                    $this->track_provider_pivot_relation_diff(
+                        (int) $article_id,
+                        (int) $provider_id,
+                        $pivot_data
+                    );
+                }
+
                 $rows[] = [
                     'article_id'    => (int)$article_id,
                     'provider_id'   => (int)$provider_id,
@@ -1948,6 +2039,267 @@ class ActualizarBBDD {
         }
     }
     
+
+    /**
+     * Registra el diff de descuentos o recargos (% o amount) leyendo el estado previo en DB.
+     *
+     * @param int    $article_id
+     * @param array  $article_cache
+     * @param string $relation       'discounts' o 'surchages'
+     * @param string $diff_key       ej: discounts_percent, surchages_amount
+     * @param string $table          article_discounts o article_surchages
+     * @param string $column         percentage o amount
+     * @return void
+     */
+    protected function track_discounts_or_surchages_relation_diff(
+        int $article_id,
+        array $article_cache,
+        string $relation,
+        string $diff_key,
+        string $table,
+        string $column
+    ): void {
+        if (empty($this->import_history_id)) {
+            return;
+        }
+
+        /*
+         * Valores actuales en DB antes del DELETE (estado previo al import).
+         */
+        $old_values = DB::table($table)
+            ->where('article_id', $article_id)
+            ->whereNotNull($column)
+            ->pluck($column)
+            ->map(function ($value) {
+                return (float) $value;
+            })
+            ->values()
+            ->all();
+
+        /*
+         * Valores nuevos: preferimos el diff ya calculado en ProcessRow; si no existe,
+         * reconstruimos desde el cache de inserción.
+         */
+        $new_values = $this->extract_relation_diff_new_values($article_cache, $relation, $diff_key);
+
+        if (empty($new_values)) {
+            $new_values = $this->build_discounts_or_surchages_new_values_from_cache(
+                $article_cache,
+                $relation,
+                $column === 'percentage' ? '%' : 'amount'
+            );
+        }
+
+        $this->record_relation_diff($article_id, $diff_key, $old_values, $new_values);
+    }
+
+    /**
+     * Extrae el array "new" de un diff de relación anidado en discounts/surchages del cache.
+     *
+     * @param array  $article_cache
+     * @param string $relation   discounts o surchages
+     * @param string $diff_key   ej: discounts_percent
+     * @return array
+     */
+    protected function extract_relation_diff_new_values(array $article_cache, string $relation, string $diff_key): array
+    {
+        if (empty($article_cache[$relation]) || !is_array($article_cache[$relation])) {
+            return [];
+        }
+
+        $nested_diff_key = '__diff__' . $diff_key;
+
+        foreach ($article_cache[$relation] as $entry) {
+            if (isset($entry[$nested_diff_key]['new']) && is_array($entry[$nested_diff_key]['new'])) {
+                return $entry[$nested_diff_key]['new'];
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * Reconstruye los valores nuevos de descuentos/recargos desde el cache de inserción.
+     *
+     * @param array  $article_cache
+     * @param string $relation
+     * @param string $value_type  '%' o 'amount'
+     * @return array
+     */
+    protected function build_discounts_or_surchages_new_values_from_cache(
+        array $article_cache,
+        string $relation,
+        string $value_type
+    ): array {
+        if (empty($article_cache[$relation]) || !is_array($article_cache[$relation])) {
+            return [];
+        }
+
+        $new_values = [];
+
+        foreach ($article_cache[$relation] as $entry) {
+            if (!isset($entry['type']) || $entry['type'] !== $value_type) {
+                continue;
+            }
+
+            $nested_key = '__diff__' . $relation . ($value_type === '%' ? '_percent' : '_amount');
+
+            if (!isset($entry[$nested_key]['new']) || !is_array($entry[$nested_key]['new'])) {
+                continue;
+            }
+
+            foreach ($entry[$nested_key]['new'] as $new_item) {
+                if (is_array($new_item) && isset($new_item['value'])) {
+                    $new_values[] = $new_item;
+                } else {
+                    $new_values[] = (float) $new_item;
+                }
+            }
+        }
+
+        return $new_values;
+    }
+
+    /**
+     * Registra el diff de una lista de precio (pivot article_price_type) antes del UPDATE.
+     *
+     * @param int         $article_id
+     * @param int         $price_type_id
+     * @param string|null $new_percentage  Valor crudo antes de normalizar a 'NULL'
+     * @param string|null $new_final_price
+     * @return void
+     */
+    protected function track_price_type_relation_diff(
+        int $article_id,
+        int $price_type_id,
+        $new_percentage,
+        $new_final_price
+    ): void {
+        if (empty($this->import_history_id)) {
+            return;
+        }
+
+        $existing_pivot = DB::table('article_price_type')
+            ->where('article_id', $article_id)
+            ->where('price_type_id', $price_type_id)
+            ->first();
+
+        if (!$existing_pivot) {
+            return;
+        }
+
+        $old_values = [
+            'percentage'  => $existing_pivot->percentage,
+            'final_price' => $existing_pivot->final_price,
+        ];
+
+        $new_values = [
+            'percentage'  => ($new_percentage === '' || is_null($new_percentage) || $new_percentage === 'NULL')
+                ? null
+                : (float) $new_percentage,
+            'final_price' => ($new_final_price === '' || is_null($new_final_price) || $new_final_price === 'NULL')
+                ? null
+                : (float) $new_final_price,
+        ];
+
+        /*
+         * Solo registramos si hubo cambio real en percentage o final_price.
+         */
+        if (
+            (string) ($old_values['percentage'] ?? '') === (string) ($new_values['percentage'] ?? '')
+            && (string) ($old_values['final_price'] ?? '') === (string) ($new_values['final_price'] ?? '')
+        ) {
+            return;
+        }
+
+        $this->record_relation_diff(
+            $article_id,
+            'price_type_' . $price_type_id,
+            $old_values,
+            $new_values
+        );
+    }
+
+    /**
+     * Registra el diff del pivot article_provider antes del upsert.
+     *
+     * @param int   $article_id
+     * @param int   $provider_id
+     * @param array $pivot_data  provider_code y cost que se van a aplicar
+     * @return void
+     */
+    protected function track_provider_pivot_relation_diff(int $article_id, int $provider_id, array $pivot_data): void
+    {
+        if (empty($this->import_history_id)) {
+            return;
+        }
+
+        $existing_pivot = DB::table('article_provider')
+            ->where('article_id', $article_id)
+            ->where('provider_id', $provider_id)
+            ->first();
+
+        if (!$existing_pivot) {
+            return;
+        }
+
+        $old_values = [
+            'provider_id'   => $provider_id,
+            'provider_code' => $existing_pivot->provider_code,
+            'cost'          => $existing_pivot->cost,
+        ];
+
+        $new_values = [
+            'provider_code' => $pivot_data['provider_code'] ?? null,
+            'cost'          => $pivot_data['cost'] ?? null,
+        ];
+
+        if (
+            (string) ($old_values['provider_code'] ?? '') === (string) ($new_values['provider_code'] ?? '')
+            && (string) ($old_values['cost'] ?? '') === (string) ($new_values['cost'] ?? '')
+        ) {
+            return;
+        }
+
+        $this->record_relation_diff($article_id, 'provider_pivot', $old_values, $new_values);
+    }
+
+    /**
+     * Persiste un diff de relación en el cache del artículo y en ImportHistory (best-effort).
+     *
+     * @param int    $article_id
+     * @param string $diff_key
+     * @param mixed  $old_value
+     * @param mixed  $new_value
+     * @return void
+     */
+    protected function record_relation_diff(int $article_id, string $diff_key, $old_value, $new_value): void
+    {
+        if (empty($this->import_history_id)) {
+            return;
+        }
+
+        /*
+         * Fusionamos en el cache del chunk; update_article_import_result persiste
+         * estos props y RollbackArticleImportHistory los lee desde ahí.
+         */
+        if (isset($this->articulos_para_actualizar_by_id[$article_id])) {
+            ImportChangeRecorder::mergeRelationDiffIntoArticleProps(
+                $this->articulos_para_actualizar_by_id[$article_id],
+                $diff_key,
+                $old_value,
+                $new_value
+            );
+        }
+
+        ImportChangeRecorder::logRelationUpdated(
+            $this->import_history_id,
+            $article_id,
+            $diff_key,
+            $old_value,
+            $new_value
+        );
+    }
 
     function log($text) {
         if (config('app.APP_ENV') == 'local') {

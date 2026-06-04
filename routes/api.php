@@ -719,4 +719,5 @@ Route::middleware('admin.api.key')
         Route::post('support/typing', 'AdminSync\\SupportTypingController@store');
         Route::post('support/tickets', 'AdminSync\\SupportTicketController@store');
         Route::put('support/tickets/{ticket_uuid}', 'AdminSync\\SupportTicketController@update');
+        Route::get('employees', 'AdminSync\\EmployeesController@index');
     });

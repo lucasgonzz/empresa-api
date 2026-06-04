@@ -16,8 +16,23 @@ class GlobalNotification extends Notification
     public $message_text;
     public $color_variant;
     public $functions_to_execute;
+    public $info_to_show;
     public $owner_id;
     public $is_only_for_auth_user;
+
+    /**
+     * Modal del SPA a abrir: global_notification (default) o article_import_result.
+     *
+     * @var string
+     */
+    public $notification_modal;
+
+    /**
+     * Estadísticas estructuradas para el modal de resultado de importación (opcional).
+     *
+     * @var array|null
+     */
+    public $import_stats;
 
     public function __construct($data)
     {
@@ -27,6 +42,8 @@ class GlobalNotification extends Notification
         $this->info_to_show             = $data['info_to_show'];
         $this->owner_id                 = $data['owner_id'];
         $this->is_only_for_auth_user    = $data['is_only_for_auth_user'];
+        $this->notification_modal       = $data['notification_modal'] ?? 'global_notification';
+        $this->import_stats             = $data['import_stats'] ?? null;
     }
 
     /**
@@ -53,6 +70,8 @@ class GlobalNotification extends Notification
             'info_to_show'              => $this->info_to_show,
             'owner_id'                  => $this->owner_id,
             'is_only_for_auth_user'     => $this->is_only_for_auth_user,
+            'notification_modal'        => $this->notification_modal,
+            'import_stats'              => $this->import_stats,
         ]);
     }
 }

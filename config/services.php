@@ -56,4 +56,15 @@ return [
         'guzzle_ca_bundle' => env('MERCADO_LIBRE_GUZZLE_CA_BUNDLE', ''),
     ],
 
+    /*
+     * API Anthropic (Claude) — importación Excel asistida por IA.
+     * Misma configuración TLS que admin-api (WAMP/Windows suele requerir ANTHROPIC_CAINFO).
+     */
+    'anthropic' => [
+        'api_key'    => env('ANTHROPIC_API_KEY'),
+        'model'      => env('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514'),
+        'ca_bundle'  => env('ANTHROPIC_CAINFO'),
+        'verify_ssl' => filter_var(env('ANTHROPIC_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
+    ],
+
 ];

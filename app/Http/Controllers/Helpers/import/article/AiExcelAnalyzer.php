@@ -85,12 +85,13 @@ class AiExcelAnalyzer
     /**
      * Analiza el Excel recibido y devuelve el mapeo de columnas sugerido por Claude.
      *
-     * @param  string $excel_path  Ruta absoluta al archivo Excel ya guardado en storage
-     * @return array               Array con claves: column_mapping, provider_id, provider_confidence
+     * @param  string $excel_path           Ruta absoluta al archivo Excel ya guardado en storage
+     * @param  string $original_filename    Nombre del archivo tal como lo subió el usuario (pista para proveedor)
+     * @return array                        Array con claves: column_mapping, provider_id, provider_confidence
      *
      * @throws \RuntimeException  Si el archivo no puede leerse o Claude no devuelve JSON válido
      */
-    public function analyze(string $excel_path): array
+    public function analyze(string $excel_path, string $original_filename = ''): array
     {
         /*
          * Paso 1: Leer headers y filas de muestra del Excel.
@@ -107,14 +108,25 @@ class AiExcelAnalyzer
         /*
          * Paso 3: Construir el prompt y llamar a Claude.
          */
-        $prompt = $this->build_prompt($sample_data, $providers);
+        $prompt = $this->build_prompt($sample_data, $providers, $original_filename);
 
         $claude_response = $this->call_claude($prompt);
 
         /*
          * Paso 4: Parsear y validar el JSON devuelto por Claude.
          */
-        return $this->parse_claude_response($claude_response);
+        $parsed = $this->parse_claude_response($claude_response, $providers);
+
+        /*
+         * Paso 5: Enriquecer cada columna con letra Excel, índice 0-based y confianza normalizada
+         * para que el frontend muestre A, B, C… y use la posición real al importar.
+         */
+        $parsed['column_mapping'] = $this->enrich_column_mapping(
+            $parsed['column_mapping'],
+            $sample_data['headers']
+        );
+
+        return $parsed;
     }
 
     /**
@@ -212,12 +224,19 @@ class AiExcelAnalyzer
     /**
      * Construye el prompt que se envía a Claude con los datos del Excel y los proveedores.
      *
-     * @param  array $sample_data  Resultado de read_sample_rows()
-     * @param  array $providers    Lista de proveedores disponibles
-     * @return string              Prompt completo listo para enviar a la API
+     * @param  array  $sample_data        Resultado de read_sample_rows()
+     * @param  array  $providers          Lista de proveedores disponibles
+     * @param  string $original_filename  Nombre original del archivo subido por el usuario
+     * @return string                     Prompt completo listo para enviar a la API
      */
-    protected function build_prompt(array $sample_data, array $providers): string
+    protected function build_prompt(array $sample_data, array $providers, string $original_filename = ''): string
     {
+        /* Texto del nombre de archivo para el prompt (sin ruta, solo nombre + extensión). */
+        $filename_for_prompt = trim(basename($original_filename));
+        if ($filename_for_prompt === '') {
+            $filename_for_prompt = '(no disponible)';
+        }
+
         /* Armamos la cabecera del Excel como texto separado por pipes para Claude. */
         $headers_line = implode(' | ', $sample_data['headers']);
 
@@ -247,6 +266,11 @@ class AiExcelAnalyzer
         $prompt = <<<PROMPT
 Analizá el siguiente archivo Excel de importación de artículos y devolvé SOLO un JSON válido (sin markdown, sin explicaciones extra).
 
+## Nombre del archivo subido
+{$filename_for_prompt}
+
+(Usá este nombre como pista principal para inferir el proveedor: suele contener el nombre o siglas del distribuidor. Comparalo con la lista de proveedores disponibles.)
+
 ## Encabezados del Excel
 {$headers_line}
 
@@ -262,7 +286,7 @@ Analizá el siguiente archivo Excel de importación de artículos y devolvé SOL
 ## Instrucciones
 1. Analizá cada columna del Excel y mapeala a la propiedad del sistema más apropiada.
 2. Si una columna no corresponde a ninguna propiedad del sistema, usá null en system_property.
-3. Determiná a qué proveedor pertenece este listado de precios (si podés inferirlo).
+3. Determiná a qué proveedor pertenece este listado: priorizá el nombre del archivo; si no alcanza, usá encabezados y datos de muestra. El provider_id debe ser un ID de la lista de proveedores o null.
 4. Devolvé EXCLUSIVAMENTE el siguiente JSON sin texto adicional:
 
 {
@@ -297,10 +321,10 @@ PROMPT;
      */
     protected function call_claude(string $prompt): string
     {
-        /* Clave de API de Anthropic configurada en .env como ANTHROPIC_API_KEY. */
-        $api_key = config('app.ANTHROPIC_API_KEY');
+        /* Clave de API de Anthropic (config/services.php → ANTHROPIC_API_KEY). */
+        $api_key = (string) config('services.anthropic.api_key');
 
-        if (empty($api_key)) {
+        if ($api_key === '') {
             throw new \RuntimeException('La clave ANTHROPIC_API_KEY no está configurada en el entorno.');
         }
 
@@ -310,25 +334,20 @@ PROMPT;
         ]);
 
         /*
-         * Usamos el cliente HTTP nativo de Laravel para la llamada a Anthropic.
-         * El timeout es generoso porque Claude puede tardar varios segundos.
+         * Cliente HTTP con la misma configuración TLS que admin-api (ANTHROPIC_CAINFO / ANTHROPIC_VERIFY_SSL).
          */
-        $response = Http::timeout(60)
-            ->withHeaders([
-                'x-api-key'         => $api_key,
-                'anthropic-version' => '2023-06-01',
-                'content-type'      => 'application/json',
-            ])
-            ->post('https://api.anthropic.com/v1/messages', [
-                'model'      => self::CLAUDE_MODEL,
-                'max_tokens' => self::MAX_TOKENS,
-                'messages'   => [
-                    [
-                        'role'    => 'user',
-                        'content' => $prompt,
-                    ],
+        $http = $this->build_anthropic_http_client($api_key);
+
+        $response = $http->post('https://api.anthropic.com/v1/messages', [
+            'model'      => self::CLAUDE_MODEL,
+            'max_tokens' => self::MAX_TOKENS,
+            'messages'   => [
+                [
+                    'role'    => 'user',
+                    'content' => $prompt,
                 ],
-            ]);
+            ],
+        ]);
 
         if (!$response->successful()) {
             Log::error('AiExcelAnalyzer: error en respuesta de Claude', [
@@ -367,11 +386,12 @@ PROMPT;
      * se le pide que no lo haga, así que limpiamos esos artefactos primero.
      *
      * @param  string $claude_text  Texto crudo devuelto por Claude
+     * @param  array  $providers    Proveedores del usuario (para validar provider_id)
      * @return array                Array con claves: column_mapping, provider_id, provider_confidence
      *
      * @throws \RuntimeException  Si el JSON no puede parsearse o tiene estructura inválida
      */
-    protected function parse_claude_response(string $claude_text): array
+    protected function parse_claude_response(string $claude_text, array $providers = []): array
     {
         /*
          * Limpiamos posibles bloques de código markdown que Claude pueda incluir
@@ -403,13 +423,146 @@ PROMPT;
         }
 
         /*
-         * Normalizamos los valores opcionales para garantizar estructura consistente
-         * aunque Claude omita alguna clave.
+         * Normalizamos provider_id: solo IDs que existan en los proveedores del usuario.
          */
+        $provider_id = $parsed['provider_id'] ?? null;
+        if ($provider_id !== null) {
+            $provider_id = (int) $provider_id;
+            $valid_provider_ids = [];
+            foreach ($providers as $provider) {
+                $valid_provider_ids[(int) $provider['id']] = true;
+            }
+            if (!isset($valid_provider_ids[$provider_id])) {
+                Log::warning('AiExcelAnalyzer: provider_id devuelto por Claude no pertenece al usuario', [
+                    'provider_id' => $provider_id,
+                ]);
+                $provider_id = null;
+            }
+        }
+
+        $provider_confidence = $parsed['provider_confidence'] ?? 'bajo';
+        if (!in_array($provider_confidence, ['alto', 'medio', 'bajo'], true)) {
+            $provider_confidence = 'bajo';
+        }
+
+        if ($provider_id === null) {
+            $provider_confidence = 'bajo';
+        }
+
         return [
             'column_mapping'      => $parsed['column_mapping'],
-            'provider_id'         => $parsed['provider_id'] ?? null,
-            'provider_confidence' => $parsed['provider_confidence'] ?? 'bajo',
+            'provider_id'         => $provider_id,
+            'provider_confidence' => $provider_confidence,
         ];
+    }
+
+    /**
+     * Completa cada ítem del mapeo con letra de columna Excel, índice y confianza numérica.
+     *
+     * @param  array $column_mapping  Mapeo devuelto por Claude
+     * @param  array $headers           Encabezados de la primera fila del Excel (orden real)
+     * @return array                    Mismo mapeo enriquecido para la API
+     */
+    protected function enrich_column_mapping(array $column_mapping, array $headers): array
+    {
+        /* Índice por nombre de encabezado normalizado para ubicar la columna en el Excel. */
+        $header_index_by_name = [];
+        foreach ($headers as $header_index => $header_text) {
+            $normalized_key = $this->normalize_header_key($header_text);
+            if ($normalized_key !== '' && !isset($header_index_by_name[$normalized_key])) {
+                $header_index_by_name[$normalized_key] = $header_index;
+            }
+        }
+
+        $enriched_mapping = [];
+
+        foreach ($column_mapping as $array_position => $mapping_item) {
+            if (!is_array($mapping_item)) {
+                continue;
+            }
+
+            /* Confianza entre 0 y 1; si Claude omite el valor, asumimos 0. */
+            $raw_confidence = $mapping_item['confidence'] ?? 0;
+            $confidence = (float) $raw_confidence;
+            $confidence = max(0, min(1, $confidence));
+
+            $excel_column_name = (string) ($mapping_item['excel_column'] ?? '');
+            $normalized_excel_name = $this->normalize_header_key($excel_column_name);
+
+            /*
+             * Preferimos el índice que coincide con el encabezado leído del archivo;
+             * si no hay match, usamos la posición en el array (orden de Claude).
+             */
+            $excel_column_index = $array_position;
+            if ($normalized_excel_name !== '' && isset($header_index_by_name[$normalized_excel_name])) {
+                $excel_column_index = $header_index_by_name[$normalized_excel_name];
+            }
+
+            $enriched_mapping[] = array_merge($mapping_item, [
+                'confidence'          => $confidence,
+                'excel_column_index'  => $excel_column_index,
+                'excel_column_letter' => $this->number_to_excel_column($excel_column_index + 1),
+            ]);
+        }
+
+        return $enriched_mapping;
+    }
+
+    /**
+     * Normaliza un texto de encabezado para comparación insensible a mayúsculas y espacios.
+     *
+     * @param  mixed $value  Texto del encabezado
+     * @return string        Clave normalizada o cadena vacía
+     */
+    protected function normalize_header_key($value): string
+    {
+        return mb_strtolower(trim((string) $value));
+    }
+
+    /**
+     * Convierte un índice de columna 1-based (1 = A) a letra estilo Excel.
+     *
+     * @param  int $column_number  Número de columna (1 = A, 2 = B, …)
+     * @return string             Letra o letras de columna (p. ej. "AA")
+     */
+    protected function number_to_excel_column(int $column_number): string
+    {
+        $column_letter = '';
+
+        while ($column_number > 0) {
+            $remainder = ($column_number - 1) % 26;
+            $column_letter = chr(65 + $remainder) . $column_letter;
+            $column_number = (int) floor(($column_number - 1) / 26);
+        }
+
+        return $column_letter;
+    }
+
+    /**
+     * Arma el cliente HTTP hacia Anthropic con headers y TLS (ca_bundle / verify_ssl).
+     *
+     * Mismo criterio que admin-api SupportAiSuggestionService::build_http_client().
+     *
+     * @param  string $api_key  Clave ANTHROPIC_API_KEY
+     * @return \Illuminate\Http\Client\PendingRequest
+     */
+    protected function build_anthropic_http_client(string $api_key)
+    {
+        $http = Http::withHeaders([
+            'x-api-key'         => $api_key,
+            'anthropic-version' => '2023-06-01',
+            'content-type'      => 'application/json',
+        ])->timeout(60);
+
+        $verify_ssl = (bool) config('services.anthropic.verify_ssl', true);
+        $ca_bundle  = config('services.anthropic.ca_bundle');
+
+        if (!$verify_ssl) {
+            $http = $http->withoutVerifying();
+        } elseif (is_string($ca_bundle) && $ca_bundle !== '' && is_file($ca_bundle)) {
+            $http = $http->withOptions(['verify' => $ca_bundle]);
+        }
+
+        return $http;
     }
 }

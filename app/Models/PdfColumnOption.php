@@ -25,7 +25,7 @@ class PdfColumnOption extends Model
     public function pdf_column_profiles()
     {
         return $this->belongsToMany(PdfColumnProfile::class, 'pdf_column_option_profile')
-            ->withPivot(['visible', 'order', 'width', 'wrap_content'])
+            ->withPivot(['visible', 'order', 'width', 'wrap_content', 'font_size', 'text_align'])
             ->withTimestamps();
     }
 }

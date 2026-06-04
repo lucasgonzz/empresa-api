@@ -26,7 +26,7 @@ class AiExcelImportController extends Controller
      *
      * El archivo debe enviarse como multipart en el campo "excel_file".
      * La respuesta incluye:
-     *   - column_mapping: array de objetos { excel_column, system_property, confidence }
+     *   - column_mapping: array de objetos { excel_column, excel_column_letter, excel_column_index, system_property, confidence }
      *   - provider_id: id del proveedor inferido (null si no se pudo)
      *   - provider_confidence: "alto" | "medio" | "bajo"
      *   - excel_path: ruta relativa del archivo guardado (para reutilizarla en /import)
@@ -60,12 +60,19 @@ class AiExcelImportController extends Controller
              * Guardamos el archivo en storage para que AiExcelAnalyzer pueda leerlo
              * con OpenSpout, y también para reutilizarlo en el endpoint /import.
              */
+            /*
+             * Nombre original del archivo subido (p. ej. "Lista_Distribuidora_X.xlsx").
+             * Se envía a Claude para inferir el proveedor; el guardado en disco usa otro nombre.
+             */
+            $original_filename = (string) $request->file('excel_file')->getClientOriginalName();
+
             $filename       = 'ai_import_' . time() . '_' . Str::random(8) . '.xlsx';
             $excel_path     = $request->file('excel_file')->storeAs('imported_files', $filename);
             $excel_full_path = storage_path('app/' . $excel_path);
 
             Log::info('AiExcelImportController::analyze - archivo guardado', [
-                'excel_path' => $excel_path,
+                'excel_path'         => $excel_path,
+                'original_filename'  => $original_filename,
             ]);
 
             /*
@@ -73,7 +80,7 @@ class AiExcelImportController extends Controller
              * y poder inferir cuál corresponde al listado analizado.
              */
             $analyzer = new AiExcelAnalyzer($this->userId());
-            $analysis = $analyzer->analyze($excel_full_path);
+            $analysis = $analyzer->analyze($excel_full_path, $original_filename);
 
             return response()->json([
                 'column_mapping'      => $analysis['column_mapping'],

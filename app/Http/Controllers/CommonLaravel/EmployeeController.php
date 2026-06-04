@@ -30,6 +30,7 @@ class EmployeeController extends Controller
         }
         
         $model->name                                            = $request->name;
+        $model->phone                                           = $request->phone;
         $model->address_id                                      = $request->address_id;
         $model->visible_password                                = $request->visible_password;
         $model->admin_access                                    = $request->admin_access;
@@ -67,6 +68,7 @@ class EmployeeController extends Controller
         if (!$this->docNumerRegister($request->doc_number)) {
             $model = User::create([
                 'name'              => ucfirst($request->name),
+                'phone'             => $request->phone,
                 'doc_number'        => $request->doc_number,
                 'admin_access'      => $request->admin_access,
                 'visible_password'  => $request->visible_password,
