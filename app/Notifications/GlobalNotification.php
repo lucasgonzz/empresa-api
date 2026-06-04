@@ -34,6 +34,13 @@ class GlobalNotification extends Notification
      */
     public $import_stats;
 
+    /**
+     * Configuración utilizada en la importación (rango de filas, operación, opciones avanzadas).
+     *
+     * @var array|null
+     */
+    public $import_options;
+
     public function __construct($data)
     {
         $this->message_text             = $data['message_text'];
@@ -44,6 +51,7 @@ class GlobalNotification extends Notification
         $this->is_only_for_auth_user    = $data['is_only_for_auth_user'];
         $this->notification_modal       = $data['notification_modal'] ?? 'global_notification';
         $this->import_stats             = $data['import_stats'] ?? null;
+        $this->import_options           = $data['import_options'] ?? null;
     }
 
     /**
@@ -72,6 +80,7 @@ class GlobalNotification extends Notification
             'is_only_for_auth_user'     => $this->is_only_for_auth_user,
             'notification_modal'        => $this->notification_modal,
             'import_stats'              => $this->import_stats,
+            'import_options'            => $this->import_options,
         ]);
     }
 }

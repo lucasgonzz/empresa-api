@@ -27,7 +27,12 @@ class InitExcelImport
     {
         $this->import_uuid              = $data['import_uuid'];
         $this->archivo_excel            = $data['archivo_excel'];
-        $this->columns                  = $data['columns'];
+        /*
+         * Normalizamos claves del mapeo (p. ej. importación con IA: codigo_proveedor → codigo_de_proveedor).
+         */
+        $this->columns                  = ArticleImportColumnsNormalizer::normalize(
+            is_array($data['columns'] ?? null) ? $data['columns'] : []
+        );
         $this->create_and_edit          = $data['create_and_edit'];
         $this->start_row                = $data['start_row'];
         $this->finish_row               = $data['finish_row'];

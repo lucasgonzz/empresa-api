@@ -49,9 +49,9 @@ class AiExcelAnalyzer
      */
     protected const SYSTEM_PROPERTIES = [
         'nombre',
-        'codigo_barras',
+        'codigo_de_barras',
         'sku',
-        'codigo_proveedor',
+        'codigo_de_proveedor',
         'costo',
         'precio',
         'iva',
@@ -124,6 +124,10 @@ class AiExcelAnalyzer
         $parsed['column_mapping'] = $this->enrich_column_mapping(
             $parsed['column_mapping'],
             $sample_data['headers']
+        );
+
+        $parsed['column_mapping'] = $this->apply_nombre_descripcion_interpretation_rules(
+            $parsed['column_mapping']
         );
 
         return $parsed;
@@ -283,10 +287,21 @@ Analizá el siguiente archivo Excel de importación de artículos y devolvé SOL
 ## Propiedades del sistema disponibles
 {$system_properties_list}
 
-## Instrucciones
+## Instrucciones generales
 1. Analizá cada columna del Excel y mapeala a la propiedad del sistema más apropiada.
 2. Si una columna no corresponde a ninguna propiedad del sistema, usá null en system_property.
 3. Determiná a qué proveedor pertenece este listado: priorizá el nombre del archivo; si no alcanza, usá encabezados y datos de muestra. El provider_id debe ser un ID de la lista de proveedores o null.
+
+## Regla crítica: nombre del artículo (propiedad "nombre")
+- El dato más importante para importar es el **nombre** del artículo (propiedad del sistema: nombre).
+- En listas de proveedor/distribuidor es MUY frecuente que la columna del Excel se llame "DESCRIPCION", "Descripción", "DETALLE" o similar, pero su contenido es en realidad el **nombre del producto** (texto largo identificatorio), NO la descripción complementaria del sistema.
+- Si NO existe otra columna claramente dedicada al nombre (encabezados como "Nombre", "Name", "Artículo", "Producto", "Denominación"):
+  - Mapeá esa columna "Descripción" (o equivalente) a system_property **nombre**, NO a descripcion.
+  - Usá confidence como máximo **0.78** (no estás 100% seguro).
+  - Completá **interpretation_note** en español, indicando explícitamente que interpretás esa columna como el nombre del artículo para que el usuario lo valide. Ejemplo: "Interpretamos la columna «DESCRIPCION» como el nombre del artículo; en este tipo de listados suele ser el dato principal del producto."
+- Solo mapeá una columna a system_property **descripcion** cuando YA identificaste otra columna distinta mapeada a **nombre** (es decir: hay nombre de producto en una columna y texto complementario en otra).
+- Si existen columnas separadas "Nombre" y "Descripción", mapeá "Nombre" → nombre (confidence alta) y "Descripción" → descripcion solo si el contenido parece texto complementario; si la segunda sigue siendo el nombre largo del producto, mapeala a nombre o null, nunca a descripcion.
+
 4. Devolvé EXCLUSIVAMENTE el siguiente JSON sin texto adicional:
 
 {
@@ -294,7 +309,8 @@ Analizá el siguiente archivo Excel de importación de artículos y devolvé SOL
     {
       "excel_column": "nombre exacto del encabezado en el Excel",
       "system_property": "propiedad del sistema o null",
-      "confidence": 0.95
+      "confidence": 0.95,
+      "interpretation_note": "texto en español para el usuario o null"
     }
   ],
   "provider_id": null,
@@ -303,6 +319,7 @@ Analizá el siguiente archivo Excel de importación de artículos y devolvé SOL
 
 Notas:
 - confidence es un número entre 0 y 1 indicando seguridad del mapeo
+- interpretation_note: obligatorio en español cuando interpretás "Descripción" (u homólogo) como nombre; null en el resto de los casos
 - provider_confidence debe ser "alto", "medio" o "bajo"
 - provider_id debe ser el ID numérico del proveedor o null si no se puede inferir
 - Devolvé SOLO el JSON, sin markdown ni texto adicional
@@ -498,14 +515,173 @@ PROMPT;
                 $excel_column_index = $header_index_by_name[$normalized_excel_name];
             }
 
+            /* Alineamos system_property al contrato del importador (codigo_de_proveedor, etc.). */
+            $system_property = $mapping_item['system_property'] ?? null;
+            if (!is_null($system_property)) {
+                $system_property = ArticleImportColumnsNormalizer::normalize_property_key($system_property);
+            }
+
+            /* Nota opcional para el usuario cuando la IA reinterpreta un encabezado (p. ej. Descripción → nombre). */
+            $interpretation_note = $mapping_item['interpretation_note'] ?? null;
+            if (is_string($interpretation_note)) {
+                $interpretation_note = trim($interpretation_note);
+                if ($interpretation_note === '') {
+                    $interpretation_note = null;
+                }
+            } else {
+                $interpretation_note = null;
+            }
+
             $enriched_mapping[] = array_merge($mapping_item, [
-                'confidence'          => $confidence,
-                'excel_column_index'  => $excel_column_index,
-                'excel_column_letter' => $this->number_to_excel_column($excel_column_index + 1),
+                'system_property'      => $system_property,
+                'confidence'           => $confidence,
+                'interpretation_note'  => $interpretation_note,
+                'excel_column_index'   => $excel_column_index,
+                'excel_column_letter'  => $this->number_to_excel_column($excel_column_index + 1),
             ]);
         }
 
         return $enriched_mapping;
+    }
+
+    /**
+     * Ajusta mapeos Descripción/nombre según reglas de negocio si Claude no las aplicó del todo.
+     *
+     * @param  array $column_mapping  Mapeo enriquecido
+     * @return array                 Mapeo corregido con interpretation_note cuando corresponda
+     */
+    protected function apply_nombre_descripcion_interpretation_rules(array $column_mapping): array
+    {
+        /* ¿Hay alguna columna ya mapeada a nombre desde un encabezado explícito de nombre? */
+        $has_nombre_from_clear_header = false;
+
+        foreach ($column_mapping as $mapping_item) {
+            if (!is_array($mapping_item)) {
+                continue;
+            }
+
+            $header_key = $this->normalize_header_key($mapping_item['excel_column'] ?? '');
+            $system_property = $mapping_item['system_property'] ?? null;
+
+            if (
+                $system_property === 'nombre'
+                && $this->header_indicates_clear_product_name($header_key)
+            ) {
+                $has_nombre_from_clear_header = true;
+                break;
+            }
+        }
+
+        foreach ($column_mapping as $index => $mapping_item) {
+            if (!is_array($mapping_item)) {
+                continue;
+            }
+
+            $excel_column_label = (string) ($mapping_item['excel_column'] ?? '');
+            $header_key = $this->normalize_header_key($excel_column_label);
+            $system_property = $mapping_item['system_property'] ?? null;
+
+            if (!$this->header_indicates_descripcion_label($header_key)) {
+                continue;
+            }
+
+            /*
+             * Sin columna "Nombre" clara: la columna Descripción del Excel debe alimentar nombre.
+             */
+            if (!$has_nombre_from_clear_header) {
+                if ($system_property === 'descripcion' || is_null($system_property)) {
+                    $column_mapping[$index]['system_property'] = 'nombre';
+                    $system_property = 'nombre';
+                }
+
+                if ($system_property === 'nombre') {
+                    $column_mapping[$index]['confidence'] = min(
+                        (float) ($column_mapping[$index]['confidence'] ?? 0.7),
+                        0.78
+                    );
+
+                    if (empty($column_mapping[$index]['interpretation_note'])) {
+                        $column_mapping[$index]['interpretation_note'] =
+                            'Interpretamos la columna «' . $excel_column_label . '» como el nombre del artículo; '
+                            . 'en listas de proveedor suele llamarse descripción pero identifica el producto. '
+                            . 'Revisá el mapeo antes de importar.';
+                    }
+                }
+
+                continue;
+            }
+
+            /*
+             * Ya hay nombre en otra columna: descripcion solo si Claude la asignó explícitamente.
+             * Si quedó como nombre por error en una segunda columna "Descripción", pasar a descripcion.
+             */
+            if ($system_property === 'nombre' && $has_nombre_from_clear_header) {
+                $column_mapping[$index]['system_property'] = 'descripcion';
+                $column_mapping[$index]['interpretation_note'] = null;
+            }
+        }
+
+        return $column_mapping;
+    }
+
+    /**
+     * Indica si el encabezado del Excel suele ser el nombre explícito del producto.
+     *
+     * @param  string $header_key  Encabezado normalizado
+     * @return bool
+     */
+    protected function header_indicates_clear_product_name(string $header_key): bool
+    {
+        if ($header_key === '') {
+            return false;
+        }
+
+        $clear_name_tokens = [
+            'nombre',
+            'name',
+            'articulo',
+            'artículo',
+            'producto',
+            'denominacion',
+            'denominación',
+        ];
+
+        foreach ($clear_name_tokens as $token) {
+            if (strpos($header_key, $token) !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Indica si el encabezado del Excel es el típico "Descripción" de listas de proveedor.
+     *
+     * @param  string $header_key  Encabezado normalizado
+     * @return bool
+     */
+    protected function header_indicates_descripcion_label(string $header_key): bool
+    {
+        if ($header_key === '') {
+            return false;
+        }
+
+        $descripcion_tokens = [
+            'descripcion',
+            'descripción',
+            'desc ',
+            'detalle',
+            'detalle producto',
+        ];
+
+        foreach ($descripcion_tokens as $token) {
+            if (strpos($header_key, $token) !== false) {
+                return true;
+            }
+        }
+
+        return $header_key === 'desc';
     }
 
     /**

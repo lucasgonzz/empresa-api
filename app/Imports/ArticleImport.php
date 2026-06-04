@@ -167,9 +167,9 @@ class ArticleImport implements ToCollection
     }
 
     function checkRow($row) {
-        return !is_null(ImportHelper::getColumnValue($row, 'nombre', $this->columns)) 
-            || !is_null(ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns)) 
-            || !is_null(ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns)) 
+        return !is_null(ImportHelper::getColumnValueByAliases($row, ['nombre', 'descripcion'], $this->columns))
+            || !is_null(ImportHelper::getColumnValueByAliases($row, ['codigo_de_proveedor', 'codigo_proveedor'], $this->columns))
+            || !is_null(ImportHelper::getColumnValueByAliases($row, ['codigo_de_barras', 'codigo_barras'], $this->columns))
             || !is_null(ImportHelper::getColumnValue($row, 'numero', $this->columns));
     }
 
