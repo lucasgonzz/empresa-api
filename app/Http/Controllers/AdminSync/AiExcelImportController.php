@@ -5,11 +5,17 @@ namespace App\Http\Controllers\AdminSync;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use App\Http\Controllers\Helpers\import\article\InitExcelImport;
+use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
+use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
+use App\Imports\ClientImport;
+use App\Imports\ProviderImport;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Maatwebsite\Excel\Facades\Excel;
 
 /**
  * Importación de Excel asistida por IA expuesta vía admin-sync.
@@ -53,13 +59,6 @@ class AiExcelImportController extends Controller
         $user_id = (int) $request->input('user_id');
         $model   = (string) $request->input('model');
 
-        /* Análisis con IA solo disponible para artículos por ahora. */
-        if ($model === 'client' || $model === 'provider') {
-            return response()->json([
-                'message' => 'El análisis de ' . ($model === 'client' ? 'clientes' : 'proveedores') . ' no está disponible vía admin-sync aún.',
-            ], 501);
-        }
-
         $excel_validation = $this->validate_excel_file($request);
         if ($excel_validation instanceof JsonResponse) {
             return $excel_validation;
@@ -67,7 +66,7 @@ class AiExcelImportController extends Controller
 
         try {
             /*
-             * Nombre original del archivo subido; se envía a Claude para inferir proveedor.
+             * Nombre original del archivo subido; se envía a Claude como pista contextual.
              */
             $original_filename = (string) $request->file('excel_file')->getClientOriginalName();
 
@@ -83,7 +82,18 @@ class AiExcelImportController extends Controller
                 'model'             => $model,
             ]);
 
-            $analyzer = new AiExcelAnalyzer($user_id);
+            /*
+             * Instanciamos el analizador correspondiente al modelo indicado.
+             * Todos implementan el mismo contrato: analyze(string $path, string $filename): array.
+             */
+            if ($model === 'client') {
+                $analyzer = new AiClientAnalyzer($user_id);
+            } elseif ($model === 'provider') {
+                $analyzer = new AiProviderAnalyzer($user_id);
+            } else {
+                $analyzer = new AiExcelAnalyzer($user_id);
+            }
+
             $analysis = $analyzer->analyze($excel_full_path, $original_filename);
 
             return response()->json([
@@ -143,13 +153,6 @@ class AiExcelImportController extends Controller
         $user_id = (int) $request->input('user_id');
         $model   = (string) $request->input('model');
 
-        /* Importación admin-sync solo implementada para artículos por ahora. */
-        if ($model === 'client' || $model === 'provider') {
-            return response()->json([
-                'message' => 'La importación de ' . ($model === 'client' ? 'clientes' : 'proveedores') . ' no está disponible vía admin-sync aún.',
-            ], 501);
-        }
-
         $excel_path = $request->input('excel_path');
 
         if (empty($excel_path)) {
@@ -174,6 +177,21 @@ class AiExcelImportController extends Controller
             ], 403);
         }
 
+        /*
+         * Derivamos la importación al handler correspondiente según el modelo.
+         * - article: usa InitExcelImport (jobs en background con chunks).
+         * - client/provider: usa Maatwebsite Excel directamente, igual que los
+         *   controladores web de clientes y proveedores.
+         */
+        if ($model === 'client') {
+            return $this->import_clients($request, $user_id, $excel_full_path);
+        }
+
+        if ($model === 'provider') {
+            return $this->import_providers($request, $user_id, $excel_full_path);
+        }
+
+        /* model === 'article': flujo original con InitExcelImport. */
         $import_uuid = (string) Str::uuid();
 
         $excel_import = new InitExcelImport();
@@ -208,6 +226,136 @@ class AiExcelImportController extends Controller
         }
 
         return response(null, 200);
+    }
+
+    /**
+     * Ejecuta la importación de clientes usando Maatwebsite Excel y ClientImport.
+     *
+     * ClientImport usa internamente Controller::userId() → UserHelper::userId() → Auth::user().
+     * En el contexto admin-sync no hay sesión autenticada, por lo que hacemos login temporal
+     * del owner antes de lanzar el import y logout inmediatamente después.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  int                       $user_id         ID del usuario owner
+     * @param  string                    $excel_full_path  Ruta absoluta al archivo Excel
+     * @return \Illuminate\Http\JsonResponse
+     */
+    protected function import_clients(Request $request, int $user_id, string $excel_full_path): JsonResponse
+    {
+        /* Parámetros de importación extraídos del request. */
+        $columns        = $request->input('columns', []);
+        $create_and_edit = $request->input('create_and_edit', true);
+        $start_row      = (int) $request->input('start_row', 2);
+        $finish_row     = $request->input('finish_row', null);
+
+        /* El finish_row vacío o cero se trata como "hasta la última fila". */
+        if ($finish_row === '' || $finish_row === '0' || $finish_row === 0) {
+            $finish_row = null;
+        } elseif (!is_null($finish_row)) {
+            $finish_row = (int) $finish_row;
+        }
+
+        try {
+            /*
+             * Login temporal del owner para que ClientImport pueda resolver userId()
+             * correctamente en este contexto sin sesión autenticada.
+             */
+            Auth::loginUsingId($user_id);
+
+            Excel::import(
+                new ClientImport($columns, $create_and_edit, $start_row, $finish_row),
+                $excel_full_path
+            );
+
+            Auth::logout();
+
+            Log::info('AdminSync\\AiExcelImportController::import_clients - importación finalizada', [
+                'user_id'  => $user_id,
+                'start_row' => $start_row,
+                'finish_row' => $finish_row,
+            ]);
+
+            return response()->json(['message' => 'Importación de clientes iniciada.'], 200);
+
+        } catch (\Throwable $e) {
+            /* Asegurar logout incluso ante error para no dejar sesión colgada. */
+            Auth::logout();
+
+            Log::error('AdminSync\\AiExcelImportController::import_clients - error', [
+                'message' => $e->getMessage(),
+                'trace'   => $e->getTraceAsString(),
+                'user_id' => $user_id,
+            ]);
+
+            return response()->json([
+                'message' => 'Ocurrió un error al importar clientes: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Ejecuta la importación de proveedores usando Maatwebsite Excel y ProviderImport.
+     *
+     * Mismo patrón que import_clients: login temporal del owner antes del import
+     * y logout inmediato después para resolver userId() en contexto admin-sync.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  int                       $user_id         ID del usuario owner
+     * @param  string                    $excel_full_path  Ruta absoluta al archivo Excel
+     * @return \Illuminate\Http\JsonResponse
+     */
+    protected function import_providers(Request $request, int $user_id, string $excel_full_path): JsonResponse
+    {
+        /* Parámetros de importación extraídos del request. */
+        $columns        = $request->input('columns', []);
+        $create_and_edit = $request->input('create_and_edit', true);
+        $start_row      = (int) $request->input('start_row', 2);
+        $finish_row     = $request->input('finish_row', null);
+
+        /* El finish_row vacío o cero se trata como "hasta la última fila". */
+        if ($finish_row === '' || $finish_row === '0' || $finish_row === 0) {
+            $finish_row = null;
+        } elseif (!is_null($finish_row)) {
+            $finish_row = (int) $finish_row;
+        }
+
+        try {
+            /*
+             * Login temporal del owner para que ProviderImport pueda resolver userId()
+             * correctamente en este contexto sin sesión autenticada.
+             * El quinto parámetro ($provider_id) es null porque no aplica en este flujo.
+             */
+            Auth::loginUsingId($user_id);
+
+            Excel::import(
+                new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null),
+                $excel_full_path
+            );
+
+            Auth::logout();
+
+            Log::info('AdminSync\\AiExcelImportController::import_providers - importación finalizada', [
+                'user_id'   => $user_id,
+                'start_row' => $start_row,
+                'finish_row' => $finish_row,
+            ]);
+
+            return response()->json(['message' => 'Importación de proveedores iniciada.'], 200);
+
+        } catch (\Throwable $e) {
+            /* Asegurar logout incluso ante error para no dejar sesión colgada. */
+            Auth::logout();
+
+            Log::error('AdminSync\\AiExcelImportController::import_providers - error', [
+                'message' => $e->getMessage(),
+                'trace'   => $e->getTraceAsString(),
+                'user_id' => $user_id,
+            ]);
+
+            return response()->json([
+                'message' => 'Ocurrió un error al importar proveedores: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 
     /**
