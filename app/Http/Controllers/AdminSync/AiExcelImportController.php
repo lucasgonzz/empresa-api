@@ -91,6 +91,8 @@ class AiExcelImportController extends Controller
                 'provider_id'         => $analysis['provider_id'],
                 'provider_confidence' => $analysis['provider_confidence'],
                 'excel_path'          => $excel_path,
+                /* Conteo real de filas de datos del Excel (excluye cabecera). */
+                'row_count'           => $analysis['row_count'] ?? 0,
             ], 200);
 
         } catch (\RuntimeException $e) {

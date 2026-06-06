@@ -130,6 +130,12 @@ class AiExcelAnalyzer
             $parsed['column_mapping']
         );
 
+        /*
+         * Paso 6: Contar el total real de filas de datos del Excel (excluye cabecera)
+         * para que el caller pueda informarlo al cliente sin estimaciones heurísticas.
+         */
+        $parsed['row_count'] = $this->count_data_rows($excel_path);
+
         return $parsed;
     }
 
@@ -693,6 +699,51 @@ PROMPT;
     protected function normalize_header_key($value): string
     {
         return mb_strtolower(trim((string) $value));
+    }
+
+    /**
+     * Cuenta el total de filas de datos del Excel (excluye la primera fila de cabecera).
+     *
+     * Realiza una pasada completa sobre la primera hoja para obtener el conteo real;
+     * no carga los valores en memoria, solo itera los objetos de fila de OpenSpout.
+     *
+     * @param  string $excel_path  Ruta absoluta al archivo Excel
+     * @return int                 Cantidad de filas de datos (0 si el archivo está vacío o solo tiene cabecera)
+     */
+    protected function count_data_rows(string $excel_path): int
+    {
+        /* Contador de filas de datos (sin contar la primera fila de cabecera). */
+        $data_row_count = 0;
+
+        /*
+         * Usamos setShouldPreserveEmptyRows(false) para no contar filas completamente vacías
+         * que algunos Excel incluyen al final del rango.
+         */
+        $reader = ReaderEntityFactory::createXLSXReader();
+        $reader->setShouldPreserveEmptyRows(false);
+        $reader->open($excel_path);
+
+        foreach ($reader->getSheetIterator() as $sheet) {
+            /* Bandera para saltar la primera fila (cabecera). */
+            $first_row_skipped = false;
+
+            foreach ($sheet->getRowIterator() as $row) {
+                if (! $first_row_skipped) {
+                    /* Saltamos la fila de encabezados; no cuenta como dato. */
+                    $first_row_skipped = true;
+                    continue;
+                }
+
+                $data_row_count++;
+            }
+
+            /* Solo procesamos la primera hoja. */
+            break;
+        }
+
+        $reader->close();
+
+        return $data_row_count;
     }
 
     /**
