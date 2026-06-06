@@ -4,10 +4,15 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use App\Http\Controllers\Helpers\import\article\InitExcelImport;
+use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
+use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
+use App\Imports\ClientImport;
+use App\Imports\ProviderImport;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Maatwebsite\Excel\Facades\Excel;
 
 /**
  * Controlador para la importación de artículos asistida por Claude IA.
@@ -76,10 +81,20 @@ class AiExcelImportController extends Controller
             ]);
 
             /*
-             * El analizador recibe el user_id del owner para filtrar sus proveedores
-             * y poder inferir cuál corresponde al listado analizado.
+             * Elegimos el analizador según el modelo indicado en el request.
+             * El default es 'article' para mantener compatibilidad con llamadas que no envían model.
              */
-            $analyzer = new AiExcelAnalyzer($this->userId());
+            $model = (string) $request->input('model', 'article');
+
+            if ($model === 'client') {
+                $analyzer = new AiClientAnalyzer($this->userId());
+            } elseif ($model === 'provider') {
+                $analyzer = new AiProviderAnalyzer($this->userId());
+            } else {
+                /* model === 'article' o cualquier valor no reconocido: comportamiento original. */
+                $analyzer = new AiExcelAnalyzer($this->userId());
+            }
+
             $analysis = $analyzer->analyze($excel_full_path, $original_filename);
 
             return response()->json([
@@ -88,6 +103,8 @@ class AiExcelImportController extends Controller
                 'provider_confidence' => $analysis['provider_confidence'],
                 /* Devolvemos la ruta relativa para que el frontend la envíe en /import. */
                 'excel_path'          => $excel_path,
+                /* Conteo real de filas de datos (excluye cabecera). */
+                'row_count'           => $analysis['row_count'] ?? 0,
             ], 200);
 
         } catch (\RuntimeException $e) {
@@ -163,6 +180,22 @@ class AiExcelImportController extends Controller
             ], 403);
         }
 
+        /*
+         * Derivamos la importación al handler correspondiente según el modelo.
+         * En este contexto el usuario ya está autenticado (Bearer token),
+         * por lo que ClientImport y ProviderImport pueden resolver userId() directamente.
+         */
+        $model = (string) $request->input('model', 'article');
+
+        if ($model === 'client') {
+            return $this->import_clients($request, $excel_full_path);
+        }
+
+        if ($model === 'provider') {
+            return $this->import_providers($request, $excel_full_path);
+        }
+
+        /* model === 'article': flujo original con InitExcelImport. */
         $import_uuid = (string) Str::uuid();
 
         /*
@@ -201,5 +234,113 @@ class AiExcelImportController extends Controller
         }
 
         return response(null, 200);
+    }
+
+    /**
+     * Ejecuta la importación de clientes usando Maatwebsite Excel y ClientImport.
+     *
+     * En este controlador el usuario está autenticado vía Bearer token, por lo que
+     * ClientImport resuelve userId() correctamente sin necesidad de login temporal.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  string                    $excel_full_path  Ruta absoluta al archivo Excel
+     * @return \Illuminate\Http\JsonResponse
+     */
+    protected function import_clients(Request $request, string $excel_full_path)
+    {
+        /* Parámetros de importación extraídos del request. */
+        $columns         = $request->input('columns', []);
+        $create_and_edit = $request->input('create_and_edit', true);
+        $start_row       = (int) $request->input('start_row', 2);
+        $finish_row      = $request->input('finish_row', null);
+
+        /* Tratar finish_row vacío o cero como "hasta la última fila". */
+        if ($finish_row === '' || $finish_row === '0' || $finish_row === 0) {
+            $finish_row = null;
+        } elseif (!is_null($finish_row)) {
+            $finish_row = (int) $finish_row;
+        }
+
+        try {
+            Excel::import(
+                new ClientImport($columns, $create_and_edit, $start_row, $finish_row),
+                $excel_full_path
+            );
+
+            Log::info('AiExcelImportController::import_clients - importación finalizada', [
+                'user_id'    => $this->userId(),
+                'start_row'  => $start_row,
+                'finish_row' => $finish_row,
+            ]);
+
+            return response()->json(['message' => 'Importación de clientes iniciada.'], 200);
+
+        } catch (\Throwable $e) {
+            Log::error('AiExcelImportController::import_clients - error', [
+                'message' => $e->getMessage(),
+                'trace'   => $e->getTraceAsString(),
+                'user_id' => $this->userId(),
+            ]);
+
+            return response()->json([
+                'message' => 'Ocurrió un error al importar clientes: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Ejecuta la importación de proveedores usando Maatwebsite Excel y ProviderImport.
+     *
+     * En este controlador el usuario está autenticado vía Bearer token, por lo que
+     * ProviderImport resuelve userId() correctamente sin necesidad de login temporal.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  string                    $excel_full_path  Ruta absoluta al archivo Excel
+     * @return \Illuminate\Http\JsonResponse
+     */
+    protected function import_providers(Request $request, string $excel_full_path)
+    {
+        /* Parámetros de importación extraídos del request. */
+        $columns         = $request->input('columns', []);
+        $create_and_edit = $request->input('create_and_edit', true);
+        $start_row       = (int) $request->input('start_row', 2);
+        $finish_row      = $request->input('finish_row', null);
+
+        /* Tratar finish_row vacío o cero como "hasta la última fila". */
+        if ($finish_row === '' || $finish_row === '0' || $finish_row === 0) {
+            $finish_row = null;
+        } elseif (!is_null($finish_row)) {
+            $finish_row = (int) $finish_row;
+        }
+
+        try {
+            /*
+             * El quinto parámetro ($provider_id) es null; en importación de proveedores
+             * no se asigna un proveedor padre al registro importado.
+             */
+            Excel::import(
+                new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null),
+                $excel_full_path
+            );
+
+            Log::info('AiExcelImportController::import_providers - importación finalizada', [
+                'user_id'    => $this->userId(),
+                'start_row'  => $start_row,
+                'finish_row' => $finish_row,
+            ]);
+
+            return response()->json(['message' => 'Importación de proveedores iniciada.'], 200);
+
+        } catch (\Throwable $e) {
+            Log::error('AiExcelImportController::import_providers - error', [
+                'message' => $e->getMessage(),
+                'trace'   => $e->getTraceAsString(),
+                'user_id' => $this->userId(),
+            ]);
+
+            return response()->json([
+                'message' => 'Ocurrió un error al importar proveedores: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 }
