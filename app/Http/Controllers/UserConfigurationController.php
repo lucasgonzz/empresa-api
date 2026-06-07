@@ -34,6 +34,29 @@ class UserConfigurationController extends Controller
         return response()->json(['model' => $this->fullModel('UserConfiguration', $model->id)], 200);
     }
 
+    /**
+     * Actualiza el ancho personalizado de los paneles izquierdo y derecho
+     * del módulo de vender para el usuario autenticado.
+     *
+     * Busca la UserConfiguration del usuario autenticado y persiste
+     * los anchos recibidos. No modifica el método update() existente
+     * para no afectar el flujo de configuración general.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function updateVenderLayout(Request $request) {
+        /* Recuperar la configuración del usuario autenticado */
+        $model = UserConfiguration::where('user_id', $this->userId())->first();
+
+        /* Persistir los anchos de panel recibidos desde el frontend */
+        $model->vender_left_width  = $request->vender_left_width;
+        $model->vender_right_width = $request->vender_right_width;
+        $model->save();
+
+        return response()->json(['model' => $this->fullModel('UserConfiguration', $model->id)], 200);
+    }
+
     public function destroy($id) {
         $model = UserConfiguration::find($id);
         ImageController::deleteModelImages($model);

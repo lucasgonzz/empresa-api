@@ -39,6 +39,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
 
+    // Configuración de layout del módulo de vender por usuario
+    Route::put('user-configuration/vender-layout', 'UserConfigurationController@updateVenderLayout');
+
     // Employee
     Route::resource('employee', 'CommonLaravel\EmployeeController');
 
