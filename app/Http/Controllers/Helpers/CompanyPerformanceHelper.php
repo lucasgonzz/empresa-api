@@ -134,6 +134,22 @@ class CompanyPerformanceHelper {
 
             $helper->set_addresses_relation();
 
+            /* Buscar el snapshot de deuda más reciente disponible hasta el último día del segmento.
+               Se usa el snapshot para no calcular la deuda en tiempo real en reportes históricos. */
+            $snapshot = \App\Models\DebtSnapshot::where('user_id', $this->user_id)
+                ->where('date', '<=', $segmento_fin->toDateString())
+                ->orderBy('date', 'desc')
+                ->first();
+
+            /* Asignar los valores de deuda desde el snapshot (null si no hay snapshot disponible) */
+            $company_performance->deuda_clientes        = $snapshot?->deuda_clientes ?? null;
+            $company_performance->deuda_clientes_usd    = $snapshot?->deuda_clientes_usd ?? null;
+            $company_performance->deuda_proveedores     = $snapshot?->deuda_proveedores ?? null;
+            $company_performance->deuda_proveedores_usd = $snapshot?->deuda_proveedores_usd ?? null;
+
+            /* Flag para que el frontend sepa si hay datos históricos de deuda para este segmento */
+            $company_performance->snapshot_disponible = !is_null($snapshot);
+
             $this->meses_anteriores[] = $company_performance;
 
             /* Eliminar el registro temporal para no contaminar la caché de reportes */
@@ -208,6 +224,20 @@ class CompanyPerformanceHelper {
             'rentabilidad'                      => 0,
             'rentabilidad_usd'                      => 0,
             'company_performance_info_facturacion'  => [],
+
+            /* Deudas: son un stock (no un flujo), se toma inicio y fin del período.
+               Inicio = snapshot del primer segmento con datos; fin = snapshot del último segmento con datos. */
+            'deuda_clientes_inicio'             => null,
+            'deuda_clientes_fin'                => null,
+            'deuda_clientes_usd_inicio'         => null,
+            'deuda_clientes_usd_fin'            => null,
+            'deuda_proveedores_inicio'          => null,
+            'deuda_proveedores_fin'             => null,
+            'deuda_proveedores_usd_inicio'      => null,
+            'deuda_proveedores_usd_fin'         => null,
+
+            /* true si al menos un segmento tiene snapshot de deuda disponible */
+            'snapshot_disponible'               => false,
         ];
 
         $this->set_payment_methods();
@@ -277,6 +307,28 @@ class CompanyPerformanceHelper {
             $this->sumar_payment_methods_relation($company_performance, 'users_payment_methods_formated', 'user');
             $this->sumar_payment_methods_relation($company_performance, 'addresses_payment_methods_formated', 'address');
 
+            /* Deudas: son un stock (no un flujo), se registra inicio y fin del período.
+               Solo se actualiza con segmentos que tienen snapshot disponible.
+               El valor de inicio se toma del primer segmento con snapshot; el de fin, del último. */
+            if ($company_performance->snapshot_disponible) {
+
+                /* Marcar que el resumen tiene al menos un segmento con snapshot */
+                $this->suma_company_performances['snapshot_disponible'] = true;
+
+                /* Inicio: se fija con el primer segmento que tenga snapshot (solo si aún es null) */
+                if (is_null($this->suma_company_performances['deuda_clientes_inicio'])) {
+                    $this->suma_company_performances['deuda_clientes_inicio']        = $company_performance->deuda_clientes;
+                    $this->suma_company_performances['deuda_clientes_usd_inicio']    = $company_performance->deuda_clientes_usd;
+                    $this->suma_company_performances['deuda_proveedores_inicio']     = $company_performance->deuda_proveedores;
+                    $this->suma_company_performances['deuda_proveedores_usd_inicio'] = $company_performance->deuda_proveedores_usd;
+                }
+
+                /* Fin: se actualiza con cada segmento con snapshot (el último sobreescribe) */
+                $this->suma_company_performances['deuda_clientes_fin']        = $company_performance->deuda_clientes;
+                $this->suma_company_performances['deuda_clientes_usd_fin']    = $company_performance->deuda_clientes_usd;
+                $this->suma_company_performances['deuda_proveedores_fin']     = $company_performance->deuda_proveedores;
+                $this->suma_company_performances['deuda_proveedores_usd_fin'] = $company_performance->deuda_proveedores_usd;
+            }
 
             // $this->sumar_info_facturacion($company_performance);
 

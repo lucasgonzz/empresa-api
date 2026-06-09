@@ -55,7 +55,12 @@ class CompanyPerformanceController extends Controller
 
         $helper->set_addresses_relation();
 
-        return response()->json(['model' => $company_performance], 201);
+        /* snapshot_disponible: true porque la deuda del día actual viene calculada en tiempo real
+           por PerformanceHelper::set_deuda_clientes() y set_deuda_proveedores(), no desde snapshots */
+        return response()->json([
+            'model'               => $company_performance,
+            'snapshot_disponible' => true,
+        ], 201);
 
     }
 
