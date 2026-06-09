@@ -248,8 +248,6 @@ class DemoSetupHelper
             'BuyerSeeder',
             'DiscountSeeder',
             'SurchageSeeder',
-            'ProviderOrderSeeder',
-            'ProviderPagosSeeder',
             'TitleSeeder',
             'DeliveryZoneSeeder',
             'UpdateFeatureSeeder',
@@ -258,7 +256,6 @@ class DemoSetupHelper
             // 'MessageSeeder',
 
             'ExpenseConceptSeeder',
-            'ExpenseSeeder',
             'PendingSeeder',
 
             'EmployeeSeeder',

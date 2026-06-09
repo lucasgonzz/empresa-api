@@ -227,8 +227,7 @@ class DatabaseSeeder extends Seeder
             $this->call(DeliveryDaySeeder::class);
 
             if ($for_user == 'demo') {
-                $this->call(SaleReporteSeeder::class);
-                $this->call(SaleReporteArticuloSeeder::class);
+                $this->call(\Database\Seeders\sales\ReportesMesSeeder::class);
             }
 
             if ($for_user == 'truvari') {
@@ -273,8 +272,6 @@ class DatabaseSeeder extends Seeder
             $this->call(BuyerSeeder::class);
             $this->call(DiscountSeeder::class);
             $this->call(SurchageSeeder::class);
-            $this->call(ProviderOrderSeeder::class);
-            $this->call(ProviderPagosSeeder::class);
             $this->call(TitleSeeder::class);
             $this->call(DeliveryZoneSeeder::class);
             $this->call(UpdateFeatureSeeder::class);
@@ -285,7 +282,6 @@ class DatabaseSeeder extends Seeder
 
             $this->call(ExpenseCategorySeeder::class);
             $this->call(ExpenseConceptSeeder::class);
-            $this->call(ExpenseSeeder::class);
             $this->call(PendingSeeder::class);
 
             $this->call(EmployeeSeeder::class);
