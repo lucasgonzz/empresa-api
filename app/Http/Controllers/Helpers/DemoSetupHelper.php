@@ -105,8 +105,9 @@ class DemoSetupHelper
         self::crear_client_con_mail_del_user_demo($data);
 
         // Reportes pre-calculados que usa el dashboard de ventas
-        Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteSeeder', '--force' => true]);
-        Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteArticuloSeeder', '--force' => true]);
+        // Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteSeeder', '--force' => true]);
+        // Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteArticuloSeeder', '--force' => true]);
+        Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\ReportesMesSeeder', '--force' => true]);
 
         // Performance histórica del usuario (costos, márgenes, etc.)
         Artisan::call('set_company_performances', ['--historico' => true]);

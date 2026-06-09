@@ -4,8 +4,9 @@ namespace Database\Seeders;
 
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
-use App\Http\Controllers\Helpers\ProviderOrderHelper;
+use App\Http\Controllers\Helpers\DeleteModelsHelper;
 use App\Http\Controllers\Helpers\Seeders\SaleSeederHelper;
+use App\Models\Address;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Expense;
@@ -29,6 +30,12 @@ class ReportesMesSeeder extends Seeder
      */
     public function run()
     {
+        // Id del usuario demo/owner desde .env; los helpers (ArticleHelper, UserHelper) lo requieren en CLI
+        $user_id = config('app.USER_ID');
+
+        // Sin sesión ni Auth, ProviderOrderHelper::updateArticleStock() falla al recalcular precios del artículo
+        DeleteModelsHelper::setup_auth_context($user_id);
+
         // Configuración de cada mes a poblar:
         // meses_atras = cuántos meses hacia atrás respecto al actual (0 = mes actual)
         // los demás campos son los totales deseados para ese mes
@@ -101,6 +108,8 @@ class ReportesMesSeeder extends Seeder
                                                   ->where('moneda_id', 1)
                                                   ->first();
 
+        $addresses = Address::all();
+
         foreach ($meses as $mes) {
 
             // Offsets de días para distribuir los registros a lo largo del mes;
@@ -129,7 +138,7 @@ class ReportesMesSeeder extends Seeder
                     'num'             => $num,
                     'total'           => $monto,
                     'employee_id'     => config('app.USER_ID'),
-                    'address_id'      => 1,
+                    'address_id'      => count($addresses) >= 1 ? rand(1, count($addresses)) : null,
                     'client_id'       => null,
                     'moneda_id'       => 1,
                     'articles'        => [
@@ -173,7 +182,7 @@ class ReportesMesSeeder extends Seeder
                     'num'             => $num,
                     'total'           => $monto,
                     'employee_id'     => config('app.USER_ID'),
-                    'address_id'      => 1,
+                    'address_id'      => count($addresses) >= 1 ? rand(1, count($addresses)) : null,
                     'client_id'       => 1,
                     'moneda_id'       => 1,
                     'articles'        => [
@@ -266,29 +275,8 @@ class ReportesMesSeeder extends Seeder
 
                 $num_pago++;
 
-                // Artículo del pedido: 1 unidad al costo = monto del registro; received = 1 (recibido)
-                $articles = [
-                    [
-                        'id'     => 1,
-                        'status' => 'active',
-                        'iva_id' => null,
-                        'pivot'  => [
-                            'amount'          => 1,
-                            'cost'            => $monto,
-                            'received'        => 1,
-                            'notes'           => null,
-                            'received_cost'   => null,
-                            'update_cost'     => null,
-                            'update_provider' => null,
-                            'cost_in_dollars' => null,
-                            'add_to_articles' => null,
-                            'address_id'      => null,
-                            'iva_id'          => null,
-                        ],
-                    ],
-                ];
-
-                ProviderOrderHelper::attachArticles($articles, $order);
+                // Adjuntar artículo y débito en CC sin ProviderOrderHelper (usa getSaldo con firma vieja)
+                $this->crear_compra_proveedor($order, $monto, $fecha, $credit_account_proveedor);
             }
 
             // ---------------------------------------------------------------
@@ -358,6 +346,52 @@ class ReportesMesSeeder extends Seeder
                 ]);
             }
         }
+    }
+
+    /**
+     * Vincula el artículo al pedido y crea el débito en cuenta corriente del proveedor.
+     * Evita ProviderOrderHelper::attachArticles() porque recalcula stock y llama getSaldo con firma obsoleta.
+     *
+     * @param  ProviderOrder   $order                    Pedido ya persistido
+     * @param  int             $monto                    Costo total del pedido (1 unidad)
+     * @param  Carbon          $fecha                    Fecha del movimiento
+     * @param  CreditAccount   $credit_account_proveedor Cuenta corriente del proveedor en pesos
+     * @return void
+     */
+    private function crear_compra_proveedor($order, $monto, $fecha, $credit_account_proveedor)
+    {
+        // Artículo del pedido: 1 unidad recibida al costo indicado
+        $order->articles()->attach(1, [
+            'amount'          => 1,
+            'notes'           => null,
+            'received'        => 1,
+            'cost'            => $monto,
+            'price'           => null,
+            'received_cost'   => null,
+            'update_cost'     => null,
+            'update_provider' => null,
+            'cost_in_dollars' => null,
+            'add_to_articles' => null,
+            'address_id'      => null,
+            'iva_id'          => null,
+        ]);
+
+        // Débito en cuenta corriente del proveedor (mismo criterio que createCurrentAcount, con getSaldo actual)
+        $current_acount = CurrentAcount::create([
+            'detalle'             => 'Pedido N°' . $order->num,
+            'debe'                => $monto,
+            'status'              => 'sin_pagar',
+            'user_id'             => config('app.USER_ID'),
+            'provider_id'         => 1,
+            'provider_order_id'   => $order->id,
+            'credit_account_id'   => $credit_account_proveedor->id,
+            'created_at'          => $fecha,
+        ]);
+
+        $current_acount->saldo = CurrentAcountHelper::getSaldo($credit_account_proveedor->id, $current_acount) + $monto;
+        $current_acount->save();
+
+        CurrentAcountHelper::checkSaldos($credit_account_proveedor->id);
     }
 
     /**
