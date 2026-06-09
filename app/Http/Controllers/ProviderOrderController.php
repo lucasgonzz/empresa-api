@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ProviderOrderHelper;
 use App\Http\Controllers\Pdf\ProviderOrderPdf;
@@ -181,15 +182,29 @@ class ProviderOrderController extends Controller
         $import_type        = $request->input('import_type', 'pedido');
         $overwrite_articles = $request->boolean('overwrite_articles', false);
 
-        Excel::import(new ProviderOrderArticleImport(
-            $columns,
-            $request->start_row,
-            $request->finish_row,
-            $user,
-            $provider_order,
-            $import_type,
-            $overwrite_articles,
-        ), $archivo_excel_path);
+        try {
+            Excel::import(new ProviderOrderArticleImport(
+                $columns,
+                $request->start_row,
+                $request->finish_row,
+                $user,
+                $provider_order,
+                $import_type,
+                $overwrite_articles,
+            ), $archivo_excel_path);
+        } catch (\Throwable $exception) {
+            Log::error('Error al importar Excel de compra a proveedor', [
+                'provider_order_id' => $request->provider_order_id,
+                'message' => $exception->getMessage(),
+            ]);
+
+            $error_payload = ImportHelper::buildImportErrorPayload(
+                $exception,
+                'Hubo un error durante la importación de artículos de la compra'
+            );
+
+            return response()->json($error_payload, 422);
+        }
 
         // ProcessProviderOrderArticleImport::dispatch($columns, $request->start_row, $request->finish_row, $owner, $provider_order, $archivo_excel_path);
 

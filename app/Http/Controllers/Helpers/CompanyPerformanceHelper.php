@@ -20,24 +20,25 @@ class CompanyPerformanceHelper {
         $this->user_id = UserHelper::userId(); 
     }
 
+  /**
+   * Normaliza el rango a instancias Carbon con inicio del día y fin del día.
+   * Acepta fechas en formato Y-m-d (o Y-m para compatibilidad heredada).
+   * Si inicio > fin, los intercambia automáticamente.
+   *
+   * @param string $fecha_inicio Fecha de inicio (Y-m-d o Y-m)
+   * @param string $fecha_fin    Fecha de fin (Y-m-d o Y-m)
+   */
 	function set_fechas($fecha_inicio, $fecha_fin) {
 
-        $ano_inicio = explode('-', $fecha_inicio)[0];
-        $mes_inicio = explode('-', $fecha_inicio)[1];
+        $this->fecha_inicio = Carbon::parse($fecha_inicio)->startOfDay();
+        $this->fecha_fin    = Carbon::parse($fecha_fin)->endOfDay();
 
-        if (!is_null($fecha_fin)) {
-
-            $ano_fin = explode('-', $fecha_fin)[0];
-            $mes_fin = explode('-', $fecha_fin)[1];
-        } else {
-
-            $ano_fin = explode('-', $fecha_inicio)[0];
-            $mes_fin = explode('-', $fecha_inicio)[1];
-        } 
-
-
-        $this->fecha_inicio = Carbon::create($ano_inicio, $mes_inicio, 1);
-        $this->fecha_fin = Carbon::create($ano_fin, $mes_fin, 1);
+        /* Garantizar que inicio no sea posterior al fin */
+        if ($this->fecha_inicio->gt($this->fecha_fin)) {
+            $temporal           = $this->fecha_inicio->copy()->startOfDay();
+            $this->fecha_inicio = $this->fecha_fin->copy()->startOfDay();
+            $this->fecha_fin    = $temporal->endOfDay();
+        }
 	}
 
     function create_company_performance_from_date($fecha_inicio) {
@@ -77,6 +78,15 @@ class CompanyPerformanceHelper {
         }
     }
 	
+  /**
+   * Genera reportes calculados en tiempo real para el rango de fechas solicitado.
+   * Itera mes a mes dentro del rango, recortando el primer y último mes si son parciales.
+   * Cada segmento se calcula con PerformanceHelper usando from_day + until_day para precisión diaria.
+   * Los registros temporales se eliminan tras usar los datos, sin afectar la caché de meses completos.
+   *
+   * @param string $fecha_inicio Fecha inicio en Y-m-d
+   * @param string $fecha_fin    Fecha fin en Y-m-d
+   */
     function get_company_performances_from_dates($fecha_inicio, $fecha_fin) {
     	
         $this->set_fechas($fecha_inicio, $fecha_fin);
@@ -85,67 +95,51 @@ class CompanyPerformanceHelper {
 
         Carbon::setLocale('es');
 
-        $mes_actual = Carbon::today()->startOfMonth();
+        /* Cursor que avanza mes a mes dentro del rango */
+        $cursor_mes = $this->fecha_inicio->copy()->startOfMonth();
 
-        while ($this->fecha_inicio->lte($this->fecha_fin)) {
+        while ($cursor_mes->startOfMonth()->lte($this->fecha_fin)) {
 
-            // if ($this->fecha_inicio->eq($mes_actual)) {
+            $inicio_del_mes = $cursor_mes->copy()->startOfMonth()->startOfDay();
+            $fin_del_mes    = $cursor_mes->copy()->endOfMonth()->endOfDay();
 
-            //     Log::info('Entro al mes corriente');
+            /* Recortar el segmento al rango solicitado */
+            $segmento_inicio = $this->fecha_inicio->greaterThan($inicio_del_mes)
+                ? $this->fecha_inicio->copy()
+                : $inicio_del_mes;
 
-            //     $this->crear_company_performance_del_mes_corriente();
+            $segmento_fin = $this->fecha_fin->lessThan($fin_del_mes)
+                ? $this->fecha_fin->copy()
+                : $fin_del_mes;
 
-            // }
+            Log::info('Calculando segmento: '.$segmento_inicio->format('d/m/Y').' → '.$segmento_fin->format('d/m/Y'));
 
+            /* Calcular el reporte en tiempo real para el segmento */
+            $performance_helper = new PerformanceHelper(
+                $segmento_inicio->month,
+                $segmento_inicio->year,
+                $this->user_id,
+                $segmento_inicio->format('Y-m-d'),
+                false,
+                $segmento_fin->format('Y-m-d')
+            );
 
-            // Log::info('Buscando company_performance del mes: '.$this->fecha_inicio->month.' año: '.$this->fecha_inicio->year);
+            $company_performance = $performance_helper->create_company_performance();
 
-            $year = $this->fecha_inicio->year;
-            $month = $this->fecha_inicio->month;
-            $company_performance = CompanyPerformance::where('user_id', $this->user_id)
-                                ->where('year', $year)
-                                ->where('month', $month)
-                                ->withAll()
-                                ->first();  
-
-            $inicio_del_mes = Carbon::createFromDate($year, $month, 1)->startOfDay();
-            $fin_del_mes = Carbon::createFromDate($year, $month, 1)->endOfMonth()->endOfDay();
-
-            if (is_null($company_performance)) {
-
-                // Si no existe, se Crear
-
-                $performance_helper = new PerformanceHelper($month, $year, $this->user_id);
-
-                $company_performance = $performance_helper->create_company_performance();
-
-            // } else if ($company_performance->created_at->between($inicio_del_mes, $fin_del_mes)) {
-            } else {
-
-                // Si existe pero se creo el mismo mes del cual es el reporte, significa que seguro pasaron cosas desde que se creo, entonces se Borrar y vuelve a crear
-
-                Log::info('Se elimino y se volvio a crear');
-
-                $company_performance->delete();
-
-                $performance_helper = new PerformanceHelper($month, $year, $this->user_id);
-
-                $company_performance = $performance_helper->create_company_performance();
-
-
-            } 
-
-            $company_performance->fecha = Carbon::create($company_performance->year, $company_performance->month, 1)->isoFormat('MMMM').' '.$company_performance->year;
-
+            $company_performance->fecha = $this->format_segment_label($segmento_inicio, $segmento_fin);
 
             $helper = new PaymentMethodsHelper($company_performance, $this->user_id);
 
             $helper->set_users_relation();
 
             $helper->set_addresses_relation();
+
             $this->meses_anteriores[] = $company_performance;
 
-            $this->fecha_inicio->addMonth();
+            /* Eliminar el registro temporal para no contaminar la caché de reportes */
+            $company_performance->delete();
+
+            $cursor_mes->addMonth()->startOfMonth();
         }
 
         $this->sumar_company_performances();
@@ -156,6 +150,32 @@ class CompanyPerformanceHelper {
         ];
 
 
+    }
+
+  /**
+   * Genera la etiqueta de un segmento para mostrar en los gráficos.
+   * Si el segmento cubre el mes completo, muestra "Mes Año".
+   * Si es un único día, muestra "15 de marzo 2026".
+   * Para rangos parciales muestra "15 mar → 31 mar 2026".
+   *
+   * @param \Carbon\Carbon $segmento_inicio
+   * @param \Carbon\Carbon $segmento_fin
+   * @return string
+   */
+    function format_segment_label($segmento_inicio, $segmento_fin) {
+
+        $es_mes_completo = $segmento_inicio->isSameDay($segmento_inicio->copy()->startOfMonth())
+            && $segmento_fin->isSameDay($segmento_fin->copy()->endOfMonth());
+
+        if ($es_mes_completo) {
+            return Carbon::create($segmento_inicio->year, $segmento_inicio->month, 1)->isoFormat('MMMM').' '.$segmento_inicio->year;
+        }
+
+        if ($segmento_inicio->isSameDay($segmento_fin)) {
+            return $segmento_inicio->isoFormat('D [de] MMMM YYYY');
+        }
+
+        return $segmento_inicio->isoFormat('D MMM').' → '.$segmento_fin->isoFormat('D MMM YYYY');
     }
 
     function sumar_company_performances() {

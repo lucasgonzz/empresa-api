@@ -42,6 +42,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Configuración de layout del módulo de vender por usuario
     Route::put('user-configuration/vender-layout', 'UserConfigurationController@updateVenderLayout');
 
+    // Atajos de teclado configurables del módulo Vender (por usuario autenticado)
+    Route::get('vender-keyboard-shortcut', 'VenderKeyboardShortcutController@show');
+    Route::put('vender-keyboard-shortcut', 'VenderKeyboardShortcutController@update');
+
     // Employee
     Route::resource('employee', 'CommonLaravel\EmployeeController');
 

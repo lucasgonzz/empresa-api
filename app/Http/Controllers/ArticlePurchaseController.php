@@ -19,11 +19,15 @@ class ArticlePurchaseController extends Controller
         $orden = $request->orden;
         $sale_channel_id = $request->sale_channel_id;
 
-        $mes_inicio = $request->mes_inicio;
-        $mes_inicio = Carbon::createFromFormat('Y-m', $mes_inicio)->startOfMonth();
+        /*
+         * Acepta fechas en formato Y-m-d (nuevo) o Y-m (legado).
+         * Carbon::parse() maneja ambos formatos sin configuración adicional.
+         */
+        $mes_inicio_raw = $request->fecha_inicio ?: $request->mes_inicio;
+        $mes_fin_raw    = $request->fecha_fin    ?: $request->mes_fin;
 
-        $mes_fin = $request->mes_fin;
-        $mes_fin = Carbon::createFromFormat('Y-m', $mes_fin)->endOfMonth();
+        $mes_inicio = Carbon::parse($mes_inicio_raw)->startOfDay();
+        $mes_fin    = Carbon::parse($mes_fin_raw)->endOfDay();
 
         Log::info('mes_inicio: '.$mes_inicio->format('d/m/y'));
         Log::info('mes_fin: '.$mes_fin->format('d/m/y'));
