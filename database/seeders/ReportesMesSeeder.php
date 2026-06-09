@@ -2,17 +2,23 @@
 
 namespace Database\Seeders;
 
+use App\Http\Controllers\CurrentAcountController;
+use App\Http\Controllers\ExpenseController;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
 use App\Http\Controllers\Helpers\DeleteModelsHelper;
 use App\Http\Controllers\Helpers\Seeders\SaleSeederHelper;
+use App\Http\Controllers\SaleController;
 use App\Models\Address;
+use App\Models\CompanyPerformance;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Expense;
 use App\Models\ProviderOrder;
+use App\Models\Sale;
 use Carbon\Carbon;
 use Illuminate\Database\Seeder;
+use Illuminate\Http\Request;
 
 /**
  * Seeder que puebla datos de varios meses para testear el módulo de reportes con rangos de fechas.
@@ -30,6 +36,8 @@ class ReportesMesSeeder extends Seeder
      */
     public function run()
     {
+        $this->truncate_data();
+
         // Id del usuario demo/owner desde .env; los helpers (ArticleHelper, UserHelper) lo requieren en CLI
         $user_id = config('app.USER_ID');
 
@@ -351,6 +359,70 @@ class ReportesMesSeeder extends Seeder
                     'created_at'                       => $fecha,
                 ]);
             }
+        }
+    }
+
+    /**
+     * Elimina datos previos del usuario actual para poder re-ejecutar el seeder sin duplicar registros.
+     * Respeta el orden de borrado para no dejar relaciones huérfanas ni inconsistencias en cuenta corriente.
+     *
+     * @return void
+     */
+    private function truncate_data()
+    {
+        // Id del owner cuyos datos de reportes se van a regenerar
+        $user_id = config('app.USER_ID');
+
+        // Auth y sesión requeridos por SaleController::destroy y CurrentAcountController::delete
+        DeleteModelsHelper::setup_auth_context($user_id);
+
+        // Request vacío: mismo criterio que DeleteModelsHelper en eliminaciones sin compensar caja
+        $request = Request::create('/');
+
+        // Evitar notificaciones broadcast al borrar en bloque (mismo flag que DeleteModelsHelper::process_delete)
+        config(['app.suppress_delete_notifications' => true]);
+
+        try {
+            // 1) Ventas del usuario con el flujo completo de SaleController::destroy (relaciones, CC, stock)
+            $sale_controller = new SaleController();
+            $sale_ids = Sale::where('user_id', $user_id)->pluck('id')->toArray();
+
+            foreach ($sale_ids as $sale_id) {
+                $sale_controller->destroy($request, $sale_id);
+            }
+
+            // 2) Pedidos a proveedor vía DeleteModelsHelper (ProviderOrderController::destroy)
+            $provider_order_ids = ProviderOrder::where('user_id', $user_id)->pluck('id')->toArray();
+
+            if (count($provider_order_ids)) {
+                DeleteModelsHelper::process_delete('provider_order', $provider_order_ids, true);
+            }
+
+            // 3) Gastos del usuario con ExpenseController::destroy
+            $expense_controller = new ExpenseController();
+            $expense_ids = Expense::where('user_id', $user_id)->pluck('id')->toArray();
+
+            foreach ($expense_ids as $expense_id) {
+                $expense_controller->destroy($request, $expense_id);
+            }
+
+            // 4) Movimientos de cuenta corriente restantes (pagos, débitos de pedidos, etc.)
+            $current_acount_controller = new CurrentAcountController();
+            $current_acounts = CurrentAcount::where('user_id', $user_id)
+                                             ->orderBy('created_at', 'DESC')
+                                             ->get();
+
+            foreach ($current_acounts as $current_acount) {
+                // Tipo de entidad para recalcular saldos tras el delete (cliente o proveedor)
+                $model_name = !is_null($current_acount->client_id) ? 'client' : 'provider';
+
+                $current_acount_controller->delete($request, $model_name, $current_acount->id);
+            }
+
+            // 5) Reportes de performance precalculados del usuario
+            CompanyPerformance::where('user_id', $user_id)->delete();
+        } finally {
+            config(['app.suppress_delete_notifications' => false]);
         }
     }
 
