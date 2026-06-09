@@ -129,16 +129,22 @@ class ReportesMesSeeder extends Seeder
             // Acumulamos las ventas en un array para pasarlas al helper en bloque
             $ventas_mostrador = [];
 
-            foreach ($montos_mostrador as $monto) {
+            // IDs de sucursales para repartir ventas mostrador de forma rotativa (1 por sucursal, ciclando si hay más de 4)
+            $sucursal_ids = [1, 2, 3, 4];
+
+            foreach ($montos_mostrador as $indice_mostrador => $monto) {
                 // Avanzar entre 4 y 6 días para distribuir las ventas en el mes
                 $dia_mostrador += rand(4, 6);
                 $fecha = Carbon::now()->startOfMonth()->subMonths($mes['meses_atras'])->addDays($dia_mostrador);
+
+                // address_id rota entre las 4 sucursales: registro 0 → 1, 1 → 2, …, 4 → 1, etc.
+                $address_id = $sucursal_ids[$indice_mostrador % count($sucursal_ids)];
 
                 $ventas_mostrador[] = [
                     'num'             => $num,
                     'total'           => $monto,
                     'employee_id'     => config('app.USER_ID'),
-                    'address_id'      => count($addresses) >= 1 ? rand(1, count($addresses)) : null,
+                    'address_id'      => $address_id,
                     'client_id'       => null,
                     'moneda_id'       => 1,
                     'articles'        => [
