@@ -574,6 +574,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('google/custom-search/aumentar-contador', 'GoogleController@aumentar_contador_custom_search');
     Route::get('google/get-current', 'GoogleController@get_current');
+    Route::post('google/batch-assign-images', 'GoogleController@batch_assign_images');
 
 
     Route::post('payment-plan', 'PaymentPlanController@store');
