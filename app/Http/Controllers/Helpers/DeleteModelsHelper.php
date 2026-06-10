@@ -15,7 +15,7 @@ class DeleteModelsHelper
     /**
      * Cantidad mínima de registros para procesar la eliminación en segundo plano.
      */
-    const BACKGROUND_THRESHOLD = 20;
+    const BACKGROUND_THRESHOLD = 1;
 
     /**
      * Devuelve una etiqueta legible del modelo para mensajes al usuario.

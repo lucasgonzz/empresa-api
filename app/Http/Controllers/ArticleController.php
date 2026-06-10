@@ -575,15 +575,33 @@ class ArticleController extends Controller
             $jsonData = $request->query('filters');
             $filters = json_decode($jsonData, true);
 
+            if (!is_array($filters) || !count($filters)) {
+                return response()->json([
+                    'message' => 'No hay filtros activos para exportar articulos',
+                ], 422);
+            }
+
             $search_ct = new SearchController();
             $models = $search_ct->search($request, 'article', $filters);
 
             // Se extraen solo IDs para evitar serializar modelos completos al job.
             $article_ids = $models->pluck('id')->toArray();
+
+            if (!count($article_ids)) {
+                return response()->json([
+                    'message' => 'No hay articulos que coincidan con el filtro para exportar',
+                ], 422);
+            }
         } else if ($request->has('articles_id')) {
             // IDs seleccionados manualmente desde listado.
             $ids = explode('-', $request->query('articles_id'));
-            $article_ids = array_map('intval', $ids);
+            $article_ids = array_values(array_filter(array_map('intval', $ids)));
+
+            if (!count($article_ids)) {
+                return response()->json([
+                    'message' => 'No hay articulos para exportar',
+                ], 422);
+            }
         }
 
         $export_history = ExportHistoryHelper::create_pending(
@@ -655,6 +673,10 @@ class ArticleController extends Controller
         ArticleHelper::check_article_recipe_to_delete($model);
 
         $this->check_delete_tienda_nube($model);
+
+        // Propaga el delete a los artículos espejo en clientes con inventory linkage.
+        $inventory_linkage_helper = new InventoryLinkageHelper(null, $model->user_id);
+        $inventory_linkage_helper->delete_client_articles_for_provider_article($model);
         
         // ImageController::deleteModelImages($model);
         $model->delete();

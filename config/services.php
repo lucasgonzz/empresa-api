@@ -67,4 +67,16 @@ return [
         'verify_ssl' => filter_var(env('ANTHROPIC_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
     ],
 
+    /**
+     * Google Custom Search API (asignación batch de imágenes en ProcessArticleBatchImagesJob).
+     * En Windows/WAMP sin CA bundle suele aparecer cURL error 60; ver .env.example.
+     */
+    'google_custom_search' => [
+        'guzzle_verify' => filter_var(
+            env('GOOGLE_CUSTOM_SEARCH_GUZZLE_VERIFY_SSL', env('APP_ENV') === 'production'),
+            FILTER_VALIDATE_BOOLEAN
+        ),
+        'guzzle_ca_bundle' => env('GOOGLE_CUSTOM_SEARCH_GUZZLE_CA_BUNDLE', ''),
+    ],
+
 ];

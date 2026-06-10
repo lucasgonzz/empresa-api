@@ -346,7 +346,9 @@ class AuthController extends Controller
             }
         }
 
-        Log::info('loginLucas comando detectado: '.$doc_number_lower);
+        Log::info('is_login_command = '.$is_login_command);
+        Log::info('is_login_full_command = '.$is_login_full_command);
+        Log::info('loginLucas documento detectado: '.$doc_number_lower);
 
         if ($is_login_command || $is_login_full_command) {
             /** Define modo para usarlo luego en login() y respuesta al frontend. */

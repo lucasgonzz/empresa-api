@@ -167,7 +167,7 @@ class DemoSetupHelper
             'home_position'                 => 1,
             'download_articles'             => 0,
             'online'                        => $data['online'],
-            'payment_expired_at'            => Carbon::now()->addDays(12),
+            'payment_expired_at'            => Carbon::now()->addMonths(12),
             'total_a_pagar'                 => 15000,
             'plan_id'                       => null,
             'plan_discount'                 => null,

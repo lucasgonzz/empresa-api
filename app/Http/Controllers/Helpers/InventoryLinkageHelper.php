@@ -105,6 +105,133 @@ class InventoryLinkageHelper extends Controller {
 		}
 	}
 
+	/**
+	 * Elimina las copias del artículo proveedor en todos los clientes con inventory linkage.
+	 *
+	 * @param Article $article Artículo del usuario proveedor (dueño) que se está eliminando.
+	 * @return void
+	 */
+	function delete_client_articles_for_provider_article($article) {
+		// Vinculaciones del usuario proveedor dueño del artículo.
+		$inventory_linkages = InventoryLinkage::where('user_id', $this->user_id)
+												->get();
+
+		if (count($inventory_linkages) < 1) {
+			return;
+		}
+
+		foreach ($inventory_linkages as $inventory_linkage) {
+			// Usuario ComercioCity del cliente destino del linkage.
+			$client_user_id = $inventory_linkage->client->comercio_city_user_id;
+
+			$client_article = Article::where('user_id', $client_user_id)
+												->where('provider_article_id', $article->id)
+												->first();
+
+			if (!is_null($client_article)) {
+				Log::info('InventoryLinkageHelper: eliminando articulo cliente '.$client_article->name.' por delete del proveedor');
+				$client_article->delete();
+			}
+		}
+	}
+
+	/**
+	 * Elimina en batch las copias cliente cuyo provider_article_id está en la lista de eliminados del proveedor.
+	 *
+	 * @param int $client_user_id ID del usuario cliente (comercio_city_user_id).
+	 * @param array $deleted_provider_article_ids IDs de artículos soft-deleted del proveedor.
+	 * @return int Cantidad de artículos cliente eliminados.
+	 */
+	function delete_client_articles_for_deleted_provider_article_ids($client_user_id, array $deleted_provider_article_ids) {
+		$deleted_count = 0;
+
+		if (empty($deleted_provider_article_ids)) {
+			return $deleted_count;
+		}
+
+		foreach (array_chunk($deleted_provider_article_ids, 1000) as $deleted_provider_article_ids_chunk) {
+			$client_articles_to_delete = Article::where('user_id', $client_user_id)
+				->whereIn('provider_article_id', $deleted_provider_article_ids_chunk)
+				->get();
+
+			foreach ($client_articles_to_delete as $client_article) {
+				Log::info('InventoryLinkageHelper: eliminando articulo cliente '.$client_article->name.' (reconciliacion batch)');
+				$client_article->delete();
+				$deleted_count++;
+			}
+		}
+
+		return $deleted_count;
+	}
+
+	/**
+	 * Crea el artículo en el cliente del linkage si aún no existe (provider_article_id + provider_id).
+	 *
+	 * @param InventoryLinkage $inventory_linkage Vinculación activa proveedor → cliente.
+	 * @param Article $article Artículo fuente del usuario proveedor.
+	 * @return Article|null Artículo cliente creado o existente; null si no hay proveedor configurado en el cliente.
+	 */
+	function ensure_client_article_for_linkage($inventory_linkage, $article) {
+		$this->inventory_linkage = $inventory_linkage;
+		$this->client = $inventory_linkage->client;
+		$this->setProviderForClient();
+
+		if (is_null($this->provider_for_client)) {
+			Log::warning('InventoryLinkageHelper: no hay provider_for_client para linkage '.$inventory_linkage->id);
+			return null;
+		}
+
+		$client_article = Article::where('user_id', $this->client->comercio_city_user_id)
+												->where('provider_article_id', $article->id)
+												->first();
+
+		if (is_null($client_article)) {
+			return $this->createClientArticle($article);
+		}
+
+		return $client_article;
+	}
+
+	/**
+	 * Sincroniza solo precio y código de barras del artículo cliente respecto al proveedor.
+	 * No modifica categoría ni otros campos que el cliente puede editar en su sistema.
+	 *
+	 * @param InventoryLinkage $inventory_linkage Vinculación activa proveedor → cliente.
+	 * @param Article $article Artículo fuente del proveedor.
+	 * @param Article $client_article Copia del artículo en el usuario cliente.
+	 * @return bool True si se persistieron cambios.
+	 */
+	function sync_client_article_price_and_bar_code($inventory_linkage, $article, $client_article) {
+		$this->inventory_linkage = $inventory_linkage;
+		$this->client = $inventory_linkage->client;
+
+		$needs_save = false;
+
+		// Código de barras: debe reflejar el del proveedor.
+		if ($client_article->bar_code != $article->bar_code) {
+			$client_article->bar_code = $article->bar_code;
+			$needs_save = true;
+		}
+
+		// Precio: misma lógica que el comando de reconciliación (cost = final_price del proveedor).
+		if ($client_article->cost != $article->final_price) {
+			$client_article->cost = $article->final_price;
+			ArticleHelper::setFinalPrice(
+				$client_article,
+				$this->client->comercio_city_user_id,
+				$this->client->comercio_city_user,
+				$this->client->comercio_city_user->id
+			);
+			$needs_save = true;
+		}
+
+		if ($needs_save) {
+			$client_article->save();
+		}
+
+		return $needs_save;
+	}
+
 	function checkArticle($article) {
 		$inventory_linkages = InventoryLinkage::where('user_id', $this->user_id)
 												->get();

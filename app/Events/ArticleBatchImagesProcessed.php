@@ -17,7 +17,7 @@ class ArticleBatchImagesProcessed implements ShouldBroadcastNow
     public $skipped;
     public $skipped_names;
     public $needs_review;
-    public $needs_review_names;
+    public $needs_review_items;
 
     /**
      * @param int   $user_id            ID del usuario dueño.
@@ -25,7 +25,7 @@ class ArticleBatchImagesProcessed implements ShouldBroadcastNow
      * @param int   $skipped            Cantidad de artículos sin imagen asignada.
      * @param array $skipped_names      Nombres de los artículos sin imagen.
      * @param int   $needs_review       Cantidad de artículos con imagen de baja confianza.
-     * @param array $needs_review_names Nombres de los artículos con imagen para revisar.
+     * @param array $needs_review_items Artículos con imagen para revisar (id, nombre, image_url).
      */
     public function __construct(
         int $user_id,
@@ -33,14 +33,14 @@ class ArticleBatchImagesProcessed implements ShouldBroadcastNow
         int $skipped,
         array $skipped_names,
         int $needs_review,
-        array $needs_review_names
+        array $needs_review_items
     ) {
         $this->user_id            = $user_id;
         $this->processed          = $processed;
         $this->skipped            = $skipped;
         $this->skipped_names      = $skipped_names;
         $this->needs_review       = $needs_review;
-        $this->needs_review_names = $needs_review_names;
+        $this->needs_review_items = $needs_review_items;
     }
 
     /**
@@ -73,7 +73,7 @@ class ArticleBatchImagesProcessed implements ShouldBroadcastNow
             'skipped'            => $this->skipped,
             'skipped_names'      => $this->skipped_names,
             'needs_review'       => $this->needs_review,
-            'needs_review_names' => $this->needs_review_names,
+            'needs_review_items' => $this->needs_review_items,
         ];
     }
 }

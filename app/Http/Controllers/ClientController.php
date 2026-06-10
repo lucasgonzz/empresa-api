@@ -191,6 +191,15 @@ class ClientController extends Controller
 
     function pdf(Request $request) {
 
+        if ($request->has('clients_id') && $request->query('clients_id') !== '') {
+            $ids = explode('-', $request->query('clients_id'));
+            $models = Client::where('user_id', $this->userId())
+                ->whereIn('id', $ids)
+                ->get();
+            new ClientsPdf($models);
+            return;
+        }
+
         $jsonData = $request->query('filters');
         $filters = json_decode($jsonData, true);
 

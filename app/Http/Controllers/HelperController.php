@@ -21,7 +21,6 @@ use App\Http\Controllers\Helpers\article\ResetStockHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\Stock\StockMovementController;
-use App\Jobs\ProcessCheckInventoryLinkages;
 use App\Jobs\ProcessCheckSaldos;
 use App\Jobs\ProcessRecalculateCurrentAcounts;
 use App\Jobs\ProcessSetStockResultante;
@@ -2890,12 +2889,9 @@ class HelperController extends Controller
 
     function check_inventory_linkages($company_name) {
 
-        $user = User::where('company_name', $company_name)
-                        ->first();
+        \Illuminate\Support\Facades\Artisan::call('check_inventory_linkages');
 
-        ProcessCheckInventoryLinkages::dispatch($user);
-
-        echo 'Se despacho';
+        echo 'Se ejecuto check_inventory_linkages';
     }
 
     function check_stock() {

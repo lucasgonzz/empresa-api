@@ -226,9 +226,7 @@ class DatabaseSeeder extends Seeder
 
             $this->call(DeliveryDaySeeder::class);
 
-            if ($for_user == 'demo') {
-                $this->call(\Database\Seeders\sales\ReportesMesSeeder::class);
-            }
+            $this->call(ReportesMesSeeder::class);
 
             if ($for_user == 'truvari') {
                 if (env('APP_ENV') == 'local') {
