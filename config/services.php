@@ -67,6 +67,16 @@ return [
         'verify_ssl' => filter_var(env('ANTHROPIC_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
     ],
 
+    /*
+     * API OpenAI — embeddings vectoriales del catálogo de artículos (text-embedding-3-small).
+     * El token se configura en .env como OPENAI_API_KEY.
+     * Reutiliza la configuración TLS de anthropic (verify_ssl / ca_bundle) para
+     * mantener coherencia entre entornos Windows/WAMP y producción Linux.
+     */
+    'openai' => [
+        'api_key' => env('OPENAI_API_KEY', ''),
+    ],
+
     /**
      * Google Custom Search API (asignación batch de imágenes en ProcessArticleBatchImagesJob).
      * En Windows/WAMP sin CA bundle suele aparecer cURL error 60; ver .env.example.
