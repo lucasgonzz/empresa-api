@@ -86,13 +86,19 @@ class PdfColumnProfileController extends Controller
              * URL de imagen de cabecera en cada página del PDF (plantillas de artículos u otras).
              */
             'header_image_url' => $request->input('header_image_url') ?: null,
+            /**
+             * Tamaño de letra uniforme para encabezados de columnas (PDF tabular de artículos).
+             */
+            'table_header_font_size' => $this->normalize_table_header_font_size(
+                $request->input('table_header_font_size')
+            ),
         ]);
 
         GeneralHelper::attachModels(
             $model,
             'pdf_column_options',
             $request->pdf_column_options,
-            ['visible', 'order', 'width', 'wrap_content']
+            ['visible', 'order', 'width', 'wrap_content', 'font_size', 'text_align']
         );
 
         return response()->json(['model' => $this->fullModel('PdfColumnProfile', $model->id)], 201);
@@ -152,6 +158,7 @@ class PdfColumnProfileController extends Controller
             'show_total_in_footer',
             'use_current_date',
             'header_image_url',
+            'table_header_font_size',
         ]);
         $model->update($fillable);
 
@@ -160,7 +167,7 @@ class PdfColumnProfileController extends Controller
                 $model,
                 'pdf_column_options',
                 $request->pdf_column_options,
-                ['visible', 'order', 'width', 'wrap_content']
+                ['visible', 'order', 'width', 'wrap_content', 'font_size', 'text_align']
             );
         }
 
@@ -232,12 +239,15 @@ class PdfColumnProfileController extends Controller
             'show_total_costs' => 'mostrar total costos',
             'footer_text' => 'pie de página',
             'show_total_in_footer' => 'mostrar total en el pie',
+            'table_header_font_size' => 'tamaño de letra del encabezado de columnas',
             'pdf_column_options' => 'opciones de columnas',
             'pdf_column_options.*.id' => 'opción de columna',
             'pdf_column_options.*.pivot.visible' => 'visible',
             'pdf_column_options.*.pivot.order' => 'orden',
             'pdf_column_options.*.pivot.width' => 'ancho',
             'pdf_column_options.*.pivot.wrap_content' => 'salto de línea',
+            'pdf_column_options.*.pivot.font_size' => 'tamaño de letra',
+            'pdf_column_options.*.pivot.text_align' => 'alineación horizontal',
         ];
     }
 
@@ -267,6 +277,7 @@ class PdfColumnProfileController extends Controller
             'show_total_costs' => ['sometimes', 'boolean'],
             'footer_text' => ['nullable', 'string', 'max:2000'],
             'show_total_in_footer' => ['sometimes', 'boolean'],
+            'table_header_font_size' => ['sometimes', 'nullable', 'integer', 'min:4', 'max:24'],
             'pdf_column_options' => ['required', 'array', 'min:1'],
             'pdf_column_options.*.id' => [
                 'required',
@@ -278,6 +289,8 @@ class PdfColumnProfileController extends Controller
             'pdf_column_options.*.pivot.order' => ['sometimes', 'integer', 'min:0'],
             'pdf_column_options.*.pivot.width' => ['sometimes', 'integer', 'min:0', 'max:5000'],
             'pdf_column_options.*.pivot.wrap_content' => ['sometimes', 'boolean'],
+            'pdf_column_options.*.pivot.font_size' => ['sometimes', 'nullable', 'integer', 'min:4', 'max:24'],
+            'pdf_column_options.*.pivot.text_align' => ['sometimes', 'nullable', 'string', Rule::in(['left', 'center', 'right'])],
         ];
     }
 
@@ -310,6 +323,7 @@ class PdfColumnProfileController extends Controller
             'show_total_costs' => ['sometimes', 'boolean'],
             'footer_text' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'show_total_in_footer' => ['sometimes', 'boolean'],
+            'table_header_font_size' => ['sometimes', 'nullable', 'integer', 'min:4', 'max:24'],
             'pdf_column_options' => ['sometimes', 'array'],
             'pdf_column_options.*.id' => [
                 'required_with:pdf_column_options',
@@ -321,6 +335,8 @@ class PdfColumnProfileController extends Controller
             'pdf_column_options.*.pivot.order' => ['sometimes', 'integer', 'min:0'],
             'pdf_column_options.*.pivot.width' => ['sometimes', 'integer', 'min:0', 'max:5000'],
             'pdf_column_options.*.pivot.wrap_content' => ['sometimes', 'boolean'],
+            'pdf_column_options.*.pivot.font_size' => ['sometimes', 'nullable', 'integer', 'min:4', 'max:24'],
+            'pdf_column_options.*.pivot.text_align' => ['sometimes', 'nullable', 'string', Rule::in(['left', 'center', 'right'])],
         ];
     }
 
@@ -500,5 +516,25 @@ class PdfColumnProfileController extends Controller
                 ],
             ]);
         }
+    }
+
+    /**
+     * Normaliza el tamaño de letra del encabezado tabular (4–24 pt); null si no es válido.
+     *
+     * @param  mixed  $value
+     * @return int|null
+     */
+    protected function normalize_table_header_font_size($value)
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        $font_size = (int) $value;
+        if ($font_size >= 4 && $font_size <= 24) {
+            return $font_size;
+        }
+
+        return null;
     }
 }

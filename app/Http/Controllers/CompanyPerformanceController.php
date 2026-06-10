@@ -17,55 +17,50 @@ use Illuminate\Support\Facades\Log;
 class CompanyPerformanceController extends Controller
 {
 
+  /**
+   * Reporte del día actual (sin parámetros) o de un rango arbitrario de días.
+   * Si solo se envía $inicio, se usa como inicio y fin del rango (un único día).
+   *
+   * @param string|null $inicio Fecha inicio en Y-m-d; null → día actual
+   * @param string|null $fin    Fecha fin en Y-m-d; null → mismo día que $inicio
+   */
     function index($inicio = null, $fin = null) {
 
         if (!is_null($inicio)) {
 
+            /* Cuando no hay fin se interpreta como un único día */
+            $fecha_fin = !is_null($fin) ? $fin : $inicio;
+
             $helper = new CompanyPerformanceHelper();
-            
-            if (!is_null($fin)) {
 
-                // Si hay fecha fin, es el reporte de un rango de meses (puede ser un unico mes)
-                $result = $helper->get_company_performances_from_dates($inicio, $fin);
+            $result = $helper->get_company_performances_from_dates($inicio, $fecha_fin);
 
-                $meses_anteriores = $result['meses_anteriores'];
-                
-                $company_performance = $result['company_performance'];
+            return response()->json([
+                'model'            => $result['company_performance'],
+                'meses_anteriores' => $result['meses_anteriores'],
+                'fecha_inicio'     => $inicio,
+                'fecha_fin'        => $fecha_fin,
+            ], 201);
 
-                return response()->json(['model' => $company_performance, 'meses_anteriores' => $meses_anteriores], 201);
-
-            } else {
-
-                // Si hay fecha inio pero no fin, es el reporte de un dia en especifico
-                $helper->create_company_performance_from_date($inicio);
-
-                $company_performance = $this->get_company_performance_from_date($inicio);
-
-                $helper = new PaymentMethodsHelper($company_performance, $this->userId());
-
-                $helper->set_users_relation();
-
-                $helper->set_addresses_relation();
-
-                return response()->json(['model' => $company_performance, 'from_date' => $inicio], 201);
-            }
-
-        } else {
-
-            // Si no hay fecha, es el reporte del dia actual
-
-            $this->check_tiempo_ultima_creada();
-
-            $company_performance = $this->get_company_performance_today(true);
-
-            $helper = new PaymentMethodsHelper($company_performance, $this->userId());
-
-            $helper->set_users_relation();
-
-            $helper->set_addresses_relation();
-
-            return response()->json(['model' => $company_performance], 201);
         }
+
+        /* Sin fechas: reporte del día actual (caché con renovación automática) */
+        $this->check_tiempo_ultima_creada();
+
+        $company_performance = $this->get_company_performance_today(true);
+
+        $helper = new PaymentMethodsHelper($company_performance, $this->userId());
+
+        $helper->set_users_relation();
+
+        $helper->set_addresses_relation();
+
+        /* snapshot_disponible: true porque la deuda del día actual viene calculada en tiempo real
+           por PerformanceHelper::set_deuda_clientes() y set_deuda_proveedores(), no desde snapshots */
+        return response()->json([
+            'model'               => $company_performance,
+            'snapshot_disponible' => true,
+        ], 201);
 
     }
 

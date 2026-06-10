@@ -1220,38 +1220,40 @@ class ProcessRow {
         return $v;
     }
 
+    /**
+     * Normaliza un valor numérico del Excel usando el parser compartido de importaciones.
+     *
+     * @param mixed $number Valor crudo de la celda.
+     * @param int $decimales Cantidad de decimales del resultado formateado.
+     * @return string|null Número formateado como string, o null si está vacío o no es válido.
+     */
     static function get_number($number, $decimales = 2) {
-        // 1. Si es null o solo espacios vacíos, retorna null
-        if (is_null($number) || (is_string($number) && trim($number) === '')) {
-            // \$this->log('get_number Retornando null');
+        try {
+            $parsed = ImportHelper::parseNumericValue($number);
+        } catch (\InvalidArgumentException $exception) {
             return null;
         }
 
-        // 2. Reemplazar coma por punto y limpiar espacios
-        $normalized = str_replace(',', '.', trim($number));
-
-        // 3. Si no es numérico, retornar null
-        if (!is_numeric($normalized)) {
-            // \$this->log("get_number Valor no numérico: '$number'");
+        if (is_null($parsed)) {
             return null;
         }
 
-        
-        // 4. Validar que la parte entera no tenga más de 10 dígitos
-        $parts = explode('.', $normalized);
-        $integer_part = ltrim($parts[0], '0'); // Eliminar ceros a la izquierda
+        // Validar que la parte entera no tenga más de 10 dígitos.
+        $parts = explode('.', (string) $parsed);
+        $integer_part = ltrim($parts[0], '0');
         if (strlen($integer_part) > 10) {
             return null;
         }
 
-        // 5. Formatear número a la cantidad de decimales solicitada
-        return number_format((float) $normalized, $decimales, '.', '');
+        return number_format((float) $parsed, $decimales, '.', '');
     }
 
 
     private function obtener_stock($row, $articulo_ya_creado = null) {
 
         $excel_stock = ImportHelper::getColumnValue($row, 'stock_actual', $this->columns);
+        // Normaliza stock tolerando separadores locales (ej: "1.000" → 1000).
+        $excel_stock_parsed = self::get_number($excel_stock, 0);
 
         $stock_global = null;
         $stock_addresses = [];
@@ -1261,8 +1263,7 @@ class ProcessRow {
 
         if (
             (
-                ImportHelper::usa_columna($excel_stock)
-                && is_numeric($excel_stock)
+                !is_null($excel_stock_parsed)
             )
             || $indico_stock_en_addresses
         ) {
@@ -1274,9 +1275,9 @@ class ProcessRow {
                     $stock_addresses = $this->obtener_stock_addresses($row, $articulo_ya_creado);
                 
                 } else {
-                    $this->log('comparando stock existente de '.$articulo_ya_creado->stock.' con excel de '.$excel_stock);
-                    if ($articulo_ya_creado->stock != $excel_stock) {
-                        $stock_global = $excel_stock - $articulo_ya_creado->stock;
+                    $this->log('comparando stock existente de '.$articulo_ya_creado->stock.' con excel de '.$excel_stock_parsed);
+                    if ($articulo_ya_creado->stock != $excel_stock_parsed) {
+                        $stock_global = $excel_stock_parsed - $articulo_ya_creado->stock;
                         $this->log('nuevo stock_global: '.$stock_global);
                     }
                 }
@@ -1286,7 +1287,7 @@ class ProcessRow {
                 if ($indico_stock_en_addresses) {
                     $stock_addresses = $this->obtener_stock_addresses($row);
                 } else {
-                    $stock_global = $excel_stock;
+                    $stock_global = $excel_stock_parsed;
                 }
             }
             
@@ -1354,15 +1355,20 @@ class ProcessRow {
 
                 $this->log('Hay info en la columna '.$address->street);
 
+                // Normaliza cantidades y límites de stock por sucursal.
+                $min_excel_parsed = self::get_number($min_excel, 0);
+                $max_excel_parsed = self::get_number($max_excel, 0);
+                $amount_excel_parsed = self::get_number($amount_excel, 0);
+
                 $address_article = [
                     'address_id'    => $address->id,
-                    'stock_min'     => $min_excel,
-                    'stock_max'     => $max_excel,
+                    'stock_min'     => $min_excel_parsed,
+                    'stock_max'     => $max_excel_parsed,
                     'amount'        => null,
                 ];
 
-                $this->log($address->street.' min: '.$min_excel);
-                $this->log($address->street.' max: '.$max_excel);
+                $this->log($address->street.' min: '.$min_excel_parsed);
+                $this->log($address->street.' max: '.$max_excel_parsed);
 
                 if (!is_null($articulo_ya_creado) && $articulo_ya_creado instanceof \App\Models\Article) {
 
@@ -1378,13 +1384,11 @@ class ProcessRow {
                 }
 
                 // Ojo aca
-                if (!is_null($amount_excel)) {
+                if (!is_null($amount_excel_parsed)) {
 
-                    $this->log('Agregando '.$amount_excel.' a la direccion '.$address->street);
+                    $this->log('Agregando '.$amount_excel_parsed.' a la direccion '.$address->street);
 
-                    $amount_excel = (float)$amount_excel;
-
-                    $address_article['amount'] = $amount_excel;
+                    $address_article['amount'] = (float) $amount_excel_parsed;
                     // $diferencia = $amount_excel - $stock_actual_en_address;
 
                     // if ($diferencia != 0) {
@@ -1566,10 +1570,10 @@ class ProcessRow {
                 }
             
                 $row_percentage_name = $this->get_price_type_row_name('%_', $price_type);
-                $percentage = ImportHelper::getColumnValue($row, $row_percentage_name, $this->columns);
+                $percentage = self::get_number(ImportHelper::getColumnValue($row, $row_percentage_name, $this->columns));
             
                 $row_final_price_name = $this->get_price_type_row_name('$_final_', $price_type);
-                $final_price = ImportHelper::getColumnValue($row, $row_final_price_name, $this->columns);
+                $final_price = self::get_number(ImportHelper::getColumnValue($row, $row_final_price_name, $this->columns));
 
                 $this->log('setear: '.$setear);
                 $this->log('percentage: '.$percentage);
@@ -1953,7 +1957,7 @@ class ProcessRow {
         // Campos de variante opcionales si vienen en la fila
 
         $variant_price = self::get_number(ImportHelper::getColumnValue($row, 'precio', $this->columns));
-        $variant_stock = ImportHelper::getColumnValue($row, 'stock_actual', $this->columns);
+        $variant_stock_parsed = self::get_number(ImportHelper::getColumnValue($row, 'stock_actual', $this->columns), 0);
         $image_url     = ImportHelper::getColumnValue($row, 'imagen', $this->columns); // si mapeás una columna 'imagen'
         $sku           = ImportHelper::getColumnValue($row, 'sku', $this->columns);
         
@@ -1964,7 +1968,7 @@ class ProcessRow {
         return [
             'properties' => $props,                  // ['color'=>'Rojo','talle'=>'42', ...]
             'price'      => $variant_price ?? null,  // num o null
-            'stock'      => is_null($variant_stock) ? null : (int)$variant_stock,
+            'stock'      => is_null($variant_stock_parsed) ? null : (int) $variant_stock_parsed,
             'image_url'  => $image_url ?? null,
             'sku'        => $sku ?? null,
             'address_stocks' => $address_stocks, 
@@ -2014,8 +2018,9 @@ class ProcessRow {
 
             if (!is_null($address_excel)) {
 
-                // normalizamos cantidad a int >= 0
-                $amount = (int) round((float) str_replace(',', '.', (string)$address_excel));
+                // Normalizamos cantidad a entero >= 0 tolerando formatos locales y símbolos de moneda.
+                $amount_parsed = self::get_number($address_excel, 0);
+                $amount = is_null($amount_parsed) ? 0 : (int) round((float) $amount_parsed);
                 if ($amount < 0) $amount = 0;
 
                 $stocks[$address->id] = $amount;

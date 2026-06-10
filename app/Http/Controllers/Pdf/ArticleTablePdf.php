@@ -115,17 +115,24 @@ class ArticleTablePdf extends fpdf
          */
         $this->row_index = 0;
 
+        /**
+         * Tamaño de letra uniforme (pt) para todos los encabezados de columna (th).
+         */
+        $this->table_header_font_size = $this->resolve_table_header_font_size(
+            $pdf_column_profile->table_header_font_size ?? null
+        );
+
         parent::__construct();
         $this->SetAutoPageBreak(false);
 
         /** Parámetro de borde para celdas: 0 = sin borde (el diseño usa Rect para fondos). */
         $this->b = 0;
 
-        /** Altura estándar de fila en mm (ligeramente mayor para mejor legibilidad). */
-        $this->line_height = 6;
+        /** Altura mínima de fila en mm (filas de una sola línea sin imagen). */
+        $this->line_height = 4.5;
 
-        /** Altura de la fila de encabezado de columnas en mm. */
-        $this->table_header_line_height = 8;
+        /** Altura base del encabezado de columnas en mm. */
+        $this->table_header_line_height = 7;
 
         /** Alias para total de páginas; FPDF lo reemplaza al hacer Output. */
         $this->AliasNbPages('{nb}');
@@ -174,6 +181,8 @@ class ArticleTablePdf extends fpdf
                 'order'          => isset($option->pivot->order) ? (int) $option->pivot->order : 0,
                 'width'          => isset($option->pivot->width) ? (int) $option->pivot->width : (int) $option->default_width,
                 'wrap_content'   => isset($option->pivot->wrap_content) ? (bool) $option->pivot->wrap_content : false,
+                'font_size'      => isset($option->pivot->font_size) ? (int) $option->pivot->font_size : null,
+                'text_align'     => isset($option->pivot->text_align) ? (string) $option->pivot->text_align : null,
             ];
         }
 
@@ -243,13 +252,20 @@ class ArticleTablePdf extends fpdf
     }
 
     /**
-     * Devuelve la alineación horizontal de una celda según el tipo de dato de la columna.
+     * Devuelve la alineación horizontal de una celda según la configuración del perfil
+     * o, si no hay valor guardado, según reglas automáticas legacy por tipo de dato.
      *
      * @param  array  $column  Definición de columna del perfil.
      * @return string          'L', 'C' o 'R' para FPDF Cell / MultiCell.
      */
     private function get_column_text_align(array $column)
     {
+        /** Valor configurado en el pivot del perfil (left|center|right). */
+        $configured_align = isset($column['text_align']) ? (string) $column['text_align'] : '';
+        if (in_array($configured_align, ['left', 'center', 'right'], true)) {
+            return $this->text_align_to_fpdf($configured_align);
+        }
+
         /** Resolver de la columna; define el tipo de dato mostrado. */
         $value_resolver = $column['value_resolver'] ?? '';
 
@@ -271,6 +287,105 @@ class ArticleTablePdf extends fpdf
         }
 
         return 'C';
+    }
+
+    /**
+     * Convierte alineación persistida en el perfil al código esperado por FPDF.
+     *
+     * @param  string  $text_align  left|center|right
+     * @return string               L|C|R
+     */
+    private function text_align_to_fpdf($text_align)
+    {
+        $map = [
+            'left' => 'L',
+            'center' => 'C',
+            'right' => 'R',
+        ];
+
+        return $map[$text_align] ?? 'C';
+    }
+
+    /**
+     * Resuelve el tamaño de letra del encabezado tabular del perfil (default 8 pt).
+     *
+     * @param  mixed  $configured_font_size
+     * @return int
+     */
+    private function resolve_table_header_font_size($configured_font_size)
+    {
+        $font_size = (int) $configured_font_size;
+        if ($font_size >= 4 && $font_size <= 24) {
+            return $font_size;
+        }
+
+        return 8;
+    }
+
+    /**
+     * Tamaño de fuente en puntos para una columna (default 8 pt).
+     *
+     * @param  array  $column
+     * @return int
+     */
+    private function get_column_font_size(array $column)
+    {
+        $font_size = isset($column['font_size']) ? (int) $column['font_size'] : 0;
+        if ($font_size >= 4 && $font_size <= 24) {
+            return $font_size;
+        }
+
+        return 8;
+    }
+
+    /**
+     * Altura de línea en mm acorde al tamaño de fuente de la columna.
+     * Factor bajo para interlineado compacto en celdas con salto de línea.
+     *
+     * @param  int  $font_size  Tamaño de fuente en puntos.
+     * @return float
+     */
+    private function get_column_line_height($font_size)
+    {
+        return max(3.5, round($font_size * 0.52, 1));
+    }
+
+    /**
+     * Imprime texto en una celda con alineación horizontal y vertical centrada en la fila.
+     *
+     * @param  float   $x
+     * @param  float   $start_y
+     * @param  int     $width
+     * @param  float   $row_height
+     * @param  string  $text
+     * @param  string  $text_align  L|C|R
+     * @param  int     $font_size
+     * @param  bool    $wrap_content
+     * @return void
+     */
+    private function print_vertically_centered_text_cell($x, $start_y, $width, $row_height, $text, $text_align, $font_size, $wrap_content)
+    {
+        if ($width <= 0) {
+            return;
+        }
+
+        /** Altura de cada línea según el tamaño de fuente activo. */
+        $cell_line_height = $this->get_column_line_height($font_size);
+        $this->SetFont('Arial', '', $font_size);
+
+        if ($wrap_content) {
+            $lines = $this->NbLines($width, $text);
+            $content_height = max(1, $lines) * $cell_line_height;
+            $cell_y = $start_y + ($row_height - $content_height) / 2;
+            $this->SetXY($x, $cell_y);
+            $this->MultiCell($width, $cell_line_height, $this->pdf_text($text), 0, $text_align, false);
+            return;
+        }
+
+        $short_text = $this->truncate_text_to_width($text, $width);
+        $cell_y = $start_y + ($row_height - $cell_line_height) / 2;
+        $this->SetXY($x, $cell_y);
+        $this->Cell($width, $cell_line_height, $short_text, 0, 0, $text_align, false);
     }
 
     // ── Cabecera de página ────────────────────────────────────────────────────
@@ -379,8 +494,10 @@ class ArticleTablePdf extends fpdf
      */
     private function print_styled_table_header(array $columns)
     {
-        /** Altura de la fila de encabezados en mm. */
-        $h = $this->table_header_line_height;
+        /** Tamaño uniforme para todos los títulos de columna (th). */
+        $header_font_size = $this->table_header_font_size;
+        $header_line_height = $this->get_column_line_height($header_font_size);
+        $h = max($this->table_header_line_height, $header_line_height + 1);
 
         /** Posición Y inicial de la fila de encabezados en mm. */
         $start_y = $this->y;
@@ -397,14 +514,21 @@ class ArticleTablePdf extends fpdf
         $this->print_table_area_fill($this->start_x, $start_y, $usable_width, $h, '1100');
 
         $this->SetTextColor(...self::COLOR_HEADER_TEXT);
-        $this->SetFont('Arial', 'B', 8);
         $this->x = $this->start_x;
+        $this->SetFont('Arial', 'B', $header_font_size);
+
+        $cell_y = $start_y + ($h - $header_line_height) / 2;
 
         foreach ($columns as $column) {
-            /** Ancho y alineación coherentes con las celdas de datos de la misma columna. */
+            /** Ancho y alineación coherentes con las celdas de datos; tipografía única en todos los th. */
             $width = (int) $column['width'];
             $align = $this->get_column_text_align($column);
-            $this->Cell($width, $h, $column['label'], 0, 0, $align, false);
+            $current_x = $this->x;
+
+            $this->SetXY($current_x, $cell_y);
+            $this->Cell($width, $header_line_height, $column['label'], 0, 0, $align, false);
+            /** Cell() avanza x; fijamos la posición explícita para la siguiente columna. */
+            $this->x = $current_x + $width;
         }
 
         // Avanzar y al final de la fila de encabezados
@@ -532,12 +656,15 @@ class ArticleTablePdf extends fpdf
             }
 
             $value = (string) $this->get_profile_column_value($column, $index, $article);
+            $font_size = $this->get_column_font_size($column);
+            $cell_line_height = $this->get_column_line_height($font_size);
 
             /** Las celdas con wrap_content expanden la altura según líneas necesarias. */
             $wrap_content = ! empty($column['wrap_content']);
             if ($wrap_content && $width > 0) {
-                $lines     = $this->NbLines($width, $value);
-                $estimated = max(1, $lines) * $this->line_height;
+                $this->SetFont('Arial', '', $font_size);
+                $lines = $this->NbLines($width, $value);
+                $estimated = max(1, $lines) * $cell_line_height;
                 if ($estimated > $row_height) {
                     $row_height = $estimated;
                 }
@@ -582,20 +709,24 @@ class ArticleTablePdf extends fpdf
                 continue;
             }
 
-            $text         = (string) $this->get_profile_column_value($column, $index, $article);
+            $text = (string) $this->get_profile_column_value($column, $index, $article);
             $wrap_content = ! empty($column['wrap_content']);
-            $text_align   = $this->get_column_text_align($column);
+            $text_align = $this->get_column_text_align($column);
+            $font_size = $this->get_column_font_size($column);
 
-            if ($wrap_content) {
-                // MultiCell no aplica utf8_decode; convertimos antes de imprimir.
-                $this->MultiCell($width, $this->line_height, $this->pdf_text($text), 0, $text_align, false);
-                $this->x = $current_x + $width;
-                $this->y = $current_y;
-            } else {
-                $short_text = $this->truncate_text_to_width($text, $width);
-                // fill=false: el fondo ya fue pintado con Rect
-                $this->Cell($width, $row_height, $short_text, 0, 0, $text_align, false);
-            }
+            $this->print_vertically_centered_text_cell(
+                $current_x,
+                $start_y,
+                $width,
+                $row_height,
+                $text,
+                $text_align,
+                $font_size,
+                $wrap_content
+            );
+
+            $this->x = $current_x + $width;
+            $this->y = $current_y;
         }
 
         // ── Paso 4: línea separadora inferior (omitida en la última fila; cierra el borde redondeado) ──

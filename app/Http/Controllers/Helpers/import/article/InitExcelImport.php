@@ -27,7 +27,12 @@ class InitExcelImport
     {
         $this->import_uuid              = $data['import_uuid'];
         $this->archivo_excel            = $data['archivo_excel'];
-        $this->columns                  = $data['columns'];
+        /*
+         * Normalizamos claves del mapeo (p. ej. importación con IA: codigo_proveedor → codigo_de_proveedor).
+         */
+        $this->columns                  = ArticleImportColumnsNormalizer::normalize(
+            is_array($data['columns'] ?? null) ? $data['columns'] : []
+        );
         $this->create_and_edit          = $data['create_and_edit'];
         $this->start_row                = $data['start_row'];
         $this->finish_row               = $data['finish_row'];
@@ -190,7 +195,34 @@ class InitExcelImport
     function calcular_chunck()
     {
         $this->total_rows = $this->finish_row - $this->start_row + 1;
+        if ($this->total_rows < 1) {
+            $this->total_rows = 1;
+        }
         $this->total_chunks = (int) ceil($this->total_rows / $this->chunkSize);
+    }
+
+    /**
+     * Reduce finish_row cuando el cliente envió un tope mayor que las filas reales del Excel.
+     *
+     * @param  int $ultima_fila_con_contenido  Última fila 1-based con al menos una celda no vacía
+     * @return void
+     */
+    protected function ajustar_finish_row_segun_excel_real(int $ultima_fila_con_contenido): void
+    {
+        $finish_row_original = (int) $this->finish_row;
+
+        if ($finish_row_original <= $ultima_fila_con_contenido) {
+            return;
+        }
+
+        $this->finish_row = max($ultima_fila_con_contenido, (int) $this->start_row);
+
+        Log::info('InitExcelImport: finish_row ajustado al tamaño real del Excel', [
+            'finish_row_original'       => $finish_row_original,
+            'finish_row'                => $this->finish_row,
+            'ultima_fila_con_contenido' => $ultima_fila_con_contenido,
+            'chunk_size'                => $this->chunkSize,
+        ]);
     }
 
     function armar_archivo_csv()
@@ -210,11 +242,14 @@ class InitExcelImport
             $writer = WriterEntityFactory::createCSVWriter();
             $writer->openToFile($this->csv_full_path);
 
+            /* Número de fila actual en el Excel (1-based) y última fila con al menos una celda con datos. */
             $fila = 1;
+            $ultima_fila_con_contenido = 1;
 
             foreach ($reader->getSheetIterator() as $sheet) {
                 foreach ($sheet->getRowIterator() as $row) {
                     $cells = [];
+                    $fila_tiene_contenido = false;
 
                     foreach ($row->getCells() as $cell) {
                         $value = $cell->getValue();
@@ -227,11 +262,20 @@ class InitExcelImport
                             $value = '';
                         }
 
+                        $text_value = trim((string) $value);
+                        if ($text_value !== '') {
+                            $fila_tiene_contenido = true;
+                        }
+
                         $cells[] = new Cell((string) $value);
                     }
 
                     if (count($cells) === 0) {
                         $cells[] = new Cell('');
+                    }
+
+                    if ($fila_tiene_contenido) {
+                        $ultima_fila_con_contenido = $fila;
                     }
 
                     $new_row = new Row($cells, null);
@@ -245,6 +289,12 @@ class InitExcelImport
 
             $writer->close();
             $reader->close();
+
+            /*
+             * Si el frontend envió finish_row muy alto (p. ej. 99999 en importación con IA),
+             * limitamos al rango real del archivo para no crear miles de chunks vacíos.
+             */
+            $this->ajustar_finish_row_segun_excel_real($ultima_fila_con_contenido);
 
             $conversion_fin = microtime(true);
             $conversion_duracion = $conversion_fin - $conversion_inicio;

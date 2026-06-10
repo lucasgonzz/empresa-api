@@ -46,6 +46,10 @@ class Kernel extends ConsoleKernel
 
         // Reintenta cada 5 minutos los mensajes de soporte no sincronizados a admin-api.
         $schedule->command('support:retry-pending-syncs')->everyFiveMinutes();
+
+        // Captura el snapshot de deuda diario (clientes y proveedores) a las 23:59.
+        // Registra los saldos actuales de credit_accounts para análisis histórico.
+        $schedule->command('debt:snapshot')->dailyAt('23:59');
     }
 
     /**

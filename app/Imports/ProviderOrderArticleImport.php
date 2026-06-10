@@ -3,6 +3,7 @@
 namespace App\Imports;
 
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
+use InvalidArgumentException;
 use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Models\Article;
@@ -54,7 +55,7 @@ class ProviderOrderArticleImport implements ToCollection
                 $article = $this->get_article($row);
 
                 if (!is_null($article)) {
-                    $this->add_article($article, $row);
+                    $this->add_article($article, $row, $num_row);
                 }
             }
 
@@ -91,12 +92,26 @@ class ProviderOrderArticleImport implements ToCollection
         }
     }
 
-    function add_article($article, $row) {
+    /**
+     * Agrega un artículo al lote de importación normalizando cantidades y costos numéricos.
+     *
+     * @param \App\Models\Article $article Artículo encontrado o creado para la fila.
+     * @param mixed $row Fila del Excel en procesamiento.
+     * @param int $row_number Número de fila del Excel (1-based) para mensajes de error.
+     * @return void
+     * @throws InvalidArgumentException Si algún valor numérico no puede parsearse.
+     */
+    function add_article($article, $row, $row_number) {
 
-        $amount   = ImportHelper::getColumnValue($row, 'cantidad', $this->columns);
-        $received = ImportHelper::getColumnValue($row, 'cantidad_recibida', $this->columns);
-        $cost     = ImportHelper::getColumnValue($row, 'costo', $this->columns);
-        $notes    = ImportHelper::getColumnValue($row, 'notas', $this->columns);
+        $amount_raw   = ImportHelper::getColumnValue($row, 'cantidad', $this->columns);
+        $received_raw = ImportHelper::getColumnValue($row, 'cantidad_recibida', $this->columns);
+        $cost_raw     = ImportHelper::getColumnValue($row, 'costo', $this->columns);
+        $notes        = ImportHelper::getColumnValue($row, 'notas', $this->columns);
+
+        // Normaliza valores numéricos tolerando "$ 37468,24" y formatos locales similares.
+        $amount   = ImportHelper::parseNumericValue($amount_raw, 'cantidad', $row_number);
+        $received = ImportHelper::parseNumericValue($received_raw, 'cantidad recibida', $row_number);
+        $cost     = ImportHelper::parseNumericValue($cost_raw, 'costo', $row_number);
 
         // $current = $this->get_current_pivot($article->id);
         // $model_defaults = $this->get_model_defaults($article, $current);

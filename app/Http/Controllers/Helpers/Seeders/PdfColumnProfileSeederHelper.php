@@ -57,6 +57,25 @@ class PdfColumnProfileSeederHelper
 
             $wrap_content = $is_visible && ! empty($visible_settings['wrap_content']);
 
+            /**
+             * Tipografía opcional por columna (artículos PDF tabla).
+             */
+            $font_size = null;
+            if ($is_visible && isset($visible_settings['font_size'])) {
+                $font_size = (int) $visible_settings['font_size'];
+                if ($font_size < 4 || $font_size > 24) {
+                    $font_size = null;
+                }
+            }
+
+            $text_align = null;
+            if ($is_visible && ! empty($visible_settings['text_align'])) {
+                $text_align = (string) $visible_settings['text_align'];
+                if (! in_array($text_align, ['left', 'center', 'right'], true)) {
+                    $text_align = null;
+                }
+            }
+
             if ($is_visible && isset($visible_order_by_name[$option->name])) {
                 $pivot_order = (int) $visible_order_by_name[$option->name];
             } else {
@@ -68,6 +87,8 @@ class PdfColumnProfileSeederHelper
                 'order' => $pivot_order,
                 'width' => $option_width,
                 'wrap_content' => $wrap_content,
+                'font_size' => $font_size,
+                'text_align' => $text_align,
             ];
 
             $columns[] = [
@@ -79,6 +100,8 @@ class PdfColumnProfileSeederHelper
                 'order' => $pivot_order,
                 'width' => $option_width,
                 'wrap_content' => $wrap_content,
+                'font_size' => $font_size,
+                'text_align' => $text_align,
             ];
         }
 
@@ -91,7 +114,7 @@ class PdfColumnProfileSeederHelper
      * Arma mapa name => ajustes (width, wrap_content) para columnas visibles.
      *
      * @param array $visible_options_definition
-     * @return array<string, array{width: int|null, wrap_content: bool}>
+     * @return array<string, array{width: int|null, wrap_content: bool, font_size: int|null, text_align: string|null}>
      */
     protected static function get_visible_option_settings_map(array $visible_options_definition): array
     {
@@ -104,6 +127,8 @@ class PdfColumnProfileSeederHelper
 
             $visible_option_width = null;
             $wrap_content = false;
+            $font_size = null;
+            $text_align = null;
 
             if (is_array($visible_option_definition)) {
                 if (isset($visible_option_definition['width'])) {
@@ -112,11 +137,19 @@ class PdfColumnProfileSeederHelper
                 if (isset($visible_option_definition['wrap_content'])) {
                     $wrap_content = (bool) $visible_option_definition['wrap_content'];
                 }
+                if (isset($visible_option_definition['font_size'])) {
+                    $font_size = (int) $visible_option_definition['font_size'];
+                }
+                if (isset($visible_option_definition['text_align'])) {
+                    $text_align = (string) $visible_option_definition['text_align'];
+                }
             }
 
             $visible_option_settings_by_name[$visible_option_name] = [
                 'width' => $visible_option_width,
                 'wrap_content' => $wrap_content,
+                'font_size' => $font_size,
+                'text_align' => $text_align,
             ];
         }
 

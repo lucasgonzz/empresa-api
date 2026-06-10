@@ -11,6 +11,7 @@ use App\Models\Article;
 use App\Models\ArticleImportResult;
 use App\Models\ImportHistory;
 use App\Models\PriceType;
+use App\Models\Provider;
 use App\Models\UnidadMedida;
 use App\Notifications\GlobalNotification;
 use Illuminate\Support\Facades\Log;
@@ -29,6 +30,7 @@ class ArticleImportHelper {
         	],
         ];
 
+        /* Compatibilidad con global-notification y modal dedicado article_import_result. */
         $info_to_show = [
         	[
         		'title'		=> 'Resultado de la operacion',
@@ -37,10 +39,19 @@ class ArticleImportHelper {
         			$import_history->created_models. ' articulos creados',
         			$import_history->articles_match. ' articulos macheados',
         			$import_history->updated_models. ' articulos actualizados',
-        			// $import_history->articles_repetidos. ' articulos repetidos',
         		],
         	],
         ];
+
+        $import_stats = [
+            'filas_procesadas'       => (int) $import_history->filas_procesadas,
+            'articulos_creados'      => (int) $import_history->created_models,
+            'articulos_macheados'    => (int) $import_history->articles_match,
+            'articulos_actualizados' => (int) $import_history->updated_models,
+        ];
+
+        /* Opciones del paso 3 y rango de filas para el modal de resultado. */
+        $import_options = Self::build_import_options_for_notification($import_history);
 
         $user->notify(new GlobalNotification([
         	'message_text'				=> 'Importacion de Excel finalizada correctamente',
@@ -49,12 +60,135 @@ class ArticleImportHelper {
         	'info_to_show'				=> $info_to_show,
         	'owner_id'					=> $user->id,
         	'is_only_for_auth_user'		=> false,
+        	'notification_modal'		=> 'article_import_result',
+        	'import_stats'				=> $import_stats,
+        	'import_options'			=> $import_options,
         	])
     	);
 
         Log::info('Se ejecuto ArticleImportHelper enviar_notificacion');
 
 	}
+
+    /**
+     * Arma el payload de configuración de importación para el modal del SPA.
+     * Usa operacion_a_realizar, operaciones (JSON) y proveedor del ImportHistory.
+     *
+     * @param  ImportHistory  $import_history
+     * @return array|null
+     */
+    static function build_import_options_for_notification($import_history) {
+        if (!$import_history) {
+            return null;
+        }
+
+        $operacion_a_realizar = $import_history->operacion_a_realizar;
+
+        if (empty($operacion_a_realizar)) {
+            $operacion_a_realizar = 'Solo actualizar';
+        }
+
+        $start_row = null;
+        $finish_row = null;
+        $advanced_options = [];
+
+        if (!empty($import_history->operaciones)) {
+            $operaciones = json_decode($import_history->operaciones, true);
+
+            if (is_array($operaciones)) {
+                foreach ($operaciones as $operacion) {
+                    if (!is_array($operacion)) {
+                        continue;
+                    }
+
+                    $name = isset($operacion['name']) ? (string) $operacion['name'] : '';
+                    $value = isset($operacion['value']) ? $operacion['value'] : '';
+
+                    if ($name === 'Fila inicio') {
+                        $start_row = $value;
+                        continue;
+                    }
+
+                    if ($name === 'Fila fin') {
+                        $finish_row = $value;
+                        continue;
+                    }
+
+                    /* "Operaciones" duplica operacion_a_realizar. */
+                    if ($name === 'Operaciones') {
+                        continue;
+                    }
+
+                    $advanced_options[] = [
+                        'label' => Self::format_import_option_label($name),
+                        'value' => Self::format_import_option_value($value),
+                    ];
+                }
+            }
+        }
+
+        $provider_name = null;
+
+        if (!empty($import_history->provider_id)) {
+            $provider = Provider::find($import_history->provider_id);
+
+            if ($provider) {
+                $provider_name = $provider->name;
+            }
+        }
+
+        return [
+            'operacion_a_realizar' => $operacion_a_realizar,
+            'start_row'            => $start_row,
+            'finish_row'           => $finish_row,
+            'provider_name'        => $provider_name,
+            'advanced_options'     => $advanced_options,
+        ];
+    }
+
+    /**
+     * Etiqueta legible para una opción guardada en operaciones (JSON).
+     *
+     * @param  string  $name
+     * @return string
+     */
+    static function format_import_option_label($name) {
+        $labels = [
+            'Permitir codigos de proveedor repetidos' => 'Permitir códigos de proveedor repetidos',
+            'Permitir codigos de proveedor repetidos en multiples proveedores' => 'Permitir códigos repetidos en múltiples proveedores',
+            'Actualizar articulos de otro proveedor' => 'Actualizar artículos de otro proveedor',
+            'Actualizar por codigos de proveedor' => 'Actualizar por código de proveedor',
+            'Actualizar proveedor' => 'Actualizar proveedor del artículo',
+        ];
+
+        if (isset($labels[$name])) {
+            return $labels[$name];
+        }
+
+        return $name;
+    }
+
+    /**
+     * Normaliza Si/No para mostrar en el modal.
+     *
+     * @param  mixed  $value
+     * @return string
+     */
+    static function format_import_option_value($value) {
+        if ($value === true || $value === 1 || $value === '1') {
+            return 'Sí';
+        }
+
+        if ($value === false || $value === 0 || $value === '0') {
+            return 'No';
+        }
+
+        if ($value === 'Si') {
+            return 'Sí';
+        }
+
+        return (string) $value;
+    }
 
 	static function error_notification($user, $linea_error, $detalle_error) {
 
@@ -91,6 +225,8 @@ class ArticleImportHelper {
         	'info_to_show'				=> $info_to_show,
         	'owner_id'					=> $user->id,
         	'is_only_for_auth_user'		=> false,
+        	'notification_modal'		=> 'article_import_result',
+        	'import_stats'				=> null,
         	])
     	);
     	Log::info('SE ENVIO NOTIFICACION DE ERROR');

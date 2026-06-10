@@ -247,4 +247,7 @@ return [
     'FOR_USER'                                  => env('FOR_USER'),
     'API_URL'                                   => env('API_URL'),
 
+    /* Clave de API de Anthropic (Claude) para la importación de Excel asistida por IA. */
+    'ANTHROPIC_API_KEY'                         => env('ANTHROPIC_API_KEY'),
+
 ];

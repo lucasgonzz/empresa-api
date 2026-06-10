@@ -39,13 +39,22 @@ class PerformanceHelper
     public $articulos_vendidos;
     public $total_vendido;
 
-    function __construct($month, $year, $user_id, $from_day = null, $from_current_month = false) {
+    /**
+     * @param int|null    $month              Mes (1-12) o null para reporte del día actual
+     * @param int|null    $year               Año del reporte
+     * @param int         $user_id            Usuario dueño del reporte
+     * @param string|null $from_day           Inicio del período en Y-m-d (fecha específica o inicio de rango)
+     * @param bool        $from_current_month Si es el mes corriente (evita crear article_performances)
+     * @param string|null $until_day          Fin del período en Y-m-d; null = mismo día que from_day
+     */
+    function __construct($month, $year, $user_id, $from_day = null, $from_current_month = false, $until_day = null) {
 
         $this->user_id = $user_id;
         
         $this->month = $month;
         $this->year = $year;
         $this->from_day = $from_day;
+        $this->until_day = $until_day;
         $this->from_current_month = $from_current_month;
 
 
@@ -62,7 +71,13 @@ class PerformanceHelper
         if (!is_null($from_day)) {
 
             $this->mes_inicio = Carbon::parse($from_day)->startOfDay();
-            $this->mes_fin = Carbon::parse($from_day)->endOfDay();
+
+            /* Cuando hay until_day se usa como fin del rango; si no, es solo el día from_day */
+            if (!is_null($until_day)) {
+                $this->mes_fin = Carbon::parse($until_day)->endOfDay();
+            } else {
+                $this->mes_fin = Carbon::parse($from_day)->endOfDay();
+            }
 
         } else if ($this->from_today) {
 
@@ -78,9 +93,12 @@ class PerformanceHelper
 
     }
 
+    /**
+     * Persiste el día solo cuando el reporte es de una única fecha (sin until_day).
+     */
     function set_day() {
 
-        if (!is_null($this->from_day)) {
+        if (!is_null($this->from_day) && is_null($this->until_day)) {
 
             $this->company_performance->day = $this->mes_inicio->day;
             $this->company_performance->save();

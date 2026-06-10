@@ -39,6 +39,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
 
+    // Configuración de layout del módulo de vender por usuario
+    Route::put('user-configuration/vender-layout', 'UserConfigurationController@updateVenderLayout');
+
+    // Atajos de teclado configurables del módulo Vender (por usuario autenticado)
+    Route::get('vender-keyboard-shortcut', 'VenderKeyboardShortcutController@show');
+    Route::put('vender-keyboard-shortcut', 'VenderKeyboardShortcutController@update');
+
     // Employee
     Route::resource('employee', 'CommonLaravel\EmployeeController');
 
@@ -480,6 +487,17 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('/import-history/chunks/{import_history_id}', 'ImportHistoryController@chunks');
     Route::post('/import-history/rollback/{import_history_id}', 'ImportHistoryController@rollback');
 
+    /*
+     * Importación de artículos asistida por Claude IA.
+     * Requiere la extensión "ai_excel_import" habilitada para el usuario.
+     *  - POST /ai-excel-import/analyze : analiza el Excel y devuelve el mapeo de columnas sugerido
+     *  - POST /ai-excel-import/import  : lanza la importación con el mapeo confirmado por el usuario
+     */
+    Route::middleware('check_extencion_empresa:ai_excel_import')->group(function () {
+        Route::post('/ai-excel-import/analyze', 'AiExcelImportController@analyze');
+        Route::post('/ai-excel-import/import',  'AiExcelImportController@import');
+    });
+
     Route::get('/online-price-type', 'OnlinePriceTypeController@index');
 
     Route::resource('/cupon', 'CuponController');
@@ -556,6 +574,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('google/custom-search/aumentar-contador', 'GoogleController@aumentar_contador_custom_search');
     Route::get('google/get-current', 'GoogleController@get_current');
+    Route::post('google/batch-assign-images', 'GoogleController@batch_assign_images');
 
 
     Route::post('payment-plan', 'PaymentPlanController@store');
@@ -708,4 +727,7 @@ Route::middleware('admin.api.key')
         Route::post('support/typing', 'AdminSync\\SupportTypingController@store');
         Route::post('support/tickets', 'AdminSync\\SupportTicketController@store');
         Route::put('support/tickets/{ticket_uuid}', 'AdminSync\\SupportTicketController@update');
+        Route::get('employees', 'AdminSync\\EmployeesController@index');
+        Route::post('ai-excel-import/analyze', 'AdminSync\\AiExcelImportController@analyze');
+        Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
     });

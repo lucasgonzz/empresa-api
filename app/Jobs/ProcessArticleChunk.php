@@ -293,6 +293,7 @@ class ProcessArticleChunk implements ShouldQueue
                 $this->import_history->registrar_art_cre,
                 $this->import_history->registrar_art_act,
                 $this->import_result->id,
+                $this->import_history->id,
 
                 $this->actualizar_articulos_de_otro_proveedor,
                 $this->actualizar_proveedor,

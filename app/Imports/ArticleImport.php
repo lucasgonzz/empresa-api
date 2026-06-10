@@ -49,6 +49,7 @@ class ArticleImport implements ToCollection
         $registrar_articulos_creados, 
         $registrar_articulos_actualizados, 
         $import_result_id, 
+        $import_history_id,
 
         $actualizar_articulos_de_otro_proveedor, 
         $actualizar_proveedor, 
@@ -68,6 +69,7 @@ class ArticleImport implements ToCollection
         $this->registrar_articulos_creados      = $registrar_articulos_creados;
         $this->registrar_articulos_actualizados = $registrar_articulos_actualizados;
         $this->import_result_id                 = $import_result_id;
+        $this->import_history_id                = $import_history_id;
 
 
 
@@ -165,9 +167,9 @@ class ArticleImport implements ToCollection
     }
 
     function checkRow($row) {
-        return !is_null(ImportHelper::getColumnValue($row, 'nombre', $this->columns)) 
-            || !is_null(ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns)) 
-            || !is_null(ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns)) 
+        return !is_null(ImportHelper::getColumnValueByAliases($row, ['nombre', 'descripcion'], $this->columns))
+            || !is_null(ImportHelper::getColumnValueByAliases($row, ['codigo_de_proveedor', 'codigo_proveedor'], $this->columns))
+            || !is_null(ImportHelper::getColumnValueByAliases($row, ['codigo_de_barras', 'codigo_barras'], $this->columns))
             || !is_null(ImportHelper::getColumnValue($row, 'numero', $this->columns));
     }
 
@@ -365,7 +367,16 @@ class ArticleImport implements ToCollection
         try {
 
             $this->iniciar();
-            $actualizar_bbdd = new ActualizarBBDD($articulosParaCrear, $articulosParaActualizar, $this->user, $this->auth_user_id, $this->permitir_provider_code_repetido, $this->chunk_number, $provider_buffer);
+            $actualizar_bbdd = new ActualizarBBDD(
+                $articulosParaCrear,
+                $articulosParaActualizar,
+                $this->user,
+                $this->auth_user_id,
+                $this->permitir_provider_code_repetido,
+                $this->chunk_number,
+                $provider_buffer,
+                $this->import_history_id
+            );
             $observations = $actualizar_bbdd->get_observations();
 
             foreach ($observations as $observation) {

@@ -22,9 +22,16 @@ class CajaSeeder extends Seeder
      */
     public function run() {
 
-        $this->una_caja_por_cada_empleado_cada_sucursal_y_cada_moneda();
+        if (
+            env('FOR_USER') == 'racing_carts'
+        ) {
 
-        // $this->una_caja_para_cada_direccion_y_por_cada_metodo_de_pago();
+            $this->una_caja_por_cada_empleado_cada_sucursal_y_cada_moneda();
+        } else {
+
+            $this->una_caja_para_cada_direccion_y_por_cada_metodo_de_pago();
+        }
+
     }
 
     function una_caja_para_cada_direccion_y_por_cada_metodo_de_pago() {

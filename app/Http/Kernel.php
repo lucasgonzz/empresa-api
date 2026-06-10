@@ -65,5 +65,7 @@ class Kernel extends HttpKernel
         'verified' => \Illuminate\Auth\Middleware\EnsureEmailIsVerified::class,
         // 'set.user.database' => \App\Http\Middleware\SetUserDatabaseConnection::class,
         'admin.api.key' => \App\Http\Middleware\AdminApiKey::class,
+        /* Verifica que el usuario tenga una extensión de empresa activa por su slug. */
+        'check_extencion_empresa' => \App\Http\Middleware\CheckExtencionEmpresa::class,
     ];
 }

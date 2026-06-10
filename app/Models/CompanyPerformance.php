@@ -9,6 +9,26 @@ class CompanyPerformance extends Model
 {
     protected $guarded = [];
 
+    /**
+     * Atributos calculados que se añaden automáticamente a la serialización JSON.
+     * snapshot_disponible indica si el segmento tiene datos históricos de deuda.
+     *
+     * @var array
+     */
+    protected $appends = ['snapshot_disponible'];
+
+    /**
+     * Accessor para snapshot_disponible.
+     * Devuelve true por defecto (para el reporte del día actual donde la deuda viene en tiempo real).
+     * El CompanyPerformanceHelper lo sobreescribe a false cuando no hay snapshot histórico disponible.
+     *
+     * @return bool
+     */
+    public function getSnapshotDisponibleAttribute()
+    {
+        return $this->attributes['snapshot_disponible'] ?? true;
+    }
+
     function scopeWithAll($q) {
         return $q->with('ingresos_mostrador', 'ingresos_cuenta_corriente', 'expense_concepts', 'gastos', 'users_payment_methods', 'ingresos_brutos_price_types', 'company_performance_info_facturacion.afip_information', 'company_performance_info_facturacion.afip_tipo_comprobante');
     }

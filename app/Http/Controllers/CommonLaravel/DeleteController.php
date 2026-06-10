@@ -3,16 +3,24 @@
 namespace App\Http\Controllers\CommonLaravel;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
-use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\DeleteModelsHelper;
+use App\Jobs\ProcessDeleteModelsJob;
 use App\Models\Article;
-use App\Services\Filter\FilterHistoryService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 class DeleteController extends Controller
 {
+    /**
+     * Elimina registros por selección manual o por filtro.
+     * Si superan el umbral, encola la operación y notifica al finalizar.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @param string $model_name
+     * @return \Illuminate\Http\JsonResponse
+     */
     function delete(Request $request, $model_name) {
         $models = [];
         $formated_model_name = GeneralHelper::getModelName($model_name);
@@ -46,9 +54,6 @@ class DeleteController extends Controller
                     'message' => 'No se permite eliminar por filtro si no hay criterios de filtrado.',
                 ], 422);
             }
-            // foreach($models as $model) {
-            //     Log::info($model->name);
-            // }
         } else {
             /**
              * Eliminación por selección manual: si no vienen IDs, no se debe hacer nada.
@@ -68,15 +73,20 @@ class DeleteController extends Controller
                     'key'       => 'Seleccion manual'
                 ],
             ];
-            // foreach($models as $model) {
-            //     Log::info($model->name);
-            // }
         }
-        $models_response = [];
-        
-        $send_notification = true;
-        if (count($models) > 300) {
-            $send_notification = false;
+
+        /** IDs resueltos y válidos para eliminar. */
+        $resolved_models_id = [];
+        foreach ($models as $model) {
+            if ($model && isset($model->id)) {
+                $resolved_models_id[] = $model->id;
+            }
+        }
+
+        if (count($resolved_models_id) == 0) {
+            return response()->json([
+                'message' => 'No hay registros para eliminar',
+            ], 422);
         }
         
         if ($model_name == 'article') {
@@ -89,7 +99,7 @@ class DeleteController extends Controller
             $cantidad_articles_activos = Article::where('user_id', $this->userId())
                                                 ->where('status', 'active')
                                                 ->count();
-            if ($cantidad_articles_activos == count($models)) {
+            if ($cantidad_articles_activos == count($resolved_models_id)) {
                 Log::info('Se interrumpio eliminado, eran todos los articulos');
                 return response()->json([
                     'message' => 'No se permite eliminar todos los artículos.',
@@ -97,39 +107,49 @@ class DeleteController extends Controller
             }
         }
 
-        $eliminados = 0;
-        foreach ($models as $model) {
-            $controller_name = 'App\\Http\\Controllers\\'.explode('\\', $formated_model_name)[2].'Controller';
-            $controller = new $controller_name();
+        /** Usuario owner y autenticado para historial y notificaciones. */
+        $owner_user_id = $this->userId(true);
+        $auth_user_id = $this->userId(false);
 
-            Log::info(Auth()->user()->name.' va a eliminar '.$model_name.' id: '.$model->id);
+        /**
+         * Más de 20 registros: se encola y se notifica al usuario solicitante al finalizar.
+         */
+        if (count($resolved_models_id) > DeleteModelsHelper::BACKGROUND_THRESHOLD) {
+            ProcessDeleteModelsJob::dispatch(
+                $model_name,
+                $resolved_models_id,
+                $owner_user_id,
+                $auth_user_id,
+                $used_filters
+            );
 
-            if ($model->name) {
-                Log::info('Nombre: '.$model->name);
-            }
-            
-            if ($model_name == 'article') {
-                $controller->destroy($model->id, $send_notification);
-            } else {
-                $controller->destroy($model->id);
-            }
+            Log::info('DeleteController: eliminacion masiva encolada', [
+                'model_name' => $model_name,
+                'records_count' => count($resolved_models_id),
+                'owner_user_id' => $owner_user_id,
+                'auth_user_id' => $auth_user_id,
+            ]);
 
-            $eliminados++;
-            
+            return response()->json([
+                'message' => 'La eliminación se está procesando en segundo plano',
+                'queued' => true,
+                'queued_count' => count($resolved_models_id),
+            ], 200);
         }
 
+        /** Eliminación síncrona para lotes pequeños (comportamiento previo). */
+        $result = DeleteModelsHelper::process_delete($model_name, $resolved_models_id, false);
 
         if ($model_name == 'article') {
-            FilterHistoryService::log_action([
-                'user_id'             => $this->userId(true),
-                'auth_user_id'        => $this->userId(false),
-                'action'              => 'eliminacion',
-                'model_name'          => 'article',
-                'filtrados_count'     => count($models),
-                'afectados_count'     => $eliminados,
-                'used_filters'        => $used_filters,
-            ]);
+            DeleteModelsHelper::log_article_filter_history(
+                $owner_user_id,
+                $auth_user_id,
+                $used_filters,
+                $result['total_count'],
+                $result['deleted_count']
+            );
         }
-        return response()->json(['models' => $models], 200);
+
+        return response()->json(['models' => $result['deleted_models']], 200);
     }
 }

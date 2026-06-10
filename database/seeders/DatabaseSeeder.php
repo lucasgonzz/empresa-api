@@ -226,10 +226,7 @@ class DatabaseSeeder extends Seeder
 
             $this->call(DeliveryDaySeeder::class);
 
-            if ($for_user == 'demo') {
-                $this->call(SaleReporteSeeder::class);
-                $this->call(SaleReporteArticuloSeeder::class);
-            }
+            $this->call(ReportesMesSeeder::class);
 
             if ($for_user == 'truvari') {
                 if (env('APP_ENV') == 'local') {
@@ -273,8 +270,6 @@ class DatabaseSeeder extends Seeder
             $this->call(BuyerSeeder::class);
             $this->call(DiscountSeeder::class);
             $this->call(SurchageSeeder::class);
-            $this->call(ProviderOrderSeeder::class);
-            $this->call(ProviderPagosSeeder::class);
             $this->call(TitleSeeder::class);
             $this->call(DeliveryZoneSeeder::class);
             $this->call(UpdateFeatureSeeder::class);
@@ -285,7 +280,6 @@ class DatabaseSeeder extends Seeder
 
             $this->call(ExpenseCategorySeeder::class);
             $this->call(ExpenseConceptSeeder::class);
-            $this->call(ExpenseSeeder::class);
             $this->call(PendingSeeder::class);
 
             $this->call(EmployeeSeeder::class);
@@ -310,6 +304,8 @@ class DatabaseSeeder extends Seeder
         $this->call(ExtencionSeeder::class);
         $this->call(ExtencionDuplicarPresupuestosSeeder::class);
         $this->call(ExtencionEnviarMailClientesSeeder::class);
+        /* Extensión para la importación de artículos asistida por Claude IA. */
+        $this->call(ExtencionEmpresaAiExcelImportSeeder::class);
         $this->call(ConceptoStockMovementSeeder::class);
         $this->call(UnidadMedidaSeeder::class);
         $this->call(PermissionSeeder::class);

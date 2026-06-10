@@ -56,4 +56,27 @@ return [
         'guzzle_ca_bundle' => env('MERCADO_LIBRE_GUZZLE_CA_BUNDLE', ''),
     ],
 
+    /*
+     * API Anthropic (Claude) — importación Excel asistida por IA.
+     * Misma configuración TLS que admin-api (WAMP/Windows suele requerir ANTHROPIC_CAINFO).
+     */
+    'anthropic' => [
+        'api_key'    => env('ANTHROPIC_API_KEY'),
+        'model'      => env('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514'),
+        'ca_bundle'  => env('ANTHROPIC_CAINFO'),
+        'verify_ssl' => filter_var(env('ANTHROPIC_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
+    ],
+
+    /**
+     * Google Custom Search API (asignación batch de imágenes en ProcessArticleBatchImagesJob).
+     * En Windows/WAMP sin CA bundle suele aparecer cURL error 60; ver .env.example.
+     */
+    'google_custom_search' => [
+        'guzzle_verify' => filter_var(
+            env('GOOGLE_CUSTOM_SEARCH_GUZZLE_VERIFY_SSL', env('APP_ENV') === 'production'),
+            FILTER_VALIDATE_BOOLEAN
+        ),
+        'guzzle_ca_bundle' => env('GOOGLE_CUSTOM_SEARCH_GUZZLE_CA_BUNDLE', ''),
+    ],
+
 ];

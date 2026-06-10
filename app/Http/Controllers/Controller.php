@@ -199,6 +199,11 @@ class Controller extends BaseController
     }
 
     function sendDeleteModelNotification($model_name, $model_id, $check_added_by = true, $for_user_id = null) {
+        /** Evita notificaciones individuales durante eliminaciones masivas en background. */
+        if (config('app.suppress_delete_notifications')) {
+            return;
+        }
+
         if (is_null($for_user_id)) {
             $for_user_id = $this->userId();
         }
