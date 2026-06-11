@@ -740,4 +740,6 @@ Route::middleware('admin.api.key')
         Route::get('employees', 'AdminSync\\EmployeesController@index');
         Route::post('ai-excel-import/analyze', 'AdminSync\\AiExcelImportController@analyze');
         Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
+        // Canal "sistema:" de WhatsApp: consulta de datos del owner (stock, ventas, facturas, clientes).
+        Route::post('sistema-query', 'AdminSync\\SistemaQueryController@query_data');
     });
