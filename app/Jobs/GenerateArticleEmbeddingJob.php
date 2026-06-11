@@ -6,6 +6,7 @@ use App\Models\Article;
 use App\Services\ArticleEmbeddingService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
@@ -23,7 +24,7 @@ use Illuminate\Support\Facades\Log;
  */
 class GenerateArticleEmbeddingJob implements ShouldQueue
 {
-    use InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     /**
      * Número de reintentos automáticos en caso de fallo.

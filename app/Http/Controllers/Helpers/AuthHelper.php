@@ -78,11 +78,21 @@ class AuthHelper {
 		return false;
 	}
 
+	/**
+	 * Libera el candado de sesión única del usuario para permitir un nuevo login.
+	 *
+	 * Limpia `session_id` y `last_activity` (mismo criterio que UserController y limpiar_sesiones).
+	 * Antes solo retrocedía `last_activity`, lo que podía dejar el lock activo si el navegador
+	 * abría una sesión PHP nueva sin el `session_id` anterior.
+	 *
+	 * @param User $user Usuario autenticado que está cerrando sesión.
+	 * @return void
+	 */
 	function removeUserLastActivity($user) {
-		$minutes = $this->get_activity_minutes($user);
-		$user->last_activity = Carbon::now()->subMinutes($minutes);
-		Log::info('se puso last_activity en '.Carbon::now()->subMinutes($minutes));
+		$user->session_id = null;
+		$user->last_activity = null;
 		$user->save();
+		Log::info('se liberó sesión única para user_id: '.$user->id);
 	}
 
 }

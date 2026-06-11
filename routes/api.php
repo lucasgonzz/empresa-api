@@ -702,10 +702,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
 // Webhook público (Kapso lo llama sin auth)
 Route::post('whatsapp-bot/webhook', 'WhatsappBotController@receive');
 
-// Configuración autenticada
+// Configuración autenticada (singleton por empresa; POST/PUT con o sin id para el ABM de empresa-spa)
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('whatsapp-bot/config', 'WhatsappBotController@get_config');
+    Route::post('whatsapp-bot/config', 'WhatsappBotController@update_config');
     Route::put('whatsapp-bot/config', 'WhatsappBotController@update_config');
+    Route::put('whatsapp-bot/config/{id}', 'WhatsappBotController@update_config');
 });
 
 // Callback público Mercado Libre (notificaciones); sin auth Sanctum.

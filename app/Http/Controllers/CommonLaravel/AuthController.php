@@ -250,24 +250,35 @@ class AuthController extends Controller
 
     public function logout(Request $request) {
         /**
-         * Libera el lock de sesión única (last_activity) para que otro
-         * dispositivo pueda iniciar sesión. Aplica también tras login maestro:
-         * el ingreso maestro no ocupa el lock, pero al cerrar sesión se
-         * fuerza la ventana de actividad como vencida en AuthHelper.
+         * Usuario autenticado en el guard web antes de destruir la sesión Laravel.
          */
-        if (Auth::check()) {
-            $this->removeUserLastActivity();
-        }
-        /** Limpia flag del bypass para evitar arrastre entre sesiones. */
-        session()->forget($this->master_login_bypass_activity_key);
-        /** Limpia flag de sesión para próximos inicios de sesión. */
-        session()->forget('skip_offline_articles_sync');
+        $auth_user = Auth::user();
 
-        $user = UserHelper::getFullModel(false);
-        
-        $this->set_logout_at($user->id);
+        /**
+         * Libera el lock de sesión única para que el mismo u otro dispositivo
+         * pueda volver a iniciar sesión de inmediato tras cerrar sesión.
+         */
+        if ($auth_user) {
+            $this->removeUserLastActivity($auth_user);
+            $this->set_logout_at($auth_user->id);
+        }
+
+        /** Limpia flags y datos cacheados en sesión PHP. */
+        session()->forget($this->master_login_bypass_activity_key);
+        session()->forget('skip_offline_articles_sync');
+        session()->forget('session_id');
+        session()->forget('auth_user');
+        session()->forget('owner');
 
         Auth::logout();
+
+        /**
+         * Invalida la sesión Laravel y regenera el token CSRF para que el próximo
+         * login no arrastre cookies ni `session_id` de la sesión anterior.
+         */
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
+
         return response(null, 200);
     }
 
@@ -409,13 +420,27 @@ class AuthController extends Controller
         return true;
     }
 
-    function removeUserLastActivity() {
+    /**
+     * Delega la liberación del lock de sesión única al AuthHelper.
+     *
+     * @param User|null $user Usuario cuya sesión única debe liberarse.
+     * @return void
+     */
+    function removeUserLastActivity($user = null) {
+        if (!$user) {
+            $user = Auth()->user();
+        }
+
+        if (!$user) {
+            return;
+        }
+
         if (class_exists('App\Http\Controllers\Helpers\AuthHelper')) {
             $auth_helper = new \App\Http\Controllers\Helpers\AuthHelper();
             if (method_exists($auth_helper, 'removeUserLastActivity')) {
-                return $auth_helper->removeUserLastActivity(Auth()->user());
+                return $auth_helper->removeUserLastActivity($user);
             }
-        } 
+        }
     }
 
     function getUserLastActivityWaitMinutes($user = null) {

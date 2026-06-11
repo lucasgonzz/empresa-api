@@ -165,15 +165,22 @@ class ArticleEmbeddingService
         // Obtener vector como array de floats.
         $embedding = $this->generate_embedding($text);
 
-        // Serializar como string con formato [f1,f2,...,fn] requerido por pgvector.
-        $vector_string = '['.implode(',', $embedding).']';
+        if ($this->uses_pgvector()) {
+            // PostgreSQL: literal [f1,f2,...] con cast ::vector.
+            $vector_string = '['.implode(',', $embedding).']';
 
-        // Persistir usando SQL crudo; el cast ::vector es obligatorio en Postgres
-        // para que el driver reconozca el literal como tipo vector de pgvector.
-        DB::statement(
-            'UPDATE articles SET embedding = ?::vector WHERE id = ?',
-            [$vector_string, $article->id]
-        );
+            DB::statement(
+                'UPDATE articles SET embedding = ?::vector WHERE id = ?',
+                [$vector_string, $article->id]
+            );
+
+            return;
+        }
+
+        // MySQL / otros: persistir el array como JSON.
+        DB::table('articles')
+            ->where('id', $article->id)
+            ->update(['embedding' => json_encode($embedding)]);
     }
 
     /**
@@ -194,26 +201,129 @@ class ArticleEmbeddingService
     public function search_similar_articles(string $query, int $user_id, int $limit = 8): Collection
     {
         // Generar embedding del query para comparar contra los artículos.
-        $embedding = $this->generate_embedding($query);
+        $query_embedding = $this->generate_embedding($query);
 
-        // Serializar como literal de pgvector.
-        $vector_string = '['.implode(',', $embedding).']';
+        if ($this->uses_pgvector()) {
+            $vector_string = '['.implode(',', $query_embedding).']';
 
-        // Buscar los $limit artículos más cercanos por distancia de coseno.
-        // Solo se devuelven campos mínimos para no cargar datos innecesarios en el contexto del bot.
-        $results = DB::select(
-            'SELECT id, name, final_price, stock, bar_code
-             FROM articles
-             WHERE user_id = ?
-               AND status = ?
-               AND deleted_at IS NULL
-               AND embedding IS NOT NULL
-             ORDER BY embedding <=> ?::vector
-             LIMIT ?',
-            [$user_id, 'active', $vector_string, $limit]
-        );
+            $results = DB::select(
+                'SELECT id, name, final_price, stock, bar_code
+                 FROM articles
+                 WHERE user_id = ?
+                   AND status = ?
+                   AND deleted_at IS NULL
+                   AND embedding IS NOT NULL
+                 ORDER BY embedding <=> ?::vector
+                 LIMIT ?',
+                [$user_id, 'active', $vector_string, $limit]
+            );
+
+            return collect($results);
+        }
+
+        return $this->search_similar_articles_in_php($query_embedding, $user_id, $limit);
+    }
+
+    /**
+     * Indica si el driver activo soporta pgvector (solo PostgreSQL).
+     *
+     * @return bool
+     */
+    protected function uses_pgvector(): bool
+    {
+        return DB::getDriverName() === 'pgsql';
+    }
+
+    /**
+     * Búsqueda por similitud de coseno en PHP para entornos sin pgvector (p. ej. MySQL en WAMP).
+     *
+     * @param array<int, float> $query_embedding Vector de la consulta.
+     * @param int               $user_id         Tenant propietario del catálogo.
+     * @param int               $limit           Cantidad máxima de resultados.
+     *
+     * @return Collection
+     */
+    protected function search_similar_articles_in_php(array $query_embedding, int $user_id, int $limit): Collection
+    {
+        $rows = DB::table('articles')
+            ->select('id', 'name', 'final_price', 'stock', 'bar_code', 'embedding')
+            ->where('user_id', $user_id)
+            ->where('status', 'active')
+            ->whereNull('deleted_at')
+            ->whereNotNull('embedding')
+            ->get();
+
+        $scored = [];
+
+        foreach ($rows as $row) {
+            $article_embedding = json_decode((string) $row->embedding, true);
+
+            if (! is_array($article_embedding) || empty($article_embedding)) {
+                continue;
+            }
+
+            $similarity = $this->cosine_similarity($query_embedding, $article_embedding);
+
+            $scored[] = [
+                'similarity' => $similarity,
+                'row'        => $row,
+            ];
+        }
+
+        usort($scored, function ($left, $right) {
+            if ($left['similarity'] === $right['similarity']) {
+                return 0;
+            }
+
+            return $left['similarity'] < $right['similarity'] ? 1 : -1;
+        });
+
+        $top_rows = array_slice($scored, 0, $limit);
+        $results  = [];
+
+        foreach ($top_rows as $item) {
+            $row = $item['row'];
+            unset($row->embedding);
+            $results[] = $row;
+        }
 
         return collect($results);
+    }
+
+    /**
+     * Similitud de coseno entre dos vectores del mismo tamaño.
+     *
+     * @param array<int, float> $vector_a
+     * @param array<int, float> $vector_b
+     *
+     * @return float Valor entre -1 y 1; mayor = más similar.
+     */
+    protected function cosine_similarity(array $vector_a, array $vector_b): float
+    {
+        $length = min(count($vector_a), count($vector_b));
+
+        if ($length === 0) {
+            return 0.0;
+        }
+
+        $dot_product = 0.0;
+        $norm_a      = 0.0;
+        $norm_b      = 0.0;
+
+        for ($index = 0; $index < $length; $index++) {
+            $value_a = (float) $vector_a[$index];
+            $value_b = (float) $vector_b[$index];
+
+            $dot_product += $value_a * $value_b;
+            $norm_a      += $value_a * $value_a;
+            $norm_b      += $value_b * $value_b;
+        }
+
+        if ($norm_a <= 0.0 || $norm_b <= 0.0) {
+            return 0.0;
+        }
+
+        return $dot_product / (sqrt($norm_a) * sqrt($norm_b));
     }
 
     /**
