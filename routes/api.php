@@ -698,6 +698,16 @@ Route::middleware(['auth:sanctum'])->group(function() {
 });
 
 
+// Bot WhatsApp para clientes finales
+// Webhook público (Kapso lo llama sin auth)
+Route::post('whatsapp-bot/webhook', 'WhatsappBotController@receive');
+
+// Configuración autenticada
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('whatsapp-bot/config', 'WhatsappBotController@get_config');
+    Route::put('whatsapp-bot/config', 'WhatsappBotController@update_config');
+});
+
 // Callback público Mercado Libre (notificaciones); sin auth Sanctum.
 Route::post('meli/notifications', 'MeLiOrderController@receive_notification');
 

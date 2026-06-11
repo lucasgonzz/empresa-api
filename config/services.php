@@ -57,6 +57,15 @@ return [
     ],
 
     /*
+     * Kapso (proxy WhatsApp / Meta Cloud API).
+     * verify_ssl=false en WAMP/Windows si no hay CA bundle disponible.
+     */
+    'kapso' => [
+        'verify_ssl' => env('KAPSO_VERIFY_SSL', true),
+        'ca_bundle'  => env('KAPSO_CA_BUNDLE', null),
+    ],
+
+    /*
      * API Anthropic (Claude) — importación Excel asistida por IA.
      * Misma configuración TLS que admin-api (WAMP/Windows suele requerir ANTHROPIC_CAINFO).
      */
