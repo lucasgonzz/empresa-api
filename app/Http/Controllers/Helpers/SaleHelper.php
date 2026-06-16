@@ -670,6 +670,8 @@ class SaleHelper extends Controller {
                     foreach ($article['varios_precios'] as $otro_precio) {
 
                         $otro_precio['id'] = $article['id'];
+                        $otro_precio['name'] = $article['name'] ?? null;
+                        $otro_precio['name_vender_personalizado'] = $article['name_vender_personalizado'] ?? null;
 
                         if ($otro_precio['amount'] == '') {
                             $otro_precio['amount'] = 1;
@@ -782,6 +784,10 @@ class SaleHelper extends Controller {
             'checked_amount'        => Self::getCheckedAmount($sale, $article),
             'article_variant_id'    => Self::getArticleVariantId($article),
             'variant_description'    => Self::getVariantDescription($article),
+            /**
+             * Nombre personalizado de la línea; null si no difiere del artículo.
+             */
+            'name'                  => Self::get_custom_name_for_pivot($article),
             'price_type_personalizado_id'    => Self::get_price_type_personalizado($article),
 
             'fecha_agregado'        => $fecha_agregado,
@@ -1066,6 +1072,41 @@ class SaleHelper extends Controller {
             }
         }
         return null;
+    }
+
+    /**
+     * Resuelve el nombre personalizado para persistir en article_sale.
+     * Solo guarda valor si el operador modificó el nombre respecto al artículo.
+     *
+     * @param  array  $article  Datos del ítem enviados desde vender.
+     * @return string|null
+     */
+    static function get_custom_name_for_pivot($article)
+    {
+        if (!isset($article['name_vender_personalizado'])) {
+            return null;
+        }
+
+        $custom_name = trim((string) $article['name_vender_personalizado']);
+        if ($custom_name === '') {
+            return null;
+        }
+
+        $article_base_name = '';
+        if (isset($article['name'])) {
+            $article_base_name = trim((string) $article['name']);
+        } else {
+            $article_model = Article::find($article['id']);
+            if (!is_null($article_model)) {
+                $article_base_name = trim((string) $article_model->name);
+            }
+        }
+
+        if ($custom_name === $article_base_name) {
+            return null;
+        }
+
+        return $custom_name;
     }
 
     static function getReturnedAmount($item) {

@@ -3,9 +3,9 @@
 namespace App\Http\Controllers\Pdf\Afip;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipImportesResolver;
 use App\Http\Controllers\Helpers\Numbers;
-use App\Http\Controllers\Pdf\AfipQrPdf;
 use Carbon\Carbon;
 
 /**
@@ -63,216 +63,449 @@ class AfipPdfHelper
         $pdf->Cell(200, 8, 'ORIGINAL', 1, 1, 'C');
 
         /**
-         * Bloque central: logo, cuadrado de letra y tipo de comprobante.
+         * Bloque unificado emisor: dos recuadros laterales + letra centrada (modelo AFIP).
          */
-        $block_start_y = $pdf->y;
-        self::print_header_logo_zone($pdf, $user, $block_start_y);
-        self::print_header_letter_zone($pdf, $afip_ticket, $block_start_y);
-        self::print_header_right_zone($pdf, $afip_ticket, $sale, $block_start_y, $pdf);
-
-        /**
-         * Avanza Y al máximo alcanzado por las tres columnas del bloque central.
-         */
-        $pdf->y = max($block_start_y + 40, $pdf->y);
-
-        /**
-         * Bloque de datos del emisor (razón social, domicilio, CUIT, etc.).
-         */
-        if ($afip_information) {
-            self::print_emisor_block($pdf, $afip_information);
-        }
+        self::print_emisor_header_block($pdf, $afip_ticket, $sale, $user, $afip_information, $pdf);
 
         /**
          * Bloque de datos del receptor cuando la venta tiene cliente.
          */
         if (!is_null($sale->client)) {
+            $pdf->y += 2;
             self::print_receptor_block($pdf, $sale);
             $pdf->y += 2;
         }
     }
 
     /**
-     * Zona izquierda del header: logo cuadrado y nombre del negocio.
+     * Geometría del header fiscal: paneles laterales y cuadro de letra centrado.
      *
-     * @param mixed $pdf
-     * @param mixed $user
-     * @param float $start_y
-     * @return void
+     * @return array<string, float|int>
      */
-    protected static function print_header_logo_zone($pdf, $user, $start_y): void
+    protected static function get_header_layout(): array
     {
         /**
-         * Logo forzado a cuadrado 35×35 mm; en local se usa imagen de prueba.
+         * Márgenes y ancho útil del comprobante (coherente con el resto del PDF).
          */
-        $logo_size = 35;
-        $logo_url = $user->image_url;
-        $logo_printed = false;
+        $page_left = 5;
+        $page_width = 200;
+        $page_right = $page_left + $page_width;
 
-        if (config('app.APP_ENV') == 'local') {
-            $pdf->Image(
-                'https://img.freepik.com/vector-gratis/ilustracion-banner-sello-circulo_53876-28480.jpg',
-                5,
-                $start_y,
-                $logo_size,
-                $logo_size
-            );
-            $logo_printed = true;
-        } elseif (!is_null($logo_url) && GeneralHelper::file_exists_2($logo_url)) {
-            $pdf->Image($logo_url, 5, $start_y, $logo_size, $logo_size);
-            $logo_printed = true;
+        /**
+         * Cuadro central de letra del comprobante, centrado horizontalmente.
+         */
+        $letter_width = 30;
+        $letter_height = 22;
+        $letter_x = $page_left + ($page_width - $letter_width) / 2;
+
+        /**
+         * Eje vertical central del comprobante (mitad del ancho útil).
+         */
+        $center_x = $page_left + ($page_width / 2);
+
+        /**
+         * Paneles de contenido: a cada lado del cuadro de letra (sin solaparse con él).
+         */
+        $left_panel_x = $page_left;
+        $left_panel_width = $letter_x - $page_left;
+        $right_panel_x = $letter_x + $letter_width;
+        $right_panel_width = $page_right - $right_panel_x;
+
+        return [
+            'page_left' => $page_left,
+            'page_width' => $page_width,
+            'page_right' => $page_right,
+            'center_x' => $center_x,
+            'letter_x' => $letter_x,
+            'letter_width' => $letter_width,
+            'letter_height' => $letter_height,
+            'left_panel_x' => $left_panel_x,
+            'left_panel_width' => $left_panel_width,
+            'right_panel_x' => $right_panel_x,
+            'right_panel_width' => $right_panel_width,
+            'inner_pad' => 2,
+            'logo_size' => 35,
+        ];
+    }
+
+    /**
+     * Imprime una línea con label en negrita y valor en peso normal.
+     *
+     * @param mixed $pdf Instancia FPDF.
+     * @param string $label Texto del label (incluir ":" al final).
+     * @param string $value Valor a mostrar.
+     * @param float $x Posición X inicial.
+     * @param float $width Ancho total de la línea.
+     * @param int $font_size Tamaño de fuente.
+     * @param int $line_height Alto de línea.
+     * @return void
+     */
+    protected static function print_label_value_line($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4): void
+    {
+        $pdf->x = $x;
+        $pdf->SetFont('Arial', 'B', $font_size);
+        $label_width = $pdf->GetStringWidth($label);
+        $pdf->Cell($label_width, $line_height, $label, 0, 0, 'L');
+
+        $pdf->SetFont('Arial', '', $font_size);
+        $value_width = $width - $label_width;
+        if ($value_width > 0) {
+            $pdf->Cell($value_width, $line_height, (string) $value, 0, 1, 'L');
+        } else {
+            $pdf->Ln($line_height);
+        }
+    }
+
+    /**
+     * Imprime label en negrita y valor con MultiCell para textos extensos.
+     *
+     * @param mixed $pdf Instancia FPDF.
+     * @param string $label Texto del label (incluir ":" al final).
+     * @param string $value Valor a mostrar (puede ocupar varias líneas).
+     * @param float $x Posición X inicial.
+     * @param float $width Ancho total disponible.
+     * @param int $font_size Tamaño de fuente.
+     * @param int $line_height Alto de línea.
+     * @return void
+     */
+    protected static function print_label_value_multiline($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4): void
+    {
+        $pdf->x = $x;
+        $pdf->SetFont('Arial', 'B', $font_size);
+        $pdf->Write($line_height, $label);
+
+        $pdf->SetFont('Arial', '', $font_size);
+        $used_width = $pdf->x - $x;
+        $remaining_width = $width - $used_width;
+
+        if ($remaining_width <= 1) {
+            $pdf->Ln($line_height);
+            $pdf->x = $x;
+            $remaining_width = $width;
         }
 
-        /**
-         * Nombre comercial debajo del logo (o al inicio si no hay imagen).
-         */
-        $name_y = $logo_printed ? ($start_y + $logo_size + 2) : $start_y;
-        $pdf->y = $name_y;
-        $pdf->x = 5;
-        $pdf->SetFont('Arial', 'B', 10);
-        $pdf->Cell(65, 5, (string) $user->company_name, 0, 1, 'L');
+        $pdf->MultiCell($remaining_width, $line_height, (string) $value, 0, 'L');
     }
 
     /**
-     * Zona central del header: rectángulo con letra y código de comprobante.
+     * Bloque unificado del emisor: logo, datos fiscales, letra centrada y datos del comprobante.
      *
-     * @param mixed $pdf
-     * @param mixed $afip_ticket
-     * @param float $start_y
-     * @return void
-     */
-    protected static function print_header_letter_zone($pdf, $afip_ticket, $start_y): void
-    {
-        /**
-         * Rectángulo 30×20 mm con la letra del comprobante centrada.
-         */
-        $rect_x = 75;
-        $rect_y = $start_y;
-        $rect_w = 30;
-        $rect_h = 20;
-
-        self::draw_box($pdf, $rect_x, $rect_y, $rect_w, $rect_h);
-
-        $pdf->y = $rect_y + 2;
-        $pdf->x = $rect_x;
-        $pdf->SetFont('Arial', 'B', 28);
-        $pdf->Cell($rect_w, $rect_h - 4, (string) $afip_ticket->cbte_letra, 0, 1, 'C');
-
-        /**
-         * Código numérico del tipo de comprobante con zero-pad a 2 dígitos.
-         */
-        $pdf->x = $rect_x;
-        $pdf->SetFont('Arial', '', 8);
-        $codigo = self::left_pad((string) $afip_ticket->cbte_tipo, 2);
-        $pdf->Cell($rect_w, 5, 'COD. '.$codigo, 0, 1, 'C');
-    }
-
-    /**
-     * Zona derecha del header: tipo, punto de venta, número y fecha.
-     *
-     * @param mixed $pdf
-     * @param mixed $afip_ticket
-     * @param mixed $sale
-     * @param float $start_y
+     * @param mixed $pdf Instancia FPDF.
+     * @param mixed $afip_ticket Ticket AFIP.
+     * @param mixed $sale Venta asociada.
+     * @param mixed $user Usuario emisor.
+     * @param mixed|null $afip_information Datos fiscales del emisor.
      * @param mixed $pdf_instance Para leer use_current_date del PDF.
      * @return void
      */
-    protected static function print_header_right_zone($pdf, $afip_ticket, $sale, $start_y, $pdf_instance): void
+    protected static function print_emisor_header_block($pdf, $afip_ticket, $sale, $user, $afip_information, $pdf_instance): void
     {
+        $layout = self::get_header_layout();
+        $block_start_y = $pdf->y;
+        $inner_pad = $layout['inner_pad'];
+        $logo_size = $layout['logo_size'];
+
+        $left_content_x = $layout['left_panel_x'] + $inner_pad;
+        $left_content_width = $layout['left_panel_width'] - ($inner_pad * 2);
+        $right_content_x = $layout['right_panel_x'] + $inner_pad;
+        $right_content_width = $layout['right_panel_width'] - ($inner_pad * 2);
+
         /**
-         * Fecha de emisión: actual del servidor o fecha del ticket según perfil.
+         * --- Panel izquierdo: logo + nombre comercial + datos fiscales del emisor ---
+         */
+        $logo_x = $left_content_x;
+        $logo_y = $block_start_y + $inner_pad;
+        $logo_printed = self::print_logo_image($pdf, $user, $logo_x, $logo_y, $logo_size);
+
+        /**
+         * Columna al costado del logo (nombre arriba; razón social y domicilio debajo del cuadro de letra).
+         */
+        $beside_logo_x = $logo_printed
+            ? ($logo_x + $logo_size + 2)
+            : $left_content_x;
+        $beside_logo_width = $logo_printed
+            ? ($left_content_width - $logo_size - 2)
+            : $left_content_width;
+
+        /**
+         * Nombre del negocio a la derecha del logo, tipografía más grande.
+         */
+        $name_y = $block_start_y + $inner_pad;
+        $company_name_font_size = 13;
+        $company_name_line_height = 6;
+
+        $pdf->y = $name_y;
+        $pdf->x = $beside_logo_x;
+        $pdf->SetFont('Arial', 'B', $company_name_font_size);
+        $pdf->MultiCell($beside_logo_width, $company_name_line_height, (string) $user->company_name, 0, 'L');
+        $name_end_y = $pdf->y;
+
+        $logo_end_y = $logo_printed ? ($logo_y + $logo_size) : $name_y;
+
+        /**
+         * Razón social y domicilio al costado del logo, debajo de la altura del cuadro central.
+         */
+        $fields_start_y = $block_start_y + $layout['letter_height'] + $inner_pad;
+        $fields_end_y = $fields_start_y;
+
+        if ($afip_information) {
+
+            $beside_logo_width += 15;
+
+            $pdf->y = $fields_start_y;
+
+            self::print_label_value_multiline(
+                $pdf,
+                'Razón Social: ',
+                (string) $afip_information->razon_social,
+                $beside_logo_x,
+                $beside_logo_width
+            );
+
+            if (!empty($afip_information->owner_name)) {
+                $pdf->x = $beside_logo_x;
+                $pdf->SetFont('Arial', 'I', 9);
+                $pdf->MultiCell($beside_logo_width, 4, (string) $afip_information->owner_name, 0, 'L');
+            }
+
+            self::print_label_value_multiline(
+                $pdf,
+                'Domicilio Comercial: ',
+                (string) $afip_information->domicilio_comercial,
+                $beside_logo_x,
+                $beside_logo_width
+            );
+
+            $fields_end_y = $pdf->y;
+        }
+
+        $left_end_y = max($logo_end_y, $name_end_y, $fields_end_y);
+
+        /**
+         * --- Cuadro central: letra y código del comprobante ---
+         */
+        self::print_header_letter_zone($pdf, $afip_ticket, $block_start_y, $layout);
+
+        /**
+         * --- Panel derecho: tipo de comprobante, PV, fecha y datos fiscales del emisor ---
          */
         $emission_date = (!empty($pdf_instance->use_current_date))
             ? now()
             : $afip_ticket->created_at;
 
-        $pdf->y = $start_y;
-        $pdf->x = 110;
+        $pdf->y = $block_start_y + $inner_pad;
+        $pdf->x = $right_content_x;
         $pdf->SetFont('Arial', 'B', 18);
-        $pdf->Cell(95, 8, self::get_tipo_comprobante_label($afip_ticket, $sale), 0, 1, 'L');
+        $pdf->Cell($right_content_width, 8, self::get_tipo_comprobante_label($afip_ticket, $sale), 0, 1, 'L');
 
         $punto_venta = self::left_pad((string) $afip_ticket->punto_venta, 5);
         $cbte_numero = self::left_pad((string) $afip_ticket->cbte_numero, 8);
 
-        $pdf->x = 110;
+        $pdf->x = $right_content_x;
+        $pdf->SetFont('Arial', 'B', 10);
+        $label_pv = 'Punto de Venta: ';
+        $pdf->Cell($pdf->GetStringWidth($label_pv), 5, $label_pv, 0, 0, 'L');
         $pdf->SetFont('Arial', '', 10);
-        $pdf->Cell(
-            95,
-            5,
-            'Punto de Venta: '.$punto_venta.'   Comp. Nro: '.$cbte_numero,
-            0,
-            1,
-            'L'
-        );
+        $pdf->Cell(22, 5, $punto_venta, 0, 1, 'L');
 
-        $pdf->x = 110;
+        $pdf->x = $right_content_x;
+        $pdf->SetFont('Arial', 'B', 10);
+        $label_nro = 'Comp. Nro: ';
+        $pdf->Cell($pdf->GetStringWidth($label_nro), 5, $label_nro, 0, 0, 'L');
+        $pdf->SetFont('Arial', '', 10);
+        $remaining_width = $right_content_width - ($pdf->x - $right_content_x);
+        $pdf->Cell($remaining_width, 5, $cbte_numero, 0, 1, 'L');
+
         $fecha_texto = $emission_date instanceof \DateTimeInterface
             ? $emission_date->format('d/m/Y')
             : date('d/m/Y', strtotime((string) $emission_date));
-        $pdf->Cell(95, 5, 'Fecha de Emisión: '.$fecha_texto, 0, 1, 'L');
+        self::print_label_value_line(
+            $pdf,
+            'Fecha de Emisión: ',
+            $fecha_texto,
+            $right_content_x,
+            $right_content_width,
+            10,
+            5
+        );
+
+        if ($afip_information) {
+
+            $iva_name = $afip_information->iva_condition ? $afip_information->iva_condition->name : '';
+            self::print_label_value_line(
+                $pdf,
+                'Condición frente al IVA: ',
+                $iva_name,
+                $right_content_x,
+                $right_content_width
+            );
+
+            self::print_label_value_line(
+                $pdf,
+                'CUIT: ',
+                (string) $afip_information->cuit,
+                $right_content_x,
+                $right_content_width
+            );
+
+            self::print_label_value_line(
+                $pdf,
+                'Ingresos Brutos: ',
+                (string) $afip_information->ingresos_brutos,
+                $right_content_x,
+                $right_content_width
+            );
+
+            if (!is_null($afip_information->inicio_actividades)) {
+                $inicio = $afip_information->inicio_actividades instanceof \DateTimeInterface
+                    ? $afip_information->inicio_actividades->format('d/m/Y')
+                    : Carbon::parse($afip_information->inicio_actividades)->format('d/m/Y');
+                self::print_label_value_line(
+                    $pdf,
+                    'Fecha de Inicio de Actividades: ',
+                    $inicio,
+                    $right_content_x,
+                    $right_content_width
+                );
+            }
+        }
+
+        $right_end_y = $pdf->y;
+
+        /**
+         * Altura mínima del bloque: al menos la del cuadro de letra.
+         */
+        $min_block_height = $layout['letter_height'];
+        $content_end_y = max($left_end_y, $right_end_y, $block_start_y + $min_block_height) + $inner_pad;
+
+        /**
+         * Bordes del bloque emisor: sin línea central en la franja superior (cuadro de letra).
+         */
+        self::draw_emisor_header_borders($pdf, $layout, $block_start_y, $content_end_y);
+
+        $pdf->y = $content_end_y;
     }
 
     /**
-     * Bloque de dos columnas con datos fiscales del emisor.
+     * Dibuja los bordes del header emisor estilo AFIP.
+     * La línea central solo baja desde el borde inferior del cuadro de letra.
      *
-     * @param mixed $pdf
-     * @param mixed $afip_information
+     * @param mixed $pdf Instancia FPDF.
+     * @param array<string, float|int> $layout Geometría del header.
+     * @param float $block_start_y Inicio Y del bloque.
+     * @param float $content_end_y Fin Y del bloque.
      * @return void
      */
-    protected static function print_emisor_block($pdf, $afip_information): void
+    protected static function draw_emisor_header_borders($pdf, $layout, $block_start_y, $content_end_y): void
     {
-        $start_y = $pdf->y;
-        $start_x = 5;
-        $block_width = 200;
+        $page_left = $layout['page_left'];
+        $page_right = $layout['page_right'];
+        $center_x = $layout['center_x'];
+        $letter_x = $layout['letter_x'];
+        $letter_width = $layout['letter_width'];
+        $letter_height = $layout['letter_height'];
+        $letter_right_x = $letter_x + $letter_width;
+        $letter_bottom_y = $block_start_y + $letter_height;
 
         /**
-         * Columna izquierda: razón social, domicilio y condición IVA.
+         * Cuadro central de letra y código.
          */
-        $pdf->y = $start_y + 2;
-        $pdf->x = $start_x + 2;
-        $pdf->SetFont('Arial', '', 9);
-        $pdf->Cell(98, 4, 'Razón Social: '.(string) $afip_information->razon_social, 0, 1, 'L');
-
-        if (!empty($afip_information->owner_name)) {
-            $pdf->x = $start_x + 2;
-            $pdf->SetFont('Arial', 'I', 9);
-            $pdf->Cell(98, 4, (string) $afip_information->owner_name, 0, 1, 'L');
-        }
-
-        $pdf->x = $start_x + 2;
-        $pdf->SetFont('Arial', '', 9);
-        $pdf->Cell(98, 4, 'Domicilio Comercial: '.(string) $afip_information->domicilio, 0, 1, 'L');
-
-        $iva_name = $afip_information->iva_condition ? $afip_information->iva_condition->name : '';
-        $pdf->x = $start_x + 2;
-        $pdf->Cell(98, 4, 'Condición frente al IVA: '.$iva_name, 0, 1, 'L');
-
-        $left_end_y = $pdf->y;
+        self::draw_box($pdf, $letter_x, $block_start_y, $letter_width, $letter_height);
 
         /**
-         * Columna derecha: CUIT, ingresos brutos e inicio de actividades.
+         * Borde superior: segmentos izquierdo y derecho (interrumpidos por el cuadro de letra).
          */
-        $pdf->y = $start_y + 2;
-        $pdf->x = 112;
-        $pdf->SetFont('Arial', '', 9);
-        $pdf->Cell(93, 4, 'CUIT: '.(string) $afip_information->cuit, 0, 1, 'L');
+        $pdf->Line($page_left, $block_start_y, $letter_x, $block_start_y);
+        $pdf->Line($letter_right_x, $block_start_y, $page_right, $block_start_y);
 
-        $pdf->x = 112;
-        $pdf->Cell(93, 4, 'Ingresos Brutos: '.(string) $afip_information->ingresos_brutos, 0, 1, 'L');
+        /**
+         * Borde inferior a ancho completo.
+         */
+        $pdf->Line($page_left, $content_end_y, $page_right, $content_end_y);
 
-        if (!is_null($afip_information->inicio_actividades)) {
-            $pdf->x = 112;
-            $inicio = $afip_information->inicio_actividades instanceof \DateTimeInterface
-                ? $afip_information->inicio_actividades->format('d/m/Y')
-                : Carbon::parse($afip_information->inicio_actividades)->format('d/m/Y');
-            $pdf->Cell(93, 4, 'Fecha de Inicio de Actividades: '.$inicio, 0, 1, 'L');
+        /**
+         * Bordes laterales exteriores a altura completa.
+         */
+        $pdf->Line($page_left, $block_start_y, $page_left, $content_end_y);
+        $pdf->Line($page_right, $block_start_y, $page_right, $content_end_y);
+
+        /**
+         * Divisor central: solo desde el centro del borde inferior del cuadro de letra.
+         */
+        $pdf->Line($center_x, $letter_bottom_y, $center_x, $content_end_y);
+    }
+
+    /**
+     * Imprime el logo cuadrado del emisor en las coordenadas indicadas.
+     *
+     * @param mixed $pdf Instancia FPDF.
+     * @param mixed $user Usuario emisor.
+     * @param float $x Posición X del logo.
+     * @param float $y Posición Y del logo.
+     * @param int $logo_size Tamaño del logo en mm.
+     * @return bool True si se imprimió una imagen.
+     */
+    protected static function print_logo_image($pdf, $user, $x, $y, $logo_size): bool
+    {
+        $logo_url = $user->image_url;
+
+        if (config('app.APP_ENV') == 'local') {
+            $pdf->Image(
+                'https://img.freepik.com/vector-gratis/ilustracion-banner-sello-circulo_53876-28480.jpg',
+                $x,
+                $y,
+                $logo_size,
+                $logo_size
+            );
+
+            return true;
         }
 
-        $end_y = max($left_end_y, $pdf->y) + 2;
+        if (!is_null($logo_url) && GeneralHelper::file_exists_2($logo_url)) {
+            $pdf->Image($logo_url, $x, $y, $logo_size, $logo_size);
 
-        self::draw_box($pdf, $start_x, $start_y, $block_width, $end_y - $start_y);
-        $pdf->Line(105, $start_y, 105, $end_y);
+            return true;
+        }
 
-        $pdf->y = $end_y;
+        return false;
+    }
+
+    /**
+     * Zona central del header: letra y código de comprobante (sin borde; se dibuja al final).
+     *
+     * @param mixed $pdf Instancia FPDF.
+     * @param mixed $afip_ticket Ticket AFIP.
+     * @param float $start_y Posición Y inicial del bloque.
+     * @param array<string, float|int> $layout Geometría del header.
+     * @return void
+     */
+    protected static function print_header_letter_zone($pdf, $afip_ticket, $start_y, $layout): void
+    {
+        $rect_x = $layout['letter_x'];
+        $rect_w = $layout['letter_width'];
+        $rect_h = $layout['letter_height'];
+
+        /**
+         * Alturas internas: letra grande arriba y código debajo, sin invadir el borde inferior.
+         */
+        $top_pad = 1;
+        $letter_cell_h = 13;
+        $cod_cell_h = 6;
+
+        $pdf->y = $start_y + $top_pad;
+        $pdf->x = $rect_x;
+        $pdf->SetFont('Arial', 'B', 28);
+        $pdf->Cell($rect_w, $letter_cell_h, (string) $afip_ticket->cbte_letra, 0, 1, 'C');
+
+        $pdf->x = $rect_x;
+        $pdf->SetFont('Arial', '', 8);
+        $codigo = self::left_pad((string) $afip_ticket->cbte_tipo, 2);
+        $pdf->Cell($rect_w, $cod_cell_h, 'COD. '.$codigo, 0, 1, 'C');
+
+        /**
+         * Restablece Y al fondo del cuadro para no desalinear otros paneles.
+         */
+        $pdf->y = $start_y + $rect_h;
     }
 
     /**
@@ -297,18 +530,38 @@ class AfipPdfHelper
         /**
          * Columna izquierda: CUIT, IVA y condición de venta.
          */
+        $content_x = $start_x + 2;
+        $left_content_width = 98;
+        $right_content_x = 112;
+        $right_content_width = 93;
+
         $pdf->y = $start_y + 2;
-        $pdf->x = $start_x + 2;
-        $pdf->SetFont('Arial', '', 9);
-        $pdf->Cell(98, 4, 'CUIT: '.(string) $client->cuit, 0, 1, 'L');
+
+        self::print_label_value_line(
+            $pdf,
+            'CUIT: ',
+            (string) $client->cuit,
+            $content_x,
+            $left_content_width
+        );
 
         if (!is_null($client->iva_condition)) {
-            $pdf->x = $start_x + 2;
-            $pdf->Cell(98, 4, 'Condición frente al IVA: '.$client->iva_condition->name, 0, 1, 'L');
+            self::print_label_value_line(
+                $pdf,
+                'Condición frente al IVA: ',
+                $client->iva_condition->name,
+                $content_x,
+                $left_content_width
+            );
         }
 
-        $pdf->x = $start_x + 2;
-        $pdf->Cell(98, 4, 'Condición de venta: '.$condicion_venta, 0, 1, 'L');
+        self::print_label_value_line(
+            $pdf,
+            'Condición de venta: ',
+            $condicion_venta,
+            $content_x,
+            $left_content_width
+        );
 
         $left_end_y = $pdf->y;
 
@@ -316,12 +569,22 @@ class AfipPdfHelper
          * Columna derecha: nombre y domicilio del cliente.
          */
         $pdf->y = $start_y + 2;
-        $pdf->x = 112;
-        $pdf->SetFont('Arial', '', 9);
-        $pdf->Cell(93, 4, 'Apellido y Nombre / Razón Social: '.(string) $client->name, 0, 1, 'L');
 
-        $pdf->x = 112;
-        $pdf->Cell(93, 4, 'Domicilio Comercial: '.(string) $client->address, 0, 1, 'L');
+        self::print_label_value_line(
+            $pdf,
+            'Apellido y Nombre / Razón Social: ',
+            (string) $client->name,
+            $right_content_x,
+            $right_content_width
+        );
+
+        self::print_label_value_line(
+            $pdf,
+            'Domicilio Comercial: ',
+            (string) $client->address,
+            $right_content_x,
+            $right_content_width
+        );
 
         $end_y = max($left_end_y, $pdf->y) + 2;
 
@@ -391,99 +654,105 @@ class AfipPdfHelper
             self::print_footer_importes_block($pdf, $afip_ticket, $sale, $afip_helper);
         }
 
-        self::print_footer_qr_and_cae_block($pdf, $afip_ticket);
-        self::print_footer_legal_text($pdf);
+        self::print_footer_official_block($pdf, $afip_ticket);
     }
 
     /**
-     * Bloque de importes: tabla Otros Tributos + resumen fiscal con alícuotas IVA.
+     * Bloque de importes: tabla Otros Tributos + resumen fiscal (modelo AFIP).
      *
-     * @param mixed $pdf
-     * @param mixed $afip_ticket
-     * @param mixed $sale
-     * @param mixed $afip_helper
+     * @param mixed $pdf Instancia FPDF.
+     * @param mixed $afip_ticket Ticket AFIP.
+     * @param mixed $sale Venta asociada.
+     * @param mixed $afip_helper Helper AFIP.
      * @return void
      */
     protected static function print_footer_importes_block($pdf, $afip_ticket, $sale, $afip_helper): void
     {
         $start_y = $pdf->y + 5;
+        $page_left = 5;
+        $page_width = 200;
+        $row_h = 5;
 
         /**
-         * Columna izquierda: tabla "Otros Tributos" con filas fijas en 0,00.
+         * Columna izquierda: tabla "Otros Tributos" con encabezado y celdas bordeadas.
          */
-        $left_x = 5;
+        $left_x = $page_left;
         $left_w = 97;
-        $row_h = 5;
+        $col_desc_w = 46;
+        $col_det_w = 18;
+        $col_alic_w = 13;
+        $col_imp_w = 20;
 
         $pdf->y = $start_y;
         $pdf->x = $left_x;
         $pdf->SetFont('Arial', 'B', 9);
-        $pdf->Cell($left_w, $row_h, 'Otros Tributos', 'B', 1, 'L');
+        $pdf->Cell($left_w, $row_h, 'Otros Tributos', 'LTR', 1, 'L');
 
-        $col_desc_w = 50;
-        $col_det_w = 17;
-        $col_alic_w = 10;
-        $col_imp_w = 20;
+        $pdf->x = $left_x;
+        $pdf->SetFillColor(210, 210, 210);
+        $pdf->SetFont('Arial', 'B', 7);
+        $pdf->Cell($col_desc_w, $row_h, 'Descripción', 1, 0, 'C', true);
+        $pdf->Cell($col_det_w, $row_h, 'Detalle', 1, 0, 'C', true);
+        $pdf->Cell($col_alic_w, $row_h, 'Alic. %', 1, 0, 'C', true);
+        $pdf->Cell($col_imp_w, $row_h, 'Importe', 1, 1, 'C', true);
 
-        $pdf->SetFont('Arial', '', 8);
+        $pdf->SetFont('Arial', '', 7);
+        $pdf->SetFillColor(255, 255, 255);
         foreach (self::$otros_tributos_rows as $row_label) {
             $pdf->x = $left_x;
-            $pdf->Cell($col_desc_w, $row_h, $row_label, 0, 0, 'L');
-            $pdf->Cell($col_det_w, $row_h, '', 0, 0, 'L');
-            $pdf->Cell($col_alic_w, $row_h, '', 0, 0, 'R');
-            $pdf->Cell($col_imp_w, $row_h, '0,00', 0, 1, 'R');
+            $pdf->Cell($col_desc_w, $row_h, $row_label, 1, 0, 'L');
+            $pdf->Cell($col_det_w, $row_h, '', 1, 0, 'L');
+            $pdf->Cell($col_alic_w, $row_h, '', 1, 0, 'R');
+            $pdf->Cell($col_imp_w, $row_h, '0,00', 1, 1, 'R');
         }
 
         $pdf->x = $left_x;
-        $pdf->Cell($col_desc_w + $col_det_w + $col_alic_w, $row_h, 'Importe Otros Tributos:', 0, 0, 'L');
-        $pdf->Cell($col_imp_w, $row_h, '0,00', 0, 1, 'R');
+        $pdf->SetFont('Arial', '', 8);
+        $pdf->Cell($col_desc_w + $col_det_w + $col_alic_w, $row_h, 'Importe Otros Tributos:', 1, 0, 'R');
+        $pdf->Cell($col_imp_w, $row_h, '0,00', 1, 1, 'R');
 
         $left_end_y = $pdf->y;
 
         /**
-         * Columna derecha: resumen fiscal con importes reales del comprobante.
+         * Columna derecha: moneda y totales alineados a la derecha.
          */
         $right_x = 107;
         $right_w = 98;
         $importes = AfipImportesResolver::resolve($afip_ticket, $afip_helper);
         $moneda_id = $sale->moneda_id;
+        $moneda_label = self::get_footer_moneda_label($sale);
 
         $pdf->y = $start_y;
-        $pdf->x = $right_x;
-
-        /**
-         * Nombre de moneda desde relación o valor por defecto.
-         */
-        $moneda_nombre = 'Peso Argentino';
-        if ($sale->moneda && !empty($sale->moneda->name)) {
-            $moneda_nombre = (string) $sale->moneda->name;
-        }
-
-        $pdf->SetFont('Arial', '', 9);
-        $pdf->Cell($right_w, $row_h, 'Moneda: '.$moneda_nombre, 0, 1, 'L');
+        self::print_footer_total_line_right($pdf, $right_x, $right_w, 'Moneda: '.$moneda_label, $row_h, false, true);
 
         $cbte_letra = (string) $afip_ticket->cbte_letra;
 
         if ($cbte_letra === 'A' || $cbte_letra === 'B') {
-            $pdf->x = $right_x;
-            $pdf->Cell($right_w, $row_h, 'Importe Neto Gravado: '.Numbers::price($importes['gravado'], true, $moneda_id), 0, 1, 'L');
+            self::print_footer_total_line_right(
+                $pdf,
+                $right_x,
+                $right_w,
+                'Importe Neto Gravado: '.Numbers::price($importes['gravado'], true, $moneda_id),
+                $row_h
+            );
 
             foreach (self::$iva_rate_labels as $iva_rate) {
                 $importe_iva = 0;
                 if (isset($importes['ivas'][$iva_rate]['Importe'])) {
                     $importe_iva = (float) $importes['ivas'][$iva_rate]['Importe'];
                 }
-                $pdf->x = $right_x;
-                $pdf->Cell($right_w, $row_h, 'IVA '.$iva_rate.'%: '.Numbers::price($importe_iva, true, $moneda_id), 0, 1, 'L');
+                self::print_footer_total_line_right(
+                    $pdf,
+                    $right_x,
+                    $right_w,
+                    'IVA '.$iva_rate.'%: '.Numbers::price($importe_iva, true, $moneda_id),
+                    $row_h
+                );
             }
         }
 
-        $pdf->x = $right_x;
-        $pdf->Cell($right_w, $row_h, 'Importe Otros Tributos: 0,00', 0, 1, 'L');
+        self::print_footer_total_line_right($pdf, $right_x, $right_w, 'Importe Otros Tributos: 0,00', $row_h);
 
-        /**
-         * Total: respeta moneda de venta en comprobantes tipo E.
-         */
         $total = (float) $importes['total'];
         $formatted_total = Numbers::price($total, true, $moneda_id);
         if ($cbte_letra === 'E') {
@@ -491,90 +760,219 @@ class AfipPdfHelper
             $total = (float) $sale->total;
         }
 
-        $pdf->x = $right_x;
-        $pdf->SetFont('Arial', 'B', 10);
-        $pdf->Cell($right_w, $row_h + 2, 'Importe Total: '.$formatted_total, 0, 1, 'L');
+        self::print_footer_total_line_right(
+            $pdf,
+            $right_x,
+            $right_w,
+            'Importe Total: '.$formatted_total,
+            $row_h + 1,
+            true
+        );
 
         $right_end_y = $pdf->y;
+        $pdf->y = max($left_end_y, $right_end_y);
 
         /**
-         * Conversión a pesos cuando la venta está en moneda extranjera (dólar).
+         * Caja de conversión a pesos para ventas en moneda extranjera.
          */
         if ((int) $sale->moneda_id === 2 && (float) $sale->valor_dolar > 0) {
             $total_pesos = $total * (float) $sale->valor_dolar;
-            $conversion_text = 'El total de este comprobante expresado en moneda de curso legal - Pesos Argentinos - considerándose un tipo de cambio de '
-                .$sale->valor_dolar.', asciende a $ '.Numbers::price($total_pesos, true);
-
-            $pdf->x = 5;
-            $pdf->SetFont('Arial', '', 8);
-            $pdf->MultiCell(200, 4, $conversion_text, 0, 'C', false);
-            $right_end_y = max($right_end_y, $pdf->y);
+            self::print_footer_conversion_box($pdf, $page_left, $page_width, $sale->valor_dolar, $total_pesos);
         }
 
-        $pdf->y = max($left_end_y, $right_end_y) + 3;
+        $pdf->y += 3;
     }
 
     /**
-     * Bloque QR AFIP + datos de CAE y número de página.
+     * Resuelve la etiqueta de moneda para el pie fiscal.
      *
-     * @param mixed $pdf
-     * @param mixed $afip_ticket
+     * @param mixed $sale Venta asociada.
+     * @return string
+     */
+    protected static function get_footer_moneda_label($sale): string
+    {
+        if ((int) $sale->moneda_id === 2) {
+            return 'USD - Dólar Estadounidense';
+        }
+
+        if ($sale->moneda && !empty($sale->moneda->name)) {
+            return (string) $sale->moneda->name;
+        }
+
+        return 'Peso Argentino';
+    }
+
+    /**
+     * Imprime una línea de total alineada a la derecha en el pie fiscal.
+     *
+     * @param mixed $pdf Instancia FPDF.
+     * @param float $x Posición X.
+     * @param float $width Ancho disponible.
+     * @param string $text Texto completo de la línea.
+     * @param int $line_height Alto de línea.
+     * @param bool $bold Si true, usa negrita.
+     * @param bool $underline Si true, subraya la línea inferior.
      * @return void
      */
-    protected static function print_footer_qr_and_cae_block($pdf, $afip_ticket): void
+    protected static function print_footer_total_line_right($pdf, $x, $width, $text, $line_height, $bold = false, $underline = false): void
     {
-        $qr_start_y = $pdf->y;
+        $pdf->x = $x;
+        $pdf->SetFont('Arial', $bold ? 'B' : '', $bold ? 10 : 9);
+        $border = $underline ? 'B' : 0;
+        $pdf->Cell($width, $line_height, $text, $border, 1, 'R');
+    }
+
+    /**
+     * Dibuja la caja de conversión a pesos argentinos (comprobantes en moneda extranjera).
+     *
+     * @param mixed $pdf Instancia FPDF.
+     * @param float $x Inicio X de la caja.
+     * @param float $width Ancho de la caja.
+     * @param float $tipo_cambio Cotización utilizada.
+     * @param float $total_pesos Total convertido a ARS.
+     * @return void
+     */
+    protected static function print_footer_conversion_box($pdf, $x, $width, $tipo_cambio, $total_pesos): void
+    {
+        $box_y = $pdf->y + 2;
+        $box_h = 10;
+        $inner_pad = 2;
+        $text_width = 145;
+
+        $conversion_text = 'El total de este comprobante expresado en moneda de curso legal - Pesos Argentinos - considerándose un tipo de cambio consignado de '
+            .number_format((float) $tipo_cambio, 6, ',', '.')
+            .' asciende a:';
+
+        $pdf->y = $box_y + $inner_pad;
+        $pdf->x = $x + $inner_pad;
+        $pdf->SetFont('Arial', '', 8);
+        $pdf->MultiCell($text_width, 4, $conversion_text, 0, 'L');
+
+        $pdf->y = $box_y + 3;
+        $pdf->x = $x + $text_width;
+        $pdf->SetFont('Arial', 'B', 10);
+        $pdf->Cell($width - $text_width - $inner_pad, 5, '$ '.Numbers::price($total_pesos, true), 0, 0, 'R');
+
+        self::draw_box($pdf, $x, $box_y, $width, $box_h);
+        $pdf->y = $box_y + $box_h;
+    }
+
+    /**
+     * Bloque oficial del pie: QR, logo AFIP, leyenda y datos de CAE (modelo AFIP).
+     *
+     * @param mixed $pdf Instancia FPDF.
+     * @param mixed $afip_ticket Ticket AFIP.
+     * @return void
+     */
+    protected static function print_footer_official_block($pdf, $afip_ticket): void
+    {
+        $footer_start_y = $pdf->y + 4;
+        $page_left = 5;
+        $page_width = 200;
+        $center_x = $page_left + ($page_width / 2);
+        $qr_size = 45;
+        $afip_logo_w = 40;
+        $afip_logo_h = 18;
+        $cae_block_x = 138;
+        $cae_block_w = 62;
 
         /**
-         * QR: misma lógica de entorno que TicketInfoHelper (omitido en local).
+         * Paginación centrada sobre el bloque AFIP.
          */
+        $pdf->y = $footer_start_y;
+        $pdf->x = $center_x - 25;
+        $pdf->SetFont('Arial', '', 9);
+        $pdf->Cell(50, 4, 'Pág. '.$pdf->PageNo(), 0, 0, 'C');
+
+        /**
+         * QR AFIP a la izquierda (omitido en entorno local).
+         */
+        $qr_bottom_y = $footer_start_y + $qr_size;
         if (config('app.APP_ENV') != 'local') {
-            $qr_pdf = new AfipQrPdf($pdf, $afip_ticket, false);
-            $qr_pdf->printQR();
-            $pdf->y = $qr_start_y;
+            self::print_afip_qr_image($pdf, $afip_ticket, $page_left, $footer_start_y + 2, $qr_size);
         }
 
         /**
-         * Datos de CAE y paginación a la derecha del QR.
+         * Logo AFIP y leyenda "Comprobante Autorizado" al centro.
          */
-        $pdf->y = $qr_start_y + 7;
-        $pdf->x = 110;
-        $pdf->SetFont('Arial', '', 10);
-        $pdf->Cell(95, 5, 'Pág. '.$pdf->PageNo(), 0, 1, 'C');
+        $logo_path = public_path().'/afip/logo.jpg';
+        $logo_x = $center_x - ($afip_logo_w / 2);
+        $logo_y = $footer_start_y + 5;
 
-        $pdf->x = 110;
-        $pdf->SetFont('Arial', 'B', 10);
-        $pdf->Cell(30, 5, 'CAE N°:', 0, 0, 'L');
-        $pdf->SetFont('Arial', '', 10);
-        $pdf->Cell(65, 5, (string) $afip_ticket->cae, 0, 1, 'L');
+        if (file_exists($logo_path)) {
+            $pdf->Image($logo_path, $logo_x, $logo_y, $afip_logo_w, $afip_logo_h);
+        }
 
-        $pdf->x = 110;
-        $pdf->SetFont('Arial', 'B', 10);
-        $pdf->Cell(55, 5, 'Fecha de Vto. de CAE:', 0, 0, 'L');
-        $pdf->SetFont('Arial', '', 10);
-        $pdf->Cell(40, 5, self::cae_expired_at_label($afip_ticket), 0, 1, 'L');
+        $pdf->y = $logo_y + $afip_logo_h + 1;
+        $pdf->x = $center_x - 50;
+        $pdf->SetFont('Arial', 'BI', 9);
+        $pdf->Cell(100, 4, 'Comprobante Autorizado', 0, 1, 'C');
 
-        $pdf->y = max($pdf->y, $qr_start_y + 45);
-    }
-
-    /**
-     * Leyenda legal obligatoria al pie del comprobante fiscal.
-     *
-     * @param mixed $pdf
-     * @return void
-     */
-    protected static function print_footer_legal_text($pdf): void
-    {
-        $pdf->x = 5;
-        $pdf->SetFont('Arial', '', 7);
+        $pdf->x = $center_x - 50;
+        $pdf->SetFont('Arial', '', 6);
         $pdf->MultiCell(
-            200,
-            4,
+            100,
+            3,
             'Esta Administración Federal no se responsabiliza por los datos ingresados en el detalle de la operación',
             0,
-            'C',
-            false
+            'C'
         );
+
+        $center_end_y = $pdf->y;
+
+        /**
+         * CAE y vencimiento alineados a la derecha.
+         */
+        $pdf->y = $footer_start_y + 8;
+        $pdf->x = $cae_block_x;
+        $pdf->SetFont('Arial', 'B', 9);
+        $pdf->Cell(24, 5, 'CAE N°:', 0, 0, 'R');
+        $pdf->SetFont('Arial', '', 9);
+        $pdf->Cell($cae_block_w - 24, 5, (string) $afip_ticket->cae, 0, 1, 'L');
+
+        $pdf->x = $cae_block_x;
+        $pdf->SetFont('Arial', 'B', 9);
+        $pdf->Cell(42, 5, 'Fecha de Vto. de CAE:', 0, 0, 'R');
+        $pdf->SetFont('Arial', '', 9);
+        $pdf->Cell($cae_block_w - 42, 5, self::cae_expired_at_label($afip_ticket), 0, 1, 'L');
+
+        $cae_end_y = $pdf->y;
+        $pdf->y = max($qr_bottom_y, $center_end_y, $cae_end_y) + 2;
+    }
+
+    /**
+     * Imprime el código QR AFIP en coordenadas fijas del pie fiscal.
+     *
+     * @param mixed $pdf Instancia FPDF.
+     * @param mixed $afip_ticket Ticket AFIP.
+     * @param float $x Posición X.
+     * @param float $y Posición Y.
+     * @param float $size Tamaño del QR en mm.
+     * @return void
+     */
+    protected static function print_afip_qr_image($pdf, $afip_ticket, $x, $y, $size): void
+    {
+        $data = [
+            'ver' => 1,
+            'fecha' => date_format($afip_ticket->created_at, 'Y-m-d'),
+            'cuit' => $afip_ticket->cuit_negocio,
+            'ptoVta' => $afip_ticket->punto_venta,
+            'tipoCmp' => $afip_ticket->cbte_tipo,
+            'nroCmp' => $afip_ticket->cbte_numero,
+            'importe' => $afip_ticket->importe_total,
+            'moneda' => $afip_ticket->moneda_id,
+            'ctz' => 1,
+            'tipoDocRec' => AfipHelper::getDocType('Cuit'),
+            'nroDocRec' => $afip_ticket->cuit_cliente,
+            'codAut' => $afip_ticket->cae,
+        ];
+
+        $afip_link = 'https://www.afip.gob.ar/fe/qr/?'.base64_encode(json_encode($data));
+        $url = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data='.$afip_link.'&format=jpeg#.jpg';
+
+        if (GeneralHelper::file_exists_2($url)) {
+            $pdf->Image($url, $x, $y, $size, $size);
+        }
     }
 
     /**

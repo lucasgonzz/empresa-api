@@ -164,6 +164,11 @@ class PermissionSeeder extends Seeder
                 'en'            => 'article.vender.change_price',
             ],
             [
+                'singular'      => 'Personalizar nombre del articulo',
+                'plural'        => 'Vender',
+                'en'            => 'article.vender.change_name',
+            ],
+            [
                 'singular'      => 'Cambiar el empleado en VENDER',
                 'plural'        => 'Vender',
                 'en'            => 'vender.change_employee',

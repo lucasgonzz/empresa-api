@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers\Pdf;
 
-use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 
 class SaleTicketRaw {
@@ -35,7 +35,7 @@ class SaleTicketRaw {
 
 		// Agregar artículos con salto de línea si es necesario
 		foreach ($this->sale->articles as $article) {
-		    $name = wordwrap($article->name, 15, "\n", true); // Divide en líneas de 15 caracteres
+		    $name = wordwrap(GeneralHelper::article_name($article), 15, "\n", true); // Divide en líneas de 15 caracteres
 		    $lineas_nombre = explode("\n", $name); // Convierte en array las líneas del name
 		    
 		    foreach ($lineas_nombre as $index => $linea) {
