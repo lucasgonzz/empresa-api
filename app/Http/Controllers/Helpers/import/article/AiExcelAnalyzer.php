@@ -7,6 +7,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use OpenSpout\Reader\Common\Creator\ReaderEntityFactory;
+use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 
 /**
  * Helper que analiza un archivo Excel utilizando la API de Claude (Anthropic).
@@ -135,6 +136,47 @@ class AiExcelAnalyzer
          * para que el caller pueda informarlo al cliente sin estimaciones heurísticas.
          */
         $parsed['row_count'] = $this->count_data_rows($excel_path);
+
+        /*
+         * Paso 7: Extraer los índices 0-based de bar_code y provider_code del mapeo enriquecido
+         * para pasarlos al analizador de duplicados.
+         */
+        $bar_code_idx      = null;
+        $provider_code_idx = null;
+        foreach ($parsed['column_mapping'] as $col) {
+            if (($col['system_property'] ?? null) === 'codigo_de_barras') {
+                $bar_code_idx = $col['excel_column_index'] ?? null;
+            }
+            if (($col['system_property'] ?? null) === 'codigo_de_proveedor') {
+                $provider_code_idx = $col['excel_column_index'] ?? null;
+            }
+        }
+
+        Log::info('AiExcelAnalyzer: índices de columnas detectados para preanálisis', [
+            'bar_code_idx'      => $bar_code_idx,
+            'provider_code_idx' => $provider_code_idx,
+        ]);
+
+        /*
+         * Paso 8: Preanálisis de duplicados.
+         * Calcula conteos intra-archivo y cruza contra BD para detectar colisiones.
+         * Nunca lanza excepción hacia el caller; en caso de error retorna conteos en 0.
+         */
+        $parsed['duplicate_stats'] = ExcelDuplicateStats::analyze(
+            $excel_path,
+            $bar_code_idx,
+            $provider_code_idx,
+            $parsed['provider_id'] ?? null,
+            $this->user_id
+        );
+
+        /*
+         * Paso 9: Pedir recomendación de configuración a Claude basada en los conteos.
+         * Si la llamada falla, se aplica un fallback heurístico y la respuesta sigue siendo HTTP 200.
+         */
+        $parsed['recomendacion_configuracion'] = $this->ask_claude_for_recomendation(
+            $parsed['duplicate_stats']
+        );
 
         return $parsed;
     }
@@ -763,6 +805,128 @@ PROMPT;
         }
 
         return $column_letter;
+    }
+
+    /**
+     * Pide a Claude una recomendación de configuración basada en las estadísticas de duplicados.
+     *
+     * Arma un prompt con los conteos del array $stats, llama a Claude y parsea el JSON devuelto.
+     * Si la llamada falla, el parseo lanza error o el JSON no es válido, aplica un fallback
+     * heurístico para que el flujo no se interrumpa.
+     *
+     * @param  array $stats  Resultado de ExcelDuplicateStats::analyze()
+     * @return array         ['clave_identidad' => string, 'politica_colision' => string, 'explicacion' => string]
+     */
+    protected function ask_claude_for_recomendation(array $stats): array
+    {
+        /*
+         * Valores aceptados para cada campo de la recomendación.
+         * Se usan para validar la respuesta de Claude antes de retornarla.
+         */
+        $valid_claves    = ['bar_code', 'provider_code', 'name'];
+        $valid_politicas = ['actualizar_todos', 'actualizar_uno', 'crear_nuevo'];
+
+        /*
+         * Arma el prompt con los conteos del preanálisis.
+         * Las llaves de interpolación reemplazan los valores reales para contextualizar a Claude.
+         */
+        $prompt = <<<PROMPT
+Sos un asistente que ayuda a configurar una importación de artículos desde Excel a un ERP.
+
+Análisis del archivo:
+- Total de filas de datos: {$stats['total_filas_datos']}
+- Bar_codes que aparecen repetidos dentro del Excel: {$stats['bar_codes_duplicados_intra_archivo']}
+- Provider_codes que aparecen repetidos dentro del Excel: {$stats['provider_codes_duplicados_intra_archivo']}
+- Provider_codes del Excel que ya existen en BD para el MISMO proveedor: {$stats['provider_codes_existentes_mismo_proveedor']}
+- Provider_codes del Excel que ya existen en BD para OTROS proveedores: {$stats['provider_codes_existentes_otros_proveedores']}
+
+Decisión 1 - clave_identidad: qué campo usar para identificar un artículo como "el mismo".
+- "bar_code": el código de barras es único y confiable.
+- "provider_code": no hay bar_code o tiene muchos duplicados; usar código de proveedor.
+- "name": último recurso si no hay códigos confiables.
+
+Decisión 2 - politica_colision: qué hacer cuando una fila machea con N artículos (típicamente porque el provider_code está repetido a propósito en BD).
+- "actualizar_todos": actualiza TODOS los artículos coincidentes con los datos de esa fila. Útil para distribuidoras que tienen el mismo provider_code en varios artículos físicos distintos y quieren actualizar el costo de todos con una sola fila del Excel.
+- "actualizar_uno": actualiza solo el primer artículo coincidente (criterio: más antiguo).
+- "crear_nuevo": ignora el match, crea un artículo nuevo igual.
+
+Recomendá la mejor configuración para este archivo. Explicá por qué en lenguaje claro y conciso (máx 3 oraciones), mencionando cuántos artículos serían afectados con la opción que recomendás.
+
+Respondé SOLO con un JSON válido, sin markdown ni texto adicional:
+{
+  "clave_identidad": "bar_code" | "provider_code" | "name",
+  "politica_colision": "actualizar_todos" | "actualizar_uno" | "crear_nuevo",
+  "explicacion": "texto claro y conciso"
+}
+PROMPT;
+
+        try {
+            /* Llamamos a Claude con el mismo método que usa el análisis principal. */
+            $claude_response = $this->call_claude($prompt);
+
+            /* Limpiamos posibles bloques markdown igual que en parse_claude_response(). */
+            $clean_text = trim($claude_response);
+            $clean_text = preg_replace('/^```(?:json)?\s*/i', '', $clean_text);
+            $clean_text = preg_replace('/\s*```$/i', '', $clean_text);
+            $clean_text = trim($clean_text);
+
+            $decoded = json_decode($clean_text, true);
+
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                throw new \RuntimeException('JSON inválido: ' . json_last_error_msg());
+            }
+
+            /* Validamos que los valores estén dentro del set permitido. */
+            $clave_identidad  = $decoded['clave_identidad']  ?? null;
+            $politica_colision = $decoded['politica_colision'] ?? null;
+            $explicacion      = $decoded['explicacion']      ?? null;
+
+            if (
+                !in_array($clave_identidad, $valid_claves, true)
+                || !in_array($politica_colision, $valid_politicas, true)
+            ) {
+                throw new \RuntimeException(
+                    "Valores fuera de rango: clave_identidad={$clave_identidad}, politica_colision={$politica_colision}"
+                );
+            }
+
+            Log::info('AiExcelAnalyzer: recomendación de configuración recibida', [
+                'clave_identidad'  => $clave_identidad,
+                'politica_colision' => $politica_colision,
+            ]);
+
+            return [
+                'clave_identidad'  => $clave_identidad,
+                'politica_colision' => $politica_colision,
+                'explicacion'      => is_string($explicacion) ? trim($explicacion) : '',
+            ];
+
+        } catch (\Throwable $e) {
+            Log::warning('AiExcelAnalyzer: fallo en recomendación de Claude, aplicando fallback', [
+                'error' => $e->getMessage(),
+            ]);
+
+            /*
+             * Fallback heurístico: si hay bar_codes duplicados, usamos provider_code como clave.
+             * Si además el provider_code está repetido con esa clave, actualizamos todos.
+             */
+            $clave_fallback = $stats['bar_codes_duplicados_intra_archivo'] > 0
+                ? 'provider_code'
+                : 'bar_code';
+
+            $politica_fallback = (
+                $stats['provider_codes_duplicados_intra_archivo'] > 0
+                && $clave_fallback === 'provider_code'
+            )
+                ? 'actualizar_todos'
+                : 'actualizar_uno';
+
+            return [
+                'clave_identidad'  => $clave_fallback,
+                'politica_colision' => $politica_fallback,
+                'explicacion'      => 'Recomendación generada automáticamente porque la IA no devolvió una respuesta válida.',
+            ];
+        }
     }
 
     /**

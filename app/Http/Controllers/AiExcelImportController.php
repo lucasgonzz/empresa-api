@@ -105,6 +105,17 @@ class AiExcelImportController extends Controller
                 'excel_path'          => $excel_path,
                 /* Conteo real de filas de datos (excluye cabecera). */
                 'row_count'           => $analysis['row_count'] ?? 0,
+                /*
+                 * Estadísticas de duplicados calculadas en backend (solo para model=article).
+                 * Permite al frontend mostrar al usuario cuántos códigos están repetidos
+                 * antes de que confirme la configuración de importación.
+                 */
+                'duplicate_stats'              => $analysis['duplicate_stats'] ?? null,
+                /*
+                 * Recomendación de configuración generada por Claude a partir de los conteos.
+                 * Contiene: clave_identidad, politica_colision y explicacion en español.
+                 */
+                'recomendacion_configuracion'  => $analysis['recomendacion_configuracion'] ?? null,
             ], 200);
 
         } catch (\RuntimeException $e) {
