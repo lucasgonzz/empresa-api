@@ -311,15 +311,17 @@ class ArticleImport implements ToCollection
 
             $this->iniciar();
             ArticleImportHelper::update_article_import_result([
-                'import_result_id'                      => $this->import_result_id, 
-                'articulos_creados'                     => $articulos_creados, 
-                'articulos_actualizados'                => $articulos_actualizados, 
-                'articles_match'                        => $articles_match, 
-                'articles_repetidos'                    => $articles_repetidos, 
-                'filas_procesadas'                      => $this->filas_procesadas, 
-                'provider_id'                           => $this->provider_id,
-                'registrar_articulos_creados'           => $this->registrar_articulos_creados,
-                'registrar_articulos_actualizados'      => $this->registrar_articulos_actualizados,
+                'import_result_id'                              => $this->import_result_id, 
+                'articulos_creados'                             => $articulos_creados, 
+                'articulos_actualizados'                        => $articulos_actualizados, 
+                'articles_match'                                => $articles_match, 
+                'articles_repetidos'                            => $articles_repetidos, 
+                'filas_procesadas'                              => $this->filas_procesadas, 
+                'provider_id'                                   => $this->provider_id,
+                'registrar_articulos_creados'                   => $this->registrar_articulos_creados,
+                'registrar_articulos_actualizados'              => $this->registrar_articulos_actualizados,
+                /* IDs de artículos creados con código repetido en BD (puede ser array vacío). */
+                'articulos_creados_con_codigo_repetido_ids'     => $this->articulos_creados_con_codigo_repetido_ids ?? [],
             ]);
             $this->terminar('Update article_import_result');
             
@@ -384,6 +386,8 @@ class ArticleImport implements ToCollection
                 $this->observations['procesos'][] = $observation;
             }
 
+            /* Capturar IDs de artículos creados con código repetido para reportarlos. */
+            $this->articulos_creados_con_codigo_repetido_ids = $actualizar_bbdd->get_articulos_creados_con_codigo_repetido_ids();
 
             return $actualizar_bbdd->get_articulos_creados_models();
 

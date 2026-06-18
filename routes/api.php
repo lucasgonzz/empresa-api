@@ -486,6 +486,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('/import-history/created-models/{id}', 'ImportHistoryController@created_models');
     Route::get('/import-history/chunks/{import_history_id}', 'ImportHistoryController@chunks');
     Route::post('/import-history/rollback/{import_history_id}', 'ImportHistoryController@rollback');
+    /* Lista de artículos creados con código repetido para el modal de resultado de importación. */
+    Route::get('/import-history/repeated-code-articles/{import_history_id}', 'ImportHistoryController@repeated_code_articles');
 
     /*
      * Importación de artículos asistida por Claude IA.

@@ -85,6 +85,12 @@ class ActualizarBBDD {
         $this->articulos_creados_models = [];
         $this->articulos_actualizados_models = [];
 
+        /*
+         * Acumula los IDs de artículos creados cuyo bar_code o provider_code ya existía en la BD.
+         * Se llena en guardar_articulos() después del INSERT y se expone vía getter.
+         */
+        $this->articulos_creados_con_codigo_repetido_ids = [];
+
         $this->stock_movement_ct = new StockMovementController(false);
 
         $this->now = Carbon::now()->toDateTimeString();
@@ -154,6 +160,32 @@ class ActualizarBBDD {
             $this->terminar(count($this->articulos_para_crear_CACHE).' Articulos insertados en bbdd');
 
             $this->set_articulos_creados_models();
+
+            /*
+             * Registrar IDs de artículos creados cuyo bar_code o provider_code ya existía en BD.
+             * El flag has_repeated_code_in_db fue marcado por ProcessRow antes del INSERT.
+             * Se usan bar_code y name para localizar el modelo recién creado en articulos_creados_models.
+             */
+            foreach ($this->articulos_para_crear_CACHE as $art) {
+                if (empty($art['has_repeated_code_in_db'])) {
+                    continue;
+                }
+                /* Buscar el modelo persistido por bar_code o name. */
+                $found = null;
+                if (!empty($art['bar_code'])) {
+                    $found = $this->articulos_creados_models->first(function ($m) use ($art) {
+                        return trim((string)$m->bar_code) === trim((string)$art['bar_code']);
+                    });
+                }
+                if (!$found && !empty($art['name'])) {
+                    $found = $this->articulos_creados_models->first(function ($m) use ($art) {
+                        return trim((string)$m->name) === trim((string)$art['name']);
+                    });
+                }
+                if ($found) {
+                    $this->articulos_creados_con_codigo_repetido_ids[] = $found->id;
+                }
+            }
         }
 
         // Actualizar artículos existentes por lote con SQL crudo
@@ -2299,6 +2331,17 @@ class ActualizarBBDD {
             $old_value,
             $new_value
         );
+    }
+
+    /**
+     * Devuelve los IDs de artículos creados cuyo bar_code o provider_code ya existía en BD.
+     * El array puede estar vacío si no hubo artículos con código repetido en este chunk.
+     *
+     * @return array
+     */
+    public function get_articulos_creados_con_codigo_repetido_ids(): array
+    {
+        return $this->articulos_creados_con_codigo_repetido_ids ?? [];
     }
 
     function log($text) {

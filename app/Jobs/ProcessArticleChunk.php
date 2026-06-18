@@ -476,12 +476,14 @@ class ProcessArticleChunk implements ShouldQueue
         DB::table('import_histories')
             ->where('id', $this->import_history_id)
             ->update([
-                'processed_chunks'   => DB::raw('processed_chunks + 1'),
-                'articles_match'     => DB::raw('articles_match + ' . (int) $this->import_result->articles_match),
-                'created_models'     => DB::raw('created_models + ' . (int) $this->import_result->created_count),
-                'updated_models'     => DB::raw('updated_models + ' . (int) $this->import_result->updated_count),
-                'filas_procesadas'   => DB::raw('filas_procesadas + ' . (int) $this->import_result->filas_procesadas),
-                'articles_repetidos' => DB::raw('articles_repetidos + ' . (int) $this->import_result->articles_repetidos),
+                'processed_chunks'                   => DB::raw('processed_chunks + 1'),
+                'articles_match'                     => DB::raw('articles_match + ' . (int) $this->import_result->articles_match),
+                'created_models'                     => DB::raw('created_models + ' . (int) $this->import_result->created_count),
+                'updated_models'                     => DB::raw('updated_models + ' . (int) $this->import_result->updated_count),
+                'filas_procesadas'                   => DB::raw('filas_procesadas + ' . (int) $this->import_result->filas_procesadas),
+                'articles_repetidos'                 => DB::raw('articles_repetidos + ' . (int) $this->import_result->articles_repetidos),
+                /* Acumular artículos creados con código repetido de cada chunk. */
+                'created_with_repeated_code_count'   => DB::raw('created_with_repeated_code_count + ' . (int) $this->import_result->created_with_repeated_code_count),
             ]);
 
         // Traigo el estado actualizado y seteo status correctamente

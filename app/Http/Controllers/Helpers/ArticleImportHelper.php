@@ -44,10 +44,14 @@ class ArticleImportHelper {
         ];
 
         $import_stats = [
-            'filas_procesadas'       => (int) $import_history->filas_procesadas,
-            'articulos_creados'      => (int) $import_history->created_models,
-            'articulos_macheados'    => (int) $import_history->articles_match,
-            'articulos_actualizados' => (int) $import_history->updated_models,
+            'filas_procesadas'                      => (int) $import_history->filas_procesadas,
+            'articulos_creados'                     => (int) $import_history->created_models,
+            'articulos_macheados'                   => (int) $import_history->articles_match,
+            'articulos_actualizados'                => (int) $import_history->updated_models,
+            /* Artículos creados cuyo bar_code o provider_code ya existía en BD. */
+            'articulos_creados_con_codigo_repetido' => (int) $import_history->created_with_repeated_code_count,
+            /* ID del historial para que el frontend pueda pedir la lista expandible. */
+            'import_history_id'                     => (int) $import_history->id,
         ];
 
         /* Opciones del paso 3 y rango de filas para el modal de resultado. */
@@ -281,13 +285,19 @@ class ArticleImportHelper {
 
         $import_result = ArticleImportResult::find($data['import_result_id']);
 
+        /* IDs de artículos creados con código repetido en BD (array, puede estar vacío). */
+        $repeated_ids = $data['articulos_creados_con_codigo_repetido_ids'] ?? [];
+
         $import_result->update([
-		    'created_count'  		=> count($data['articulos_creados']),
-		    'updated_count'  		=> count($data['articulos_actualizados']),
-		    'articles_match' 		=> $data['articles_match'],
-		    'articles_repetidos'	=> $data['articles_repetidos'],
-		    'filas_procesadas'		=> $data['filas_procesadas'],
-		    'provider_id'			=> $data['provider_id'],
+		    'created_count'  		                => count($data['articulos_creados']),
+		    'updated_count'  		                => count($data['articulos_actualizados']),
+		    'articles_match' 		                => $data['articles_match'],
+		    'articles_repetidos'	                => $data['articles_repetidos'],
+		    'filas_procesadas'		                => $data['filas_procesadas'],
+		    'provider_id'			                => $data['provider_id'],
+            /* Contador e IDs de artículos creados con código repetido. */
+            'created_with_repeated_code_count'  => count($repeated_ids),
+            'created_with_repeated_code_ids'    => count($repeated_ids) > 0 ? json_encode($repeated_ids) : null,
         ]);
 
 
