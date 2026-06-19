@@ -35,9 +35,21 @@ class DevolucionesController extends Controller
             $model_id = null;
             $credit_account_id = null;
 
+            // Validar que el client_id recibido corresponda al cliente real de la venta.
+            // Evita que un client_id residual del frontend (de una búsqueda anterior)
+            // quede asignado a una nota de crédito de una venta sin cliente.
+            $sale_client_id = null;
+            if ($request->sale_id) {
+                $sale_for_validation = Sale::find($request->sale_id);
+                if ($sale_for_validation) {
+                    $sale_client_id = $sale_for_validation->client_id;
+                }
+            }
+
             if (
                 $request->generar_current_acount
                 && !is_null($request->client_id)
+                && $request->client_id == $sale_client_id
             ) {
                 $model_id = $request->client_id;
 

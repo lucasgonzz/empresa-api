@@ -93,9 +93,10 @@ class AfipPdfHelper
 
         /**
          * Cuadro central de letra del comprobante, centrado horizontalmente.
+         * Dimensiones reducidas para minimizar espacio vertical en el header.
          */
-        $letter_width = 30;
-        $letter_height = 22;
+        $letter_width = 25;
+        $letter_height = 16;
         $letter_x = $page_left + ($page_width - $letter_width) / 2;
 
         /**
@@ -157,34 +158,46 @@ class AfipPdfHelper
     }
 
     /**
-     * Imprime label en negrita y valor con MultiCell para textos extensos.
+     * Imprime label en negrita y valor con wrap correcto para textos extensos.
+     *
+     * Usa Write() con márgenes temporales para que cualquier salto de línea
+     * del valor comience desde $x (borde izquierdo de la columna de texto),
+     * no desde una posición indentada bajo el label.
      *
      * @param mixed $pdf Instancia FPDF.
      * @param string $label Texto del label (incluir ":" al final).
      * @param string $value Valor a mostrar (puede ocupar varias líneas).
-     * @param float $x Posición X inicial.
-     * @param float $width Ancho total disponible.
+     * @param float $x Posición X inicial de la columna de texto.
+     * @param float $width Ancho total disponible de la columna.
      * @param int $font_size Tamaño de fuente.
      * @param int $line_height Alto de línea.
      * @return void
      */
     protected static function print_label_value_multiline($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4): void
     {
+        /**
+         * Establecer márgenes temporales para que Write() haga el wrap desde $x.
+         * El margen derecho se calcula para que el texto no supere $x + $width.
+         * El ancho total de página en A4 es 210mm; los márgenes del PDF son 5mm.
+         */
+        $page_total_width = $pdf->GetPageWidth();
+        $pdf->SetLeftMargin($x);
+        $pdf->SetRightMargin($page_total_width - $x - $width);
         $pdf->x = $x;
+
         $pdf->SetFont('Arial', 'B', $font_size);
         $pdf->Write($line_height, $label);
 
         $pdf->SetFont('Arial', '', $font_size);
-        $used_width = $pdf->x - $x;
-        $remaining_width = $width - $used_width;
+        $pdf->Write($line_height, (string) $value);
 
-        if ($remaining_width <= 1) {
-            $pdf->Ln($line_height);
-            $pdf->x = $x;
-            $remaining_width = $width;
-        }
+        $pdf->Ln($line_height);
 
-        $pdf->MultiCell($remaining_width, $line_height, (string) $value, 0, 'L');
+        /**
+         * Restaurar márgenes al valor estándar del comprobante (5mm a cada lado).
+         */
+        $pdf->SetLeftMargin(5);
+        $pdf->SetRightMargin(5);
     }
 
     /**
@@ -212,19 +225,25 @@ class AfipPdfHelper
 
         /**
          * --- Panel izquierdo: logo + nombre comercial + datos fiscales del emisor ---
+         * El logo se coloca pegado a los bordes del panel (sin inner_pad) para maximizar espacio.
          */
-        $logo_x = $left_content_x;
-        $logo_y = $block_start_y + $inner_pad;
+        $logo_x = $layout['left_panel_x'];
+        $logo_y = $block_start_y;
         $logo_printed = self::print_logo_image($pdf, $user, $logo_x, $logo_y, $logo_size);
 
         /**
-         * Columna al costado del logo (nombre arriba; razón social y domicilio debajo del cuadro de letra).
+         * Columna de texto al costado del logo: desde el borde derecho del logo hasta
+         * el borde derecho del panel, con 1mm de separación en cada extremo.
          */
+        $text_gap = 1;
         $beside_logo_x = $logo_printed
-            ? ($logo_x + $logo_size + 2)
-            : $left_content_x;
+            ? ($layout['left_panel_x'] + $logo_size + $text_gap)
+            : ($layout['left_panel_x'] + $inner_pad);
+        /**
+         * Ancho hasta el borde derecho del panel izquierdo (sin margen adicional derecho).
+         */
         $beside_logo_width = $logo_printed
-            ? ($left_content_width - $logo_size - 2)
+            ? ($layout['left_panel_width'] - $logo_size - $text_gap)
             : $left_content_width;
 
         /**
@@ -244,13 +263,12 @@ class AfipPdfHelper
 
         /**
          * Razón social y domicilio al costado del logo, debajo de la altura del cuadro central.
+         * Usan el mismo ancho calculado arriba, que ocupa todo el espacio disponible.
          */
         $fields_start_y = $block_start_y + $layout['letter_height'] + $inner_pad;
         $fields_end_y = $fields_start_y;
 
         if ($afip_information) {
-
-            $beside_logo_width += 15;
 
             $pdf->y = $fields_start_y;
 
@@ -486,19 +504,19 @@ class AfipPdfHelper
         $rect_h = $layout['letter_height'];
 
         /**
-         * Alturas internas: letra grande arriba y código debajo, sin invadir el borde inferior.
+         * Letra grande sin padding superior, pegada a la línea de COD para máxima compacidad.
+         * letter_cell_h + cod_cell_h = letter_height exacto.
          */
-        $top_pad = 1;
-        $letter_cell_h = 13;
-        $cod_cell_h = 6;
+        $letter_cell_h = 11;
+        $cod_cell_h = 5;
 
-        $pdf->y = $start_y + $top_pad;
+        $pdf->y = $start_y;
         $pdf->x = $rect_x;
-        $pdf->SetFont('Arial', 'B', 28);
+        $pdf->SetFont('Arial', 'B', 22);
         $pdf->Cell($rect_w, $letter_cell_h, (string) $afip_ticket->cbte_letra, 0, 1, 'C');
 
         $pdf->x = $rect_x;
-        $pdf->SetFont('Arial', '', 8);
+        $pdf->SetFont('Arial', '', 7);
         $codigo = self::left_pad((string) $afip_ticket->cbte_tipo, 2);
         $pdf->Cell($rect_w, $cod_cell_h, 'COD. '.$codigo, 0, 1, 'C');
 
@@ -683,11 +701,17 @@ class AfipPdfHelper
         $col_alic_w = 13;
         $col_imp_w = 20;
 
+        /**
+         * Título con borde inferior solamente, como en el modelo AFIP.
+         */
         $pdf->y = $start_y;
         $pdf->x = $left_x;
         $pdf->SetFont('Arial', 'B', 9);
-        $pdf->Cell($left_w, $row_h, 'Otros Tributos', 'LTR', 1, 'L');
+        $pdf->Cell($left_w, $row_h, 'Otros Tributos', 'B', 1, 'L');
 
+        /**
+         * Encabezado de columnas con fondo gris y borde completo.
+         */
         $pdf->x = $left_x;
         $pdf->SetFillColor(210, 210, 210);
         $pdf->SetFont('Arial', 'B', 7);
@@ -696,7 +720,10 @@ class AfipPdfHelper
         $pdf->Cell($col_alic_w, $row_h, 'Alic. %', 1, 0, 'C', true);
         $pdf->Cell($col_imp_w, $row_h, 'Importe', 1, 1, 'C', true);
 
-        $pdf->SetFont('Arial', '', 7);
+        /**
+         * Filas de datos con borde y texto normal (sin relleno).
+         */
+        $pdf->SetFont('Arial', '', 8);
         $pdf->SetFillColor(255, 255, 255);
         foreach (self::$otros_tributos_rows as $row_label) {
             $pdf->x = $left_x;
@@ -706,9 +733,13 @@ class AfipPdfHelper
             $pdf->Cell($col_imp_w, $row_h, '0,00', 1, 1, 'R');
         }
 
+        /**
+         * Fila de subtotal con el código de moneda visible en la celda de descripción.
+         */
+        $moneda_code = (int) $sale->moneda_id === 2 ? ' USD' : '';
         $pdf->x = $left_x;
         $pdf->SetFont('Arial', '', 8);
-        $pdf->Cell($col_desc_w + $col_det_w + $col_alic_w, $row_h, 'Importe Otros Tributos:', 1, 0, 'R');
+        $pdf->Cell($col_desc_w + $col_det_w + $col_alic_w, $row_h, 'Importe Otros Tributos:'.$moneda_code, 1, 0, 'L');
         $pdf->Cell($col_imp_w, $row_h, '0,00', 1, 1, 'R');
 
         $left_end_y = $pdf->y;
@@ -722,18 +753,22 @@ class AfipPdfHelper
         $moneda_id = $sale->moneda_id;
         $moneda_label = self::get_footer_moneda_label($sale);
 
+        /**
+         * Primera línea de la columna derecha: moneda como texto simple alineado a la derecha.
+         */
         $pdf->y = $start_y;
-        self::print_footer_total_line_right($pdf, $right_x, $right_w, 'Moneda: '.$moneda_label, $row_h, false, true);
+        $pdf->x = $right_x;
+        $pdf->SetFont('Arial', '', 9);
+        $pdf->Cell($right_w, $row_h, 'Moneda: '.$moneda_label, 0, 1, 'R');
 
         $cbte_letra = (string) $afip_ticket->cbte_letra;
 
         if ($cbte_letra === 'A' || $cbte_letra === 'B') {
-            self::print_footer_total_line_right(
-                $pdf,
-                $right_x,
-                $right_w,
-                'Importe Neto Gravado: '.Numbers::price($importes['gravado'], true, $moneda_id),
-                $row_h
+            self::print_footer_right_row(
+                $pdf, $right_x, $right_w,
+                'Importe Neto Gravado:',
+                Numbers::price($importes['gravado'], true, $moneda_id),
+                false, $row_h
             );
 
             foreach (self::$iva_rate_labels as $iva_rate) {
@@ -741,17 +776,16 @@ class AfipPdfHelper
                 if (isset($importes['ivas'][$iva_rate]['Importe'])) {
                     $importe_iva = (float) $importes['ivas'][$iva_rate]['Importe'];
                 }
-                self::print_footer_total_line_right(
-                    $pdf,
-                    $right_x,
-                    $right_w,
-                    'IVA '.$iva_rate.'%: '.Numbers::price($importe_iva, true, $moneda_id),
-                    $row_h
+                self::print_footer_right_row(
+                    $pdf, $right_x, $right_w,
+                    'IVA '.$iva_rate.'%:',
+                    Numbers::price($importe_iva, true, $moneda_id),
+                    false, $row_h
                 );
             }
         }
 
-        self::print_footer_total_line_right($pdf, $right_x, $right_w, 'Importe Otros Tributos: 0,00', $row_h);
+        self::print_footer_right_row($pdf, $right_x, $right_w, 'Importe Otros Tributos:', '0,00', false, $row_h);
 
         $total = (float) $importes['total'];
         $formatted_total = Numbers::price($total, true, $moneda_id);
@@ -760,14 +794,10 @@ class AfipPdfHelper
             $total = (float) $sale->total;
         }
 
-        self::print_footer_total_line_right(
-            $pdf,
-            $right_x,
-            $right_w,
-            'Importe Total: '.$formatted_total,
-            $row_h + 1,
-            true
-        );
+        /**
+         * Importe Total: label y valor ambos en negrita, alto de fila levemente mayor.
+         */
+        self::print_footer_right_row($pdf, $right_x, $right_w, 'Importe Total:', $formatted_total, true, $row_h + 1);
 
         $right_end_y = $pdf->y;
         $pdf->y = max($left_end_y, $right_end_y);
@@ -803,23 +833,31 @@ class AfipPdfHelper
     }
 
     /**
-     * Imprime una línea de total alineada a la derecha en el pie fiscal.
+     * Imprime una fila de la columna de totales con label en negrita (izquierda) y valor (derecha).
      *
      * @param mixed $pdf Instancia FPDF.
-     * @param float $x Posición X.
-     * @param float $width Ancho disponible.
-     * @param string $text Texto completo de la línea.
-     * @param int $line_height Alto de línea.
-     * @param bool $bold Si true, usa negrita.
-     * @param bool $underline Si true, subraya la línea inferior.
+     * @param float $x Posición X inicial.
+     * @param float $total_width Ancho total de la fila.
+     * @param string $label Texto del label (sin valor numérico).
+     * @param string $value Valor numérico formateado (con símbolo de moneda si corresponde).
+     * @param bool $bold_value Si true, el valor también se imprime en negrita (para Importe Total).
+     * @param int $line_h Alto de línea.
      * @return void
      */
-    protected static function print_footer_total_line_right($pdf, $x, $width, $text, $line_height, $bold = false, $underline = false): void
+    protected static function print_footer_right_row($pdf, $x, $total_width, $label, $value, $bold_value = false, $line_h = 5): void
     {
+        /**
+         * Ancho fijo para la columna de label; el resto para el valor numérico.
+         */
+        $label_col_w = 65;
+        $value_col_w = $total_width - $label_col_w;
+
         $pdf->x = $x;
-        $pdf->SetFont('Arial', $bold ? 'B' : '', $bold ? 10 : 9);
-        $border = $underline ? 'B' : 0;
-        $pdf->Cell($width, $line_height, $text, $border, 1, 'R');
+        $pdf->SetFont('Arial', 'B', 9);
+        $pdf->Cell($label_col_w, $line_h, $label, 0, 0, 'L');
+
+        $pdf->SetFont('Arial', $bold_value ? 'B' : '', 9);
+        $pdf->Cell($value_col_w, $line_h, $value, 0, 1, 'R');
     }
 
     /**
