@@ -6,6 +6,7 @@ use App\Models\Category;
 use App\Models\CategoryPriceTypeRange;
 use App\Models\PriceType;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Log;
 
 class CategoryPriceTypeRangeSeeder extends Seeder
 {
@@ -57,6 +58,10 @@ class CategoryPriceTypeRangeSeeder extends Seeder
 
             $this->crear_sub_categories($category); 
         }
+
+        Log::info('CategoryPriceTypeRangeSeeder ejecutado');
+        Log::info(count($categories).' categories');
+        Log::info(count($this->price_types).' price_types');
     }
 
     function crear_sub_categories($category) {

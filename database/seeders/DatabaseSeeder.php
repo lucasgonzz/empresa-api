@@ -111,17 +111,6 @@ class DatabaseSeeder extends Seeder
                 $this->call(ArticleSeeder::class);
                 // $this->call(CajaSeeder::class);
 
-            } else if ($for_user == 'golo_norte') {
-
-                $this->call(ArticleSeeder::class);
-                $this->call(ComboSeeder::class);
-                $this->call(CategoryPriceTypeRangeSeeder::class);
-                $this->call(ArticlePriceTypeGroupSeeder::class);
-
-                // $this->call(SaleRoadMapSeeder::class);
-
-                // $this->call(RoadMapSeeder::class);
-
             } else if ($for_user == 'ferretodo') {
 
                 $this->call(ArticleSeeder::class);
@@ -223,6 +212,15 @@ class DatabaseSeeder extends Seeder
             $this->call(CajaSeeder::class);
             $this->call(TurnoCajaSeeder::class);
             $this->call(FerreteriaArticlesSeeder::class);
+
+            if ($for_user == 'golo_norte') {
+
+                $this->call(ArticleSeeder::class);
+                $this->call(ComboSeeder::class);
+                $this->call(CategoryPriceTypeRangeSeeder::class);
+                $this->call(ArticlePriceTypeGroupSeeder::class);
+                $this->call(GolonorteCategoryPriceTypeSeeder::class);
+            } 
 
             $this->call(DeliveryDaySeeder::class);
 

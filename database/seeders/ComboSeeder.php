@@ -15,6 +15,7 @@ class ComboSeeder extends Seeder
      */
     public function run()
     {
+        return;
         $models = [
             [
                 'name'          => 'Combo 1',
@@ -22,11 +23,11 @@ class ComboSeeder extends Seeder
                 'price'         => 1000,
                 'articles'      => [
                     [
-                        'name'      => 'Yerba 1',
+                        'name'      => 'CINTA MULTIPROPOSITO BLANCO 48MM X 9Mts. TACSA DUCTAC',
                         'amount'    => 2
                     ],
                     [
-                        'name'      => 'Mate torpedo 1',
+                        'name'      => 'TIMBRE INALAMBRICO REDONDO CANDELA',
                         'amount'    => 4
                     ],
                 ],

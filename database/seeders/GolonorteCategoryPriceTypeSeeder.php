@@ -8,7 +8,7 @@ use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Log;
 
-class CategorySeeder extends Seeder
+class GolonorteCategoryPriceTypeSeeder extends Seeder
 {
     /**
      * Run the database seeds.
@@ -44,6 +44,7 @@ class CategorySeeder extends Seeder
             ]);
             $num++;
         }
+
     }
 
 
@@ -51,40 +52,14 @@ class CategorySeeder extends Seeder
         if (config('app.FOR_USER') == 'truvari') {
             return;
         }
-        $models = [
-            'Herramientas',
-            'Utensilios',
-            'Muebles',
-        ];
-
-        $supermercado = [
-            'Almacen',
-            'Gaseosas',
-        ];
-
-        $auto_partes = [
-            'Accesorios',
-            'Encendido',
-            'Iluminacion',
-            'Motor',
-            'Suspencion y frenos',
-        ];
-
-        $categories = [];
-
-        $num = 1;
-        foreach ($supermercado as $category) {
-            $categories[] = Category::create([
-                'num'     => $num,
-                'name'    => $category,
-                'user_id' => config('app.USER_ID'),
-            ]);
-            $num++;
-        }
+       
+        $categories = Category::all();
 
         if (config('app.FOR_USER') == 'golo_norte') {
             $this->adjuntar_price_types($categories);
         }
+
+        Log::info('Listo categorias golonorte');
     }
 
     function adjuntar_price_types($categories) {
