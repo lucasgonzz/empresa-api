@@ -396,14 +396,13 @@ class SaleController extends Controller
             }
 
 
-            $this->sendAddModelNotification('Sale', $model->id);
-            SaleHelper::sendUpdateClient($this, $model);
-
-
             $sale_modification->estado_despues_de_actualizar = SaleModificationsHelper::get_estado($model);
             $sale_modification->save();
 
             DB::commit();
+
+            $this->sendAddModelNotification('Sale', $model->id);
+            SaleHelper::sendUpdateClient($this, $model);
 
             /** Misma regla que el checkbox en vender: sin extensión no se encola correo aunque send_mail siga en true. */
             if ($can_enviar_mail_a_clientes) {
