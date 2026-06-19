@@ -114,7 +114,22 @@ class GeneralHelper {
     }
 
 
+    /**
+     * Nombre a mostrar de un artículo en ventas, PDF y comprobantes.
+     * Prioriza pivot.name si el operador personalizó el texto en vender.
+     *
+     * @param  \App\Models\Article|object  $article
+     * @return string
+     */
     static function article_name($article) {
+        if (
+            !is_null($article->pivot)
+            && !is_null($article->pivot->name)
+            && trim((string) $article->pivot->name) !== ''
+        ) {
+            return trim((string) $article->pivot->name);
+        }
+
         $name = $article->name;
         if (!is_null($article->pivot) && !is_null($article->pivot->variant_description)) {
             $name .= ' '.$article->pivot->variant_description;

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\StringHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Helpers\Afip\AfipImportesResolver;
 use App\Http\Controllers\Helpers\Afip\AfipSolicitarCaeHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Pdf\Afip\LibroIvaCompraPdf;
@@ -83,7 +84,13 @@ class AfipController extends Controller
             }
             $comprador = str_pad(substr($client_name, 0, 30), 30, ' ');
 
-            $importe_total = str_pad(number_format($ticket->importe_total, 2, '', ''), 15, '0', STR_PAD_LEFT);
+            /**
+             * Prioriza el total enviado a AFIP para que el TXT coincida con el comprobante autorizado.
+             */
+            $importe_total_valor = !is_null($ticket->imp_total_enviado)
+                ? (float) $ticket->imp_total_enviado
+                : (float) $ticket->importe_total;
+            $importe_total = str_pad(number_format($importe_total_valor, 2, '', ''), 15, '0', STR_PAD_LEFT);
 
             $conceptos_no_gravados = str_pad('0', 15, '0', STR_PAD_LEFT);
             $percepcion_no_categorizados = str_pad('0', 15, '0', STR_PAD_LEFT);
@@ -243,9 +250,10 @@ class AfipController extends Controller
 
         $afip_helper = new AfipHelper($afip_ticket, $articles, $services, null, $sale);
 
-        $importes = $afip_helper->getImportes();
-
-        return $importes;
+        /**
+         * Usa snapshot fiscal persistido (si existe) para alinear TXT/PDF con AFIP.
+         */
+        return AfipImportesResolver::resolve($afip_ticket, $afip_helper);
     }
 
 

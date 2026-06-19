@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Jobs\RollbackArticleImportHistory;
+use App\Models\Article;
 use App\Models\ArticleImportResult;
 use App\Models\ImportHistory;
 use Illuminate\Http\Request;
@@ -80,5 +81,44 @@ class ImportHistoryController extends Controller
                             ->first();
                             
         return response()->json(['model' => $model], 200);
+    }
+
+    /**
+     * Devuelve la lista de artículos creados con código repetido para un ImportHistory dado.
+     * Recorre todos los chunks del historial y recolecta los IDs almacenados en cada
+     * ArticleImportResult.created_with_repeated_code_ids, luego trae los artículos de la BD.
+     *
+     * @param int $import_history_id ID del historial de importación.
+     * @return \Illuminate\Http\JsonResponse Array de artículos con id, name, bar_code, provider_code.
+     */
+    function repeated_code_articles($import_history_id) {
+        /* Recolectar todos los IDs de artículos con código repetido de los chunks. */
+        $all_ids = [];
+
+        ArticleImportResult::where('import_history_id', $import_history_id)
+            ->whereNotNull('created_with_repeated_code_ids')
+            ->get()
+            ->each(function ($chunk) use (&$all_ids) {
+                /* created_with_repeated_code_ids ya se castea a array en el modelo. */
+                $ids = $chunk->created_with_repeated_code_ids;
+
+                if (is_array($ids)) {
+                    foreach ($ids as $id) {
+                        $all_ids[] = (int) $id;
+                    }
+                }
+            });
+
+        if (empty($all_ids)) {
+            return response()->json([], 200);
+        }
+
+        /* Traer los artículos con los datos mínimos para mostrar en la lista. */
+        $articles = Article::whereIn('id', array_unique($all_ids))
+            ->select('id', 'name', 'bar_code', 'provider_code')
+            ->orderBy('id', 'ASC')
+            ->get();
+
+        return response()->json($articles, 200);
     }
 }

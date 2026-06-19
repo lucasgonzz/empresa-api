@@ -128,4 +128,8 @@ class User extends Authenticatable
     public function workdays() {
         return $this->belongsToMany('App\Models\Workday');
     }
+
+    public function whatsapp_bot_config() {
+        return $this->hasOne(WhatsappBotConfig::class);
+    }
 }

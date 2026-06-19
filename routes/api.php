@@ -486,6 +486,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('/import-history/created-models/{id}', 'ImportHistoryController@created_models');
     Route::get('/import-history/chunks/{import_history_id}', 'ImportHistoryController@chunks');
     Route::post('/import-history/rollback/{import_history_id}', 'ImportHistoryController@rollback');
+    /* Lista de artículos creados con código repetido para el modal de resultado de importación. */
+    Route::get('/import-history/repeated-code-articles/{import_history_id}', 'ImportHistoryController@repeated_code_articles');
 
     /*
      * Importación de artículos asistida por Claude IA.
@@ -698,6 +700,18 @@ Route::middleware(['auth:sanctum'])->group(function() {
 });
 
 
+// Bot WhatsApp para clientes finales
+// Webhook público (Kapso lo llama sin auth)
+Route::post('whatsapp-bot/webhook', 'WhatsappBotController@receive');
+
+// Configuración autenticada (singleton por empresa; POST/PUT con o sin id para el ABM de empresa-spa)
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('whatsapp-bot/config', 'WhatsappBotController@get_config');
+    Route::post('whatsapp-bot/config', 'WhatsappBotController@update_config');
+    Route::put('whatsapp-bot/config', 'WhatsappBotController@update_config');
+    Route::put('whatsapp-bot/config/{id}', 'WhatsappBotController@update_config');
+});
+
 // Callback público Mercado Libre (notificaciones); sin auth Sanctum.
 Route::post('meli/notifications', 'MeLiOrderController@receive_notification');
 
@@ -730,4 +744,6 @@ Route::middleware('admin.api.key')
         Route::get('employees', 'AdminSync\\EmployeesController@index');
         Route::post('ai-excel-import/analyze', 'AdminSync\\AiExcelImportController@analyze');
         Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
+        // Canal "sistema:" de WhatsApp: consulta de datos del owner (stock, ventas, facturas, clientes).
+        Route::post('sistema-query', 'AdminSync\\SistemaQueryController@query_data');
     });

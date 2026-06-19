@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Http\Controllers\Pdf\Afip\TicketInfoHelper;
 use App\Models\Address;
 use App\Models\User;
@@ -162,6 +163,15 @@ class NewSalePdf extends fpdf
      */
     public function Header()
     {
+        /**
+         * Perfil fiscal: header AFIP/ARCA dedicado sin pasar por PdfHelper comercial.
+         */
+        if ($this->is_afip_ticket && $this->afip_ticket) {
+            AfipPdfHelper::header($this, $this->afip_ticket, $this->sale, $this->user);
+            PdfHelper::tableHeader($this, $this->getFields());
+            return;
+        }
+
         $data = [
             'num' => $this->sale->num,
             'title' => 'X',
@@ -183,12 +193,6 @@ class NewSalePdf extends fpdf
             $data['fields']         = $this->getFields();
             $data['titulo']         = $this->user->company_name;
             $data['date']           = $print_date ?? $this->sale->created_at;
-        } else if ($this->afip_ticket) {
-            $data['title']          = $this->afip_ticket->cbte_letra;
-            $data['num']            = $this->getPuntoVenta() .' - '. $this->getNumCbte();
-            $data['titulo']         = $this->get_titulo();
-            $data['date']           = $print_date ?? $this->afip_ticket->created_at;
-            $data['afip_ticket']    = $this->afip_ticket;
         }
 
         
@@ -217,15 +221,6 @@ class NewSalePdf extends fpdf
         }
         
         PdfHelper::header($this, $data);
-        /**
-         * Si el perfil es fiscal, se agrega cabecera AFIP debajo del header comercial.
-         */
-        if ($this->is_afip_ticket && $this->ticket_info_helper && $this->ticket_info_helper->has_afip_context()) {
-            $this->ticket_info_helper->print_afip_header($this);
-            $this->y += 5;
-            PdfHelper::tableHeader($this, $this->getFields());
-        }
-
     }
 
     function get_titulo() {
@@ -284,16 +279,16 @@ class NewSalePdf extends fpdf
          * seguido del texto de pie de página si está configurado.
          */
         if ($this->is_afip_ticket && $this->ticket_info_helper && $this->ticket_info_helper->has_afip_context() && $this->should_print_totals_in_footer()) {
-            /**
-             * En perfiles fiscales, el bloque IVA/totales se considera "total" del footer.
-             */
-            if ($this->should_print_total_in_footer()) {
-                $this->ticket_info_helper->print_iva_and_totals($this, $this->sale);
-            }
+            AfipPdfHelper::footer(
+                $this,
+                $this->afip_ticket,
+                $this->sale,
+                $this->user,
+                $this->afip_helper,
+                $this->should_print_total_in_footer()
+            );
             $this->print_optional_footer_extras();
             $this->print_footer_text_block();
-            $this->ticket_info_helper->print_qr_and_arca_footer($this);
-            $this->ticket_info_helper->print_fiscal_footer($this, $this->PageNo());
         }
     }
 
@@ -1039,10 +1034,16 @@ class NewSalePdf extends fpdf
              * En perfil fiscal, se mantiene QR/pie fiscal aunque se oculten totales.
              */
             if ($this->ticket_info_helper && $this->ticket_info_helper->has_afip_context()) {
+                AfipPdfHelper::footer(
+                    $this,
+                    $this->afip_ticket,
+                    $this->sale,
+                    $this->user,
+                    $this->afip_helper,
+                    false
+                );
                 $this->print_optional_footer_extras();
                 $this->print_footer_text_block();
-                $this->ticket_info_helper->print_qr_and_arca_footer($this);
-                $this->ticket_info_helper->print_fiscal_footer($this, $this->PageNo());
             }
             return;
         }
@@ -1082,12 +1083,17 @@ class NewSalePdf extends fpdf
         if ($this->ticket_info_helper && $this->ticket_info_helper->has_afip_context()) {
 
             $this->descuentos_y_recargos();
-            
-            $this->ticket_info_helper->print_iva_and_totals($this, $this->sale);
+
+            AfipPdfHelper::footer(
+                $this,
+                $this->afip_ticket,
+                $this->sale,
+                $this->user,
+                $this->afip_helper,
+                true
+            );
             $this->print_optional_footer_extras();
             $this->print_footer_text_block();
-            $this->ticket_info_helper->print_qr_and_arca_footer($this);
-            $this->ticket_info_helper->print_fiscal_footer($this, $this->PageNo());
         }
     }
 }

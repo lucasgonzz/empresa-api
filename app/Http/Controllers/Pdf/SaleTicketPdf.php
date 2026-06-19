@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Pdf;
 
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
+use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -256,7 +257,7 @@ class SaleTicketPdf extends fpdf {
 		foreach ($this->sale->articles as $article) {
 			$this->SetFont('Arial', '', 12);
 			$y_1 = $this->y;
-			$this->MultiCell($ancho_description, $this->line_height, $article->name." ({$article->pivot->amount})", 'BT', 'L', 0);
+			$this->MultiCell($ancho_description, $this->line_height, GeneralHelper::article_name($article)." ({$article->pivot->amount})", 'BT', 'L', 0);
 			$y_2 = $this->y;
 
 			$this->x = $ancho_description + 2;
@@ -342,7 +343,7 @@ class SaleTicketPdf extends fpdf {
 
 		foreach ($combo->articles as $article) {
 			$this->x = 6;
-			$this->MultiCell(50, $this->line_height, $article->name.' ('.$article->pivot->amount.')', 'LR', 'L', 0);
+			$this->MultiCell(50, $this->line_height, GeneralHelper::article_name($article).' ('.$article->pivot->amount.')', 'LR', 'L', 0);
 		}
 	}
 

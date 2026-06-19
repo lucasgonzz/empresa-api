@@ -101,15 +101,17 @@ class InitExcelImport
         $this->armar_jobs_de_chunks();
 
         /*
-         * Selecciona la estrategia de despacho según la variable VPS del .env:
-         *   - true  (VPS con Redis + Supervisor): batch paralelo, aprovecha múltiples workers.
-         *   - false (hosting sin Redis/Supervisor): chain secuencial, compatible con cron queue:work.
+         * Siempre procesamiento secuencial (Bus::chain), independientemente del entorno.
+         *
+         * El modo paralelo (mandar_batch) causaba una condición de carrera: el índice
+         * anti-duplicados (ArticleIndexCache) vive en RAM estática por proceso, por lo
+         * que workers concurrentes no comparten estado y pueden crear el mismo artículo
+         * dos veces cuando un artículo no existía al inicio del batch.
+         *
+         * La pérdida de velocidad es aceptable dado el tamaño típico de los archivos
+         * importados (~5.000 filas) y el chunk size de 50 filas.
          */
-        if (config('app.VPS')) {
-            $this->mandar_batch();
-        } else {
-            $this->mandar_chain();
-        }
+        $this->mandar_chain();
 
         return [
             'hubo_un_error' => false,

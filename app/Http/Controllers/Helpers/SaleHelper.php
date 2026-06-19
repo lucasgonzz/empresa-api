@@ -670,6 +670,8 @@ class SaleHelper extends Controller {
                     foreach ($article['varios_precios'] as $otro_precio) {
 
                         $otro_precio['id'] = $article['id'];
+                        $otro_precio['name'] = $article['name'] ?? null;
+                        $otro_precio['name_vender_personalizado'] = $article['name_vender_personalizado'] ?? null;
 
                         if ($otro_precio['amount'] == '') {
                             $otro_precio['amount'] = 1;
@@ -773,13 +775,23 @@ class SaleHelper extends Controller {
             'returned_amount'       => Self::getReturnedAmount($article),
             'delivered_amount'      => $delivered_amount,
             'discount'              => Self::getDiscount($article),
+            /**
+             * Alícuota de IVA al momento de la venta.
+             * Se persiste para que notas de crédito y devoluciones usen el mismo IVA
+             * sin verse afectadas por cambios futuros en el artículo.
+             */
+            'iva_percentage'        => Self::get_iva_percentage_for_pivot($article),
             'checked_amount'        => Self::getCheckedAmount($sale, $article),
             'article_variant_id'    => Self::getArticleVariantId($article),
             'variant_description'    => Self::getVariantDescription($article),
+            /**
+             * Nombre personalizado de la línea; null si no difiere del artículo.
+             */
+            'name'                  => Self::get_custom_name_for_pivot($article),
             'price_type_personalizado_id'    => Self::get_price_type_personalizado($article),
 
             'fecha_agregado'        => $fecha_agregado,
-            
+
             'created_at'            => Carbon::now(),
         ]);
 
@@ -809,6 +821,38 @@ class SaleHelper extends Controller {
                                                     ]);
             }
         }
+    }
+
+    /**
+     * Obtiene la alícuota de IVA del artículo al momento de la venta para persistirla en el pivot.
+     * Usa la misma jerarquía de resolución que get_price_sin_iva para mantener coherencia.
+     *
+     * @param array $article_data Datos del artículo recibidos desde request/flujo interno.
+     * @return float|string|int Porcentaje de IVA; 21 como valor por defecto si no se resuelve.
+     */
+    static function get_iva_percentage_for_pivot($article_data)
+    {
+        /** @var float|string|int $iva_percentage Alícuota por defecto cuando no hay IVA explícito. */
+        $iva_percentage = 21;
+
+        if (isset($article_data['iva']) && isset($article_data['iva']['percentage'])) {
+            $iva_percentage = $article_data['iva']['percentage'];
+        } elseif (isset($article_data['iva_id']) && !is_null($article_data['iva_id'])) {
+            $iva_model = Iva::find($article_data['iva_id']);
+            if (!is_null($iva_model)) {
+                $iva_percentage = $iva_model->percentage;
+            }
+        } elseif (isset($article_data['id'])) {
+            $article_model = Article::find($article_data['id']);
+            if (!is_null($article_model) && !is_null($article_model->iva_id)) {
+                $iva_model = Iva::find($article_model->iva_id);
+                if (!is_null($iva_model)) {
+                    $iva_percentage = $iva_model->percentage;
+                }
+            }
+        }
+
+        return $iva_percentage;
     }
 
     /**
@@ -1028,6 +1072,41 @@ class SaleHelper extends Controller {
             }
         }
         return null;
+    }
+
+    /**
+     * Resuelve el nombre personalizado para persistir en article_sale.
+     * Solo guarda valor si el operador modificó el nombre respecto al artículo.
+     *
+     * @param  array  $article  Datos del ítem enviados desde vender.
+     * @return string|null
+     */
+    static function get_custom_name_for_pivot($article)
+    {
+        if (!isset($article['name_vender_personalizado'])) {
+            return null;
+        }
+
+        $custom_name = trim((string) $article['name_vender_personalizado']);
+        if ($custom_name === '') {
+            return null;
+        }
+
+        $article_base_name = '';
+        if (isset($article['name'])) {
+            $article_base_name = trim((string) $article['name']);
+        } else {
+            $article_model = Article::find($article['id']);
+            if (!is_null($article_model)) {
+                $article_base_name = trim((string) $article_model->name);
+            }
+        }
+
+        if ($custom_name === $article_base_name) {
+            return null;
+        }
+
+        return $custom_name;
     }
 
     static function getReturnedAmount($item) {

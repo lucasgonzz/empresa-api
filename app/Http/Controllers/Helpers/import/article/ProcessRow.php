@@ -601,8 +601,12 @@ class ProcessRow {
 
             $data['fake_id'] = 'fake_' . uniqid(); // ID temporal único
 
-            // $this->log('data[id]: ');
-            // $this->log($data['id']);
+            /*
+             * Detectar si el bar_code o provider_code de este artículo nuevo ya existe
+             * en la BD (en el índice real, no en fakes). Se guarda en el array para que
+             * ActualizarBBDD pueda identificar los IDs al persistir y reportarlos al usuario.
+             */
+            $data['has_repeated_code_in_db'] = $this->bar_code_or_provider_code_already_in_bd($data);
 
             $this->articulosParaCrear[] = $data;
 
@@ -2465,6 +2469,41 @@ class ProcessRow {
         }
 
         return true;
+    }
+
+    /**
+     * Verifica si el bar_code o el provider_code del artículo a crear ya existe en la BD.
+     * Usa el snapshot $this->article_index para evitar queries adicionales.
+     * Solo considera IDs reales (no fakes), ya que los fakes son artículos del mismo chunk.
+     *
+     * @param array $data Datos del artículo a crear.
+     * @return bool True si alguno de los códigos ya existe en un artículo real de la BD.
+     */
+    protected function bar_code_or_provider_code_already_in_bd(array $data): bool
+    {
+        /* Chequear bar_code contra el índice de bar_codes. */
+        if (!empty($data['bar_code'])) {
+            $idx = $this->article_index['bar_codes'][(string)$data['bar_code']] ?? null;
+            if (!is_null($idx) && !str_starts_with((string)$idx, 'fake_')) {
+                return true;
+            }
+        }
+
+        /* Chequear provider_code contra el índice de provider_codes por proveedor. */
+        if (!empty($data['provider_code']) && !empty($data['provider_id'])) {
+            $pc_index = $this->article_index['provider_codes'][(int)$data['provider_id']]
+                [(string)$data['provider_code']] ?? null;
+
+            if (is_array($pc_index)) {
+                foreach ($pc_index as $id) {
+                    if (!str_starts_with((string)$id, 'fake_')) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     function log($text) {

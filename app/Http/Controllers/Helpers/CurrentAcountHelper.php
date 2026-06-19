@@ -296,11 +296,25 @@ class CurrentAcountHelper {
                             $cost = (float)$item['pivot']['cost'];
                         }
 
+                        /**
+                         * Prioriza el IVA persistido en el pivot de la venta original.
+                         * Si no existe (registros históricos), cae en el IVA actual del artículo.
+                         * Esto garantiza que la NC use la misma alícuota de la factura,
+                         * incluso si el artículo fue modificado entre la venta y la devolución.
+                         */
+                        $iva_percentage_nc = null;
+                        if (isset($item['pivot']['iva_percentage']) && !is_null($item['pivot']['iva_percentage'])) {
+                            $iva_percentage_nc = $item['pivot']['iva_percentage'];
+                        } elseif (isset($item['iva']['percentage'])) {
+                            $iva_percentage_nc = $item['iva']['percentage'];
+                        }
+
                         $nota_credito->articles()->attach($item['id'], [
-                                                            'amount'    => $item['unidades_devueltas'],
-                                                            'price'     => $item['price_vender'],
-                                                            'cost'      => $cost,
-                                                            'discount'  => $item['discount'],
+                                                            'amount'          => $item['unidades_devueltas'],
+                                                            'price'           => $item['price_vender'],
+                                                            'cost'            => $cost,
+                                                            'discount'        => $item['discount'],
+                                                            'iva_percentage'  => $iva_percentage_nc,
                                                         ]);
                     }
                 }

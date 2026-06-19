@@ -20,10 +20,10 @@ class ArticlePriceTypeGroupSeeder extends Seeder
                 'user_id'   => config('app.USER_ID'),
                 'articles'  => [
                     [   
-                        'name'  => 'Fanta 1',
+                        'name'  => 'TIMBRE INALAMBRICO REDONDO CANDELA',
                     ],
                     [   
-                        'name'  => 'Coca Cola 2L 1',
+                        'name'  => 'CINTA MULTIPROPOSITO BLANCO 48MM X 9Mts. TACSA DUCTAC',
                     ],
                 ],
             ]
@@ -36,12 +36,16 @@ class ArticlePriceTypeGroupSeeder extends Seeder
             ]);
 
             foreach ($model['articles'] as $article) {
-                $article = Article::where('user_id', $model['user_id'])
-                                    ->where('name', $article['name'])
+                $article = Article::where('name', $article['name'])
                                     ->first();
 
-                $group->articles()->attach($article->id);
+                if ($article) {
+
+                    $group->articles()->attach($article->id);
+                }
+
             }
         }
+
     }
 }

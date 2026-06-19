@@ -56,7 +56,7 @@ class SellerSeeder extends Seeder
 
     function golo_norte() {
 
-
+        return;
         if (config('app.FOR_USER') != 'golo_norte') {
             return;
         }

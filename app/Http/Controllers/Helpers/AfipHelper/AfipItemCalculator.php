@@ -93,16 +93,13 @@ class AfipItemCalculator
         $importe = 0;
         /** @var float $base_imp Base imponible por alícuota filtrada. */
         $base_imp = 0;
-        if (
-            (
-                is_null($this->afip_helper->article->iva)
-                && $iva == 21
-            )
-            || (
-                !is_null($this->afip_helper->article->iva)
-                && $this->afip_helper->article->iva->percentage == $iva
-            )
-        ) {
+
+        /**
+         * Usa la alícuota resuelta (pivot histórico o relación actual) para comparar.
+         * Esto garantiza que si el artículo cambió de IVA después de la venta,
+         * la nota de crédito usa la alícuota original.
+         */
+        if ((string) $this->resolve_article_iva_percentage() == (string) $iva) {
             $importe = $this->monto_iva_del_precio() * $this->get_article_amount();
             $base_imp = $this->get_price_without_iva() * $this->get_article_amount();
 
@@ -119,6 +116,30 @@ class AfipItemCalculator
     }
 
     /**
+     * Resuelve la alícuota de IVA efectiva del ítem actual.
+     * Prioriza el valor persistido en el pivot al momento de la venta (iva_percentage),
+     * de modo que un cambio posterior de IVA en el artículo no afecte cálculos de NC.
+     * Fallback: relación iva del artículo, o 21 si no hay ninguno.
+     *
+     * @return float|int|string Porcentaje de IVA resuelto.
+     */
+    private function resolve_article_iva_percentage()
+    {
+        /** @var object|null $pivot Pivot del artículo en la relación actual (venta o NC). */
+        $pivot = isset($this->afip_helper->article->pivot) ? $this->afip_helper->article->pivot : null;
+
+        if ($pivot && isset($pivot->iva_percentage) && !is_null($pivot->iva_percentage)) {
+            return $pivot->iva_percentage;
+        }
+
+        if (!is_null($this->afip_helper->article->iva)) {
+            return $this->afip_helper->article->iva->percentage;
+        }
+
+        return 21;
+    }
+
+    /**
      * Retorna precio sin IVA del ítem actual.
      *
      * @param bool $with_discount Si es true, parte de precio con descuentos/recargos.
@@ -131,21 +152,14 @@ class AfipItemCalculator
          *  */
         $price = $with_discount ? $this->get_article_price_with_discounts() : $this->get_article_price_raw();
 
-        if (
-            is_null($this->afip_helper->article->iva)
-            || (
-                !is_null($this->afip_helper->article->iva
-                    && $this->afip_helper->article->iva->percentage != 'No Gravado'
-                    && $this->afip_helper->article->iva->percentage != 'Exento'
-                    && $this->afip_helper->article->iva->percentage != 0)
-            )
-        ) {
-            /** @var float|int|string $article_iva Alícuota del ítem actual o valor por defecto. */
-            $article_iva = 21;
-            if (!is_null($this->afip_helper->article->iva)) {
-                $article_iva = $this->afip_helper->article->iva->percentage;
-            }
+        /** @var float|int|string $article_iva Alícuota resuelta (pivot histórico o modelo actual). */
+        $article_iva = $this->resolve_article_iva_percentage();
 
+        if (
+            $article_iva !== 'No Gravado'
+            && $article_iva !== 'Exento'
+            && (float) $article_iva != 0
+        ) {
             return $price / (((float) $article_iva / 100) + 1);
         }
 
@@ -299,29 +313,21 @@ class AfipItemCalculator
 
     /**
      * Retorna el monto de IVA correspondiente al precio del ítem actual.
+     * Usa resolve_article_iva_percentage para respetar el IVA histórico del pivot.
      *
      * @return float|int
      */
     public function monto_iva_del_precio()
     {
-        if (
-            is_null($this->afip_helper->article->iva)
-            || (
-                !is_null($this->afip_helper->article->iva)
-                && (
-                    $this->afip_helper->article->iva->percentage != 'No Gravado'
-                    || $this->afip_helper->article->iva->percentage != 'Exento'
-                    || $this->afip_helper->article->iva->percentage != 0
-                )
-            )
-        ) {
-            /** @var float $iva Alícuota seleccionada para cálculo. */
-            $iva = 21;
-            if (!is_null($this->afip_helper->article->iva)) {
-                $iva = (float) $this->afip_helper->article->iva->percentage;
-            }
+        /** @var float|int|string $iva Alícuota resuelta (pivot histórico o relación actual). */
+        $iva = $this->resolve_article_iva_percentage();
 
-            return $this->get_price_without_iva() * $iva / 100;
+        if (
+            $iva !== 'No Gravado'
+            && $iva !== 'Exento'
+            && (float) $iva != 0
+        ) {
+            return $this->get_price_without_iva() * (float) $iva / 100;
         }
 
         return 0;

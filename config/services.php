@@ -57,6 +57,15 @@ return [
     ],
 
     /*
+     * Kapso (proxy WhatsApp / Meta Cloud API).
+     * verify_ssl=false en WAMP/Windows si no hay CA bundle disponible.
+     */
+    'kapso' => [
+        'verify_ssl' => env('KAPSO_VERIFY_SSL', true),
+        'ca_bundle'  => env('KAPSO_CA_BUNDLE', null),
+    ],
+
+    /*
      * API Anthropic (Claude) — importación Excel asistida por IA.
      * Misma configuración TLS que admin-api (WAMP/Windows suele requerir ANTHROPIC_CAINFO).
      */
@@ -65,6 +74,16 @@ return [
         'model'      => env('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514'),
         'ca_bundle'  => env('ANTHROPIC_CAINFO'),
         'verify_ssl' => filter_var(env('ANTHROPIC_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
+    ],
+
+    /*
+     * API OpenAI — embeddings vectoriales del catálogo de artículos (text-embedding-3-small).
+     * El token se configura en .env como OPENAI_API_KEY.
+     * Reutiliza la configuración TLS de anthropic (verify_ssl / ca_bundle) para
+     * mantener coherencia entre entornos Windows/WAMP y producción Linux.
+     */
+    'openai' => [
+        'api_key' => env('OPENAI_API_KEY', ''),
     ],
 
     /**

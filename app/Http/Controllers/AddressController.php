@@ -38,6 +38,8 @@ class AddressController extends Controller
     public function update(Request $request, $id) {
         $model = Address::find($id);
         $model->street                = $request->street;
+        $model->phone                 = $request->phone;
+        $model->email                 = $request->email;
         $model->street_number         = $request->street_number;
         $model->city                  = $request->city;
         $model->province              = $request->province;
