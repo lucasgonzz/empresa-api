@@ -443,6 +443,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Enviar mail a clientes',
                 'slug' => 'enviar_mail_a_clientes',
             ],
+            [
+                'name' => 'WhatsApp con IA',
+                'slug' => 'whatsapp_ia',
+            ],
 
         ];
         foreach ($extencions as $extencion) {

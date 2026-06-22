@@ -44,6 +44,16 @@ class Kernel extends ConsoleKernel
                 ->withoutOverlapping(15);
         }
 
+        // Genera embeddings vectoriales de artículos nuevos o modificados,
+        // solo si el usuario tiene la extensión whatsapp_ia activa.
+        // withoutOverlapping(25) previene acumulación si un ciclo tarda más de lo esperado
+        // (primer índice completo de catálogos grandes) con margen antes del próximo ciclo de 30 min.
+        if ($company_owner && UserHelper::hasExtencion('whatsapp_ia', $company_owner)) {
+            $schedule->command('articles:generate-embeddings')
+                ->everyThirtyMinutes()
+                ->withoutOverlapping(25);
+        }
+
         // Reintenta cada 5 minutos los mensajes de soporte no sincronizados a admin-api.
         $schedule->command('support:retry-pending-syncs')->everyFiveMinutes();
 

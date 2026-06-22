@@ -9,6 +9,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -84,6 +85,12 @@ class GenerateArticleEmbeddingJob implements ShouldQueue
         try {
             // Generar y persistir el embedding via el servicio.
             $service->update_article_embedding($article);
+
+            // Registrar cuándo se generó el embedding para que el scheduler detecte
+            // si el artículo se modifica después de esta fecha (updated_at > embedding_generated_at).
+            DB::table('articles')
+                ->where('id', $article->id)
+                ->update(['embedding_generated_at' => now()]);
 
             Log::channel('daily')->info('GenerateArticleEmbeddingJob: embedding generado correctamente.', [
                 'article_id'   => $this->article_id,

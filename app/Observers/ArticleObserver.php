@@ -31,8 +31,9 @@ class ArticleObserver
     ];
 
     /**
-     * Despacha el job de generación de embedding cuando se crea un artículo nuevo.
-     * Siempre se genera porque el artículo aún no tiene embedding.
+     * Creación de artículo: los embeddings ya no se generan desde el observer.
+     * El scheduler (articles:generate-embeddings cada 30 min) los procesa en lote.
+     * Ver GenerateArticleEmbeddings y Kernel.php.
      *
      * @param Article $article Artículo recién creado.
      *
@@ -40,16 +41,14 @@ class ArticleObserver
      */
     public function created(Article $article): void
     {
-        GenerateArticleEmbeddingJob::dispatch($article->id);
+        // Los embeddings se generan por scheduler (articles:generate-embeddings).
+        // Ver GenerateArticleEmbeddings y Kernel.php.
     }
 
     /**
-     * Despacha el job de regeneración de embedding cuando se actualiza un artículo,
-     * pero solo si cambió al menos uno de los campos que afectan la representación
-     * semántica del artículo (nombre, código, categoría, marca o estado).
-     *
-     * Verificar wasChanged() antes de despachar evita jobs innecesarios cuando
-     * se actualizan campos como stock, precio o imágenes que no impactan la búsqueda.
+     * Actualización de artículo: los embeddings ya no se regeneran desde el observer.
+     * El scheduler detecta artículos modificados comparando updated_at con embedding_generated_at.
+     * Ver GenerateArticleEmbeddings y Kernel.php.
      *
      * @param Article $article Artículo recién actualizado.
      *
@@ -57,9 +56,7 @@ class ArticleObserver
      */
     public function updated(Article $article): void
     {
-        // Solo despachar si cambió algún campo que modifica la semántica del artículo.
-        if ($article->wasChanged(self::EMBEDDING_RELEVANT_FIELDS)) {
-            GenerateArticleEmbeddingJob::dispatch($article->id);
-        }
+        // Los embeddings se generan por scheduler (articles:generate-embeddings).
+        // Ver GenerateArticleEmbeddings y Kernel.php.
     }
 }
