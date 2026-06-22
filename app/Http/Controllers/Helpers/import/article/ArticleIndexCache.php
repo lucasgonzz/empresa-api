@@ -537,9 +537,29 @@ class ArticleIndexCache
 
                 // Si se permiten codigos repetidos, se retorna un array
                 if ($permitir_provider_code_repetido) {
-                    Self::log('Retornando array de articles porque se permiten provider_codes repetidos');
-                    // Repetidos + sync: mezcla BD + artículos fake pendientes (ids fake_* no existen en articles)
-                    return self::collection_from_index_article_ids($article_ids, $relations, $user_id);
+
+                    /*
+                     * Separar IDs reales de BD (enteros) de IDs fake (pendientes de INSERT en este chunk).
+                     * Los fakes existen solo en RAM del proceso actual y no tienen fila real en articles todavía.
+                     *
+                     * Si TODOS los IDs son fakes → estamos en primera importación sin artículos en BD.
+                     * Devolver null para que ProcessRow cree un artículo nuevo por cada fila del Excel.
+                     *
+                     * Si hay al menos un ID real → estamos en reimportación.
+                     * Devolver la colección para que ProcessRow actualice todos los artículos existentes.
+                     */
+                    $real_ids = array_values(array_filter($article_ids, function ($id) {
+                        return !str_starts_with((string) $id, 'fake_');
+                    }));
+
+                    if (empty($real_ids)) {
+                        Self::log('Todos los IDs son fakes (primera importación) - retornando null para crear artículo nuevo');
+                        return null;
+                    }
+
+                    Self::log('Hay IDs reales en BD - retornando colección para actualizar');
+                    return self::collection_from_index_article_ids($real_ids, $relations, $user_id);
+
                 } else {
 
                     Self::log('Retornando un unico article porque no se permtien provider_codes repetidos');
