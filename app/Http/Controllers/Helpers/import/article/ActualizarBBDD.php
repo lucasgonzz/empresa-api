@@ -146,6 +146,8 @@ class ActualizarBBDD {
                     'variants_data',
                     'id',
                     'fake_id',
+                    /* Flag en memoria de ProcessRow; no es columna de articles. */
+                    'has_repeated_code_in_db',
                 ])->merge([
                     'created_at' => $this->now,
                     'updated_at' => $this->now,
