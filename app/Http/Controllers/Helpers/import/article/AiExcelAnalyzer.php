@@ -885,13 +885,14 @@ Decisión 1 - clave_identidad: qué campo usar para identificar un artículo com
 IMPORTANTE: solo podés recomendar una clave si esa columna existe en el Excel (ver "Columnas disponibles" arriba).
 
 Decisión 2 - politica_colision: qué hacer cuando una fila del Excel coincide con artículos ya existentes en el sistema.
-- "actualizar_todos": el sistema encuentra TODOS los artículos con ese código y los actualiza. Es la opción correcta cuando hay provider_codes repetidos en el Excel (provider_codes_duplicados_intra_archivo > 0), tanto en primera importación como en reimportación. En primera importación con BD vacía, crea un artículo por cada fila aunque compartan el código. En reimportación, actualiza todos los artículos que coinciden.
-- "actualizar_uno": actualiza solo el primer artículo coincidente. Usar cuando no hay códigos repetidos en el Excel.
-- "crear_nuevo": NUNCA recomiendes esta opción. Está reservada para casos muy especiales manuales.
+- "actualizar_todos": el sistema encuentra TODOS los artículos con ese código y los actualiza o crea. SOLO válido cuando clave_identidad = "provider_code" y hay provider_codes repetidos en el Excel.
+- "actualizar_uno": actualiza o crea un único artículo por fila. Es la opción correcta para bar_code y name (que deben ser únicos), y también para provider_code cuando no hay repetidos.
+- "crear_nuevo": NUNCA recomiendes esta opción. Está reservada para casos manuales.
 
-REGLA CRÍTICA para politica_colision:
-- Si provider_codes_duplicados_intra_archivo > 0: recomendá SIEMPRE "actualizar_todos".
-- Si provider_codes_duplicados_intra_archivo = 0: recomendá "actualizar_uno".
+REGLAS CRÍTICAS para politica_colision (aplicar en orden):
+1. Si clave_identidad es "bar_code" o "name": recomendá SIEMPRE "actualizar_uno". No puede haber dos artículos con el mismo código de barras ni con el mismo nombre. Ignorar los conteos de repetidos.
+2. Si clave_identidad es "provider_code" y provider_codes_duplicados_intra_archivo > 0: recomendá "actualizar_todos". El sistema creará un artículo por cada fila en primera importación, y actualizará todos los coincidentes en reimportaciones.
+3. Si clave_identidad es "provider_code" y provider_codes_duplicados_intra_archivo = 0: recomendá "actualizar_uno".
 
 Para el campo "explicacion":
 - Describí qué va a pasar en términos concretos y simples.
@@ -973,12 +974,17 @@ PROMPT;
 
             /*
              * Fallback heurístico para politica_colision:
-             * - Si hay provider_codes repetidos en el Excel: actualizar_todos (funciona tanto en
-             *   primera importación como en reimportación con códigos repetidos).
-             * - Si no hay repetidos: actualizar_uno.
+             * - bar_code y name son siempre únicos: actualizar_uno.
+             * - provider_code con repetidos en el Excel: actualizar_todos.
+             * - provider_code sin repetidos: actualizar_uno.
              * Nunca se recomienda crear_nuevo en el fallback.
              */
-            if ($stats['provider_codes_duplicados_intra_archivo'] > 0) {
+            if ($clave_fallback === 'bar_code' || $clave_fallback === 'name') {
+                $politica_fallback = 'actualizar_uno';
+            } elseif (
+                $clave_fallback === 'provider_code'
+                && $stats['provider_codes_duplicados_intra_archivo'] > 0
+            ) {
                 $politica_fallback = 'actualizar_todos';
             } else {
                 $politica_fallback = 'actualizar_uno';
