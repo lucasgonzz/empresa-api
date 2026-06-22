@@ -98,7 +98,7 @@ class UserSeeder extends Seeder
             // $models[0]['doc_number'] = '34702455';
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -121,7 +121,7 @@ class UserSeeder extends Seeder
             
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -146,7 +146,7 @@ class UserSeeder extends Seeder
             
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -174,7 +174,7 @@ class UserSeeder extends Seeder
             
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -202,7 +202,7 @@ class UserSeeder extends Seeder
             
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -233,7 +233,7 @@ class UserSeeder extends Seeder
             
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -264,7 +264,7 @@ class UserSeeder extends Seeder
             
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -289,7 +289,7 @@ class UserSeeder extends Seeder
             $models[0]['iva_condition_id'] = 1;
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -313,7 +313,7 @@ class UserSeeder extends Seeder
             $models[0]['iva_condition_id'] = 2;
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -334,7 +334,7 @@ class UserSeeder extends Seeder
             $models[0]['iva_included'] = 0;
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'comerciocity_interno',
                 'budgets',
@@ -350,7 +350,7 @@ class UserSeeder extends Seeder
             $models[0]['name'] = 'Colman';
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'budgets',
                 'production',
@@ -377,7 +377,7 @@ class UserSeeder extends Seeder
             $models[0]['ask_amount_in_vender'] = 0;
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'bar_code_scanner',
                 'comerciocity_interno',
@@ -399,7 +399,7 @@ class UserSeeder extends Seeder
             $models[0]['ask_amount_in_vender'] = 0;
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'bar_code_scanner',
                 'forzar_total',
@@ -419,7 +419,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'budgets',
                 'online',
@@ -439,7 +439,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'ask_save_current_acount',
                 'budgets',
@@ -466,7 +466,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'budgets',
                 'bar_code_scanner',
@@ -491,7 +491,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'budgets',
                 'bar_code_scanner',
@@ -515,7 +515,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'budgets',
                 'bar_code_scanner',
@@ -565,7 +565,7 @@ class UserSeeder extends Seeder
             ];
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'ask_save_current_acount',
                 'article.costo_real',
@@ -600,7 +600,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'ask_save_current_acount',
                 'budgets',
@@ -650,7 +650,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'budgets',
                 'bar_code_scanner',
@@ -676,7 +676,7 @@ class UserSeeder extends Seeder
             $models[0]['siempre_omitir_en_cuenta_corriente'] = 0;
 
             $models[0]['extencions'] = [
-                'support_chat',
+                // 'support_chat',
 
                 'budgets',
                 'bar_code_scanner',
