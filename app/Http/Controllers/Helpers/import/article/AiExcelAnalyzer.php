@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 
 namespace App\Http\Controllers\Helpers\import\article;
 
@@ -185,10 +185,60 @@ class AiExcelAnalyzer
     }
 
     /**
+     * Recorre la hoja de un reader ya abierto y retorna el número de fila (1-based)
+     * de la primera fila que tenga al menos una celda con contenido no vacío.
+     *
+     * Retorna 1 si todas las filas están vacías o el archivo no tiene filas.
+     *
+     * @param  string $excel_path  Ruta al archivo Excel
+     * @return int                 Número de fila (1-based) de la primera fila no vacía
+     */
+    protected function find_first_non_empty_row(string $excel_path): int
+    {
+        $reader = ReaderEntityFactory::createXLSXReader();
+        $reader->setShouldPreserveEmptyRows(true);
+        $reader->open($excel_path);
+
+        /* Número de fila Excel (1-based) donde empieza el contenido real. */
+        $first_non_empty_row = 1;
+        $row_number = 0;
+
+        foreach ($reader->getSheetIterator() as $sheet) {
+            foreach ($sheet->getRowIterator() as $row) {
+                $row_number++;
+
+                foreach ($row->getCells() as $cell) {
+                    $value = $cell->getValue();
+
+                    if ($value instanceof \DateTime) {
+                        $value = $value->format('Y-m-d');
+                    }
+
+                    $str_value = trim((string)($value ?? ''));
+
+                    if ($str_value !== '') {
+                        $first_non_empty_row = $row_number;
+                        $reader->close();
+                        return $first_non_empty_row;
+                    }
+                }
+            }
+
+            /* Solo primera hoja. */
+            break;
+        }
+
+        $reader->close();
+
+        /* Si todo está vacío, retornar 1 como fallback (mismo comportamiento histórico). */
+        return 1;
+    }
+
+    /**
      * Lee las primeras N filas del Excel y retorna un array con headers y muestra.
      *
-     * La primera fila se trata siempre como cabecera.
-     * Las siguientes filas son datos de muestra.
+     * Detecta la primera fila no vacía del archivo (soporta filas vacías al inicio)
+     * y la trata como cabecera; las siguientes filas son datos de muestra.
      *
      * @param  string $excel_path  Ruta al archivo Excel
      * @return array               ['headers' => [...], 'rows' => [[...], ...]]
@@ -201,6 +251,12 @@ class AiExcelAnalyzer
         $rows = [];
 
         /*
+         * Detectar en qué fila empieza el contenido real del Excel
+         * (puede haber filas vacías al inicio del archivo).
+         */
+        $header_row_number = $this->find_first_non_empty_row($excel_path);
+
+        /*
          * Usamos el lector XLSX de OpenSpout, el mismo que InitExcelImport,
          * para garantizar compatibilidad con los formatos ya aceptados.
          */
@@ -208,12 +264,17 @@ class AiExcelAnalyzer
         $reader->setShouldPreserveEmptyRows(true);
         $reader->open($excel_path);
 
-        /* Contador de fila leída en la hoja; la fila 1 es la cabecera. */
         $row_number = 0;
+        $header_found = false;
 
         foreach ($reader->getSheetIterator() as $sheet) {
             foreach ($sheet->getRowIterator() as $row) {
                 $row_number++;
+
+                /* Saltear filas vacías anteriores a la cabecera detectada. */
+                if ($row_number < $header_row_number) {
+                    continue;
+                }
 
                 /* Extraemos los valores celdas como strings simples. */
                 $cells = [];
@@ -227,15 +288,16 @@ class AiExcelAnalyzer
                     $cells[] = (string)($value ?? '');
                 }
 
-                if ($row_number === 1) {
-                    /* La primera fila contiene los encabezados de columna. */
+                if (!$header_found) {
+                    /* Primera fila no vacía: encabezados de columna. */
                     $headers = $cells;
+                    $header_found = true;
                 } else {
                     $rows[] = $cells;
                 }
 
-                /* Dejamos de leer una vez que tenemos suficientes filas de muestra. */
-                if ($row_number > self::SAMPLE_ROWS) {
+                /* Leer cabecera + SAMPLE_ROWS filas de datos. */
+                if ($row_number >= $header_row_number + self::SAMPLE_ROWS) {
                     break;
                 }
             }
@@ -747,17 +809,22 @@ PROMPT;
     }
 
     /**
-     * Cuenta el total de filas de datos del Excel (excluye la primera fila de cabecera).
+     * Cuenta el total de filas de datos del Excel (excluye la fila de cabecera detectada).
      *
-     * Realiza una pasada completa sobre la primera hoja para obtener el conteo real;
-     * no carga los valores en memoria, solo itera los objetos de fila de OpenSpout.
+     * Detecta la primera fila no vacía como cabecera y cuenta solo las filas posteriores.
+     * Realiza una pasada completa sobre la primera hoja para obtener el conteo real.
      *
      * @param  string $excel_path  Ruta absoluta al archivo Excel
      * @return int                 Cantidad de filas de datos (0 si el archivo está vacío o solo tiene cabecera)
      */
     protected function count_data_rows(string $excel_path): int
     {
-        /* Contador de filas de datos (sin contar la primera fila de cabecera). */
+        /*
+         * Detectar dónde empieza el contenido real (filas vacías al inicio del Excel).
+         */
+        $header_row_number = $this->find_first_non_empty_row($excel_path);
+
+        /* Contador de filas de datos (sin contar la fila de cabecera). */
         $data_row_count = 0;
 
         /*
@@ -768,14 +835,14 @@ PROMPT;
         $reader->setShouldPreserveEmptyRows(false);
         $reader->open($excel_path);
 
-        foreach ($reader->getSheetIterator() as $sheet) {
-            /* Bandera para saltar la primera fila (cabecera). */
-            $first_row_skipped = false;
+        $row_number = 0;
 
+        foreach ($reader->getSheetIterator() as $sheet) {
             foreach ($sheet->getRowIterator() as $row) {
-                if (! $first_row_skipped) {
-                    /* Saltamos la fila de encabezados; no cuenta como dato. */
-                    $first_row_skipped = true;
+                $row_number++;
+
+                /* Saltear filas vacías iniciales y la fila de cabecera. */
+                if ($row_number <= $header_row_number) {
                     continue;
                 }
 
@@ -863,7 +930,7 @@ Sos un asistente que ayuda a configurar una importación de artículos desde Exc
 Análisis del archivo:
 - Total de filas de datos: {$stats['total_filas_datos']}
 - Bar_codes que aparecen repetidos dentro del Excel: {$stats['bar_codes_duplicados_intra_archivo']}
-- Provider_codes que aparecen repetidos dentro del Excel: {$stats['provider_codes_duplicados_intra_archivo']}
+- Cantidad de códigos de proveedor distintos que aparecen MÁS DE UNA VEZ dentro del Excel (0 = ninguno repetido, >0 = hay al menos un código que aparece en múltiples filas): {$stats['provider_codes_duplicados_intra_archivo']}
 - Provider_codes del Excel que ya existen en BD para el MISMO proveedor: {$stats['provider_codes_existentes_mismo_proveedor']}
 - Provider_codes del Excel que ya existen en BD para OTROS proveedores: {$stats['provider_codes_existentes_otros_proveedores']}
 
@@ -939,6 +1006,19 @@ PROMPT;
                 throw new \RuntimeException(
                     "Valores fuera de rango: clave_identidad={$clave_identidad}, politica_colision={$politica_colision}"
                 );
+            }
+
+            /*
+             * Override determinístico de politica_colision.
+             * Claude puede malinterpretar el valor numérico de provider_codes_duplicados_intra_archivo.
+             * La regla es simple y no requiere juicio subjetivo: si hay códigos repetidos en el Excel
+             * y la clave es provider_code, la política debe ser actualizar_todos sin excepción.
+             * Para bar_code y name nunca puede haber repetidos, así que siempre actualizar_uno.
+             */
+            if ($clave_identidad === 'provider_code' && $stats['provider_codes_duplicados_intra_archivo'] > 0) {
+                $politica_colision = 'actualizar_todos';
+            } elseif ($clave_identidad === 'bar_code' || $clave_identidad === 'name') {
+                $politica_colision = 'actualizar_uno';
             }
 
             Log::info('AiExcelAnalyzer: recomendación de configuración recibida', [
