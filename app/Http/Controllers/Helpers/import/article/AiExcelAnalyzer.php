@@ -172,10 +172,13 @@ class AiExcelAnalyzer
 
         /*
          * Paso 9: Pedir recomendación de configuración a Claude basada en los conteos.
+         * Pasamos también el mapeo de columnas para que Claude sepa qué columnas existen
+         * y no recomiende claves de identidad que no están mapeadas en el Excel.
          * Si la llamada falla, se aplica un fallback heurístico y la respuesta sigue siendo HTTP 200.
          */
         $parsed['recomendacion_configuracion'] = $this->ask_claude_for_recomendation(
-            $parsed['duplicate_stats']
+            $parsed['duplicate_stats'],
+            $parsed['column_mapping']
         );
 
         return $parsed;
@@ -810,14 +813,16 @@ PROMPT;
     /**
      * Pide a Claude una recomendación de configuración basada en las estadísticas de duplicados.
      *
-     * Arma un prompt con los conteos del array $stats, llama a Claude y parsea el JSON devuelto.
+     * Arma un prompt con los conteos del array $stats y las columnas disponibles del Excel,
+     * llama a Claude y parsea el JSON devuelto.
      * Si la llamada falla, el parseo lanza error o el JSON no es válido, aplica un fallback
-     * heurístico para que el flujo no se interrumpa.
+     * heurístico respetando las columnas disponibles.
      *
-     * @param  array $stats  Resultado de ExcelDuplicateStats::analyze()
-     * @return array         ['clave_identidad' => string, 'politica_colision' => string, 'explicacion' => string]
+     * @param  array $stats          Resultado de ExcelDuplicateStats::analyze()
+     * @param  array $column_mapping Mapeo enriquecido de columnas (para derivar columnas disponibles)
+     * @return array                 ['clave_identidad' => string, 'politica_colision' => string, 'explicacion' => string]
      */
-    protected function ask_claude_for_recomendation(array $stats): array
+    protected function ask_claude_for_recomendation(array $stats, array $column_mapping = []): array
     {
         /*
          * Valores aceptados para cada campo de la recomendación.
@@ -827,8 +832,30 @@ PROMPT;
         $valid_politicas = ['actualizar_todos', 'actualizar_uno', 'crear_nuevo'];
 
         /*
-         * Arma el prompt con los conteos del preanálisis.
-         * Las llaves de interpolación reemplazan los valores reales para contextualizar a Claude.
+         * Derivamos qué columnas clave están disponibles en este Excel.
+         * Se hace antes del try/catch para que el fallback también pueda usarlas.
+         * Solo se marca true si la columna está efectivamente mapeada en el Excel.
+         */
+        $tiene_bar_code      = false;
+        $tiene_provider_code = false;
+        $tiene_nombre        = false;
+
+        foreach ($column_mapping as $col) {
+            $prop = $col['system_property'] ?? null;
+            if ($prop === 'codigo_de_barras')    $tiene_bar_code      = true;
+            if ($prop === 'codigo_de_proveedor') $tiene_provider_code = true;
+            if ($prop === 'nombre')              $tiene_nombre        = true;
+        }
+
+        /* Textos "Sí" / "No" para el prompt. */
+        $bar_code_disponible      = $tiene_bar_code      ? 'Sí' : 'No';
+        $provider_code_disponible = $tiene_provider_code ? 'Sí' : 'No';
+        $nombre_disponible        = $tiene_nombre        ? 'Sí' : 'No';
+
+        /*
+         * Arma el prompt con los conteos del preanálisis e informa a Claude
+         * qué columnas existen realmente en este Excel para evitar que sugiera
+         * claves que no están disponibles.
          */
         $prompt = <<<PROMPT
 Sos un asistente que ayuda a configurar una importación de artículos desde Excel a un ERP.
@@ -840,10 +867,20 @@ Análisis del archivo:
 - Provider_codes del Excel que ya existen en BD para el MISMO proveedor: {$stats['provider_codes_existentes_mismo_proveedor']}
 - Provider_codes del Excel que ya existen en BD para OTROS proveedores: {$stats['provider_codes_existentes_otros_proveedores']}
 
+Columnas disponibles en este Excel:
+- Código de barras (bar_code): {$bar_code_disponible}
+- Código de proveedor (provider_code): {$provider_code_disponible}
+- Nombre del artículo: {$nombre_disponible}
+
+IMPORTANTE: solo podés recomendar usar una clave de identidad si esa columna existe en el Excel.
+Si bar_code NO existe, no recomiendes bar_code como clave_identidad.
+Si provider_code NO existe, no recomiendes provider_code como clave_identidad.
+Si ninguno de los dos existe, recomendá name.
+
 Decisión 1 - clave_identidad: qué campo usar para identificar un artículo como "el mismo".
-- "bar_code": el código de barras es único y confiable.
-- "provider_code": no hay bar_code o tiene muchos duplicados; usar código de proveedor.
-- "name": último recurso si no hay códigos confiables.
+- "bar_code": el código de barras es único y confiable (solo si está disponible).
+- "provider_code": no hay bar_code o tiene muchos duplicados; usar código de proveedor (solo si está disponible).
+- "name": último recurso si no hay códigos confiables o no están disponibles.
 
 Decisión 2 - politica_colision: qué hacer cuando una fila machea con N artículos (típicamente porque el provider_code está repetido a propósito en BD).
 - "actualizar_todos": actualiza TODOS los artículos coincidentes con los datos de esa fila. Útil para distribuidoras que tienen el mismo provider_code en varios artículos físicos distintos y quieren actualizar el costo de todos con una sola fila del Excel.
@@ -907,12 +944,19 @@ PROMPT;
             ]);
 
             /*
-             * Fallback heurístico: si hay bar_codes duplicados, usamos provider_code como clave.
-             * Si además el provider_code está repetido con esa clave, actualizamos todos.
+             * Fallback heurístico: prioridad bar_code → provider_code → name.
+             * Si la columna no existe en el Excel, se descarta aunque sea la preferida.
+             * Esto evita el caso donde Claude alucina bar_code cuando no hay columna mapeada.
              */
-            $clave_fallback = $stats['bar_codes_duplicados_intra_archivo'] > 0
-                ? 'provider_code'
-                : 'bar_code';
+            if ($tiene_bar_code && $stats['bar_codes_duplicados_intra_archivo'] === 0) {
+                $clave_fallback = 'bar_code';
+            } elseif ($tiene_provider_code) {
+                $clave_fallback = 'provider_code';
+            } elseif ($tiene_bar_code) {
+                $clave_fallback = 'bar_code';
+            } else {
+                $clave_fallback = 'name';
+            }
 
             $politica_fallback = (
                 $stats['provider_codes_duplicados_intra_archivo'] > 0

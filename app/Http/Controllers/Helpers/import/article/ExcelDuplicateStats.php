@@ -61,6 +61,8 @@ class ExcelDuplicateStats
      *                      'provider_codes_existentes_otros_proveedores'=> int,
      *                      'ejemplos_bar_codes_duplicados'              => string[],
      *                      'ejemplos_provider_codes_duplicados'         => string[],
+     *                      'detalle_bar_codes_duplicados'               => [['codigo','veces','filas'],...]
+     *                      'detalle_provider_codes_duplicados'          => [['codigo','veces','filas'],...]
      *                  ]
      */
     public static function analyze(
@@ -79,6 +81,9 @@ class ExcelDuplicateStats
             'provider_codes_existentes_otros_proveedores' => 0,
             'ejemplos_bar_codes_duplicados'               => [],
             'ejemplos_provider_codes_duplicados'          => [],
+            /* Detalle enriquecido: código, cantidad de repeticiones y filas donde aparece. */
+            'detalle_bar_codes_duplicados'                => [],
+            'detalle_provider_codes_duplicados'           => [],
         ];
 
         /* Si no hay ningún índice definido, no tiene sentido leer el archivo. */
@@ -88,12 +93,14 @@ class ExcelDuplicateStats
         }
 
         /*
-         * Acumuladores: clave = valor normalizado de la celda, valor = cantidad de ocurrencias.
-         * Se usan para detectar duplicados dentro del propio archivo (intra-archivo).
+         * Acumuladores enriquecidos: clave = valor normalizado de la celda,
+         * valor = ['count' => N, 'filas' => [fila1, fila2, ...]].
+         * 'filas' guarda el número real de fila del Excel (1-based, incluye cabecera).
+         * Se usan para detectar duplicados intra-archivo y para cruce posterior contra BD.
          */
-        $bar_code_counts    = [];
-        /* provider_code_vals también sirve para el cruce posterior contra la BD. */
-        $provider_code_vals = [];
+        $bar_code_data      = [];
+        /* provider_code_data también sirve para el cruce posterior contra la BD. */
+        $provider_code_data = [];
 
         /* Contador de filas de datos procesadas (sin contar la cabecera). */
         $total_filas = 0;
@@ -120,6 +127,12 @@ class ExcelDuplicateStats
 
                     $total_filas++;
 
+                    /*
+                     * Número de fila real en el Excel (1-based, incluye cabecera).
+                     * La primera fila de datos es la fila 2 (la fila 1 es la cabecera).
+                     */
+                    $excel_row_number = $total_filas + 1;
+
                     /* Extraemos los valores de las celdas como strings simples. */
                     $cells = [];
                     foreach ($row->getCells() as $cell) {
@@ -136,7 +149,14 @@ class ExcelDuplicateStats
                     if (!is_null($bar_code_column_index_0based) && isset($cells[$bar_code_column_index_0based])) {
                         $bar_code_val = $cells[$bar_code_column_index_0based];
                         if ($bar_code_val !== '') {
-                            $bar_code_counts[$bar_code_val] = ($bar_code_counts[$bar_code_val] ?? 0) + 1;
+                            if (!isset($bar_code_data[$bar_code_val])) {
+                                $bar_code_data[$bar_code_val] = ['count' => 0, 'filas' => []];
+                            }
+                            $bar_code_data[$bar_code_val]['count']++;
+                            /* Guardamos máximo 10 filas por código para no sobrecargar el payload. */
+                            if (count($bar_code_data[$bar_code_val]['filas']) < 10) {
+                                $bar_code_data[$bar_code_val]['filas'][] = $excel_row_number;
+                            }
                         }
                     }
 
@@ -144,7 +164,14 @@ class ExcelDuplicateStats
                     if (!is_null($provider_code_column_index_0based) && isset($cells[$provider_code_column_index_0based])) {
                         $provider_code_val = $cells[$provider_code_column_index_0based];
                         if ($provider_code_val !== '') {
-                            $provider_code_vals[$provider_code_val] = ($provider_code_vals[$provider_code_val] ?? 0) + 1;
+                            if (!isset($provider_code_data[$provider_code_val])) {
+                                $provider_code_data[$provider_code_val] = ['count' => 0, 'filas' => []];
+                            }
+                            $provider_code_data[$provider_code_val]['count']++;
+                            /* Guardamos máximo 10 filas por código para no sobrecargar el payload. */
+                            if (count($provider_code_data[$provider_code_val]['filas']) < 10) {
+                                $provider_code_data[$provider_code_val]['filas'][] = $excel_row_number;
+                            }
                         }
                     }
                 }
@@ -165,35 +192,55 @@ class ExcelDuplicateStats
 
         Log::info('ExcelDuplicateStats: Excel leído', [
             'total_filas'              => $total_filas,
-            'bar_codes_distintos'      => count($bar_code_counts),
-            'provider_codes_distintos' => count($provider_code_vals),
+            'bar_codes_distintos'      => count($bar_code_data),
+            'provider_codes_distintos' => count($provider_code_data),
         ]);
 
         /*
          * Contamos cuántos valores distintos de bar_code aparecen más de una vez en el archivo.
          * Guardamos hasta MAX_EXAMPLES para debug o presentación en frontend.
+         * También construimos el detalle enriquecido con filas para la tabla del frontend.
          */
         $bar_codes_duplicados = 0;
         $ejemplos_bar_codes   = [];
-        foreach ($bar_code_counts as $val => $count) {
-            if ($count > 1) {
+        $detalle_bar_codes    = [];
+        foreach ($bar_code_data as $val => $data) {
+            if ($data['count'] > 1) {
                 $bar_codes_duplicados++;
                 if (count($ejemplos_bar_codes) < self::MAX_EXAMPLES) {
                     $ejemplos_bar_codes[] = (string) $val;
+                }
+                /* Detalle enriquecido: máximo MAX_EXAMPLES entradas para no sobrecargar la respuesta. */
+                if (count($detalle_bar_codes) < self::MAX_EXAMPLES) {
+                    $detalle_bar_codes[] = [
+                        'codigo' => (string) $val,
+                        'veces'  => $data['count'],
+                        'filas'  => $data['filas'],
+                    ];
                 }
             }
         }
 
         /*
          * Contamos cuántos valores distintos de provider_code aparecen más de una vez en el archivo.
+         * Mismo criterio que bar_code: ejemplos simples + detalle enriquecido con filas.
          */
         $provider_codes_duplicados_intra = 0;
         $ejemplos_provider_codes         = [];
-        foreach ($provider_code_vals as $val => $count) {
-            if ($count > 1) {
+        $detalle_provider_codes          = [];
+        foreach ($provider_code_data as $val => $data) {
+            if ($data['count'] > 1) {
                 $provider_codes_duplicados_intra++;
                 if (count($ejemplos_provider_codes) < self::MAX_EXAMPLES) {
                     $ejemplos_provider_codes[] = (string) $val;
+                }
+                /* Detalle enriquecido: máximo MAX_EXAMPLES entradas. */
+                if (count($detalle_provider_codes) < self::MAX_EXAMPLES) {
+                    $detalle_provider_codes[] = [
+                        'codigo' => (string) $val,
+                        'veces'  => $data['count'],
+                        'filas'  => $data['filas'],
+                    ];
                 }
             }
         }
@@ -206,9 +253,9 @@ class ExcelDuplicateStats
         $provider_codes_mismo_proveedor   = 0;
         $provider_codes_otros_proveedores = 0;
 
-        if (!is_null($provider_code_column_index_0based) && !empty($provider_code_vals)) {
+        if (!is_null($provider_code_column_index_0based) && !empty($provider_code_data)) {
             /* Lista de provider_codes únicos del Excel. */
-            $all_provider_codes = array_keys($provider_code_vals);
+            $all_provider_codes = array_keys($provider_code_data);
 
             /* Partimos en lotes de DB_CHUNK_SIZE para no reventar la consulta. */
             $db_chunks = array_chunk($all_provider_codes, self::DB_CHUNK_SIZE);
@@ -258,6 +305,9 @@ class ExcelDuplicateStats
             'provider_codes_existentes_otros_proveedores' => $provider_codes_otros_proveedores,
             'ejemplos_bar_codes_duplicados'               => $ejemplos_bar_codes,
             'ejemplos_provider_codes_duplicados'          => $ejemplos_provider_codes,
+            /* Detalle enriquecido: vacío si la columna respectiva no estaba mapeada. */
+            'detalle_bar_codes_duplicados'                => !is_null($bar_code_column_index_0based) ? $detalle_bar_codes : [],
+            'detalle_provider_codes_duplicados'           => !is_null($provider_code_column_index_0based) ? $detalle_provider_codes : [],
         ];
     }
 }
