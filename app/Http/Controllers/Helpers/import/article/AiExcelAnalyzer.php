@@ -878,16 +878,29 @@ Si provider_code NO existe, no recomiendes provider_code como clave_identidad.
 Si ninguno de los dos existe, recomendá name.
 
 Decisión 1 - clave_identidad: qué campo usar para identificar un artículo como "el mismo".
-- "bar_code": el código de barras es único y confiable (solo si está disponible).
-- "provider_code": no hay bar_code o tiene muchos duplicados; usar código de proveedor (solo si está disponible).
-- "name": último recurso si no hay códigos confiables o no están disponibles.
+- "bar_code": usar solo si la columna bar_code está disponible Y no tiene duplicados dentro del Excel (bar_codes_duplicados_intra_archivo = 0). Es la opción más confiable cuando aplica.
+- "provider_code": usar cuando bar_code no está disponible o tiene duplicados. Es la opción más común en listas de proveedor.
+- "name": último recurso, solo si ni bar_code ni provider_code están disponibles.
 
-Decisión 2 - politica_colision: qué hacer cuando una fila machea con N artículos (típicamente porque el provider_code está repetido a propósito en BD).
-- "actualizar_todos": actualiza TODOS los artículos coincidentes con los datos de esa fila. Útil para distribuidoras que tienen el mismo provider_code en varios artículos físicos distintos y quieren actualizar el costo de todos con una sola fila del Excel.
-- "actualizar_uno": actualiza solo el primer artículo coincidente (criterio: más antiguo).
-- "crear_nuevo": ignora el match, crea un artículo nuevo igual.
+IMPORTANTE: solo podés recomendar una clave si esa columna existe en el Excel (ver "Columnas disponibles" arriba).
 
-Recomendá la mejor configuración para este archivo. Explicá por qué en lenguaje claro y conciso (máx 3 oraciones), mencionando cuántos artículos serían afectados con la opción que recomendás.
+Decisión 2 - politica_colision: qué hacer cuando una fila del Excel coincide con artículos ya existentes en el sistema.
+- "actualizar_todos": el sistema encuentra TODOS los artículos con ese código y los actualiza. Es la opción correcta cuando hay provider_codes repetidos en el Excel (provider_codes_duplicados_intra_archivo > 0), tanto en primera importación como en reimportación. En primera importación con BD vacía, crea un artículo por cada fila aunque compartan el código. En reimportación, actualiza todos los artículos que coinciden.
+- "actualizar_uno": actualiza solo el primer artículo coincidente. Usar cuando no hay códigos repetidos en el Excel.
+- "crear_nuevo": NUNCA recomiendes esta opción. Está reservada para casos muy especiales manuales.
+
+REGLA CRÍTICA para politica_colision:
+- Si provider_codes_duplicados_intra_archivo > 0: recomendá SIEMPRE "actualizar_todos".
+- Si provider_codes_duplicados_intra_archivo = 0: recomendá "actualizar_uno".
+
+Para el campo "explicacion":
+- Describí qué va a pasar en términos concretos y simples.
+- Si provider_codes_existentes_mismo_proveedor = 0 explicá que se van a crear los artículos (primera importación).
+- Si provider_codes_existentes_mismo_proveedor > 0 explicá que se van a actualizar artículos existentes.
+- Si provider_codes_existentes_otros_proveedores > 0, agregá una advertencia breve de que hay códigos que también existen en artículos de otros proveedores, y que el sistema NO los va a tocar a menos que el usuario lo habilite manualmente.
+- NUNCA uses términos técnicos internos: nada de "provider_code", "bar_code", "actualizar_todos", "actualizar_uno", "crear_nuevo", "clave_identidad", "politica_colision", "intra_archivo", ni ninguna clave del sistema.
+- Hablá como si le explicaras a un comerciante qué va a pasar con sus artículos.
+- Máximo 3 oraciones claras y directas.
 
 Respondé SOLO con un JSON válido, sin markdown ni texto adicional:
 {
@@ -958,12 +971,18 @@ PROMPT;
                 $clave_fallback = 'name';
             }
 
-            $politica_fallback = (
-                $stats['provider_codes_duplicados_intra_archivo'] > 0
-                && $clave_fallback === 'provider_code'
-            )
-                ? 'actualizar_todos'
-                : 'actualizar_uno';
+            /*
+             * Fallback heurístico para politica_colision:
+             * - Si hay provider_codes repetidos en el Excel: actualizar_todos (funciona tanto en
+             *   primera importación como en reimportación con códigos repetidos).
+             * - Si no hay repetidos: actualizar_uno.
+             * Nunca se recomienda crear_nuevo en el fallback.
+             */
+            if ($stats['provider_codes_duplicados_intra_archivo'] > 0) {
+                $politica_fallback = 'actualizar_todos';
+            } else {
+                $politica_fallback = 'actualizar_uno';
+            }
 
             return [
                 'clave_identidad'  => $clave_fallback,
