@@ -485,6 +485,14 @@ PROMPT;
                 'body'   => $response->body(),
             ]);
 
+            /* Error de sobrecarga (HTTP 529): mensaje amigable para el usuario. */
+            if ($response->status() === 529) {
+                throw new \RuntimeException(
+                    'El servicio de IA está temporalmente sobrecargado. Esperá unos segundos y volvé a intentarlo.'
+                );
+            }
+
+            /* Otros errores: mensaje técnico para debugging (no llega al usuario final en producción). */
             throw new \RuntimeException(
                 'Error al comunicarse con Claude API (HTTP ' . $response->status() . '): ' . $response->body()
             );
