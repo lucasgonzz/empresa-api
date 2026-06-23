@@ -19,7 +19,6 @@ class SaleTypeController extends Controller
 
     public function store(Request $request) {
         $model = SaleType::create([
-            'num'                   => $this->num('SaleType'),
             'name'                  => $request->name,
             'user_id'               => $this->userId(),
         ]);

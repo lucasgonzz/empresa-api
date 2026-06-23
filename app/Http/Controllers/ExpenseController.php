@@ -30,11 +30,20 @@ class ExpenseController extends Controller
     }
 
     public function store(Request $request) {
+        /*
+         * moneda_id=0 llega cuando el formulario no envía moneda (sin extensión ventas_en_dolares).
+         * Se normaliza a pesos (1) para reportes y listados.
+         */
+        $moneda_id = $request->moneda_id;
+        if (is_null($moneda_id) || (int) $moneda_id === 0) {
+            $moneda_id = 1;
+        }
+
         $model = Expense::create([
             'num'                                   => $this->num('expenses'),
             'expense_concept_id'                    => $request->expense_concept_id,
             'amount'                                => $request->amount,
-            'moneda_id'                             => $request->moneda_id,
+            'moneda_id'                             => $moneda_id,
             'importe_iva'                           => $request->importe_iva,
             'observations'                          => $request->observations,
             'created_at'                            => $request->created_at,

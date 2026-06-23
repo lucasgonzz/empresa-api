@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
+use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\article\InitExcelImport;
 use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
 use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
@@ -137,6 +138,67 @@ class AiExcelImportController extends Controller
                 'message' => 'Ocurrió un error inesperado al analizar el archivo: ' . $e->getMessage(),
             ], 500);
         }
+    }
+
+    /**
+     * Recalcula los conteos de provider_codes existentes en BD para un proveedor específico.
+     *
+     * Se llama desde el frontend cuando el usuario cambia el proveedor seleccionado en el paso 2,
+     * para actualizar los chips "ya en BD (mismo proveedor)" y "ya en BD (otro proveedor)"
+     * con el proveedor real en lugar del inferido por Claude.
+     *
+     * Request params:
+     *   - excel_path (string): ruta relativa del archivo ya guardado por /analyze
+     *   - provider_code_column_index (int|null): índice 0-based de la columna provider_code
+     *   - provider_id (int|null): ID del proveedor seleccionado por el usuario
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function refreshProviderStats(Request $request)
+    {
+        /* Ruta relativa del Excel guardado en /analyze; obligatoria para localizar el archivo. */
+        $excel_path = $request->input('excel_path');
+
+        if (empty($excel_path)) {
+            return response()->json(['message' => 'El campo "excel_path" es obligatorio.'], 422);
+        }
+
+        /* Ruta absoluta en storage donde quedó persistido el archivo del análisis. */
+        $excel_full_path = storage_path('app/' . $excel_path);
+
+        if (!file_exists($excel_full_path)) {
+            return response()->json(['message' => 'El archivo Excel indicado no existe o ha expirado.'], 422);
+        }
+
+        /* Índice 0-based de la columna provider_code en el Excel; null si no hay columna mapeada. */
+        $provider_code_column_index = $request->input('provider_code_column_index');
+        $provider_code_column_index = is_numeric($provider_code_column_index)
+            ? (int) $provider_code_column_index
+            : null;
+
+        /* Proveedor elegido por el usuario en el paso 2; null si aún no seleccionó uno. */
+        $provider_id = $request->input('provider_id');
+        $provider_id = is_numeric($provider_id) && (int) $provider_id > 0
+            ? (int) $provider_id
+            : null;
+
+        /*
+         * bar_code_column en null: solo recalcula existentes por provider_code,
+         * sin releer códigos de barras (más liviano para este endpoint).
+         */
+        $stats = ExcelDuplicateStats::analyze(
+            $excel_full_path,
+            null,
+            $provider_code_column_index,
+            $provider_id,
+            $this->userId()
+        );
+
+        return response()->json([
+            'provider_codes_existentes_mismo_proveedor'   => $stats['provider_codes_existentes_mismo_proveedor'],
+            'provider_codes_existentes_otros_proveedores' => $stats['provider_codes_existentes_otros_proveedores'],
+        ], 200);
     }
 
     /**

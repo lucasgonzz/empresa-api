@@ -906,17 +906,18 @@ class PerformanceHelper
 
 
         
-        // $total_vendido_neto = $this->total_vendido - $this->total_devolucion;
-        // Log::info('total_vendido_neto: '.$total_vendido_neto);
-        // Log::info('total_vendido_costos: '.$this->total_vendido_costos);
-        // Log::info('costos_devolucion: '.$this->costos_devolucion);
+        /*
+         * Utilidad neta = vendido neto menos costo de mercadería vendida,
+         * sumando de nuevo el costo de lo devuelto (costos_devolucion).
+         */
+        $this->company_performance->ingresos_netos = $this->total_vendido - $this->total_devolucion - $this->total_vendido_costos + $this->costos_devolucion;
+        $this->company_performance->ingresos_netos_usd = $this->total_vendido_usd - $this->total_devolucion_usd - $this->total_vendido_costos_usd + $this->costos_devolucion_usd;
 
-        $this->company_performance->ingresos_netos =  $this->total_vendido_costos - $this->costos_devolucion;
-        // $this->company_performance->ingresos_netos = $this->total_vendido - $this->total_devolucion - $this->total_vendido_costos - $this->costos_devolucion;
-        $this->company_performance->ingresos_netos_usd = $this->total_vendido_costos_usd - $this->costos_devolucion_usd;
-        
-        $this->company_performance->rentabilidad = $this->total_vendido - $this->total_vendido_costos - $this->total_gastos;
-        $this->company_performance->rentabilidad_usd = $this->total_vendido_usd - $this->total_vendido_costos_usd - $this->total_gastos_usd;
+        /*
+         * Ingresos netos del reporte = utilidad neta menos gastos del período.
+         */
+        $this->company_performance->rentabilidad = $this->company_performance->ingresos_netos - $this->total_gastos;
+        $this->company_performance->rentabilidad_usd = $this->company_performance->ingresos_netos_usd - $this->total_gastos_usd;
 
         $this->company_performance->total_pagado_mostrador = $this->total_pagado_mostrador;
         $this->company_performance->total_pagado_mostrador_usd = $this->total_pagado_mostrador_usd;
@@ -1183,10 +1184,16 @@ class PerformanceHelper
 
     }
 
+    /**
+     * Suma los gastos (Expense) del período para totales, gráficos por concepto y por método de pago.
+     *
+     * @return void
+     */
     function procesar_gastos() {
         $expenses = Expense::where('user_id', $this->user_id)
                             ->whereDate('created_at', '>=', $this->mes_inicio)
                             ->whereDate('created_at', '<=', $this->mes_fin)
+                            ->with('current_acount_payment_methods')
                             ->get();
 
         $this->total_gastos = 0;
@@ -1196,50 +1203,92 @@ class PerformanceHelper
         $this->expense_concepts_usd = $this->get_expense_concepts();
 
         $this->payment_methods_gastos = $this->get_payment_methods();
-        // $this->payment_methods_gastos_usd = $this->get_payment_methods();
-
-        // Log::info('Hay '.count($expenses).' Gastos el mes '.$this->mes_inicio);
 
         foreach ($expenses as $expense) {
 
-            // Log::info('procesando gasto de '.$expense->amount);
-            // Log::info('procesando gasto de '.$expense->expense_concept->name.' de '.$expense->amount);
+            $amount = (float) $expense->amount;
 
-            if (!is_null($expense->expense_concept_id) && $expense->expense_concept_id != 0) {
-                
-                $payment_method_id = $expense->current_acount_payment_method_id;
-                
-                if (is_null($payment_method_id) || $payment_method_id == 0) {
-                    $payment_method_id = 3;
-                }
-
-                if (
-                    is_null($expense->moneda_id)
-                    || $expense->moneda_id == 1
-                ) {
-
-                    $this->total_gastos += $expense->amount;
-                    
-                    $this->expense_concepts[$expense->expense_concept_id]['total'] += $expense->amount;
-
-                    $this->payment_methods_gastos[$payment_method_id]['total'] += $expense->amount;
-                } else {
-
-                    $this->total_gastos_usd += $expense->amount;
-                    
-                    $this->expense_concepts_usd[$expense->expense_concept_id]['total'] += $expense->amount;
-
-                    // $this->payment_methods_gastos_usd[$payment_method_id]['total'] += $expense->amount;
-                }
-                
-
+            if ($amount <= 0) {
+                continue;
             }
 
+            /*
+             * Solo moneda_id=2 es USD explícito.
+             * 0/null/1 se tratan como pesos (0 suele venir del alta sin extensión ventas_en_dolares).
+             */
+            $es_usd = (int) $expense->moneda_id === 2;
+
+            if ($es_usd) {
+                $this->total_gastos_usd += $amount;
+            } else {
+                $this->total_gastos += $amount;
+            }
+
+            if (
+                !is_null($expense->expense_concept_id)
+                && $expense->expense_concept_id != 0
+                && isset($this->expense_concepts[$expense->expense_concept_id])
+            ) {
+                if ($es_usd) {
+                    if (isset($this->expense_concepts_usd[$expense->expense_concept_id])) {
+                        $this->expense_concepts_usd[$expense->expense_concept_id]['total'] += $amount;
+                    }
+                } else {
+                    $this->expense_concepts[$expense->expense_concept_id]['total'] += $amount;
+                }
+            }
+
+            $this->sumar_gasto_en_metodos_de_pago($expense, $amount, !$es_usd);
+
             if (!is_null($expense->importe_iva)) {
-                
                 $this->total_iva_comprado += $expense->importe_iva;
             }
 
+        }
+    }
+
+    /**
+     * Distribuye el monto de un gasto entre métodos de pago (pivot o campo legacy).
+     *
+     * @param \App\Models\Expense $expense
+     * @param float $amount
+     * @param bool $es_pesos
+     * @return void
+     */
+    function sumar_gasto_en_metodos_de_pago($expense, $amount, $es_pesos) {
+
+        if (!$es_pesos) {
+            return;
+        }
+
+        if (count($expense->current_acount_payment_methods) > 0) {
+
+            foreach ($expense->current_acount_payment_methods as $payment_method) {
+
+                $monto_metodo = (float) $payment_method->pivot->amount;
+
+                if ($monto_metodo <= 0) {
+                    continue;
+                }
+
+                $payment_method_id = $payment_method->id;
+
+                if (isset($this->payment_methods_gastos[$payment_method_id])) {
+                    $this->payment_methods_gastos[$payment_method_id]['total'] += $monto_metodo;
+                }
+            }
+
+            return;
+        }
+
+        $payment_method_id = $expense->current_acount_payment_method_id;
+
+        if (is_null($payment_method_id) || $payment_method_id == 0) {
+            $payment_method_id = 3;
+        }
+
+        if (isset($this->payment_methods_gastos[$payment_method_id])) {
+            $this->payment_methods_gastos[$payment_method_id]['total'] += $amount;
         }
     }
 
