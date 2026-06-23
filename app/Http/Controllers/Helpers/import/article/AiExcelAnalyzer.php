@@ -171,21 +171,76 @@ class AiExcelAnalyzer
         );
 
         /*
-         * Paso 9: Pedir recomendación de configuración a Claude basada en los conteos.
-         * Si la llamada falla, se aplica un fallback heurístico y la respuesta sigue siendo HTTP 200.
+         * Nota: la recomendación de configuración (ask_claude_for_recomendation) ya no se genera
+         * aquí porque en este punto el proveedor puede ser solo inferido por Claude y no el
+         * confirmado por el usuario. La recomendación se genera en el endpoint
+         * POST /ai-excel-import/get-recomendacion, una vez que el usuario confirma el proveedor
+         * en el paso 2 del modal.
          */
-        $parsed['recomendacion_configuracion'] = $this->ask_claude_for_recomendation(
-            $parsed['duplicate_stats']
-        );
+
+        /*
+         * Primeras 5 filas de datos del Excel para la preview reactiva del paso 2 en el frontend.
+         */
+        $parsed['preview_rows'] = array_slice($sample_data['rows'], 0, 5);
 
         return $parsed;
     }
 
     /**
+     * Recorre la hoja de un reader ya abierto y retorna el número de fila (1-based)
+     * de la primera fila que tenga al menos una celda con contenido no vacío.
+     *
+     * Retorna 1 si todas las filas están vacías o el archivo no tiene filas.
+     *
+     * @param  string $excel_path  Ruta al archivo Excel
+     * @return int                 Número de fila (1-based) de la primera fila no vacía
+     */
+    protected function find_first_non_empty_row(string $excel_path): int
+    {
+        $reader = ReaderEntityFactory::createXLSXReader();
+        $reader->setShouldPreserveEmptyRows(true);
+        $reader->open($excel_path);
+
+        /* Número de fila Excel (1-based) donde empieza el contenido real. */
+        $first_non_empty_row = 1;
+        $row_number = 0;
+
+        foreach ($reader->getSheetIterator() as $sheet) {
+            foreach ($sheet->getRowIterator() as $row) {
+                $row_number++;
+
+                foreach ($row->getCells() as $cell) {
+                    $value = $cell->getValue();
+
+                    if ($value instanceof \DateTime) {
+                        $value = $value->format('Y-m-d');
+                    }
+
+                    $str_value = trim((string)($value ?? ''));
+
+                    if ($str_value !== '') {
+                        $first_non_empty_row = $row_number;
+                        $reader->close();
+                        return $first_non_empty_row;
+                    }
+                }
+            }
+
+            /* Solo primera hoja. */
+            break;
+        }
+
+        $reader->close();
+
+        /* Si todo está vacío, retornar 1 como fallback (mismo comportamiento histórico). */
+        return 1;
+    }
+
+    /**
      * Lee las primeras N filas del Excel y retorna un array con headers y muestra.
      *
-     * La primera fila se trata siempre como cabecera.
-     * Las siguientes filas son datos de muestra.
+     * Detecta la primera fila no vacía del archivo (soporta filas vacías al inicio)
+     * y la trata como cabecera; las siguientes filas son datos de muestra.
      *
      * @param  string $excel_path  Ruta al archivo Excel
      * @return array               ['headers' => [...], 'rows' => [[...], ...]]
@@ -198,6 +253,12 @@ class AiExcelAnalyzer
         $rows = [];
 
         /*
+         * Detectar en qué fila empieza el contenido real del Excel
+         * (puede haber filas vacías al inicio del archivo).
+         */
+        $header_row_number = $this->find_first_non_empty_row($excel_path);
+
+        /*
          * Usamos el lector XLSX de OpenSpout, el mismo que InitExcelImport,
          * para garantizar compatibilidad con los formatos ya aceptados.
          */
@@ -205,12 +266,17 @@ class AiExcelAnalyzer
         $reader->setShouldPreserveEmptyRows(true);
         $reader->open($excel_path);
 
-        /* Contador de fila leída en la hoja; la fila 1 es la cabecera. */
         $row_number = 0;
+        $header_found = false;
 
         foreach ($reader->getSheetIterator() as $sheet) {
             foreach ($sheet->getRowIterator() as $row) {
                 $row_number++;
+
+                /* Saltear filas vacías anteriores a la cabecera detectada. */
+                if ($row_number < $header_row_number) {
+                    continue;
+                }
 
                 /* Extraemos los valores celdas como strings simples. */
                 $cells = [];
@@ -224,15 +290,16 @@ class AiExcelAnalyzer
                     $cells[] = (string)($value ?? '');
                 }
 
-                if ($row_number === 1) {
-                    /* La primera fila contiene los encabezados de columna. */
+                if (!$header_found) {
+                    /* Primera fila no vacía: encabezados de columna. */
                     $headers = $cells;
+                    $header_found = true;
                 } else {
                     $rows[] = $cells;
                 }
 
-                /* Dejamos de leer una vez que tenemos suficientes filas de muestra. */
-                if ($row_number > self::SAMPLE_ROWS) {
+                /* Leer cabecera + SAMPLE_ROWS filas de datos. */
+                if ($row_number >= $header_row_number + self::SAMPLE_ROWS) {
                     break;
                 }
             }
@@ -420,6 +487,23 @@ PROMPT;
                 'body'   => $response->body(),
             ]);
 
+            /*
+             * Detectar el tipo de error desde el JSON de respuesta de Anthropic.
+             * Los errores transitorios tienen type: overloaded_error, api_error, etc.
+             * Mostramos un mensaje amigable en lugar del JSON crudo.
+             */
+            $error_body = $response->json();
+            $error_type = $error_body['error']['type'] ?? null;
+
+            $transient_error_types = ['overloaded_error', 'api_error'];
+
+            if (in_array($error_type, $transient_error_types) || $response->status() === 529) {
+                throw new \RuntimeException(
+                    'El servicio de IA no está disponible en este momento. Esperá unos segundos y volvé a intentarlo.'
+                );
+            }
+
+            /* Otros errores (auth, rate limit, etc.): mensaje técnico para debugging. */
             throw new \RuntimeException(
                 'Error al comunicarse con Claude API (HTTP ' . $response->status() . '): ' . $response->body()
             );
@@ -744,17 +828,22 @@ PROMPT;
     }
 
     /**
-     * Cuenta el total de filas de datos del Excel (excluye la primera fila de cabecera).
+     * Cuenta el total de filas de datos del Excel (excluye la fila de cabecera detectada).
      *
-     * Realiza una pasada completa sobre la primera hoja para obtener el conteo real;
-     * no carga los valores en memoria, solo itera los objetos de fila de OpenSpout.
+     * Detecta la primera fila no vacía como cabecera y cuenta solo las filas posteriores.
+     * Realiza una pasada completa sobre la primera hoja para obtener el conteo real.
      *
      * @param  string $excel_path  Ruta absoluta al archivo Excel
      * @return int                 Cantidad de filas de datos (0 si el archivo está vacío o solo tiene cabecera)
      */
     protected function count_data_rows(string $excel_path): int
     {
-        /* Contador de filas de datos (sin contar la primera fila de cabecera). */
+        /*
+         * Detectar dónde empieza el contenido real (filas vacías al inicio del Excel).
+         */
+        $header_row_number = $this->find_first_non_empty_row($excel_path);
+
+        /* Contador de filas de datos (sin contar la fila de cabecera). */
         $data_row_count = 0;
 
         /*
@@ -765,14 +854,14 @@ PROMPT;
         $reader->setShouldPreserveEmptyRows(false);
         $reader->open($excel_path);
 
-        foreach ($reader->getSheetIterator() as $sheet) {
-            /* Bandera para saltar la primera fila (cabecera). */
-            $first_row_skipped = false;
+        $row_number = 0;
 
+        foreach ($reader->getSheetIterator() as $sheet) {
             foreach ($sheet->getRowIterator() as $row) {
-                if (! $first_row_skipped) {
-                    /* Saltamos la fila de encabezados; no cuenta como dato. */
-                    $first_row_skipped = true;
+                $row_number++;
+
+                /* Saltear filas vacías iniciales y la fila de cabecera. */
+                if ($row_number <= $header_row_number) {
                     continue;
                 }
 
@@ -810,14 +899,16 @@ PROMPT;
     /**
      * Pide a Claude una recomendación de configuración basada en las estadísticas de duplicados.
      *
-     * Arma un prompt con los conteos del array $stats, llama a Claude y parsea el JSON devuelto.
+     * Arma un prompt con los conteos del array $stats y las columnas disponibles del Excel,
+     * llama a Claude y parsea el JSON devuelto.
      * Si la llamada falla, el parseo lanza error o el JSON no es válido, aplica un fallback
-     * heurístico para que el flujo no se interrumpa.
+     * heurístico respetando las columnas disponibles.
      *
-     * @param  array $stats  Resultado de ExcelDuplicateStats::analyze()
-     * @return array         ['clave_identidad' => string, 'politica_colision' => string, 'explicacion' => string]
+     * @param  array $stats          Resultado de ExcelDuplicateStats::analyze()
+     * @param  array $column_mapping Mapeo enriquecido de columnas (para derivar columnas disponibles)
+     * @return array                 ['clave_identidad' => string, 'politica_colision' => string, 'explicacion' => string]
      */
-    protected function ask_claude_for_recomendation(array $stats): array
+    public function ask_claude_for_recomendation(array $stats, array $column_mapping = []): array
     {
         /*
          * Valores aceptados para cada campo de la recomendación.
@@ -827,8 +918,30 @@ PROMPT;
         $valid_politicas = ['actualizar_todos', 'actualizar_uno', 'crear_nuevo'];
 
         /*
-         * Arma el prompt con los conteos del preanálisis.
-         * Las llaves de interpolación reemplazan los valores reales para contextualizar a Claude.
+         * Derivamos qué columnas clave están disponibles en este Excel.
+         * Se hace antes del try/catch para que el fallback también pueda usarlas.
+         * Solo se marca true si la columna está efectivamente mapeada en el Excel.
+         */
+        $tiene_bar_code      = false;
+        $tiene_provider_code = false;
+        $tiene_nombre        = false;
+
+        foreach ($column_mapping as $col) {
+            $prop = $col['system_property'] ?? null;
+            if ($prop === 'codigo_de_barras')    $tiene_bar_code      = true;
+            if ($prop === 'codigo_de_proveedor') $tiene_provider_code = true;
+            if ($prop === 'nombre')              $tiene_nombre        = true;
+        }
+
+        /* Textos "Sí" / "No" para el prompt. */
+        $bar_code_disponible      = $tiene_bar_code      ? 'Sí' : 'No';
+        $provider_code_disponible = $tiene_provider_code ? 'Sí' : 'No';
+        $nombre_disponible        = $tiene_nombre        ? 'Sí' : 'No';
+
+        /*
+         * Arma el prompt con los conteos del preanálisis e informa a Claude
+         * qué columnas existen realmente en este Excel para evitar que sugiera
+         * claves que no están disponibles.
          */
         $prompt = <<<PROMPT
 Sos un asistente que ayuda a configurar una importación de artículos desde Excel a un ERP.
@@ -836,21 +949,45 @@ Sos un asistente que ayuda a configurar una importación de artículos desde Exc
 Análisis del archivo:
 - Total de filas de datos: {$stats['total_filas_datos']}
 - Bar_codes que aparecen repetidos dentro del Excel: {$stats['bar_codes_duplicados_intra_archivo']}
-- Provider_codes que aparecen repetidos dentro del Excel: {$stats['provider_codes_duplicados_intra_archivo']}
+- Cantidad de códigos de proveedor distintos que aparecen MÁS DE UNA VEZ dentro del Excel (0 = ninguno repetido, >0 = hay al menos un código que aparece en múltiples filas): {$stats['provider_codes_duplicados_intra_archivo']}
 - Provider_codes del Excel que ya existen en BD para el MISMO proveedor: {$stats['provider_codes_existentes_mismo_proveedor']}
 - Provider_codes del Excel que ya existen en BD para OTROS proveedores: {$stats['provider_codes_existentes_otros_proveedores']}
 
+Columnas disponibles en este Excel:
+- Código de barras (bar_code): {$bar_code_disponible}
+- Código de proveedor (provider_code): {$provider_code_disponible}
+- Nombre del artículo: {$nombre_disponible}
+
+IMPORTANTE: solo podés recomendar usar una clave de identidad si esa columna existe en el Excel.
+Si bar_code NO existe, no recomiendes bar_code como clave_identidad.
+Si provider_code NO existe, no recomiendes provider_code como clave_identidad.
+Si ninguno de los dos existe, recomendá name.
+
 Decisión 1 - clave_identidad: qué campo usar para identificar un artículo como "el mismo".
-- "bar_code": el código de barras es único y confiable.
-- "provider_code": no hay bar_code o tiene muchos duplicados; usar código de proveedor.
-- "name": último recurso si no hay códigos confiables.
+- "bar_code": usar solo si la columna bar_code está disponible Y no tiene duplicados dentro del Excel (bar_codes_duplicados_intra_archivo = 0). Es la opción más confiable cuando aplica.
+- "provider_code": usar cuando bar_code no está disponible o tiene duplicados. Es la opción más común en listas de proveedor.
+- "name": último recurso, solo si ni bar_code ni provider_code están disponibles.
 
-Decisión 2 - politica_colision: qué hacer cuando una fila machea con N artículos (típicamente porque el provider_code está repetido a propósito en BD).
-- "actualizar_todos": actualiza TODOS los artículos coincidentes con los datos de esa fila. Útil para distribuidoras que tienen el mismo provider_code en varios artículos físicos distintos y quieren actualizar el costo de todos con una sola fila del Excel.
-- "actualizar_uno": actualiza solo el primer artículo coincidente (criterio: más antiguo).
-- "crear_nuevo": ignora el match, crea un artículo nuevo igual.
+IMPORTANTE: solo podés recomendar una clave si esa columna existe en el Excel (ver "Columnas disponibles" arriba).
 
-Recomendá la mejor configuración para este archivo. Explicá por qué en lenguaje claro y conciso (máx 3 oraciones), mencionando cuántos artículos serían afectados con la opción que recomendás.
+Decisión 2 - politica_colision: qué hacer cuando una fila del Excel coincide con artículos ya existentes en el sistema.
+- "actualizar_todos": el sistema encuentra TODOS los artículos con ese código y los actualiza o crea. SOLO válido cuando clave_identidad = "provider_code" y hay provider_codes repetidos en el Excel.
+- "actualizar_uno": actualiza o crea un único artículo por fila. Es la opción correcta para bar_code y name (que deben ser únicos), y también para provider_code cuando no hay repetidos.
+- "crear_nuevo": NUNCA recomiendes esta opción. Está reservada para casos manuales.
+
+REGLAS CRÍTICAS para politica_colision (aplicar en orden):
+1. Si clave_identidad es "bar_code" o "name": recomendá SIEMPRE "actualizar_uno". No puede haber dos artículos con el mismo código de barras ni con el mismo nombre. Ignorar los conteos de repetidos.
+2. Si clave_identidad es "provider_code" y provider_codes_duplicados_intra_archivo > 0: recomendá "actualizar_todos". El sistema creará un artículo por cada fila en primera importación, y actualizará todos los coincidentes en reimportaciones.
+3. Si clave_identidad es "provider_code" y provider_codes_duplicados_intra_archivo = 0: recomendá "actualizar_uno".
+
+Para el campo "explicacion":
+- Describí qué va a pasar en términos concretos y simples.
+- Si provider_codes_existentes_mismo_proveedor = 0 explicá que se van a crear los artículos (primera importación).
+- Si provider_codes_existentes_mismo_proveedor > 0 explicá que se van a actualizar artículos existentes.
+- Si provider_codes_existentes_otros_proveedores > 0, agregá una advertencia breve de que hay códigos que también existen en artículos de otros proveedores, y que el sistema NO los va a tocar a menos que el usuario lo habilite manualmente.
+- NUNCA uses términos técnicos internos: nada de "provider_code", "bar_code", "actualizar_todos", "actualizar_uno", "crear_nuevo", "clave_identidad", "politica_colision", "intra_archivo", ni ninguna clave del sistema.
+- Hablá como si le explicaras a un comerciante qué va a pasar con sus artículos.
+- Máximo 3 oraciones claras y directas.
 
 Respondé SOLO con un JSON válido, sin markdown ni texto adicional:
 {
@@ -890,6 +1027,19 @@ PROMPT;
                 );
             }
 
+            /*
+             * Override determinístico de politica_colision.
+             * Claude puede malinterpretar el valor numérico de provider_codes_duplicados_intra_archivo.
+             * La regla es simple y no requiere juicio subjetivo: si hay códigos repetidos en el Excel
+             * y la clave es provider_code, la política debe ser actualizar_todos sin excepción.
+             * Para bar_code y name nunca puede haber repetidos, así que siempre actualizar_uno.
+             */
+            if ($clave_identidad === 'provider_code' && $stats['provider_codes_duplicados_intra_archivo'] > 0) {
+                $politica_colision = 'actualizar_todos';
+            } elseif ($clave_identidad === 'bar_code' || $clave_identidad === 'name') {
+                $politica_colision = 'actualizar_uno';
+            }
+
             Log::info('AiExcelAnalyzer: recomendación de configuración recibida', [
                 'clave_identidad'  => $clave_identidad,
                 'politica_colision' => $politica_colision,
@@ -907,19 +1057,37 @@ PROMPT;
             ]);
 
             /*
-             * Fallback heurístico: si hay bar_codes duplicados, usamos provider_code como clave.
-             * Si además el provider_code está repetido con esa clave, actualizamos todos.
+             * Fallback heurístico: prioridad bar_code → provider_code → name.
+             * Si la columna no existe en el Excel, se descarta aunque sea la preferida.
+             * Esto evita el caso donde Claude alucina bar_code cuando no hay columna mapeada.
              */
-            $clave_fallback = $stats['bar_codes_duplicados_intra_archivo'] > 0
-                ? 'provider_code'
-                : 'bar_code';
+            if ($tiene_bar_code && $stats['bar_codes_duplicados_intra_archivo'] === 0) {
+                $clave_fallback = 'bar_code';
+            } elseif ($tiene_provider_code) {
+                $clave_fallback = 'provider_code';
+            } elseif ($tiene_bar_code) {
+                $clave_fallback = 'bar_code';
+            } else {
+                $clave_fallback = 'name';
+            }
 
-            $politica_fallback = (
-                $stats['provider_codes_duplicados_intra_archivo'] > 0
-                && $clave_fallback === 'provider_code'
-            )
-                ? 'actualizar_todos'
-                : 'actualizar_uno';
+            /*
+             * Fallback heurístico para politica_colision:
+             * - bar_code y name son siempre únicos: actualizar_uno.
+             * - provider_code con repetidos en el Excel: actualizar_todos.
+             * - provider_code sin repetidos: actualizar_uno.
+             * Nunca se recomienda crear_nuevo en el fallback.
+             */
+            if ($clave_fallback === 'bar_code' || $clave_fallback === 'name') {
+                $politica_fallback = 'actualizar_uno';
+            } elseif (
+                $clave_fallback === 'provider_code'
+                && $stats['provider_codes_duplicados_intra_archivo'] > 0
+            ) {
+                $politica_fallback = 'actualizar_todos';
+            } else {
+                $politica_fallback = 'actualizar_uno';
+            }
 
             return [
                 'clave_identidad'  => $clave_fallback,

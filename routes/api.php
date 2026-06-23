@@ -490,15 +490,16 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('/import-history/repeated-code-articles/{import_history_id}', 'ImportHistoryController@repeated_code_articles');
 
     /*
-     * Importación de artículos asistida por Claude IA.
-     * Requiere la extensión "ai_excel_import" habilitada para el usuario.
-     *  - POST /ai-excel-import/analyze : analiza el Excel y devuelve el mapeo de columnas sugerido
-     *  - POST /ai-excel-import/import  : lanza la importación con el mapeo confirmado por el usuario
+     * Importación asistida por Claude IA (artículos, clientes, proveedores).
+     *  - POST /ai-excel-import/analyze              : analiza el Excel y devuelve el mapeo de columnas sugerido
+     *  - POST /ai-excel-import/import               : lanza la importación con el mapeo confirmado por el usuario
+     *  - POST /ai-excel-import/refresh-provider-stats : recalcula conteos de códigos existentes al cambiar proveedor
+     *  - POST /ai-excel-import/get-recomendacion    : genera la recomendación de configuración con el proveedor real confirmado
      */
-    Route::middleware('check_extencion_empresa:ai_excel_import')->group(function () {
-        Route::post('/ai-excel-import/analyze', 'AiExcelImportController@analyze');
-        Route::post('/ai-excel-import/import',  'AiExcelImportController@import');
-    });
+    Route::post('/ai-excel-import/analyze', 'AiExcelImportController@analyze');
+    Route::post('/ai-excel-import/import',  'AiExcelImportController@import');
+    Route::post('/ai-excel-import/refresh-provider-stats', 'AiExcelImportController@refreshProviderStats');
+    Route::post('/ai-excel-import/get-recomendacion', 'AiExcelImportController@getRecomendacion');
 
     Route::get('/online-price-type', 'OnlinePriceTypeController@index');
 

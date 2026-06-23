@@ -33,6 +33,7 @@ class DatabaseSeeder extends Seeder
             $this->call(ExtencionSeeder::class);
             $this->call(ExtencionDuplicarPresupuestosSeeder::class);
             $this->call(ExtencionEnviarMailClientesSeeder::class);
+            $this->call(ExtencionCrearArticulosDesdeVenderSeeder::class);
             $this->call(PermissionSeeder::class);
             // $this->call(FeaturesSeeder::class);
             // $this->call(PlansSeeder::class);
@@ -302,6 +303,7 @@ class DatabaseSeeder extends Seeder
         $this->call(ExtencionSeeder::class);
         $this->call(ExtencionDuplicarPresupuestosSeeder::class);
         $this->call(ExtencionEnviarMailClientesSeeder::class);
+        $this->call(ExtencionCrearArticulosDesdeVenderSeeder::class);
         /* Extensión para la importación de artículos asistida por Claude IA. */
         $this->call(ExtencionEmpresaAiExcelImportSeeder::class);
         $this->call(ConceptoStockMovementSeeder::class);

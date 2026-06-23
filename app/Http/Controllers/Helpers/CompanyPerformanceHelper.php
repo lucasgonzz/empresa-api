@@ -150,6 +150,19 @@ class CompanyPerformanceHelper {
             /* Flag para que el frontend sepa si hay datos históricos de deuda para este segmento */
             $company_performance->snapshot_disponible = !is_null($snapshot);
 
+            /*
+             * Precargar relaciones antes del delete: el resumen suma pivots en memoria
+             * y el registro temporal se elimina para no contaminar la caché mensual.
+             */
+            $company_performance->load(
+                'expense_concepts',
+                'gastos',
+                'ingresos_mostrador',
+                'ingresos_cuenta_corriente',
+                'users_payment_methods',
+                'addresses_payment_methods'
+            );
+
             $this->meses_anteriores[] = $company_performance;
 
             /* Eliminar el registro temporal para no contaminar la caché de reportes */
@@ -219,6 +232,8 @@ class CompanyPerformanceHelper {
             'total_gastos_usd'                      => 0,
             'total_comprado'                    => 0,
             'total_comprado_usd'                    => 0,
+            'ingresos_brutos'                   => 0,
+            'ingresos_brutos_usd'               => 0,
             'ingresos_netos'                    => 0,
             'ingresos_netos_usd'                    => 0,
             'rentabilidad'                      => 0,
@@ -288,6 +303,9 @@ class CompanyPerformanceHelper {
             
             $this->suma_company_performances['total_comprado']    += $company_performance->total_comprado;
             $this->suma_company_performances['total_comprado_usd']    += $company_performance->total_comprado_usd;
+
+            $this->suma_company_performances['ingresos_brutos']   += $company_performance->ingresos_brutos;
+            $this->suma_company_performances['ingresos_brutos_usd']   += $company_performance->ingresos_brutos_usd;
 
             $this->suma_company_performances['ingresos_netos']    += $company_performance->ingresos_netos;
             $this->suma_company_performances['ingresos_netos_usd']    += $company_performance->ingresos_netos_usd;
