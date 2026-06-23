@@ -447,6 +447,10 @@ class ExtencionSeeder extends Seeder
                 'name' => 'WhatsApp con IA',
                 'slug' => 'whatsapp_ia',
             ],
+            [
+                'name' => 'Crear artículos desde vender',
+                'slug' => 'crear_articulos_desde_vender',
+            ],
 
         ];
         foreach ($extencions as $extencion) {
