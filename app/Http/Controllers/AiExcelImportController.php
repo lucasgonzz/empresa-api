@@ -113,10 +113,10 @@ class AiExcelImportController extends Controller
                  */
                 'duplicate_stats'              => $analysis['duplicate_stats'] ?? null,
                 /*
-                 * Recomendación de configuración generada por Claude a partir de los conteos.
-                 * Contiene: clave_identidad, politica_colision y explicacion en español.
+                 * Nota: recomendacion_configuracion ya no se genera en /analyze.
+                 * Se genera en POST /ai-excel-import/get-recomendacion una vez que el
+                 * usuario confirma el proveedor real en el paso 2 del modal.
                  */
-                'recomendacion_configuracion'  => $analysis['recomendacion_configuracion'] ?? null,
                 /* Filas de muestra (máx. 5) para la tabla de preview del paso 2. */
                 'preview_rows'                 => $analysis['preview_rows'] ?? [],
             ], 200);
@@ -416,6 +416,92 @@ class AiExcelImportController extends Controller
             return response()->json([
                 'message' => 'Ocurrió un error al importar proveedores: ' . $e->getMessage(),
             ], 500);
+        }
+    }
+
+    /**
+     * Genera la recomendación de configuración de importación usando el proveedor
+     * ya confirmado por el usuario en el paso 2 del modal.
+     *
+     * A diferencia de /analyze (que usa el proveedor inferido por Claude),
+     * este endpoint recibe el provider_id real elegido por el usuario,
+     * recalcula los duplicate_stats con ese proveedor, y genera la recomendación
+     * con datos correctos.
+     *
+     * @param  Request  $request  Campos: excel_path (string), provider_id (int|null),
+     *                             provider_code_column_index (int|null), column_mapping (array)
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getRecomendacion(Request $request)
+    {
+        /* Ruta relativa del archivo Excel guardado por /analyze */
+        $excel_path = $request->input('excel_path');
+
+        if (empty($excel_path)) {
+            return response()->json(['message' => 'El campo "excel_path" es obligatorio.'], 422);
+        }
+
+        /* Ruta absoluta en el sistema de archivos */
+        $excel_full_path = storage_path('app/' . $excel_path);
+
+        if (!file_exists($excel_full_path)) {
+            return response()->json(['message' => 'El archivo Excel indicado no existe o ha expirado.'], 422);
+        }
+
+        /* Proveedor confirmado por el usuario (puede ser null si no aplica) */
+        $provider_id = $request->input('provider_id');
+        $provider_id = is_numeric($provider_id) && (int) $provider_id > 0
+            ? (int) $provider_id
+            : null;
+
+        /* Índice 0-based de la columna provider_code en el Excel (para calcular stats correctamente) */
+        $provider_code_column_index = $request->input('provider_code_column_index');
+        $provider_code_column_index = is_numeric($provider_code_column_index)
+            ? (int) $provider_code_column_index
+            : null;
+
+        /* Mapeo de columnas confirmado por el usuario (para derivar columnas disponibles) */
+        $column_mapping = $request->input('column_mapping', []);
+
+        try {
+            /*
+             * Recalcular duplicate_stats con el proveedor real confirmado por el usuario.
+             * Esto garantiza que la recomendación de Claude se base en datos correctos
+             * y no en el proveedor inferido durante el análisis inicial.
+             */
+            $stats = ExcelDuplicateStats::analyze(
+                $excel_full_path,
+                null,
+                $provider_code_column_index,
+                $provider_id,
+                $this->userId()
+            );
+
+            /* Generar recomendación con los stats recalculados para el proveedor confirmado */
+            $analyzer        = new AiExcelAnalyzer($this->userId());
+            $recomendacion   = $analyzer->ask_claude_for_recomendation($stats, $column_mapping);
+
+            return response()->json([
+                'recomendacion_configuracion'                  => $recomendacion,
+                /* Stats actualizados para que el frontend pueda refrescar los chips de decisión */
+                'provider_codes_existentes_mismo_proveedor'    => $stats['provider_codes_existentes_mismo_proveedor'] ?? 0,
+                'provider_codes_existentes_otros_proveedores'  => $stats['provider_codes_existentes_otros_proveedores'] ?? 0,
+            ], 200);
+
+        } catch (\RuntimeException $e) {
+            Log::warning('AiExcelImportController::getRecomendacion - error', [
+                'message' => $e->getMessage(),
+            ]);
+
+            return response()->json(['message' => $e->getMessage()], 422);
+
+        } catch (\Throwable $e) {
+            Log::error('AiExcelImportController::getRecomendacion - error inesperado', [
+                'message' => $e->getMessage(),
+                'trace'   => $e->getTraceAsString(),
+            ]);
+
+            return response()->json(['message' => 'Error inesperado al generar la recomendación.'], 500);
         }
     }
 }

@@ -171,15 +171,12 @@ class AiExcelAnalyzer
         );
 
         /*
-         * Paso 9: Pedir recomendación de configuración a Claude basada en los conteos.
-         * Pasamos también el mapeo de columnas para que Claude sepa qué columnas existen
-         * y no recomiende claves de identidad que no están mapeadas en el Excel.
-         * Si la llamada falla, se aplica un fallback heurístico y la respuesta sigue siendo HTTP 200.
+         * Nota: la recomendación de configuración (ask_claude_for_recomendation) ya no se genera
+         * aquí porque en este punto el proveedor puede ser solo inferido por Claude y no el
+         * confirmado por el usuario. La recomendación se genera en el endpoint
+         * POST /ai-excel-import/get-recomendacion, una vez que el usuario confirma el proveedor
+         * en el paso 2 del modal.
          */
-        $parsed['recomendacion_configuracion'] = $this->ask_claude_for_recomendation(
-            $parsed['duplicate_stats'],
-            $parsed['column_mapping']
-        );
 
         /*
          * Primeras 5 filas de datos del Excel para la preview reactiva del paso 2 en el frontend.
@@ -911,7 +908,7 @@ PROMPT;
      * @param  array $column_mapping Mapeo enriquecido de columnas (para derivar columnas disponibles)
      * @return array                 ['clave_identidad' => string, 'politica_colision' => string, 'explicacion' => string]
      */
-    protected function ask_claude_for_recomendation(array $stats, array $column_mapping = []): array
+    public function ask_claude_for_recomendation(array $stats, array $column_mapping = []): array
     {
         /*
          * Valores aceptados para cada campo de la recomendación.

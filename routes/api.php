@@ -491,13 +491,15 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     /*
      * Importación asistida por Claude IA (artículos, clientes, proveedores).
-     *  - POST /ai-excel-import/analyze : analiza el Excel y devuelve el mapeo de columnas sugerido
-     *  - POST /ai-excel-import/import  : lanza la importación con el mapeo confirmado por el usuario
+     *  - POST /ai-excel-import/analyze              : analiza el Excel y devuelve el mapeo de columnas sugerido
+     *  - POST /ai-excel-import/import               : lanza la importación con el mapeo confirmado por el usuario
      *  - POST /ai-excel-import/refresh-provider-stats : recalcula conteos de códigos existentes al cambiar proveedor
+     *  - POST /ai-excel-import/get-recomendacion    : genera la recomendación de configuración con el proveedor real confirmado
      */
     Route::post('/ai-excel-import/analyze', 'AiExcelImportController@analyze');
     Route::post('/ai-excel-import/import',  'AiExcelImportController@import');
     Route::post('/ai-excel-import/refresh-provider-stats', 'AiExcelImportController@refreshProviderStats');
+    Route::post('/ai-excel-import/get-recomendacion', 'AiExcelImportController@getRecomendacion');
 
     Route::get('/online-price-type', 'OnlinePriceTypeController@index');
 
