@@ -485,14 +485,23 @@ PROMPT;
                 'body'   => $response->body(),
             ]);
 
-            /* Error de sobrecarga (HTTP 529): mensaje amigable para el usuario. */
-            if ($response->status() === 529) {
+            /*
+             * Detectar el tipo de error desde el JSON de respuesta de Anthropic.
+             * Los errores transitorios tienen type: overloaded_error, api_error, etc.
+             * Mostramos un mensaje amigable en lugar del JSON crudo.
+             */
+            $error_body = $response->json();
+            $error_type = $error_body['error']['type'] ?? null;
+
+            $transient_error_types = ['overloaded_error', 'api_error'];
+
+            if (in_array($error_type, $transient_error_types) || $response->status() === 529) {
                 throw new \RuntimeException(
-                    'El servicio de IA está temporalmente sobrecargado. Esperá unos segundos y volvé a intentarlo.'
+                    'El servicio de IA no está disponible en este momento. Esperá unos segundos y volvé a intentarlo.'
                 );
             }
 
-            /* Otros errores: mensaje técnico para debugging (no llega al usuario final en producción). */
+            /* Otros errores (auth, rate limit, etc.): mensaje técnico para debugging. */
             throw new \RuntimeException(
                 'Error al comunicarse con Claude API (HTTP ' . $response->status() . '): ' . $response->body()
             );
