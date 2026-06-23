@@ -269,11 +269,18 @@ class ExcelDuplicateStats
                     ->whereIn('provider_code', $chunk)
                     ->get(['provider_code', 'provider_id']);
 
+                /*
+                 * Agrupar por provider_code para contar códigos distintos, no artículos individuales.
+                 * Para cada código, determinamos si existe en el mismo proveedor, en otro proveedor, o en ambos.
+                 * Un código que tiene artículos en ambos (mismo y otro proveedor) cuenta en AMBOS contadores.
+                 */
+                $codes_grouped = [];
                 foreach ($matches as $article) {
-                    /*
-                     * Consideramos "mismo proveedor" solo si se proporcionó un provider_id válido
-                     * y el artículo en BD pertenece a ese mismo proveedor.
-                     */
+                    $code = (string) $article->provider_code;
+                    if (!isset($codes_grouped[$code])) {
+                        $codes_grouped[$code] = ['mismo' => false, 'otro' => false];
+                    }
+
                     $is_same_provider = (
                         !is_null($provider_id)
                         && (int) $provider_id > 0
@@ -281,8 +288,17 @@ class ExcelDuplicateStats
                     );
 
                     if ($is_same_provider) {
-                        $provider_codes_mismo_proveedor++;
+                        $codes_grouped[$code]['mismo'] = true;
                     } else {
+                        $codes_grouped[$code]['otro'] = true;
+                    }
+                }
+
+                foreach ($codes_grouped as $flags) {
+                    if ($flags['mismo']) {
+                        $provider_codes_mismo_proveedor++;
+                    }
+                    if ($flags['otro']) {
                         $provider_codes_otros_proveedores++;
                     }
                 }
