@@ -117,6 +117,8 @@ class AiExcelImportController extends Controller
                  * Contiene: clave_identidad, politica_colision y explicacion en español.
                  */
                 'recomendacion_configuracion'  => $analysis['recomendacion_configuracion'] ?? null,
+                /* Filas de muestra (máx. 5) para la tabla de preview del paso 2. */
+                'preview_rows'                 => $analysis['preview_rows'] ?? [],
             ], 200);
 
         } catch (\RuntimeException $e) {

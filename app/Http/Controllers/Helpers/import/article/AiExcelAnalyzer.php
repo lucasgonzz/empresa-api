@@ -181,6 +181,11 @@ class AiExcelAnalyzer
             $parsed['column_mapping']
         );
 
+        /*
+         * Primeras 5 filas de datos del Excel para la preview reactiva del paso 2 en el frontend.
+         */
+        $parsed['preview_rows'] = array_slice($sample_data['rows'], 0, 5);
+
         return $parsed;
     }
 
