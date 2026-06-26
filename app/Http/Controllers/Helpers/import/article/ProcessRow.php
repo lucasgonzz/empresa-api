@@ -388,6 +388,14 @@ class ProcessRow {
                 // $this->log('Fila repetida tratada como VARIANTE del artículo base');
                 return;
             }
+            // Si la coincidencia fue por bar_code, la última fila gana:
+            // actualizar el artículo ya encolado con los datos de esta fila.
+            if (!empty($data['bar_code'])) {
+                $this->merge_bar_code_duplicate($data, $row);
+                $this->sumar_durations();
+                return $this->observations;
+            }
+
             $this->articles_repetidos++;
             $this->log('SE OMITIO EN PROCES ROW (fila repetida sin propiedades de variante)');
             return;
@@ -1001,6 +1009,12 @@ class ProcessRow {
 
             $cambios['id'] = $articulo_ya_creado->id;
 
+            // Guardar bar_code para identificar este artículo si el mismo bar_code
+            // vuelve a aparecer en el Excel (última fila gana).
+            if (!empty($data['bar_code'])) {
+                $cambios['__bar_code'] = $data['bar_code'];
+            }
+
             // $cambios['variants_data'] = []; // 👈
 
             $this->articulosParaActualizar[] = $cambios;
@@ -1014,6 +1028,58 @@ class ProcessRow {
         }
 
         // return $cambios;
+    }
+
+    /**
+     * Cuando el bar_code de la fila actual ya fue procesado en una fila anterior del mismo Excel,
+     * actualiza el artículo ya encolado con los datos de esta fila (última fila gana).
+     *
+     * Si el artículo es nuevo (pendiente de INSERT), reutiliza merge_fila_en_articulo_para_crear_pendiente.
+     * Si el artículo ya existía en BD (pendiente de UPDATE), hace un merge directo en articulosParaActualizar.
+     */
+    protected function merge_bar_code_duplicate(array $data, $row): void
+    {
+        $bar_code = $data['bar_code'];
+
+        // Intentar resolver el artículo desde el índice en RAM por bar_code
+        $article_id_in_index = $this->article_index['bar_codes'][$bar_code] ?? null;
+
+        // --- 1. Es un fake (artículo nuevo pendiente de INSERT en este import) ---
+        if ($article_id_in_index && str_starts_with((string) $article_id_in_index, 'fake_')) {
+
+            $fake_id = (string) $article_id_in_index;
+            $fake_article = ArticleIndexCache::get_runtime_fake_article((int) $this->user->id, $fake_id);
+
+            if ($fake_article instanceof \App\Models\Article) {
+                $this->merge_fila_en_articulo_para_crear_pendiente($fake_article, $data, $row);
+                $this->log('merge_bar_code_duplicate: bar_code=' . $bar_code . ' actualizado via merge_fila_en_articulo_para_crear_pendiente (fake_id=' . $fake_id . ')');
+                return;
+            }
+
+            $this->log('merge_bar_code_duplicate: WARNING — fake_id=' . $fake_id . ' no encontrado en runtime para bar_code=' . $bar_code);
+            return;
+        }
+
+        // --- 2. Es un artículo real de BD (en articulosParaActualizar, guardado con __bar_code) ---
+        foreach ($this->articulosParaActualizar as $idx => $art) {
+
+            if (!isset($art['__bar_code']) || $art['__bar_code'] !== $bar_code) {
+                continue;
+            }
+
+            $article_id = $art['id'];
+
+            $merged = array_merge($art, $data);
+            $merged['id'] = $article_id;
+            $merged['__bar_code'] = $bar_code;
+
+            $this->articulosParaActualizar[$idx] = $merged;
+
+            $this->log('merge_bar_code_duplicate: bar_code=' . $bar_code . ' actualizado en articulosParaActualizar[' . $idx . '] (id=' . $article_id . ')');
+            return;
+        }
+
+        $this->log('merge_bar_code_duplicate: WARNING — bar_code=' . $bar_code . ' no encontrado en ninguna cola');
     }
 
     function get_cost_in_dollars($row) {
