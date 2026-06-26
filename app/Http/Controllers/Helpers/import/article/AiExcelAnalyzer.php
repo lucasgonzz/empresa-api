@@ -64,6 +64,7 @@ class AiExcelAnalyzer
         'stock_actual',
         'descuentos',
         'recargos',
+        'proveedor',
     ];
 
     /**
@@ -417,6 +418,13 @@ Analizá el siguiente archivo Excel de importación de artículos y devolvé SOL
 - Solo mapeá una columna a system_property **descripcion** cuando YA identificaste otra columna distinta mapeada a **nombre** (es decir: hay nombre de producto en una columna y texto complementario en otra).
 - Si existen columnas separadas "Nombre" y "Descripción", mapeá "Nombre" → nombre (confidence alta) y "Descripción" → descripcion solo si el contenido parece texto complementario; si la segunda sigue siendo el nombre largo del producto, mapeala a nombre o null, nunca a descripcion.
 
+## Regla especial: columna de proveedor por fila
+- Si el Excel tiene una columna cuyos valores son **nombres de proveedores distintos por fila** (por ejemplo, una columna llamada "Proveedor", "Prov.", "Distribuidor" o similar, donde cada fila tiene el nombre de un proveedor diferente), mapeala a system_property **proveedor**.
+- Esta regla aplica cuando los valores de la columna varían por fila conteniendo nombres de proveedores. La instrucción 3 (inferir proveedor global) aplica cuando TODO el archivo pertenece a un único proveedor y no hay una columna explícita de proveedor.
+- Cuando una columna quedó mapeada a **proveedor**, el campo **provider_id** del JSON raíz debe ser **null** (porque el proveedor se determina fila a fila, no globalmente).
+- La `interpretation_note` para esta columna debe ser **null**: no requiere validación del usuario.
+- NO generes interpretation_note con mensajes del tipo "el sistema gestiona el proveedor globalmente": ese texto confunde al usuario.
+
 4. Devolvé EXCLUSIVAMENTE el siguiente JSON sin texto adicional:
 
 {
@@ -661,6 +669,13 @@ PROMPT;
                     $interpretation_note = null;
                 }
             } else {
+                $interpretation_note = null;
+            }
+
+            /*
+             * Si la columna fue mapeada a 'proveedor', no mostrar nota: es un mapeo directo sin ambigüedad.
+             */
+            if ($system_property === 'proveedor' && !is_null($interpretation_note)) {
                 $interpretation_note = null;
             }
 
@@ -964,8 +979,8 @@ Si provider_code NO existe, no recomiendes provider_code como clave_identidad.
 Si ninguno de los dos existe, recomendá name.
 
 Decisión 1 - clave_identidad: qué campo usar para identificar un artículo como "el mismo".
-- "bar_code": usar solo si la columna bar_code está disponible Y no tiene duplicados dentro del Excel (bar_codes_duplicados_intra_archivo = 0). Es la opción más confiable cuando aplica.
-- "provider_code": usar cuando bar_code no está disponible o tiene duplicados. Es la opción más común en listas de proveedor.
+- "bar_code": usar cuando la columna bar_code está disponible. Es la clave de identidad natural para artículos y siempre debe preferirse cuando existe. Si hay bar_codes repetidos en el Excel (bar_codes_duplicados_intra_archivo > 0), igualmente se usa bar_code como clave: el sistema garantiza que no se crean artículos con bar_code repetido procesando un único artículo por código, actualizándolo con la información de la última fila del Excel que lo contenga.
+- "provider_code": usar cuando bar_code no está disponible. Es la opción más común en listas de proveedor.
 - "name": último recurso, solo si ni bar_code ni provider_code están disponibles.
 
 IMPORTANTE: solo podés recomendar una clave si esa columna existe en el Excel (ver "Columnas disponibles" arriba).
@@ -985,6 +1000,7 @@ Para el campo "explicacion":
 - Si provider_codes_existentes_mismo_proveedor = 0 explicá que se van a crear los artículos (primera importación).
 - Si provider_codes_existentes_mismo_proveedor > 0 explicá que se van a actualizar artículos existentes.
 - Si provider_codes_existentes_otros_proveedores > 0, agregá una advertencia breve de que hay códigos que también existen en artículos de otros proveedores, y que el sistema NO los va a tocar a menos que el usuario lo habilite manualmente.
+- Si bar_codes_duplicados_intra_archivo > 0, mencioná explícitamente que se detectaron códigos de barras repetidos en el archivo y que el sistema los procesará correctamente: importará un único artículo por código, quedando con la información de la última fila del Excel que lo contenga.
 - NUNCA uses términos técnicos internos: nada de "provider_code", "bar_code", "actualizar_todos", "actualizar_uno", "crear_nuevo", "clave_identidad", "politica_colision", "intra_archivo", ni ninguna clave del sistema.
 - Hablá como si le explicaras a un comerciante qué va a pasar con sus artículos.
 - Máximo 3 oraciones claras y directas.
@@ -1058,15 +1074,14 @@ PROMPT;
 
             /*
              * Fallback heurístico: prioridad bar_code → provider_code → name.
-             * Si la columna no existe en el Excel, se descarta aunque sea la preferida.
-             * Esto evita el caso donde Claude alucina bar_code cuando no hay columna mapeada.
+             * Bar_code siempre se prefiere cuando está disponible, incluso con duplicados,
+             * porque el sistema garantiza que no se crean artículos con bar_code repetido
+             * (la última aparición en el Excel sobrescribe a las anteriores).
              */
-            if ($tiene_bar_code && $stats['bar_codes_duplicados_intra_archivo'] === 0) {
+            if ($tiene_bar_code) {
                 $clave_fallback = 'bar_code';
             } elseif ($tiene_provider_code) {
                 $clave_fallback = 'provider_code';
-            } elseif ($tiene_bar_code) {
-                $clave_fallback = 'bar_code';
             } else {
                 $clave_fallback = 'name';
             }

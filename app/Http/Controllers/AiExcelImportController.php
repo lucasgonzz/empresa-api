@@ -463,6 +463,23 @@ class AiExcelImportController extends Controller
         /* Mapeo de columnas confirmado por el usuario (para derivar columnas disponibles) */
         $column_mapping = $request->input('column_mapping', []);
 
+        /*
+         * Derivar el índice 0-based de la columna bar_code desde el column_mapping.
+         * Es necesario para que ExcelDuplicateStats pueda leer el archivo y calcular
+         * correctamente total_filas_datos y bar_codes_duplicados_intra_archivo.
+         * Sin este índice, cuando no hay provider_code ambos índices quedan null y
+         * ExcelDuplicateStats retorna todo en 0 — Claude interpreta "archivo vacío".
+         */
+        $bar_code_column_index = null;
+        foreach ($column_mapping as $col) {
+            if (($col['system_property'] ?? null) === 'codigo_de_barras') {
+                $bar_code_column_index = isset($col['excel_column_index'])
+                    ? (int) $col['excel_column_index']
+                    : null;
+                break;
+            }
+        }
+
         try {
             /*
              * Recalcular duplicate_stats con el proveedor real confirmado por el usuario.
@@ -471,7 +488,7 @@ class AiExcelImportController extends Controller
              */
             $stats = ExcelDuplicateStats::analyze(
                 $excel_full_path,
-                null,
+                $bar_code_column_index,
                 $provider_code_column_index,
                 $provider_id,
                 $this->userId()
