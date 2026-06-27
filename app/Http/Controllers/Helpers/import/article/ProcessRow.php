@@ -1159,14 +1159,29 @@ class ProcessRow {
         $cost_in_dollars = 0;
 
         $moneda = ImportHelper::getColumnValue($row, 'moneda', $this->columns);
-        
-        if (
-            $moneda == 'USD'
-            || $moneda == 'usd'
-        ) {
+
+        if (is_null($moneda)) {
+            return $cost_in_dollars;
+        }
+
+        $valor = strtolower(trim((string) $moneda));
+
+        /*
+         * Valores reconocidos como "costo en dólares = verdadero":
+         * USD, u$s, dolar, dólar, dolares, dólares, dollar, dollars, 1, true, si, sí, s, yes, y
+         * Todo lo demás (peso, pesos, ars, 0, no, false, etc.) se toma como falso.
+         */
+        $valores_dolar = [
+            'usd', 'u$s',
+            'dolar', 'dólar', 'dolares', 'dólares', 'dollar', 'dollars',
+            '1', 'true', 'si', 'sí', 's', 'yes', 'y',
+        ];
+
+        if (in_array($valor, $valores_dolar, true)) {
             $this->log('Costo en dolares');
             $cost_in_dollars = 1;
         }
+
         return $cost_in_dollars;
     }
 
