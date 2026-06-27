@@ -588,7 +588,7 @@ Propiedades numéricas:
 Propiedades de texto:
 - unidad_medida: unidad de medida del artículo (columnas como "Unidad", "UM", "Unidad medida"). Valores posibles: el nombre tal como figura en el sistema.
 - contenido: descripción del contenido o empaque (columnas como "Contenido", "Envase", "Presentación"). Solo mapear si hay UNA columna de contenido y no hay una columna medida con valor numérico.
-- costo_en_dolares: reemplaza a "moneda". Si el costo está expresado en dólares. Columnas como "Moneda", "Divisa", "USD", "Costo en dólares".
+- `costo_en_dolares` (IMPORTANTE: siempre usar este nombre exacto en el JSON — NUNCA escribas "moneda" como valor de system_property): indica si el costo del artículo está en dólares. Columnas típicas en el Excel: "Moneda", "Divisa", "USD", "Costo en dólares", "Costo USD". Valores posibles en las celdas: "dólar", "dolar", "dolares", "dólares", "USD", "u$s", "dollar" → la columna corresponde a esta propiedad (el sistema interpretará esos valores como verdadero). "peso", "pesos", "ARS" también confirman que la columna es `costo_en_dolares` (el sistema los tratará como falso). Mapeá la columna aunque los valores sean "peso/dólar" en lugar de "Si/No".
 
 Regla crítica: descuentos vs descuentos_montos / recargos vs recargos_montos:
 - descuentos: la columna contiene descuentos expresados como porcentaje (ej: "10_5_3", valores sin símbolo \$). Los múltiples descuentos se concatenan con guion bajo.
