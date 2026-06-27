@@ -580,6 +580,7 @@ Propiedades booleanas (valores aceptados: Si, No, 1, 0):
 - online: si el artículo está activo/disponible para la venta (columnas como "Activo", "Disponible", "Visible", "Online").
 - precio_pausado: si el precio se muestra como "Consultar" en la tienda en lugar del monto (columnas como "Precio pausado", "Consultar precio", "Precio oculto").
 - disponible_tienda_nube: si el artículo está disponible en Tienda Nube (columnas como "Tienda Nube", "TN", "Disponible online").
+- numero: número único interno del artículo (ID de la base de datos). SOLO mapear si el encabezado dice claramente "Número", "Num", "N°", "ID", "Cod" o similar y los valores son enteros positivos que parecen IDs internos. NO inferir por los datos: requiere encabezado explícito. Esta propiedad indica que el Excel fue exportado desde el sistema y permite identificar artículos por su ID interno (incluso para actualizar el código de barras).
 - aplicar_iva: si el IVA se suma al costo para calcular el precio (default Si).
 
 Propiedades numéricas:
