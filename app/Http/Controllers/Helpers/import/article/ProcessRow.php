@@ -1310,6 +1310,16 @@ class ProcessRow {
             // ignorar campos que no queremos comparar
             if (in_array($key, ['id', 'created_at', 'updated_at'])) continue;
 
+            /*
+             * bar_code es la clave de identidad natural del artículo.
+             * Solo se permite actualizarlo si la columna 'numero' (ID) estaba
+             * presente en el Excel — es decir, si el artículo fue identificado
+             * por su ID y el usuario quiso cambiar explícitamente el código de barras.
+             * Si no hay ID en $data, el bar_code fue usado para IDENTIFICAR el
+             * artículo (no para modificarlo) y debe quedar intacto.
+             */
+            if ($key === 'bar_code' && empty($data['id'])) continue;
+
             if (
                 $key == 'provider_id'
                 && !$this->actualizar_proveedor
