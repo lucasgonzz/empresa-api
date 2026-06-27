@@ -53,6 +53,7 @@ class AiExcelAnalyzer
      * @var array
      */
     protected const SYSTEM_PROPERTIES = [
+        'numero',
         'nombre',
         'codigo_de_barras',
         'sku',
