@@ -260,6 +260,17 @@ class ProcessRow {
                 'excel_column'  => 'descripcion',
                 'prop_key'      => 'descripcion',
             ],
+            // Magnitud del contenido del artículo (ej. 2.5 para "2.5 litros"); se parsea como número.
+            [
+                'excel_column'  => 'medida',
+                'prop_key'      => 'medida',
+                'is_number'     => true,
+            ],
+            // Descripción del contenido o empaque del artículo (texto general, no exclusivo de autopartes).
+            [
+                'excel_column'  => 'contenido',
+                'prop_key'      => 'contenido',
+            ],
         ];
         
         $this->iniciar();
@@ -336,6 +347,34 @@ class ProcessRow {
             $this->terminar('aplicar_iva');
         }
 
+        // Indica si el artículo está en oferta. Default 0 (no en oferta) si no viene la columna.
+        if (!ImportHelper::isIgnoredColumn('in_offer', $this->columns)) {
+            $this->iniciar();
+            $data['in_offer'] = $this->get_boolean_column($row, 'in_offer', 0);
+            $this->terminar('in_offer');
+        }
+
+        // Indica si el artículo está activo/disponible para la venta. Default 1 para no desactivar por error.
+        if (!ImportHelper::isIgnoredColumn('online', $this->columns)) {
+            $this->iniciar();
+            $data['online'] = $this->get_boolean_column($row, 'online', 1);
+            $this->terminar('online');
+        }
+
+        // Indica si el precio se muestra como "Consultar" en la tienda. Default 0 (precio visible).
+        if (!ImportHelper::isIgnoredColumn('precio_pausado', $this->columns)) {
+            $this->iniciar();
+            $data['precio_pausado'] = $this->get_boolean_column($row, 'precio_pausado', 0);
+            $this->terminar('precio_pausado');
+        }
+
+        // Indica si el artículo está disponible en Tienda Nube. Default 0 (no disponible).
+        if (!ImportHelper::isIgnoredColumn('disponible_tienda_nube', $this->columns)) {
+            $this->iniciar();
+            $data['disponible_tienda_nube'] = $this->get_boolean_column($row, 'disponible_tienda_nube', 0);
+            $this->terminar('disponible_tienda_nube');
+        }
+
         if (!ImportHelper::isIgnoredColumn('marca', $this->columns)) {
             $this->iniciar();
             $brand_id = ImportHelper::getColumnValue($row, 'marca', $this->columns);
@@ -358,7 +397,7 @@ class ProcessRow {
                 'pastilla'              => ImportHelper::getColumnValue($row, 'pastilla', $this->columns),
                 'diametro'              => ImportHelper::getColumnValue($row, 'diametro', $this->columns),
                 'litros'                => ImportHelper::getColumnValue($row, 'litros', $this->columns),
-                'contenido'             => ImportHelper::getColumnValue($row, 'contenido', $this->columns),
+                // 'contenido' se procesa ahora como campo general dentro de props_to_add.
                 'cm3'                   => ImportHelper::getColumnValue($row, 'cm3', $this->columns),
                 'calipers'              => ImportHelper::getColumnValue($row, 'calipers', $this->columns),
                 'juego'                 => ImportHelper::getColumnValue($row, 'juego', $this->columns),
@@ -1080,6 +1119,40 @@ class ProcessRow {
         }
 
         $this->log('merge_bar_code_duplicate: WARNING — bar_code=' . $bar_code . ' no encontrado en ninguna cola');
+    }
+
+    /**
+     * Convierte el valor de una columna del Excel a un booleano entero (1 o 0).
+     *
+     * Acepta variantes habituales de "sí" y "no" (Si/Sí/S/1/yes/true/verdadero y No/N/0/false/falso).
+     * Si la celda está vacía o el valor no coincide con ninguna variante conocida, retorna el default.
+     *
+     * @param  array  $row          Fila del Excel en proceso.
+     * @param  string $column_name  Clave de la columna en el mapeo de importación.
+     * @param  int    $default      Valor por defecto (0 o 1) cuando no hay dato reconocible.
+     * @return int                  1 (verdadero) o 0 (falso).
+     */
+    private function get_boolean_column($row, string $column_name, int $default = 0): int
+    {
+        // Valor crudo de la celda según el mapeo de columnas.
+        $value = ImportHelper::getColumnValue($row, $column_name, $this->columns);
+
+        if (is_null($value)) {
+            return $default;
+        }
+
+        // Normalizamos a minúsculas y sin espacios para comparar contra los conjuntos aceptados.
+        $normalized = strtolower(trim((string)$value));
+
+        if (in_array($normalized, ['si', 'sí', 's', '1', 'yes', 'y', 'true', 'verdadero'], true)) {
+            return 1;
+        }
+
+        if (in_array($normalized, ['no', 'n', '0', 'false', 'falso'], true)) {
+            return 0;
+        }
+
+        return $default;
     }
 
     function get_cost_in_dollars($row) {

@@ -106,6 +106,8 @@ class AiExcelImportController extends Controller
                 'excel_path'          => $excel_path,
                 /* Conteo real de filas de datos (excluye cabecera). */
                 'row_count'           => $analysis['row_count'] ?? 0,
+                /* Advertencias de alto nivel para mostrar al usuario antes de la tabla de mapeo. */
+                'assistant_notes'     => $analysis['assistant_notes'] ?? [],
                 /*
                  * Estadísticas de duplicados calculadas en backend (solo para model=article).
                  * Permite al frontend mostrar al usuario cuántos códigos están repetidos

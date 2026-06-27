@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\import\article;
 
+use App\Models\Address;
 use App\Models\Provider;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
@@ -63,8 +64,21 @@ class AiExcelAnalyzer
         'descripcion',
         'stock_actual',
         'descuentos',
+        'descuentos_montos',
         'recargos',
+        'recargos_montos',
         'proveedor',
+        // Propiedades planas adicionales importables (ya existen en BD y en ProcessRow).
+        'costo_en_dolares',
+        'aplicar_iva',
+        'unidad_medida',
+        'u_individuales',
+        'medida',
+        'contenido',
+        'in_offer',
+        'online',
+        'precio_pausado',
+        'disponible_tienda_nube',
     ];
 
     /**
@@ -108,9 +122,15 @@ class AiExcelAnalyzer
         $providers = $this->get_available_providers();
 
         /*
+         * Cargamos las sucursales (addresses) del usuario para que Claude aplique
+         * la regla de stock por sucursal. Solo necesitamos id y street para el prompt.
+         */
+        $addresses = $this->get_available_addresses();
+
+        /*
          * Paso 3: Construir el prompt y llamar a Claude.
          */
-        $prompt = $this->build_prompt($sample_data, $providers, $original_filename);
+        $prompt = $this->build_prompt($sample_data, $providers, $original_filename, $addresses);
 
         $claude_response = $this->call_claude($prompt);
 
@@ -183,6 +203,12 @@ class AiExcelAnalyzer
          * Primeras 5 filas de datos del Excel para la preview reactiva del paso 2 en el frontend.
          */
         $parsed['preview_rows'] = array_slice($sample_data['rows'], 0, 5);
+
+        /*
+         * Advertencias de alto nivel generadas por Claude para mostrar al usuario
+         * antes de la tabla de mapeo. Si no vino el campo, retornamos array vacío.
+         */
+        $parsed['assistant_notes'] = $parsed['assistant_notes'] ?? [];
 
         return $parsed;
     }
@@ -342,14 +368,35 @@ class AiExcelAnalyzer
     }
 
     /**
+     * Retorna las sucursales (addresses) del usuario como array simple.
+     *
+     * Solo se cargan id y street para minimizar el tamaño del prompt y para que
+     * Claude pueda aplicar la regla de stock por sucursal.
+     *
+     * @return array  Array de ['id' => int, 'street' => string]
+     */
+    protected function get_available_addresses(): array
+    {
+        return Address::where('user_id', $this->user_id)
+            ->orderBy('street', 'ASC')
+            ->get(['id', 'street'])
+            ->map(function ($a) {
+                return ['id' => $a->id, 'street' => $a->street];
+            })
+            ->values()
+            ->all();
+    }
+
+    /**
      * Construye el prompt que se envía a Claude con los datos del Excel y los proveedores.
      *
      * @param  array  $sample_data        Resultado de read_sample_rows()
      * @param  array  $providers          Lista de proveedores disponibles
      * @param  string $original_filename  Nombre original del archivo subido por el usuario
+     * @param  array  $addresses          Sucursales del usuario (['id' => int, 'street' => string]); vacío si no tiene
      * @return string                     Prompt completo listo para enviar a la API
      */
-    protected function build_prompt(array $sample_data, array $providers, string $original_filename = ''): string
+    protected function build_prompt(array $sample_data, array $providers, string $original_filename = '', array $addresses = []): string
     {
         /* Texto del nombre de archivo para el prompt (sin ruta, solo nombre + extensión). */
         $filename_for_prompt = trim(basename($original_filename));
@@ -378,6 +425,12 @@ class AiExcelAnalyzer
 
         /* Lista de propiedades del sistema que Claude puede asignar. */
         $system_properties_list = implode(', ', self::SYSTEM_PROPERTIES);
+
+        /*
+         * Indica a Claude si el usuario tiene sucursales (addresses) configuradas.
+         * Se usa para reemplazar el marcador {HAS_ADDRESSES} y aplicar la regla de stock por sucursal.
+         */
+        $has_addresses_text = !empty($addresses) ? 'Sí' : 'No';
 
         /*
          * El prompt le explica a Claude exactamente qué debe devolver y en qué formato.
@@ -425,6 +478,47 @@ Analizá el siguiente archivo Excel de importación de artículos y devolvé SOL
 - La `interpretation_note` para esta columna debe ser **null**: no requiere validación del usuario.
 - NO generes interpretation_note con mensajes del tipo "el sistema gestiona el proveedor globalmente": ese texto confunde al usuario.
 
+## Nuevas propiedades y reglas de mapeo
+
+Propiedades booleanas (valores aceptados: Si, No, 1, 0):
+- in_offer: si el artículo está en oferta (columnas como "Oferta", "En oferta", "Promoción", "Promo").
+- online: si el artículo está activo/disponible para la venta (columnas como "Activo", "Disponible", "Visible", "Online").
+- precio_pausado: si el precio se muestra como "Consultar" en la tienda en lugar del monto (columnas como "Precio pausado", "Consultar precio", "Precio oculto").
+- disponible_tienda_nube: si el artículo está disponible en Tienda Nube (columnas como "Tienda Nube", "TN", "Disponible online").
+- aplicar_iva: si el IVA se suma al costo para calcular el precio (default Si).
+
+Propiedades numéricas:
+- medida: magnitud del contenido del artículo (ej. 2.5 para "2.5 litros"). Columnas como "Medida", "Contenido", "Volumen", "Peso neto".
+- u_individuales: cuántas unidades individuales componen el artículo (columnas como "Unidades individuales", "U. individuales", "U individuales").
+
+Propiedades de texto:
+- unidad_medida: unidad de medida del artículo (columnas como "Unidad", "UM", "Unidad medida"). Valores posibles: el nombre tal como figura en el sistema.
+- contenido: descripción del contenido o empaque (columnas como "Contenido", "Envase", "Presentación"). Solo mapear si hay UNA columna de contenido y no hay una columna medida con valor numérico.
+- costo_en_dolares: reemplaza a "moneda". Si el costo está expresado en dólares. Columnas como "Moneda", "Divisa", "USD", "Costo en dólares".
+
+Regla crítica: descuentos vs descuentos_montos / recargos vs recargos_montos:
+- descuentos: la columna contiene descuentos expresados como porcentaje (ej: "10_5_3", valores sin símbolo \$). Los múltiples descuentos se concatenan con guion bajo.
+- descuentos_montos: la columna contiene descuentos expresados como montos en pesos/dólares (ej: "500_200", valores que son sumas de dinero). Los múltiples montos se concatenan con guion bajo.
+- recargos: la columna contiene recargos expresados como porcentaje (ej: "5_10F"). El sufijo F indica que ese recargo se aplica después del precio final.
+- recargos_montos: la columna contiene recargos expresados como montos en \$ (ej: "1000_500F").
+- Cuando el encabezado no aclara si es monto o porcentaje (ej: columna llamada simplemente "Recargos" o "Descuentos"), generá una interpretation_note explicando la ambigüedad y lo que se asumió.
+
+Regla: stock con sucursales:
+El usuario tiene sucursales configuradas: {HAS_ADDRESSES}
+- Si tiene sucursales configuradas (valor "Sí"): NO mapees ninguna columna a stock_actual. Si detectás una columna de stock genérico (sin nombre de sucursal específico), dejá system_property: null y generá una interpretation_note indicando: "El sistema trabaja con stock por sucursal. No podemos mapear esta columna automáticamente — seleccioná el depósito correspondiente desde el selector." Si la columna ya tiene el nombre de una sucursal específica, mapeala a stock_actual igualmente (eso lo maneja el paso siguiente).
+- Si no tiene sucursales (valor "No"): mapeá normalmente a stock_actual.
+
+## Campo assistant_notes
+Agregá al JSON de respuesta un array assistant_notes con strings en español (máximo 5 ítems). Cada ítem es una advertencia concisa de alto nivel para el usuario. Generá notas cuando:
+- Hay una columna ambigua entre descuentos porcentaje / monto.
+- Hay una columna ambigua entre recargos porcentaje / monto.
+- Detectás columna de stock con sucursales y no podés mapearla.
+- Detectás columna que podría ser nombre o descripcion y lo mapeaste con baja confianza.
+- Hay columnas que no pudiste mapear a ninguna propiedad y que parecen importantes (no vacías).
+Cada nota debe ser accionable: decirle al usuario qué columna revisar y qué opciones tiene.
+Si no hay nada que aclarar, devolvé "assistant_notes": [].
+Ejemplo de nota: "La columna «Recargos» no especifica si son porcentajes o montos. La mapeamos como «Recargos (%)» — verificá en la tabla si corresponde cambiarla a «Recargos (montos)»."
+
 4. Devolvé EXCLUSIVAMENTE el siguiente JSON sin texto adicional:
 
 {
@@ -437,7 +531,8 @@ Analizá el siguiente archivo Excel de importación de artículos y devolvé SOL
     }
   ],
   "provider_id": null,
-  "provider_confidence": "alto"
+  "provider_confidence": "alto",
+  "assistant_notes": []
 }
 
 Notas:
@@ -446,7 +541,14 @@ Notas:
 - provider_confidence debe ser "alto", "medio" o "bajo"
 - provider_id debe ser el ID numérico del proveedor o null si no se puede inferir
 - Devolvé SOLO el JSON, sin markdown ni texto adicional
+- assistant_notes: array de strings en español (máx. 5) con advertencias de alto nivel; vacío si no hay nada que aclarar
 PROMPT;
+
+        /*
+         * Reemplazamos el marcador dinámico de sucursales: "Sí" si el usuario tiene
+         * addresses configuradas, "No" en caso contrario. Esto activa la regla de stock por sucursal.
+         */
+        $prompt = str_replace('{HAS_ADDRESSES}', $has_addresses_text, $prompt);
 
         return $prompt;
     }
@@ -606,10 +708,24 @@ PROMPT;
             $provider_confidence = 'bajo';
         }
 
+        /*
+         * Extraemos assistant_notes: array de strings con advertencias de alto nivel.
+         * Filtramos cualquier valor que no sea string y, si el campo no existe, retornamos array vacío.
+         */
+        $assistant_notes = [];
+        if (isset($parsed['assistant_notes']) && is_array($parsed['assistant_notes'])) {
+            foreach ($parsed['assistant_notes'] as $note) {
+                if (is_string($note) && trim($note) !== '') {
+                    $assistant_notes[] = trim($note);
+                }
+            }
+        }
+
         return [
             'column_mapping'      => $parsed['column_mapping'],
             'provider_id'         => $provider_id,
             'provider_confidence' => $provider_confidence,
+            'assistant_notes'     => $assistant_notes,
         ];
     }
 
