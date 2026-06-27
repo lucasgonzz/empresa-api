@@ -748,3 +748,6 @@ Route::middleware('admin.api.key')
         // Canal "sistema:" de WhatsApp: consulta de datos del owner (stock, ventas, facturas, clientes).
         Route::post('sistema-query', 'AdminSync\\SistemaQueryController@query_data');
     });
+
+// Reporte de errores del SPA (sin auth — puede ocurrir antes del login)
+Route::post('internal/report-front-error', [\App\Http\Controllers\Internal\ErrorReportController::class, 'store']);
