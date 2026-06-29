@@ -18,8 +18,10 @@ class ArticleImportColumnsNormalizer
      * @var array<string, string>
      */
     protected static $property_aliases = [
-        'codigo_proveedor' => 'codigo_de_proveedor',
-        'codigo_barras'    => 'codigo_de_barras',
+        'codigo_proveedor'  => 'codigo_de_proveedor',
+        'codigo_barras'     => 'codigo_de_barras',
+        // La IA mapea "costo_en_dolares"; ProcessRow lee la columna "moneda" para get_cost_in_dollars().
+        'costo_en_dolares'  => 'moneda',
     ];
 
     /**

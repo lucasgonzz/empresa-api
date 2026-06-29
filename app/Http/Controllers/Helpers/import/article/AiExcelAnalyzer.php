@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\import\article;
 
+use App\Models\Address;
 use App\Models\Provider;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
@@ -38,9 +39,12 @@ class AiExcelAnalyzer
     /**
      * Tokens máximos para la respuesta de Claude.
      *
+     * Se eleva a 4000 porque al incluir depósitos y listas de precio el prompt
+     * es más largo y la respuesta (column_mapping con propiedades codificadas) puede ser más extensa.
+     *
      * @var int
      */
-    protected const MAX_TOKENS = 2000;
+    protected const MAX_TOKENS = 4000;
 
     /**
      * Lista de propiedades del sistema importables que Claude puede identificar.
@@ -49,6 +53,7 @@ class AiExcelAnalyzer
      * @var array
      */
     protected const SYSTEM_PROPERTIES = [
+        'numero',
         'nombre',
         'codigo_de_barras',
         'sku',
@@ -63,7 +68,21 @@ class AiExcelAnalyzer
         'descripcion',
         'stock_actual',
         'descuentos',
+        'descuentos_montos',
         'recargos',
+        'recargos_montos',
+        'proveedor',
+        // Propiedades planas adicionales importables (ya existen en BD y en ProcessRow).
+        'costo_en_dolares',
+        'aplicar_iva',
+        'unidad_medida',
+        'u_individuales',
+        'medida',
+        'contenido',
+        'in_offer',
+        'online',
+        'precio_pausado',
+        'disponible_tienda_nube',
     ];
 
     /**
@@ -107,16 +126,29 @@ class AiExcelAnalyzer
         $providers = $this->get_available_providers();
 
         /*
+         * Cargamos las sucursales (addresses) del usuario para que Claude aplique
+         * la regla de stock por sucursal. Solo necesitamos id y street para el prompt.
+         */
+        $addresses = $this->get_available_addresses();
+
+        /*
+         * Cargamos las listas de precio (price types) del usuario para que Claude
+         * pueda mapear columnas de precio/margen por lista. Solo id y name para el prompt.
+         */
+        $price_types = $this->get_available_price_types();
+
+        /*
          * Paso 3: Construir el prompt y llamar a Claude.
          */
-        $prompt = $this->build_prompt($sample_data, $providers, $original_filename);
+        $prompt = $this->build_prompt($sample_data, $providers, $original_filename, $addresses, $price_types);
 
         $claude_response = $this->call_claude($prompt);
 
         /*
          * Paso 4: Parsear y validar el JSON devuelto por Claude.
+         * Pasamos addresses y price_types para validar los IDs codificados que devuelva Claude.
          */
-        $parsed = $this->parse_claude_response($claude_response, $providers);
+        $parsed = $this->parse_claude_response($claude_response, $providers, $addresses, $price_types);
 
         /*
          * Paso 5: Enriquecer cada columna con letra Excel, índice 0-based y confianza normalizada
@@ -182,6 +214,12 @@ class AiExcelAnalyzer
          * Primeras 5 filas de datos del Excel para la preview reactiva del paso 2 en el frontend.
          */
         $parsed['preview_rows'] = array_slice($sample_data['rows'], 0, 5);
+
+        /*
+         * Advertencias de alto nivel generadas por Claude para mostrar al usuario
+         * antes de la tabla de mapeo. Si no vino el campo, retornamos array vacío.
+         */
+        $parsed['assistant_notes'] = $parsed['assistant_notes'] ?? [];
 
         return $parsed;
     }
@@ -341,14 +379,56 @@ class AiExcelAnalyzer
     }
 
     /**
+     * Retorna las sucursales (addresses) del usuario como array simple.
+     *
+     * Solo se cargan id y street para minimizar el tamaño del prompt y para que
+     * Claude pueda aplicar la regla de stock por sucursal.
+     *
+     * @return array  Array de ['id' => int, 'street' => string]
+     */
+    protected function get_available_addresses(): array
+    {
+        return Address::where('user_id', $this->user_id)
+            ->orderBy('id', 'ASC')
+            ->get(['id', 'street'])
+            ->map(function ($a) {
+                return ['id' => $a->id, 'street' => $a->street];
+            })
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Retorna las listas de precio (price types) del usuario como array simple.
+     *
+     * Solo se cargan id y name para minimizar el tamaño del prompt y para que
+     * Claude pueda mapear columnas de precio/margen por lista de precio.
+     *
+     * @return array  Array de ['id' => int, 'name' => string]
+     */
+    protected function get_available_price_types(): array
+    {
+        return \App\Models\PriceType::where('user_id', $this->user_id)
+            ->orderBy('position', 'ASC')
+            ->get(['id', 'name'])
+            ->map(function ($pt) {
+                return ['id' => $pt->id, 'name' => $pt->name];
+            })
+            ->values()
+            ->all();
+    }
+
+    /**
      * Construye el prompt que se envía a Claude con los datos del Excel y los proveedores.
      *
      * @param  array  $sample_data        Resultado de read_sample_rows()
      * @param  array  $providers          Lista de proveedores disponibles
      * @param  string $original_filename  Nombre original del archivo subido por el usuario
+     * @param  array  $addresses          Sucursales del usuario (['id' => int, 'street' => string]); vacío si no tiene
+     * @param  array  $price_types        Listas de precio del usuario (['id' => int, 'name' => string]); vacío si no tiene
      * @return string                     Prompt completo listo para enviar a la API
      */
-    protected function build_prompt(array $sample_data, array $providers, string $original_filename = ''): string
+    protected function build_prompt(array $sample_data, array $providers, string $original_filename = '', array $addresses = [], array $price_types = []): string
     {
         /* Texto del nombre de archivo para el prompt (sin ruta, solo nombre + extensión). */
         $filename_for_prompt = trim(basename($original_filename));
@@ -377,6 +457,75 @@ class AiExcelAnalyzer
 
         /* Lista de propiedades del sistema que Claude puede asignar. */
         $system_properties_list = implode(', ', self::SYSTEM_PROPERTIES);
+
+        /*
+         * Indica a Claude si el usuario tiene sucursales (addresses) configuradas.
+         * Se usa para reemplazar el marcador {HAS_ADDRESSES} y aplicar la regla de stock por sucursal.
+         */
+        $has_addresses_text = !empty($addresses) ? 'Sí' : 'No';
+
+        /*
+         * Sección de depósitos: solo se incluye si el usuario tiene sucursales configuradas.
+         * Lista cada depósito con su ID y explica el sistema de system_property codificado
+         * (address_{id}_amount / _min / _max) que el frontend sabe expandir.
+         */
+        $addresses_section = '';
+        if (!empty($addresses)) {
+            /* Listado de depósitos en formato "- ID {id}: {street}". */
+            $addresses_lines = '';
+            foreach ($addresses as $address) {
+                $addresses_lines .= "- ID {$address['id']}: {$address['street']}\n";
+            }
+
+            $addresses_section = <<<ADDR
+## Depósitos (sucursales) disponibles
+{$addresses_lines}
+## Instrucciones para columnas de stock por depósito
+
+El usuario tiene sucursales/depósitos configurados. El stock SOLO puede modificarse a nivel de cada depósito — NO existe una columna de stock global cuando hay depósitos.
+
+Para cada columna del Excel que parezca contener stock de un depósito específico:
+- Si la columna contiene el nombre (o parte del nombre) de un depósito → mapeala con:
+  system_property: "address_{id}_amount"   (donde {id} es el ID del depósito)
+- Si la columna contiene stock mínimo de un depósito → system_property: "address_{id}_min"
+- Si la columna contiene stock máximo de un depósito → system_property: "address_{id}_max"
+
+Si encontrás una columna de stock genérico (sin referencia a una sucursal) → system_property: null.
+Generá una interpretation_note para esa columna: "Esta columna parece ser stock global, pero el sistema trabaja con stock por sucursal. Seleccioná el depósito correspondiente en el selector."
+
+ADDR;
+        }
+
+        /*
+         * Sección de listas de precio: solo se incluye si el usuario tiene price_types configurados.
+         * Lista cada lista de precio con su ID y explica el sistema de system_property codificado
+         * (price_type_{id}_final_price / _percentage / _setear) que el frontend sabe expandir.
+         */
+        $price_types_section = '';
+        if (!empty($price_types)) {
+            /* Listado de listas de precio en formato "- ID {id}: {name}". */
+            $price_types_lines = '';
+            foreach ($price_types as $price_type) {
+                $price_types_lines .= "- ID {$price_type['id']}: {$price_type['name']}\n";
+            }
+
+            $price_types_section = <<<PT
+## Listas de precio disponibles
+{$price_types_lines}
+## Instrucciones para columnas de listas de precio
+
+Si detectás columnas del Excel relacionadas con listas de precio, mapeá cada una así:
+- Columna de precio final para la lista "{name}" → system_property: "price_type_{id}_final_price"
+- Columna de porcentaje/margen para la lista "{name}" → system_property: "price_type_{id}_percentage"
+- Columna que indica si setear precio manualmente (Si/No) para la lista "{name}" → system_property: "price_type_{id}_setear"
+
+Patrones comunes de nombre de columna en Excel:
+- "\$ Final {nombre_lista}", "Precio {nombre_lista}", "PVP {nombre_lista}" → final_price
+- "% {nombre_lista}", "Margen {nombre_lista}", "Ganancia {nombre_lista}" → percentage
+- "Setear {nombre_lista}", "Manual {nombre_lista}", "Fijar {nombre_lista}" → setear
+
+PT;
+        }
 
         /*
          * El prompt le explica a Claude exactamente qué debe devolver y en qué formato.
@@ -417,6 +566,57 @@ Analizá el siguiente archivo Excel de importación de artículos y devolvé SOL
 - Solo mapeá una columna a system_property **descripcion** cuando YA identificaste otra columna distinta mapeada a **nombre** (es decir: hay nombre de producto en una columna y texto complementario en otra).
 - Si existen columnas separadas "Nombre" y "Descripción", mapeá "Nombre" → nombre (confidence alta) y "Descripción" → descripcion solo si el contenido parece texto complementario; si la segunda sigue siendo el nombre largo del producto, mapeala a nombre o null, nunca a descripcion.
 
+## Regla especial: columna de proveedor por fila
+- Si el Excel tiene una columna cuyos valores son **nombres de proveedores distintos por fila** (por ejemplo, una columna llamada "Proveedor", "Prov.", "Distribuidor" o similar, donde cada fila tiene el nombre de un proveedor diferente), mapeala a system_property **proveedor**.
+- Esta regla aplica cuando los valores de la columna varían por fila conteniendo nombres de proveedores. La instrucción 3 (inferir proveedor global) aplica cuando TODO el archivo pertenece a un único proveedor y no hay una columna explícita de proveedor.
+- Cuando una columna quedó mapeada a **proveedor**, el campo **provider_id** del JSON raíz debe ser **null** (porque el proveedor se determina fila a fila, no globalmente).
+- La `interpretation_note` para esta columna debe ser **null**: no requiere validación del usuario.
+- NO generes interpretation_note con mensajes del tipo "el sistema gestiona el proveedor globalmente": ese texto confunde al usuario.
+
+## Nuevas propiedades y reglas de mapeo
+
+Propiedades booleanas (valores aceptados: Si, No, 1, 0):
+- in_offer: si el artículo está en oferta (columnas como "Oferta", "En oferta", "Promoción", "Promo").
+- online: si el artículo está activo/disponible para la venta (columnas como "Activo", "Disponible", "Visible", "Online").
+- precio_pausado: si el precio se muestra como "Consultar" en la tienda en lugar del monto (columnas como "Precio pausado", "Consultar precio", "Precio oculto").
+- disponible_tienda_nube: si el artículo está disponible en Tienda Nube (columnas como "Tienda Nube", "TN", "Disponible online").
+- numero: número único interno del artículo (ID de la base de datos). SOLO mapear si el encabezado dice claramente "Número", "Num", "N°", "ID", "Cod" o similar y los valores son enteros positivos que parecen IDs internos. NO inferir por los datos: requiere encabezado explícito. Esta propiedad indica que el Excel fue exportado desde el sistema y permite identificar artículos por su ID interno (incluso para actualizar el código de barras).
+- aplicar_iva: si el IVA se suma al costo para calcular el precio (default Si).
+
+Propiedades numéricas:
+- medida: magnitud del contenido del artículo (ej. 2.5 para "2.5 litros"). Columnas como "Medida", "Contenido", "Volumen", "Peso neto".
+- u_individuales: cuántas unidades individuales componen el artículo (columnas como "Unidades individuales", "U. individuales", "U individuales").
+
+Propiedades de texto:
+- unidad_medida: unidad de medida del artículo (columnas como "Unidad", "UM", "Unidad medida"). Valores posibles: el nombre tal como figura en el sistema.
+- contenido: descripción del contenido o empaque (columnas como "Contenido", "Envase", "Presentación"). Solo mapear si hay UNA columna de contenido y no hay una columna medida con valor numérico.
+- `costo_en_dolares` (IMPORTANTE: siempre usar este nombre exacto en el JSON — NUNCA escribas "moneda" como valor de system_property): indica si el costo del artículo está en dólares. Columnas típicas en el Excel: "Moneda", "Divisa", "USD", "Costo en dólares", "Costo USD". Valores posibles en las celdas: "dólar", "dolar", "dolares", "dólares", "USD", "u\$s", "dollar" → la columna corresponde a esta propiedad (el sistema interpretará esos valores como verdadero). "peso", "pesos", "ARS" también confirman que la columna es `costo_en_dolares` (el sistema los tratará como falso). Mapeá la columna aunque los valores sean "peso/dólar" en lugar de "Si/No".
+
+Regla crítica: descuentos vs descuentos_montos / recargos vs recargos_montos:
+- descuentos: la columna contiene descuentos expresados como porcentaje (ej: "10_5_3", valores sin símbolo \$). Los múltiples descuentos se concatenan con guion bajo.
+- descuentos_montos: la columna contiene descuentos expresados como montos en pesos/dólares (ej: "500_200", valores que son sumas de dinero). Los múltiples montos se concatenan con guion bajo.
+- recargos: la columna contiene recargos expresados como porcentaje (ej: "5_10F"). El sufijo F indica que ese recargo se aplica después del precio final.
+- recargos_montos: la columna contiene recargos expresados como montos en \$ (ej: "1000_500F").
+- Cuando el encabezado no aclara si es monto o porcentaje (ej: columna llamada simplemente "Recargos" o "Descuentos"), generá una interpretation_note explicando la ambigüedad y lo que se asumió.
+
+Regla: stock con sucursales:
+El usuario tiene sucursales configuradas: {HAS_ADDRESSES}
+- Si tiene sucursales configuradas (valor "Sí"): NO mapees ninguna columna a stock_actual. Si detectás una columna de stock genérico (sin nombre de sucursal específico), dejá system_property: null y generá una interpretation_note indicando: "El sistema trabaja con stock por sucursal. No podemos mapear esta columna automáticamente — seleccioná el depósito correspondiente desde el selector." Si la columna ya tiene el nombre de una sucursal específica, mapeala a stock_actual igualmente (eso lo maneja el paso siguiente).
+- Si no tiene sucursales (valor "No"): mapeá normalmente a stock_actual.
+
+{ADDRESSES_SECTION}
+{PRICE_TYPES_SECTION}
+## Campo assistant_notes
+Agregá al JSON de respuesta un array assistant_notes con strings en español (máximo 5 ítems). Cada ítem es una advertencia concisa de alto nivel para el usuario. Generá notas cuando:
+- Hay una columna ambigua entre descuentos porcentaje / monto.
+- Hay una columna ambigua entre recargos porcentaje / monto.
+- Detectás columna de stock con sucursales y no podés mapearla.
+- Detectás columna que podría ser nombre o descripcion y lo mapeaste con baja confianza.
+- Hay columnas que no pudiste mapear a ninguna propiedad y que parecen importantes (no vacías).
+Cada nota debe ser accionable: decirle al usuario qué columna revisar y qué opciones tiene.
+Si no hay nada que aclarar, devolvé "assistant_notes": [].
+Ejemplo de nota: "La columna «Recargos» no especifica si son porcentajes o montos. La mapeamos como «Recargos (%)» — verificá en la tabla si corresponde cambiarla a «Recargos (montos)»."
+
 4. Devolvé EXCLUSIVAMENTE el siguiente JSON sin texto adicional:
 
 {
@@ -429,7 +629,8 @@ Analizá el siguiente archivo Excel de importación de artículos y devolvé SOL
     }
   ],
   "provider_id": null,
-  "provider_confidence": "alto"
+  "provider_confidence": "alto",
+  "assistant_notes": []
 }
 
 Notas:
@@ -438,7 +639,22 @@ Notas:
 - provider_confidence debe ser "alto", "medio" o "bajo"
 - provider_id debe ser el ID numérico del proveedor o null si no se puede inferir
 - Devolvé SOLO el JSON, sin markdown ni texto adicional
+- assistant_notes: array de strings en español (máx. 5) con advertencias de alto nivel; vacío si no hay nada que aclarar
 PROMPT;
+
+        /*
+         * Reemplazamos el marcador dinámico de sucursales: "Sí" si el usuario tiene
+         * addresses configuradas, "No" en caso contrario. Esto activa la regla de stock por sucursal.
+         */
+        $prompt = str_replace('{HAS_ADDRESSES}', $has_addresses_text, $prompt);
+
+        /*
+         * Reemplazamos las secciones dinámicas de depósitos y listas de precio.
+         * Si el usuario no tiene addresses o price_types, el marcador se reemplaza por vacío
+         * y el comportamiento existente (stock_actual / listas) se mantiene sin cambios.
+         */
+        $prompt = str_replace('{ADDRESSES_SECTION}', $addresses_section, $prompt);
+        $prompt = str_replace('{PRICE_TYPES_SECTION}', $price_types_section, $prompt);
 
         return $prompt;
     }
@@ -536,11 +752,13 @@ PROMPT;
      *
      * @param  string $claude_text  Texto crudo devuelto por Claude
      * @param  array  $providers    Proveedores del usuario (para validar provider_id)
+     * @param  array  $addresses    Sucursales del usuario (para validar IDs en address_{id}_*)
+     * @param  array  $price_types  Listas de precio del usuario (para validar IDs en price_type_{id}_*)
      * @return array                Array con claves: column_mapping, provider_id, provider_confidence
      *
      * @throws \RuntimeException  Si el JSON no puede parsearse o tiene estructura inválida
      */
-    protected function parse_claude_response(string $claude_text, array $providers = []): array
+    protected function parse_claude_response(string $claude_text, array $providers = [], array $addresses = [], array $price_types = []): array
     {
         /*
          * Limpiamos posibles bloques de código markdown que Claude pueda incluir
@@ -598,10 +816,57 @@ PROMPT;
             $provider_confidence = 'bajo';
         }
 
+        /*
+         * Validar IDs de depósitos y listas de precio en el column_mapping.
+         * Claude puede devolver system_property codificado (address_{id}_{sub} / price_type_{id}_{sub}).
+         * Si el ID no pertenece al usuario, descartamos el mapeo (system_property = null) para no
+         * referenciar un depósito o lista inexistente que ProcessRow no podría resolver.
+         */
+        $valid_address_ids    = array_column($addresses, 'id');
+        $valid_price_type_ids = array_column($price_types, 'id');
+
+        foreach ($parsed['column_mapping'] as &$col) {
+            $prop = $col['system_property'] ?? null;
+            if (is_null($prop)) continue;
+
+            // Validar address_{id}_{sub_tipo}
+            if (preg_match('/^address_(\d+)_(amount|min|max)$/', $prop, $m)) {
+                $address_id = (int) $m[1];
+                if (!in_array($address_id, $valid_address_ids, true)) {
+                    $col['system_property'] = null; // ID inválido → ignorar
+                }
+                continue;
+            }
+
+            // Validar price_type_{id}_{sub_tipo}
+            if (preg_match('/^price_type_(\d+)_(final_price|percentage|setear)$/', $prop, $m)) {
+                $pt_id = (int) $m[1];
+                if (!in_array($pt_id, $valid_price_type_ids, true)) {
+                    $col['system_property'] = null; // ID inválido → ignorar
+                }
+                continue;
+            }
+        }
+        unset($col);
+
+        /*
+         * Extraemos assistant_notes: array de strings con advertencias de alto nivel.
+         * Filtramos cualquier valor que no sea string y, si el campo no existe, retornamos array vacío.
+         */
+        $assistant_notes = [];
+        if (isset($parsed['assistant_notes']) && is_array($parsed['assistant_notes'])) {
+            foreach ($parsed['assistant_notes'] as $note) {
+                if (is_string($note) && trim($note) !== '') {
+                    $assistant_notes[] = trim($note);
+                }
+            }
+        }
+
         return [
             'column_mapping'      => $parsed['column_mapping'],
             'provider_id'         => $provider_id,
             'provider_confidence' => $provider_confidence,
+            'assistant_notes'     => $assistant_notes,
         ];
     }
 
@@ -649,7 +914,15 @@ PROMPT;
 
             /* Alineamos system_property al contrato del importador (codigo_de_proveedor, etc.). */
             $system_property = $mapping_item['system_property'] ?? null;
-            if (!is_null($system_property)) {
+            /*
+             * Solo normalizar propiedades planas — las codificadas con address_/price_type_
+             * se pasan tal cual porque el normalizer no las conoce y las dejaría en null.
+             */
+            if (
+                !is_null($system_property)
+                && strpos($system_property, 'address_') !== 0
+                && strpos($system_property, 'price_type_') !== 0
+            ) {
                 $system_property = ArticleImportColumnsNormalizer::normalize_property_key($system_property);
             }
 
@@ -661,6 +934,13 @@ PROMPT;
                     $interpretation_note = null;
                 }
             } else {
+                $interpretation_note = null;
+            }
+
+            /*
+             * Si la columna fue mapeada a 'proveedor', no mostrar nota: es un mapeo directo sin ambigüedad.
+             */
+            if ($system_property === 'proveedor' && !is_null($interpretation_note)) {
                 $interpretation_note = null;
             }
 
@@ -964,8 +1244,8 @@ Si provider_code NO existe, no recomiendes provider_code como clave_identidad.
 Si ninguno de los dos existe, recomendá name.
 
 Decisión 1 - clave_identidad: qué campo usar para identificar un artículo como "el mismo".
-- "bar_code": usar solo si la columna bar_code está disponible Y no tiene duplicados dentro del Excel (bar_codes_duplicados_intra_archivo = 0). Es la opción más confiable cuando aplica.
-- "provider_code": usar cuando bar_code no está disponible o tiene duplicados. Es la opción más común en listas de proveedor.
+- "bar_code": usar cuando la columna bar_code está disponible. Es la clave de identidad natural para artículos y siempre debe preferirse cuando existe. Si hay bar_codes repetidos en el Excel (bar_codes_duplicados_intra_archivo > 0), igualmente se usa bar_code como clave: el sistema garantiza que no se crean artículos con bar_code repetido procesando un único artículo por código, actualizándolo con la información de la última fila del Excel que lo contenga.
+- "provider_code": usar cuando bar_code no está disponible. Es la opción más común en listas de proveedor.
 - "name": último recurso, solo si ni bar_code ni provider_code están disponibles.
 
 IMPORTANTE: solo podés recomendar una clave si esa columna existe en el Excel (ver "Columnas disponibles" arriba).
@@ -985,6 +1265,7 @@ Para el campo "explicacion":
 - Si provider_codes_existentes_mismo_proveedor = 0 explicá que se van a crear los artículos (primera importación).
 - Si provider_codes_existentes_mismo_proveedor > 0 explicá que se van a actualizar artículos existentes.
 - Si provider_codes_existentes_otros_proveedores > 0, agregá una advertencia breve de que hay códigos que también existen en artículos de otros proveedores, y que el sistema NO los va a tocar a menos que el usuario lo habilite manualmente.
+- Si bar_codes_duplicados_intra_archivo > 0, mencioná explícitamente que se detectaron códigos de barras repetidos en el archivo y que el sistema los procesará correctamente: importará un único artículo por código, quedando con la información de la última fila del Excel que lo contenga.
 - NUNCA uses términos técnicos internos: nada de "provider_code", "bar_code", "actualizar_todos", "actualizar_uno", "crear_nuevo", "clave_identidad", "politica_colision", "intra_archivo", ni ninguna clave del sistema.
 - Hablá como si le explicaras a un comerciante qué va a pasar con sus artículos.
 - Máximo 3 oraciones claras y directas.
@@ -1058,15 +1339,14 @@ PROMPT;
 
             /*
              * Fallback heurístico: prioridad bar_code → provider_code → name.
-             * Si la columna no existe en el Excel, se descarta aunque sea la preferida.
-             * Esto evita el caso donde Claude alucina bar_code cuando no hay columna mapeada.
+             * Bar_code siempre se prefiere cuando está disponible, incluso con duplicados,
+             * porque el sistema garantiza que no se crean artículos con bar_code repetido
+             * (la última aparición en el Excel sobrescribe a las anteriores).
              */
-            if ($tiene_bar_code && $stats['bar_codes_duplicados_intra_archivo'] === 0) {
+            if ($tiene_bar_code) {
                 $clave_fallback = 'bar_code';
             } elseif ($tiene_provider_code) {
                 $clave_fallback = 'provider_code';
-            } elseif ($tiene_bar_code) {
-                $clave_fallback = 'bar_code';
             } else {
                 $clave_fallback = 'name';
             }

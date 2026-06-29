@@ -236,7 +236,8 @@ class ActualizarBBDD {
                             || $column === 'stock_global'
                             || $column === 'stock_addresses'
                             || $column === 'variants_data'
-                            || str_contains($column, '__diff__') 
+                            /* Excluir campos internos de tracking (prefijo __): __bar_code, __diff__X, etc. */
+                            || strncmp($column, '__', 2) === 0 
 
                             || is_null($value)
                             || $value === ''

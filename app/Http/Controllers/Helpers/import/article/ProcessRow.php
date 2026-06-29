@@ -260,6 +260,17 @@ class ProcessRow {
                 'excel_column'  => 'descripcion',
                 'prop_key'      => 'descripcion',
             ],
+            // Magnitud del contenido del artículo (ej. 2.5 para "2.5 litros"); se parsea como número.
+            [
+                'excel_column'  => 'medida',
+                'prop_key'      => 'medida',
+                'is_number'     => true,
+            ],
+            // Descripción del contenido o empaque del artículo (texto general, no exclusivo de autopartes).
+            [
+                'excel_column'  => 'contenido',
+                'prop_key'      => 'contenido',
+            ],
         ];
         
         $this->iniciar();
@@ -336,6 +347,34 @@ class ProcessRow {
             $this->terminar('aplicar_iva');
         }
 
+        // Indica si el artículo está en oferta. Default 0 (no en oferta) si no viene la columna.
+        if (!ImportHelper::isIgnoredColumn('in_offer', $this->columns)) {
+            $this->iniciar();
+            $data['in_offer'] = $this->get_boolean_column($row, 'in_offer', 0);
+            $this->terminar('in_offer');
+        }
+
+        // Indica si el artículo está activo/disponible para la venta. Default 1 para no desactivar por error.
+        if (!ImportHelper::isIgnoredColumn('online', $this->columns)) {
+            $this->iniciar();
+            $data['online'] = $this->get_boolean_column($row, 'online', 1);
+            $this->terminar('online');
+        }
+
+        // Indica si el precio se muestra como "Consultar" en la tienda. Default 0 (precio visible).
+        if (!ImportHelper::isIgnoredColumn('precio_pausado', $this->columns)) {
+            $this->iniciar();
+            $data['precio_pausado'] = $this->get_boolean_column($row, 'precio_pausado', 0);
+            $this->terminar('precio_pausado');
+        }
+
+        // Indica si el artículo está disponible en Tienda Nube. Default 0 (no disponible).
+        if (!ImportHelper::isIgnoredColumn('disponible_tienda_nube', $this->columns)) {
+            $this->iniciar();
+            $data['disponible_tienda_nube'] = $this->get_boolean_column($row, 'disponible_tienda_nube', 0);
+            $this->terminar('disponible_tienda_nube');
+        }
+
         if (!ImportHelper::isIgnoredColumn('marca', $this->columns)) {
             $this->iniciar();
             $brand_id = ImportHelper::getColumnValue($row, 'marca', $this->columns);
@@ -358,7 +397,7 @@ class ProcessRow {
                 'pastilla'              => ImportHelper::getColumnValue($row, 'pastilla', $this->columns),
                 'diametro'              => ImportHelper::getColumnValue($row, 'diametro', $this->columns),
                 'litros'                => ImportHelper::getColumnValue($row, 'litros', $this->columns),
-                'contenido'             => ImportHelper::getColumnValue($row, 'contenido', $this->columns),
+                // 'contenido' se procesa ahora como campo general dentro de props_to_add.
                 'cm3'                   => ImportHelper::getColumnValue($row, 'cm3', $this->columns),
                 'calipers'              => ImportHelper::getColumnValue($row, 'calipers', $this->columns),
                 'juego'                 => ImportHelper::getColumnValue($row, 'juego', $this->columns),
@@ -388,6 +427,14 @@ class ProcessRow {
                 // $this->log('Fila repetida tratada como VARIANTE del artículo base');
                 return;
             }
+            // Si la coincidencia fue por bar_code, la última fila gana:
+            // actualizar el artículo ya encolado con los datos de esta fila.
+            if (!empty($data['bar_code'])) {
+                $this->merge_bar_code_duplicate($data, $row);
+                $this->sumar_durations();
+                return $this->observations;
+            }
+
             $this->articles_repetidos++;
             $this->log('SE OMITIO EN PROCES ROW (fila repetida sin propiedades de variante)');
             return;
@@ -1001,6 +1048,12 @@ class ProcessRow {
 
             $cambios['id'] = $articulo_ya_creado->id;
 
+            // Guardar bar_code para identificar este artículo si el mismo bar_code
+            // vuelve a aparecer en el Excel (última fila gana).
+            if (!empty($data['bar_code'])) {
+                $cambios['__bar_code'] = $data['bar_code'];
+            }
+
             // $cambios['variants_data'] = []; // 👈
 
             $this->articulosParaActualizar[] = $cambios;
@@ -1016,18 +1069,119 @@ class ProcessRow {
         // return $cambios;
     }
 
+    /**
+     * Cuando el bar_code de la fila actual ya fue procesado en una fila anterior del mismo Excel,
+     * actualiza el artículo ya encolado con los datos de esta fila (última fila gana).
+     *
+     * Si el artículo es nuevo (pendiente de INSERT), reutiliza merge_fila_en_articulo_para_crear_pendiente.
+     * Si el artículo ya existía en BD (pendiente de UPDATE), hace un merge directo en articulosParaActualizar.
+     */
+    protected function merge_bar_code_duplicate(array $data, $row): void
+    {
+        $bar_code = $data['bar_code'];
+
+        // Intentar resolver el artículo desde el índice en RAM por bar_code
+        $article_id_in_index = $this->article_index['bar_codes'][$bar_code] ?? null;
+
+        // --- 1. Es un fake (artículo nuevo pendiente de INSERT en este import) ---
+        if ($article_id_in_index && str_starts_with((string) $article_id_in_index, 'fake_')) {
+
+            $fake_id = (string) $article_id_in_index;
+            $fake_article = ArticleIndexCache::get_runtime_fake_article((int) $this->user->id, $fake_id);
+
+            if ($fake_article instanceof \App\Models\Article) {
+                $this->merge_fila_en_articulo_para_crear_pendiente($fake_article, $data, $row);
+                $this->log('merge_bar_code_duplicate: bar_code=' . $bar_code . ' actualizado via merge_fila_en_articulo_para_crear_pendiente (fake_id=' . $fake_id . ')');
+                return;
+            }
+
+            $this->log('merge_bar_code_duplicate: WARNING — fake_id=' . $fake_id . ' no encontrado en runtime para bar_code=' . $bar_code);
+            return;
+        }
+
+        // --- 2. Es un artículo real de BD (en articulosParaActualizar, guardado con __bar_code) ---
+        foreach ($this->articulosParaActualizar as $idx => $art) {
+
+            if (!isset($art['__bar_code']) || $art['__bar_code'] !== $bar_code) {
+                continue;
+            }
+
+            $article_id = $art['id'];
+
+            $merged = array_merge($art, $data);
+            $merged['id'] = $article_id;
+            $merged['__bar_code'] = $bar_code;
+
+            $this->articulosParaActualizar[$idx] = $merged;
+
+            $this->log('merge_bar_code_duplicate: bar_code=' . $bar_code . ' actualizado en articulosParaActualizar[' . $idx . '] (id=' . $article_id . ')');
+            return;
+        }
+
+        $this->log('merge_bar_code_duplicate: WARNING — bar_code=' . $bar_code . ' no encontrado en ninguna cola');
+    }
+
+    /**
+     * Convierte el valor de una columna del Excel a un booleano entero (1 o 0).
+     *
+     * Acepta variantes habituales de "sí" y "no" (Si/Sí/S/1/yes/true/verdadero y No/N/0/false/falso).
+     * Si la celda está vacía o el valor no coincide con ninguna variante conocida, retorna el default.
+     *
+     * @param  array  $row          Fila del Excel en proceso.
+     * @param  string $column_name  Clave de la columna en el mapeo de importación.
+     * @param  int    $default      Valor por defecto (0 o 1) cuando no hay dato reconocible.
+     * @return int                  1 (verdadero) o 0 (falso).
+     */
+    private function get_boolean_column($row, string $column_name, int $default = 0): int
+    {
+        // Valor crudo de la celda según el mapeo de columnas.
+        $value = ImportHelper::getColumnValue($row, $column_name, $this->columns);
+
+        if (is_null($value)) {
+            return $default;
+        }
+
+        // Normalizamos a minúsculas y sin espacios para comparar contra los conjuntos aceptados.
+        $normalized = strtolower(trim((string)$value));
+
+        if (in_array($normalized, ['si', 'sí', 's', '1', 'yes', 'y', 'true', 'verdadero'], true)) {
+            return 1;
+        }
+
+        if (in_array($normalized, ['no', 'n', '0', 'false', 'falso'], true)) {
+            return 0;
+        }
+
+        return $default;
+    }
+
     function get_cost_in_dollars($row) {
         $cost_in_dollars = 0;
 
         $moneda = ImportHelper::getColumnValue($row, 'moneda', $this->columns);
-        
-        if (
-            $moneda == 'USD'
-            || $moneda == 'usd'
-        ) {
+
+        if (is_null($moneda)) {
+            return $cost_in_dollars;
+        }
+
+        $valor = strtolower(trim((string) $moneda));
+
+        /*
+         * Valores reconocidos como "costo en dólares = verdadero":
+         * USD, u$s, dolar, dólar, dolares, dólares, dollar, dollars, 1, true, si, sí, s, yes, y
+         * Todo lo demás (peso, pesos, ars, 0, no, false, etc.) se toma como falso.
+         */
+        $valores_dolar = [
+            'usd', 'u$s',
+            'dolar', 'dólar', 'dolares', 'dólares', 'dollar', 'dollars',
+            '1', 'true', 'si', 'sí', 's', 'yes', 'y',
+        ];
+
+        if (in_array($valor, $valores_dolar, true)) {
             $this->log('Costo en dolares');
             $cost_in_dollars = 1;
         }
+
         return $cost_in_dollars;
     }
 
@@ -1155,6 +1309,16 @@ class ProcessRow {
         foreach ($data as $key => $value) {
             // ignorar campos que no queremos comparar
             if (in_array($key, ['id', 'created_at', 'updated_at'])) continue;
+
+            /*
+             * bar_code es la clave de identidad natural del artículo.
+             * Solo se permite actualizarlo si la columna 'numero' (ID) estaba
+             * presente en el Excel — es decir, si el artículo fue identificado
+             * por su ID y el usuario quiso cambiar explícitamente el código de barras.
+             * Si no hay ID en $data, el bar_code fue usado para IDENTIFICAR el
+             * artículo (no para modificarlo) y debe quedar intacto.
+             */
+            if ($key === 'bar_code' && empty($data['id'])) continue;
 
             if (
                 $key == 'provider_id'

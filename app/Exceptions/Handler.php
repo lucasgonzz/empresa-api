@@ -2,11 +2,8 @@
 
 namespace App\Exceptions;
 
-use App\Http\Controllers\Helpers\UserHelper;
-use App\Mail\ErrorHandler;
 use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\ValidationException;
 use Throwable;
 
@@ -18,7 +15,8 @@ class Handler extends ExceptionHandler
      * @var array<int, class-string<Throwable>>
      */
     protected $dontReport = [
-        //
+        \Illuminate\Auth\AuthenticationException::class,
+        \Illuminate\Validation\ValidationException::class,
     ];
 
     /**
@@ -41,11 +39,7 @@ class Handler extends ExceptionHandler
     {
         $this->reportable(function (Throwable $e) {
             Log::error('Error: ', ['error' => $e]);
-            if (config('app.APP_ENV') == 'production' && env('SEND_MAILS', false)) {
-                $owner_user = UserHelper::getFullModel();
-                $auth_user = UserHelper::getFullModel(false);
-                Mail::to('lucasgonzalez5500@gmail.com')->send(new ErrorHandler($owner_user, $auth_user, $e));
-            }
+            (new \App\Services\GitHubErrorReporterService())->report($e);
         });
     }
 
