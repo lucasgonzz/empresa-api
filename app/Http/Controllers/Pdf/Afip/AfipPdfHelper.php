@@ -696,10 +696,10 @@ class AfipPdfHelper
          */
         $left_x = $page_left;
         $left_w = 97;
-        $col_desc_w = 46;
-        $col_det_w = 18;
-        $col_alic_w = 13;
-        $col_imp_w = 20;
+        $col_desc_w = 55;
+        $col_det_w = 15;
+        $col_alic_w = 10;
+        $col_imp_w = 17;
 
         /**
          * Título con borde inferior solamente, como en el modelo AFIP.
@@ -805,7 +805,7 @@ class AfipPdfHelper
         /**
          * Caja de conversión a pesos para ventas en moneda extranjera.
          */
-        if ((int) $sale->moneda_id === 2 && (float) $sale->valor_dolar > 0) {
+        if ((int) $sale->moneda_id === 2 && (float) $sale->valor_dolar > 0 && $cbte_letra === 'E') {
             $total_pesos = $total * (float) $sale->valor_dolar;
             self::print_footer_conversion_box($pdf, $page_left, $page_width, $sale->valor_dolar, $total_pesos);
         }
@@ -877,7 +877,7 @@ class AfipPdfHelper
         $inner_pad = 2;
         $text_width = 145;
 
-        $conversion_text = 'El total de este comprobante expresado en moneda de curso legal - Pesos Argentinos - considerándose un tipo de cambio consignado de '
+        $conversion_text = 'El total de este comprobante expresado en Dólar Estadounidense - considerándose un tipo de cambio consignado de '
             .number_format((float) $tipo_cambio, 6, ',', '.')
             .' asciende a:';
 
@@ -889,7 +889,7 @@ class AfipPdfHelper
         $pdf->y = $box_y + 3;
         $pdf->x = $x + $text_width;
         $pdf->SetFont('Arial', 'B', 10);
-        $pdf->Cell($width - $text_width - $inner_pad, 5, '$ '.Numbers::price($total_pesos, true), 0, 0, 'R');
+        $pdf->Cell($width - $text_width - $inner_pad, 5, '$ '.Numbers::price($total_pesos), 0, 0, 'R');
 
         self::draw_box($pdf, $x, $box_y, $width, $box_h);
         $pdf->y = $box_y + $box_h;
