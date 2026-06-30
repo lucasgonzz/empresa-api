@@ -26,7 +26,8 @@ class OnlineConfigurationController extends Controller
         $model->online_price_surchage           = $request->online_price_surchage;                      
         $model->instagram                       = $request->instagram;                     
         $model->facebook                        = $request->facebook;                     
-        $model->quienes_somos                   = $request->quienes_somos;                     
+        $model->quienes_somos                   = $request->quienes_somos;
+        $model->aviso_antes_de_confirmar_compra = $request->aviso_antes_de_confirmar_compra;
         $model->default_article_image_url       = $request->default_article_image_url;                     
         $model->logo_url                        = $request->logo_url;                     
         $model->primary_color                   = $request->primary_color;
