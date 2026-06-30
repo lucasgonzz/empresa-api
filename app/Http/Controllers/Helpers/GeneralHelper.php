@@ -78,12 +78,12 @@ class GeneralHelper {
     static function getModelName($model_name) {
         $model_name = 'App\Models\/'.ucfirst($model_name);
         $model_name = str_replace('/', '', $model_name);
-        if (str_contains($model_name, '_')) {
+        if (strpos($model_name, '_') !== false) {
             $pos = strpos($model_name, '_');
             $sub_str = substr($model_name, $pos+1);
             $model_name = substr($model_name, 0, $pos).ucfirst($sub_str);
         }
-        if (str_contains($model_name, '-')) {
+        if (strpos($model_name, '-') !== false) {
             $pos = strpos($model_name, '-');
             $sub_str = substr($model_name, $pos+1);
             $model_name = substr($model_name, 0, $pos).ucfirst($sub_str);
@@ -94,7 +94,7 @@ class GeneralHelper {
     static function getImportColumns($request) {
         $props = [];
         foreach ($request->all() as $key => $value) {
-            if (str_contains($key, 'prop_')) {
+            if (strpos($key, 'prop_') !== false) {
                 if ($value != '' && $value != -1) {
                     $props[strtolower(substr($key, strpos($key, '_')+1))] = (int)$value-1;
                 } 

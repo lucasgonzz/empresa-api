@@ -277,30 +277,30 @@ class VenderController extends Controller
                 $matched_keywords = collect($keywords)->filter(function ($word) use ($article, $search_bar_code_en_vender) {
                     $word_lower = mb_strtolower($word, 'UTF-8');
 
-                    if (str_contains(
+                    if (strpos(
                             mb_strtolower($article->name ?? '', 'UTF-8'),
                             $word_lower
-                        ) ||
-                        str_contains(
+                        ) !== false ||
+                        strpos(
                             mb_strtolower($article->provider_code ?? '', 'UTF-8'),
                             $word_lower
-                        )) {
+                        ) !== false) {
                         return true;
                     }
 
                     if ($search_bar_code_en_vender) {
-                        if (str_contains(
+                        if (strpos(
                                 mb_strtolower($article->bar_code ?? '', 'UTF-8'),
                                 $word_lower
-                            )) {
+                            ) !== false) {
                             return true;
                         }
 
                         foreach ($article->article_variants as $variant) {
-                            if (str_contains(
+                            if (strpos(
                                     mb_strtolower($variant->bar_code ?? '', 'UTF-8'),
                                     $word_lower
-                                )) {
+                                ) !== false) {
                                 return true;
                             }
                         }
@@ -348,10 +348,10 @@ class VenderController extends Controller
                     // Filtrar variantes que coincidan con todas las palabras restantes
                     $matching_variants = $article->article_variants->filter(function ($variant) use ($remaining_keywords) {
                         foreach ($remaining_keywords as $word) {
-                            if (!str_contains(
+                            if (strpos(
                                     mb_strtolower($variant->variant_description ?? '', 'UTF-8'),
                                     mb_strtolower($word, 'UTF-8')
-                                )) {
+                                ) === false) {
                                 return false;
                             }
                         }

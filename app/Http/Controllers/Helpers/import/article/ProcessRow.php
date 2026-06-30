@@ -750,7 +750,7 @@ class ProcessRow {
 
         $fake_id = $articulo->getAttribute('fake_id');
 
-        return is_string($fake_id) && str_starts_with($fake_id, 'fake_');
+        return is_string($fake_id) && strncmp($fake_id, 'fake_', strlen('fake_')) === 0;
     }
 
     /**
@@ -1084,7 +1084,7 @@ class ProcessRow {
         $article_id_in_index = $this->article_index['bar_codes'][$bar_code] ?? null;
 
         // --- 1. Es un fake (artículo nuevo pendiente de INSERT en este import) ---
-        if ($article_id_in_index && str_starts_with((string) $article_id_in_index, 'fake_')) {
+        if ($article_id_in_index && strncmp((string) $article_id_in_index, 'fake_', strlen('fake_')) === 0) {
 
             $fake_id = (string) $article_id_in_index;
             $fake_article = ArticleIndexCache::get_runtime_fake_article((int) $this->user->id, $fake_id);
@@ -2648,7 +2648,7 @@ class ProcessRow {
         /* Chequear bar_code contra el índice de bar_codes. */
         if (!empty($data['bar_code'])) {
             $idx = $this->article_index['bar_codes'][(string)$data['bar_code']] ?? null;
-            if (!is_null($idx) && !str_starts_with((string)$idx, 'fake_')) {
+            if (!is_null($idx) && strncmp((string)$idx, 'fake_', strlen('fake_')) !== 0) {
                 return true;
             }
         }
@@ -2660,7 +2660,7 @@ class ProcessRow {
 
             if (is_array($pc_index)) {
                 foreach ($pc_index as $id) {
-                    if (!str_starts_with((string)$id, 'fake_')) {
+                    if (strncmp((string)$id, 'fake_', strlen('fake_')) !== 0) {
                         return true;
                     }
                 }

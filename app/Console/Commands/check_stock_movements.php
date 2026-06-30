@@ -373,7 +373,7 @@ class check_stock_movements extends Command
             
         foreach ($stock_movements as $stock_movement) {
             
-            if (str_contains($stock_movement->concepto->name, 'Se elimino de la venta')) {
+            if (strpos($stock_movement->concepto->name, 'Se elimino de la venta') !== false) {
 
                 $num_venta = substr($stock_movement->concepto->name, 23);
                 

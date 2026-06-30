@@ -202,10 +202,10 @@ class CheckStockMovements extends Command
 
             // Si es un movimiento entre depósitos, el stock no cambia
             if (
-                str_contains($movimiento->concepto, 'Act de depositos')  
-                || str_contains($movimiento->concepto, 'Creacion de deposito')
-                || str_contains($movimiento->concepto, 'Mov. Deposito')  
-                || str_contains($movimiento->concepto, 'Movimiento de depositos')
+                strpos($movimiento->concepto, 'Act de depositos') !== false
+                || strpos($movimiento->concepto, 'Creacion de deposito') !== false
+                || strpos($movimiento->concepto, 'Mov. Deposito') !== false
+                || strpos($movimiento->concepto, 'Movimiento de depositos') !== false
                 ) {
 
                 $movimiento->stock_resultante = $stockActual;
@@ -216,11 +216,11 @@ class CheckStockMovements extends Command
                 // Calcular el stock resultante
 
                 $amount = $movimiento->amount;
-                if (str_contains($movimiento->concepto, 'Venta')
-                    && !str_contains($movimiento->concepto, 'Restauracion')
-                    && !str_contains($movimiento->concepto, 'Nota credito')
-                    && !str_contains($movimiento->concepto, 'Act. Venta')
-                    && !str_contains($movimiento->concepto, 'Eliminacion de venta')
+                if (strpos($movimiento->concepto, 'Venta') !== false
+                    && strpos($movimiento->concepto, 'Restauracion') === false
+                    && strpos($movimiento->concepto, 'Nota credito') === false
+                    && strpos($movimiento->concepto, 'Act. Venta') === false
+                    && strpos($movimiento->concepto, 'Eliminacion de venta') === false
                     && $movimiento->amount > 0) {
                     $amount = -$movimiento->amount;
                 }
@@ -258,7 +258,7 @@ class CheckStockMovements extends Command
             
         foreach ($stock_movements as $stock_movement) {
             
-            if (str_contains($stock_movement->concepto, 'Se elimino de la venta')) {
+            if (strpos($stock_movement->concepto, 'Se elimino de la venta') !== false) {
 
                 $num_venta = substr($stock_movement->concepto, 23);
                 

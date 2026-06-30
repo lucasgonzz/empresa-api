@@ -42,7 +42,7 @@ class ArticleIndexCache
      */
     public static function get_runtime_fake_article(int $user_id, string $fake_id): ?Article
     {
-        if ($fake_id === '' || !str_starts_with($fake_id, 'fake_')) {
+        if ($fake_id === '' || strncmp($fake_id, 'fake_', strlen('fake_')) !== 0) {
             return null;
         }
 
@@ -82,7 +82,7 @@ class ArticleIndexCache
 
             $as_string = (string) $raw_id;
 
-            if (str_starts_with($as_string, 'fake_')) {
+            if (strncmp($as_string, 'fake_', strlen('fake_')) === 0) {
 
                 $fake_ids_ordered[$as_string] = true;
             } else {
@@ -549,7 +549,7 @@ class ArticleIndexCache
                      * Devolver la colección para que ProcessRow actualice todos los artículos existentes.
                      */
                     $real_ids = array_values(array_filter($article_ids, function ($id) {
-                        return !str_starts_with((string) $id, 'fake_');
+                        return strncmp((string) $id, 'fake_', strlen('fake_')) !== 0;
                     }));
 
                     if (empty($real_ids)) {
@@ -601,7 +601,7 @@ class ArticleIndexCache
         // }
 
         // Puede ser id numérico (BD) o fake_* (pendiente de insert en el mismo import)
-        if (is_string($article_id) && str_starts_with((string) $article_id, 'fake_')) {
+        if (is_string($article_id) && strncmp((string) $article_id, 'fake_', strlen('fake_')) === 0) {
 
             $from_ram = self::get_runtime_fake_article($user_id, (string) $article_id);
 
@@ -647,7 +647,7 @@ class ArticleIndexCache
             // Referencia al modelo fake para find_with_index / whereIn no aplica en BD
             if (
                 is_string($article_id)
-                && str_starts_with($article_id, 'fake_')
+                && strncmp($article_id, 'fake_', strlen('fake_')) === 0
             ) {
 
                 $uid = (int) $article->user_id;
@@ -719,7 +719,7 @@ class ArticleIndexCache
         if (!empty($article->bar_code)) {
 
             if (isset($index['bar_codes'][$article->bar_code]) &&
-                str_starts_with((string) $index['bar_codes'][$article->bar_code], 'fake_')) {
+                strncmp((string) $index['bar_codes'][$article->bar_code], 'fake_', strlen('fake_')) === 0) {
 
                 $fake_id_bar = (string) $index['bar_codes'][$article->bar_code];
 
@@ -737,7 +737,7 @@ class ArticleIndexCache
             if (!empty($article->sku)) {
 
                 if (isset($index['skus'][$article->sku]) &&
-                    str_starts_with((string) $index['skus'][$article->sku], 'fake_')) {
+                    strncmp((string) $index['skus'][$article->sku], 'fake_', strlen('fake_')) === 0) {
 
                     $fake_id_sku = (string) $index['skus'][$article->sku];
 
@@ -771,13 +771,13 @@ class ArticleIndexCache
                         // múltiples ids → eliminar solo fakes; liberar registro en RAM por cada fake
                         foreach ($entry as $id_en_entry) {
 
-                            if (str_starts_with((string) $id_en_entry, 'fake_')) {
+                            if (strncmp((string) $id_en_entry, 'fake_', strlen('fake_')) === 0) {
                                 self::forget_runtime_fake_article((int) $article->user_id, (string) $id_en_entry);
                             }
                         }
 
                         $sin_fakes = array_values(array_filter($entry, function ($id) {
-                            return !str_starts_with((string) $id, 'fake_');
+                            return strncmp((string) $id, 'fake_', strlen('fake_')) !== 0;
                         }));
 
                         if (count($sin_fakes) === 0) {
@@ -791,7 +791,7 @@ class ArticleIndexCache
 
                     } else {
                         // single id
-                        if (str_starts_with((string) $entry, 'fake_')) {
+                        if (strncmp((string) $entry, 'fake_', strlen('fake_')) === 0) {
 
                             self::forget_runtime_fake_article((int) $article->user_id, (string) $entry);
                             unset($index['provider_codes'][$prov_id][$prov_code]);
@@ -811,7 +811,7 @@ class ArticleIndexCache
             // c) Si existe fake en names
             if (!empty($article->name)) {
                 if (isset($index['names'][$name_key]) &&
-                    str_starts_with((string) $index['names'][$name_key], 'fake_')) {
+                    strncmp((string) $index['names'][$name_key], 'fake_', strlen('fake_')) === 0) {
 
                     $fake_id_name = (string) $index['names'][$name_key];
 

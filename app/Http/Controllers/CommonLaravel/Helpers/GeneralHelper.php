@@ -92,7 +92,7 @@ class GeneralHelper {
         if (! is_array($file_headers) || ! isset($file_headers[0])) {
             return false;
         }
-        if (str_contains($file_headers[0], '404 Not Found')) {
+        if (strpos($file_headers[0], '404 Not Found') !== false) {
             return false;
         }
 
@@ -153,12 +153,12 @@ class GeneralHelper {
     static function getModelName($model_name) {
         $model_name = 'App\Models\!'.ucfirst($model_name);
         $model_name = str_replace('!', '', $model_name);
-        while (str_contains($model_name, '_')) {
+        while (strpos($model_name, '_') !== false) {
             $pos = strpos($model_name, '_');
             $sub_str = substr($model_name, $pos+1);
             $model_name = substr($model_name, 0, $pos).ucfirst($sub_str);
         }
-        while (str_contains($model_name, '-')) {
+        while (strpos($model_name, '-') !== false) {
             $pos = strpos($model_name, '-');
             $sub_str = substr($model_name, $pos+1);
             $model_name = substr($model_name, 0, $pos).ucfirst($sub_str);
@@ -169,7 +169,7 @@ class GeneralHelper {
     static function getImportColumns($request) {
         $props = [];
         foreach ($request->all() as $key => $value) {
-            if (str_contains($key, 'prop_')) {
+            if (strpos($key, 'prop_') !== false) {
                 // Log::info($key.': '.$value);
                 if ($value != '' && $value != -1 && $value != '-1') {
                     $props[strtolower(substr($key, strpos($key, '_')+1))] = (int)$value-1;

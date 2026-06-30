@@ -26,7 +26,7 @@ class BuyerController extends Controller
         }
 
         if (
-            str_contains(config('app.APP_URL'), 'truvari')
+            strpos(config('app.APP_URL'), 'truvari') !== false
             && isset($request->phone)
         ) {
             $password = 'truvari'.substr($request->phone, -3);

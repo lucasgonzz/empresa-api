@@ -741,14 +741,14 @@ class AfipWsfeHelper extends Controller
     {
         $message = mb_strtolower((string) $message);
 
-        return str_contains($message, 'could not connect to host')
-            || str_contains($message, 'failed to connect')
-            || str_contains($message, 'timed out')
-            || str_contains($message, 'operation timed out')
-            || str_contains($message, 'connection reset')
-            || str_contains($message, 'name or service not known')
-            || str_contains($message, 'temporary failure in name resolution')
-            || str_contains($message, 'http request failed')
-            || str_contains($message, 'ssl');
+        return strpos($message, 'could not connect to host') !== false
+            || strpos($message, 'failed to connect') !== false
+            || strpos($message, 'timed out') !== false
+            || strpos($message, 'operation timed out') !== false
+            || strpos($message, 'connection reset') !== false
+            || strpos($message, 'name or service not known') !== false
+            || strpos($message, 'temporary failure in name resolution') !== false
+            || strpos($message, 'http request failed') !== false
+            || strpos($message, 'ssl') !== false;
     }
 }

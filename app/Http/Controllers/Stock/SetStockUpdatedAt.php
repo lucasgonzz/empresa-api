@@ -8,8 +8,8 @@ class SetStockUpdatedAt  {
     static function set_stock_updated_at($stock_movement, $article) {
 
         if (
-            !str_contains($stock_movement->concepto_movement->name, 'Venta')
-            && !str_contains($stock_movement->concepto_movement->name, 'venta')
+            strpos($stock_movement->concepto_movement->name, 'Venta') === false
+            && strpos($stock_movement->concepto_movement->name, 'venta') === false
         ) {
             $article->stock_updated_at = $stock_movement->created_at;
             $article->timestamps = false;
