@@ -26,7 +26,7 @@ class Article extends Model
     // protected $appends = ['costo_real'];
 
     function scopeWithAll($query) {
-        $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'article_variants.addresses', 'addresses', 'price_types', 'article_discounts_blanco', 'article_surchages', 'article_surchages_blanco', 'price_type_monedas', 'meli_category', 'article_ubications', 'article_price_ranges', 'providers', 'sales_with_deliveries_in_acopio');
+        $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'article_variants.addresses', 'addresses', 'price_types', 'article_discounts_blanco', 'article_surchages', 'article_surchages_blanco', 'price_type_monedas', 'meli_category', 'article_ubications', 'article_price_ranges', 'providers', 'sales_with_deliveries_in_acopio', 'provider');
     }
 
     public function article_price_ranges()
