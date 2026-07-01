@@ -99,7 +99,10 @@ class ImportHelper {
 			}
 		} elseif (strpos($normalized, ',') !== false) {
 			$normalized = str_replace(',', '.', $normalized);
-		} elseif (preg_match('/\.\d{3}$/', $normalized) === 0) {
+		} elseif (preg_match('/^-?\d{1,3}(\.\d{3})+$/', $normalized) === 1) {
+			// Solo se interpreta el punto como separador de miles cuando TODO el valor
+			// son grupos de exactamente 3 dígitos (ej: "1.234" o "12.345.678").
+			// Cualquier otro caso se interpreta como decimal (ej: "3330.95", "2.5").
 			$normalized = str_replace('.', '', $normalized);
 		}
 

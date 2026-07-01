@@ -391,19 +391,19 @@ class ArticleOfferSheetPdf extends fpdf
 
         $name = mb_strtolower(trim($article->unidad_medida->name), 'UTF-8');
 
-        if (str_contains($name, 'gramo') && !str_contains($name, 'kilo')) {
+        if (strpos($name, 'gramo') !== false && strpos($name, 'kilo') === false) {
             $per = $final / $medida * 1000;
             return '$'.Numbers::price($per).' el kilo';
         }
-        if (str_contains($name, 'kilo')) {
+        if (strpos($name, 'kilo') !== false) {
             $per = $final / $medida;
             return '$'.Numbers::price($per).' el kilo';
         }
-        if ($name === 'ml' || str_contains($name, 'mililitro')) {
+        if ($name === 'ml' || strpos($name, 'mililitro') !== false) {
             $per = $final / $medida * 1000;
             return '$'.Numbers::price($per).' el litro';
         }
-        if (str_contains($name, 'litro')) {
+        if (strpos($name, 'litro') !== false) {
             $per = $final / $medida;
             return '$'.Numbers::price($per).' el litro';
         }

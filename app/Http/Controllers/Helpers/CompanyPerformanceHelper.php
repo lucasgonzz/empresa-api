@@ -142,10 +142,10 @@ class CompanyPerformanceHelper {
                 ->first();
 
             /* Asignar los valores de deuda desde el snapshot (null si no hay snapshot disponible) */
-            $company_performance->deuda_clientes        = $snapshot?->deuda_clientes ?? null;
-            $company_performance->deuda_clientes_usd    = $snapshot?->deuda_clientes_usd ?? null;
-            $company_performance->deuda_proveedores     = $snapshot?->deuda_proveedores ?? null;
-            $company_performance->deuda_proveedores_usd = $snapshot?->deuda_proveedores_usd ?? null;
+            $company_performance->deuda_clientes        = $snapshot ? $snapshot->deuda_clientes : null;
+            $company_performance->deuda_clientes_usd    = $snapshot ? $snapshot->deuda_clientes_usd : null;
+            $company_performance->deuda_proveedores     = $snapshot ? $snapshot->deuda_proveedores : null;
+            $company_performance->deuda_proveedores_usd = $snapshot ? $snapshot->deuda_proveedores_usd : null;
 
             /* Flag para que el frontend sepa si hay datos históricos de deuda para este segmento */
             $company_performance->snapshot_disponible = !is_null($snapshot);

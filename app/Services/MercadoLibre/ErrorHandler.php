@@ -115,12 +115,12 @@ class ErrorHandler
             return;
         }
 
-        if ($skip_if_meli_api && str_contains($exception->getMessage(), 'Mercado Libre API error:')) {
+        if ($skip_if_meli_api && strpos($exception->getMessage(), 'Mercado Libre API error:') !== false) {
             return;
         }
 
         $detail = $exception->getMessage();
-        if (str_contains($detail, 'cURL error 60') || str_contains($detail, 'SSL certificate problem')) {
+        if (strpos($detail, 'cURL error 60') !== false || strpos($detail, 'SSL certificate problem') !== false) {
             $detail = 'Problema de certificados SSL en el servidor (común en WAMP local). '
                 .'Agregá MERCADO_LIBRE_GUZZLE_VERIFY_SSL=false en .env o configurá MERCADO_LIBRE_GUZZLE_CA_BUNDLE con cacert.pem. '
                 .'Detalle técnico: '.$detail;

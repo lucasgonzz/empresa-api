@@ -165,8 +165,8 @@ class set_conceptos_stock_movements extends Command
         }
 
         if (
-            !str_contains($stock_movement->concepto, 'Restauracion')
-            && !str_contains($stock_movement->concepto, 'Eliminacion Nota C.')
+            strpos($stock_movement->concepto, 'Restauracion') === false
+            && strpos($stock_movement->concepto, 'Eliminacion Nota C.') === false
         ) {
 
             $this->info('No se encontro concepto para stock_movement id: '.$stock_movement->id);

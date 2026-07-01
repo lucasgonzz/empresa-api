@@ -10,10 +10,30 @@ class TableColumnPreferenceCrudController extends Controller
 {
     public function index()
     {
-        $models = TableColumnPreference::where('user_id', $this->userId())
-            ->orderBy('model_name')
-            ->orderBy('preference_type')
-            ->get();
+        // Id real del usuario autenticado (dueño o empleado) y del dueño de la cuenta.
+        $real_user_id = $this->userId(false);
+        $owner_id = $this->userId(true);
+
+        $mine = TableColumnPreference::where('user_id', $real_user_id)->get();
+
+        if ($real_user_id == $owner_id) {
+            $models = $mine;
+        } else {
+            $owner_models = TableColumnPreference::where('user_id', $owner_id)->get();
+
+            $mine_keys = $mine->map(function ($item) {
+                return $item->model_name . '|' . $item->preference_type;
+            })->all();
+
+            // Del dueño, solo lo que el empleado todavia no reemplazo con su propio override.
+            $fallback = $owner_models->filter(function ($item) use ($mine_keys) {
+                return !in_array($item->model_name . '|' . $item->preference_type, $mine_keys, true);
+            });
+
+            $models = $mine->concat($fallback)->values();
+        }
+
+        $models = $models->sortBy('model_name')->sortBy('preference_type')->values();
 
         return response()->json(['models' => $models], 200);
     }

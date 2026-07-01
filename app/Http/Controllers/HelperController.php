@@ -2112,12 +2112,12 @@ class HelperController extends Controller
 
         foreach ($clients as $client) {
             
-            if (!is_null($client->cuit) 
+            if (!is_null($client->cuit)
                 && (
-                    str_contains($client->cuit, '-')
-                    || str_contains($client->cuit, '_')
-                    || str_contains($client->cuit, ' ')
-                    || str_contains($client->cuit, '.')
+                    strpos($client->cuit, '-') !== false
+                    || strpos($client->cuit, '_') !== false
+                    || strpos($client->cuit, ' ') !== false
+                    || strpos($client->cuit, '.') !== false
                 )
             ) {
 
@@ -3789,7 +3789,7 @@ class HelperController extends Controller
             foreach ($models as $model) {
                 $images = Image::where('article_id', $model->id)->get();
                 foreach($images as $image) {
-                    if (str_contains($image->hosting_url, 'https://api-beta.comerciocity.com/storage')) {
+                    if (strpos($image->hosting_url, 'https://api-beta.comerciocity.com/storage') !== false) {
                         $new = substr($image->hosting_url, 0, 34).'public/'.substr($image->hosting_url, 34);
                         $image->imageable_id = $model->id;
                         $image->imageable_type = 'article';
@@ -3876,7 +3876,7 @@ class HelperController extends Controller
     }
 
     function checkImageUrl($url) {
-        if (str_contains($url, 'https://api-beta.comerciocity.com/public/public')) {
+        if (strpos($url, 'https://api-beta.comerciocity.com/public/public') !== false) {
             $url = substr($url, 0, 41).substr($url, 48);
             echo 'Nueva url: '.$url.' </br>';
         }

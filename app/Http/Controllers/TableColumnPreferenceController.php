@@ -51,10 +51,22 @@ class TableColumnPreferenceController extends Controller
     {
         $this->assert_preference_type($preference_type);
 
-        $model = TableColumnPreference::where('user_id', $this->userId())
+        // Id real del usuario autenticado (dueño o empleado) y del dueño de la cuenta.
+        $real_user_id = $this->userId(false);
+        $owner_id = $this->userId(true);
+
+        $model = TableColumnPreference::where('user_id', $real_user_id)
             ->where('model_name', $model_name)
             ->where('preference_type', $preference_type)
             ->first();
+
+        // El usuario (empleado) no tiene override propio: cae a la config compartida del dueño.
+        if (!$model && $real_user_id != $owner_id) {
+            $model = TableColumnPreference::where('user_id', $owner_id)
+                ->where('model_name', $model_name)
+                ->where('preference_type', $preference_type)
+                ->first();
+        }
 
         return response()->json([
             'model' => $model,
@@ -86,7 +98,8 @@ class TableColumnPreferenceController extends Controller
 
         $model = TableColumnPreference::updateOrCreate(
             [
-                'user_id' => $this->userId(),
+                // Cada usuario (dueño o empleado) guarda su propia fila, sin pisar la de otros.
+                'user_id' => $this->userId(false),
                 'model_name' => $model_name,
                 'preference_type' => $preference_type,
             ],

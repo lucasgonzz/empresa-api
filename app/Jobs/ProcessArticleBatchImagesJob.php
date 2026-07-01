@@ -71,11 +71,15 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
      */
     public function handle()
     {
-        $processed         = 0;
-        $skipped           = 0;
-        $skipped_names     = [];
-        $needs_review      = 0;
-        $needs_review_items = [];
+        $processed              = 0;
+        $skipped                = 0;
+        $skipped_names          = [];
+        $skipped_by_quota       = 0;
+        $skipped_by_quota_names = [];
+        $quota_reached          = false;
+        $attempted_article_ids  = [];
+        $needs_review           = 0;
+        $needs_review_items     = [];
 
         $counter = $this->get_or_create_counter();
 
@@ -86,6 +90,8 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
         ));
 
         foreach ($this->article_ids as $article_id) {
+            $attempted_article_ids[] = $article_id;
+
             $article = Article::where('id', $article_id)
                 ->where('user_id', $this->user_id)
                 ->first();
@@ -96,8 +102,9 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
 
             /* Verificar cuota antes de cada búsqueda; terminar loop si se agotó. */
             if ($counter->counter >= $this->google_cuota) {
-                $skipped++;
-                $skipped_names[] = $this->get_article_display_name($article);
+                $quota_reached = true;
+                $skipped_by_quota++;
+                $skipped_by_quota_names[] = $this->get_article_display_name($article);
                 Log::info('ProcessArticleBatchImagesJob: cuota agotada, deteniendo procesamiento.', [
                     'user_id' => $this->user_id,
                     'counter' => $counter->counter,
@@ -173,8 +180,9 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
             }
 
             if ($quota_exceeded && $saved_url === null) {
-                $skipped++;
-                $skipped_names[] = $this->get_article_display_name($article);
+                $quota_reached = true;
+                $skipped_by_quota++;
+                $skipped_by_quota_names[] = $this->get_article_display_name($article);
                 Log::info('ProcessArticleBatchImagesJob: cuota agotada, deteniendo procesamiento.', [
                     'user_id' => $this->user_id,
                     'counter' => $counter->counter,
@@ -223,6 +231,25 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
             ]);
         }
 
+        /*
+         * Si el corte fue por cuota agotada, sumar también los artículos que quedaron
+         * sin siquiera intentarse (el break del foreach corta antes de llegar a ellos).
+         */
+        if ($quota_reached) {
+            $remaining_ids = array_diff($this->article_ids, $attempted_article_ids);
+
+            if (!empty($remaining_ids)) {
+                $remaining_articles = Article::whereIn('id', $remaining_ids)
+                    ->where('user_id', $this->user_id)
+                    ->get();
+
+                foreach ($remaining_articles as $remaining_article) {
+                    $skipped_by_quota++;
+                    $skipped_by_quota_names[] = $this->get_article_display_name($remaining_article);
+                }
+            }
+        }
+
         /* Emitir evento Pusher con el resumen del procesamiento batch. */
         event(new ArticleBatchImagesProcessed(
             $this->user_id,
@@ -230,14 +257,19 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
             $skipped,
             $skipped_names,
             $needs_review,
-            $needs_review_items
+            $needs_review_items,
+            $quota_reached,
+            $skipped_by_quota,
+            $skipped_by_quota_names
         ));
 
         Log::info('ProcessArticleBatchImagesJob: finalizado.', [
-            'user_id'    => $this->user_id,
-            'processed'  => $processed,
-            'skipped'    => $skipped,
-            'needs_review' => $needs_review,
+            'user_id'          => $this->user_id,
+            'processed'        => $processed,
+            'skipped'          => $skipped,
+            'skipped_by_quota' => $skipped_by_quota,
+            'quota_reached'    => $quota_reached,
+            'needs_review'     => $needs_review,
         ]);
     }
 

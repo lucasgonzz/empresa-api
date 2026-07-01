@@ -142,7 +142,7 @@ class ProductService extends MercadoLibreService
             $article = $sync->article ?? null;
             $error_message = $e->getMessage();
 
-            if (str_contains($error_message, 'Mercado Libre API error:')) {
+            if (strpos($error_message, 'Mercado Libre API error:') !== false) {
                 $json_part = trim(str_replace('Mercado Libre API error:', '', $error_message));
 
                 $parsed_error = json_decode($json_part, true);
@@ -519,7 +519,7 @@ class ProductService extends MercadoLibreService
         $reduced_payload = $meli_payload;
         $changed = false;
 
-        if (str_contains($error_message, 'item.price.not_modifiable')) {
+        if (strpos($error_message, 'item.price.not_modifiable') !== false) {
             if (array_key_exists('price', $reduced_payload)) {
                 unset($reduced_payload['price']);
                 $changed = true;
@@ -527,8 +527,8 @@ class ProductService extends MercadoLibreService
         }
 
         if (
-            str_contains($error_message, 'field_not_updatable')
-            || str_contains($error_message, 'available_quantity')
+            strpos($error_message, 'field_not_updatable') !== false
+            || strpos($error_message, 'available_quantity') !== false
         ) {
             if (array_key_exists('available_quantity', $reduced_payload)) {
                 unset($reduced_payload['available_quantity']);

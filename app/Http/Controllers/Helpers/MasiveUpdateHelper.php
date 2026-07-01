@@ -304,7 +304,7 @@ class MasiveUpdateHelper
             return null;
         }
 
-        if ($form['type'] == 'number' && str_contains($form['key'], 'decrement') && self::form_scalar_value_is_filled($form['value'])) {
+        if ($form['type'] == 'number' && strpos($form['key'], 'decrement') !== false && self::form_scalar_value_is_filled($form['value'])) {
             $prop_key = substr($form['key'], 10);
             $old_value = $model->{$prop_key};
             $value = $model->{$prop_key} * (float) $form['value'] / 100;
@@ -327,7 +327,7 @@ class MasiveUpdateHelper
             ];
         }
 
-        if ($form['type'] == 'number' && str_contains($form['key'], 'increment') && self::form_scalar_value_is_filled($form['value'])) {
+        if ($form['type'] == 'number' && strpos($form['key'], 'increment') !== false && self::form_scalar_value_is_filled($form['value'])) {
             $prop_key = substr($form['key'], 10);
             $old_value = $model->{$prop_key};
             $value = $model->{$prop_key} * (float) $form['value'] / 100;
@@ -350,7 +350,7 @@ class MasiveUpdateHelper
             ];
         }
 
-        if ($form['type'] == 'number' && str_contains($form['key'], 'set_') && self::form_scalar_value_is_filled($form['value'])) {
+        if ($form['type'] == 'number' && strpos($form['key'], 'set_') !== false && self::form_scalar_value_is_filled($form['value'])) {
             $prop_key = substr($form['key'], 4);
             $old_value = $model->{$prop_key};
             $model->{$prop_key} = (float) $form['value'];
@@ -371,7 +371,7 @@ class MasiveUpdateHelper
 
         if (
             $form['type'] == 'search'
-            && str_contains($form['key'], '_id')
+            && strpos($form['key'], '_id') !== false
             && self::form_scalar_value_is_filled($form['value'])
             && $form['value'] != 0
         ) {
@@ -395,7 +395,7 @@ class MasiveUpdateHelper
 
         if (
             $form['type'] == 'select'
-            && str_contains($form['key'], '_id')
+            && strpos($form['key'], '_id') !== false
             && self::form_scalar_value_is_filled($form['value'])
             && $form['value'] != 0
         ) {

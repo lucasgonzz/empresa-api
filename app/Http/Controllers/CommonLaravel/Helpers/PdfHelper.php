@@ -441,7 +441,7 @@ class PdfHelper {
 	}
 
 	static function getPropValue($model, $prop) {
-		if (str_contains($prop['key'], '.')) {
+		if (strpos($prop['key'], '.') !== false) {
 			$relation = substr($prop['key'], 0, strpos($prop['key'], '.'));
 			$key = substr($prop['key'], strpos($prop['key'], '.')+1, strlen($prop['key']));
 			if (!is_null($model->{$relation})) {
