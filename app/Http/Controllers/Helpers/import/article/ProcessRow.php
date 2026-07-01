@@ -255,6 +255,7 @@ class ProcessRow {
             [
                 'excel_column'  => 'u_individuales',
                 'prop_key'      => 'unidades_individuales',
+                'is_number'     => true,
             ],
             [
                 'excel_column'  => 'descripcion',
@@ -1416,6 +1417,24 @@ class ProcessRow {
         return number_format((float) $parsed, $decimales, '.', '');
     }
 
+    /**
+     * Igual que get_number() pero pensado para chunks individuales de descuentos/recargos
+     * (ej: "12,5" dentro de "12,5_20,3"). Nunca lanza excepción: si el chunk no es un
+     * número válido devuelve 0.0, igual que hacía antes floatval()/(float) sobre el string.
+     *
+     * @param mixed $chunk Chunk individual ya separado por "_".
+     * @return float
+     */
+    static function get_number_forgiving($chunk) {
+        try {
+            $parsed = ImportHelper::parseNumericValue($chunk);
+        } catch (\InvalidArgumentException $exception) {
+            return 0.0;
+        }
+
+        return is_null($parsed) ? 0.0 : (float) $parsed;
+    }
+
 
     private function obtener_stock($row, $articulo_ya_creado = null) {
 
@@ -2436,12 +2455,12 @@ class ProcessRow {
         // Parsear las cadenas del Excel
         $new_percents = [];
         if ($discounts_percent_str) {
-            $new_percents = array_filter(array_map('floatval', explode('_', $discounts_percent_str)));
+            $new_percents = array_filter(array_map(fn($chunk) => self::get_number_forgiving($chunk), explode('_', $discounts_percent_str)));
         }
 
         $new_amounts = [];
         if ($discounts_amount_str) {
-            $new_amounts = array_filter(array_map('floatval', explode('_', $discounts_amount_str)));
+            $new_amounts = array_filter(array_map(fn($chunk) => self::get_number_forgiving($chunk), explode('_', $discounts_amount_str)));
         }
 
         // Obtener los valores actuales desde BD
@@ -2529,7 +2548,7 @@ class ProcessRow {
                     $chunk = substr($chunk, 0, -1);
                 }
 
-                $value = (float)$chunk;
+                $value = self::get_number_forgiving($chunk);
                 $new_percents[] = [
                     'value' => $value,
                     'final' => $final_flag,
@@ -2552,7 +2571,7 @@ class ProcessRow {
                     $chunk = substr($chunk, 0, -1);
                 }
 
-                $value = (float)$chunk;
+                $value = self::get_number_forgiving($chunk);
                 $new_amounts[] = [
                     'value' => $value,
                     'final' => $final_flag,
