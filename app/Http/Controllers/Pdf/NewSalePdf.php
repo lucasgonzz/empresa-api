@@ -20,7 +20,7 @@ class NewSalePdf extends fpdf
     /**
      * Constructor principal del PDF nuevo con perfil de columnas.
      */
-    public function __construct($sale, $pdf_column_profile_id, $afip_ticket_id)
+    public function __construct($sale, $pdf_column_profile_id, $afip_ticket_id, $origin = null)
     {
 
         $user = User::find($sale->user_id);
@@ -28,11 +28,16 @@ class NewSalePdf extends fpdf
          * Con afip_ticket_id solo perfiles fiscales; sin factura solo remito/venta.
          */
         $only_afip_ticket_profile = $afip_ticket_id ? true : false;
+        /**
+         * Cuando el request viene de la tienda, se prioriza el perfil marcado como default de tienda.
+         */
+        $prefer_default_column = ($origin === 'tienda') ? 'is_default_tienda' : null;
         $this->pdf_column_profile = PdfColumnService::get_profile_for_print(
             $user->id,
             'sale',
             $pdf_column_profile_id,
-            $only_afip_ticket_profile
+            $only_afip_ticket_profile,
+            $prefer_default_column
         );
         $this->profile_columns = $this->get_profile_columns();
 

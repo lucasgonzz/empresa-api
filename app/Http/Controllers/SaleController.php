@@ -534,9 +534,48 @@ class SaleController extends Controller
 
 
         // SaleHelper::setPrinted($this, $sale, $confirmed, $user);
+        $origin = $request->query('origin');
         $profile_id = $request->query('pdf_column_profile_id');
         $afip_ticket_id = $request->query('afip_ticket_id');
-        $pdf = new NewSalePdf($sale, $profile_id, $afip_ticket_id);
+
+        /**
+         * Capa de seguridad: si el request viene de la tienda, exige un token de un solo uso válido
+         * emitido por tienda-api tras validar sesión y propiedad de la venta.
+         */
+        if ($origin === 'tienda') {
+            $token = $request->query('token');
+            $access = null;
+            if (!empty($token)) {
+                $access = \App\Models\SalePdfAccessToken::where('token', $token)
+                    ->where('sale_id', $id)
+                    ->whereNull('used_at')
+                    ->where('expires_at', '>', now())
+                    ->first();
+            }
+            if (!$access) {
+                abort(403);
+            }
+            $access->used_at = now();
+            $access->save();
+
+            /**
+             * Detección automática de factura: si la venta tiene un afip_ticket con CAE, se imprime la factura.
+             */
+            if (empty($afip_ticket_id)) {
+                $afip_ticket = null;
+                if ($sale) {
+                    $afip_ticket = $sale->afip_tickets()
+                        ->whereNotNull('cae')
+                        ->orderBy('id', 'asc')
+                        ->first();
+                }
+                if ($afip_ticket) {
+                    $afip_ticket_id = $afip_ticket->id;
+                }
+            }
+        }
+
+        $pdf = new NewSalePdf($sale, $profile_id, $afip_ticket_id, $origin);
     }
 
     function afipTicketA4Pdf(Request $request, $id) {

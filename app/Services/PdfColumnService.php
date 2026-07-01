@@ -340,9 +340,10 @@ class PdfColumnService
      * @param string $model_name
      * @param int|null $profile_id Id solicitado por query string.
      * @param bool|null $only_afip_ticket_profile true = solo factura ARCA; false = solo remito/venta; null = sin filtro.
+     * @param string|null $prefer_default_column Nombre de columna boolean (ej: 'is_default_tienda') a priorizar antes del default general.
      * @return \App\Models\PdfColumnProfile|null
      */
-    public static function get_profile_for_print($user_id, $model_name, $profile_id = null, $only_afip_ticket_profile = null)
+    public static function get_profile_for_print($user_id, $model_name, $profile_id = null, $only_afip_ticket_profile = null, $prefer_default_column = null)
     {
         $query = PdfColumnProfile::where('user_id', $user_id)
             ->where('model_name', $model_name);
@@ -357,6 +358,13 @@ class PdfColumnService
             $profile = (clone $query)->where('id', $profile_id)->first();
             if ($profile) {
                 return $profile;
+            }
+        }
+
+        if (! is_null($prefer_default_column)) {
+            $preferred = (clone $query)->where($prefer_default_column, true)->first();
+            if ($preferred) {
+                return $preferred;
             }
         }
 
