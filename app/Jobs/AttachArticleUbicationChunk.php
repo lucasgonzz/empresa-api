@@ -15,6 +15,7 @@ class AttachArticleUbicationChunk implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     protected $article_ids;
+    
     protected $article_ubication_id;
 
     public function __construct(array $article_ids, $article_ubication_id)
