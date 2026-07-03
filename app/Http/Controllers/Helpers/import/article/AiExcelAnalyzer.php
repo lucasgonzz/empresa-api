@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Models\Address;
 use App\Models\Provider;
+use App\Models\User;
+use App\Http\Controllers\Helpers\UserHelper;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -408,6 +410,23 @@ class AiExcelAnalyzer
      */
     protected function get_available_price_types(): array
     {
+        /*
+         * FIX (bug real, 2/7/2026): antes de este fix acá no se chequeaba si el dueño
+         * tiene activo el modo "listas de precio" (users.listas_de_precio). El frontend
+         * (ai-excel-import/Index.vue, system_property_options) y ProcessRow::obtener_price_types()
+         * SÍ lo chequean — así que un usuario con PriceType cargadas pero listas_de_precio
+         * desactivado (ej: quedaron de antes de migrar la extensión vieja al flag nuevo, y
+         * nunca se corrió check_extencion_listas_de_precios sobre la base de ese cliente)
+         * recibía de Claude una sugerencia de mapeo y una vista previa con datos que el
+         * select no podía mostrar (no matcheaba ninguna opción) y que ProcessRow iba a
+         * ignorar igual al importar de verdad. Chequear acá también evita que Claude vea
+         * y sugiera listas de precio que el usuario no puede usar.
+         */
+        $owner = User::find($this->user_id);
+        if (!UserHelper::uses_listas_de_precio($owner)) {
+            return [];
+        }
+
         return \App\Models\PriceType::where('user_id', $this->user_id)
             ->orderBy('position', 'ASC')
             ->get(['id', 'name'])
