@@ -567,6 +567,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('table-column-preferences', 'TableColumnPreferenceCrudController');
     Route::get('pdf-column-options', 'PdfColumnOptionController@index');
     Route::get('pdf-column-options/{id}', 'PdfColumnOptionController@show');
+    // Duplica un perfil de diseño de PDF con toda su configuración y columnas (pivots).
+    Route::post('pdf-column-profiles/{id}/duplicate', 'PdfColumnProfileController@duplicate');
     Route::resource('pdf-column-profiles', 'PdfColumnProfileController');
 
     Route::get('etiqueta-medidas', 'EtiquetaMedidaController@index');

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Pdf\Afip;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipImportesResolver;
 use App\Http\Controllers\Helpers\Numbers;
@@ -35,6 +36,63 @@ class AfipPdfHelper
     ];
 
     /**
+     * Tamaño de fuente unificado para renglones del header emisor (labels y valores).
+     * Un punto menos que el tamaño anterior (10pt) para compactar el bloque fiscal.
+     *
+     * @var int
+     */
+    protected static $header_row_font_size = 9;
+
+    /**
+     * Alto de línea de los renglones del header emisor (separación vertical entre filas).
+     *
+     * @var int
+     */
+    protected static $header_row_line_height = 5;
+
+    /**
+     * Tamaño de fuente de los títulos del header emisor (nombre del negocio y tipo de comprobante).
+     *
+     * @var int
+     */
+    protected static $header_title_font_size = 18;
+
+    /**
+     * Alto de línea de los títulos del header emisor.
+     *
+     * @var int
+     */
+    protected static $header_title_line_height = 8;
+
+    /**
+     * Familia tipográfica de la letra del comprobante (Inter = tipografía global del sistema).
+     *
+     * @var string
+     */
+    protected static $cbte_letter_font_family = 'Inter';
+
+    /**
+     * Archivo de definición FPDF para Inter Bold embebida en el cuadro central.
+     *
+     * @var string
+     */
+    protected static $cbte_letter_font_file = 'Inter-Bold.php';
+
+    /**
+     * Tamaño de la letra del comprobante en el cuadro central.
+     *
+     * @var int
+     */
+    protected static $cbte_letter_font_size = 24;
+
+    /**
+     * RGB del fondo gris claro del encabezado de columnas de ítems.
+     *
+     * @var array<int, int>
+     */
+    protected static $table_header_bg_rgb = [235, 235, 235];
+
+    /**
      * Dibuja el header fiscal completo estilo comprobante ARCA/AFIP.
      *
      * @param mixed $pdf Instancia FPDF (NewSalePdf).
@@ -57,9 +115,9 @@ class AfipPdfHelper
         $pdf->y = 5;
 
         /**
-         * Banda superior "ORIGINAL" a ancho completo.
+         * Banda superior "ORIGINAL" a ancho completo (mismo tamaño que los demás renglones).
          */
-        $pdf->SetFont('Arial', 'B', 10);
+        $pdf->SetFont('Arial', 'B', self::$header_row_font_size);
         $pdf->Cell(200, 8, 'ORIGINAL', 1, 1, 'C');
 
         /**
@@ -78,11 +136,31 @@ class AfipPdfHelper
     }
 
     /**
+     * Encabezado de columnas del detalle de ítems con fondo gris claro.
+     *
+     * @param mixed $pdf Instancia FPDF.
+     * @param array<string|int, mixed> $fields Columnas label => ancho.
+     * @return void
+     */
+    public static function table_header($pdf, $fields): void
+    {
+        PdfHelper::tableHeader(
+            $pdf,
+            $fields,
+            10,
+            2,
+            self::$table_header_bg_rgb
+        );
+    }
+
+    /**
      * Geometría del header fiscal: paneles laterales y cuadro de letra centrado.
      *
+     * @param mixed $pdf Instancia FPDF (para medir anchos de texto).
+     * @param mixed $afip_ticket Ticket AFIP (letra y código del comprobante).
      * @return array<string, float|int>
      */
-    protected static function get_header_layout(): array
+    protected static function get_header_layout($pdf, $afip_ticket): array
     {
         /**
          * Márgenes y ancho útil del comprobante (coherente con el resto del PDF).
@@ -93,10 +171,10 @@ class AfipPdfHelper
 
         /**
          * Cuadro central de letra del comprobante, centrado horizontalmente.
-         * Dimensiones reducidas para minimizar espacio vertical en el header.
+         * El ancho se ajusta al contenido (letra + código) con padding mínimo.
          */
-        $letter_width = 25;
         $letter_height = 16;
+        $letter_width = self::get_letter_box_width($pdf, $afip_ticket);
         $letter_x = $page_left + ($page_width - $letter_width) / 2;
 
         /**
@@ -127,6 +205,52 @@ class AfipPdfHelper
             'inner_pad' => 2,
             'logo_size' => 35,
         ];
+    }
+
+    /**
+     * Calcula el ancho mínimo del cuadro central según la letra y el código AFIP impresos.
+     *
+     * @param mixed $pdf Instancia FPDF.
+     * @param mixed $afip_ticket Ticket AFIP.
+     * @return float Ancho del cuadro en mm.
+     */
+    protected static function get_letter_box_width($pdf, $afip_ticket): float
+    {
+        /**
+         * Tipografías del cuadro central (deben coincidir con print_header_letter_zone).
+         */
+        $letter_font_size = self::$cbte_letter_font_size;
+        $cod_font_size = 7;
+        /**
+         * Padding horizontal mínimo a cada lado del contenido.
+         */
+        $horizontal_pad = 1;
+
+        self::register_cbte_letter_font($pdf);
+        $pdf->SetFont(self::$cbte_letter_font_family, 'B', $letter_font_size);
+        $letter_text_width = $pdf->GetStringWidth((string) $afip_ticket->cbte_letra);
+
+        $pdf->SetFont('Arial', '', $cod_font_size);
+        $codigo = self::left_pad((string) $afip_ticket->cbte_tipo, 2);
+        $cod_text_width = $pdf->GetStringWidth('COD. '.$codigo);
+
+        /**
+         * Ancho útil = el mayor entre letra y código, más padding simétrico.
+         */
+        $content_width = max($letter_text_width, $cod_text_width);
+
+        return $content_width + ($horizontal_pad * 2);
+    }
+
+    /**
+     * Registra la fuente Inter Bold embebida para la letra del comprobante AFIP.
+     *
+     * @param mixed $pdf Instancia FPDF.
+     * @return void
+     */
+    protected static function register_cbte_letter_font($pdf): void
+    {
+        $pdf->AddFont(self::$cbte_letter_font_family, 'B', self::$cbte_letter_font_file);
     }
 
     /**
@@ -201,6 +325,63 @@ class AfipPdfHelper
     }
 
     /**
+     * Imprime dos pares label/valor en el mismo renglón dentro de un ancho dado.
+     *
+     * @param mixed $pdf Instancia FPDF.
+     * @param string $label_a Primer label (incluir ":" al final).
+     * @param string $value_a Primer valor.
+     * @param string $label_b Segundo label (incluir ":" al final).
+     * @param string $value_b Segundo valor.
+     * @param float $x Posición X inicial.
+     * @param float $width Ancho total del renglón.
+     * @param int $font_size Tamaño de fuente.
+     * @param int $line_height Alto de línea.
+     * @return void
+     */
+    protected static function print_label_value_pair_line(
+        $pdf,
+        $label_a,
+        $value_a,
+        $label_b,
+        $value_b,
+        $x,
+        $width,
+        $font_size = 9,
+        $line_height = 4
+    ): void {
+        /**
+         * Mitad izquierda: primer par label/valor (p. ej. Punto de Venta).
+         */
+        $half_width = $width / 2;
+
+        $pdf->x = $x;
+        $pdf->SetFont('Arial', 'B', $font_size);
+        $label_a_width = $pdf->GetStringWidth($label_a);
+        $pdf->Cell($label_a_width, $line_height, $label_a, 0, 0, 'L');
+
+        $pdf->SetFont('Arial', '', $font_size);
+        $value_a_width = $half_width - $label_a_width;
+        if ($value_a_width > 0) {
+            $pdf->Cell($value_a_width, $line_height, (string) $value_a, 0, 0, 'L');
+        }
+
+        /**
+         * Mitad derecha: segundo par label/valor (p. ej. Comp. Nro).
+         */
+        $pdf->SetFont('Arial', 'B', $font_size);
+        $label_b_width = $pdf->GetStringWidth($label_b);
+        $pdf->Cell($label_b_width, $line_height, $label_b, 0, 0, 'L');
+
+        $pdf->SetFont('Arial', '', $font_size);
+        $value_b_width = $width - ($pdf->x - $x) - $label_b_width;
+        if ($value_b_width > 0) {
+            $pdf->Cell($value_b_width, $line_height, (string) $value_b, 0, 1, 'L');
+        } else {
+            $pdf->Cell(0, $line_height, (string) $value_b, 0, 1, 'L');
+        }
+    }
+
+    /**
      * Bloque unificado del emisor: logo, datos fiscales, letra centrada y datos del comprobante.
      *
      * @param mixed $pdf Instancia FPDF.
@@ -213,13 +394,11 @@ class AfipPdfHelper
      */
     protected static function print_emisor_header_block($pdf, $afip_ticket, $sale, $user, $afip_information, $pdf_instance): void
     {
-        $layout = self::get_header_layout();
+        $layout = self::get_header_layout($pdf, $afip_ticket);
         $block_start_y = $pdf->y;
         $inner_pad = $layout['inner_pad'];
         $logo_size = $layout['logo_size'];
 
-        $left_content_x = $layout['left_panel_x'] + $inner_pad;
-        $left_content_width = $layout['left_panel_width'] - ($inner_pad * 2);
         $right_content_x = $layout['right_panel_x'] + $inner_pad;
         $right_content_width = $layout['right_panel_width'] - ($inner_pad * 2);
 
@@ -233,39 +412,32 @@ class AfipPdfHelper
 
         /**
          * Columna de texto al costado del logo: desde el borde derecho del logo hasta
-         * el borde derecho del panel, con 1mm de separación en cada extremo.
+         * la línea vertical central del comprobante.
          */
-        $text_gap = 1;
+        $text_gap = 2;
         $beside_logo_x = $logo_printed
             ? ($layout['left_panel_x'] + $logo_size + $text_gap)
             : ($layout['left_panel_x'] + $inner_pad);
         /**
-         * Ancho hasta el borde derecho del panel izquierdo (sin margen adicional derecho).
+         * Ancho hasta el eje central (línea divisoria izquierda/derecha).
          */
-        $beside_logo_width = $logo_printed
-            ? ($layout['left_panel_width'] - $logo_size - $text_gap)
-            : $left_content_width;
+        $beside_logo_width = $layout['center_x'] - $beside_logo_x - $text_gap;
 
         /**
-         * Nombre del negocio a la derecha del logo, tipografía más grande.
+         * Nombre del negocio alineado con el título del comprobante (misma Y y tipografía).
          */
         $name_y = $block_start_y + $inner_pad;
-        $company_name_font_size = 13;
-        $company_name_line_height = 6;
 
         $pdf->y = $name_y;
         $pdf->x = $beside_logo_x;
-        $pdf->SetFont('Arial', 'B', $company_name_font_size);
-        $pdf->MultiCell($beside_logo_width, $company_name_line_height, (string) $user->company_name, 0, 'L');
+        $pdf->SetFont('Arial', 'B', self::$header_title_font_size);
+        $pdf->MultiCell($beside_logo_width, self::$header_title_line_height, (string) $user->company_name, 0, 'L');
         $name_end_y = $pdf->y;
 
-        $logo_end_y = $logo_printed ? ($logo_y + $logo_size) : $name_y;
-
         /**
-         * Razón social y domicilio al costado del logo, debajo de la altura del cuadro central.
-         * Usan el mismo ancho calculado arriba, que ocupa todo el espacio disponible.
+         * Datos fiscales del emisor inmediatamente debajo del nombre comercial.
          */
-        $fields_start_y = $block_start_y + $layout['letter_height'] + $inner_pad;
+        $fields_start_y = $name_end_y;
         $fields_end_y = $fields_start_y;
 
         if ($afip_information) {
@@ -277,13 +449,15 @@ class AfipPdfHelper
                 'Razón Social: ',
                 (string) $afip_information->razon_social,
                 $beside_logo_x,
-                $beside_logo_width
+                $beside_logo_width,
+                self::$header_row_font_size,
+                self::$header_row_line_height
             );
 
             if (!empty($afip_information->owner_name)) {
                 $pdf->x = $beside_logo_x;
-                $pdf->SetFont('Arial', 'I', 9);
-                $pdf->MultiCell($beside_logo_width, 4, (string) $afip_information->owner_name, 0, 'L');
+                $pdf->SetFont('Arial', 'I', self::$header_row_font_size);
+                $pdf->MultiCell($beside_logo_width, self::$header_row_line_height, (string) $afip_information->owner_name, 0, 'L');
             }
 
             self::print_label_value_multiline(
@@ -291,13 +465,32 @@ class AfipPdfHelper
                 'Domicilio Comercial: ',
                 (string) $afip_information->domicilio_comercial,
                 $beside_logo_x,
-                $beside_logo_width
+                $beside_logo_width,
+                self::$header_row_font_size,
+                self::$header_row_line_height
+            );
+
+            /**
+             * Condición IVA del emisor en un solo renglón debajo del domicilio comercial.
+             */
+            $iva_name = $afip_information->iva_condition ? $afip_information->iva_condition->name : '';
+            self::print_label_value_line(
+                $pdf,
+                'Condición IVA: ',
+                $iva_name,
+                $beside_logo_x,
+                $beside_logo_width,
+                self::$header_row_font_size,
+                self::$header_row_line_height
             );
 
             $fields_end_y = $pdf->y;
         }
 
-        $left_end_y = max($logo_end_y, $name_end_y, $fields_end_y);
+        /**
+         * Extensión vertical del contenido textual del panel izquierdo (sin contar el logo).
+         */
+        $left_content_bottom_y = max($name_end_y, $fields_end_y);
 
         /**
          * --- Cuadro central: letra y código del comprobante ---
@@ -313,26 +506,26 @@ class AfipPdfHelper
 
         $pdf->y = $block_start_y + $inner_pad;
         $pdf->x = $right_content_x;
-        $pdf->SetFont('Arial', 'B', 18);
-        $pdf->Cell($right_content_width, 8, self::get_tipo_comprobante_label($afip_ticket, $sale), 0, 1, 'L');
+        $pdf->SetFont('Arial', 'B', self::$header_title_font_size);
+        $pdf->Cell($right_content_width, self::$header_title_line_height, self::get_tipo_comprobante_label($afip_ticket, $sale), 0, 1, 'L');
 
         $punto_venta = self::left_pad((string) $afip_ticket->punto_venta, 5);
         $cbte_numero = self::left_pad((string) $afip_ticket->cbte_numero, 8);
 
-        $pdf->x = $right_content_x;
-        $pdf->SetFont('Arial', 'B', 10);
-        $label_pv = 'Punto de Venta: ';
-        $pdf->Cell($pdf->GetStringWidth($label_pv), 5, $label_pv, 0, 0, 'L');
-        $pdf->SetFont('Arial', '', 10);
-        $pdf->Cell(22, 5, $punto_venta, 0, 1, 'L');
-
-        $pdf->x = $right_content_x;
-        $pdf->SetFont('Arial', 'B', 10);
-        $label_nro = 'Comp. Nro: ';
-        $pdf->Cell($pdf->GetStringWidth($label_nro), 5, $label_nro, 0, 0, 'L');
-        $pdf->SetFont('Arial', '', 10);
-        $remaining_width = $right_content_width - ($pdf->x - $right_content_x);
-        $pdf->Cell($remaining_width, 5, $cbte_numero, 0, 1, 'L');
+        /**
+         * Punto de venta y número de comprobante en el mismo renglón.
+         */
+        self::print_label_value_pair_line(
+            $pdf,
+            'Punto de Venta: ',
+            $punto_venta,
+            'Comp. Nro: ',
+            $cbte_numero,
+            $right_content_x,
+            $right_content_width,
+            self::$header_row_font_size,
+            self::$header_row_line_height
+        );
 
         $fecha_texto = $emission_date instanceof \DateTimeInterface
             ? $emission_date->format('d/m/Y')
@@ -343,27 +536,20 @@ class AfipPdfHelper
             $fecha_texto,
             $right_content_x,
             $right_content_width,
-            10,
-            5
+            self::$header_row_font_size,
+            self::$header_row_line_height
         );
 
         if ($afip_information) {
-
-            $iva_name = $afip_information->iva_condition ? $afip_information->iva_condition->name : '';
-            self::print_label_value_line(
-                $pdf,
-                'Condición frente al IVA: ',
-                $iva_name,
-                $right_content_x,
-                $right_content_width
-            );
 
             self::print_label_value_line(
                 $pdf,
                 'CUIT: ',
                 (string) $afip_information->cuit,
                 $right_content_x,
-                $right_content_width
+                $right_content_width,
+                self::$header_row_font_size,
+                self::$header_row_line_height
             );
 
             self::print_label_value_line(
@@ -371,7 +557,9 @@ class AfipPdfHelper
                 'Ingresos Brutos: ',
                 (string) $afip_information->ingresos_brutos,
                 $right_content_x,
-                $right_content_width
+                $right_content_width,
+                self::$header_row_font_size,
+                self::$header_row_line_height
             );
 
             if (!is_null($afip_information->inicio_actividades)) {
@@ -383,7 +571,9 @@ class AfipPdfHelper
                     'Fecha de Inicio de Actividades: ',
                     $inicio,
                     $right_content_x,
-                    $right_content_width
+                    $right_content_width,
+                    self::$header_row_font_size,
+                    self::$header_row_line_height
                 );
             }
         }
@@ -391,10 +581,11 @@ class AfipPdfHelper
         $right_end_y = $pdf->y;
 
         /**
-         * Altura mínima del bloque: al menos la del cuadro de letra.
+         * Cierre inferior del bloque: logo o el renglón más bajo de cualquier cuadrante, lo que llegue más abajo.
+         * Sin padding inferior extra ni altura mínima artificial del cuadro de letra.
          */
-        $min_block_height = $layout['letter_height'];
-        $content_end_y = max($left_end_y, $right_end_y, $block_start_y + $min_block_height) + $inner_pad;
+        $logo_bottom_y = $logo_printed ? ($logo_y + $logo_size) : 0;
+        $content_end_y = max($logo_bottom_y, $left_content_bottom_y, $right_end_y);
 
         /**
          * Bordes del bloque emisor: sin línea central en la franja superior (cuadro de letra).
@@ -512,7 +703,8 @@ class AfipPdfHelper
 
         $pdf->y = $start_y;
         $pdf->x = $rect_x;
-        $pdf->SetFont('Arial', 'B', 22);
+        self::register_cbte_letter_font($pdf);
+        $pdf->SetFont(self::$cbte_letter_font_family, 'B', self::$cbte_letter_font_size);
         $pdf->Cell($rect_w, $letter_cell_h, (string) $afip_ticket->cbte_letra, 0, 1, 'C');
 
         $pdf->x = $rect_x;

@@ -173,7 +173,7 @@ class NewSalePdf extends fpdf
          */
         if ($this->is_afip_ticket && $this->afip_ticket) {
             AfipPdfHelper::header($this, $this->afip_ticket, $this->sale, $this->user);
-            PdfHelper::tableHeader($this, $this->getFields());
+            AfipPdfHelper::table_header($this, $this->getFields());
             return;
         }
 

@@ -491,14 +491,28 @@ class PdfHelper {
 		return $start;
 	}
 
-	static function tableHeader($instance, $fields, $size = 10, $margen = 2) {
+	static function tableHeader($instance, $fields, $size = 10, $margen = 2, $header_bg_rgb = null) {
 		$instance->SetFont('Arial', 'B', $size);
 		$instance->x = 5;
 		$instance->y += $margen;
 		$instance->SetLineWidth(.4);
-		foreach ($fields as $text => $width) {
-			$instance->Cell($width, 7, $text, 1, 0, 'C');
+
+		/**
+		 * Fondo gris opcional para resaltar la fila de encabezados de columna.
+		 */
+		$use_header_fill = is_array($header_bg_rgb) && count($header_bg_rgb) === 3;
+		if ($use_header_fill) {
+			$instance->SetFillColor($header_bg_rgb[0], $header_bg_rgb[1], $header_bg_rgb[2]);
 		}
+
+		foreach ($fields as $text => $width) {
+			$instance->Cell($width, 7, $text, 1, 0, 'C', $use_header_fill);
+		}
+
+		if ($use_header_fill) {
+			$instance->SetFillColor(255, 255, 255);
+		}
+
 		$instance->y += 7;
 		$instance->x = 5;
 	}
