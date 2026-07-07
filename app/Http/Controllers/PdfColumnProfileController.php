@@ -58,6 +58,13 @@ class PdfColumnProfileController extends Controller
             null
         );
 
+        $this->clear_tienda_default_flag_on_siblings(
+            $request->model_name,
+            $is_afip_ticket,
+            $request->input('is_default_tienda', false),
+            null
+        );
+
         $model = PdfColumnProfile::create([
             'user_id' => $this->userId(),
             'model_name' => $request->model_name,
@@ -65,6 +72,10 @@ class PdfColumnProfileController extends Controller
             'is_default' => (bool) $request->is_default,
             'is_default_whatsapp' => (bool) $request->input('is_default_whatsapp', false),
             'is_default_whatsapp_afip' => (bool) $request->input('is_default_whatsapp_afip', false),
+            /**
+             * Perfil predeterminado para PDF de ventas solicitado desde la tienda.
+             */
+            'is_default_tienda' => (bool) $request->input('is_default_tienda', false),
             'paper_width_mm' => (int) $request->paper_width_mm,
             'printable_width_mm' => (int) $request->printable_width_mm,
             'margin_mm' => (int) $request->input('margin_mm', 5),
@@ -140,12 +151,20 @@ class PdfColumnProfileController extends Controller
             $model->id
         );
 
+        $this->clear_tienda_default_flag_on_siblings(
+            $new_model_name,
+            $is_afip_ticket,
+            $request->input('is_default_tienda', false),
+            $model->id
+        );
+
         $fillable = $request->only([
             'model_name',
             'name',
             'is_default',
             'is_default_whatsapp',
             'is_default_whatsapp_afip',
+            'is_default_tienda',
             'paper_width_mm',
             'printable_width_mm',
             'margin_mm',
@@ -207,6 +226,7 @@ class PdfColumnProfileController extends Controller
         $new_model->is_default = false;
         $new_model->is_default_whatsapp = false;
         $new_model->is_default_whatsapp_afip = false;
+        $new_model->is_default_tienda = false;
         $new_model->save();
 
         // Arma el array de pivots (id de columna => atributos del pivot) para sincronizar en el nuevo perfil.
@@ -279,6 +299,36 @@ class PdfColumnProfileController extends Controller
     }
 
     /**
+     * Deja un solo perfil predeterminado de tienda por tipo (remito vs factura ARCA) dentro del mismo model_name.
+     *
+     * @param string $model_name
+     * @param bool $is_afip_ticket Tipo del perfil que se guarda.
+     * @param mixed $wants_tienda_default is_default_tienda en el request.
+     * @param int|null $except_id Id del perfil actual en update.
+     * @return void
+     */
+    protected function clear_tienda_default_flag_on_siblings(
+        $model_name,
+        $is_afip_ticket,
+        $wants_tienda_default,
+        $except_id = null
+    ) {
+        if (! $wants_tienda_default) {
+            return;
+        }
+
+        $base_query = PdfColumnProfile::where('user_id', $this->userId())
+            ->where('model_name', $model_name)
+            ->where('is_afip_ticket', (bool) $is_afip_ticket);
+
+        if ($except_id) {
+            $base_query->where('id', '!=', $except_id);
+        }
+
+        $base_query->update(['is_default_tienda' => false]);
+    }
+
+    /**
      * Etiquetas en español para sustituir :attribute en mensajes de validación.
      *
      * @return array<string, string>
@@ -291,6 +341,7 @@ class PdfColumnProfileController extends Controller
             'is_default' => 'perfil por defecto',
             'is_default_whatsapp' => 'perfil predeterminado para WhatsApp (remito)',
             'is_default_whatsapp_afip' => 'perfil predeterminado para WhatsApp (factura ARCA)',
+            'is_default_tienda' => 'perfil predeterminado para la tienda',
             'paper_width_mm' => 'ancho de hoja (mm)',
             'printable_width_mm' => 'ancho imprimible (mm)',
             'margin_mm' => 'margen lateral (mm)',
@@ -329,6 +380,7 @@ class PdfColumnProfileController extends Controller
             'is_default' => ['sometimes', 'boolean'],
             'is_default_whatsapp' => ['sometimes', 'boolean'],
             'is_default_whatsapp_afip' => ['sometimes', 'boolean'],
+            'is_default_tienda' => ['sometimes', 'boolean'],
             'paper_width_mm' => ['required', 'integer', 'min:1', 'max:50000'],
             'printable_width_mm' => ['required', 'integer', 'min:1', 'max:50000', 'lte:paper_width_mm'],
             'margin_mm' => ['sometimes', 'integer', 'min:0', 'max:5000'],
@@ -375,6 +427,7 @@ class PdfColumnProfileController extends Controller
             'is_default' => ['sometimes', 'boolean'],
             'is_default_whatsapp' => ['sometimes', 'boolean'],
             'is_default_whatsapp_afip' => ['sometimes', 'boolean'],
+            'is_default_tienda' => ['sometimes', 'boolean'],
             'paper_width_mm' => ['sometimes', 'integer', 'min:1', 'max:50000'],
             'printable_width_mm' => ['sometimes', 'integer', 'min:1', 'max:50000'],
             'margin_mm' => ['sometimes', 'integer', 'min:0', 'max:5000'],
