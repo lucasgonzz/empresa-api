@@ -185,6 +185,68 @@ class PdfColumnProfileController extends Controller
     }
 
     /**
+     * Duplica un perfil de PDF del usuario autenticado con toda su configuración y columnas (pivots).
+     * La copia apaga los flags de "por defecto" para no colisionar con los únicos por model_name.
+     *
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function duplicate($id)
+    {
+        // Solo permite duplicar perfiles del usuario autenticado; 404 si el id no es suyo.
+        $original = PdfColumnProfile::where('user_id', $this->userId())
+            ->where('id', $id)
+            ->with(['pdf_column_options'])
+            ->firstOrFail();
+
+        // replicate() copia todas las columnas menos PK y timestamps: la copia arranca
+        // con toda la config del original (anchos, márgenes, pie, imagen de cabecera, flags de contenido).
+        $new_model = $original->replicate();
+        $new_model->name = $this->build_duplicated_name($original->name);
+        // Apagamos los flags de "por defecto" para no pisar los únicos por model_name que maneja store/update.
+        $new_model->is_default = false;
+        $new_model->is_default_whatsapp = false;
+        $new_model->is_default_whatsapp_afip = false;
+        $new_model->save();
+
+        // Arma el array de pivots (id de columna => atributos del pivot) para sincronizar en el nuevo perfil.
+        $pivot_data = [];
+        foreach ($original->pdf_column_options as $option) {
+            $pivot = $option->pivot;
+            $pivot_data[$option->id] = [
+                'visible' => $pivot->visible,
+                'order' => $pivot->order,
+                'width' => $pivot->width,
+                'wrap_content' => $pivot->wrap_content,
+                'font_size' => $pivot->font_size,
+                'text_align' => $pivot->text_align,
+            ];
+        }
+        if (! empty($pivot_data)) {
+            $new_model->pdf_column_options()->sync($pivot_data);
+        }
+
+        return response()->json(['model' => $this->fullModel('PdfColumnProfile', $new_model->id)], 201);
+    }
+
+    /**
+     * Nombre de la copia ("Copia de X") respetando el máximo de 120 caracteres de la columna name.
+     *
+     * @param  string  $original_name
+     * @return string
+     */
+    protected function build_duplicated_name($original_name)
+    {
+        // Prefijo estándar para copias; si supera el máximo de la columna, se trunca.
+        $name = 'Copia de ' . $original_name;
+        if (strlen($name) > 120) {
+            $name = substr($name, 0, 120);
+        }
+
+        return $name;
+    }
+
+    /**
      * Deja un solo perfil WhatsApp por tipo (remito vs factura ARCA) dentro del mismo model_name.
      *
      * @param string $model_name
