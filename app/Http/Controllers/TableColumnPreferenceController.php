@@ -12,7 +12,7 @@ class TableColumnPreferenceController extends Controller
      */
     protected function assert_preference_type(string $preference_type): void
     {
-        if (in_array($preference_type, ['table', 'search'], true)) {
+        if (in_array($preference_type, ['table', 'search', 'form_has_many'], true)) {
             return;
         }
 
@@ -42,6 +42,11 @@ class TableColumnPreferenceController extends Controller
 
         if (isset($item['row_id']) && $item['row_id'] !== '') {
             $column['row_id'] = $item['row_id'];
+        }
+
+        // Normaliza y castea el ancho (cols, 1..12) de la columna dentro del formulario has_many
+        if (isset($item['cols']) && $item['cols'] !== '' && $item['cols'] !== null) {
+            $column['cols'] = (int) $item['cols'];
         }
 
         return $column;
@@ -86,6 +91,8 @@ class TableColumnPreferenceController extends Controller
             'columns.*.wrap_content' => 'nullable|boolean',
             'columns.*.source' => 'nullable|string|in:model_prop,pivot_show,pivot_set',
             'columns.*.row_id' => 'nullable|string|max:120',
+            // Ancho de columna (en unidades de grilla, 1..12) para formularios has_many
+            'columns.*.cols' => 'nullable|integer|min:1|max:12',
         ]);
 
         $columns = collect($request->columns)
