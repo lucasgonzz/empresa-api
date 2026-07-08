@@ -81,11 +81,8 @@ class VenderController extends Controller
 
         $this->fin($code, $inicio, $article);
 
-        if ($article) {
-            // Capa 3 (Prompt 263): desglose de precio equivalente por metodo de pago cuando el usuario
-            // tiene activo `precio_base_incluye_tarjeta` (null si esta apagado, sin efecto).
-            $article->precios_por_metodo_pago = ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($article->final_price, $this->userId());
-        }
+        // Capa 3 (Prompt 263, hotfix Prompt 313): `precios_por_metodo_pago` ahora es un accessor del
+        // modelo Article, ya viene incluido en el JSON de $article sin necesidad de asignarlo aca.
 
         return response()->json(['article' => $article, 'variant_id' => $variant_id, 'variant' => $variant], 200);
     }
@@ -397,8 +394,8 @@ class VenderController extends Controller
                     // Si no tiene variantes, y al menos una keyword matcheó → agregar el artículo
                     if ($matched_keywords->isNotEmpty()) {
                         $article->is_variant = false;
-                        // Capa 3 (Prompt 263): desglose por metodo de pago con `precio_base_incluye_tarjeta`
-                        $article->precios_por_metodo_pago = ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($article->final_price, $this->userId());
+                        // Capa 3 (Prompt 263, hotfix Prompt 313): `precios_por_metodo_pago` viene del
+                        // accessor del modelo Article, no hace falta asignarlo aca.
                         $results->push($article);
                     }
                 }

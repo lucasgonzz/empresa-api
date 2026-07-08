@@ -396,10 +396,9 @@ class ArticleHelper {
                 return $des;
             }
 
-            // Capa 3 (Prompt 263): si el usuario tiene activo `precio_base_incluye_tarjeta`, se agrega
-            // (despues del save(), para no intentar persistir esta columna inexistente) el desglose de
-            // precio equivalente por metodo de pago, para que el SPA (prompt 266) pueda mostrarlo.
-            $article->precios_por_metodo_pago = ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($article->final_price, $user->id);
+            // Capa 3 (Prompt 263, hotfix Prompt 313): `precios_por_metodo_pago` ahora es un accessor
+            // del modelo Article (getPreciosPorMetodoPagoAttribute), no se asigna aca para evitar que
+            // save() posteriores en la misma request intenten persistir una columna inexistente.
 
             return $article;
         } else {
