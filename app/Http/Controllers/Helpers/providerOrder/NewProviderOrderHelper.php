@@ -10,12 +10,14 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\caja\MovimientoCajaHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
+use App\Models\ArticleSurchage;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Iva;
 use App\Models\MovimientoCaja;
 use App\Models\Provider;
 use App\Models\ProviderOrderDiscount;
+use App\Models\ProviderOrderExtraCost;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
@@ -50,6 +52,12 @@ class NewProviderOrderHelper {
         // cada artículo de la compra. Tiene que ir DESPUÉS de set_totales() porque necesita el
         // total ya calculado.
         $this->aplicar_descuento_compra_a_costo_articulos();
+
+        // Prompt 264: los costos extra tipados de la compra (flete, seguro, arancel de
+        // importación) se prorratean entre los artículos y se materializan como recargo
+        // (article_surchage) de cada artículo. Corre después de set_totales() porque necesita
+        // sub_total y provider_order_extra_costs ya cargados/calculados.
+        $this->aplicar_costos_extra_a_recargos_articulos();
 
         $this->set_current_acount();
     }
@@ -177,6 +185,131 @@ class NewProviderOrderHelper {
             Log::info('aplicar_descuento_compra_a_costo_articulos: costo de '.$articulo->name.' ajustado de '.$costo_original.' a '.$costo_final.' (ratio descuento compra: '.$ratio_descuento.')');
 
             ArticleHelper::setFinalPrice($articulo);
+        }
+    }
+
+    /**
+     * Prompt 264 — Tarea 2: prorratea los costos extra "tipados" de la orden de compra
+     * (provider_order_extra_costs con `tipo` transporte/seguro/arancel_importacion, ver
+     * ProviderOrderExtraCost::TIPO_*) entre los artículos de la compra y materializa el monto
+     * prorrateado de cada artículo como un `article_surchage` (App\Models\ArticleSurchage) de
+     * ese mismo `tipo`, para que impacte el costo real (Capa 1, vía
+     * ArticlePricesHelper::aplicar_recargos()) y participe del cálculo de precio como
+     * cualquier recargo cargado a mano.
+     *
+     * Fórmula de prorrateo por ítem (mismo patrón que aplicar_descuento_compra_a_costo_articulos()
+     * y que el prorrateo de bonificaciones del prompt 262):
+     *   monto_item = valor_costo_extra * subtotal_item / total_articulos_compra
+     * El recargo de artículo (ArticleSurchage->amount) es un valor UNITARIO — se suma directo
+     * al precio por unidad en ArticlePricesHelper::aplicar_recargos() — por eso acá se divide el
+     * monto prorrateado del ítem por la cantidad comprada (pivot->amount) antes de guardarlo.
+     *
+     * Criterio "último costo" (confirmado por Lucas, prompt 264): si el artículo YA tiene un
+     * recargo del mismo `tipo`, se PISA su `amount` (no se acumula un segundo recargo del mismo
+     * tipo). El costo del artículo siempre refleja el flete/seguro/arancel de la ÚLTIMA compra
+     * que trajo un costo extra de ese tipo.
+     *
+     * Nota (decisión documentada, no automatizar): si en una edición de la orden se elimina un
+     * extra cost tipado (o se le saca el tipo), el recargo de artículo ya materializado NO se
+     * borra automáticamente acá — el criterio último costo asume que una próxima compra con
+     * costo extra de ese tipo lo va a pisar, y mientras tanto el usuario lo puede borrar a mano
+     * desde el modal del artículo (ArticleSurchageController::destroy).
+     *
+     * Nota (simetría con precios en blanco, Tarea 3): `article_surchage_blancos` sólo tiene
+     * columna `percentage` (no `amount`), no existe un campo unitario equivalente para copiar
+     * un recargo por monto fijo como este. Por eso este método NO crea/actualiza recargos en
+     * blanco — no hay a dónde propagar un `amount` en esa tabla sin agregar una columna nueva,
+     * fuera del alcance de este prompt.
+     *
+     * Mismo gate que aplicar_descuento_compra_a_costo_articulos(): solo corre si la orden está
+     * marcada para actualizar costo/precio de catálogo.
+     */
+    function aplicar_costos_extra_a_recargos_articulos() {
+
+        if (!$this->provider_order->update_prices) {
+            return;
+        }
+
+        // Tipos de costo extra que se materializan como recargo de artículo (mismo enum que
+        // ArticleSurchage, prompt 260). NULL o TIPO_OTRO: comportamiento actual, solo suman al
+        // total de la orden.
+        $tipos_materializables = [
+            ProviderOrderExtraCost::TIPO_TRANSPORTE,
+            ProviderOrderExtraCost::TIPO_SEGURO,
+            ProviderOrderExtraCost::TIPO_ARANCEL_IMPORTACION,
+        ];
+
+        // Total de artículos de la compra (ya calculado por set_totales(), corre antes en
+        // procesar_pedido()), usado como base del prorrateo.
+        $total_articulos = (float)$this->provider_order->sub_total;
+
+        if ($total_articulos <= 0) {
+            return;
+        }
+
+        foreach ($this->provider_order->provider_order_extra_costs as $extra_cost) {
+
+            if (!in_array($extra_cost->tipo, $tipos_materializables)) {
+                continue;
+            }
+
+            $valor_costo_extra = (float)$extra_cost->value;
+
+            if ($valor_costo_extra <= 0) {
+                continue;
+            }
+
+            foreach ($this->provider_order->articles as $article) {
+
+                // Subtotal de este ítem, calculado con la misma lógica que usa set_totales()
+                // para sumar total_articulos (get_total_article), así el prorrateo es
+                // consistente con la base usada.
+                $res            = $this->get_total_article($article);
+                $subtotal_item  = (float)$res['sub_total_article'];
+
+                if ($subtotal_item <= 0) {
+                    continue;
+                }
+
+                // Cantidad comprada del ítem (pivot de la orden), para llevar el monto
+                // prorrateado del ítem a un valor unitario.
+                $cantidad = (float)$article->pivot->amount;
+
+                if ($cantidad <= 0) {
+                    continue;
+                }
+
+                $monto_prorrateado_item = $valor_costo_extra * $subtotal_item / $total_articulos;
+                $monto_unitario         = $monto_prorrateado_item / $cantidad;
+
+                $articulo = Article::find($article->id);
+
+                if (is_null($articulo)) {
+                    continue;
+                }
+
+                // Criterio último costo: busca un recargo existente del mismo tipo en el
+                // artículo para pisar su amount; si no existe, lo crea.
+                $surchage = ArticleSurchage::where('article_id', $articulo->id)
+                                            ->where('tipo', $extra_cost->tipo)
+                                            ->first();
+
+                if (is_null($surchage)) {
+                    $surchage                          = new ArticleSurchage();
+                    $surchage->article_id              = $articulo->id;
+                    $surchage->tipo                     = $extra_cost->tipo;
+                    $surchage->luego_del_precio_final   = 0;
+                }
+
+                // Es un recargo por monto fijo (unitario), no por porcentaje.
+                $surchage->amount      = $monto_unitario;
+                $surchage->percentage  = null;
+                $surchage->save();
+
+                Log::info('aplicar_costos_extra_a_recargos_articulos: recargo '.$extra_cost->tipo.' de '.$articulo->name.' seteado en '.$monto_unitario.' (costo extra: '.$extra_cost->description.', valor total: '.$valor_costo_extra.')');
+
+                ArticleHelper::setFinalPrice($articulo);
+            }
         }
     }
 
