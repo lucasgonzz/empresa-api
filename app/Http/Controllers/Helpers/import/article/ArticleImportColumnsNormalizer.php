@@ -75,4 +75,26 @@ class ArticleImportColumnsNormalizer
 
         return $normalized_columns;
     }
+
+    /**
+     * Prompt 310: normaliza las claves del mapa de flags "permitir_valores_en_blanco" por
+     * columna, con los mismos alias que normalize() usa para las posiciones de columna
+     * (ej. "codigo_proveedor" -> "codigo_de_proveedor"), para que ProcessRow pueda buscar
+     * el flag con la misma clave canónica que usa para leer la celda del Excel.
+     *
+     * @param  array $blank_flags  Mapa propiedad => bool (o "1"/"0"/"true"/"false")
+     * @return array                Mismo mapa con claves canónicas y valores boolean puros
+     */
+    public static function normalize_blank_flags(array $blank_flags): array
+    {
+        $normalized_flags = [];
+
+        foreach ($blank_flags as $property_key => $enabled) {
+            $canonical_key = self::normalize_property_key($property_key) ?? $property_key;
+
+            $normalized_flags[$canonical_key] = filter_var($enabled, FILTER_VALIDATE_BOOLEAN);
+        }
+
+        return $normalized_flags;
+    }
 }

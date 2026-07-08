@@ -285,6 +285,8 @@ class AiExcelImportController extends Controller
             'import_uuid'           => $import_uuid,
             'archivo_excel'         => $excel_full_path,
             'columns'               => $request->input('columns', []),
+            // Prompt 310: flags "permitir_valores_en_blanco" por columna (default: ninguna, todas OFF).
+            'blank_flags'           => $request->input('blank_flags', []),
             'create_and_edit'       => $request->input('create_and_edit', false),
             'start_row'             => $request->input('start_row', 2),
             'finish_row'            => $request->input('finish_row', 1000),

@@ -62,6 +62,23 @@ class ProcessRow {
      */
     protected $provider_standard_discounts_cache = [];
 
+    /**
+     * Prompt 310: flag "permitir valores en blanco" configurado por columna mapeada.
+     * Mapa columna_del_import (misma clave que $this->columns, ej. 'costo', 'descuentos')
+     * => bool. Default (columna ausente del mapa) = false: celda vacía NO pisa el valor
+     * actual del artículo. Con el flag en true, celda vacía sobrescribe con blanco/cero.
+     */
+    protected $blank_flags = [];
+
+    /**
+     * Prompt 310: claves de $data (prop_key, ej. 'cost', 'stock_min') detectadas en la fila
+     * actual como "forzar blanco/cero" porque la celda vino vacía y el flag de esa columna
+     * está en true. Se resetea al inicio de cada fila (ver procesar(), justo antes del loop
+     * de props_to_add) y lo consume get_modified_fields() para no omitir el campo pese a
+     * venir null.
+     */
+    protected $forced_blank_props = [];
+
 
     /**
      * Constructor: recibe los datos necesarios para procesar las filas
@@ -82,6 +99,9 @@ class ProcessRow {
         $this->import_history_id = $data['import_history_id'] ?? null;
         $this->import_uuid = $data['import_uuid'] ?? null;
 
+        // Prompt 310: flags "permitir valores en blanco" por columna mapeada (default vacío = todas en false).
+        $this->blank_flags = isset($data['blank_flags']) && is_array($data['blank_flags']) ? $data['blank_flags'] : [];
+
         $this->set_price_types();
         $this->set_addresses();
         $this->set_property_types();
@@ -92,6 +112,19 @@ class ProcessRow {
         $this->set_category_cache();
         $this->set_sub_category_cache();
         $this->set_iva_cache();
+    }
+
+    /**
+     * Prompt 310: indica si la columna del import (misma clave que $this->columns, ej.
+     * 'costo', 'descuentos') tiene habilitado "permitir valores en blanco".
+     *
+     * @param  string $column_key  Clave de la columna en el mapeo de importación.
+     * @return bool                true si una celda vacía debe sobrescribir (borrar/cero) el
+     *                               valor actual; false (default) si debe omitirse sin tocarlo.
+     */
+    protected function permite_valores_en_blanco(string $column_key): bool
+    {
+        return !empty($this->blank_flags[$column_key]);
     }
 
     public function set_taken_slugs(array $slugs): void
@@ -294,6 +327,10 @@ class ProcessRow {
         $this->terminar('get_provider_id');
 
 
+        // Prompt 310: se resetea por fila; get_modified_fields() lo consulta para saber qué
+        // props deben forzarse a blanco/cero pese a que la celda haya venido vacía.
+        $this->forced_blank_props = [];
+
         $this->iniciar();
         foreach ($props_to_add as $prop_to_add) {
 
@@ -305,8 +342,19 @@ class ProcessRow {
                     $excel_value = Self::get_number($excel_value);
                 }
 
+                /*
+                 * Prompt 310: celda vacía (excel_value null) + columna mapeada.
+                 * - Flag OFF (default): se deja $data[prop_key] = null; get_modified_fields()
+                 *   omite los valores null y por lo tanto NO pisa el valor actual del artículo.
+                 * - Flag ON: se marca el prop_key para que get_modified_fields() fuerce la
+                 *   sobreescritura en blanco/cero en vez de omitirlo.
+                 */
+                if (is_null($excel_value) && $this->permite_valores_en_blanco($prop_to_add['excel_column'])) {
+                    $this->forced_blank_props[$prop_to_add['prop_key']] = true;
+                }
+
                 $data[$prop_to_add['prop_key']] = $excel_value;
-            
+
             } else {
                 // $this->log('Columna ignorada '.$prop_to_add['excel_column']);
             }
@@ -842,7 +890,7 @@ class ProcessRow {
 
             unset($merged['discounts']);
 
-            $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id_para_discounts);
+            $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id_para_discounts, $baseline_para_diffs);
 
             if (!is_null($provider_discounts_to_tag)) {
                 $merged['provider_discounts_to_tag'] = $provider_discounts_to_tag;
@@ -1039,7 +1087,7 @@ class ProcessRow {
 
         } else {
 
-            $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id_de_la_fila);
+            $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id_de_la_fila, $articulo_ya_creado);
 
             if (!is_null($provider_discounts_to_tag)) {
                 $cambios['provider_discounts_to_tag'] = $provider_discounts_to_tag;
@@ -1384,18 +1432,39 @@ class ProcessRow {
             // Valor nuevo normalizado
             $new = $this->normalize_value_for_comparison($value);
 
+            /*
+             * Prompt 310: celda vacía (normalize_value_for_comparison la deja en null) pero la
+             * columna tiene el flag "permitir_valores_en_blanco" activo para este prop_key.
+             * En ese caso NO se omite: se fuerza blanco/cero explícito.
+             */
+            $forzar_blanco = isset($this->forced_blank_props[$key]);
+
             // Si el modelo no tiene esa propiedad, lo tratamos como virtual
 
             if (!array_key_exists($key, $existing->getAttributes())) {
                 if (!is_null($new)) {
                     $modified[$key] = $new;
-                    $this->log('Agregando a la fuerza '.$key.' con el valor: '.$new);  
-                } 
+                    $this->log('Agregando a la fuerza '.$key.' con el valor: '.$new);
+                }
                 continue;
             }
 
             // Valor viejo normalizado
             $old = $this->normalize_value_for_comparison($existing->$key);
+
+            if (is_null($new) && $forzar_blanco) {
+                // Campos numéricos pasan a 0; el resto (texto) queda en blanco (null).
+                $new = is_numeric($old) ? 0 : null;
+
+                if ($old == $new) continue; // ya estaba en blanco/cero, no hay cambio real
+
+                $modified[$key] = $new;
+                $modified["__diff__{$key}"] = [
+                    'old' => $existing->$key,
+                    'new' => $new,
+                ];
+                continue;
+            }
 
             // Si son iguales (tras normalizar), no hay cambio
             if ($old == $new || is_null($new)) continue;
@@ -2534,10 +2603,23 @@ class ProcessRow {
             }
         }
 
-        // Comparar porcentajes: si la columna está mapeada (no ignorada), siempre comparar aunque esté vacía.
-        // Celda vacía + old con valores → diff con new:[] → dispara el borrado del descuento %.
-        // Si la columna está ignorada se omite para no tocar datos existentes.
-        if (!ImportHelper::isIgnoredColumn('descuentos', $this->columns)) {
+        /*
+         * Prompt 310: Comparar porcentajes solo si corresponde.
+         * - Columna mapeada + celda CON valor: siempre se compara (el Excel manda).
+         * - Columna mapeada + celda VACÍA + flag "permitir_valores_en_blanco" OFF (default):
+         *   se omite la comparación para NO pisar/borrar los descuentos existentes (corrige
+         *   el bug donde una celda vacía borraba los descuentos del artículo).
+         * - Columna mapeada + celda VACÍA + flag ON: se mantiene el comportamiento legado
+         *   (diff con new:[] → dispara el borrado del descuento %, ahora explícito y opcional).
+         * - Columna ignorada: se omite para no tocar datos existentes.
+         */
+        if (
+            !ImportHelper::isIgnoredColumn('descuentos', $this->columns)
+            && (
+                !is_null($discounts_percent_str)
+                || $this->permite_valores_en_blanco('descuentos')
+            )
+        ) {
 
             if ($old_percents != $new_percents) {
                 $diffs[] = [
@@ -2550,9 +2632,14 @@ class ProcessRow {
             }
         }
 
-        // Comparar montos: misma lógica que porcentajes.
-        // Celda vacía + old con valores → diff → borra los montos existentes.
-        if (!ImportHelper::isIgnoredColumn('descuentos_montos', $this->columns)) {
+        // Comparar montos: misma lógica que porcentajes (ver comentario arriba).
+        if (
+            !ImportHelper::isIgnoredColumn('descuentos_montos', $this->columns)
+            && (
+                !is_null($discounts_amount_str)
+                || $this->permite_valores_en_blanco('descuentos_montos')
+            )
+        ) {
 
             if ($old_amounts != $new_amounts) {
                 $diffs[] = [
@@ -2587,13 +2674,20 @@ class ProcessRow {
      *    columna no está mapeada simplemente no se agregan montos.
      *  - Si no hay nada que aportar (ninguna columna mapeada y el proveedor no tiene estándar),
      *    se devuelve null: no se toca lo que ya estuviera tagueado para este artículo.
+     *  - Prompt 310: columna mapeada + celda VACÍA + flag "permitir_valores_en_blanco" OFF
+     *    (default): en lugar de limpiar, se preservan los items ya tagueados (percentage o
+     *    amount, según corresponda) leídos de `$existing_article`. Con el flag ON se mantiene
+     *    el comportamiento legado (celda vacía → sin items → borrado).
      *
-     * @param  array    $row          Fila del Excel en proceso.
-     * @param  int|null $provider_id  Proveedor de esta fila (columna o el fijo del import).
+     * @param  array                     $row              Fila del Excel en proceso.
+     * @param  int|null                  $provider_id      Proveedor de esta fila (columna o el fijo del import).
+     * @param  \App\Models\Article|null  $existing_article Artículo ya persistido (si existe) para
+     *                                                      preservar sus descuentos tagueados cuando
+     *                                                      corresponda. Null si el artículo es nuevo.
      * @return array|null             Lista de items ['percentage'=>x] / ['amount'=>x] a pasar
      *                                 a sync_provider_discounts(), o null si no corresponde tocar nada.
      */
-    private function get_provider_discounts_to_tag($row, $provider_id)
+    private function get_provider_discounts_to_tag($row, $provider_id, $existing_article = null)
     {
         // Nunca se tagea un descuento sin proveedor conocido (misma regla que
         // ArticleProviderDiscountHelper::sync_provider_discounts).
@@ -2619,10 +2713,19 @@ class ProcessRow {
 
         if (!$col_percent_ignorada) {
 
-            // Columna mapeada: manda el Excel (aunque la celda venga vacía → sin items → borrado).
             $discounts_percent_str = ImportHelper::getColumnValue($row, 'descuentos', $this->columns);
 
-            if ($discounts_percent_str) {
+            if (
+                is_null($discounts_percent_str)
+                && !$this->permite_valores_en_blanco('descuentos')
+            ) {
+                // Prompt 310: celda vacía + flag OFF -> se preserva lo tagueado existente
+                // (sync_provider_discounts sobreescribe TODO, por eso hay que traerlo explícito).
+                foreach ($this->get_tagged_discount_percentages($existing_article) as $percentage) {
+                    $items[] = ['percentage' => $percentage];
+                }
+            } else if ($discounts_percent_str) {
+
                 $new_percents = array_filter(array_map(function ($chunk) {
                     return self::get_number_forgiving($chunk);
                 }, explode('_', $discounts_percent_str)));
@@ -2631,6 +2734,7 @@ class ProcessRow {
                     $items[] = ['percentage' => $percentage];
                 }
             }
+            // discounts_percent_str vacío + flag ON -> no agrega nada -> borra (comportamiento legado).
 
         } else {
 
@@ -2644,7 +2748,15 @@ class ProcessRow {
 
             $discounts_amount_str = ImportHelper::getColumnValue($row, 'descuentos_montos', $this->columns);
 
-            if ($discounts_amount_str) {
+            if (
+                is_null($discounts_amount_str)
+                && !$this->permite_valores_en_blanco('descuentos_montos')
+            ) {
+                foreach ($this->get_tagged_discount_amounts($existing_article) as $amount) {
+                    $items[] = ['amount' => $amount];
+                }
+            } else if ($discounts_amount_str) {
+
                 $new_amounts = array_filter(array_map(function ($chunk) {
                     return self::get_number_forgiving($chunk);
                 }, explode('_', $discounts_amount_str)));
@@ -2656,6 +2768,53 @@ class ProcessRow {
         }
 
         return $items;
+    }
+
+    /**
+     * Prompt 310: porcentajes de descuentos ya "tagueados" (con provider_id, de cualquier
+     * proveedor) para un artículo persistido. Se usa para preservarlos cuando la celda de
+     * "descuentos" vino vacía y el flag "permitir_valores_en_blanco" está en false.
+     *
+     * @param  \App\Models\Article|null $article  Artículo a consultar; null o sin id -> sin datos.
+     * @return array<float>
+     */
+    private function get_tagged_discount_percentages($article): array
+    {
+        if (is_null($article) || !($article instanceof Article) || empty($article->id)) {
+            return [];
+        }
+
+        return \App\Models\ArticleDiscount::where('article_id', $article->id)
+            ->whereNotNull('provider_id')
+            ->whereNotNull('percentage')
+            ->pluck('percentage')
+            ->map(function ($p) {
+                return (float) $p;
+            })
+            ->all();
+    }
+
+    /**
+     * Prompt 310: montos de descuentos ya "tagueados" para un artículo persistido.
+     * Misma finalidad que get_tagged_discount_percentages() pero para la columna "descuentos_montos".
+     *
+     * @param  \App\Models\Article|null $article  Artículo a consultar; null o sin id -> sin datos.
+     * @return array<float>
+     */
+    private function get_tagged_discount_amounts($article): array
+    {
+        if (is_null($article) || !($article instanceof Article) || empty($article->id)) {
+            return [];
+        }
+
+        return \App\Models\ArticleDiscount::where('article_id', $article->id)
+            ->whereNotNull('provider_id')
+            ->whereNotNull('amount')
+            ->pluck('amount')
+            ->map(function ($a) {
+                return (float) $a;
+            })
+            ->all();
     }
 
     /**
@@ -2777,8 +2936,16 @@ class ProcessRow {
             }
         }
 
+        /*
+         * Prompt 310: mismo criterio que get_discounts_diff(). Columna mapeada + celda vacía +
+         * flag "permitir_valores_en_blanco" OFF (default) -> se omite la comparación para no
+         * borrar los recargos existentes. Flag ON -> comportamiento legado (borra).
+         */
         // 🔹 3. Comparar porcentajes
-        if (!$this->compare_surchages_arrays($old_percents, $new_percents)) {
+        if (
+            (!is_null($surchages_percent_str) || $this->permite_valores_en_blanco('recargos'))
+            && !$this->compare_surchages_arrays($old_percents, $new_percents)
+        ) {
             $diffs[] = [
                 'type' => '%',
                 '__diff__surchages_percent' => [
@@ -2789,7 +2956,10 @@ class ProcessRow {
         }
 
         // 🔹 4. Comparar montos
-        if (!$this->compare_surchages_arrays($old_amounts, $new_amounts)) {
+        if (
+            (!is_null($surchages_amount_str) || $this->permite_valores_en_blanco('recargos_montos'))
+            && !$this->compare_surchages_arrays($old_amounts, $new_amounts)
+        ) {
             $diffs[] = [
                 'type' => 'amount',
                 '__diff__surchages_amount' => [

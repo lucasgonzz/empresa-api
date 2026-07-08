@@ -37,9 +37,10 @@ class ArticleImport implements ToCollection
 
     
     public function __construct(
-        $columns, 
-        $create_and_edit, 
-        $start_row, 
+        $columns,
+        $blank_flags,
+        $create_and_edit,
+        $start_row,
         $finish_row, 
         $provider_id, 
         $user, 
@@ -81,6 +82,8 @@ class ArticleImport implements ToCollection
 
 
         $this->columns = $columns;
+        // Prompt 310: flags "permitir_valores_en_blanco" por columna, propagados hasta ProcessRow.
+        $this->blank_flags = $blank_flags;
         $this->create_and_edit = $create_and_edit;
         $this->start_row = $start_row;
         $this->finish_row = $finish_row;
@@ -104,8 +107,9 @@ class ArticleImport implements ToCollection
 
 
         $this->process_row = new ProcessRow([
-            'ct'                                            => $this->ct, 
+            'ct'                                            => $this->ct,
             'columns'                                       => $this->columns,
+            'blank_flags'                                   => $this->blank_flags,
             'user'                                          => $this->user,
             'provider_id'                                   => $this->provider_id,
             'create_and_edit'                               => $this->create_and_edit,

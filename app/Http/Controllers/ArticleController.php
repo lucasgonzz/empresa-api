@@ -485,6 +485,9 @@ class ArticleController extends Controller
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
 
+        // Prompt 310: flags "permitir_valores_en_blanco" por columna mapeada (default false).
+        $blank_flags = GeneralHelper::getImportBlankFlags($request);
+
         // Log::info('columns:');
         // Log::info($columns);
         /*
@@ -532,8 +535,9 @@ class ArticleController extends Controller
         $result = $excel->importar([
             'import_uuid'           => $import_uuid, 
             'archivo_excel'         => $archivo_excel, 
-            'columns'               => $columns, 
-            'create_and_edit'       => $request->create_and_edit, 
+            'columns'               => $columns,
+            'blank_flags'           => $blank_flags,
+            'create_and_edit'       => $request->create_and_edit,
             'start_row'             => $request->start_row, 
             'finish_row'            => $request->finish_row, 
             'provider_id'           => $request->provider_id, 
