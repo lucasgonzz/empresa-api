@@ -884,7 +884,16 @@ class AfipPdfHelper
         $row_h = 5;
 
         /**
+         * Letra del comprobante resuelta antes de dibujar, para poder ocultar
+         * el bloque "Otros Tributos" (tabla izquierda + renglón derecho) en
+         * comprobantes de exportación (letra E).
+         */
+        $cbte_letra = (string) $afip_ticket->cbte_letra;
+        $es_exportacion = $cbte_letra === 'E';
+
+        /**
          * Columna izquierda: tabla "Otros Tributos" con encabezado y celdas bordeadas.
+         * No se muestra en comprobantes de exportación.
          */
         $left_x = $page_left;
         $left_w = 97;
@@ -893,48 +902,52 @@ class AfipPdfHelper
         $col_alic_w = 10;
         $col_imp_w = 17;
 
-        /**
-         * Título con borde inferior solamente, como en el modelo AFIP.
-         */
-        $pdf->y = $start_y;
-        $pdf->x = $left_x;
-        $pdf->SetFont('Arial', 'B', 9);
-        $pdf->Cell($left_w, $row_h, 'Otros Tributos', 'B', 1, 'L');
-
-        /**
-         * Encabezado de columnas con fondo gris y borde completo.
-         */
-        $pdf->x = $left_x;
-        $pdf->SetFillColor(210, 210, 210);
-        $pdf->SetFont('Arial', 'B', 7);
-        $pdf->Cell($col_desc_w, $row_h, 'Descripción', 1, 0, 'C', true);
-        $pdf->Cell($col_det_w, $row_h, 'Detalle', 1, 0, 'C', true);
-        $pdf->Cell($col_alic_w, $row_h, 'Alic. %', 1, 0, 'C', true);
-        $pdf->Cell($col_imp_w, $row_h, 'Importe', 1, 1, 'C', true);
-
-        /**
-         * Filas de datos con borde y texto normal (sin relleno).
-         */
-        $pdf->SetFont('Arial', '', 8);
-        $pdf->SetFillColor(255, 255, 255);
-        foreach (self::$otros_tributos_rows as $row_label) {
+        if (!$es_exportacion) {
+            /**
+             * Título con borde inferior solamente, como en el modelo AFIP.
+             */
+            $pdf->y = $start_y;
             $pdf->x = $left_x;
-            $pdf->Cell($col_desc_w, $row_h, $row_label, 1, 0, 'L');
-            $pdf->Cell($col_det_w, $row_h, '', 1, 0, 'L');
-            $pdf->Cell($col_alic_w, $row_h, '', 1, 0, 'R');
+            $pdf->SetFont('Arial', 'B', 9);
+            $pdf->Cell($left_w, $row_h, 'Otros Tributos', 'B', 1, 'L');
+
+            /**
+             * Encabezado de columnas con fondo gris y borde completo.
+             */
+            $pdf->x = $left_x;
+            $pdf->SetFillColor(210, 210, 210);
+            $pdf->SetFont('Arial', 'B', 7);
+            $pdf->Cell($col_desc_w, $row_h, 'Descripción', 1, 0, 'C', true);
+            $pdf->Cell($col_det_w, $row_h, 'Detalle', 1, 0, 'C', true);
+            $pdf->Cell($col_alic_w, $row_h, 'Alic. %', 1, 0, 'C', true);
+            $pdf->Cell($col_imp_w, $row_h, 'Importe', 1, 1, 'C', true);
+
+            /**
+             * Filas de datos con borde y texto normal (sin relleno).
+             */
+            $pdf->SetFont('Arial', '', 8);
+            $pdf->SetFillColor(255, 255, 255);
+            foreach (self::$otros_tributos_rows as $row_label) {
+                $pdf->x = $left_x;
+                $pdf->Cell($col_desc_w, $row_h, $row_label, 1, 0, 'L');
+                $pdf->Cell($col_det_w, $row_h, '', 1, 0, 'L');
+                $pdf->Cell($col_alic_w, $row_h, '', 1, 0, 'R');
+                $pdf->Cell($col_imp_w, $row_h, '0,00', 1, 1, 'R');
+            }
+
+            /**
+             * Fila de subtotal con el código de moneda visible en la celda de descripción.
+             */
+            $moneda_code = (int) $sale->moneda_id === 2 ? ' USD' : '';
+            $pdf->x = $left_x;
+            $pdf->SetFont('Arial', '', 8);
+            $pdf->Cell($col_desc_w + $col_det_w + $col_alic_w, $row_h, 'Importe Otros Tributos:'.$moneda_code, 1, 0, 'L');
             $pdf->Cell($col_imp_w, $row_h, '0,00', 1, 1, 'R');
+
+            $left_end_y = $pdf->y;
+        } else {
+            $left_end_y = $start_y;
         }
-
-        /**
-         * Fila de subtotal con el código de moneda visible en la celda de descripción.
-         */
-        $moneda_code = (int) $sale->moneda_id === 2 ? ' USD' : '';
-        $pdf->x = $left_x;
-        $pdf->SetFont('Arial', '', 8);
-        $pdf->Cell($col_desc_w + $col_det_w + $col_alic_w, $row_h, 'Importe Otros Tributos:'.$moneda_code, 1, 0, 'L');
-        $pdf->Cell($col_imp_w, $row_h, '0,00', 1, 1, 'R');
-
-        $left_end_y = $pdf->y;
 
         /**
          * Columna derecha: moneda y totales alineados a la derecha.
@@ -952,8 +965,6 @@ class AfipPdfHelper
         $pdf->x = $right_x;
         $pdf->SetFont('Arial', '', 9);
         $pdf->Cell($right_w, $row_h, 'Moneda: '.$moneda_label, 0, 1, 'R');
-
-        $cbte_letra = (string) $afip_ticket->cbte_letra;
 
         if ($cbte_letra === 'A' || $cbte_letra === 'B') {
             self::print_footer_right_row(
@@ -977,7 +988,9 @@ class AfipPdfHelper
             }
         }
 
-        self::print_footer_right_row($pdf, $right_x, $right_w, 'Importe Otros Tributos:', '0,00', false, $row_h);
+        if (!$es_exportacion) {
+            self::print_footer_right_row($pdf, $right_x, $right_w, 'Importe Otros Tributos:', '0,00', false, $row_h);
+        }
 
         $total = (float) $importes['total'];
         $formatted_total = Numbers::price($total, true, $moneda_id);
