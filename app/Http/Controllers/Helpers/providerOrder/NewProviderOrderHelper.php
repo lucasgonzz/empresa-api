@@ -14,6 +14,8 @@ use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Iva;
 use App\Models\MovimientoCaja;
+use App\Models\Provider;
+use App\Models\ProviderOrderDiscount;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
@@ -43,7 +45,139 @@ class NewProviderOrderHelper {
 
         $this->set_totales();
 
+        // Prompt 262: el descuento de la orden (provider_order_discounts) recién ahora que
+        // set_totales() calculó "descuentos_compra" se prorratea sobre el costo de catálogo de
+        // cada artículo de la compra. Tiene que ir DESPUÉS de set_totales() porque necesita el
+        // total ya calculado.
+        $this->aplicar_descuento_compra_a_costo_articulos();
+
         $this->set_current_acount();
+    }
+
+    /**
+     * Prompt 262 - Tarea 1: pre-carga las bonificaciones del proveedor (provider_discounts,
+     * dato maestro de la negociación con el proveedor) como descuentos EDITABLES de esta orden
+     * de compra puntual (provider_order_discounts), al momento de crearla.
+     *
+     * Racional: desde el prompt 261, la bonificación del proveedor dejó de aplicarse
+     * automáticamente al costo de catálogo (Capa 1). Ahora es solo un dato "sugerido" que
+     * pre-completa el descuento de la orden de compra concreta, para que el usuario lo vea, lo
+     * pueda editar o eliminar antes de confirmar la compra. Recién lo que quede cargado en
+     * provider_order_discounts en el momento de confirmar es lo que impacta el costo real, vía
+     * aplicar_descuento_compra_a_costo_articulos().
+     *
+     * No pisa nada si la orden ya trae descuentos propios (por ejemplo, si el usuario ya los
+     * mandó explícitamente en el request al crear la orden) — solo pre-completa cuando la orden
+     * todavía no tiene ningún provider_order_discount cargado.
+     */
+    function precargar_bonificaciones_proveedor() {
+
+        // Si la orden ya tiene descuentos propios cargados, no se pisan con los del proveedor.
+        if ($this->provider_order->provider_order_discounts()->count() > 0) {
+            return;
+        }
+
+        $provider = Provider::find($this->provider_order->provider_id);
+
+        if (is_null($provider)) {
+            return;
+        }
+
+        foreach ($provider->provider_discounts as $provider_discount) {
+
+            // Solo se pre-cargan bonificaciones porcentuales (dato maestro del proveedor,
+            // ver ProviderDiscount): si no tiene porcentaje cargado, no hay nada que copiar.
+            if (is_null($provider_discount->percentage) || $provider_discount->percentage == '') {
+                continue;
+            }
+
+            ProviderOrderDiscount::create([
+                'description'        => 'Bonificación de proveedor',
+                'percentage'         => $provider_discount->percentage,
+                'provider_order_id'  => $this->provider_order->id,
+            ]);
+        }
+
+        // Se vuelve a cargar la relación para que set_totales() (que corre después) vea
+        // los descuentos recién creados.
+        $this->provider_order->load('provider_order_discounts');
+    }
+
+    /**
+     * Prompt 262 - Tarea 2: prorratea el descuento agregado de la orden de compra
+     * (provider_order_discounts, ya sumarizado por set_totales() en "descuentos_compra") sobre
+     * el costo de catálogo de cada artículo de la orden.
+     *
+     * Racional: la bonificación del proveedor ahora es un dato de la NEGOCIACIÓN de esta compra
+     * puntual (cargada como descuento editable de la orden), no una propiedad permanente del
+     * costo de catálogo del artículo. Por eso NO se persiste como un ArticleDiscount ni se
+     * aplica en ArticlePricesHelper (Capa 1 sigue sin tocarse, ver prompt 261) — el único canal
+     * por el que impacta el costo real es este: la misma compra concreta, igual que ya hace
+     * update_cost() con el costo "en bruto" que viene del formulario de la orden.
+     *
+     * Fórmula de prorrateo por ítem (igual a la usada para costos extra/flete prorrateados):
+     *   descuento_item = descuentos_compra * subtotal_item / total_compra
+     * Como acá lo que se ajusta es el costo UNITARIO (no un total), y descuentos_compra /
+     * total_compra ya es la misma proporción para cualquier ítem (se cancela el subtotal_item),
+     * esa fórmula equivale a aplicar el mismo ratio de descuento directamente sobre el costo
+     * unitario original de cada artículo: costo_final = costo_original * (1 - ratio).
+     *
+     * Solo corre si la orden tiene marcado update_prices (mismo gate que usa update_cost() para
+     * decidir si la compra actualiza el costo de catálogo) y si efectivamente hubo
+     * descuentos_compra > 0. Es idempotente: cada vez que se recalculan los totales de la orden
+     * (por ejemplo al editarla), vuelve a partir del costo "en bruto" que está en el pivot de la
+     * compra (article_provider_order.cost, que este método NO modifica) y aplica el ratio vigente
+     * — no hay riesgo de descontar dos veces sobre un costo ya descontado.
+     */
+    function aplicar_descuento_compra_a_costo_articulos() {
+
+        // Si la orden no está configurada para actualizar el costo/precio de catálogo, no se
+        // toca nada (mismo gate que usa update_cost()/update_price()).
+        if (!$this->provider_order->update_prices) {
+            return;
+        }
+
+        $descuentos_compra = (float)$this->provider_order->descuentos_compra;
+        $total_articulos   = (float)$this->provider_order->sub_total;
+
+        // Sin descuento de compra o sin una base válida para prorratear, no hay nada que hacer.
+        if ($descuentos_compra <= 0 || $total_articulos <= 0) {
+            return;
+        }
+
+        // Ratio de descuento agregado de la orden sobre el total de artículos, ver fórmula en el
+        // comentario del método.
+        $ratio_descuento = $descuentos_compra / $total_articulos;
+
+        if ($ratio_descuento <= 0) {
+            return;
+        }
+
+        foreach ($this->provider_order->articles as $article) {
+
+            // Costo "en bruto" cargado en esta compra puntual para este artículo (pivot de la
+            // orden), sin descuento de orden aplicado todavía.
+            $costo_original = (float)$article->pivot->cost;
+
+            if ($costo_original <= 0) {
+                continue;
+            }
+
+            $costo_final = $costo_original * (1 - $ratio_descuento);
+
+            $articulo = Article::find($article->id);
+
+            if (is_null($articulo)) {
+                continue;
+            }
+
+            $articulo->cost = $costo_final;
+            $articulo->save();
+
+            Log::info('aplicar_descuento_compra_a_costo_articulos: costo de '.$articulo->name.' ajustado de '.$costo_original.' a '.$costo_final.' (ratio descuento compra: '.$ratio_descuento.')');
+
+            ArticleHelper::setFinalPrice($articulo);
+        }
     }
 
     function set_credit_account() {

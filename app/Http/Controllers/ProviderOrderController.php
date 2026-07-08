@@ -80,9 +80,13 @@ class ProviderOrderController extends Controller
         
 
         $helper = new NewProviderOrderHelper($model, $request->articles);
-        
+
+        // Prompt 262: al crear la orden, pre-carga las bonificaciones del proveedor como
+        // descuentos editables de esta orden puntual (si el request no trajo descuentos propios).
+        $helper->precargar_bonificaciones_proveedor();
+
         $helper->attach_articles();
-        
+
         ModoFacturacionHelper::check_modo_facturacion($model, $helper);
 
         $helper->procesar_pedido();
