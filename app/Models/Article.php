@@ -180,6 +180,12 @@ class Article extends Model
         return $this->hasMany('App\Models\ArticleSurchageBlanco');
     }
 
+    // Impuestos sobre ventas (Capa 2 — Prompt 260) que aplican a este artículo cuando el
+    // sale_tax tiene apply_to_all = false.
+    function sale_taxes() {
+        return $this->belongsToMany('App\Models\SaleTax', 'article_sale_tax');
+    }
+
     function combos() {
         return $this->belongsToMany('App\Models\Article')->withTrashed();
     }

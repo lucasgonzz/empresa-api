@@ -404,6 +404,8 @@ class ArticlePricesHelper {
                     ArticleDiscount::create([
                         'percentage' => $discount->percentage,
                         'article_id' => $article->id,
+                        // Tipo del descuento si viene en el origen (Prompt 260); si no, queda null
+                        'tipo' => isset($discount->tipo) ? $discount->tipo : null,
                     ]);
                     // Log::info('Se creo descuento de '.$discount->percentage);
                 }
@@ -426,6 +428,8 @@ class ArticlePricesHelper {
                     ArticleDiscountBlanco::create([
                         'percentage' => $discount->percentage,
                         'article_id' => $article->id,
+                        // Propago el tipo del descuento original (Prompt 260, simetría con la tabla normal)
+                        'tipo' => isset($discount->tipo) ? $discount->tipo : null,
                     ]);
                     // Log::info('Se creo descuento en blanco de '.$discount->percentage.' para article_id: '.$article->id);
                 }
@@ -448,6 +452,8 @@ class ArticlePricesHelper {
                     ArticleSurchage::create([
                         'percentage' => $surchage->percentage,
                         'article_id' => $article->id,
+                        // Tipo del recargo si viene en el origen (Prompt 260); si no, queda null
+                        'tipo' => isset($surchage->tipo) ? $surchage->tipo : null,
                     ]);
                     // Log::info('Se creo recargo de '.$surchage->percentage);
                 }
@@ -470,6 +476,8 @@ class ArticlePricesHelper {
                     ArticleSurchageBlanco::create([
                         'percentage' => $surchage->percentage,
                         'article_id' => $article->id,
+                        // Propago el tipo del recargo original (Prompt 260, simetría con la tabla normal)
+                        'tipo' => isset($surchage->tipo) ? $surchage->tipo : null,
                     ]);
                     // Log::info('Se creo recargo en blanco de '.$surchage->percentage);
                 }

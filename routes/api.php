@@ -193,6 +193,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Cuotas
     Route::resource('cuota', 'CuotaController');
 
+    // Impuestos sobre ventas (Capa 2 — Prompt 260, ej. IIBB)
+    Route::resource('sale-tax', 'SaleTaxController');
+
 
 
     // Insumos (Producción V2)

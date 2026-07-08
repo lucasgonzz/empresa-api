@@ -25,6 +25,8 @@ class ArticleDiscountController extends Controller
             'percentage'            => $request->percentage,
             'amount'                => $request->amount,
             'show_in_online'        => $request->show_in_online,
+            // Naturaleza contable del descuento (Prompt 260). Nullable, sin UI todavía.
+            'tipo'                  => $request->tipo,
         ]);
         if (!is_null($request->model_id)) {
             ArticleHelper::setFinalPrice($model->article);
@@ -42,6 +44,11 @@ class ArticleDiscountController extends Controller
         $model->percentage                = $request->percentage;
         $model->amount                    = $request->amount;
         $model->show_in_online            = $request->show_in_online;
+        // Naturaleza contable del descuento (Prompt 260). Sin UI todavía: solo se pisa si el
+        // request lo manda explícitamente, para no perder el backfill 'otro' en updates existentes.
+        if (!is_null($request->tipo)) {
+            $model->tipo = $request->tipo;
+        }
         $model->save();
         ArticleHelper::setFinalPrice($model->article);
         $this->sendAddModelNotification('article', $model->article_id, false);
