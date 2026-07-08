@@ -12,10 +12,20 @@ use App\Models\ArticleDiscountBlanco;
 use App\Models\ArticleSurchage;
 use App\Models\ArticleSurchageBlanco;
 use App\Models\PriceType;
+use App\Models\SaleTax;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
 class ArticlePricesHelper {
+
+    /**
+     * Cache en memoria (por request/job) de los sale_taxes activos de cada usuario, para evitar
+     * repetir la misma consulta cuando este helper se llama en loop masivo sobre muchos artículos
+     * (ej. recalculo global de precios). Se indexa por user_id.
+     *
+     * @var array<int, \Illuminate\Support\Collection>
+     */
+    static $sale_taxes_cache = [];
 
     static function aplicar_category_percentage_gain($article, $price, $des) {
 
@@ -78,10 +88,15 @@ class ArticlePricesHelper {
                 $percentage = $price_type->pivot->percentage; // Porcentaje de ganancia
 
                 if ($percentage) {
-                    
+
                     // Calcular el precio final
-                    
+
                     $price = $cost + ($cost * $percentage / 100);
+
+                    // Capa 2 (Prompt 261): sale_taxes con formula de division, despues del margen
+                    // y antes del IVA de venta (que en este metodo esta comentado/no se aplica).
+                    $res = Self::aplicar_sale_taxes($article, $price, $user, []);
+                    $price = $res['price'];
 
                     // $final_price = Self::aplicar_iva($article, $price, $user);
 
@@ -179,8 +194,14 @@ class ArticlePricesHelper {
 
                     $final_price = $cost + ($cost * (float)$percentage / 100);
 
+                    // Capa 2 (Prompt 261): sale_taxes con formula de division, despues del margen
+                    // (y de los price_type_surchages, que se preservan sin tocar mas abajo) y
+                    // antes del IVA de venta.
+                    $res = ArticlePricesHelper::aplicar_sale_taxes($article, $final_price, $user, []);
+                    $final_price = $res['price'];
+
                     if (!$user->aplicar_iva_al_costo) {
-                        
+
                         $res = ArticlePricesHelper::aplicar_iva($article, $final_price, $user, []);
                         $final_price = $res['price'];
                         // $des   = $res['des'];
@@ -286,15 +307,77 @@ class ArticlePricesHelper {
         ];
     }
 
-    static function aplicar_provider_discounts($article, $price, $des) {
+    /**
+     * Obtiene los sale_taxes activos que aplican a un artículo puntual: los de `apply_to_all = true`
+     * del usuario, más los vinculados específicamente al artículo vía el pivot `article_sale_tax`
+     * (Prompt 260/261 — Capa 2 del motor de precios).
+     *
+     * La consulta de sale_taxes del usuario se cachea en memoria (Self::$sale_taxes_cache) para
+     * no repetirla en cada artículo cuando este helper corre en un recalculo masivo.
+     *
+     * @param \App\Models\Article $article
+     * @param \App\Models\User $user
+     * @return \Illuminate\Support\Collection Colección de SaleTax aplicables al artículo.
+     */
+    static function get_sale_taxes_para_articulo($article, $user) {
 
-        if (!is_null($article->provider)) {
+        if (!isset(Self::$sale_taxes_cache[$user->id])) {
+            Self::$sale_taxes_cache[$user->id] = SaleTax::where('user_id', $user->id)
+                                                            ->where('activo', 1)
+                                                            ->get();
+        }
 
-            foreach ($article->provider->provider_discounts as $discount) {
-                $price -= $price * $discount->percentage / 100;
-                $des[] = 'Menos descuento del proveedor de '.$discount->percentage.'% = '.Numbers::price($price, true);
+        $sale_taxes_usuario = Self::$sale_taxes_cache[$user->id];
+
+        // Filtro los que aplican a este articulo puntual: apply_to_all, o vinculados por pivot
+        $aplicables = [];
+
+        foreach ($sale_taxes_usuario as $sale_tax) {
+
+            if ($sale_tax->apply_to_all) {
+
+                $aplicables[] = $sale_tax;
+
+            } else {
+
+                foreach ($article->sale_taxes as $article_sale_tax) {
+                    if ($article_sale_tax->id == $sale_tax->id) {
+                        $aplicables[] = $sale_tax;
+                        break;
+                    }
+                }
             }
         }
+
+        return $aplicables;
+    }
+
+    /**
+     * Aplica los impuestos sobre ventas (sale_taxes, ej. IIBB) al precio, con la fórmula
+     * contablemente correcta de división (el precio ya "incluiría" el impuesto al despejarlo):
+     * precio_final_neto = precio_con_margen / (1 - alicuota).
+     *
+     * Capa 2 del motor de precios (Prompt 261). Corre después del margen (y de los
+     * price_type_surchages, que no se tocan) y antes del IVA de venta.
+     *
+     * @param \App\Models\Article $article
+     * @param float $price Precio antes de aplicar los sale_taxes.
+     * @param \App\Models\User $user
+     * @param array $des Descripciones acumuladas de cada paso del cálculo (auditoría).
+     * @return array{price:float,des:array}
+     */
+    static function aplicar_sale_taxes($article, $price, $user, $des = []) {
+
+        $sale_taxes_aplicables = Self::get_sale_taxes_para_articulo($article, $user);
+
+        foreach ($sale_taxes_aplicables as $sale_tax) {
+
+            // Formula de division: se despeja el precio neto sabiendo que el impuesto se traslada
+            // sobre el precio final (no es un descuento sobre el costo, es un impuesto sobre la venta)
+            $price = $price / (1 - $sale_tax->percentage / 100);
+            $des[] = 'Mas '.$sale_tax->name.' ('.$sale_tax->percentage.'%) por division = '.Numbers::price($price, true);
+        }
+
         return [
             'price'   => $price,
             'des'     => $des,
@@ -338,7 +421,7 @@ class ArticlePricesHelper {
         ];
     }
 
-    static function set_precios_en_blanco($article) {
+    static function set_precios_en_blanco($article, $user = null) {
 
         // Log::info('set_precios_en_blanco para '.$article->name);
 
@@ -355,6 +438,14 @@ class ArticlePricesHelper {
 
             $cost += $cost * $article->percentage_gain_blanco / 100;
             // Log::info('Poniendo marguen del '.$article->percentage_gain_blanco.', quedo en '.$cost);
+        }
+
+        // Capa 2 (Prompt 261): las sale_taxes son impuestos sobre la venta, independientes del IVA,
+        // por lo que tambien aplican sobre el precio en blanco (que es la variante SIN IVA).
+        if (!is_null($user)) {
+
+            $res = Self::aplicar_sale_taxes($article, $cost, $user, []);
+            $cost = $res['price'];
         }
 
 

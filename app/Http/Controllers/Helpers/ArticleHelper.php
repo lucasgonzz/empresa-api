@@ -342,8 +342,15 @@ class ArticleHelper {
             // Log::info('Aplicando recargos despues del margen de ganancia');
         }
 
+        // Capa 2 (Prompt 261): sale_taxes (IIBB y afines) se aplican con fórmula de división,
+        // después del margen/price_type_surchages y ANTES del IVA de venta. Aplica siempre
+        // (Responsable Inscripto o Monotributista), ya que es un impuesto distinto del IVA.
+        $res = ArticlePricesHelper::aplicar_sale_taxes($article, $final_price, $user, $des);
+        $final_price = $res['price'];
+        $des   = $res['des'];
+
         if (!$user->aplicar_iva_al_costo) {
-            
+
             $res = ArticlePricesHelper::aplicar_iva($article, $final_price, $user, $des);
             $final_price = $res['price'];
             $des   = $res['des'];
@@ -373,7 +380,8 @@ class ArticleHelper {
 
         if (UserHelper::hasExtencion('articulos_precios_en_blanco', $user)) {
 
-            $article = ArticlePricesHelper::set_precios_en_blanco($article);
+            // Se pasa $user para poder aplicar sale_taxes tambien en el precio en blanco (Prompt 261)
+            $article = ArticlePricesHelper::set_precios_en_blanco($article, $user);
         }
 
         ProductService::add_article_to_sync($article);
@@ -429,9 +437,9 @@ class ArticleHelper {
         $price = $res['price'];
         $des   = $res['des'];
 
-        $res = ArticlePricesHelper::aplicar_provider_discounts($article, $price, $des);
-        $price = $res['price'];
-        $des   = $res['des'];
+        // Prompt 261: se elimina aplicar_provider_discounts() de este flujo. Las bonificaciones
+        // del proveedor ya no pisan el costo real "de catálogo" del artículo (Capa 1). Pasan a
+        // pre-completar campos editables en la orden de compra (prompt 262), fuera de este cálculo.
 
         if ($user->aplicar_iva_al_costo) {
 
