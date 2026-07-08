@@ -742,8 +742,8 @@ class AfipPdfHelper
          */
         $content_x = $start_x + 2;
         $left_content_width = 98;
-        $right_content_x = 112;
-        $right_content_width = 93;
+        $right_content_x = 105 + 2;
+        $right_content_width = 98;
 
         $pdf->y = $start_y + 2;
 
@@ -780,7 +780,7 @@ class AfipPdfHelper
          */
         $pdf->y = $start_y + 2;
 
-        self::print_label_value_line(
+        self::print_label_value_multiline(
             $pdf,
             'Apellido y Nombre / Razón Social: ',
             (string) $client->name,
@@ -788,7 +788,7 @@ class AfipPdfHelper
             $right_content_width
         );
 
-        self::print_label_value_line(
+        self::print_label_value_multiline(
             $pdf,
             'Domicilio Comercial: ',
             (string) $client->address,
@@ -1082,9 +1082,9 @@ class AfipPdfHelper
         $inner_pad = 2;
         $text_width = 145;
 
-        $conversion_text = 'El total de este comprobante expresado en Dólar Estadounidense - considerándose un tipo de cambio consignado de '
+        $conversion_text = 'El total de este comprobante, expresado en Pesos Argentinos considerando un tipo de cambio consignado de '
             .number_format((float) $tipo_cambio, 6, ',', '.')
-            .' asciende a:';
+            .', asciende a:';
 
         $pdf->y = $box_y + $inner_pad;
         $pdf->x = $x + $inner_pad;
