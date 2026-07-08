@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeMonedaHelper;
+use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
 use App\Http\Controllers\Helpers\article\ArticleVariantHelper;
 use App\Http\Controllers\Helpers\article\BarCodeAutomaticoHelper;
@@ -945,5 +946,63 @@ class ArticleController extends Controller
         $article = Article::find($id);
         $description = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true);
         return response()->json(['description'    => $description], 200);
+    }
+
+    /**
+     * Prompt 308: cambio MANUAL de proveedor de un artículo desde el listado, con dos flags
+     * independientes (ver modal del prompt 309):
+     *   - eliminar_descuentos_proveedor_anterior (default true)
+     *   - crear_descuentos_proveedor_nuevo (default true)
+     * La lógica de negocio (qué descuentos borrar/crear, recálculo de costo_real) vive en
+     * ArticleProviderDiscountHelper::change_provider(), no acá.
+     *
+     * @param \Illuminate\Http\Request $request Espera: id (artículo), provider_id (nuevo
+     *                                          proveedor), y los dos flags opcionales.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function change_provider(Request $request) {
+
+        $model = Article::find($request->id);
+
+        // Los dos flags son independientes y ambos activados por defecto (ver prompt 308/309):
+        // si no vienen en el request, se asume que el usuario quiere el comportamiento
+        // "reemplazar" completo (barrer lo viejo + crear lo nuevo).
+        $eliminar_descuentos_proveedor_anterior = $request->has('eliminar_descuentos_proveedor_anterior')
+            ? filter_var($request->eliminar_descuentos_proveedor_anterior, FILTER_VALIDATE_BOOLEAN)
+            : true;
+
+        $crear_descuentos_proveedor_nuevo = $request->has('crear_descuentos_proveedor_nuevo')
+            ? filter_var($request->crear_descuentos_proveedor_nuevo, FILTER_VALIDATE_BOOLEAN)
+            : true;
+
+        $model = ArticleProviderDiscountHelper::change_provider(
+            $model,
+            $request->provider_id,
+            $eliminar_descuentos_proveedor_anterior,
+            $crear_descuentos_proveedor_nuevo
+        );
+
+        $this->attach_provider($model);
+
+        return response()->json(['model' => $this->fullModel('Article', $model->id)], 200);
+    }
+
+    /**
+     * Prompt 308 (tarea 4): datos para pre-llenar el modal de cambio de proveedor (prompt 309) —
+     * qué descuentos tagueados tiene HOY el proveedor anterior del artículo (candidatos a
+     * borrarse) y qué bonificaciones estándar (`provider_discounts`) tiene el proveedor destino
+     * (candidatas a crearse). Consulta pura, no modifica nada.
+     *
+     * @param int $id          Id del artículo.
+     * @param int $provider_id Id del proveedor DESTINO (todavía no aplicado al artículo).
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function change_provider_preview($id, $provider_id) {
+
+        $article = Article::find($id);
+
+        $preview = ArticleProviderDiscountHelper::get_change_provider_preview($article, $provider_id);
+
+        return response()->json($preview, 200);
     }
 }

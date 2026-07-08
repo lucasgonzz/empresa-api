@@ -202,6 +202,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Importante: esta ruta debe ir ANTES del resource para que no la capture `article/{id}` (show)
     Route::get('article/get-insumos', 'ArticleController@get_insumos');
 
+    // Prompt 308: cambio MANUAL de proveedor de un artículo (dos flags independientes) y su
+    // preview de descuentos para el modal (prompt 309). Igual que get-insumos: deben ir ANTES
+    // del resource para que `article/{article}` (PUT/GET del resource) no las capture.
+    Route::put('article/change-provider', 'ArticleController@change_provider');
+    Route::get('article/change-provider/preview/{id}/{provider_id}', 'ArticleController@change_provider_preview');
+
     Route::resource('article', 'ArticleController')->except(['index']);
     Route::get('article/index/from-status', 'ArticleController@index');
     Route::get('article/index/eliminados', 'ArticleController@index_deleted');
