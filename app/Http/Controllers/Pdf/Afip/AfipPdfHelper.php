@@ -860,7 +860,7 @@ class AfipPdfHelper
      */
     public static function footer($pdf, $afip_ticket, $sale, $user, $afip_helper, $show_importes = true): void
     {
-        if ($show_importes) {
+        if ($show_importes && $afip_ticket->cbte_tipo != 19) {
             self::print_footer_importes_block($pdf, $afip_ticket, $sale, $afip_helper);
         }
 
