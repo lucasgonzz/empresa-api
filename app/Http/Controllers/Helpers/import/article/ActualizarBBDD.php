@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
@@ -148,6 +149,11 @@ class ActualizarBBDD {
                     'fake_id',
                     /* Flag en memoria de ProcessRow; no es columna de articles. */
                     'has_repeated_code_in_db',
+                    /* Prompt 307: descuentos tagueados a un proveedor, se materializan aparte
+                       vía ArticleProviderDiscountHelper::sync_provider_discounts(), no son
+                       columnas de articles. */
+                    'provider_discounts_to_tag',
+                    'provider_discounts_to_tag_provider_id',
                 ])->merge([
                     'created_at' => $this->now,
                     'updated_at' => $this->now,
@@ -236,8 +242,11 @@ class ActualizarBBDD {
                             || $column === 'stock_global'
                             || $column === 'stock_addresses'
                             || $column === 'variants_data'
+                            /* Prompt 307: idem al bloque de creación, no son columnas de articles. */
+                            || $column === 'provider_discounts_to_tag'
+                            || $column === 'provider_discounts_to_tag_provider_id'
                             /* Excluir campos internos de tracking (prefijo __): __bar_code, __diff__X, etc. */
-                            || strncmp($column, '__', 2) === 0 
+                            || strncmp($column, '__', 2) === 0
 
                             || is_null($value)
                             || $value === ''
@@ -292,8 +301,12 @@ class ActualizarBBDD {
 
  
         // 🔁 Asignar descuentos (a nuevos y actualizados)
+        // Legado: descuentos globales, sin proveedor (filas del import sin provider_id).
         $this->asignar_discounts_percentages();
         $this->asignar_discounts_amounts();
+        // Prompt 307: descuentos tagueados al proveedor de la fila (import con provider_id),
+        // vía el mismo helper que usa la compra (prompt 306).
+        $this->asignar_discounts_tagueados_a_proveedor();
         $this->log('Se asignaron discounts');
 
  
@@ -558,6 +571,59 @@ class ActualizarBBDD {
             DB::table('article_discounts')->insert($insertData);
         }
         $this->terminar('Descuentos montos articulos para actualizar');
+    }
+
+    /**
+     * Prompt 307: materializa (overwrite) los descuentos "tagueados" a un proveedor que
+     * ProcessRow::get_provider_discounts_to_tag() calculó para las filas del import que sí
+     * tienen `provider_id` (columna 'discounts' legado queda reservada para imports sin
+     * proveedor asociado, ver asignar_discounts_percentages()/asignar_discounts_amounts()).
+     *
+     * Reusa ArticleProviderDiscountHelper::sync_provider_discounts() (mismo helper que usa
+     * NewProviderOrderHelper para las compras, prompt 306): borra los article_discounts
+     * tagueados previos (de cualquier proveedor) y crea los nuevos, dejando intactos los
+     * descuentos manuales (provider_id null).
+     *
+     * Se recorre artículo por artículo (no hay bulk-insert acá) porque sync_provider_discounts
+     * ya resuelve el delete+insert por artículo; el volumen esperado por chunk es acotado.
+     */
+    function asignar_discounts_tagueados_a_proveedor() {
+
+        $this->iniciar();
+
+        // Artículos nuevos de este chunk que traen descuentos tagueados a un proveedor.
+        foreach ($this->articulos_para_crear_CACHE as $article_cache) {
+
+            if (!isset($article_cache['provider_discounts_to_tag'])) continue;
+
+            $article_model = $this->get_article_model_from_cache($article_cache);
+
+            if (!$article_model) continue;
+
+            ArticleProviderDiscountHelper::sync_provider_discounts(
+                $article_model,
+                $article_cache['provider_discounts_to_tag_provider_id'],
+                $article_cache['provider_discounts_to_tag']
+            );
+        }
+
+        // Artículos ya existentes actualizados en este chunk, idem.
+        foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
+
+            if (!isset($article_cache['provider_discounts_to_tag'])) continue;
+
+            $article_model = $this->articulos_actualizados_models[$article_cache['id']] ?? null;
+
+            if (!$article_model) continue;
+
+            ArticleProviderDiscountHelper::sync_provider_discounts(
+                $article_model,
+                $article_cache['provider_discounts_to_tag_provider_id'],
+                $article_cache['provider_discounts_to_tag']
+            );
+        }
+
+        $this->terminar('Descuentos tagueados a proveedor (import)');
     }
 
     function asignar_surchages_percentages() {

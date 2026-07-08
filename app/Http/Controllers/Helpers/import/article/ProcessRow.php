@@ -55,6 +55,13 @@ class ProcessRow {
 
     protected $provider_relations_buffer = []; // [article_id][provider_id] => pivot_data
 
+    /**
+     * Cache en memoria de los descuentos estándar (ProviderDiscount) de cada proveedor,
+     * indexado por provider_id, para no repetir la consulta fila a fila del Excel.
+     * Se llena de forma perezosa en get_provider_standard_discount_percentages().
+     */
+    protected $provider_standard_discounts_cache = [];
+
 
     /**
      * Constructor: recibe los datos necesarios para procesar las filas
@@ -611,10 +618,21 @@ class ProcessRow {
 
             
             $this->iniciar();
-            $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
-            if (!empty($discounts_diff)) {
-                $data['discounts'] = $discounts_diff;
-            } 
+            // Prompt 307: con provider_id conocido, los descuentos se tagean a ese proveedor
+            // (reusa ArticleProviderDiscountHelper::sync_provider_discounts desde ActualizarBBDD).
+            // Sin provider_id, se mantiene el comportamiento legado (descuentos globales, sin tag).
+            if (empty($provider_id)) {
+                $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
+                if (!empty($discounts_diff)) {
+                    $data['discounts'] = $discounts_diff;
+                }
+            } else {
+                $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id);
+                if (!is_null($provider_discounts_to_tag)) {
+                    $data['provider_discounts_to_tag'] = $provider_discounts_to_tag;
+                    $data['provider_discounts_to_tag_provider_id'] = $provider_id;
+                }
+            }
             $this->terminar('crear: discounts_diff');
 
             $this->iniciar();
@@ -807,12 +825,31 @@ class ProcessRow {
 
 
         $this->iniciar();
-        $discounts_diff = $this->get_discounts_diff($baseline_para_diffs, $row);
+        // Prompt 307: misma bifurcación que en la creación (ver más arriba en procesar()).
+        $provider_id_para_discounts = isset($merged['provider_id']) ? $merged['provider_id'] : null;
 
-        if (!empty($discounts_diff)) {
-            $merged['discounts'] = $discounts_diff;
+        if (empty($provider_id_para_discounts)) {
+
+            $discounts_diff = $this->get_discounts_diff($baseline_para_diffs, $row);
+
+            if (!empty($discounts_diff)) {
+                $merged['discounts'] = $discounts_diff;
+            } else {
+                unset($merged['discounts']);
+            }
+
         } else {
+
             unset($merged['discounts']);
+
+            $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id_para_discounts);
+
+            if (!is_null($provider_discounts_to_tag)) {
+                $merged['provider_discounts_to_tag'] = $provider_discounts_to_tag;
+                $merged['provider_discounts_to_tag_provider_id'] = $provider_id_para_discounts;
+            } else {
+                unset($merged['provider_discounts_to_tag'], $merged['provider_discounts_to_tag_provider_id']);
+            }
         }
 
         $this->terminar('merge pendiente: discounts_diff');
@@ -990,10 +1027,25 @@ class ProcessRow {
 
         
         $this->iniciar();
-        $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
-        if (!empty($discounts_diff)) {
-            $cambios['discounts'] = $discounts_diff;
-        } 
+        // Prompt 307: misma bifurcación que en la creación (ver procesar()).
+        $provider_id_de_la_fila = isset($data['provider_id']) ? $data['provider_id'] : null;
+
+        if (empty($provider_id_de_la_fila)) {
+
+            $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
+            if (!empty($discounts_diff)) {
+                $cambios['discounts'] = $discounts_diff;
+            }
+
+        } else {
+
+            $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id_de_la_fila);
+
+            if (!is_null($provider_discounts_to_tag)) {
+                $cambios['provider_discounts_to_tag'] = $provider_discounts_to_tag;
+                $cambios['provider_discounts_to_tag_provider_id'] = $provider_id_de_la_fila;
+            }
+        }
         $this->terminar('discounts_diff');
 
         $this->iniciar();
@@ -2514,6 +2566,126 @@ class ProcessRow {
         }
 
         return $diffs;
+    }
+
+    /**
+     * Prompt 307: contraparte de ArticleProviderDiscountHelper::sync_provider_discounts()
+     * (prompt 306) para el import de Excel. En lugar de calcular un diff contra TODOS los
+     * article_discounts (que mezclaría descuentos manuales, tagueados de otros proveedores,
+     * etc.), calcula directamente la lista final de descuentos a "tagear" (overwrite total)
+     * con el `provider_id` de esta fila, para pasarla tal cual a `sync_provider_discounts()`.
+     *
+     * Reglas (ver prompt 307):
+     *  - Sin `provider_id` no se puede tagear nada: se devuelve null y el caller conserva el
+     *    comportamiento legado (descuentos globales, sin proveedor) vía get_discounts_diff().
+     *  - Columna "descuentos" (porcentaje) MAPEADA: manda el valor del Excel (aunque venga
+     *    vacío, lo que intencionalmente limpia los descuentos porcentuales tagueados).
+     *  - Columna "descuentos" NO mapeada: si el proveedor tiene descuentos estándar
+     *    (ProviderDiscount.percentage) se materializan esos, tagueados.
+     *  - Columna "descuentos_montos" solo tiene equivalente en el Excel: no existe un monto
+     *    "estándar" de proveedor (ProviderDiscount no tiene columna amount), así que si esa
+     *    columna no está mapeada simplemente no se agregan montos.
+     *  - Si no hay nada que aportar (ninguna columna mapeada y el proveedor no tiene estándar),
+     *    se devuelve null: no se toca lo que ya estuviera tagueado para este artículo.
+     *
+     * @param  array    $row          Fila del Excel en proceso.
+     * @param  int|null $provider_id  Proveedor de esta fila (columna o el fijo del import).
+     * @return array|null             Lista de items ['percentage'=>x] / ['amount'=>x] a pasar
+     *                                 a sync_provider_discounts(), o null si no corresponde tocar nada.
+     */
+    private function get_provider_discounts_to_tag($row, $provider_id)
+    {
+        // Nunca se tagea un descuento sin proveedor conocido (misma regla que
+        // ArticleProviderDiscountHelper::sync_provider_discounts).
+        if (empty($provider_id)) {
+            return null;
+        }
+
+        $col_percent_ignorada = ImportHelper::isIgnoredColumn('descuentos', $this->columns);
+        $col_amount_ignorada  = ImportHelper::isIgnoredColumn('descuentos_montos', $this->columns);
+
+        // El estándar del proveedor solo aplica cuando la columna de % NO está mapeada:
+        // la columna del Excel siempre manda por sobre el estándar.
+        $estandar_percentages = $col_percent_ignorada
+            ? $this->get_provider_standard_discount_percentages($provider_id)
+            : [];
+
+        // Nada mapeado y sin estándar: no hay nada que tagear, se deja intacto lo existente.
+        if ($col_percent_ignorada && $col_amount_ignorada && empty($estandar_percentages)) {
+            return null;
+        }
+
+        $items = [];
+
+        if (!$col_percent_ignorada) {
+
+            // Columna mapeada: manda el Excel (aunque la celda venga vacía → sin items → borrado).
+            $discounts_percent_str = ImportHelper::getColumnValue($row, 'descuentos', $this->columns);
+
+            if ($discounts_percent_str) {
+                $new_percents = array_filter(array_map(function ($chunk) {
+                    return self::get_number_forgiving($chunk);
+                }, explode('_', $discounts_percent_str)));
+
+                foreach ($new_percents as $percentage) {
+                    $items[] = ['percentage' => $percentage];
+                }
+            }
+
+        } else {
+
+            // Columna no mapeada: se materializa el estándar del proveedor (si tiene).
+            foreach ($estandar_percentages as $percentage) {
+                $items[] = ['percentage' => $percentage];
+            }
+        }
+
+        if (!$col_amount_ignorada) {
+
+            $discounts_amount_str = ImportHelper::getColumnValue($row, 'descuentos_montos', $this->columns);
+
+            if ($discounts_amount_str) {
+                $new_amounts = array_filter(array_map(function ($chunk) {
+                    return self::get_number_forgiving($chunk);
+                }, explode('_', $discounts_amount_str)));
+
+                foreach ($new_amounts as $amount) {
+                    $items[] = ['amount' => $amount];
+                }
+            }
+        }
+
+        return $items;
+    }
+
+    /**
+     * Devuelve los porcentajes estándar (ProviderDiscount.percentage) de un proveedor,
+     * cacheados en memoria por provider_id para no repetir la consulta en cada fila del Excel.
+     *
+     * @param  int $provider_id
+     * @return array<float>
+     */
+    private function get_provider_standard_discount_percentages($provider_id)
+    {
+        if (isset($this->provider_standard_discounts_cache[$provider_id])) {
+            return $this->provider_standard_discounts_cache[$provider_id];
+        }
+
+        $percentages = \App\Models\ProviderDiscount::where('provider_id', $provider_id)
+            ->whereNotNull('percentage')
+            ->pluck('percentage')
+            ->map(function ($p) {
+                return (float) $p;
+            })
+            ->filter(function ($p) {
+                return $p != 0;
+            })
+            ->values()
+            ->all();
+
+        $this->provider_standard_discounts_cache[$provider_id] = $percentages;
+
+        return $percentages;
     }
 
     private function get_surchages_diff($article, $row)
