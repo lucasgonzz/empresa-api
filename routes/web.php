@@ -324,8 +324,6 @@ Route::get('/super-budget', 'SuperBudgetController@pdf');
 
 Route::get('helpers/{method}/{param?}/{param_2?}', 'HelperController@callMethod');
 
-Route::get('recaulculate-cc-sales-debe/{client_id}', 'Helpers\CurrentAcountHelper@recalculateCurrentAcountsSalesDebe');
-
 Route::get('articulos-repetidos/{provider_id}', 'HelperController@articulosRepetidos');
 Route::get('check-insuficiente-amount/{company_name}', 'HelperController@checkCartArticlesInsuficienteAmount');
 Route::get('rehacer-facturas', 'HelperController@rehacerFacturas');
