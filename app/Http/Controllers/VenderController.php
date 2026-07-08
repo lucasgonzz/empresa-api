@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Models\Article;
 use App\Models\ArticleVariant;
 use Illuminate\Http\Request;
@@ -79,6 +80,12 @@ class VenderController extends Controller
         }
 
         $this->fin($code, $inicio, $article);
+
+        if ($article) {
+            // Capa 3 (Prompt 263): desglose de precio equivalente por metodo de pago cuando el usuario
+            // tiene activo `precio_base_incluye_tarjeta` (null si esta apagado, sin efecto).
+            $article->precios_por_metodo_pago = ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($article->final_price, $this->userId());
+        }
 
         return response()->json(['article' => $article, 'variant_id' => $variant_id, 'variant' => $variant], 200);
     }
@@ -326,12 +333,17 @@ class VenderController extends Controller
 
                         if ($matching_variants_by_bar_code->count() > 0) {
                             foreach ($matching_variants_by_bar_code as $variant) {
+
+                                $variant_final_price = $this->get_variant_price($variant);
+
                                 $results->push((object)[
                                     'is_variant'            => true,
                                     'id'                    => $variant->article->id,
                                     'variant_id'            => $variant->id,
                                     'variant_description'   => $variant->variant_description,
-                                    'final_price'           => $this->get_variant_price($variant),
+                                    'final_price'           => $variant_final_price,
+                                    // Capa 3 (Prompt 263): desglose por metodo de pago con `precio_base_incluye_tarjeta`
+                                    'precios_por_metodo_pago' => ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($variant_final_price, $this->userId()),
                                     'price_types'           => $article->price_types,
                                     'bar_code'              => $variant->bar_code,
                                     'name'                  => $article->name. ' '.$variant->variant_description,
@@ -360,12 +372,17 @@ class VenderController extends Controller
 
                     if ($matching_variants->count() > 0) {
                         foreach ($matching_variants as $variant) {
+
+                            $variant_final_price = $this->get_variant_price($variant);
+
                             $results->push((object)[
                                 'is_variant'            => true,
                                 'id'                    => $variant->article->id,
                                 'variant_id'            => $variant->id,
                                 'variant_description'   => $variant->variant_description,
-                                'final_price'           => $this->get_variant_price($variant),
+                                'final_price'           => $variant_final_price,
+                                // Capa 3 (Prompt 263): desglose por metodo de pago con `precio_base_incluye_tarjeta`
+                                'precios_por_metodo_pago' => ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($variant_final_price, $this->userId()),
                                 'price_types'           => $article->price_types,
                                 'bar_code'              => $variant->bar_code,
                                 'name'                  => $article->name. ' '.$variant->variant_description,
@@ -380,6 +397,8 @@ class VenderController extends Controller
                     // Si no tiene variantes, y al menos una keyword matcheó → agregar el artículo
                     if ($matched_keywords->isNotEmpty()) {
                         $article->is_variant = false;
+                        // Capa 3 (Prompt 263): desglose por metodo de pago con `precio_base_incluye_tarjeta`
+                        $article->precios_por_metodo_pago = ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($article->final_price, $this->userId());
                         $results->push($article);
                     }
                 }

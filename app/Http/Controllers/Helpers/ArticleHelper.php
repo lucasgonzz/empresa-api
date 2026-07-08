@@ -395,12 +395,21 @@ class ArticleHelper {
 
                 return $des;
             }
+
+            // Capa 3 (Prompt 263): si el usuario tiene activo `precio_base_incluye_tarjeta`, se agrega
+            // (despues del save(), para no intentar persistir esta columna inexistente) el desglose de
+            // precio equivalente por metodo de pago, para que el SPA (prompt 266) pueda mostrarlo.
+            $article->precios_por_metodo_pago = ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($article->final_price, $user->id);
+
             return $article;
         } else {
             return [
                 'costo_real'            => $costo_real,
                 'final_price'           => $final_price,
                 'current_final_price'   => $current_final_price,
+                // Capa 3 (Prompt 263): desglose de precio equivalente por metodo de pago (null si el
+                // flag `precio_base_incluye_tarjeta` esta apagado o no hay reglas de recargo configuradas).
+                'precios_por_metodo_pago' => ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($final_price, $user->id),
             ];
         }
 

@@ -11,8 +11,12 @@ use App\Models\ArticleDiscount;
 use App\Models\ArticleDiscountBlanco;
 use App\Models\ArticleSurchage;
 use App\Models\ArticleSurchageBlanco;
+use App\Models\CurrentAcountPaymentMethod;
+use App\Models\CurrentAcountPaymentMethodDiscount;
+use App\Models\Cuota;
 use App\Models\PriceType;
 use App\Models\SaleTax;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
@@ -26,6 +30,17 @@ class ArticlePricesHelper {
      * @var array<int, \Illuminate\Support\Collection>
      */
     static $sale_taxes_cache = [];
+
+    /**
+     * Cache en memoria (por request/job) de la configuracion de recargo por tarjeta de cada usuario
+     * (Capa 3, Prompt 263), para no repetir la consulta de reglas por cada articulo cuando se listan
+     * o buscan muchos articulos en un mismo request (ej. busqueda en Vender). Se indexa por user_id.
+     * Valor `null` = el flag `precio_base_incluye_tarjeta` esta apagado o no hay reglas de recargo
+     * configuradas (el helper no tiene efecto para ese usuario).
+     *
+     * @var array<int, array{multiplicador_max: float, metodos: \Illuminate\Support\Collection}|null>
+     */
+    static $payment_method_layer3_cache = [];
 
     static function aplicar_category_percentage_gain($article, $price, $des) {
 
@@ -381,6 +396,137 @@ class ArticlePricesHelper {
         return [
             'price'   => $price,
             'des'     => $des,
+        ];
+    }
+
+    /**
+     * Construye (y cachea por request) la configuracion de recargo por tarjeta del usuario, usada por
+     * `calcular_precios_por_metodo_pago_con_tarjeta_incluida()` (Capa 3, Prompt 263).
+     *
+     * El "recargo maximo" (la tarjeta mas cara que el precio de etiqueta ya incluye) se busca entre
+     * TODAS las reglas configuradas por el usuario: las genericas por metodo de pago
+     * (`current_acount_payment_method_discounts`, sin cuotas especificas) Y las reglas por cantidad de
+     * cuotas (`cuotas`, genericas o por metodo) — porque el recargo mas alto suele ser una cuota
+     * especifica (ej. "credito 6 cuotas +10%"), no la regla generica del metodo. El desglose por
+     * metodo que se le muestra al SPA, en cambio, usa el catalogo completo de metodos de pago
+     * (`current_acount_payment_methods`, global) con su regla generica (o 0% si no tiene ninguna
+     * configurada), ya que al mostrar el precio de etiqueta todavia no se eligio cantidad de cuotas.
+     *
+     * @param int $user_id Id del owner (dueño de cuenta).
+     * @return array{multiplicador_max: float, metodos: \Illuminate\Support\Collection}|null Null si el
+     *         flag `precio_base_incluye_tarjeta` esta apagado o no hay ningun recargo configurado
+     *         (el helper no tiene efecto).
+     */
+    static function build_payment_method_layer3_cache($user_id) {
+
+        $user = User::find($user_id);
+
+        if (!$user || !$user->precio_base_incluye_tarjeta) {
+            return null;
+        }
+
+        // Reglas genericas por metodo de pago (sin cantidad de cuotas especifica)
+        $reglas_metodo = CurrentAcountPaymentMethodDiscount::where('user_id', $user_id)
+                            ->whereNull('cuotas')
+                            ->get();
+
+        // Reglas por cantidad de cuotas (genericas o por metodo especifico)
+        $reglas_cuotas = Cuota::where('user_id', $user_id)->get();
+
+        // Multiplicador de cada regla sobre el monto: 1 - porcentaje/100
+        // (porcentaje positivo = descuento, reduce el multiplicador; negativo = recargo, lo aumenta)
+        $multiplicador_max = 1;
+
+        foreach ($reglas_metodo as $regla) {
+            $multiplicador = 1 - ((float)$regla->discount_percentage / 100);
+            if ($multiplicador > $multiplicador_max) {
+                $multiplicador_max = $multiplicador;
+            }
+        }
+
+        foreach ($reglas_cuotas as $regla) {
+            $porcentaje = (float)$regla->descuento - (float)$regla->recargo;
+            $multiplicador = 1 - ($porcentaje / 100);
+            if ($multiplicador > $multiplicador_max) {
+                $multiplicador_max = $multiplicador;
+            }
+        }
+
+        if ($multiplicador_max <= 1) {
+            // Ningun recargo real configurado (todas son descuentos, neutras, o no hay reglas): sin efecto.
+            return null;
+        }
+
+        // Catalogo completo de metodos de pago (global), con su regla generica de recargo/descuento
+        // (0% si el metodo no tiene ninguna regla configurada, ej. "Efectivo" sin fila propia).
+        $metodos = CurrentAcountPaymentMethod::all()->map(function ($metodo) use ($reglas_metodo) {
+
+            $regla = $reglas_metodo->firstWhere('current_acount_payment_method_id', $metodo->id);
+
+            return (object)[
+                'current_acount_payment_method_id' => $metodo->id,
+                'discount_percentage'               => $regla ? (float)$regla->discount_percentage : 0,
+            ];
+        });
+
+        return [
+            'multiplicador_max' => $multiplicador_max,
+            'metodos'           => $metodos,
+        ];
+    }
+
+    /**
+     * Capa 3 del motor de precios (Prompt 263), caso `precio_base_incluye_tarjeta` activo: dado que
+     * el precio de etiqueta del articulo ($price, ya calculado por las capas anteriores) representa el
+     * precio CON el recargo del metodo de pago mas caro incluido, calcula el precio equivalente para
+     * cada metodo de pago con regla generica configurada, para que el SPA (prompt 266) pueda mostrar
+     * por ejemplo "Efectivo: $X (−Y%)" respecto del precio de etiqueta.
+     *
+     * Formula (despejando el precio base sin recargo y volviendo a aplicar el recargo del metodo):
+     *   precio_metodo = precio_etiqueta * multiplicador_metodo / multiplicador_max
+     * donde multiplicador_x = 1 - discount_percentage_x/100.
+     *
+     * Con el flag apagado (o sin reglas de recargo configuradas) devuelve null: el comportamiento
+     * actual (precio base + recargo al elegir el metodo) queda intacto.
+     *
+     * @param float $price Precio de etiqueta del articulo (ya calculado, incluye el recargo maximo).
+     * @param int $user_id Id del owner (dueño de cuenta) dueño del articulo.
+     * @return array{recargo_max_percentage: float, precios_por_metodo: array}|null
+     */
+    static function calcular_precios_por_metodo_pago_con_tarjeta_incluida($price, $user_id) {
+
+        if (is_null($price) || is_null($user_id)) {
+            return null;
+        }
+
+        if (!array_key_exists($user_id, Self::$payment_method_layer3_cache)) {
+            Self::$payment_method_layer3_cache[$user_id] = Self::build_payment_method_layer3_cache($user_id);
+        }
+
+        $cache = Self::$payment_method_layer3_cache[$user_id];
+
+        if (is_null($cache)) {
+            return null;
+        }
+
+        $precios_por_metodo = [];
+
+        foreach ($cache['metodos'] as $metodo) {
+
+            $multiplicador = 1 - ((float)$metodo->discount_percentage / 100);
+            $price_metodo = $price * $multiplicador / $cache['multiplicador_max'];
+
+            $precios_por_metodo[] = [
+                'current_acount_payment_method_id' => $metodo->current_acount_payment_method_id,
+                'price'                             => round($price_metodo, 2),
+                // Porcentaje de descuento respecto del precio de etiqueta (positivo = mas barato que la etiqueta)
+                'discount_percentage_vs_etiqueta'   => $price > 0 ? round((($price - $price_metodo) / $price) * 100, 2) : 0,
+            ];
+        }
+
+        return [
+            'recargo_max_percentage' => round((($cache['multiplicador_max'] - 1) * 100), 2),
+            'precios_por_metodo'     => $precios_por_metodo,
         ];
     }
 

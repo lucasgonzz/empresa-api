@@ -37,6 +37,8 @@ use App\Models\Client;
 use App\Models\Commissioner;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
+use App\Models\CurrentAcountPaymentMethodDiscount;
+use App\Models\Cuota;
 use App\Models\Discount;
 use App\Models\Iva;
 use App\Models\Sale;
@@ -433,15 +435,94 @@ class SaleHelper extends Controller {
                     $total += (float)$request->discount_amount;
                 }
 
+                // Descuento/recargo por metodo de pago: si el frontend ya lo mando calculado (comportamiento
+                // actual, se preserva tal cual), se usa ese valor. Si no vino, se resuelve en base a las
+                // reglas configuradas (metodo + cuotas) segun la precedencia de Capa 3 (Prompt 263).
+                $discount_percentage = $request->discount_percentage;
+                if (is_null($discount_percentage) && !is_null($request->current_acount_payment_method_id)) {
+                    $discount_percentage = Self::resolver_descuento_recargo_metodo_pago(
+                        $sale->user_id,
+                        $request->current_acount_payment_method_id,
+                        $request->cuotas
+                    );
+                }
+
                 $sale->current_acount_payment_methods()->attach($request->current_acount_payment_method_id, [
                     'amount'                => $total,
-                    'discount_percentage'   => $request->discount_percentage,
+                    'discount_percentage'   => $discount_percentage,
                     'discount_amount'       => $request->discount_amount,
                     'caja_id'               => $request->caja_id,
                 ]);
             }
         }
 
+    }
+
+    /**
+     * Resuelve el porcentaje de descuento/recargo aplicable al vender con un metodo de pago y una
+     * cantidad de cuotas determinados (Capa 3 del motor de precios, Prompt 263).
+     *
+     * Precedencia (gana la primera regla que matchee; las reglas NO se acumulan), de mas especifica
+     * a mas generica:
+     *   1. Regla de `cuotas` con `payment_method_id` = metodo elegido Y `cantidad_cuotas` = cuotas elegidas.
+     *   2. Regla de `cuotas` generica (`payment_method_id` NULL) con esa `cantidad_cuotas`.
+     *   3. Regla de `current_acount_payment_method_discounts` del metodo con `cuotas` = cuotas elegidas.
+     *   4. Regla de `current_acount_payment_method_discounts` del metodo con `cuotas` NULL (comportamiento
+     *      actual, previo al Prompt 260/263).
+     * Si ninguna regla matchea, devuelve null (sin descuento/recargo, igual que hoy).
+     *
+     * @param int $user_id Id del owner (dueño de cuenta) al que pertenecen las reglas configuradas.
+     * @param int|null $current_acount_payment_method_id Metodo de pago elegido en la venta.
+     * @param int|null $cuotas Cantidad de cuotas elegida (null si la venta no es en cuotas).
+     * @return float|null Porcentaje a aplicar sobre el monto (positivo = descuento, negativo = recargo).
+     */
+    static function resolver_descuento_recargo_metodo_pago($user_id, $current_acount_payment_method_id, $cuotas = null) {
+
+        if (is_null($current_acount_payment_method_id)) {
+            return null;
+        }
+
+        // Pasos 1 y 2 (reglas de `cuotas`) solo aplican si se eligio una cantidad de cuotas.
+        if (!is_null($cuotas)) {
+
+            // 1. Regla especifica de este metodo de pago para esta cantidad de cuotas.
+            $cuota_especifica = Cuota::where('user_id', $user_id)
+                                ->where('payment_method_id', $current_acount_payment_method_id)
+                                ->where('cantidad_cuotas', $cuotas)
+                                ->first();
+            if ($cuota_especifica) {
+                return (float)$cuota_especifica->descuento - (float)$cuota_especifica->recargo;
+            }
+
+            // 2. Regla generica (sin metodo de pago) para esa cantidad de cuotas.
+            $cuota_generica = Cuota::where('user_id', $user_id)
+                                ->whereNull('payment_method_id')
+                                ->where('cantidad_cuotas', $cuotas)
+                                ->first();
+            if ($cuota_generica) {
+                return (float)$cuota_generica->descuento - (float)$cuota_generica->recargo;
+            }
+
+            // 3. Regla del metodo de pago limitada a esa cantidad de cuotas.
+            $method_discount_con_cuotas = CurrentAcountPaymentMethodDiscount::where('user_id', $user_id)
+                                ->where('current_acount_payment_method_id', $current_acount_payment_method_id)
+                                ->where('cuotas', $cuotas)
+                                ->first();
+            if ($method_discount_con_cuotas) {
+                return (float)$method_discount_con_cuotas->discount_percentage;
+            }
+        }
+
+        // 4. Regla generica del metodo de pago (sin cuotas): comportamiento actual, previo al Prompt 260.
+        $method_discount_generico = CurrentAcountPaymentMethodDiscount::where('user_id', $user_id)
+                            ->where('current_acount_payment_method_id', $current_acount_payment_method_id)
+                            ->whereNull('cuotas')
+                            ->first();
+        if ($method_discount_generico) {
+            return (float)$method_discount_generico->discount_percentage;
+        }
+
+        return null;
     }
     static function checkNotaCredito($sale, $request) {
         if ($request->save_nota_credito) {
