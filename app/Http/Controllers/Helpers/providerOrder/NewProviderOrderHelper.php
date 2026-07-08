@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\providerOrder;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -47,11 +48,12 @@ class NewProviderOrderHelper {
 
         $this->set_totales();
 
-        // Prompt 262: el descuento de la orden (provider_order_discounts) recién ahora que
-        // set_totales() calculó "descuentos_compra" se prorratea sobre el costo de catálogo de
-        // cada artículo de la compra. Tiene que ir DESPUÉS de set_totales() porque necesita el
-        // total ya calculado.
-        $this->aplicar_descuento_compra_a_costo_articulos();
+        // Prompt 306: reemplaza el prorrateo horneado sobre articles.cost (método eliminado
+        // aplicar_descuento_compra_a_costo_articulos, prompt 262) por la materialización
+        // explícita de los descuentos vigentes de la orden como article_discounts tagueados con
+        // el proveedor. Tiene que ir DESPUÉS de set_totales() porque necesita
+        // provider_order_discounts ya cargados (set_totales() hace el load()).
+        $this->materializar_descuentos_proveedor_en_articulos();
 
         // Prompt 264: los costos extra tipados de la compra (flete, seguro, arancel de
         // importación) se prorratean entre los artículos y se materializan como recargo
@@ -112,66 +114,49 @@ class NewProviderOrderHelper {
     }
 
     /**
-     * Prompt 262 - Tarea 2: prorratea el descuento agregado de la orden de compra
-     * (provider_order_discounts, ya sumarizado por set_totales() en "descuentos_compra") sobre
-     * el costo de catálogo de cada artículo de la orden.
+     * Prompt 306 — Tareas 2/3/6: reemplaza el prorrateo horneado sobre `articles.cost` (método
+     * eliminado `aplicar_descuento_compra_a_costo_articulos`, prompt 262) por la materialización
+     * explícita de los descuentos vigentes de la orden (`provider_order_discounts`, ya cargados o
+     * editados por el usuario) como `article_discounts` tagueados con el proveedor de la orden.
      *
-     * Racional: la bonificación del proveedor ahora es un dato de la NEGOCIACIÓN de esta compra
-     * puntual (cargada como descuento editable de la orden), no una propiedad permanente del
-     * costo de catálogo del artículo. Por eso NO se persiste como un ArticleDiscount ni se
-     * aplica en ArticlePricesHelper (Capa 1 sigue sin tocarse, ver prompt 261) — el único canal
-     * por el que impacta el costo real es este: la misma compra concreta, igual que ya hace
-     * update_cost() con el costo "en bruto" que viene del formulario de la orden.
+     * Racional: antes el descuento se aplicaba una sola vez, prorrateado, directo sobre
+     * `articles.cost` — y el costo bruto original se perdía. Ahora `articles.cost` (seteado por
+     * update_cost() con el costo bruto literal del pivot) NUNCA se toca acá; los descuentos
+     * quedan como `article_discounts` explícitos, que el pipeline de precios
+     * (ArticlePricesHelper::aplicar_descuentos, vía ArticleHelper::aplicar_descuentos_e_iva) aplica
+     * UNA sola vez sobre ese costo bruto para dar el `costo_real`. Evita el doble descuento.
      *
-     * Fórmula de prorrateo por ítem (igual a la usada para costos extra/flete prorrateados):
-     *   descuento_item = descuentos_compra * subtotal_item / total_compra
-     * Como acá lo que se ajusta es el costo UNITARIO (no un total), y descuentos_compra /
-     * total_compra ya es la misma proporción para cualquier ítem (se cancela el subtotal_item),
-     * esa fórmula equivale a aplicar el mismo ratio de descuento directamente sobre el costo
-     * unitario original de cada artículo: costo_final = costo_original * (1 - ratio).
+     * A diferencia del prorrateo viejo (que ajustaba el costo unitario según el peso de cada
+     * artículo en el total de la compra), acá se copian los MISMOS descuentos (porcentaje o
+     * monto) tal cual están cargados en la orden a cada artículo — no se prorratean por peso,
+     * porque el pipeline de precios ya los aplica individualmente sobre el costo bruto de cada
+     * artículo.
      *
-     * Solo corre si la orden tiene marcado update_prices (mismo gate que usa update_cost() para
-     * decidir si la compra actualiza el costo de catálogo) y si efectivamente hubo
-     * descuentos_compra > 0. Es idempotente: cada vez que se recalculan los totales de la orden
-     * (por ejemplo al editarla), vuelve a partir del costo "en bruto" que está en el pivot de la
-     * compra (article_provider_order.cost, que este método NO modifica) y aplica el ratio vigente
-     * — no hay riesgo de descontar dos veces sobre un costo ya descontado.
+     * Semántica overwrite/último costo (delegada en ArticleProviderDiscountHelper): cada
+     * confirmación de compra vuelve a pisar los descuentos tagueados del proveedor, no los
+     * acumula.
+     *
+     * Gate: solo corre con `update_prices` ON (mismo criterio que usa update_cost()/update_price()
+     * para decidir si la compra actualiza el costo de catálogo) y si la orden tiene proveedor
+     * cargado (sin proveedor no hay a qué taguear el descuento).
      */
-    function aplicar_descuento_compra_a_costo_articulos() {
+    function materializar_descuentos_proveedor_en_articulos() {
 
-        // Si la orden no está configurada para actualizar el costo/precio de catálogo, no se
-        // toca nada (mismo gate que usa update_cost()/update_price()).
         if (!$this->provider_order->update_prices) {
             return;
         }
 
-        $descuentos_compra = (float)$this->provider_order->descuentos_compra;
-        $total_articulos   = (float)$this->provider_order->sub_total;
+        $provider_id = $this->provider_order->provider_id;
 
-        // Sin descuento de compra o sin una base válida para prorratear, no hay nada que hacer.
-        if ($descuentos_compra <= 0 || $total_articulos <= 0) {
+        if (is_null($provider_id)) {
             return;
         }
 
-        // Ratio de descuento agregado de la orden sobre el total de artículos, ver fórmula en el
-        // comentario del método.
-        $ratio_descuento = $descuentos_compra / $total_articulos;
-
-        if ($ratio_descuento <= 0) {
-            return;
-        }
+        // Descuentos vigentes de la orden (ya cargados/editados por el usuario), sean
+        // porcentuales o por monto fijo — se materializan tal cual en cada artículo de la compra.
+        $discounts = $this->provider_order->provider_order_discounts;
 
         foreach ($this->provider_order->articles as $article) {
-
-            // Costo "en bruto" cargado en esta compra puntual para este artículo (pivot de la
-            // orden), sin descuento de orden aplicado todavía.
-            $costo_original = (float)$article->pivot->cost;
-
-            if ($costo_original <= 0) {
-                continue;
-            }
-
-            $costo_final = $costo_original * (1 - $ratio_descuento);
 
             $articulo = Article::find($article->id);
 
@@ -179,11 +164,12 @@ class NewProviderOrderHelper {
                 continue;
             }
 
-            $articulo->cost = $costo_final;
-            $articulo->save();
+            ArticleProviderDiscountHelper::sync_provider_discounts($articulo, $provider_id, $discounts);
 
-            Log::info('aplicar_descuento_compra_a_costo_articulos: costo de '.$articulo->name.' ajustado de '.$costo_original.' a '.$costo_final.' (ratio descuento compra: '.$ratio_descuento.')');
+            Log::info('materializar_descuentos_proveedor_en_articulos: descuentos del proveedor '.$provider_id.' materializados en '.$articulo->name);
 
+            // Recalcula costo_real con el costo bruto (sin hornear) + los descuentos recién
+            // materializados, aplicados una sola vez por el pipeline de precios.
             ArticleHelper::setFinalPrice($articulo);
         }
     }
@@ -799,6 +785,11 @@ class NewProviderOrderHelper {
                 $article = $this->update_cost($article, $new_article);
 
                 $article = $this->update_price($article, $new_article);
+
+                // Prompt 306 — Tarea 5: catalogar el costo bruto de este proveedor en
+                // article_provider (dato para la futura recomendación de a qué proveedor conviene
+                // comprar).
+                $this->catalogar_costo_proveedor($article, $new_article);
             }
 
             // Si el articulo esta inacive, se actualiza la info de bar_code y demas
@@ -818,14 +809,82 @@ class NewProviderOrderHelper {
         }
     }
 
+    /**
+     * Prompt 306 — Tarea 4: linkea el artículo al proveedor de la compra.
+     *
+     * Desde este prompt, cuando la orden tiene `update_prices` ON (el flujo principal,
+     * "actualizar precios" tildado), el artículo pasa a pertenecer al proveedor de ESTA compra sin
+     * importar el flag `update_provider` del pivot — con `update_prices` ON el artículo ya está
+     * recibiendo el costo bruto (update_cost()) y los descuentos materializados (article_discounts
+     * tagueados, ver materializar_descuentos_proveedor_en_articulos()) de este mismo proveedor, así
+     * que su `provider_id` debe quedar consistente con esos datos.
+     *
+     * Con `update_prices` OFF se conserva el comportamiento previo (anterior a este prompt): el
+     * proveedor solo se linkea si el usuario tildó explícitamente `update_provider` en el pivot de
+     * este artículo puntual.
+     */
     function update_article_provider($article, $new_article) {
-        if (isset($new_article['pivot']['update_provider']) && (bool)$new_article['pivot']['update_provider']) {
-            
+
+        $tilda_update_provider = isset($new_article['pivot']['update_provider']) && (bool)$new_article['pivot']['update_provider'];
+
+        if ($this->provider_order->update_prices || $tilda_update_provider) {
+
             $article->provider_id = $this->provider_order->provider_id;
             $article->timestamps = false;
             $article->save();
         }
 
+    }
+
+    /**
+     * Prompt 306 — Tarea 5: catalogar el costo bruto del proveedor de la compra en
+     * `article_provider` (relación Article::providers()), reusando el mismo patrón de upsert que
+     * ProcessRow::update_provider_relation() (import de artículos) y SetProvider::set_provider()
+     * (movimiento de stock).
+     *
+     * Alimenta la futura recomendación de "a qué proveedor conviene comprar": guarda el costo
+     * BRUTO (mismo valor que setea update_cost(), sin descuentos aplicados) más el
+     * `provider_code`, sin tocar la relación del artículo con otros proveedores.
+     *
+     * Gate: solo se llama con `update_prices` ON (ver update_article()).
+     */
+    function catalogar_costo_proveedor($article, $new_article) {
+
+        $provider_id = $this->provider_order->provider_id;
+
+        if (is_null($provider_id)) {
+            return;
+        }
+
+        // Costo bruto literal cargado en el pivot de esta compra (mismo valor que usa update_cost()).
+        $cost = (isset($new_article['pivot']['cost']) && $new_article['pivot']['cost'] != '')
+            ? $new_article['pivot']['cost']
+            : null;
+
+        if (is_null($cost)) {
+            return;
+        }
+
+        $pivot_data = [
+            'cost' => $cost,
+        ];
+
+        // provider_code es opcional: solo se propaga si vino informado en el artículo de la compra.
+        if (isset($new_article['provider_code']) && $new_article['provider_code'] != '') {
+            $pivot_data['provider_code'] = $new_article['provider_code'];
+        }
+
+        $existe_relacion = $article->providers()
+                                    ->where('provider_id', $provider_id)
+                                    ->exists();
+
+        if ($existe_relacion) {
+
+            $article->providers()->updateExistingPivot($provider_id, $pivot_data);
+        } else {
+
+            $article->providers()->attach($provider_id, $pivot_data);
+        }
     }
 
     function update_article_data($article, $new_article) {
