@@ -667,13 +667,91 @@ class ArticleHelper {
         return $articles;
     }
 
-    static function checkAdvises($article) {
-        $advises = Advise::where('article_id', $article->id)
-                            ->get();
-        if ($article->stock >= 1 && count($advises) >= 1) {
-            foreach ($advises as $advise) {
-                ProcessSendAdviseMail::dispatch($advise, $article);
+    /**
+     * Chequea los avisos de "avisame cuando esté disponible" de un artículo y dispara el mail
+     * correspondiente cuando corresponde.
+     *
+     * Regla de oro: notificar avisos NUNCA puede romper la operación de stock que la disparó
+     * (setArticleStock corre en el mismo request con QUEUE_CONNECTION=sync). Por eso todo el
+     * cuerpo va envuelto en un try/catch general que loguea y no relanza.
+     *
+     * @param \App\Models\Article|null $article Artículo cuyo stock se acaba de actualizar.
+     * @param float|null $stock_anterior Stock que tenía el artículo ANTES del movimiento que
+     *      disparó este chequeo. Se usa para detectar la transición sin-stock -> con-stock
+     *      (0/negativo -> positivo). Si viene null (call sites viejos sin actualizar), se
+     *      mantiene el comportamiento anterior: dispara con stock >= 1 sin mirar la transición.
+     * @return void
+     */
+    static function checkAdvises($article, $stock_anterior = null) {
+        try {
+            // Sin artículo (o sin id), no hay nada que chequear.
+            if (is_null($article) || is_null($article->id)) {
+                return;
             }
+
+            // Stock actual normalizado a float, contemplando null como 0.
+            $stock_actual = is_null($article->stock) ? 0 : (float) $article->stock;
+
+            // Si no hay stock, no hay nada que avisar.
+            if ($stock_actual < 1) {
+                return;
+            }
+
+            // Disparar solo en la transición sin-stock -> con-stock. Si ya tenía stock antes de
+            // este movimiento, no es un "ingreso de stock" para el que estaba esperando (ej: una
+            // venta que deja el stock en 3 no debe disparar el mail de "ingresó nuevo stock").
+            if (!is_null($stock_anterior) && (float) $stock_anterior >= 1) {
+                return;
+            }
+
+            // Avisos pendientes para este artículo.
+            $advises = Advise::where('article_id', $article->id)->get();
+            if (count($advises) < 1) {
+                return;
+            }
+
+            foreach ($advises as $advise) {
+                // Un advise roto (email inválido, etc.) no debe cortar a los demás.
+                try {
+                    // Normalizo el email antes de validarlo.
+                    $email = trim((string) $advise->email);
+
+                    if ($email === '' || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+                        // Fila basura (endpoint sin validar antes de prompts 354/355): se borra.
+                        Log::warning('checkAdvises: advise con email invalido, se borra', [
+                            'advise_id'  => $advise->id,
+                            'article_id' => $article->id,
+                            'email'      => $email,
+                        ]);
+                        $advise->delete();
+                        continue;
+                    }
+
+                    if (!env('SEND_MAILS', false)) {
+                        // Mails deshabilitados: el aviso queda pendiente, NO se borra, para
+                        // cuando se habiliten se pueda mandar (antes se borraba en silencio).
+                        Log::info('checkAdvises: SEND_MAILS en false, advise queda pendiente', [
+                            'advise_id'  => $advise->id,
+                            'article_id' => $article->id,
+                        ]);
+                        continue;
+                    }
+
+                    ProcessSendAdviseMail::dispatch($advise, $article);
+                } catch (\Exception $e) {
+                    Log::error('checkAdvises: error procesando advise individual', [
+                        'advise_id'  => isset($advise->id) ? $advise->id : null,
+                        'article_id' => $article->id,
+                        'error'      => $e->getMessage(),
+                    ]);
+                }
+            }
+        } catch (\Exception $e) {
+            // Nunca dejar que un fallo de avisos rompa la operación de stock que lo disparó.
+            Log::error('checkAdvises: error general, no se afecta el stock', [
+                'article_id' => isset($article->id) ? $article->id : null,
+                'error'      => $e->getMessage(),
+            ]);
         }
     }
 
