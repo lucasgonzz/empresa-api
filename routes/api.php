@@ -68,6 +68,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('online-configuration', 'OnlineConfigurationController@index');
     Route::put('online-configuration/{id}', 'OnlineConfigurationController@update');
+    // Prompt 358: prueba de la config SMTP propia del cliente. La usa el dueño del comercio desde
+    // el ERP (no es pública), por eso va dentro del mismo grupo de middleware de autenticación.
+    Route::post('online-configuration/test-mail', 'OnlineConfigurationController@testMail');
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
     Route::get('update-feature', 'UpdateFeatureController@index');
 

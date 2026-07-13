@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use Illuminate\Support\Facades\Mail;
 use App\Mail\Advise as AdviseMail;
+use App\Http\Controllers\Helpers\ClientMailConfigHelper;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -73,6 +74,14 @@ class ProcessSendAdviseMail implements ShouldQueue
                 ]);
                 return;
             }
+
+            // Correo propio por cliente (prompt 358): si el owner del artículo configuró su
+            // propia casilla SMTP y está activa/completa, se pisa en runtime la config de mail
+            // para que este envío salga desde ahí. Se pasa explícito el user_id del artículo
+            // porque este Job puede llegar a correr sin sesión de auth (worker async a futuro);
+            // si no está disponible, el helper cae a UserHelper::userId(). Si no hay config
+            // propia o algo falla, el helper devuelve false y el envío sigue usando el .env.
+            ClientMailConfigHelper::apply(isset($this->article->user_id) ? $this->article->user_id : null);
 
             // Si send() tira excepción, el catch de abajo la atrapa y NO se borra la fila.
             Mail::to($email)->send(new AdviseMail($this->article));
