@@ -11,8 +11,6 @@ use Illuminate\Support\Facades\Log;
 
 class InventoryPerformanceHelper {
 
-	public $articles;
-
 	public $cantidad_articulos;
 	public $stockeados;
 	public $sin_stockear;
@@ -53,8 +51,6 @@ class InventoryPerformanceHelper {
 	}
 
 	function create() {
-
-		$this->set_articles();
 
 		$this->procesar_articulos();
 
@@ -116,107 +112,122 @@ class InventoryPerformanceHelper {
 
 	function procesar_articulos() {
 
-		foreach ($this->articles as $article) {
+		$columns = collect(\Illuminate\Support\Facades\Schema::getColumnListing((new Article)->getTable()))
+					->reject(function ($column) {
+						return in_array($column, ['embedding'], true);
+					})
+					->values()
+					->all();
 
-			$this->cantidad_articulos++;
+		Article::select($columns)
+			->with('addresses')
+			->where('user_id', UserHelper::userId())
+			->where('status', 'active')
+			->orderBy('created_at', 'ASC')
+			->chunk(2000, function ($articles) {
 
-			if (is_null($article->cost)) {
+				foreach ($articles as $article) {
 
-				$this->articulos_sin_costos++;
-				
-			} else {
+					$this->cantidad_articulos++;
 
-				$this->articulos_con_costos++;
+					if (is_null($article->cost)) {
 
-			}
-
-			if (is_null($article->stock)) {
-
-				$this->sin_stockear++;
-
-			} else {
-
-				$this->stockeados++;
-
-				if (
-					$article->stock > 0
-				) {
-					
-
-					$cost = $article->cost;
-
-					if (!is_null($article->presentacion)) {
-						$cost *= $article->presentacion;
-					}
-
-					if (
-						!is_null($article->unidades_individuales)
-						&& $article->unidades_individuales > 0
-					) {
-						$cost /= $article->unidades_individuales;
-					}
-
-					$total_article_cost = $cost * $article->stock;
-
-					$this->valor_inventario_en_costos += $total_article_cost;
-
-
-					if (!is_null($article->final_price)) {
-
-						$total_article_price = $article->final_price * $article->stock;
-
-						$this->valor_inventario_en_precios += $total_article_price;
-
-					}
-				}
-
-				if ($article->stock <= 0) {
-
-					$this->sin_stock++;
-				
-				}
-
-				// if (
-				// 	count($article->addresses) == 0
-				// 	&& !is_null($article->stock_min)
-				// 	&& !is_null($article->stock)
-				// 	&& $article->stock < $article->stock_min
-				// ) {
-				if (
-					!is_null($article->stock_min)
-					&& !is_null($article->stock)
-					&& $article->stock <= $article->stock_min
-				) {
-
-					$this->stock_minimo++;
-
-					$this->articles_stock_minimo[] = $article;
-				
-				} else if (
-					count($article->addresses) > 0
-				) {
-
-					foreach ($article->addresses as $address) {
+						$this->articulos_sin_costos++;
 						
+					} else {
+
+						$this->articulos_con_costos++;
+
+					}
+
+					if (is_null($article->stock)) {
+
+						$this->sin_stockear++;
+
+					} else {
+
+						$this->stockeados++;
+
 						if (
-							!is_null($address->pivot->stock_min)
-							&& $address->pivot->stock_min >= $address->pivot->amount 
+							$article->stock > 0
+						) {
+							
+
+							$cost = $article->cost;
+
+							if (!is_null($article->presentacion)) {
+								$cost *= $article->presentacion;
+							}
+
+							if (
+								!is_null($article->unidades_individuales)
+								&& $article->unidades_individuales > 0
+							) {
+								$cost /= $article->unidades_individuales;
+							}
+
+							$total_article_cost = $cost * $article->stock;
+
+							$this->valor_inventario_en_costos += $total_article_cost;
+
+
+							if (!is_null($article->final_price)) {
+
+								$total_article_price = $article->final_price * $article->stock;
+
+								$this->valor_inventario_en_precios += $total_article_price;
+
+							}
+						}
+
+						if ($article->stock <= 0) {
+
+							$this->sin_stock++;
+						
+						}
+
+						// if (
+						// 	count($article->addresses) == 0
+						// 	&& !is_null($article->stock_min)
+						// 	&& !is_null($article->stock)
+						// 	&& $article->stock < $article->stock_min
+						// ) {
+						if (
+							!is_null($article->stock_min)
+							&& !is_null($article->stock)
+							&& $article->stock <= $article->stock_min
 						) {
 
 							$this->stock_minimo++;
 
-							$article_to_add = $article;
-							$article_to_add->address_id = $address->id;
-							$article_to_add->stock_min_address = $address->pivot->stock_min;
-							$article_to_add->stock_address = $address->pivot->amount;
+							$this->articles_stock_minimo[] = $article;
+						
+						} else if (
+							count($article->addresses) > 0
+						) {
 
-							$this->articles_stock_minimo[] = $article_to_add;
+							foreach ($article->addresses as $address) {
+								
+								if (
+									!is_null($address->pivot->stock_min)
+									&& $address->pivot->stock_min >= $address->pivot->amount 
+								) {
+
+									$this->stock_minimo++;
+
+									$article_to_add = $article;
+									$article_to_add->address_id = $address->id;
+									$article_to_add->stock_min_address = $address->pivot->stock_min;
+									$article_to_add->stock_address = $address->pivot->amount;
+
+									$this->articles_stock_minimo[] = $article_to_add;
+								}
+							}
 						}
+
 					}
 				}
-
-			}
-		}
+			});
 
 	}	
 
@@ -231,22 +242,6 @@ class InventoryPerformanceHelper {
 				$this->valor_inventario_en_precios += $promo->final_price * $promo->stock;
 			}
 		}
-	}	
-
-	function set_articles() {
-
-		$columns = collect(\Illuminate\Support\Facades\Schema::getColumnListing((new Article)->getTable()))
-					->reject(function ($column) {
-						return in_array($column, ['embedding'], true);
-					})
-					->values()
-					->all();
-
-		$this->articles = Article::select($columns)
-							->where('user_id', UserHelper::userId())
-							->where('status', 'active')
-							->orderBy('created_at', 'ASC')
-							->get();
 	}
 
 }
