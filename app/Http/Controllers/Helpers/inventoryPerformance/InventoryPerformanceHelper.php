@@ -174,47 +174,45 @@ class InventoryPerformanceHelper {
 
 					$this->sin_stock++;
 				
-				} else {
+				}
 
-					// if (
-					// 	count($article->addresses) == 0
-					// 	&& !is_null($article->stock_min)
-					// 	&& !is_null($article->stock)
-					// 	&& $article->stock < $article->stock_min
-					// ) {
-					if (
-						!is_null($article->stock_min)
-						&& !is_null($article->stock)
-						&& $article->stock <= $article->stock_min
-					) {
+				// if (
+				// 	count($article->addresses) == 0
+				// 	&& !is_null($article->stock_min)
+				// 	&& !is_null($article->stock)
+				// 	&& $article->stock < $article->stock_min
+				// ) {
+				if (
+					!is_null($article->stock_min)
+					&& !is_null($article->stock)
+					&& $article->stock <= $article->stock_min
+				) {
 
-						$this->stock_minimo++;
+					$this->stock_minimo++;
 
-						$this->articles_stock_minimo[] = $article;
-					
-					} else if (
-						count($article->addresses) > 0
-					) {
+					$this->articles_stock_minimo[] = $article;
+				
+				} else if (
+					count($article->addresses) > 0
+				) {
 
-						foreach ($article->addresses as $address) {
-							
-							if (
-								!is_null($address->pivot->stock_min)
-								&& $address->pivot->stock_min >= $address->pivot->amount 
-							) {
+					foreach ($article->addresses as $address) {
+						
+						if (
+							!is_null($address->pivot->stock_min)
+							&& $address->pivot->stock_min >= $address->pivot->amount 
+						) {
 
-								$this->stock_minimo++;
+							$this->stock_minimo++;
 
-								$article_to_add = $article;
-								$article_to_add->address_id = $address->id;
-								$article_to_add->stock_min_address = $address->pivot->stock_min;
-								$article_to_add->stock_address = $address->pivot->amount;
+							$article_to_add = $article;
+							$article_to_add->address_id = $address->id;
+							$article_to_add->stock_min_address = $address->pivot->stock_min;
+							$article_to_add->stock_address = $address->pivot->amount;
 
-								$this->articles_stock_minimo[] = $article_to_add;
-							}
+							$this->articles_stock_minimo[] = $article_to_add;
 						}
 					}
-
 				}
 
 			}
