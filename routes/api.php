@@ -19,6 +19,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Buscador general unificado (view-header): OR entre props propias + relaciones + AND de filtros extra.
     Route::post('global-search/{model_name}', 'CommonLaravel\SearchController@globalSearch');
     Route::post('search/save-if-not-exist/{model_name}/{propertye}/{query}', 'CommonLaravel\SearchController@saveIfNotExist');
+    // Excel de ventas fidedigno a la pantalla: recibe el estado completo del filtro por POST.
+    Route::post('sales/excel/export', 'SaleController@excel_export_view');
+    Route::post('sales/excel/breakdown-export', 'SaleController@excel_breakdown_export_view');
     Route::get('previus-day/{model_name}/{index}/{date_param?}', 'CommonLaravel\PreviusDayController@previusDays');
     Route::get('previus-next/{model_name}/{index}', 'CommonLaravel\PreviusNextController@previusNext');
     Route::get('previus-next-index/{model_name}/{id}', 'CommonLaravel\PreviusNextController@getIndexPreviusNext');

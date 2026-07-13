@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Exports\SalesBreakdownExport;
 use App\Exports\SalesFullExport;
 use App\Http\Controllers\AfipWsController;
+use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\CurrentAcountController;
 use App\Http\Controllers\Helpers\Afip\MakeAfipTicket;
@@ -1084,5 +1085,192 @@ class SaleController extends Controller
         }
 
         return max(0, (int) $raw_value);
+    }
+
+    /**
+     * Export Excel de ventas fidedigno a la pantalla (botón "Excel").
+     * Recibe el estado completo del filtro por POST y reconstruye el set completo.
+     *
+     * @param Request $request
+     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse
+     */
+    function excel_export_view(Request $request)
+    {
+        $models = $this->resolve_sales_for_export($request);
+
+        return Excel::download(
+            new SalesFullExport($models),
+            'ventas_'.date_format(Carbon::now(), 'd-m-y').'.xlsx'
+        );
+    }
+
+    /**
+     * Export Excel desglosado por artículo, fidedigno a la pantalla (botón "Excel full").
+     *
+     * @param Request $request
+     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse
+     */
+    function excel_breakdown_export_view(Request $request)
+    {
+        $models = $this->resolve_sales_for_export($request);
+
+        return Excel::download(
+            new SalesBreakdownExport($models),
+            'ventas_desglosado_'.date_format(Carbon::now(), 'd-m-y').'.xlsx'
+        );
+    }
+
+    /**
+     * Reconstruye el conjunto COMPLETO de ventas que corresponde a lo que el usuario ve en pantalla.
+     * - Si hay filtro de columnas activo: reusa el mismo motor de búsqueda que /api/search/sale,
+     *   completo (sin paginar) y con withAll(), pasando por SearchController.
+     * - Si no: arma el rango de fechas igual que excel_export/excel_breakdown_export.
+     * Después aplica en PHP las show options y la pestaña sucursal/empleado (ver apply_view_show_option_filters).
+     *
+     * @param Request $request
+     * @return \Illuminate\Support\Collection
+     */
+    private function resolve_sales_for_export(Request $request)
+    {
+        /** Indica si la pantalla tiene el filtro de columnas activo (mismo motor que /api/search/sale). */
+        $is_filtered = (boolean) $request->input('is_filtered', false);
+
+        if ($is_filtered) {
+            /* Mismo motor de columnas que la pantalla, pero completo (sin paginar) y devolviendo modelos crudos. */
+            $search = new SearchController();
+            $models = $search->search($request, 'sale', null, 0, false, true);
+        } else {
+            /** Rango de fechas equivalente al que usan los endpoints GET viejos. */
+            $from_date = $request->input('from_date');
+            $until_date = $request->input('until_date');
+
+            $query = Sale::where('user_id', $this->userId())
+                        ->withAll()
+                        ->orderBy('created_at', 'DESC');
+
+            if (!is_null($from_date) && $from_date !== '') {
+                if (!is_null($until_date) && $until_date !== '') {
+                    $query = $query->whereDate('created_at', '>=', $from_date)
+                                    ->whereDate('created_at', '<=', $until_date);
+                } else {
+                    $query = $query->whereDate('created_at', $from_date);
+                }
+            }
+
+            $models = $query->get();
+        }
+
+        return $this->apply_view_show_option_filters($models, $request);
+    }
+
+    /**
+     * Espeja el computed sales_to_show del front: aplica sobre la colección las show options
+     * (cobradas/sin cobrar, con/sin factura, método de pago) y la pestaña sucursal/empleado.
+     * Las ventas consolidadas (contenedoras de facturación) SIEMPRE se excluyen del Excel.
+     *
+     * @param \Illuminate\Support\Collection $models
+     * @param Request $request
+     * @return \Illuminate\Support\Collection
+     */
+    private function apply_view_show_option_filters($models, Request $request)
+    {
+        /** Pestaña de sucursal (nullable: sin filtro por address). */
+        $address_id  = $request->input('address_id');
+        /** Pestaña "solo dueño" (ventas sin employee_id asignado). */
+        $only_owner  = (boolean) $request->input('only_owner', false);
+        /** Pestaña de empleado puntual (nullable). */
+        $employee_id = $request->input('employee_id');
+        /** Show option cobradas / sin cobrar. */
+        $cobradas    = $request->input('ventas_cobradas_show_option', 'cobradas-y-no-cobradas');
+        /** Show option con / sin factura AFIP. */
+        $afip        = $request->input('afip_ticket_show_option', 'con-y-sin-factura');
+        /** Show option método de pago (id de CurrentAcountPaymentMethod o 'todos'). */
+        $payment     = $request->input('payment_method_show_option', 'todos');
+
+        $self = $this;
+
+        return $models->filter(function ($sale) use ($self, $address_id, $only_owner, $employee_id, $cobradas, $afip, $payment) {
+
+            /* Consolidadas: siempre excluidas del Excel (decisión fija). */
+            if ((int) $sale->is_consolidacion_facturacion === 1) {
+                return false;
+            }
+
+            /* Pestaña de sucursal. */
+            if (!is_null($address_id) && $address_id !== '') {
+                if ((int) $sale->address_id !== (int) $address_id) {
+                    return false;
+                }
+            }
+
+            /* Pestaña de empleado (dueño = sin employee_id). */
+            if ($only_owner) {
+                if (!empty($sale->employee_id)) {
+                    return false;
+                }
+            } else if (!is_null($employee_id) && $employee_id !== '') {
+                if ((int) $sale->employee_id !== (int) $employee_id) {
+                    return false;
+                }
+            }
+
+            /* Show option cobradas / no cobradas. */
+            if ($cobradas === 'solo-cobradas') {
+                if (!$self->venta_cobrada_export($sale)) {
+                    return false;
+                }
+            } else if ($cobradas === 'solo-sin-cobrar') {
+                $sin_cobrar = $sale->client_id
+                    && $sale->current_acount
+                    && $sale->current_acount->status !== 'pagado';
+                if (!$sin_cobrar) {
+                    return false;
+                }
+            }
+
+            /* Show option con / sin factura. */
+            if ($afip === 'solo-con-factura') {
+                if ($sale->afip_tickets->count() === 0) {
+                    return false;
+                }
+            } else if ($afip === 'solo-sin-factura') {
+                if ($sale->afip_tickets->count() > 0) {
+                    return false;
+                }
+            }
+
+            /* Show option método de pago. */
+            if ($payment !== 'todos') {
+                $match = $sale->current_acount_payment_methods->first(function ($pm) use ($payment) {
+                    return (string) $pm->id === (string) $payment;
+                });
+                if (is_null($match)) {
+                    return false;
+                }
+            }
+
+            return true;
+        })->values();
+    }
+
+    /**
+     * Espeja venta_cobrada del front (mixins/generals.js): venta cobrada si no tiene cliente,
+     * si está omitida de cuenta corriente, o si su cuenta corriente está 'pagado'.
+     *
+     * @param Sale $sale
+     * @return boolean
+     */
+    private function venta_cobrada_export($sale)
+    {
+        if (!$sale->client_id) {
+            return true;
+        }
+        if ($sale->omitir_en_cuenta_corriente) {
+            return true;
+        }
+        if ($sale->current_acount && $sale->current_acount->status === 'pagado') {
+            return true;
+        }
+        return false;
     }
 }
