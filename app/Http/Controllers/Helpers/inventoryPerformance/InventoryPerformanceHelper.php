@@ -235,7 +235,15 @@ class InventoryPerformanceHelper {
 
 	function set_articles() {
 
-		$this->articles = Article::where('user_id', UserHelper::userId())
+		$columns = collect(\Illuminate\Support\Facades\Schema::getColumnListing((new Article)->getTable()))
+					->reject(function ($column) {
+						return in_array($column, ['embedding'], true);
+					})
+					->values()
+					->all();
+
+		$this->articles = Article::select($columns)
+							->where('user_id', UserHelper::userId())
 							->where('status', 'active')
 							->orderBy('created_at', 'ASC')
 							->get();
