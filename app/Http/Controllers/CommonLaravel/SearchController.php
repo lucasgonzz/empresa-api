@@ -529,6 +529,201 @@ class SearchController extends Controller
     }
 
     /**
+     * Buscador general unificado (view-header de todos los módulos).
+     *
+     * Evolución de `searchFromModal`: además de props propias del modelo (OR con AND de
+     * keywords vía LIKE, igual criterio que `searchFromModal`), soporta OR contra props de
+     * relaciones (`relation_props`, vía `orWhereHas`) y un AND de filtros extra por módulo
+     * (`extra_filters`, ej. categoría / stock en el listado de artículos).
+     *
+     * Payload esperado (JSON body, POST):
+     * - query_value    (string) Criterio de texto. OJO: se llama `query_value`, nunca `query`
+     *                   (`$request->query` es una propiedad real de Symfony\Request, no un input).
+     * - props           (array)  Columnas propias del modelo a considerar en el OR (ej: ["name","bar_code"]).
+     * - relation_props  (array)  Objetos { relation, props } para OR contra relaciones vía whereHas.
+     * - extra_filters   (array)  Objetos { key, operator, value } que ANDean sobre el resultado del OR.
+     * - per_page        (int)    Tamaño de página (clamp 1..200, default 50). Página vía ?page=.
+     *
+     * @param Request $request
+     * @param string $model_name_param Nombre del modelo en snake_case (ej: 'article').
+     * @return \Illuminate\Http\JsonResponse Misma forma que `search` (paginador con data/last_page/total),
+     *         o un JSON de error controlado (400) si el modelo/prop/relación pedida no existe.
+     */
+    function globalSearch(Request $request, $model_name_param) {
+
+        // Resolución del modelo Eloquent a partir del nombre en snake_case del param de ruta.
+        $model_name = GeneralHelper::getModelName($model_name_param);
+
+        // Si el modelo no existe, devolvemos error controlado en vez de un 500 por clase inexistente.
+        if (!class_exists($model_name)) {
+            return response()->json(['error' => 'Modelo inexistente: '.$model_name_param], 400);
+        }
+
+        // Criterio de texto. SIEMPRE `query_value` (nunca `$request->query`, que es una propiedad
+        // real de Symfony\Request y no el input del mismo nombre).
+        $query_value = trim((string) $request->input('query_value'));
+
+        // Listas recibidas del frontend. Con default a array vacío si no vienen.
+        $props = $request->input('props', []);
+        $relation_props = $request->input('relation_props', []);
+        $extra_filters = $request->input('extra_filters', []);
+
+        // Instancia temporal del modelo, usada solo para chequear existencia de columnas/relaciones
+        // antes de armar la query (evita 500 por prop o relación inexistente).
+        $model_instance = new $model_name();
+
+        // Nombre de la tabla del modelo, para resolver tipo de columna vía el schema builder.
+        $table = $model_instance->getTable();
+
+        $models = $model_name::where('user_id', $this->userId())->withAll();
+
+        $models = $models->where(function ($query) use ($request, $props, $relation_props, $query_value, $table, $model_instance) {
+
+            // OR por cada prop propia del modelo.
+            foreach ($props as $prop) {
+
+                // Prop inexistente en la tabla: se ignora (no rompe la búsqueda).
+                if (!\Illuminate\Support\Facades\Schema::hasColumn($table, $prop)) {
+                    continue;
+                }
+
+                // Guard numérico: columnas numéricas (id, num, o cualquier columna con tipo numérico
+                // en el schema) solo entran al OR si el criterio también es numérico, y con match
+                // exacto (nunca LIKE sobre columna numérica con texto).
+                // NOTA: no usamos Schema::getColumnType() (Doctrine DBAL) porque rompe con
+                // "Unknown database type enum" apenas la tabla tiene UNA columna enum (ej: articles.status),
+                // sin importar qué columna se esté consultando. Se resuelve el tipo real vía
+                // information_schema, que no depende del mapeo de tipos de Doctrine.
+                $is_numeric_column = ($prop == 'id' || $prop == 'num' || $this->is_numeric_column($table, $prop));
+
+                if ($is_numeric_column) {
+                    if (is_numeric($query_value)) {
+                        $query->orWhere($prop, $query_value);
+                    }
+                    // Si el criterio no es numérico, esta prop numérica se omite del OR.
+                    continue;
+                }
+
+                // Prop de texto: AND de keywords (mismo criterio que searchFromModal).
+                $query->orWhere(function ($sub) use ($prop, $query_value) {
+                    $keywords = explode(' ', $query_value);
+                    foreach ($keywords as $keyword) {
+                        $sub->whereRaw($prop.' LIKE ?', ["%$keyword%"]);
+                    }
+                });
+            }
+
+            // OR por cada relación pedida (whereHas), con OR interno entre sus props y AND de keywords.
+            foreach ($relation_props as $relation_prop) {
+
+                if (!isset($relation_prop['relation']) || !isset($relation_prop['props'])) {
+                    continue;
+                }
+
+                $relation = $relation_prop['relation'];
+
+                // Relación inexistente en el modelo: se ignora (no rompe la búsqueda).
+                if (!method_exists($model_instance, $relation)) {
+                    continue;
+                }
+
+                $relation_field_props = $relation_prop['props'];
+
+                $query->orWhereHas($relation, function ($sub_relation) use ($relation_field_props, $query_value) {
+                    $sub_relation->where(function ($sub) use ($relation_field_props, $query_value) {
+                        foreach ($relation_field_props as $relation_field_prop) {
+                            $sub->orWhere(function ($sub_prop) use ($relation_field_prop, $query_value) {
+                                $keywords = explode(' ', $query_value);
+                                foreach ($keywords as $keyword) {
+                                    $sub_prop->whereRaw($relation_field_prop.' LIKE ?', ["%$keyword%"]);
+                                }
+                            });
+                        }
+                    });
+                });
+            }
+
+        });
+
+        // AND de filtros extra, fuera del closure del grupo OR para que sean condiciones AND reales.
+        // Whitelist de operadores: cualquier otro valor de "operator" se ignora (no se ejecuta SQL
+        // arbitrario con la key/valor que venga del request).
+        foreach ($extra_filters as $extra_filter) {
+
+            if (!isset($extra_filter['key']) || !isset($extra_filter['operator'])) {
+                continue;
+            }
+
+            $key = $extra_filter['key'];
+            $operator = $extra_filter['operator'];
+            $value = isset($extra_filter['value']) ? $extra_filter['value'] : null;
+
+            // Ignorar filtros sin valor útil o marcados explícitamente como "sin filtro".
+            if ($value === null || $value === '' || $value === 0 || $value === '0' || $value === 'con_o_sin_stock') {
+                continue;
+            }
+
+            if ($operator == '=') {
+                $models->where($key, $value);
+            } else if ($operator == 'like') {
+                $models->where($key, 'like', '%'.$value.'%');
+            } else if ($operator == 'category') {
+                // Filtro por categoría: misma lógica que el buscador de artículos en VenderController.
+                $models->where('category_id', $value);
+            } else if ($operator == 'stock_option') {
+                // Filtro de stock: reusa la lógica existente de VenderController::search_nombre.
+                // Valores soportados por el select del frontend: con_stock, hayan_tenido_stock
+                // (con_o_sin_stock ya se filtró arriba, no aplica ningún where).
+                if ($value == 'con_stock') {
+                    $models->where('stock', '>', 0);
+                } else if ($value == 'hayan_tenido_stock' || $value == 'sin_stock') {
+                    $models->whereNotNull('stock');
+                }
+            }
+            // Operadores fuera de la whitelist: se ignoran silenciosamente.
+        }
+
+        if ($model_name_param == 'article') {
+            $models = $models->where('status', 'active');
+        }
+
+        // Paginado con clamp 1..200 (default 50), igual que `search`.
+        $per_page = (int) $request->input('per_page', 50);
+        if ($per_page < 1) {
+            $per_page = 50;
+        }
+        if ($per_page > 200) {
+            $per_page = 200;
+        }
+
+        $models = $models->orderBy('created_at', 'DESC')->paginate($per_page);
+
+        return response()->json(['models' => $models], 200);
+    }
+
+    /**
+     * Indica si una columna de la tabla es de tipo numérico (int/decimal/float), consultando
+     * `information_schema` directamente (sin Doctrine DBAL, que rompe con "Unknown database type
+     * enum" apenas la tabla tiene alguna columna enum, sin importar qué columna se pida).
+     *
+     * @param string $table Nombre de la tabla (sin prefijo de base de datos).
+     * @param string $column Nombre de la columna a chequear.
+     * @return bool
+     */
+    protected function is_numeric_column($table, $column) {
+        $row = \Illuminate\Support\Facades\DB::selectOne(
+            'SELECT DATA_TYPE as data_type FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?',
+            [$table, $column]
+        );
+
+        if (!$row) {
+            return false;
+        }
+
+        return in_array($row->data_type, ['int', 'bigint', 'smallint', 'tinyint', 'mediumint', 'decimal', 'float', 'double']);
+    }
+
+    /**
      * Indica si el valor del filtro date debe compararse con hora (no solo día calendario).
      * Valores solo fecha (YYYY-MM-DD) o datetime-local con 00:00 se tratan como día completo.
      *

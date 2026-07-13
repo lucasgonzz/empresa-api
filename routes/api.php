@@ -16,6 +16,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Generals
     Route::post('search/{model_name}/{_filters?}/{paginate?}', 'CommonLaravel\SearchController@search');
     Route::post('search-from-modal/{model_name}', 'CommonLaravel\SearchController@searchFromModal');
+    // Buscador general unificado (view-header): OR entre props propias + relaciones + AND de filtros extra.
+    Route::post('global-search/{model_name}', 'CommonLaravel\SearchController@globalSearch');
     Route::post('search/save-if-not-exist/{model_name}/{propertye}/{query}', 'CommonLaravel\SearchController@saveIfNotExist');
     Route::get('previus-day/{model_name}/{index}/{date_param?}', 'CommonLaravel\PreviusDayController@previusDays');
     Route::get('previus-next/{model_name}/{index}', 'CommonLaravel\PreviusNextController@previusNext');
