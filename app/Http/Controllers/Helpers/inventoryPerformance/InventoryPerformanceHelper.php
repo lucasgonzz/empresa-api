@@ -33,6 +33,15 @@ class InventoryPerformanceHelper {
 	public $stock_minimo;
 	public $articles_stock_minimo;
 
+	// Cantidad de artículos con stock estrictamente menor a 0 (distinto de sin_stock, que
+	// ya cuenta los que están exactamente en 0). Casi siempre indica un error de carga o
+	// ventas sin ingreso de mercadería registrado.
+	public $stock_negativo;
+
+	// Costo estimado de reponer, para todos los artículos bajo el mínimo, la cantidad que
+	// falta para llegar al stock mínimo (suma de faltante * costo_unitario_normalizado).
+	public $costo_reposicion_stock_minimo;
+
 	public $inventory_performance;
 
 	/**
@@ -62,6 +71,9 @@ class InventoryPerformanceHelper {
 		$this->sin_stock = 0;
 		$this->stock_minimo = 0;
 		$this->articles_stock_minimo = [];
+
+		$this->stock_negativo = 0;
+		$this->costo_reposicion_stock_minimo = 0;
 
 
 	}
@@ -101,6 +113,9 @@ class InventoryPerformanceHelper {
 		    
 				'sin_stock'							=> $this->sin_stock,
 				'stock_minimo'						=> $this->stock_minimo,
+
+				'stock_negativo'					=> $this->stock_negativo,
+				'costo_reposicion_stock_minimo'	=> $this->costo_reposicion_stock_minimo,
 
 				'user_id'							=> $this->user_id,
 			]);
@@ -197,18 +212,10 @@ class InventoryPerformanceHelper {
 						) {
 							
 
-							$cost = $article->cost;
-
-							if (!is_null($article->presentacion)) {
-								$cost *= $article->presentacion;
-							}
-
-							if (
-								!is_null($article->unidades_individuales)
-								&& $article->unidades_individuales > 0
-							) {
-								$cost /= $article->unidades_individuales;
-							}
+							// Costo unitario normalizado (presentación / unidades individuales),
+							// extraído a un método privado para reusar la misma fórmula en el
+							// cálculo del costo de reposición de stock mínimo.
+							$cost = $this->costo_unitario_normalizado($article);
 
 							$total_article_cost = $cost * $article->stock;
 
@@ -227,7 +234,13 @@ class InventoryPerformanceHelper {
 						if ($article->stock <= 0) {
 
 							$this->sin_stock++;
-						
+
+						}
+
+						// Stock estrictamente negativo (distinto de sin_stock, que ya cuenta el 0).
+						if ($article->stock < 0) {
+
+							$this->stock_negativo++;
 						}
 
 						// if (
@@ -253,6 +266,18 @@ class InventoryPerformanceHelper {
 								'stock_min_address'	=> null,
 							];
 
+							// Faltante para llegar al stock mínimo (ej: min 1, stock -3 => faltante 4).
+							$faltante = $article->stock_min - $article->stock;
+
+							// Sólo se estima costo si falta reponer y el artículo tiene costo cargado
+							// (si no tiene costo, no se puede estimar: se ignora, no se asume 0).
+							if ($faltante > 0 && !is_null($article->cost)) {
+
+								$costo_unitario = $this->costo_unitario_normalizado($article);
+
+								$this->costo_reposicion_stock_minimo += $faltante * $costo_unitario;
+							}
+
 						} else if (
 							count($article->addresses) > 0
 						) {
@@ -273,6 +298,16 @@ class InventoryPerformanceHelper {
 										'stock_address'		=> $address->pivot->amount,
 										'stock_min_address'	=> $address->pivot->stock_min,
 									];
+
+									// Faltante calculado con los valores del depósito puntual.
+									$faltante_address = $address->pivot->stock_min - $address->pivot->amount;
+
+									if ($faltante_address > 0 && !is_null($article->cost)) {
+
+										$costo_unitario = $this->costo_unitario_normalizado($article);
+
+										$this->costo_reposicion_stock_minimo += $faltante_address * $costo_unitario;
+									}
 								}
 							}
 						}
@@ -281,7 +316,44 @@ class InventoryPerformanceHelper {
 				}
 			});
 
-	}	
+	}
+
+	/**
+	 * Normaliza el costo unitario de un artículo aplicando presentación y unidades
+	 * individuales, la misma fórmula que ya usaba valor_inventario_en_costos. Se extrae
+	 * a un método único para que este cálculo y el de costo_reposicion_stock_minimo no
+	 * terminen siendo dos versiones de la misma fórmula que se desincronizan con el tiempo.
+	 *
+	 * @param  Article $article Artículo del que se calcula el costo unitario.
+	 * @return float Costo unitario ya normalizado. Si $article->cost es null se devuelve
+	 *                null (el llamador debe chequear is_null($article->cost) antes de usar
+	 *                este método en un cálculo).
+	 */
+	function costo_unitario_normalizado($article) {
+
+		if (is_null($article->cost)) {
+
+			return null;
+		}
+
+		$cost = $article->cost;
+
+		// Multiplica por la cantidad de unidades que trae cada presentación (ej: pack x6).
+		if (!is_null($article->presentacion)) {
+			$cost *= $article->presentacion;
+		}
+
+		// Divide por las unidades individuales cuando el costo está cargado por el total
+		// de la presentación en lugar de por unidad.
+		if (
+			!is_null($article->unidades_individuales)
+			&& $article->unidades_individuales > 0
+		) {
+			$cost /= $article->unidades_individuales;
+		}
+
+		return $cost;
+	}
 
 	function promocion_vinotecas() {
 		$promos = PromocionVinoteca::all();

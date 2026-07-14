@@ -98,6 +98,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Inventory performance
     Route::get('inventory-performance', 'InventoryPerformanceController@index');
 
+    // Artículos bajo el stock mínimo del último reporte, paginados y con buscador
+    // (reemplaza el envío de todos los artículos dentro del JSON del reporte principal).
+    Route::get('inventory-performance/articles-stock-minimo', 'InventoryPerformanceController@articles_stock_minimo');
+
     // Inputs Size
     Route::resource('inputs-size', 'InputsSizeController');
 
