@@ -98,4 +98,15 @@ return [
         'guzzle_ca_bundle' => env('GOOGLE_CUSTOM_SEARCH_GUZZLE_CA_BUNDLE', ''),
     ],
 
+    /**
+     * UPCitemdb (plan FREE, sin API key): lookup de producto por GTIN para el flujo de
+     * descripciones inteligentes. Limite real: 100 requests/dia POR IP, compartidos por
+     * TODOS los clientes de la plataforma. daily_cap deja margen antes de ese techo.
+     */
+    'upcitemdb' => [
+        'enabled'   => filter_var(env('UPCITEMDB_ENABLED', true), FILTER_VALIDATE_BOOLEAN),
+        'daily_cap' => (int) env('UPCITEMDB_DAILY_CAP', 90),
+        'timeout'   => (int) env('UPCITEMDB_TIMEOUT', 8),
+    ],
+
 ];

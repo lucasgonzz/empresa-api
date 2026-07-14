@@ -367,6 +367,11 @@ class StockMovementController extends Controller
 
     function setArticleStock() {
         if (!is_null($this->article)) {
+            // Stock previo al movimiento (normalizado a float), necesario para que checkAdvises
+            // pueda detectar la transición sin-stock -> con-stock y no dispare el mail en
+            // cualquier actualización de stock (ej: una venta).
+            $stock_anterior = is_null($this->article->stock) ? 0 : (float) $this->article->stock;
+
             $this->checkFromAddress();
 
             $this->checkToAddress();
@@ -374,10 +379,15 @@ class StockMovementController extends Controller
             $this->checkArticleVariant();
 
             $this->checkGlobalStock();
-    
-            ArticleHelper::checkAdvises($this->article);
 
+            // checkGlobalStock() solo actualiza $article->stock para artículos sin depósitos y
+            // sin variantes. Para los que sí usan depósitos/variantes, el stock real recién queda
+            // calculado después de setArticleStockFromAddresses(). Por eso checkAdvises debe ir
+            // DESPUÉS de esa llamada (antes corría antes y el mail nunca se mandaba para esos
+            // artículos, porque leía el stock viejo).
             ArticleHelper::setArticleStockFromAddresses($this->article, false);
+
+            ArticleHelper::checkAdvises($this->article, $stock_anterior);
 
             if ($this->stock_movement->concepto != 'Movimiento de depositos'
                 && !isset($this->request->from_excel_import) 
