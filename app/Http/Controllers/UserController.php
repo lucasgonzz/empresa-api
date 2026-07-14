@@ -140,6 +140,16 @@ class UserController extends Controller
         $model->show_stock_min_al_iniciar       = $request->show_stock_min_al_iniciar;
         $model->show_afip_errors_al_iniciar     = $request->show_afip_errors_al_iniciar;
         $model->usar_articles_cache             = $request->usar_articles_cache;
+
+        // Minutos de duración del reporte de inventario. Se blinda para que nunca quede en 0 o
+        // vacío (0 significaría regenerar el reporte en cada request, algo inviable en cuentas
+        // con muchos artículos): si el valor recibido es nulo, no numérico o menor a 1, se guarda
+        // el default de 30 minutos.
+        $duracion_reporte_inventario = $request->duracion_reporte_inventario;
+        if ($duracion_reporte_inventario === null || !is_numeric($duracion_reporte_inventario) || (int) $duracion_reporte_inventario < 1) {
+            $duracion_reporte_inventario = 30;
+        }
+        $model->duracion_reporte_inventario     = $duracion_reporte_inventario;
         /**
          * Flag para habilitar/deshabilitar trabajo offline en frontend.
          */

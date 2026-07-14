@@ -264,6 +264,7 @@ class set_datos_for_demo extends Command
         $this->user->password = bcrypt('1234');
         $this->user->show_stock_min_al_iniciar = 0;
         $this->user->show_afip_errors_al_iniciar = 0;
+        $this->user->duracion_reporte_inventario = 30;
         $this->user->default_version = null;
         $this->user->estable_version = null;
         $this->user->google_cuota = 100;
