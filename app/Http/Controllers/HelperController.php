@@ -76,6 +76,19 @@ class HelperController extends Controller
     function callMethod($method, $param = null, $param_2 = null) {
         $this->{$method}($param, $param_2);
     }
+
+    function servian() {
+        \Illuminate\Support\Facades\Auth::loginUsingId(2800);
+
+        try {
+            $helper = new \App\Http\Controllers\Helpers\inventoryPerformance\InventoryPerformanceHelper();
+            $ip = $helper->create();
+            dump($ip);
+        } catch (\Throwable $e) {
+            echo get_class($e) . ': ' . $e->getMessage() . "\n";
+            echo $e->getFile() . ':' . $e->getLine() . "\n";
+        }
+    }
     
 
     /**
