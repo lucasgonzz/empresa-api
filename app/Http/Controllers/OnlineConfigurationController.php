@@ -3,8 +3,11 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\ClientMailConfigHelper;
 use App\Models\OnlineConfiguration;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Validator;
 
 class OnlineConfigurationController extends Controller
 {
@@ -61,9 +64,83 @@ class OnlineConfigurationController extends Controller
         $model->auto_scroll_home_interval           = $request->auto_scroll_home_interval;       
         $model->article_description_font_size       = $request->article_description_font_size;
         $model->mostrar_catalogo                    = $request->mostrar_catalogo;
-        
+
+        $model->enviar_whatsapp_al_terminar_pedido  = $request->enviar_whatsapp_al_terminar_pedido;
+
+        // Correo propio por cliente (prompt 358): master switch y datos de la casilla SMTP.
+        $model->mail_enabled                        = $request->mail_enabled;
+        $model->mail_host                           = $request->mail_host;
+        $model->mail_port                           = $request->mail_port;
+        $model->mail_encryption                     = $request->mail_encryption;
+        $model->mail_username                       = $request->mail_username;
+        $model->mail_from_address                   = $request->mail_from_address;
+        $model->mail_from_name                      = $request->mail_from_name;
+
+        // Notificaciones por mail configurables desde la UI (prompt 382).
+        // Estos 3 son booleanos NOT NULL con default true. Si el front todavia no tiene la
+        // clave (por ejemplo, la pantalla quedo abierta desde antes de que se agregara el
+        // campo) el request llega sin el valor. $request->boolean() nunca devuelve null: si
+        // la clave no viene, cae al default indicado (el valor actual del modelo), asi el save
+        // nunca pisa un true existente con null y no puede romper la constraint NOT NULL.
+        $model->notificar_pedido_al_negocio         = $request->boolean('notificar_pedido_al_negocio', $model->notificar_pedido_al_negocio ?? true);
+        $model->mail_notificacion_pedidos           = $request->mail_notificacion_pedidos;
+        $model->notificar_pedido_al_cliente         = $request->boolean('notificar_pedido_al_cliente', $model->notificar_pedido_al_cliente ?? true);
+        $model->avisar_ingreso_stock_por_mail       = $request->boolean('avisar_ingreso_stock_por_mail', $model->avisar_ingreso_stock_por_mail ?? true);
+
+        // mail_password es write-only: solo se pisa si viene con contenido. Si el request no
+        // trae el campo o llega vacio (la UI lo muestra siempre en blanco por seguridad), se
+        // conserva la contraseña ya guardada en vez de borrarla.
+        if ($request->filled('mail_password')) {
+            $model->mail_password = $request->mail_password;
+        }
+
         $model->save();
         $this->sendAddModelNotification('OnlineConfiguration', $model->id);
+        // $this->fullModel() ya devuelve el modelo con mail_password oculto por el $hidden del
+        // modelo (Eloquent lo excluye al serializar a JSON), asi que nunca se filtra por esta via.
         return response()->json(['model' => $this->fullModel('OnlineConfiguration', $model->id)], 200);
+    }
+
+    /**
+     * Envia un mail de prueba usando la configuracion SMTP propia del cliente (si esta activa y
+     * completa), para que el dueño del comercio pueda validar sus credenciales sin depender de
+     * que un comprador reciba (o no) un aviso real.
+     *
+     * @param Request $request Request con email_destino (obligatorio, formato email).
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function testMail(Request $request) {
+        // Validacion puntual del formato del mail de destino: justificada porque este endpoint
+        // dispara un envio real de correo, no es la validacion general de formularios del ERP.
+        $validator = Validator::make($request->all(), [
+            'email_destino' => 'required|email',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['message' => $validator->errors()->first()], 422);
+        }
+
+        // Intenta aplicar en runtime la config SMTP del cliente. Si no hay configuracion activa
+        // y completa, no tiene sentido "probar" nada: el envio real caeria al .env igual.
+        $applied = ClientMailConfigHelper::apply($this->userId());
+
+        if (!$applied) {
+            return response()->json([
+                'message' => 'No hay una configuración de correo activa y completa para probar',
+            ], 422);
+        }
+
+        try {
+            Mail::raw('Este es un mail de prueba de configuración SMTP de ComercioCity.', function ($message) use ($request) {
+                $message->to($request->email_destino)
+                        ->subject('Mail de prueba - ComercioCity');
+            });
+
+            return response()->json(['message' => 'Mail de prueba enviado correctamente'], 200);
+        } catch (\Exception $e) {
+            // Se devuelve el mensaje de error de SMTP tal cual: es la razon de ser del endpoint,
+            // le dice al dueño del comercio por que no le anda el correo (ej. auth rechazada).
+            return response()->json(['message' => 'Error al enviar el mail de prueba: '.$e->getMessage()], 422);
+        }
     }
 }

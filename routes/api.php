@@ -68,6 +68,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('online-configuration', 'OnlineConfigurationController@index');
     Route::put('online-configuration/{id}', 'OnlineConfigurationController@update');
+    // Prompt 358: prueba de la config SMTP propia del cliente. La usa el dueño del comercio desde
+    // el ERP (no es pública), por eso va dentro del mismo grupo de middleware de autenticación.
+    Route::post('online-configuration/test-mail', 'OnlineConfigurationController@testMail');
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
     Route::get('update-feature', 'UpdateFeatureController@index');
 
@@ -94,6 +97,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Inventory performance
     Route::get('inventory-performance', 'InventoryPerformanceController@index');
+
+    // Artículos bajo el stock mínimo del último reporte, paginados y con buscador
+    // (reemplaza el envío de todos los artículos dentro del JSON del reporte principal).
+    Route::get('inventory-performance/articles-stock-minimo', 'InventoryPerformanceController@articles_stock_minimo');
 
     // Inputs Size
     Route::resource('inputs-size', 'InputsSizeController');
@@ -581,6 +588,14 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('google/get-current', 'GoogleController@get_current');
     Route::post('google/batch-assign-images', 'GoogleController@batch_assign_images');
 
+    // Descripciones inteligentes: preview individual, guardado, batch masivo (job + Pusher) y revisión.
+    Route::post('article-description-ai/preview/{article_id}', 'ArticleDescriptionAiController@preview');
+    Route::post('article-description-ai/store/{article_id}', 'ArticleDescriptionAiController@store');
+    Route::post('article-description-ai/batch-generate', 'ArticleDescriptionAiController@batch_generate');
+    Route::get('article-description-ai/pending-review', 'ArticleDescriptionAiController@pending_review');
+    Route::put('article-description-ai/approve/{id}', 'ArticleDescriptionAiController@approve');
+    Route::delete('article-description-ai/discard/{id}', 'ArticleDescriptionAiController@discard');
+
 
     Route::post('payment-plan', 'PaymentPlanController@store');
 
@@ -745,6 +760,9 @@ Route::middleware('admin.api.key')
         Route::post('support/tickets', 'AdminSync\\SupportTicketController@store');
         Route::put('support/tickets/{ticket_uuid}', 'AdminSync\\SupportTicketController@update');
         Route::get('employees', 'AdminSync\\EmployeesController@index');
+        // Mensualidad: consulta y actualización desde admin (capa opcional de sincronización, ver prompt 326)
+        Route::get('mensualidad-info/{user_id?}', 'AdminSync\\MensualidadController@show');
+        Route::put('mensualidad-update/{user_id?}', 'AdminSync\\MensualidadController@update');
         Route::post('ai-excel-import/analyze', 'AdminSync\\AiExcelImportController@analyze');
         Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
         // Canal "sistema:" de WhatsApp: consulta de datos del owner (stock, ventas, facturas, clientes).

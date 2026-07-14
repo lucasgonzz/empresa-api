@@ -29,6 +29,7 @@ return [
         '/storage/*',
         'storage',
     ],
+    
 
     'allowed_methods' => ['*'],
 

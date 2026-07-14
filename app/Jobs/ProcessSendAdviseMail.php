@@ -4,6 +4,8 @@ namespace App\Jobs;
 
 use Illuminate\Support\Facades\Mail;
 use App\Mail\Advise as AdviseMail;
+use App\Http\Controllers\Helpers\ClientMailConfigHelper;
+use App\Http\Controllers\Helpers\MailNotificationConfigHelper;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -19,6 +21,15 @@ class ProcessSendAdviseMail implements ShouldQueue
     public $advise;
     public $article;
 
+    /**
+     * Cantidad de reintentos que hace la queue antes de darse por vencida y llamar a failed().
+     * Con QUEUE_CONNECTION=sync corre en el mismo request, pero declararlo no rompe nada y sirve
+     * si en algún momento se cambia a una queue real.
+     *
+     * @var int
+     */
+    public $tries = 3;
+
 
     /**
      * Create a new job instance.
@@ -32,16 +43,83 @@ class ProcessSendAdviseMail implements ShouldQueue
     }
 
     /**
-     * Execute the job.
+     * Execute the job: manda el mail de aviso y borra la fila SOLO si el envío fue exitoso.
+     *
+     * Todo el cuerpo va dentro de un try/catch: con QUEUE_CONNECTION=sync este Job corre en el
+     * mismo request que ingresa el stock del ERP, así que una excepción acá NUNCA puede
+     * propagarse hacia arriba (rompería la operación de stock, que es el bug raíz que este
+     * prompt viene a corregir).
      *
      * @return void
      */
     public function handle()
     {
+        try {
+            // Revalido el email por las dudas: checkAdvises ya filtra, pero este Job puede
+            // llegar a ser despachado desde otro lado en el futuro.
+            $email = trim((string) $this->advise->email);
 
-        Mail::to($this->advise->email)->send(new AdviseMail($this->article));
-        $this->advise->delete();
+            if ($email === '' || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+                Log::warning('ProcessSendAdviseMail: email invalido, se borra el advise', [
+                    'advise_id' => $this->advise->id,
+                    'email'     => $email,
+                ]);
+                $this->advise->delete();
+                return;
+            }
 
-        Log::info('Se elimino advise a '.$this->advise->email);
+            // Gate por cliente (prompt 383, reemplaza a env('SEND_MAILS')). Se revalida aca ademas de
+            // en checkAdvises porque este Job podria ser despachado desde otro lado en el futuro.
+            $owner_id = isset($this->article->user_id) ? $this->article->user_id : null;
+
+            if (!MailNotificationConfigHelper::avisarIngresoStock($owner_id)) {
+                // Avisos deshabilitados: no se manda ni se borra, queda pendiente.
+                Log::info('ProcessSendAdviseMail: avisos deshabilitados para el cliente, el advise queda pendiente', [
+                    'advise_id' => $this->advise->id,
+                    'user_id'   => $owner_id,
+                ]);
+                return;
+            }
+
+            // Correo propio por cliente (prompt 358): si el owner del artículo configuró su
+            // propia casilla SMTP y está activa/completa, se pisa en runtime la config de mail
+            // para que este envío salga desde ahí. Se pasa explícito el user_id del artículo
+            // porque este Job puede llegar a correr sin sesión de auth (worker async a futuro);
+            // si no está disponible, el helper cae a UserHelper::userId(). Si no hay config
+            // propia o algo falla, el helper devuelve false y el envío sigue usando el .env.
+            ClientMailConfigHelper::apply(isset($this->article->user_id) ? $this->article->user_id : null);
+
+            // Si send() tira excepción, el catch de abajo la atrapa y NO se borra la fila.
+            Mail::to($email)->send(new AdviseMail($this->article));
+
+            // Recien acá, con el mail mandado con éxito, se borra el aviso.
+            $this->advise->delete();
+
+            Log::info('Se elimino advise a '.$email);
+        } catch (\Exception $e) {
+            // No se borra el advise: queda pendiente para el próximo ingreso de stock.
+            // No se relanza la excepción: con QUEUE_CONNECTION=sync eso rompería la operación
+            // de stock del ERP que disparó este Job.
+            Log::error('ProcessSendAdviseMail: error enviando mail, advise queda pendiente', [
+                'advise_id' => isset($this->advise->id) ? $this->advise->id : null,
+                'email'     => isset($this->advise->email) ? $this->advise->email : null,
+                'error'     => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Se ejecuta cuando el Job agota los reintentos ($tries) sin éxito.
+     * Solo loguea el fallo definitivo; no borra el advise (queda pendiente).
+     *
+     * @param \Exception $e Excepción que causó el fallo final.
+     * @return void
+     */
+    public function failed(\Exception $e)
+    {
+        Log::error('ProcessSendAdviseMail: fallo definitivo tras agotar reintentos', [
+            'advise_id' => isset($this->advise->id) ? $this->advise->id : null,
+            'error'     => $e->getMessage(),
+        ]);
     }
 }

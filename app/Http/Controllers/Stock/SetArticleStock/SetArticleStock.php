@@ -16,6 +16,10 @@ class SetArticleStock  {
 
         if (!is_null($article)) {
 
+            // Stock previo al movimiento, para que checkAdvises detecte la transición
+            // sin-stock -> con-stock (no dispara el mail en cualquier actualización de stock).
+            $stock_anterior = is_null($article->stock) ? 0 : (float) $article->stock;
+
             CheckFromAddress::check_from_address($stock_movement, $article);
 
             CheckToAddress::check_to_address($stock_movement, $article);
@@ -23,11 +27,11 @@ class SetArticleStock  {
             CheckVariants::check_article_variant($stock_movement, $article);
 
             CheckGlobalStock::check_global_stock($stock_movement, $article, $set_updated_at);
-    
+
             ArticleHelper::setArticleStockFromAddresses($article, false, $user_id);
 
-            ArticleHelper::checkAdvises($article);
-            
+            ArticleHelper::checkAdvises($article, $stock_anterior);
+
             CheckCartAmount::check_cart_amount($stock_movement, $article);
 
         } 
