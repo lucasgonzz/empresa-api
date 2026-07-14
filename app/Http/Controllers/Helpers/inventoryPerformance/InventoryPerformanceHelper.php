@@ -7,9 +7,15 @@ use App\Models\Article;
 use App\Models\ArticlePurchase;
 use App\Models\InventoryPerformance;
 use App\Models\PromocionVinoteca;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class InventoryPerformanceHelper {
+
+	// Id del usuario owner para el que se genera el reporte.
+	// Se recibe explícito porque el helper puede correr dentro de un job (sin sesión HTTP ni Auth).
+	public $user_id;
 
 	public $cantidad_articulos;
 	public $stockeados;
@@ -29,7 +35,17 @@ class InventoryPerformanceHelper {
 
 	public $inventory_performance;
 
-	function __construct() {
+	/**
+	 * Inicializa los contadores del reporte.
+	 *
+	 * @param int|null $user_id Id del owner. Si es null se resuelve desde la sesión
+	 *                          con UserHelper::userId() (uso desde el request); si viene
+	 *                          un id se usa ese (uso desde el job, sin sesión).
+	 */
+	function __construct($user_id = null) {
+
+		// Si no se recibe user_id explícito, se cae al comportamiento actual basado en la sesión.
+		$this->user_id = is_null($user_id) ? UserHelper::userId() : $user_id;
 
 		$this->cantidad_articulos = 0;
 		$this->stockeados = 0;
@@ -86,24 +102,52 @@ class InventoryPerformanceHelper {
 				'sin_stock'							=> $this->sin_stock,
 				'stock_minimo'						=> $this->stock_minimo,
 
-				'user_id'							=> UserHelper::userId(),
+				'user_id'							=> $this->user_id,
 			]);
-			
-			// Agrupar artículos por provider_id
-			$grouped_articles = collect($this->articles_stock_minimo)->groupBy('provider_id');
 
-			// Iterar por cada grupo y adjuntar artículos
-			foreach ($grouped_articles as $provider_id => $articles_group) {
-				foreach ($articles_group as $article) {
+			// Timestamp único para todas las filas del pivot de este reporte.
+			$now = Carbon::now();
 
-					$pivot_data = [];
-					if ($article->address_id) {
-						$pivot_data['address_id'] = $article->address_id;
-						$pivot_data['stock_min_address'] = $article->stock_min_address;
-						$pivot_data['stock_address'] = $article->stock_address;
-					} 
-					$this->inventory_performance->articles_stock_minimo()->attach($article->id, $pivot_data);
+			// Insert masivo sobre la pivot (article_inventory_performance) en lotes de 1000.
+			// Se reemplaza el attach() uno por uno (un INSERT por artículo) por un solo INSERT por lote,
+			// evitando decenas de miles de queries en cuentas grandes.
+			foreach (array_chunk($this->articles_stock_minimo, 1000) as $rows) {
+
+				// A cada fila plana acumulada se le agrega el id del reporte y los timestamps.
+				$rows_con_id = [];
+
+				foreach ($rows as $row) {
+
+					$rows_con_id[] = [
+						'article_id'				=> $row['article_id'],
+						'inventory_performance_id'	=> $this->inventory_performance->id,
+						'address_id'				=> $row['address_id'],
+						'stock_address'				=> $row['stock_address'],
+						'stock_min_address'			=> $row['stock_min_address'],
+						'created_at'				=> $now,
+						'updated_at'				=> $now,
+					];
 				}
+
+				DB::table('article_inventory_performance')->insert($rows_con_id);
+			}
+
+			// Recién ahora, con el reporte nuevo ya creado y su pivot completa, se borran los reportes
+			// anteriores del usuario. Si el proceso fallara antes de este punto, el cliente conserva
+			// el reporte viejo en lugar de quedarse sin nada.
+			$old_ids = InventoryPerformance::where('user_id', $this->user_id)
+							->where('id', '!=', $this->inventory_performance->id)
+							->pluck('id')
+							->all();
+
+			if (count($old_ids) > 0) {
+
+				// Se borran también las filas de pivot de esos reportes viejos para no dejar basura.
+				DB::table('article_inventory_performance')
+					->whereIn('inventory_performance_id', $old_ids)
+					->delete();
+
+				InventoryPerformance::whereIn('id', $old_ids)->delete();
 			}
 		}
 
@@ -121,7 +165,7 @@ class InventoryPerformanceHelper {
 
 		Article::select($columns)
 			->with('addresses')
-			->where('user_id', UserHelper::userId())
+			->where('user_id', $this->user_id)
 			->where('status', 'active')
 			->orderBy('created_at', 'ASC')
 			->chunk(2000, function ($articles) {
@@ -200,27 +244,35 @@ class InventoryPerformanceHelper {
 
 							$this->stock_minimo++;
 
-							$this->articles_stock_minimo[] = $article;
-						
+							// Se acumula sólo lo necesario para el pivot (array plano), no el modelo Eloquent
+							// completo con sus relaciones: en cuentas grandes eso es OOM latente.
+							$this->articles_stock_minimo[] = [
+								'article_id'		=> $article->id,
+								'address_id'		=> null,
+								'stock_address'		=> null,
+								'stock_min_address'	=> null,
+							];
+
 						} else if (
 							count($article->addresses) > 0
 						) {
 
 							foreach ($article->addresses as $address) {
-								
+
 								if (
 									!is_null($address->pivot->stock_min)
-									&& $address->pivot->stock_min >= $address->pivot->amount 
+									&& $address->pivot->stock_min >= $address->pivot->amount
 								) {
 
 									$this->stock_minimo++;
 
-									$article_to_add = $article;
-									$article_to_add->address_id = $address->id;
-									$article_to_add->stock_min_address = $address->pivot->stock_min;
-									$article_to_add->stock_address = $address->pivot->amount;
-
-									$this->articles_stock_minimo[] = $article_to_add;
+									// Misma acumulación plana, pero apuntando al depósito puntual bajo mínimo.
+									$this->articles_stock_minimo[] = [
+										'article_id'		=> $article->id,
+										'address_id'		=> $address->id,
+										'stock_address'		=> $address->pivot->amount,
+										'stock_min_address'	=> $address->pivot->stock_min,
+									];
 								}
 							}
 						}
