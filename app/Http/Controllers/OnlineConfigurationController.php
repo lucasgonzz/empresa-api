@@ -65,6 +65,8 @@ class OnlineConfigurationController extends Controller
         $model->article_description_font_size       = $request->article_description_font_size;
         $model->mostrar_catalogo                    = $request->mostrar_catalogo;
 
+        $model->enviar_whatsapp_al_terminar_pedido  = $request->enviar_whatsapp_al_terminar_pedido;
+
         // Correo propio por cliente (prompt 358): master switch y datos de la casilla SMTP.
         $model->mail_enabled                        = $request->mail_enabled;
         $model->mail_host                           = $request->mail_host;
