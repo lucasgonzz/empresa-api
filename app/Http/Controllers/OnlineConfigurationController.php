@@ -74,6 +74,12 @@ class OnlineConfigurationController extends Controller
         $model->mail_from_address                   = $request->mail_from_address;
         $model->mail_from_name                      = $request->mail_from_name;
 
+        // Notificaciones por mail configurables desde la UI (prompt 382).
+        $model->notificar_pedido_al_negocio         = $request->notificar_pedido_al_negocio;
+        $model->mail_notificacion_pedidos           = $request->mail_notificacion_pedidos;
+        $model->notificar_pedido_al_cliente         = $request->notificar_pedido_al_cliente;
+        $model->avisar_ingreso_stock_por_mail       = $request->avisar_ingreso_stock_por_mail;
+
         // mail_password es write-only: solo se pisa si viene con contenido. Si el request no
         // trae el campo o llega vacio (la UI lo muestra siempre en blanco por seguridad), se
         // conserva la contraseña ya guardada en vez de borrarla.

@@ -33,6 +33,10 @@ class OnlineConfiguration extends Model
         // Cast nativo de Laravel: encripta/desencripta automaticamente con la APP_KEY al leer y
         // escribir el atributo. Verificado soportado en esta version de Laravel (8.75).
         'mail_password' => 'encrypted',
+        // Notificaciones por mail configurables desde la UI (prompt 382).
+        'notificar_pedido_al_negocio' => 'boolean',
+        'notificar_pedido_al_cliente' => 'boolean',
+        'avisar_ingreso_stock_por_mail' => 'boolean',
     ];
 
     function scopeWithAll($q) {
