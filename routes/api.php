@@ -584,6 +584,14 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('google/get-current', 'GoogleController@get_current');
     Route::post('google/batch-assign-images', 'GoogleController@batch_assign_images');
 
+    // Descripciones inteligentes: preview individual, guardado, batch masivo (job + Pusher) y revisión.
+    Route::post('article-description-ai/preview/{article_id}', 'ArticleDescriptionAiController@preview');
+    Route::post('article-description-ai/store/{article_id}', 'ArticleDescriptionAiController@store');
+    Route::post('article-description-ai/batch-generate', 'ArticleDescriptionAiController@batch_generate');
+    Route::get('article-description-ai/pending-review', 'ArticleDescriptionAiController@pending_review');
+    Route::put('article-description-ai/approve/{id}', 'ArticleDescriptionAiController@approve');
+    Route::delete('article-description-ai/discard/{id}', 'ArticleDescriptionAiController@discard');
+
 
     Route::post('payment-plan', 'PaymentPlanController@store');
 
