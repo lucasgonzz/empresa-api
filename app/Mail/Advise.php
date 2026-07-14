@@ -34,10 +34,11 @@ class Advise extends Mailable
     /**
      * Build the message.
      *
-     * El gate de SEND_MAILS ya NO vive acá: ahora lo controlan checkAdvises() y el Job
-     * ProcessSendAdviseMail antes de llamar a Mail::send(). build() siempre tiene que devolver
-     * el mailable armado, porque un build() que no devuelve nada es lo que permitía que el
-     * aviso se borrara sin haber mandado nunca el mail.
+     * El gate ya NO vive acá: ahora lo controlan checkAdvises() y el Job ProcessSendAdviseMail,
+     * a través de MailNotificationConfigHelper (configuración online del cliente, columna
+     * avisar_ingreso_stock_por_mail, prompt 383), antes de llamar a Mail::send(). build() siempre
+     * tiene que devolver el mailable armado, porque un build() que no devuelve nada es lo que
+     * permitía que el aviso se borrara sin haber mandado nunca el mail.
      *
      * @return $this
      */

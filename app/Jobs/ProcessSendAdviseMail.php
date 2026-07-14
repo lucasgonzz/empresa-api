@@ -5,6 +5,7 @@ namespace App\Jobs;
 use Illuminate\Support\Facades\Mail;
 use App\Mail\Advise as AdviseMail;
 use App\Http\Controllers\Helpers\ClientMailConfigHelper;
+use App\Http\Controllers\Helpers\MailNotificationConfigHelper;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -67,10 +68,15 @@ class ProcessSendAdviseMail implements ShouldQueue
                 return;
             }
 
-            if (!env('SEND_MAILS', false)) {
-                // Mails deshabilitados: no se manda ni se borra, queda pendiente.
-                Log::info('ProcessSendAdviseMail: SEND_MAILS en false, no se envia ni se borra', [
+            // Gate por cliente (prompt 383, reemplaza a env('SEND_MAILS')). Se revalida aca ademas de
+            // en checkAdvises porque este Job podria ser despachado desde otro lado en el futuro.
+            $owner_id = isset($this->article->user_id) ? $this->article->user_id : null;
+
+            if (!MailNotificationConfigHelper::avisarIngresoStock($owner_id)) {
+                // Avisos deshabilitados: no se manda ni se borra, queda pendiente.
+                Log::info('ProcessSendAdviseMail: avisos deshabilitados para el cliente, el advise queda pendiente', [
                     'advise_id' => $this->advise->id,
+                    'user_id'   => $owner_id,
                 ]);
                 return;
             }
