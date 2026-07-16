@@ -84,6 +84,7 @@ class UserSeeder extends Seeder
                 'comision_funcion' => 'distri_creo',
                 'google_cuota' => 100,
                 'show_stock_min_al_iniciar'         => 0,
+                'duracion_reporte_inventario'        => 30,
                 'tienda_nube_url'                   => 'https://demo317.mitiendanube.com',
             ],
         ];

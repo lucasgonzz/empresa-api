@@ -60,7 +60,7 @@ class Budget extends Model
     }
 
     function articles() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'bonus', 'location', 'price', 'price_type_personalizado_id', 'cost');
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'bonus', 'location', 'price', 'price_type_personalizado_id', 'cost', 'name');
     }
 
     function optional_order_production_statuses() {

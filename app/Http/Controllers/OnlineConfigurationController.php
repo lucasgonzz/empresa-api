@@ -65,6 +65,8 @@ class OnlineConfigurationController extends Controller
         $model->article_description_font_size       = $request->article_description_font_size;
         $model->mostrar_catalogo                    = $request->mostrar_catalogo;
 
+        $model->enviar_whatsapp_al_terminar_pedido  = $request->enviar_whatsapp_al_terminar_pedido;
+
         // Correo propio por cliente (prompt 358): master switch y datos de la casilla SMTP.
         $model->mail_enabled                        = $request->mail_enabled;
         $model->mail_host                           = $request->mail_host;
@@ -73,6 +75,17 @@ class OnlineConfigurationController extends Controller
         $model->mail_username                       = $request->mail_username;
         $model->mail_from_address                   = $request->mail_from_address;
         $model->mail_from_name                      = $request->mail_from_name;
+
+        // Notificaciones por mail configurables desde la UI (prompt 382).
+        // Estos 3 son booleanos NOT NULL con default true. Si el front todavia no tiene la
+        // clave (por ejemplo, la pantalla quedo abierta desde antes de que se agregara el
+        // campo) el request llega sin el valor. $request->boolean() nunca devuelve null: si
+        // la clave no viene, cae al default indicado (el valor actual del modelo), asi el save
+        // nunca pisa un true existente con null y no puede romper la constraint NOT NULL.
+        $model->notificar_pedido_al_negocio         = $request->boolean('notificar_pedido_al_negocio', $model->notificar_pedido_al_negocio ?? true);
+        $model->mail_notificacion_pedidos           = $request->mail_notificacion_pedidos;
+        $model->notificar_pedido_al_cliente         = $request->boolean('notificar_pedido_al_cliente', $model->notificar_pedido_al_cliente ?? true);
+        $model->avisar_ingreso_stock_por_mail       = $request->boolean('avisar_ingreso_stock_por_mail', $model->avisar_ingreso_stock_por_mail ?? true);
 
         // mail_password es write-only: solo se pisa si viene con contenido. Si el request no
         // trae el campo o llega vacio (la UI lo muestra siempre en blanco por seguridad), se

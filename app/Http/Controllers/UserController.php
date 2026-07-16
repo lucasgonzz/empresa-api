@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\UserProfileChangeDescriptionHelper;
 use App\Jobs\ProcessSetFinalPrices;
 use App\Models\OnlineConfiguration;
+use App\Models\PdfColumnProfile;
 use App\Models\User;
 use App\Models\UserConfiguration;
 use App\Models\Article;
@@ -140,6 +141,16 @@ class UserController extends Controller
         $model->show_stock_min_al_iniciar       = $request->show_stock_min_al_iniciar;
         $model->show_afip_errors_al_iniciar     = $request->show_afip_errors_al_iniciar;
         $model->usar_articles_cache             = $request->usar_articles_cache;
+
+        // Minutos de duración del reporte de inventario. Se blinda para que nunca quede en 0 o
+        // vacío (0 significaría regenerar el reporte en cada request, algo inviable en cuentas
+        // con muchos artículos): si el valor recibido es nulo, no numérico o menor a 1, se guarda
+        // el default de 30 minutos.
+        $duracion_reporte_inventario = $request->duracion_reporte_inventario;
+        if ($duracion_reporte_inventario === null || !is_numeric($duracion_reporte_inventario) || (int) $duracion_reporte_inventario < 1) {
+            $duracion_reporte_inventario = 30;
+        }
+        $model->duracion_reporte_inventario     = $duracion_reporte_inventario;
         /**
          * Flag para habilitar/deshabilitar trabajo offline en frontend.
          */
@@ -171,7 +182,17 @@ class UserController extends Controller
             $owner_user->listas_de_precio = (int) $request->listas_de_precio;
             $owner_user->save();
         }
-       
+
+        /**
+         * Preferencia del dueño sobre qué PDF/ticket abre el botón de imprimir de la factura ARCA
+         * (tarjetita en Ventas y en "problemas al facturar"). Igual que `listas_de_precio`, vive
+         * siempre en el usuario dueño aunque quien guarda el formulario sea un empleado.
+         */
+        if ($owner_user && $request->has('sale_factura_print_option')) {
+            $owner_user->sale_factura_print_option = $this->resolve_sale_factura_print_option($request->sale_factura_print_option);
+            $owner_user->save();
+        }
+
 
         UserHelper::set_sessions($model);
 
@@ -230,6 +251,57 @@ class UserController extends Controller
             'model' => $model,
             'notifications' => $notifications,
         ], 200);
+    }
+
+    /**
+     * Normaliza y valida el valor de sale_factura_print_option antes de guardarlo en el owner.
+     * Devuelve el valor normalizado a guardar, o null si el valor recibido no es válido
+     * (en cuyo caso se guarda null en vez de dejar un valor corrupto/inexistente).
+     *
+     * Vocabulario aceptado (reutiliza las claves de `vender_print_shortcut_options.js` del SPA):
+     * - 'factura_ticket_pdf': ticket común (equivalente explícito al default).
+     * - 'ticket_2': Ticket 2.0.
+     * - 'factura_a4:{id}': perfil PdfColumnProfile fiscal de tipo A4 con ese id (debe existir,
+     *   pertenecer al modelo 'sale' y estar marcado como is_afip_ticket).
+     * - Cualquier otro valor (o vacío): se descarta y se guarda null.
+     *
+     * @param mixed $value Valor recibido desde el request.
+     * @return string|null
+     */
+    private function resolve_sale_factura_print_option($value) {
+        // Valor vacío o no enviado: sin preferencia, comportamiento default (ticket común).
+        if (empty($value)) {
+            return null;
+        }
+
+        // Claves fijas del vocabulario: se aceptan tal cual.
+        if ($value === 'factura_ticket_pdf' || $value === 'ticket_2') {
+            return $value;
+        }
+
+        // Perfil de PDF A4 fiscal: 'factura_a4:{id}'. Se valida que el id exista y sea un perfil
+        // fiscal (is_afip_ticket) del modelo 'sale', para no guardar una referencia inexistente.
+        if (strpos($value, 'factura_a4:') === 0) {
+            $profile_id = (int) str_replace('factura_a4:', '', $value);
+
+            if ($profile_id <= 0) {
+                return null;
+            }
+
+            $profile_valido = PdfColumnProfile::where('id', $profile_id)
+                ->where('model_name', 'sale')
+                ->where('is_afip_ticket', true)
+                ->exists();
+
+            if (!$profile_valido) {
+                return null;
+            }
+
+            return $value;
+        }
+
+        // Cualquier otro valor no reconocido se ignora silenciosamente.
+        return null;
     }
 
     function check_cambio_version($model, $current_default_version) {

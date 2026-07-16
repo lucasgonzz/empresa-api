@@ -726,6 +726,28 @@ class ArticleHelper {
                 return;
             }
 
+            // Gate por cliente (prompt 383, reemplaza a env('SEND_MAILS')). Se resuelve una sola vez
+            // para todos los avisos de este articulo.
+            // $article puede llegar como stdClass parcial desde algunos callers de stock, asi que el
+            // user_id se resuelve del modelo real si el objeto no lo trae.
+            $owner_id = (isset($article->user_id) && !is_null($article->user_id)) ? $article->user_id : null;
+
+            if (is_null($owner_id)) {
+                $article_model = Article::find($article->id);
+                $owner_id = is_null($article_model) ? null : $article_model->user_id;
+            }
+
+            if (!MailNotificationConfigHelper::avisarIngresoStock($owner_id)) {
+                // Avisos deshabilitados para este cliente: los avisos quedan PENDIENTES, no se
+                // borran, para poder mandarlos si el comercio los habilita mas adelante.
+                Log::info('checkAdvises: avisos de stock deshabilitados para el cliente, quedan pendientes', [
+                    'article_id' => $article->id,
+                    'user_id'    => $owner_id,
+                    'advises'    => count($advises),
+                ]);
+                return;
+            }
+
             foreach ($advises as $advise) {
                 // Un advise roto (email inválido, etc.) no debe cortar a los demás.
                 try {
@@ -740,16 +762,6 @@ class ArticleHelper {
                             'email'      => $email,
                         ]);
                         $advise->delete();
-                        continue;
-                    }
-
-                    if (!env('SEND_MAILS', false)) {
-                        // Mails deshabilitados: el aviso queda pendiente, NO se borra, para
-                        // cuando se habiliten se pueda mandar (antes se borraba en silencio).
-                        Log::info('checkAdvises: SEND_MAILS en false, advise queda pendiente', [
-                            'advise_id'  => $advise->id,
-                            'article_id' => $article->id,
-                        ]);
                         continue;
                     }
 

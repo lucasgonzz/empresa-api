@@ -21,8 +21,10 @@ use Illuminate\Support\Facades\Log;
  * ProcessArticleBatchImagesJob, con dos diferencias de fondo respecto al flujo de imagenes:
  *
  * 1. Nunca pisa trabajo humano: un articulo con descripciones cargadas a mano se saltea
- *    (skipped_existing), salvo que se pida overwrite explicito (que solo borra las
- *    descripciones generadas por IA, nunca las humanas).
+ *    SIEMPRE (skipped_existing), en los dos modos. Ademas, en modo automatico
+ *    (overwrite=false) tambien se saltea si el articulo ya tiene una descripcion de IA
+ *    de una corrida anterior — evita duplicar filas en reintentos. En modo reemplazar
+ *    (overwrite=true) se borran (y regeneran) solo las descripciones con ai_generated=true.
  * 2. La baja confianza no se publica sola: una descripcion con confianza 'low' se guarda
  *    pero NO se sincroniza a TiendaNube hasta que una persona la revise (needs_review, ver
  *    ArticleDescriptionAiController::approve()).
@@ -135,13 +137,26 @@ class ProcessArticleBatchDescriptionsJob implements ShouldQueue
             }
 
             /*
-             * 1. Nunca pisar trabajo humano. Si el artículo ya tiene alguna descripción cargada
-             * a mano (no generada por IA) y no se pidió overwrite, se saltea por completo.
+             * 1. Nunca se toca un articulo con descripcion humana, en NINGUNO de los dos modos.
+             * Ni "automatico" ni "reemplazar" agregan ni pisan nada si ya hay una descripcion
+             * cargada a mano.
              */
-            if (!$this->overwrite && $article->descriptions()->human()->exists()) {
+            if ($article->descriptions()->human()->exists()) {
                 $skipped_existing++;
                 $skipped_existing_names[] = $this->get_article_display_name($article);
-                Log::info('[DescripcionesIA] Artículo con descripciones humanas, se saltea.', ['article_id' => $article->id]);
+                Log::info('[DescripcionesIA] Artículo con descripción humana, se saltea.', ['article_id' => $article->id]);
+                continue;
+            }
+
+            /*
+             * 2. Modo "automatico" (overwrite=false): si el articulo ya tiene una descripcion
+             * de IA de una corrida anterior, no se vuelve a tocar. Sin este chequeo, correr
+             * el batch dos veces sobre el mismo filtro duplica descripciones de IA.
+             */
+            if (!$this->overwrite && $article->descriptions()->exists()) {
+                $skipped_existing++;
+                $skipped_existing_names[] = $this->get_article_display_name($article);
+                Log::info('[DescripcionesIA] Artículo ya tiene descripción de IA, se saltea (modo automático).', ['article_id' => $article->id]);
                 continue;
             }
 

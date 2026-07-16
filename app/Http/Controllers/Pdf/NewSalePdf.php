@@ -84,6 +84,14 @@ class NewSalePdf extends fpdf
             ? $this->normalize_boolean($this->pdf_column_profile->show_total_in_footer, true)
             : true;
         /**
+         * Flag para controlar visibilidad de la línea "Sub Total" en el pie del PDF.
+         * Solo tiene efecto cuando hay descuentos/recargos (total_bruto != total).
+         * Default true para mantener el comportamiento de perfiles legacy.
+         */
+        $this->show_subtotal_in_footer = $this->pdf_column_profile
+            ? $this->normalize_boolean($this->pdf_column_profile->show_subtotal_in_footer, true)
+            : true;
+        /**
          * Texto libre del pie de página; se renderiza con MultiCell debajo de los totales.
          * Sigue la misma regla de visibilidad que show_totals_on_each_page.
          */
@@ -118,7 +126,11 @@ class NewSalePdf extends fpdf
 
         $this->AddPage();
         $this->items();
-        $this->observations();
+        /**
+         * Las observaciones ahora pertenecen al pie del documento: se imprimen
+         * desde Footer() (en cada página) o desde print_totals_only_on_last_page_when_needed()
+         * (solo en la última), según el flag show_totals_on_each_page del perfil.
+         */
         $this->print_totals_only_on_last_page_when_needed();
 
         // if ($save_doc_as) {
@@ -295,6 +307,18 @@ class NewSalePdf extends fpdf
             $this->print_optional_footer_extras();
             $this->print_footer_text_block();
         }
+
+        /**
+         * Las observaciones pertenecen al pie del documento y se repiten en cada
+         * página cuando el perfil pide mostrar el pie en todas las hojas.
+         * No depende de show_total_in_footer ni de footer_text: es un bloque propio.
+         * El espacio ya fue reservado en get_items_page_break_limit_y(), por lo que
+         * acá no se dispara ningún salto de página (no es seguro llamar AddPage()
+         * desde dentro de Footer(), FPDF lo invoca recursivamente).
+         */
+        if ($this->should_print_totals_in_footer()) {
+            $this->print_observations_block();
+        }
     }
 
     function descuentos_y_recargos() {
@@ -303,19 +327,26 @@ class NewSalePdf extends fpdf
 
         if ($this->total_bruto != $this->sale->total) {
 
-            $this->y += 2;
+            /**
+             * La línea "Sub Total" solo se imprime si el perfil lo pide (show_subtotal_in_footer).
+             * Los descuentos y recargos se siguen imprimiendo siempre, sin importar el flag.
+             */
+            if ($this->show_subtotal_in_footer) {
 
-            $text = 'Sub Total: '.Numbers::price($this->total_bruto, true, $this->sale->moneda_id);
+                $this->y += 2;
 
-            $this->SetFont('Arial', 'B', 12);
-            $this->Cell(
-                200, 
-                7, 
-                $text, 
-                $this->b, 
-                1, 
-                'R'
-            );
+                $text = 'Sub Total: '.Numbers::price($this->total_bruto, true, $this->sale->moneda_id);
+
+                $this->SetFont('Arial', 'B', 12);
+                $this->Cell(
+                    200,
+                    7,
+                    $text,
+                    $this->b,
+                    1,
+                    'R'
+                );
+            }
 
             $this->discounts();
             $this->surchages();
@@ -626,7 +657,8 @@ class NewSalePdf extends fpdf
              * en cada pie para evitar superposición con filas de ítems.
              */
             $extra_reserved_height = $this->estimate_optional_footer_extras_height()
-                + $this->estimate_footer_text_height();
+                + $this->estimate_footer_text_height()
+                + $this->estimate_observations_height();
 
             return max(120, $base_limit_y - $extra_reserved_height);
         }
@@ -696,7 +728,8 @@ class NewSalePdf extends fpdf
     {
         $base_limit_y = $with_total_block ? 265 : 275;
         $extra_reserved_height = $this->estimate_optional_footer_extras_height()
-            + $this->estimate_footer_text_height();
+            + $this->estimate_footer_text_height()
+            + $this->estimate_observations_height();
 
         return max(120, $base_limit_y - $extra_reserved_height);
     }
@@ -718,21 +751,90 @@ class NewSalePdf extends fpdf
     }
 
     /**
-     * Observaciones de la venta.
+     * Indica si la venta tiene observaciones cargadas.
+     *
+     * @return bool
      */
-    private function observations()
+    private function has_observations(): bool
     {
-        if (!is_null($this->sale->observations)) {
-            $this->SetFont('Arial', '', 14);
-            $this->y += 5;
-            $this->x = 5;
-            $this->Cell(200, 7, 'Observaciones', $this->b, 1, 'L');
-            $this->y += 2;
-            $this->SetFont('Arial', '', 10);
-            $this->x = 5;
-            $this->MultiCell(200, 5, $this->sale->observations, $this->b, 'L', false);
-            $this->y += 2;
+        return !is_null($this->sale->observations) && trim((string) $this->sale->observations) !== '';
+    }
+
+    /**
+     * Estima la altura total que va a ocupar el bloque de observaciones
+     * (separación previa + título + líneas reales del texto + paddings del recuadro
+     * + separación posterior). Debe mantenerse en sincro con print_observations_block().
+     * Devuelve 0 si la venta no tiene observaciones.
+     *
+     * @return float
+     */
+    private function estimate_observations_height(): float
+    {
+        if (!$this->has_observations()) {
+            return 0;
         }
+
+        $this->SetFont('Arial', '', 9);
+        $lines = $this->NbLines(200 - 8, (string) $this->sale->observations);
+
+        /**
+         * 3 (separación previa) + 6 (título) + líneas*4.5 (cuerpo) + 4 (padding inferior del recuadro) + 3 (separación posterior).
+         */
+        return 3 + 6 + (max(1, $lines) * 4.5) + 4 + 3;
+    }
+
+    /**
+     * Imprime el bloque de observaciones con un recuadro (fondo + borde) para que
+     * se distinga visualmente del resto del comprobante. El espacio ya fue reservado
+     * por quien llama a este método (ver estimate_observations_height()), por lo que
+     * acá no se evalúa ni se dispara ningún salto de página.
+     *
+     * @return void
+     */
+    private function print_observations_block(): void
+    {
+        if (!$this->has_observations()) {
+            return;
+        }
+
+        $box_x = $this->start_x;
+        $box_width = 200;
+        $text_width = $box_width - 8;
+
+        $this->SetFont('Arial', '', 9);
+        $lines = $this->NbLines($text_width, (string) $this->sale->observations);
+        $body_height = max(1, $lines) * 4.5;
+        $box_height = 6 + $body_height + 4;
+
+        $box_y = $this->y + 3;
+
+        /**
+         * Fondo gris claro + borde sutil para que el bloque se note como una sección aparte.
+         */
+        $this->SetFillColor(247, 247, 247);
+        $this->SetDrawColor(210, 210, 210);
+        $this->Rect($box_x, $box_y, $box_width, $box_height, 'DF');
+
+        $this->x = $box_x + 4;
+        $this->y = $box_y + 3;
+        $this->SetFont('Arial', 'B', 9);
+        $this->SetTextColor(110, 110, 110);
+        $this->Cell($text_width, 4, 'OBSERVACIONES', 0, 1, 'L');
+
+        $this->x = $box_x + 4;
+        $this->y += 1;
+        $this->SetFont('Arial', '', 9);
+        $this->SetTextColor(40, 40, 40);
+        $this->MultiCell($text_width, 4.5, $this->sale->observations, 0, 'L', false);
+
+        /**
+         * Restaurar colores por defecto para no afectar los bloques que se impriman después.
+         */
+        $this->SetTextColor(0, 0, 0);
+        $this->SetDrawColor(0, 0, 0);
+        $this->SetFillColor(255, 255, 255);
+
+        $this->y = $box_y + $box_height + 3;
     }
 
     /**
@@ -1015,41 +1117,43 @@ class NewSalePdf extends fpdf
         /**
          * Si el perfil desactivó el total en el pie, no se imprime ni siquiera en la última hoja.
          * Sin embargo, si hay texto de pie configurado, se imprime igualmente al final para no perderlo.
+         * Las observaciones son independientes de este flag: se evalúan e imprimen siempre
+         * que la venta las tenga cargadas, sin importar si el total o el texto libre están ocultos.
          */
         if (! $this->should_print_total_in_footer()) {
-            if (! $this->footer_text) {
-                return;
-            }
             /**
-             * Reserva espacio y genera salto de página si no entra el bloque final.
+             * Reserva espacio (texto de pie + observaciones) y genera salto de página si no entra.
              */
             if ($this->y >= $this->get_last_page_footer_break_limit_y(false)) {
                 $this->AddPage();
             }
-            /**
-             * En perfil comercial, solo se imprime el texto libre.
-             */
-            if (! $this->is_afip_ticket) {
-                $this->y += 5;
-                $this->print_optional_footer_extras();
-                $this->print_footer_text_block();
-                return;
+
+            if ($this->footer_text) {
+                /**
+                 * En perfil comercial, solo se imprime el texto libre.
+                 */
+                if (! $this->is_afip_ticket) {
+                    $this->y += 5;
+                    $this->print_optional_footer_extras();
+                    $this->print_footer_text_block();
+                } elseif ($this->ticket_info_helper && $this->ticket_info_helper->has_afip_context()) {
+                    /**
+                     * En perfil fiscal, se mantiene QR/pie fiscal aunque se oculten totales.
+                     */
+                    AfipPdfHelper::footer(
+                        $this,
+                        $this->afip_ticket,
+                        $this->sale,
+                        $this->user,
+                        $this->afip_helper,
+                        false
+                    );
+                    $this->print_optional_footer_extras();
+                    $this->print_footer_text_block();
+                }
             }
-            /**
-             * En perfil fiscal, se mantiene QR/pie fiscal aunque se oculten totales.
-             */
-            if ($this->ticket_info_helper && $this->ticket_info_helper->has_afip_context()) {
-                AfipPdfHelper::footer(
-                    $this,
-                    $this->afip_ticket,
-                    $this->sale,
-                    $this->user,
-                    $this->afip_helper,
-                    false
-                );
-                $this->print_optional_footer_extras();
-                $this->print_footer_text_block();
-            }
+
+            $this->print_observations_block();
             return;
         }
 
@@ -1077,6 +1181,7 @@ class NewSalePdf extends fpdf
              * Texto de pie de página debajo del total en la última hoja.
              */
             $this->print_footer_text_block();
+            $this->print_observations_block();
             return;
         }
 
@@ -1100,6 +1205,8 @@ class NewSalePdf extends fpdf
             $this->print_optional_footer_extras();
             $this->print_footer_text_block();
         }
+
+        $this->print_observations_block();
     }
 }
 
