@@ -519,7 +519,7 @@ class AfipPdfHelper
             $pdf,
             'Punto de Venta: ',
             $punto_venta,
-            'Comp. Nro: ',
+            'Factura Nro: ',
             $cbte_numero,
             $right_content_x,
             $right_content_width,
