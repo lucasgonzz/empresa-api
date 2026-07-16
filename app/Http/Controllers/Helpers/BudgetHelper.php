@@ -135,6 +135,7 @@ class BudgetHelper {
 				'ganancia'	    	=> $ganancia,
 				'price_type_personalizado_id'	    		=> $article->pivot->price_type_personalizado_id,
 				'discount'			=> $article->pivot->bonus,
+				'name'				=> $article->pivot->name,
 			]);
 
 			Log::info('sale articles:');
