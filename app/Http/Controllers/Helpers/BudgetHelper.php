@@ -310,6 +310,17 @@ class BudgetHelper {
 	}
 
 	static function attachArticles($budget, $articles, $from_update = false) {
+		/**
+		 * Snapshot de los nombres personalizados por linea ANTES del detach.
+		 * Se usa para preservarlos cuando el payload entrante no trae la senal
+		 * name_vender_personalizado (ej: el form generico del modulo Presupuestos,
+		 * que re-adjunta los articulos sin ese dato). Sin esto, guardar o confirmar
+		 * desde ese form pisaria el nombre personalizado a null.
+		 */
+		$existing_names = [];
+		foreach ($budget->articles as $existing_article) {
+			$existing_names[$existing_article->id] = $existing_article->pivot->name;
+		}
 		$budget->articles()->detach();
 		foreach ($articles as $article) {
 			$id = (int)$article['id'];
@@ -347,6 +358,17 @@ class BudgetHelper {
 				$art->name 			= $article['name'];
 				$art->save();
 			}
+			/**
+			 * Si el payload trae la senal name_vender_personalizado (flujo de VENDER y de
+			 * duplicar), se respeta la edicion, incluyendo limpiar el nombre. Si NO la trae
+			 * (form generico del modulo Presupuestos, que no maneja el nombre por linea),
+			 * se preserva el nombre ya guardado para no pisarlo a null.
+			 */
+			if (array_key_exists('name_vender_personalizado', $article)) {
+				$pivot_name = SaleHelper::get_custom_name_for_pivot($article);
+			} else {
+				$pivot_name = isset($existing_names[$id]) ? $existing_names[$id] : null;
+			}
 			$budget->articles()->attach($article['id'], [
 									'amount' 	=> $amount,
 									'price' 	=> $price,
@@ -354,9 +376,9 @@ class BudgetHelper {
 									'bonus' 	=> $bonus,
 									'location' 	=> $location,
 									'price_type_personalizado_id' 	=> $price_type_personalizado_id,
-									'name' 		=> SaleHelper::get_custom_name_for_pivot($article),
+									'name' 		=> $pivot_name,
 								]);
-		}		
+		}
 	}
 
     static function getCost($item) {
