@@ -46,12 +46,12 @@ class PdfColumnProfileSeeder extends Seeder
                      */
                     [
                         'name'  => 'Precio unitario',
-                        'width' => 22,
+                        'width' => 28,
                     ],
                     'Descuento porcentaje',
                     [
                         'name'  => 'Subtotal línea',
-                        'width' => 25,
+                        'width' => 32,
                     ],
                 ],
             ],
