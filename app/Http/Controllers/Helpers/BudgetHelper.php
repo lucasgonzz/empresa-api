@@ -353,6 +353,7 @@ class BudgetHelper {
 									'bonus' 	=> $bonus,
 									'location' 	=> $location,
 									'price_type_personalizado_id' 	=> $price_type_personalizado_id,
+									'name' 		=> SaleHelper::get_custom_name_for_pivot($article),
 								]);
 		}		
 	}
