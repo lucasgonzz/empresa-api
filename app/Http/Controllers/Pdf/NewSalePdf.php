@@ -84,6 +84,14 @@ class NewSalePdf extends fpdf
             ? $this->normalize_boolean($this->pdf_column_profile->show_total_in_footer, true)
             : true;
         /**
+         * Flag para controlar visibilidad de la línea "Sub Total" en el pie del PDF.
+         * Solo tiene efecto cuando hay descuentos/recargos (total_bruto != total).
+         * Default true para mantener el comportamiento de perfiles legacy.
+         */
+        $this->show_subtotal_in_footer = $this->pdf_column_profile
+            ? $this->normalize_boolean($this->pdf_column_profile->show_subtotal_in_footer, true)
+            : true;
+        /**
          * Texto libre del pie de página; se renderiza con MultiCell debajo de los totales.
          * Sigue la misma regla de visibilidad que show_totals_on_each_page.
          */
@@ -303,19 +311,26 @@ class NewSalePdf extends fpdf
 
         if ($this->total_bruto != $this->sale->total) {
 
-            $this->y += 2;
+            /**
+             * La línea "Sub Total" solo se imprime si el perfil lo pide (show_subtotal_in_footer).
+             * Los descuentos y recargos se siguen imprimiendo siempre, sin importar el flag.
+             */
+            if ($this->show_subtotal_in_footer) {
 
-            $text = 'Sub Total: '.Numbers::price($this->total_bruto, true, $this->sale->moneda_id);
+                $this->y += 2;
 
-            $this->SetFont('Arial', 'B', 12);
-            $this->Cell(
-                200, 
-                7, 
-                $text, 
-                $this->b, 
-                1, 
-                'R'
-            );
+                $text = 'Sub Total: '.Numbers::price($this->total_bruto, true, $this->sale->moneda_id);
+
+                $this->SetFont('Arial', 'B', 12);
+                $this->Cell(
+                    200,
+                    7,
+                    $text,
+                    $this->b,
+                    1,
+                    'R'
+                );
+            }
 
             $this->discounts();
             $this->surchages();

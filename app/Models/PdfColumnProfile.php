@@ -51,6 +51,11 @@ class PdfColumnProfile extends Model
          */
         'show_total_in_footer' => 'boolean',
         /**
+         * Flag de visibilidad de la línea "Sub Total" en el pie del PDF.
+         * Solo tiene efecto cuando hay descuentos/recargos.
+         */
+        'show_subtotal_in_footer' => 'boolean',
+        /**
          * Flag para imprimir la fecha actual en lugar de la fecha del comprobante.
          */
         'use_current_date' => 'boolean',
