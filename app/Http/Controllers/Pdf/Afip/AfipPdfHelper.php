@@ -116,17 +116,112 @@ class AfipPdfHelper
 
         /**
          * Banda superior "ORIGINAL" a ancho completo (mismo tamaño que los demás renglones).
+         * Exclusiva del comprobante fiscal: el header comercial (header_comercial) no la imprime.
          */
         $pdf->SetFont('Arial', 'B', self::$header_row_font_size);
         $pdf->Cell(200, 8, 'ORIGINAL', 1, 1, 'C');
 
         /**
+         * Fecha de emisión: actual si el perfil fuerza use_current_date, si no la
+         * fecha de creación del comprobante AFIP (misma regla que antes del refactor).
+         */
+        $emission_date = (!empty($pdf->use_current_date)) ? now() : $afip_ticket->created_at;
+
+        /**
+         * Punto de venta y número de comprobante, formateados con el mismo padding de siempre.
+         */
+        $punto_venta = self::left_pad((string) $afip_ticket->punto_venta, 5);
+        $cbte_numero = self::left_pad((string) $afip_ticket->cbte_numero, 8);
+
+        /**
+         * Descriptor fiscal: reproduce exactamente los valores que antes leía
+         * print_emisor_header_block() directamente del $afip_ticket. El logo es
+         * lo único configurable ahora (con fallback a 35mm, valor histórico).
+         */
+        $descriptor = [
+            'afip_information' => $afip_information,
+            'user' => $user,
+            'letra' => (string) $afip_ticket->cbte_letra,
+            'mostrar_cod' => true,
+            'cod' => self::left_pad((string) $afip_ticket->cbte_tipo, 2),
+            'logo_size' => (!empty($pdf->logo_size_mm) ? (int) $pdf->logo_size_mm : 35),
+            'right_title' => self::get_tipo_comprobante_label($afip_ticket, $sale),
+            'right_top' => [
+                'type' => 'pair',
+                'label_a' => 'Punto de Venta: ',
+                'value_a' => $punto_venta,
+                'label_b' => 'Factura Nro: ',
+                'value_b' => $cbte_numero,
+            ],
+            'fecha' => $emission_date,
+        ];
+
+        /**
          * Bloque unificado emisor: dos recuadros laterales + letra centrada (modelo AFIP).
          */
-        self::print_emisor_header_block($pdf, $afip_ticket, $sale, $user, $afip_information, $pdf);
+        self::print_emisor_header_block($pdf, $descriptor);
 
         /**
          * Bloque de datos del receptor cuando la venta tiene cliente.
+         */
+        if (!is_null($sale->client)) {
+            $pdf->y += 2;
+            self::print_receptor_block($pdf, $sale);
+            $pdf->y += 2;
+        }
+    }
+
+    /**
+     * Dibuja el header comercial (remito no fiscal), compartiendo el mismo diseño
+     * y el mismo código de render que el header fiscal (print_emisor_header_block),
+     * pero sin banda "ORIGINAL", sin línea "COD. NN" en el recuadro de letra, y con
+     * los datos del comprobante (N° de Comprobante = sale->num, fecha de creación de
+     * la venta) en lugar de los datos exclusivos de AFIP (Punto de Venta, Factura Nro).
+     *
+     * @param mixed $pdf Instancia FPDF (NewSalePdf).
+     * @param mixed $sale Venta asociada.
+     * @param mixed $user Usuario emisor (dueño del negocio).
+     * @return void
+     */
+    public static function header_comercial($pdf, $sale, $user): void
+    {
+        /**
+         * Posición inicial, igual que el header fiscal.
+         */
+        $pdf->x = 5;
+        $pdf->y = 5;
+
+        /**
+         * Fecha de emisión: actual si el perfil fuerza use_current_date, si no la
+         * fecha de creación de la venta (no hay ticket AFIP en este camino).
+         */
+        $fecha = (!empty($pdf->use_current_date)) ? now() : $sale->created_at;
+
+        /**
+         * Descriptor comercial: mismo layout que el fiscal, pero con letra 'X' sin
+         * código, sin datos exclusivos de AFIP y con el número de venta como "N° de Comprobante".
+         * afip_information se toma del dueño (user), no del ticket (acá no hay ticket).
+         */
+        $descriptor = [
+            'afip_information' => $user->afip_information,
+            'user' => $user,
+            'letra' => 'X',
+            'mostrar_cod' => false,
+            'cod' => '',
+            'logo_size' => (!empty($pdf->logo_size_mm) ? (int) $pdf->logo_size_mm : 35),
+            'right_title' => 'Comprobante',
+            'right_top' => [
+                'type' => 'line',
+                'label' => 'N° Comprobante: ',
+                'value' => (string) $sale->num,
+            ],
+            'fecha' => $fecha,
+        ];
+
+        self::print_emisor_header_block($pdf, $descriptor);
+
+        /**
+         * Bloque de datos del receptor cuando la venta tiene cliente (igual que el fiscal).
          */
         if (!is_null($sale->client)) {
             $pdf->y += 2;
@@ -154,13 +249,16 @@ class AfipPdfHelper
     }
 
     /**
-     * Geometría del header fiscal: paneles laterales y cuadro de letra centrado.
+     * Geometría del header (fiscal o comercial): paneles laterales y cuadro de letra centrado.
+     * Recibe el ancho del cuadro de letra y el tamaño del logo ya resueltos por el caller,
+     * para poder compartir esta geometría entre el header fiscal y el comercial.
      *
-     * @param mixed $pdf Instancia FPDF (para medir anchos de texto).
-     * @param mixed $afip_ticket Ticket AFIP (letra y código del comprobante).
+     * @param mixed $pdf Instancia FPDF (no se usa para medir; se mantiene por consistencia de firma).
+     * @param float $letter_width Ancho ya calculado del cuadro central de letra (ver get_letter_box_width).
+     * @param int $logo_size Tamaño del logo en mm (resuelto por el caller: perfil -> dueño -> 35).
      * @return array<string, float|int>
      */
-    protected static function get_header_layout($pdf, $afip_ticket): array
+    protected static function get_header_layout($pdf, $letter_width, $logo_size): array
     {
         /**
          * Márgenes y ancho útil del comprobante (coherente con el resto del PDF).
@@ -174,7 +272,6 @@ class AfipPdfHelper
          * El ancho se ajusta al contenido (letra + código) con padding mínimo.
          */
         $letter_height = 16;
-        $letter_width = self::get_letter_box_width($pdf, $afip_ticket);
         $letter_x = $page_left + ($page_width - $letter_width) / 2;
 
         /**
@@ -203,18 +300,22 @@ class AfipPdfHelper
             'right_panel_x' => $right_panel_x,
             'right_panel_width' => $right_panel_width,
             'inner_pad' => 2,
-            'logo_size' => 35,
+            'logo_size' => $logo_size,
         ];
     }
 
     /**
-     * Calcula el ancho mínimo del cuadro central según la letra y el código AFIP impresos.
+     * Calcula el ancho mínimo del cuadro central según la letra (y, si corresponde, el
+     * código AFIP) a imprimir. Cuando $mostrar_cod es false (header comercial) el ancho
+     * se calcula solo con la letra, dando un recuadro más chico que el fiscal.
      *
      * @param mixed $pdf Instancia FPDF.
-     * @param mixed $afip_ticket Ticket AFIP.
+     * @param string $letra Letra del comprobante ('A', 'B', 'X', etc).
+     * @param string $cod Código de comprobante ya formateado (ej. '01'), ignorado si $mostrar_cod es false.
+     * @param bool $mostrar_cod Si true, el ancho también considera el texto "COD. NN".
      * @return float Ancho del cuadro en mm.
      */
-    protected static function get_letter_box_width($pdf, $afip_ticket): float
+    protected static function get_letter_box_width($pdf, $letra, $cod, $mostrar_cod): float
     {
         /**
          * Tipografías del cuadro central (deben coincidir con print_header_letter_zone).
@@ -228,16 +329,19 @@ class AfipPdfHelper
 
         self::register_cbte_letter_font($pdf);
         $pdf->SetFont(self::$cbte_letter_font_family, 'B', $letter_font_size);
-        $letter_text_width = $pdf->GetStringWidth((string) $afip_ticket->cbte_letra);
-
-        $pdf->SetFont('Arial', '', $cod_font_size);
-        $codigo = self::left_pad((string) $afip_ticket->cbte_tipo, 2);
-        $cod_text_width = $pdf->GetStringWidth('COD. '.$codigo);
+        $letter_text_width = $pdf->GetStringWidth((string) $letra);
 
         /**
-         * Ancho útil = el mayor entre letra y código, más padding simétrico.
+         * Ancho útil = el mayor entre letra y código (solo si se muestra el código),
+         * más padding simétrico. Sin código, el cuadro se ajusta solo a la letra.
          */
-        $content_width = max($letter_text_width, $cod_text_width);
+        $content_width = $letter_text_width;
+
+        if ($mostrar_cod) {
+            $pdf->SetFont('Arial', '', $cod_font_size);
+            $cod_text_width = $pdf->GetStringWidth('COD. '.$cod);
+            $content_width = max($letter_text_width, $cod_text_width);
+        }
 
         return $content_width + ($horizontal_pad * 2);
     }
@@ -383,21 +487,48 @@ class AfipPdfHelper
 
     /**
      * Bloque unificado del emisor: logo, datos fiscales, letra centrada y datos del comprobante.
+     * Compartido entre el header fiscal (factura ARCA) y el header comercial (remito no fiscal):
+     * el layout es idéntico en ambos, la única diferencia vive en los valores del $descriptor.
      *
      * @param mixed $pdf Instancia FPDF.
-     * @param mixed $afip_ticket Ticket AFIP.
-     * @param mixed $sale Venta asociada.
-     * @param mixed $user Usuario emisor.
-     * @param mixed|null $afip_information Datos fiscales del emisor.
-     * @param mixed $pdf_instance Para leer use_current_date del PDF.
+     * @param array<string, mixed> $descriptor {
+     *     @var mixed|null $afip_information Datos fiscales del emisor (ticket en fiscal, dueño en comercial).
+     *     @var mixed $user Usuario emisor (para company_name y logo).
+     *     @var string $letra Letra del comprobante a mostrar en el cuadro central.
+     *     @var bool $mostrar_cod Si true, imprime la línea "COD. NN" bajo la letra (exclusivo fiscal).
+     *     @var string $cod Código de comprobante ya formateado (ignorado si mostrar_cod es false).
+     *     @var int $logo_size Tamaño del logo en mm.
+     *     @var string $right_title Título del cuadrante derecho ("FACTURA A" en fiscal, "Comprobante" en comercial).
+     *     @var array<string, mixed> $right_top Renglón(es) bajo el título derecho, antes de la fecha
+     *         (tipo 'pair' para Punto de Venta/Factura Nro en fiscal, tipo 'line' para N° de Comprobante en comercial).
+     *     @var \DateTimeInterface|string $fecha Fecha de emisión ya resuelta por el caller.
+     * }
      * @return void
      */
-    protected static function print_emisor_header_block($pdf, $afip_ticket, $sale, $user, $afip_information, $pdf_instance): void
+    protected static function print_emisor_header_block($pdf, $descriptor): void
     {
-        $layout = self::get_header_layout($pdf, $afip_ticket);
+        /**
+         * Desestructura el descriptor: mantiene el cuerpo del método igual de legible
+         * que la versión anterior (que leía directamente del afip_ticket).
+         */
+        $afip_information = $descriptor['afip_information'];
+        $user = $descriptor['user'];
+        $letra = $descriptor['letra'];
+        $mostrar_cod = $descriptor['mostrar_cod'];
+        $cod = $descriptor['cod'];
+        $logo_size = $descriptor['logo_size'];
+        $right_title = $descriptor['right_title'];
+        $right_top = $descriptor['right_top'];
+        $fecha = $descriptor['fecha'];
+
+        /**
+         * Ancho del cuadro central calculado a partir de la letra (y código si aplica),
+         * y layout general armado a partir de ese ancho y el tamaño de logo del descriptor.
+         */
+        $letter_width = self::get_letter_box_width($pdf, $letra, $cod, $mostrar_cod);
+        $layout = self::get_header_layout($pdf, $letter_width, $logo_size);
         $block_start_y = $pdf->y;
         $inner_pad = $layout['inner_pad'];
-        $logo_size = $layout['logo_size'];
 
         $right_content_x = $layout['right_panel_x'] + $inner_pad;
         $right_content_width = $layout['right_panel_width'] - ($inner_pad * 2);
@@ -493,43 +624,27 @@ class AfipPdfHelper
         $left_content_bottom_y = max($name_end_y, $fields_end_y);
 
         /**
-         * --- Cuadro central: letra y código del comprobante ---
+         * --- Cuadro central: letra y (si corresponde) código del comprobante ---
          */
-        self::print_header_letter_zone($pdf, $afip_ticket, $block_start_y, $layout);
+        self::print_header_letter_zone($pdf, $letra, $cod, $mostrar_cod, $block_start_y, $layout);
 
         /**
-         * --- Panel derecho: tipo de comprobante, PV, fecha y datos fiscales del emisor ---
+         * --- Panel derecho: título, renglón(es) superiores, fecha y datos fiscales del emisor ---
          */
-        $emission_date = (!empty($pdf_instance->use_current_date))
-            ? now()
-            : $afip_ticket->created_at;
-
         $pdf->y = $block_start_y + $inner_pad;
         $pdf->x = $right_content_x;
         $pdf->SetFont('Arial', 'B', self::$header_title_font_size);
-        $pdf->Cell($right_content_width, self::$header_title_line_height, self::get_tipo_comprobante_label($afip_ticket, $sale), 0, 1, 'L');
-
-        $punto_venta = self::left_pad((string) $afip_ticket->punto_venta, 5);
-        $cbte_numero = self::left_pad((string) $afip_ticket->cbte_numero, 8);
+        $pdf->Cell($right_content_width, self::$header_title_line_height, $right_title, 0, 1, 'L');
 
         /**
-         * Punto de venta y número de comprobante en el mismo renglón.
+         * Renglón(es) superiores del panel derecho: Punto de Venta/Factura Nro en fiscal
+         * (tipo 'pair'), N° de Comprobante en comercial (tipo 'line').
          */
-        self::print_label_value_pair_line(
-            $pdf,
-            'Punto de Venta: ',
-            $punto_venta,
-            'Factura Nro: ',
-            $cbte_numero,
-            $right_content_x,
-            $right_content_width,
-            self::$header_row_font_size,
-            self::$header_row_line_height
-        );
+        self::print_header_right_top_rows($pdf, $right_top, $right_content_x, $right_content_width);
 
-        $fecha_texto = $emission_date instanceof \DateTimeInterface
-            ? $emission_date->format('d/m/Y')
-            : date('d/m/Y', strtotime((string) $emission_date));
+        $fecha_texto = $fecha instanceof \DateTimeInterface
+            ? $fecha->format('d/m/Y')
+            : date('d/m/Y', strtotime((string) $fecha));
         self::print_label_value_line(
             $pdf,
             'Fecha de Emisión: ',
@@ -680,42 +795,103 @@ class AfipPdfHelper
     }
 
     /**
-     * Zona central del header: letra y código de comprobante (sin borde; se dibuja al final).
+     * Zona central del header: letra y, si corresponde, código de comprobante
+     * (sin borde; se dibuja al final). Cuando $mostrar_cod es false (header comercial)
+     * no imprime la línea "COD. NN" y centra la letra en el alto completo del recuadro.
      *
      * @param mixed $pdf Instancia FPDF.
-     * @param mixed $afip_ticket Ticket AFIP.
+     * @param string $letra Letra del comprobante a imprimir en el cuadro central.
+     * @param string $cod Código de comprobante ya formateado (ignorado si mostrar_cod es false).
+     * @param bool $mostrar_cod Si true, imprime la línea "COD. NN" bajo la letra (exclusivo fiscal).
      * @param float $start_y Posición Y inicial del bloque.
      * @param array<string, float|int> $layout Geometría del header.
      * @return void
      */
-    protected static function print_header_letter_zone($pdf, $afip_ticket, $start_y, $layout): void
+    protected static function print_header_letter_zone($pdf, $letra, $cod, $mostrar_cod, $start_y, $layout): void
     {
         $rect_x = $layout['letter_x'];
         $rect_w = $layout['letter_width'];
         $rect_h = $layout['letter_height'];
 
-        /**
-         * Letra grande sin padding superior, pegada a la línea de COD para máxima compacidad.
-         * letter_cell_h + cod_cell_h = letter_height exacto.
-         */
-        $letter_cell_h = 11;
-        $cod_cell_h = 5;
-
-        $pdf->y = $start_y;
-        $pdf->x = $rect_x;
         self::register_cbte_letter_font($pdf);
-        $pdf->SetFont(self::$cbte_letter_font_family, 'B', self::$cbte_letter_font_size);
-        $pdf->Cell($rect_w, $letter_cell_h, (string) $afip_ticket->cbte_letra, 0, 1, 'C');
 
-        $pdf->x = $rect_x;
-        $pdf->SetFont('Arial', '', 7);
-        $codigo = self::left_pad((string) $afip_ticket->cbte_tipo, 2);
-        $pdf->Cell($rect_w, $cod_cell_h, 'COD. '.$codigo, 0, 1, 'C');
+        if ($mostrar_cod) {
+            /**
+             * Letra grande sin padding superior, pegada a la línea de COD para máxima compacidad.
+             * letter_cell_h + cod_cell_h = letter_height exacto.
+             */
+            $letter_cell_h = 11;
+            $cod_cell_h = 5;
+
+            $pdf->y = $start_y;
+            $pdf->x = $rect_x;
+            $pdf->SetFont(self::$cbte_letter_font_family, 'B', self::$cbte_letter_font_size);
+            $pdf->Cell($rect_w, $letter_cell_h, (string) $letra, 0, 1, 'C');
+
+            $pdf->x = $rect_x;
+            $pdf->SetFont('Arial', '', 7);
+            $pdf->Cell($rect_w, $cod_cell_h, 'COD. '.$cod, 0, 1, 'C');
+        } else {
+            /**
+             * Sin código: la letra ocupa y se centra en todo el alto del recuadro (comercial).
+             */
+            $pdf->y = $start_y;
+            $pdf->x = $rect_x;
+            $pdf->SetFont(self::$cbte_letter_font_family, 'B', self::$cbte_letter_font_size);
+            $pdf->Cell($rect_w, $rect_h, (string) $letra, 0, 1, 'C');
+        }
 
         /**
          * Restablece Y al fondo del cuadro para no desalinear otros paneles.
          */
         $pdf->y = $start_y + $rect_h;
+    }
+
+    /**
+     * Imprime el/los renglón(es) superiores del panel derecho, antes de la fecha de emisión.
+     * Soporta dos formatos: 'pair' (dos pares label/valor en el mismo renglón, usado por el
+     * fiscal para Punto de Venta/Factura Nro) y 'line' (un solo renglón simple, usado por el
+     * comercial para N° de Comprobante).
+     *
+     * @param mixed $pdf Instancia FPDF.
+     * @param array<string, mixed> $right_top Descriptor del renglón (ver print_emisor_header_block).
+     * @param float $x Posición X inicial.
+     * @param float $width Ancho total disponible.
+     * @return void
+     */
+    protected static function print_header_right_top_rows($pdf, $right_top, $x, $width): void
+    {
+        if (empty($right_top) || !isset($right_top['type'])) {
+            return;
+        }
+
+        if ($right_top['type'] === 'pair') {
+            self::print_label_value_pair_line(
+                $pdf,
+                $right_top['label_a'],
+                $right_top['value_a'],
+                $right_top['label_b'],
+                $right_top['value_b'],
+                $x,
+                $width,
+                self::$header_row_font_size,
+                self::$header_row_line_height
+            );
+
+            return;
+        }
+
+        if ($right_top['type'] === 'line') {
+            self::print_label_value_line(
+                $pdf,
+                $right_top['label'],
+                $right_top['value'],
+                $x,
+                $width,
+                self::$header_row_font_size,
+                self::$header_row_line_height
+            );
+        }
     }
 
     /**

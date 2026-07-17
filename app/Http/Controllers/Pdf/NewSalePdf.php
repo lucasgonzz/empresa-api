@@ -106,6 +106,21 @@ class NewSalePdf extends fpdf
             : false;
 
         /**
+         * Tamaño del logo en mm. Prioridad: perfil (logo_size_mm) -> global del dueño (pdf_image_size) -> 35.
+         * 35 reproduce el valor histórico del header fiscal cuando no hay nada configurado.
+         */
+        $this->logo_size_mm = 35;
+        if ($this->pdf_column_profile
+            && $this->pdf_column_profile->logo_size_mm !== null
+            && $this->pdf_column_profile->logo_size_mm !== ''
+            && (int) $this->pdf_column_profile->logo_size_mm > 0
+        ) {
+            $this->logo_size_mm = (int) $this->pdf_column_profile->logo_size_mm;
+        } elseif ($this->user && $this->user->pdf_image_size) {
+            $this->logo_size_mm = (int) $this->user->pdf_image_size;
+        }
+
+        /**
          * Comprobante AFIP solicitado para impresión fiscal.
          */
         $this->afip_ticket = null;
@@ -189,55 +204,69 @@ class NewSalePdf extends fpdf
             return;
         }
 
-        $data = [
-            'num' => $this->sale->num,
-            'title' => 'X',
-            // 'fields' => $this->getFields(),
-            'address' => $this->get_address(),
-            'user' => $this->user,
-            'table_margen' => 2,
-        ];
+        /**
+         * Perfil no fiscal (remito): header unificado con el mismo diseño que la
+         * factura fiscal (recuadro de letra dinámico, título del negocio 18pt,
+         * Razón Social/Domicilio/Condición IVA a la izquierda, N° de Comprobante =
+         * sale->num y fecha de creación de la venta a la derecha), sin banda
+         * "ORIGINAL" ni datos exclusivos de AFIP.
+         */
+        AfipPdfHelper::header_comercial($this, $this->sale, $this->user);
 
         /**
-         * Fecha a imprimir en el header: fecha actual si use_current_date está activo,
-         * o la fecha del comprobante (Sale o AfipTicket) en caso contrario.
+         * Vendedor: se preserva debajo del header unificado cuando la extensión
+         * 'vendedor_en_sale_pdf' está activa y la venta tiene empleado asociado.
+         * El remito ya mostraba esta línea antes de unificar el header con AFIP.
          */
-        $print_date = $this->use_current_date ? now() : null;
-
-        if (!$this->is_afip_ticket) {
-            $data['model_info']     = $this->sale->client;
-            $data['model_props']    = $this->getModelProps();
-            $data['fields']         = $this->getFields();
-            $data['titulo']         = $this->user->company_name;
-            $data['date']           = $print_date ?? $this->sale->created_at;
-        }
-
-        
         if (
             UserHelper::hasExtencion('vendedor_en_sale_pdf', $this->user)
             && $this->sale->employee
         ) {
-            
-            $data['extra_info'] = [
-                'Vendedor'  => $this->sale->employee->name
-            ];
-        }
-
-        if (
-            !$this->is_afip_ticket
-            && $this->show_total_in_footer
-            && !is_null($this->sale->client) 
-            && $this->sale->save_current_acount 
-            && !is_null($this->sale->current_acount)
-        ) {
-            $data = array_merge($data, [
-                'current_acount'    => $this->sale->current_acount,
-                'client_id'         => $this->sale->client_id,
-                'compra_actual'     => $this->sale->total,
+            PdfHelper::extra_info($this, [
+                'extra_info' => [
+                    'Vendedor' => $this->sale->employee->name,
+                ],
             ]);
         }
-        
-        PdfHelper::header($this, $data);
+
+        /**
+         * Descripción del cliente ("Observaciones"): se dibuja debajo del header
+         * unificado. Se pasa $this->y como $start_y para que la caja arranque donde
+         * terminó el header (client_description ahora cierra en $start_y + 20,
+         * o donde termine el texto si es más largo, en vez de un 52 hardcodeado).
+         */
+        if (
+            !is_null($this->sale->client)
+            && !is_null($this->sale->client->description)
+        ) {
+            PdfHelper::client_description($this, $this->sale->client, $this->y);
+        }
+
+        /**
+         * Cuenta corriente: Saldo anterior / Compra actual / Saldo, cuando la venta
+         * tiene cliente, guarda cuenta corriente y el perfil muestra el total en el pie.
+         */
+        if (
+            $this->show_total_in_footer
+            && !is_null($this->sale->client)
+            && $this->sale->save_current_acount
+            && !is_null($this->sale->current_acount)
+        ) {
+            PdfHelper::currentAcountInfo(
+                $this,
+                $this->sale->current_acount,
+                $this->sale->client_id,
+                $this->sale->total,
+                $this->y,
+                $this->user
+            );
+        }
+
+        /**
+         * Header de columnas de la tabla de ítems, igual al que usa el path fiscal,
+         * para que la tabla quede consistente entre ambos tipos de comprobante.
+         */
+        AfipPdfHelper::table_header($this, $this->getFields());
     }
 
     function get_titulo() {
