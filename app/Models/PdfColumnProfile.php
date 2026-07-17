@@ -61,6 +61,10 @@ class PdfColumnProfile extends Model
         'use_current_date' => 'boolean',
         'margin_mm' => 'integer',
         /**
+         * Tamaño del logo en mm por perfil. Null = usar el tamaño global del dueño (users.pdf_image_size).
+         */
+        'logo_size_mm' => 'integer',
+        /**
          * Tamaño de letra uniforme (pt) para encabezados de columnas en PDF tabular de artículos.
          */
         'table_header_font_size' => 'integer',
