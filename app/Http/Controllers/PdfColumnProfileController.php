@@ -115,6 +115,12 @@ class PdfColumnProfileController extends Controller
             'table_header_font_size' => $this->normalize_table_header_font_size(
                 $request->input('table_header_font_size')
             ),
+            /**
+             * Diseño del header por cuadrante (JSON). Null = el render usa el default por código
+             * según PdfColumnProfile::default_header_layout(). Normalizado defensivamente por si
+             * llega como string JSON en vez de array.
+             */
+            'header_layout' => $this->normalize_header_layout($request->input('header_layout')),
         ]);
 
         GeneralHelper::attachModels(
@@ -192,6 +198,7 @@ class PdfColumnProfileController extends Controller
             'use_current_date',
             'header_image_url',
             'table_header_font_size',
+            'header_layout',
         ]);
 
         /**
@@ -213,6 +220,14 @@ class PdfColumnProfileController extends Controller
             if ($fillable['discount_display_mode'] !== 'simple') {
                 $fillable['discount_display_mode'] = 'descriptivo';
             }
+        }
+
+        /**
+         * header_layout puede venir null (perfil sin diseño custom) o, defensivamente,
+         * como string JSON en vez de array (el cast 'array' del modelo espera un array/null).
+         */
+        if (array_key_exists('header_layout', $fillable)) {
+            $fillable['header_layout'] = $this->normalize_header_layout($fillable['header_layout']);
         }
 
         $model->update($fillable);
@@ -687,5 +702,29 @@ class PdfColumnProfileController extends Controller
         }
 
         return null;
+    }
+
+    /**
+     * Normaliza el JSON de diseño del header por cuadrante antes de persistirlo.
+     * No valida estrictamente la estructura (eso lo consumen los renders de forma defensiva);
+     * solo garantiza que, si llegó como string JSON, se decodifique a array antes de guardar
+     * (con el cast 'array' del modelo y el axios del SPA debería llegar ya como objeto/array).
+     *
+     * @param  mixed  $value
+     * @return array|null
+     */
+    protected function normalize_header_layout($value)
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+
+            return is_array($decoded) ? $decoded : null;
+        }
+
+        return is_array($value) ? $value : null;
     }
 }

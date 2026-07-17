@@ -68,6 +68,38 @@ class PdfColumnProfile extends Model
          * Tamaño de letra uniforme (pt) para encabezados de columnas en PDF tabular de artículos.
          */
         'table_header_font_size' => 'integer',
+        /**
+         * Diseño del header por cuadrante (qué propiedades se muestran y en qué orden).
+         * Null = el render usa el default por código (ver default_header_layout()).
+         * El tamaño del logo NO va acá: sigue en logo_size_mm.
+         *
+         * Esquema:
+         * {
+         *   "emisor": {
+         *     "izquierda": ["razon_social", "domicilio_comercial", "condicion_iva"],
+         *     "derecha": ["numero_comprobante", "fecha_emision", "cuit", "ingresos_brutos", "inicio_actividades"]
+         *   },
+         *   "receptor": {
+         *     "izquierda": ["cliente_nombre", "cliente_telefono", "cliente_localidad", "cliente_direccion", "cliente_cuit"]
+         *   }
+         * }
+         *
+         * Catálogo de claves válidas (fuente de verdad compartida con el render y el diseñador visual):
+         * - Emisor (ubicables en izquierda/derecha): razon_social, domicilio_comercial, condicion_iva,
+         *   punto_venta (solo perfiles fiscales), cuit, ingresos_brutos, inicio_actividades,
+         *   numero_comprobante, fecha_emision, web, telefono, email.
+         * - Estructural fijo (NO va en el JSON, no se puede mover): nombre del negocio (título 18pt),
+         *   recuadro de la letra, logo.
+         * - Receptor izquierda (remito negro, ubicables/ordenables): cliente_nombre, cliente_telefono,
+         *   cliente_localidad, cliente_direccion, cliente_cuit, cliente_condicion_iva,
+         *   vendedor (nombre del seller de la venta), empleado (nombre del employee que cargó la venta).
+         * - Receptor derecha (remito negro): reservado a cuenta corriente, fijo, no configurable.
+         * - Perfiles fiscales (AFIP): el bloque receptor es fijo por requisito fiscal (no configurable).
+         *   En el emisor, los campos fiscales obligatorios (razon_social, domicilio_comercial,
+         *   condicion_iva, punto_venta, cuit, ingresos_brutos, inicio_actividades, numero_comprobante,
+         *   fecha_emision) no se pueden ocultar; solo se pueden sumar/ordenar web/telefono/email.
+         */
+        'header_layout' => 'array',
     ];
 
     /**
@@ -86,6 +118,51 @@ class PdfColumnProfile extends Model
     public function sheet_type()
     {
         return $this->belongsTo(SheetType::class);
+    }
+
+    /**
+     * Layout de header por defecto (usado por el render cuando header_layout es null).
+     * Centraliza el default para que el generador de PDF (prompt 439) y el diseñador visual
+     * (prompt 441) partan siempre de la misma estructura.
+     *
+     * @param  bool  $is_afip  Si el perfil es fiscal (ARCA): agrega 'punto_venta' en emisor.derecha.
+     * @return array<string, array<string, array<int, string>>>
+     */
+    public static function default_header_layout($is_afip)
+    {
+        // Emisor: identidad (razón social, domicilio, condición IVA) a la izquierda;
+        // datos del comprobante y fiscales a la derecha.
+        $emisor_derecha = [
+            'numero_comprobante',
+            'fecha_emision',
+            'cuit',
+            'ingresos_brutos',
+            'inicio_actividades',
+        ];
+
+        // En perfiles fiscales (ARCA) el punto de venta es un dato obligatorio del emisor:
+        // se agrega al final del bloque derecho del emisor.
+        if ($is_afip) {
+            $emisor_derecha[] = 'punto_venta';
+        }
+
+        return [
+            'emisor' => [
+                'izquierda' => ['razon_social', 'domicilio_comercial', 'condicion_iva'],
+                'derecha' => $emisor_derecha,
+            ],
+            // Receptor: solo aplica al remito negro (izquierda configurable);
+            // la derecha queda reservada a cuenta corriente (fija, no configurable acá).
+            'receptor' => [
+                'izquierda' => [
+                    'cliente_nombre',
+                    'cliente_telefono',
+                    'cliente_localidad',
+                    'cliente_direccion',
+                    'cliente_cuit',
+                ],
+            ],
+        ];
     }
 }
 
