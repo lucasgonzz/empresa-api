@@ -26,6 +26,9 @@ class AddressController extends Controller
             'province'              => $request->province,
             'default_address'       => $request->default_address,
             'user_id'               => $this->userId(),
+            // afip_information por defecto de la sucursal, usado para resolver
+            // la identidad fiscal en ventas en negro (remitos sin facturacion).
+            'default_afip_information_id' => $request->default_afip_information_id,
         ]);
         $this->sendAddModelNotification('Address', $model->id);
         return response()->json(['model' => $this->fullModel('Address', $model->id)], 201);
@@ -44,6 +47,9 @@ class AddressController extends Controller
         $model->city                  = $request->city;
         $model->province              = $request->province;
         $model->default_address       = $request->default_address;
+        // afip_information por defecto de la sucursal, usado para resolver
+        // la identidad fiscal en ventas en negro (remitos sin facturacion).
+        $model->default_afip_information_id = $request->default_afip_information_id;
         $model->save();
         $this->sendAddModelNotification('Address', $model->id);
         return response()->json(['model' => $this->fullModel('Address', $model->id)], 200);
