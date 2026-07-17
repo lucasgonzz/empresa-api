@@ -92,6 +92,14 @@ class NewSalePdf extends fpdf
             ? $this->normalize_boolean($this->pdf_column_profile->show_subtotal_in_footer, true)
             : true;
         /**
+         * Modo de listado de descuentos/recargos en el pie: 'descriptivo' (default) o 'simple'.
+         * 'descriptivo' imprime monto + (%/nombre) + nuevo total acumulado (comportamiento clásico).
+         * 'simple' imprime solo "% Nombre", sin montos ni totales parciales.
+         */
+        $this->discount_display_mode = ($this->pdf_column_profile && $this->pdf_column_profile->discount_display_mode === 'simple')
+            ? 'simple'
+            : 'descriptivo';
+        /**
          * Texto libre del pie de página; se renderiza con MultiCell debajo de los totales.
          * Sigue la misma regla de visibilidad que show_totals_on_each_page.
          */
@@ -527,6 +535,320 @@ class NewSalePdf extends fpdf
     }
 
     /**
+     * Cuenta cuántos renglones va a producir build_discount_rows() sin mutar totales.
+     * Se usa únicamente para estimar la altura de la caja de totales antes de dibujarla
+     * (estimate_totals_box_height()), evitando así llamar a build_discount_rows() dos veces
+     * (lo que aplicaría los descuentos por duplicado sobre total_articles/total_combos/etc.).
+     *
+     * @return int
+     */
+    private function count_discount_rows(): int
+    {
+        if (count($this->sale->discounts) < 1) {
+            return 0;
+        }
+
+        $count = count($this->sale->discounts);
+
+        if (count($this->sale->services) > 0) {
+            $count++;
+        }
+
+        return $count;
+    }
+
+    /**
+     * Cuenta cuántos renglones va a producir build_surchage_rows() sin mutar totales.
+     * Mismo motivo que count_discount_rows(): solo para estimar altura sin efectos secundarios.
+     *
+     * @return int
+     */
+    private function count_surchage_rows(): int
+    {
+        if (count($this->sale->surchages) < 1 || $this->sale->aplicar_recargos_directo_a_items) {
+            return 0;
+        }
+
+        $count = count($this->sale->surchages);
+
+        if (count($this->sale->services) > 0) {
+            $count++;
+        }
+
+        return $count;
+    }
+
+    /**
+     * Arma los renglones de texto del bloque de descuentos para la caja de totales del
+     * path no fiscal de última página, mutando los totales corrientes (total_articles,
+     * total_combos, total_promocion_vinotecas, total_services y total_bruto) exactamente
+     * igual que discounts(), pero sin imprimir nada: cada renglón se acumula en un array
+     * para poder medir la altura de la caja antes de dibujarla (Rect) y luego escribir
+     * el texto encima. El formato de cada renglón depende de discount_display_mode:
+     * 'descriptivo' (monto + %/nombre + nuevo total) o 'simple' (solo %/nombre).
+     *
+     * @return array<int, string>
+     */
+    private function build_discount_rows(): array
+    {
+        $rows = [];
+
+        if (count($this->sale->discounts) >= 1) {
+
+            foreach ($this->sale->discounts as $discount) {
+
+                $total_descuento = 0;
+
+                $monto_descuento = $this->total_articles * floatval($discount->pivot->percentage) / 100;
+                $this->total_articles -= $monto_descuento;
+                $total_descuento += $monto_descuento;
+
+                $monto_descuento = $this->total_combos * floatval($discount->pivot->percentage) / 100;
+                $this->total_combos -= $monto_descuento;
+                $total_descuento += $monto_descuento;
+
+                $monto_descuento = $this->total_promocion_vinotecas * floatval($discount->pivot->percentage) / 100;
+                $this->total_promocion_vinotecas -= $monto_descuento;
+                $total_descuento += $monto_descuento;
+
+                if ($this->sale->discounts_in_services) {
+
+                    $monto_descuento = $this->total_services * floatval($discount->pivot->percentage) / 100;
+                    $this->total_services -= $monto_descuento;
+                    $total_descuento += $monto_descuento;
+                }
+
+                $this->total_bruto -= $total_descuento;
+
+                if ($this->discount_display_mode === 'simple') {
+                    /**
+                     * Modo simple: solo porcentaje + nombre del descuento, sin monto ni total parcial.
+                     */
+                    $rows[] = $discount->pivot->percentage.'% '.$discount->name;
+                } else {
+                    /**
+                     * Modo descriptivo (default): mismo texto histórico.
+                     */
+                    $rows[] = 'Menos '.Numbers::price($total_descuento, true, $this->sale->moneda_id).' ('.$discount->pivot->percentage.'% '.$discount->name.') = '.Numbers::price($this->total_bruto, true);
+                }
+            }
+
+            if (count($this->sale->services) > 0) {
+                $rows[] = $this->sale->discounts_in_services
+                    ? 'Se aplican descuentos a los servicios'
+                    : 'No se aplican descuentos a los servicios';
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Arma los renglones de texto del bloque de recargos para la caja de totales del
+     * path no fiscal de última página. Misma lógica y motivo que build_discount_rows():
+     * muta los totales corrientes igual que surchages() pero devuelve un array de
+     * renglones en vez de imprimir con Cell().
+     *
+     * @return array<int, string>
+     */
+    private function build_surchage_rows(): array
+    {
+        $rows = [];
+
+        if (
+            count($this->sale->surchages) >= 1
+            && !$this->sale->aplicar_recargos_directo_a_items
+        ) {
+
+            foreach ($this->sale->surchages as $surchage) {
+
+                $total_recargo = 0;
+
+                $monto_recargo = $this->total_articles * floatval($surchage->pivot->percentage) / 100;
+                $this->total_articles += $monto_recargo;
+                $total_recargo += $monto_recargo;
+
+                $monto_recargo = $this->total_combos * floatval($surchage->pivot->percentage) / 100;
+                $this->total_combos += $monto_recargo;
+                $total_recargo += $monto_recargo;
+
+                $monto_recargo = $this->total_promocion_vinotecas * floatval($surchage->pivot->percentage) / 100;
+                $this->total_promocion_vinotecas += $monto_recargo;
+                $total_recargo += $monto_recargo;
+
+                if ($this->sale->surchages_in_services) {
+
+                    $monto_recargo = $this->total_services * floatval($surchage->pivot->percentage) / 100;
+                    $this->total_services += $monto_recargo;
+                    $total_recargo += $monto_recargo;
+                }
+
+                $this->total_bruto += $total_recargo;
+
+                if ($this->discount_display_mode === 'simple') {
+                    /**
+                     * Modo simple: solo porcentaje + nombre del recargo, sin monto ni total parcial.
+                     */
+                    $rows[] = $surchage->pivot->percentage.'% '.$surchage->name;
+                } else {
+                    /**
+                     * Modo descriptivo (default): mismo texto histórico.
+                     */
+                    $rows[] = 'Mas '.Numbers::price($total_recargo, true, $this->sale->moneda_id).' ('.$surchage->pivot->percentage.'% '.$surchage->name.') = '.Numbers::price($this->total_bruto, true);
+                }
+            }
+
+            if (count($this->sale->services) > 0) {
+                $rows[] = $this->sale->surchages_in_services
+                    ? 'Se aplican recargos a los servicios'
+                    : 'No se aplican recargos a los servicios';
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Estima la altura total que va a ocupar print_totals_box() (path no fiscal de
+     * última página): cantidad de renglones (Sub Total + descuentos/recargos + Total)
+     * por el alto de fila uniforme, más el padding superior/inferior de la caja y la
+     * separación previa/posterior. No muta totales: usa count_discount_rows()/
+     * count_surchage_rows() en vez de build_discount_rows()/build_surchage_rows() para
+     * no aplicar descuentos/recargos por duplicado. Debe mantenerse en sincro con
+     * print_totals_box().
+     *
+     * @return float
+     */
+    private function estimate_totals_box_height(): float
+    {
+        /**
+         * total_bruto de referencia: mismo cálculo que print_totals_box(), pero sin
+         * mutar $this->total_bruto acá (solo se usa para decidir si hay descuentos/recargos).
+         */
+        $total_bruto = $this->total_articles + $this->total_combos + $this->total_promocion_vinotecas + $this->total_services;
+        $has_discounts_or_surchages = $total_bruto != $this->sale->total;
+
+        /**
+         * El renglón de "Total" siempre está presente.
+         */
+        $rows_count = 1;
+
+        if ($has_discounts_or_surchages) {
+            if ($this->show_subtotal_in_footer) {
+                $rows_count++;
+            }
+            $rows_count += $this->count_discount_rows();
+            $rows_count += $this->count_surchage_rows();
+        }
+
+        $row_height = 6;
+        $padding = 3;
+
+        /**
+         * +2 de separación previa a la caja (box_y = y + 2) y +3 de separación posterior,
+         * igual que se aplican en print_totals_box().
+         */
+        return ($rows_count * $row_height) + ($padding * 2) + 2 + 3;
+    }
+
+    /**
+     * Dibuja el bloque final de totales (Sub Total + descuentos/recargos + Total) del
+     * path no fiscal de última página dentro de una caja con fondo gris y borde sutil,
+     * con el mismo lenguaje visual que print_observations_block() (SetFillColor(247,247,247)
+     * + SetDrawColor(210,210,210) + Rect('DF')) y alto de fila uniforme para todos los
+     * renglones. Reemplaza, en ese path específico, a descuentos_y_recargos() + el Cell
+     * suelto de "Total" que había antes.
+     *
+     * Importante: el path fiscal (AFIP/ARCA) y el de "totales en cada página" (Footer())
+     * NO pasan por este método: siguen usando descuentos_y_recargos()/discounts()/
+     * surchages() sin cambios, para no alterar su comportamiento.
+     *
+     * El "Total" impreso siempre es $this->sale->total (fuente de verdad), nunca un
+     * acumulado calculado a partir de descuentos/recargos.
+     *
+     * @return void
+     */
+    private function print_totals_box(): void
+    {
+        /**
+         * total_bruto: suma de los totales corrientes antes de aplicar descuentos/recargos.
+         * Se recalcula acá porque este método reemplaza a descuentos_y_recargos() en este path.
+         */
+        $this->total_bruto = $this->total_articles + $this->total_combos + $this->total_promocion_vinotecas + $this->total_services;
+
+        $has_discounts_or_surchages = $this->total_bruto != $this->sale->total;
+
+        /**
+         * Renglones a imprimir dentro de la caja, en orden: Sub Total (si corresponde),
+         * descuentos, recargos y Total. Cada renglón indica si va en negrita.
+         */
+        $rows = [];
+
+        if ($has_discounts_or_surchages) {
+
+            if ($this->show_subtotal_in_footer) {
+                $rows[] = [
+                    'text' => 'Sub Total: '.Numbers::price($this->total_bruto, true, $this->sale->moneda_id),
+                    'bold' => true,
+                ];
+            }
+
+            foreach ($this->build_discount_rows() as $discount_row) {
+                $rows[] = ['text' => $discount_row, 'bold' => false];
+            }
+
+            foreach ($this->build_surchage_rows() as $surchage_row) {
+                $rows[] = ['text' => $surchage_row, 'bold' => false];
+            }
+        }
+
+        /**
+         * El Total siempre se imprime, tenga o no descuentos/recargos, y siempre a partir
+         * de $this->sale->total (fuente de verdad), no de un acumulado propio.
+         */
+        $rows[] = [
+            'text' => 'Total: '.Numbers::price($this->sale->total, true, $this->sale->moneda_id),
+            'bold' => true,
+        ];
+
+        /**
+         * Medición previa: alto de fila uniforme (6mm) + padding superior/inferior (3mm c/u),
+         * mismo criterio visual que print_observations_block().
+         */
+        $row_height = 6;
+        $padding = 3;
+        $box_width = 200;
+        $box_height = (count($rows) * $row_height) + ($padding * 2);
+        $box_x = $this->start_x;
+        $box_y = $this->y + 2;
+        $text_width = $box_width - 8;
+
+        /**
+         * Fondo gris claro + borde sutil, igual que el bloque de observaciones.
+         */
+        $this->SetFillColor(247, 247, 247);
+        $this->SetDrawColor(210, 210, 210);
+        $this->Rect($box_x, $box_y, $box_width, $box_height, 'DF');
+
+        $this->y = $box_y + $padding;
+
+        foreach ($rows as $row) {
+            $this->x = $box_x + 4;
+            $this->SetFont('Arial', $row['bold'] ? 'B' : '', $row['bold'] ? 12 : 9);
+            $this->Cell($text_width, $row_height, $row['text'], $this->b, 1, 'R');
+        }
+
+        /**
+         * Restaurar colores por defecto para no afectar los bloques que se impriman después.
+         */
+        $this->SetTextColor(0, 0, 0);
+        $this->SetDrawColor(0, 0, 0);
+        $this->SetFillColor(255, 255, 255);
+
+        $this->y = $box_y + $box_height + 3;
+    }
+
+    /**
      * Mapa de anchos para dibujar header de tabla.
      */
     private function getFields()
@@ -756,9 +1078,23 @@ class NewSalePdf extends fpdf
     private function get_last_page_footer_break_limit_y(bool $with_total_block): int
     {
         $base_limit_y = $with_total_block ? 265 : 275;
+
+        /**
+         * Reserva adicional para la caja de totales (Sub Total + descuentos/recargos + Total)
+         * del path no fiscal de última página: la caja con borde/fondo (print_totals_box())
+         * puede ser más alta que el bloque suelto que había antes, así que se reserva la
+         * altura real estimada en vez de confiar solo en el offset fijo de $base_limit_y.
+         * Solo aplica cuando efectivamente se va a dibujar esa caja ($with_total_block true
+         * y perfil no fiscal); el path fiscal sigue con el mismo cálculo de siempre.
+         */
+        $totals_box_extra = ($with_total_block && !$this->is_afip_ticket)
+            ? $this->estimate_totals_box_height()
+            : 0;
+
         $extra_reserved_height = $this->estimate_optional_footer_extras_height()
             + $this->estimate_footer_text_height()
-            + $this->estimate_observations_height();
+            + $this->estimate_observations_height()
+            + $totals_box_extra;
 
         return max(120, $base_limit_y - $extra_reserved_height);
     }
@@ -1199,12 +1535,13 @@ class NewSalePdf extends fpdf
          */
         if (!$this->is_afip_ticket) {
 
-            $this->descuentos_y_recargos();
+            /**
+             * Bloque de totales del remito no fiscal: caja gris con Sub Total (si
+             * corresponde) + descuentos/recargos (según discount_display_mode) + Total.
+             * Reemplaza a descuentos_y_recargos() + el Cell suelto de "Total" que había antes.
+             */
+            $this->print_totals_box();
 
-            $this->y += 5;
-            $this->x = $this->start_x;
-            $this->SetFont('Arial', 'B', 12);
-            $this->Cell(200, 10, 'Total: '.Numbers::price($this->sale->total, true, $this->sale->moneda_id), $this->b, 1, 'R');
             $this->print_optional_footer_extras();
             /**
              * Texto de pie de página debajo del total en la última hoja.
