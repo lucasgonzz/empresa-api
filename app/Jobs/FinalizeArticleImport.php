@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Models\ImportHistory;
@@ -85,5 +86,24 @@ class FinalizeArticleImport implements ShouldQueue
 
         ArticleIndexCache::limpiar_cache($user->id);
         Log::info('Se limpio cache');
+    }
+
+    /**
+     * Marca el import como fallido si el job de finalización muere en forma definitiva (tras agotar sus
+     * reintentos, timeout, o worker reiniciado). Idempotente vía ImportFailureHandler.
+     *
+     * @param  \Throwable  $e
+     * @return void
+     */
+    public function failed($e)
+    {
+        ImportFailureHandler::desde_excepcion(
+            $this->import_history_id,
+            $this->import_status_id,
+            $this->user_id,
+            $e,
+            null,
+            array()
+        );
     }
 }
