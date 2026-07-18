@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Http\Controllers\Pdf\Afip\TicketInfoHelper;
 use App\Models\Address;
+use App\Models\PdfColumnProfile;
 use App\Models\User;
 use App\Services\PdfColumnService;
 use fpdf;
@@ -204,10 +205,26 @@ class NewSalePdf extends fpdf
     public function Header()
     {
         /**
+         * header_layout efectivo: el guardado en el perfil (prompt 437) o, si el perfil
+         * no tiene uno propio, el default por código (mismo orden que dejó el grupo 100).
+         * En perfiles fiscales se fuerza además la presencia de los campos obligatorios
+         * (razon_social, domicilio_comercial, condicion_iva, punto_venta, cuit,
+         * ingresos_brutos, inicio_actividades, numero_comprobante, fecha_emision),
+         * aunque el layout guardado no los tenga.
+         */
+        $header_layout = ($this->pdf_column_profile && !empty($this->pdf_column_profile->header_layout))
+            ? $this->pdf_column_profile->header_layout
+            : PdfColumnProfile::default_header_layout($this->is_afip_ticket);
+
+        if ($this->is_afip_ticket) {
+            $header_layout = AfipPdfHelper::enforce_fiscal_required_fields($header_layout);
+        }
+
+        /**
          * Perfil fiscal: header AFIP/ARCA dedicado sin pasar por PdfHelper comercial.
          */
         if ($this->is_afip_ticket && $this->afip_ticket) {
-            AfipPdfHelper::header($this, $this->afip_ticket, $this->sale, $this->user);
+            AfipPdfHelper::header($this, $this->afip_ticket, $this->sale, $this->user, $header_layout);
             AfipPdfHelper::table_header($this, $this->getFields());
             return;
         }
@@ -215,11 +232,11 @@ class NewSalePdf extends fpdf
         /**
          * Perfil no fiscal (remito): header unificado con el mismo diseño que la
          * factura fiscal (recuadro de letra dinámico, título del negocio 18pt,
-         * Razón Social/Domicilio/Condición IVA a la izquierda, N° de Comprobante =
-         * sale->num y fecha de creación de la venta a la derecha), sin banda
-         * "ORIGINAL" ni datos exclusivos de AFIP.
+         * campos del emisor configurables por header_layout a la izquierda/derecha),
+         * sin banda "ORIGINAL" ni datos exclusivos de AFIP. El cuadrante izquierdo
+         * del bloque del cliente (receptor) también es configurable en este camino.
          */
-        AfipPdfHelper::header_comercial($this, $this->sale, $this->user);
+        AfipPdfHelper::header_comercial($this, $this->sale, $this->user, $header_layout);
 
         /**
          * Vendedor: se preserva debajo del header unificado cuando la extensión
