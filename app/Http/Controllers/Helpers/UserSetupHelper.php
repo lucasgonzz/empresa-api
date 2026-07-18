@@ -155,6 +155,8 @@ class UserSetupHelper
             'redondear_centenas_en_vender'  => !empty($data['redondear_centenas_en_vender']) ? 1 : 0,
             // omitir_cuentas_corrientes llega como booleano directo (al revés del demo)
             'siempre_omitir_en_cuenta_corriente' => !empty($data['omitir_cuentas_corrientes']) ? 1 : 0,
+            // Si trabaja con costos en dolares, define si el precio final de esos articulos queda cotizado a pesos (1) o en dolares (0).
+            'cotizar_precios_en_dolares'    => !empty($data['cotizar_precios_en_dolares']) ? 1 : 0,
             'base_de_datos'                 => 'empresa_prueba_1',
             'google_custom_search_api_key'  => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
             'google_cuota'                  => 10,
@@ -303,6 +305,15 @@ class UserSetupHelper
             $extencions[] = 'articulo_margen_de_ganancia_segun_lista_de_precios';
             $extencions[] = 'cambiar_price_type_en_vender';
             $extencions[] = 'cambiar_price_type_en_vender_item_por_item';
+        }
+
+        // Costos en dolares: habilita marcar el costo de un articulo en dolares y cotizarlo al precio de venta.
+        if (!empty($data['costos_en_dolares'])) {
+            $extencions[] = 'costo_en_dolares';
+        }
+        // Ventas en dolares: habilita elegir la moneda de la venta en el modulo de vender.
+        if (!empty($data['ventas_en_dolares'])) {
+            $extencions[] = 'ventas_en_dolares';
         }
 
         // budgets y cajas siempre activados en producción (comportamiento del controller original)
