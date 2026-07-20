@@ -1,130 +1,24 @@
-﻿# Prompt 287: Export Excel de ventas fidedigno (frontend) — Total.vue manda el estado completo del filtro
+﻿# Prompt 517 — SPA: UI de precios-con-IVA y costos extra facturados + descripción de CADA propiedad nueva (empresa-spa)
 
-## Objetivo
+## Estado
 
-Par frontend del prompt 286. Hoy los dos botones de Excel del módulo de ventas abren un link GET con **solo el rango de fechas** (`window.open`). Este prompt los cambia para que hagan un **POST autenticado** a los endpoints nuevos del 286, mandando el estado completo del filtro (filtro por columnas, rango de fechas, las tres show options y la pestaña sucursal/empleado), y disparen la descarga del archivo desde la respuesta (blob). Así el Excel queda fidedigno con lo que se ve en pantalla.
+bloqueado
 
-Este prompt es **solo frontend (empresa-spa)**. Depende del 286 (los endpoints POST tienen que existir).
+## Descripción
 
-## Repositorio y rama
+Frontend del fix de IVA de la compra. Agrega los controles nuevos y —pedido explícito y reiterado de
+Lucas— **la descripción de cada propiedad nueva del modelo, para que el usuario entienda desde la
+interfaz qué hace cada una**. Cada propiedad que se agrega o toca debe llevar su `description` (el
+texto que la UI muestra como ayuda/tooltip), siguiendo el mismo patrón con que otras propiedades ya
+exponen su ayuda en los modelos de empresa-spa.
 
-`empresa-spa` (rama `refractor`). ⚠️ Este grupo (55) se trabaja en `refractor`, no en `develop`.
-
-## Ramas
-
-- empresa-spa: refractor
-
-## Contexto técnico
-
-- `@empresa-spa/src/components/ventas/components/Total.vue` — único archivo a tocar. Contiene los dos botones (`@click="export_excel"` y `@click="export_breakdown_excel"`) y los dos métodos que hoy hacen `window.open(process.env.VUE_APP_API_URL + '/sales/excel/export/' + this.from_date + '/' + this.until_date)`. Ya importa el mixin `sale` (le da `addresses`, `employees`, `sales_to_show`, etc.).
-- Los nuevos endpoints del 286 son `POST sales/excel/export` y `POST sales/excel/breakdown-export`, bajo el grupo `auth:sanctum` de `api.php` (o sea, la URL real es `/api/sales/excel/export`).
-- Instancia HTTP: usar **`this.$api`** (la misma que usa `@empresa-spa/src/common-vue/components/horizontal-nav/ExcelDropDown.vue` en `this.$api.get(this.model_name + '/excel/export')`), cuya baseURL ya incluye `/api` y manda el token. Verificar en el proyecto que `this.$api.post('sales/excel/export', ...)` resuelve a `/api/sales/excel/export` con auth. Si por algún motivo `$api` no prefijara `/api`, usar el mismo `axios` global que usa el store (`@empresa-spa/src/store/sale/index.js` hace `axios.post('/api/...')`) con la ruta `/api/sales/excel/export`. Lo importante: que sea una request **autenticada** (con token), no `window.open`.
-- Estado del filtro (todo en `this.$store.state.sale`): `is_filtered`, `filters`, `ventas_cobradas_show_option`, `afip_ticket_show_option`, `payment_method_show_option`. El rango de fechas ya está como computed en el componente (`this.from_date`, `this.until_date`).
-- Resolución de la pestaña: `this.view` y `this.sub_view` (globales, del route) + `this.addresses` / `this.employees`. Hay que resolverlas **igual que `sales_to_show`** en `@empresa-spa/src/mixins/sale.js`: la sucursal se matchea por `address.street` y el empleado por `employee.name` (con `.replaceAll('-', ' ')` y `toLowerCase()`); si `sub_view != 'todos'` y no matchea ningún empleado, es el caso "dueño" (`only_owner`).
-
-## Tarea
-
-En `Total.vue`, **reemplazar** los métodos `export_excel` y `export_breakdown_excel` y **agregar** los helpers. Dejar todo el resto del componente igual (template, computeds, imports).
-
-```js
-methods: {
-    export_excel() {
-        this.download_sales_excel('sales/excel/export', 'ventas')
-    },
-    export_breakdown_excel() {
-        this.download_sales_excel('sales/excel/breakdown-export', 'ventas_desglosado')
-    },
-    /**
-     * Arma el cuerpo del POST con el estado completo del filtro que ve la pantalla.
-     * @returns {Object}
-     */
-    build_export_body() {
-        let state = this.$store.state.sale
-        let scope = this.resolve_view_scope()
-        return {
-            is_filtered: state.is_filtered,
-            filters: state.filters,
-            from_date: this.from_date,
-            until_date: this.until_date,
-            ventas_cobradas_show_option: state.ventas_cobradas_show_option,
-            afip_ticket_show_option: state.afip_ticket_show_option,
-            payment_method_show_option: state.payment_method_show_option,
-            address_id: scope.address_id,
-            employee_id: scope.employee_id,
-            only_owner: scope.only_owner,
-        }
-    },
-    /**
-     * Resuelve la pestaña actual (sucursal/empleado) igual que sales_to_show (mixins/sale.js).
-     * @returns {{address_id: (number|null), employee_id: (number|null), only_owner: boolean}}
-     */
-    resolve_view_scope() {
-        let address_id = null
-        let employee_id = null
-        let only_owner = false
-
-        if (this.view != 'todas') {
-            let address = this.addresses.find(model => {
-                return model.street.toLowerCase() == this.view.replaceAll('-', ' ').toLowerCase()
-            })
-            if (typeof address != 'undefined') {
-                address_id = address.id
-            }
-        }
-
-        if (this.sub_view != 'todos') {
-            let employee = this.employees.find(model => {
-                return model.name.toLowerCase() == this.sub_view.replaceAll('-', ' ').toLowerCase()
-            })
-            if (typeof employee == 'undefined') {
-                // Caso "dueño": ventas sin empleado asignado.
-                only_owner = true
-            } else {
-                employee_id = employee.id
-            }
-        }
-
-        return { address_id, employee_id, only_owner }
-    },
-    /**
-     * POST autenticado al endpoint de export; descarga el .xlsx desde la respuesta (blob).
-     * @param {string} endpoint 'sales/excel/export' | 'sales/excel/breakdown-export'
-     * @param {string} filename_prefix Prefijo del nombre del archivo.
-     * @returns {void}
-     */
-    download_sales_excel(endpoint, filename_prefix) {
-        this.$api.post(endpoint, this.build_export_body(), { responseType: 'blob' })
-            .then(res => {
-                let url = window.URL.createObjectURL(new Blob([res.data]))
-                let a = document.createElement('a')
-                a.href = url
-                let now = new Date()
-                let stamp = ('0' + now.getDate()).slice(-2)
-                    + '-' + ('0' + (now.getMonth() + 1)).slice(-2)
-                    + '-' + String(now.getFullYear()).slice(-2)
-                a.download = filename_prefix + '_' + stamp + '.xlsx'
-                document.body.appendChild(a)
-                a.click()
-                a.remove()
-                window.URL.revokeObjectURL(url)
-            })
-            .catch(() => {
-                this.$toast.error('No se pudo generar el Excel', { duration: 4000 })
-            })
-    },
-}
-```
-
-Nota: mantener `import sale from '@/mixins/sale'` y el resto de los computeds (`from_date`, `until_date`, totales, etc.) tal como están.
-
-## Criterio de éxito
-
-1. Filtrar por la columna cliente y exportar cualquiera de los dos Excel → el archivo trae **todas** las ventas de ese cliente (no una página), igual que la tabla.
-2. Aplicar show options (cobradas/sin cobrar, con/sin factura, método de pago) → el Excel cambia acorde, igual que la pantalla.
-3. Estando en una pestaña de sucursal o empleado → el Excel respeta esa pestaña.
-4. Sin ningún filtro (solo rango de fechas) → el Excel trae las ventas del rango, como antes.
-5. La descarga se dispara sola (nombre `ventas_dd-mm-yy.xlsx` / `ventas_desglosado_dd-mm-yy.xlsx`); ante error muestra el toast.
-6. La request va autenticada (con token), no por `window.open`.
+Controles nuevos:
+1. **Check "Los precios ya incluyen IVA"** en la carga de la compra (`provider_order`), con default
+   heredado del proveedor (`provider.precios_incluyen_iva`) al seleccionarlo; el de la compra manda.
+2. **Config del proveedor** `precios_incluyen_iva` (default de sus compras).
+3. Por cada **costo extra**: check `facturado`; si está tildado, selector de **alícuota** (`iva_id`) y
+   check `en_factura_compra` (dentro de la factura de la compra vs factura aparte); si es factura
+   aparte, campos `emisor_cuit` y `emisor_razon_social`.
 
 ## Ejecución sugerida
 
@@ -132,9 +26,95 @@ cursor
 
 ## Modelo sugerido
 
-Claude Sonnet
+sonnet — toca el formulario de compra (uno de los más cargados) + ABM del proveedor + descripciones en
+varios modelos; conviene un modelo que mantenga coherencia entre los controles y los `description`.
 
-## Al finalizar
+## Repositorios y ramas
 
-pushea empresa
+`empresa-spa` (rama `refractor`). Trabajar y pushear en `refractor`. Vue 2 Options API, sin async.
+NO develop, NO master.
+
+## Ramas
+
+- empresa-spa: refractor
+
+## Dependencias
+
+Depende de los prompts **513, 514, 515, 516** (esquema + toda la lógica de backend). Ejecutar el
+frontend al final del grupo.
+
+## Checker sugerido
+
+sonnet. Revisar que: (a) NO se use `async/await` (usar `.then()/.catch()`) ni `.map()` para
+transformar (usar `forEach`); (b) los `<style lang="sass">` usen **tabs**; (c) el default heredado del
+proveedor pre-cargue pero el flag de la compra pueda sobreescribirlo; (d) los campos del costo extra
+(alícuota, emisor) aparezcan/desaparezcan según `facturado` y `en_factura_compra`; (e) **cada propiedad
+nueva tenga su `description`** con texto claro; (f) comentarios en español.
+
+---
+
+## Constraint de estilo (empresa-spa)
+
+Vue 2 + bootstrap-vue, **Options API**. Sin `async/await` (usar `.then()/.catch()`). Comentarios en
+español. `forEach` por sobre `map`. `<style lang="sass">` **con tabs** (SASS indentado, no SCSS).
+
+---
+
+## Contexto técnico (rama refractor)
+
+- Modelo `@src/models/provider_order.js` — define las propiedades de la orden de compra y sus
+  `description`. Acá va el `description` de `precios_incluyen_iva` (y ya existe el patrón para
+  `actualizar precios`, usarlo de referencia de estilo).
+- Modelo `@src/models/provider.js` — config del proveedor; sumar `precios_incluyen_iva` con su
+  `description`.
+- El modelo del costo extra (buscar `provider_order_extra_cost` / donde se definan los extra costs de
+  la compra) — sumar `facturado`, `iva_id`, `en_factura_compra`, `emisor_cuit`, `emisor_razon_social`,
+  cada uno con su `description`.
+- El formulario de carga de compra (componentes de `provider-order` / compra) donde se listan artículos
+  y costos extra — agregar los controles nuevos.
+- El toggle tipo iPhone y el selector de alícuota (`iva_id`) ya existen en otros formularios; reusar.
+
+## Tareas
+
+1. **`provider_order.precios_incluyen_iva`**: check en la carga de la compra. Al elegir proveedor,
+   pre-cargar el valor desde `provider.precios_incluyen_iva`; el usuario puede sobreescribirlo para esa
+   compra. `description`:
+   > "Indica que los precios de esta compra ya vienen con el IVA incluido por parte del proveedor.
+   > Activado: el precio que cargás es el final (con IVA) y el sistema desglosa cuánto es neto y cuánto
+   > IVA para la factura, y guarda el costo del artículo SIN IVA. Desactivado: el precio que cargás es
+   > neto y el sistema le suma el IVA para armar la factura. En ambos casos el costo del artículo se
+   > guarda siempre neto."
+2. **`provider.precios_incluyen_iva`**: check en el ABM del proveedor. `description`:
+   > "Valor por defecto para tus compras a este proveedor: si sus listas de precios ya incluyen IVA.
+   > Al cargar una compra de este proveedor, el check 'Los precios ya incluyen IVA' viene pre-tildado
+   > según esto (podés cambiarlo en cada compra)."
+3. **Costo extra `facturado`**: check por costo extra. `description`:
+   > "Indica si este costo extra (flete, seguro, etc.) vino facturado. Si está facturado, genera IVA
+   > crédito y hay que indicar con qué alícuota; si no, suma al costo sin IVA."
+4. **Costo extra `iva_id`**: selector de alícuota, visible solo si `facturado`. `description`:
+   > "Alícuota de IVA con la que se facturó este costo extra (puede ser distinta a la de la mercadería;
+   > ej. el flete suele ir a 21%)."
+5. **Costo extra `en_factura_compra`**: check, visible solo si `facturado`. `description`:
+   > "Activado: este costo extra va dentro de la misma factura de la compra. Desactivado: se factura
+   > aparte (por ejemplo, cuando el transporte lo hizo otra empresa) y se genera un comprobante
+   > separado con los datos del emisor."
+6. **Costo extra `emisor_cuit` / `emisor_razon_social`**: campos visibles solo si `facturado` y NO
+   `en_factura_compra`. `description` respectivos:
+   > emisor_cuit: "CUIT del emisor de la factura aparte de este costo extra (ej. la empresa de
+   > transporte que lo facturó por separado)."
+   > emisor_razon_social: "Razón social del emisor de la factura aparte de este costo extra."
+7. Mostrar/ocultar condicionalmente los campos (alícuota y emisor) según `facturado` y
+   `en_factura_compra`, con `v-if`.
+
+## Criterio de éxito
+
+- Al elegir un proveedor con `precios_incluyen_iva` ON, la compra viene con el check pre-tildado;
+  destildarlo en la compra funciona.
+- Cada propiedad nueva muestra su ayuda/descripción en la UI (tooltip/ayuda, según el patrón existente).
+- Los campos de alícuota y emisor del costo extra aparecen solo cuando corresponde.
+- Sin `async/await`, `forEach` en vez de `map`, SASS con tabs.
+
+---
+
+Al terminar, pushea empresa.
 
