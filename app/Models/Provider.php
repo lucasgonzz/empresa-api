@@ -13,6 +13,12 @@ class Provider extends Model
     
     protected $guarded = [];
 
+    // Prompt 513: `precios_incluyen_iva` se guarda como tinyint; se castea a bool para que el
+    // front reciba/consuma siempre true/false y no 0/1.
+    protected $casts = [
+        'precios_incluyen_iva' => 'boolean',
+    ];
+
     function scopeWithAll($query) {
         $query->with('iva_condition', 'comercio_city_user', 'provider_price_lists', 'location', 'credit_accounts.moneda', 'provider_discounts');
         // $query->with('iva_condition', 'comercio_city_user', 'provider_price_lists', 'location')->withCount('current_acounts');
