@@ -60,6 +60,11 @@ class Kernel extends ConsoleKernel
         // Captura el snapshot de deuda diario (clientes y proveedores) a las 23:59.
         // Registra los saldos actuales de credit_accounts para análisis histórico.
         $schedule->command('debt:snapshot')->dailyAt('23:59');
+
+        /* Watchdog de importaciones colgadas: desbloquea imports que murieron sin dejar traza. */
+        $schedule->command('imports:detectar-colgadas')
+            ->everyFiveMinutes()
+            ->withoutOverlapping();
     }
 
     /**

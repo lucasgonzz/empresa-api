@@ -94,6 +94,42 @@ class ClientController extends Controller
         return response()->json(['model' => $this->fullModel('Client', $model->id)], 200);
     }
 
+    /**
+     * Actualiza UNICAMENTE el telefono del cliente, sin tocar el resto de sus datos.
+     * A diferencia de update(), que reasigna todos los campos del cliente desde el
+     * request (ver arriba), este endpoint existe para que el flujo de WhatsApp en
+     * Vender pueda ofrecer "actualizar el telefono del cliente" sin riesgo de pisar
+     * nombre, email, direccion, CUIT, etc. con null.
+     *
+     * @param Request $request Objeto de solicitud con el campo 'phone' a actualizar.
+     * @param int $id ID del cliente a actualizar.
+     * @return \Illuminate\Http\JsonResponse Respuesta JSON con el cliente actualizado o error.
+     */
+    public function update_phone(Request $request, $id) {
+        // Buscar el cliente por ID.
+        $model = Client::find($id);
+
+        // Si el cliente no existe, retornar error 404.
+        if (is_null($model)) {
+            return response()->json(['error' => true, 'message' => 'Cliente no encontrado'], 404);
+        }
+
+        // Validar que el teléfono no esté vacío o nulo.
+        if (is_null($request->phone) || trim($request->phone) == '') {
+            return response()->json(['error' => true, 'message' => 'El telefono no puede estar vacio'], 422);
+        }
+
+        // Actualizar únicamente el campo 'phone'.
+        $model->phone = trim($request->phone);
+        $model->save();
+
+        // Notificar a los usuarios conectados sobre la actualización.
+        $this->sendAddModelNotification('Client', $model->id);
+
+        // Retornar el cliente completo con la respuesta exitosa.
+        return response()->json(['model' => $this->fullModel('Client', $model->id)], 200);
+    }
+
     public function destroy($id) {
         $model = Client::find($id);
         $model->delete();

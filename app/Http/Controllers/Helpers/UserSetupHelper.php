@@ -91,10 +91,13 @@ class UserSetupHelper
             Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);
         }
 
+        // Descuentos/recargos por metodo de pago (dependen de que CurrentAcountPaymentMethodSeeder ya haya corrido).
+        self::crear_current_acount_payment_method_discounts($data, $user->id);
+
         self::assign_pdf_whatsapp_defaults_for_owner($user->id);
 
         // Tienda online por defecto para que el sistema tenga URL pública
-        self::tienda();
+        self::tienda($data);
 
         return $user;
     }
@@ -155,6 +158,8 @@ class UserSetupHelper
             'redondear_centenas_en_vender'  => !empty($data['redondear_centenas_en_vender']) ? 1 : 0,
             // omitir_cuentas_corrientes llega como booleano directo (al revés del demo)
             'siempre_omitir_en_cuenta_corriente' => !empty($data['omitir_cuentas_corrientes']) ? 1 : 0,
+            // Si trabaja con costos en dolares, define si el precio final de esos articulos queda cotizado a pesos (1) o en dolares (0).
+            'cotizar_precios_en_dolares'    => !empty($data['cotizar_precios_en_dolares']) ? 1 : 0,
             'base_de_datos'                 => 'empresa_prueba_1',
             'google_custom_search_api_key'  => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
             'google_cuota'                  => 10,
@@ -305,6 +310,15 @@ class UserSetupHelper
             $extencions[] = 'cambiar_price_type_en_vender_item_por_item';
         }
 
+        // Costos en dolares: habilita marcar el costo de un articulo en dolares y cotizarlo al precio de venta.
+        if (!empty($data['costos_en_dolares'])) {
+            $extencions[] = 'costo_en_dolares';
+        }
+        // Ventas en dolares: habilita elegir la moneda de la venta en el modulo de vender.
+        if (!empty($data['ventas_en_dolares'])) {
+            $extencions[] = 'ventas_en_dolares';
+        }
+
         // budgets y cajas siempre activados en producción (comportamiento del controller original)
         $extencions[] = 'budgets';
         $extencions[] = 'cajas';
@@ -317,9 +331,17 @@ class UserSetupHelper
 
     /**
      * Crea la OnlineConfiguration por defecto para la tienda online del sistema.
+     * Usa las redes sociales reales cargadas en el formulario (facebook/instagram, grupo 109);
+     * si el cliente no las cargó, quedan como string vacío (defensivo, no rompe).
+     *
+     * @param array<string, mixed> $data
      */
-    private static function tienda()
+    private static function tienda(array $data)
     {
+        // Redes reales del formulario (grupo 109); si no se cargaron, quedan vacias.
+        $facebook  = trim((string) (isset($data['facebook']) ? $data['facebook'] : ''));
+        $instagram = trim((string) (isset($data['instagram']) ? $data['instagram'] : ''));
+
         $online_configuration = [
             'online_price_type_id'      => 3,
             'register_to_buy'           => 1,
@@ -328,8 +350,8 @@ class UserSetupHelper
             'pausar_tienda_online'      => 0,
             'article_description_font_size' => 16,
             'user_id'                   => config('app.USER_ID'),
-            'facebook'                  => 'htts://facebook.com',
-            'instagram'                 => 'htts://instagram.com',
+            'facebook'                  => $facebook,
+            'instagram'                 => $instagram,
             'mensaje_contacto'          => 'Comunicate con nosotros',
         ];
 
@@ -358,7 +380,9 @@ class UserSetupHelper
     }
 
     /**
-     * Persiste hasta 3 listas de precios a partir de los campos price_type_1..3.
+     * Persiste hasta 3 listas de precios usando el margen de ganancia real cargado por el cliente.
+     * Preferir price_lists_detail (nombre + margen, formulario nuevo); si no viene, caer a
+     * price_type_1..3 (solo nombres, formulario/cliente viejo) con margen null.
      *
      * @param array<string, mixed> $data
      */
@@ -366,19 +390,141 @@ class UserSetupHelper
     {
         // Importamos PriceType aquí para no cargarlo si no se usa
         $priceTypeClass = '\App\Models\PriceType';
-        for ($i = 1; $i <= 3; $i++) {
-            $price_type = $data['price_type_'.$i] ?? null;
-            if (!empty($price_type)) {
-                Log::info('UserSetupHelper: creando lista de precios '.$price_type);
-                $priceTypeClass::create([
-                    'num'                => $i,
-                    'name'               => $price_type,
-                    'percentage'         => 5 * $i,
-                    'position'           => $i,
-                    'ocultar_al_publico' => 0,
-                    'user_id'            => config('app.USER_ID'),
-                ]);
+
+        // Filas a crear: cada una con 'name' y 'margin' (margin puede ser null).
+        $rows = array();
+        if (isset($data['price_lists_detail']) && is_array($data['price_lists_detail'])) {
+            foreach ($data['price_lists_detail'] as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $name = trim((string) (isset($row['name']) ? $row['name'] : ''));
+                if ($name === '') {
+                    continue;
+                }
+                // Margen por defecto de la lista: si el cliente lo dejo vacio, queda null (lo carga por articulo).
+                $margin = (isset($row['margin']) && $row['margin'] !== '' && $row['margin'] !== null) ? (float) $row['margin'] : null;
+                $rows[] = array('name' => $name, 'margin' => $margin);
+            }
+        } else {
+            // Compatibilidad hacia atras: cliente viejo solo manda los nombres, sin margen.
+            for ($i = 1; $i <= 3; $i++) {
+                $name = isset($data['price_type_' . $i]) ? trim((string) $data['price_type_' . $i]) : '';
+                if ($name !== '') {
+                    $rows[] = array('name' => $name, 'margin' => null);
+                }
             }
         }
+
+        // Crear hasta 3 listas con el nombre y el margen por defecto cargados.
+        $index = 1;
+        foreach ($rows as $row) {
+            if ($index > 3) {
+                break;
+            }
+            Log::info('UserSetupHelper: creando lista de precios ' . $row['name']);
+            $priceTypeClass::create([
+                'num'                => $index,
+                'name'               => $row['name'],
+                'percentage'         => $row['margin'],
+                'position'           => $index,
+                'ocultar_al_publico' => 0,
+                'user_id'            => config('app.USER_ID'),
+            ]);
+            $index++;
+        }
+    }
+
+    /**
+     * Crea un current_acount_payment_method_discount por cada fila de payment_discounts del formulario.
+     * Engancha cada descuento al CurrentAcountPaymentMethod del owner cuyo nombre coincide con el metodo
+     * (case e insensible a tildes). Signo: descuento => porcentaje positivo, recargo => negativo.
+     * Defensivo: filas vacias o sin metodo resoluble se saltean sin romper.
+     *
+     * @param array<string, mixed> $data
+     * @param int                  $owner_id
+     */
+    private static function crear_current_acount_payment_method_discounts(array $data, $owner_id)
+    {
+        // Filas del formulario; si no hay nada, no hacemos nada.
+        $rows = isset($data['payment_discounts']) && is_array($data['payment_discounts']) ? $data['payment_discounts'] : array();
+        if (empty($rows)) {
+            return;
+        }
+
+        // Mapa key del select -> nombre sembrado en empresa (CurrentAcountPaymentMethodSeeder).
+        $key_to_name = array(
+            'efectivo'      => 'Efectivo',
+            'debito'        => 'Debito',
+            'credito'       => 'Credito',
+            'transferencia' => 'Transferencia',
+            'cheque'        => 'Cheque',
+            'mercado_pago'  => 'Mercado Pago',
+        );
+
+        // Metodos de pago de la instancia (tabla no multi-tenant: sin columna user_id), indexados por nombre normalizado (para match tolerante).
+        $methods_by_norm = array();
+        $methodClass = '\App\Models\CurrentAcountPaymentMethod';
+        foreach ($methodClass::get() as $method) {
+            $methods_by_norm[self::normalize_payment_text((string) $method->name)] = $method;
+        }
+
+        // Modelo del descuento/recargo por metodo de pago.
+        $discountClass = '\App\Models\CurrentAcountPaymentMethodDiscount';
+
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            // Metodo: puede venir como key del select o como texto libre (cliente viejo).
+            $raw_method = trim((string) (isset($row['method']) ? $row['method'] : ''));
+            if ($raw_method === '') {
+                continue;
+            }
+
+            // Resolver el nombre candidato: si es una key conocida, usar su nombre; si no, el texto tal cual.
+            $norm_method = self::normalize_payment_text($raw_method);
+            $candidate_name = isset($key_to_name[$norm_method]) ? $key_to_name[$norm_method] : $raw_method;
+            $candidate_norm = self::normalize_payment_text($candidate_name);
+
+            // Buscar el metodo del owner por nombre normalizado; si no existe, saltear (se completa desde empresa).
+            if (!isset($methods_by_norm[$candidate_norm])) {
+                Log::info('UserSetupHelper: metodo de pago no encontrado para descuento, se saltea: ' . $raw_method);
+                continue;
+            }
+            $method = $methods_by_norm[$candidate_norm];
+
+            // Porcentaje: numerico; sin valor util, saltear.
+            $percentage = isset($row['percentage']) ? (float) $row['percentage'] : 0.0;
+            if ($percentage == 0.0) {
+                continue;
+            }
+
+            // Signo: recargo negativo, descuento (o cualquier otro) positivo.
+            $type = trim((string) (isset($row['type']) ? $row['type'] : ''));
+            $signed = ($type === 'recargo') ? -abs($percentage) : abs($percentage);
+
+            $discountClass::create(array(
+                'current_acount_payment_method_id' => $method->id,
+                'discount_percentage'              => $signed,
+                'user_id'                          => $owner_id,
+            ));
+        }
+    }
+
+    /**
+     * Normaliza un texto de metodo de pago para comparar sin tildes ni mayusculas.
+     *
+     * @param string $text
+     * @return string
+     */
+    private static function normalize_payment_text($text)
+    {
+        // Pasar a minusculas (multibyte) y reemplazar vocales acentuadas por su version simple.
+        $lower = mb_strtolower(trim($text), 'UTF-8');
+        $from  = array('á', 'é', 'í', 'ó', 'ú', 'ü', 'ñ');
+        $to    = array('a', 'e', 'i', 'o', 'u', 'u', 'n');
+        return str_replace($from, $to, $lower);
     }
 }

@@ -11,6 +11,8 @@ class ImportHistory extends Model
 
     protected $casts = [
         'changed_fields' => 'array',
+        /* Fecha en que se marcó la importación como fallida (prompt 500). */
+        'failed_at'      => 'datetime',
     ];
 
     function chunks() {

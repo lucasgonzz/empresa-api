@@ -570,7 +570,13 @@ class PdfHelper {
 	    	false
 	    );
 
-		$instance->y = 52;
+		// Cierre de la caja relativo al start_y recibido (no hardcodeado en 52).
+		// Piso histórico de 20mm; si el texto (MultiCell) bajó más, cerramos donde termina.
+		$box_bottom = $start_y + 20;
+		if ($instance->y > $box_bottom) {
+			$box_bottom = $instance->y;
+		}
+		$instance->y = $box_bottom;
 		$instance->Line(105, $start_y, 205, $start_y);
 		$instance->Line(205, $start_y, 205, $instance->y);
 		$instance->Line(205, $instance->y, 105, $instance->y);

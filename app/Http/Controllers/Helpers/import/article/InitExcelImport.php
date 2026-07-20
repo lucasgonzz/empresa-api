@@ -435,6 +435,8 @@ class InitExcelImport
             'total_chunks'          => $this->total_chunks,
             'processed_chunks'      => 0,
             'operaciones'           => json_encode($this->get_operaciones()),
+            /* Link al ImportStatus para que el watchdog pueda marcar ambos si el import queda colgado. */
+            'import_status_id'      => $this->import_status->id,
         ]);
     }
 

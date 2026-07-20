@@ -79,6 +79,13 @@ class PdfColumnProfileController extends Controller
             'paper_width_mm' => (int) $request->paper_width_mm,
             'printable_width_mm' => (int) $request->printable_width_mm,
             'margin_mm' => (int) $request->input('margin_mm', 5),
+            /**
+             * Tamaño del logo en mm para este perfil. Se guarda null cuando viene vacío,
+             * para que el generador de PDF caiga al tamaño global del dueño (users.pdf_image_size).
+             */
+            'logo_size_mm' => ($request->input('logo_size_mm') !== null && $request->input('logo_size_mm') !== '')
+                ? (int) $request->input('logo_size_mm')
+                : null,
             'sheet_type_id' => $request->sheet_type_id,
             'is_afip_ticket' => (bool) $request->input('is_afip_ticket', false),
             'show_totals_on_each_page' => (bool) $request->input('show_totals_on_each_page', false),
@@ -94,6 +101,11 @@ class PdfColumnProfileController extends Controller
              */
             'show_total_in_footer' => (bool) $request->input('show_total_in_footer', true),
             /**
+             * Modo de listado de descuentos/recargos en el pie: 'descriptivo' (monto + % + total parcial,
+             * comportamiento actual) o 'simple' (solo % + nombre). Default 'descriptivo' si no se envía.
+             */
+            'discount_display_mode' => $request->input('discount_display_mode') ?: 'descriptivo',
+            /**
              * URL de imagen de cabecera en cada página del PDF (plantillas de artículos u otras).
              */
             'header_image_url' => $request->input('header_image_url') ?: null,
@@ -103,6 +115,12 @@ class PdfColumnProfileController extends Controller
             'table_header_font_size' => $this->normalize_table_header_font_size(
                 $request->input('table_header_font_size')
             ),
+            /**
+             * Diseño del header por cuadrante (JSON). Null = el render usa el default por código
+             * según PdfColumnProfile::default_header_layout(). Normalizado defensivamente por si
+             * llega como string JSON en vez de array.
+             */
+            'header_layout' => $this->normalize_header_layout($request->input('header_layout')),
         ]);
 
         GeneralHelper::attachModels(
@@ -168,6 +186,7 @@ class PdfColumnProfileController extends Controller
             'paper_width_mm',
             'printable_width_mm',
             'margin_mm',
+            'logo_size_mm',
             'sheet_type_id',
             'is_afip_ticket',
             'show_totals_on_each_page',
@@ -175,10 +194,42 @@ class PdfColumnProfileController extends Controller
             'show_total_costs',
             'footer_text',
             'show_total_in_footer',
+            'discount_display_mode',
             'use_current_date',
             'header_image_url',
             'table_header_font_size',
+            'header_layout',
         ]);
+
+        /**
+         * Un logo_size_mm vacío desde el formulario significa "usar el tamaño global del dueño":
+         * se persiste como null para que el fallback en el generador de PDF aplique.
+         */
+        if (array_key_exists('logo_size_mm', $fillable)) {
+            if ($fillable['logo_size_mm'] === '' || $fillable['logo_size_mm'] === null) {
+                $fillable['logo_size_mm'] = null;
+            } else {
+                $fillable['logo_size_mm'] = (int) $fillable['logo_size_mm'];
+            }
+        }
+
+        /**
+         * discount_display_mode vacío o inválido cae a 'descriptivo' (comportamiento por defecto).
+         */
+        if (array_key_exists('discount_display_mode', $fillable)) {
+            if ($fillable['discount_display_mode'] !== 'simple') {
+                $fillable['discount_display_mode'] = 'descriptivo';
+            }
+        }
+
+        /**
+         * header_layout puede venir null (perfil sin diseño custom) o, defensivamente,
+         * como string JSON en vez de array (el cast 'array' del modelo espera un array/null).
+         */
+        if (array_key_exists('header_layout', $fillable)) {
+            $fillable['header_layout'] = $this->normalize_header_layout($fillable['header_layout']);
+        }
+
         $model->update($fillable);
 
         if ($request->has('pdf_column_options')) {
@@ -651,5 +702,29 @@ class PdfColumnProfileController extends Controller
         }
 
         return null;
+    }
+
+    /**
+     * Normaliza el JSON de diseño del header por cuadrante antes de persistirlo.
+     * No valida estrictamente la estructura (eso lo consumen los renders de forma defensiva);
+     * solo garantiza que, si llegó como string JSON, se decodifique a array antes de guardar
+     * (con el cast 'array' del modelo y el axios del SPA debería llegar ya como objeto/array).
+     *
+     * @param  mixed  $value
+     * @return array|null
+     */
+    protected function normalize_header_layout($value)
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+
+            return is_array($decoded) ? $decoded : null;
+        }
+
+        return is_array($value) ? $value : null;
     }
 }
