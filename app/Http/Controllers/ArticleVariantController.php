@@ -35,16 +35,20 @@ class ArticleVariantController extends Controller
     /**
      * Actualiza una variante puntual (price/image_url/oculta).
      *
-     * Nota: el manejo de `stock` en este método queda pendiente de revisión en el prompt 521
-     * (pasaría a manejarse por depósito vía addresses); no se toca acá salvo mantener la firma.
+     * Prompt 521 (fuente única de verdad del stock de variantes): el stock de una variante
+     * ya NO se edita acá. `article_variants.stock` es un campo derivado (suma de sus depósitos
+     * en `address_article_variant.amount`) y se mantiene exclusivamente a través del flujo de
+     * movimientos (`article-update-varians-stock` -> UpdateVariantsStockHelper -> StockMovement
+     * -> CheckVariants). Setearlo a mano acá bypaseaba ese flujo y dejaba los movimientos sin
+     * registrar. Si en el futuro hace falta permitir cambiar stock desde este endpoint, debe
+     * hacerse generando un StockMovement, no escribiendo la columna directo.
      *
-     * @param Request $request Espera stock, price, image_url, oculta.
+     * @param Request $request Espera price, image_url, oculta (stock ya no se usa acá).
      * @param int $id Id de la ArticleVariant a actualizar.
      * @return \Illuminate\Http\JsonResponse Variante actualizada.
      */
     function update(Request $request, $id) {
         $model = ArticleVariant::find($id);
-        $model->stock = $request->stock;
         $model->price = $request->price;
         $model->image_url = $request->image_url;
         $model->oculta = $request->oculta;

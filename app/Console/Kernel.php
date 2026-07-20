@@ -96,6 +96,11 @@ class Kernel extends ConsoleKernel
      */
     protected function commands()
     {
+        // $this->load() escanea todas las clases Command dentro de app/Console/Commands
+        // y las registra automáticamente (no hace falta listarlas una por una acá).
+        // El comando `reconciliar_stock_variantes` (prompt 521, reconciliación defensiva
+        // de stock de variantes) queda disponible por este mismo mecanismo; a propósito
+        // no se le agrega entrada en $schedule() porque es de corrida manual, no periódica.
         $this->load(__DIR__.'/Commands');
 
         require base_path('routes/console.php');
