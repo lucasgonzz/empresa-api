@@ -26,6 +26,16 @@ class SaleTicketPdf extends fpdf {
 		$this->ancho = $this->user->sale_ticket_width;
 		$this->cell_ancho = $this->ancho - 8;
 
+		// Tamaño de fuente configurable del nombre del articulo, con fallback al default historico (12)
+		$name_size = $this->user->sale_ticket_name_font_size ? (int) $this->user->sale_ticket_name_font_size : 12;
+		// Tamaño de fuente configurable del precio (unitario y total), con fallback al default historico (10)
+		$price_size = $this->user->sale_ticket_price_font_size ? (int) $this->user->sale_ticket_price_font_size : 10;
+		// Clamp geometrico: evita que tamaños extremos rompan el layout del ticket angosto
+		$this->name_font_size = max(8, min(16, $name_size));
+		$this->price_font_size = max(8, min(14, $price_size));
+		// Flag de logo a todo el ancho (default apagado = comportamiento actual sin cambios)
+		$this->logo_full_width = (bool) $this->user->sale_ticket_logo_full_width;
+
 		parent::__construct('P', 'mm', [$this->ancho, $this->getPdfHeight()]);
 		$this->SetAutoPageBreak(false);
 		$this->b = 0;
@@ -159,7 +169,14 @@ class SaleTicketPdf extends fpdf {
 	}
 
 	function logo() {
-        // Logo
+
+		// Rama nueva: logo a todo el ancho, con la info de la empresa DEBAJO (opcional, segun config del usuario)
+		if ($this->logo_full_width) {
+			$this->logoFullWidth();
+			return;
+		}
+
+        // Logo (comportamiento default, EXACTO al historico: logo a la mitad izquierda, info a la derecha)
         $image_width = $this->ancho / 2;
 
         // $image_width -= 4;
@@ -171,14 +188,14 @@ class SaleTicketPdf extends fpdf {
 	        	$this->Image($this->user->image_url, $this->x_incial, $this->x_incial, $image_width, $image_width);
         	}
         }
-		
+
         // Company name
 		$this->SetFont('Arial', 'B', 12);
 
 		$ancho_cell = $image_width - ($this->x_incial * 2);
 		$x_incial_logo = $image_width + $this->x_incial;
-		
-		$this->x = $x_incial_logo;	
+
+		$this->x = $x_incial_logo;
 		$this->y = 5;
 
 		$this->MultiCell($ancho_cell, 7, $this->user->company_name, $this->b, 'L', 0);
@@ -201,24 +218,115 @@ class SaleTicketPdf extends fpdf {
 		$this->SetFont('Arial', '', 10);
 		if ($domicilio) {
 
-			$this->x = $x_incial_logo;	
+			$this->x = $x_incial_logo;
 			$this->MultiCell($ancho_cell, 7, $domicilio, $this->b, 'L', 0);
 		}
 
 		$phone = $this->user->phone;
 		if (
-			$this->sale->address 
-			&& $this->sale->address->phone 
+			$this->sale->address
+			&& $this->sale->address->phone
 		) {
 			$phone = $this->sale->address->phone;
 		}
 
-		$this->x = $x_incial_logo;	
+		$this->x = $x_incial_logo;
 		$this->Cell($ancho_cell, 7, 'Tel: '.$phone, $this->b, 1, 'L');
 
 
 		$this->y = $ancho_cell;
 		$this->y += 15;
+	}
+
+	/**
+	 * Header alternativo con el logo ocupando todo el ancho del ticket.
+	 * La info de la empresa (nombre, domicilio, telefono) se dibuja DEBAJO del logo,
+	 * en lugar de al costado como en el layout default.
+	 * @return void
+	 */
+	function logoFullWidth() {
+		// Ancho del logo: todo el ancho util del ticket (igual que las celdas de items)
+		$logo_w = $this->cell_ancho;
+		// Alto proporcional del logo, calculado con el mismo helper que usa getPdfHeight()
+		$logo_h = $this->getLogoFullWidthHeight();
+
+		if (!is_null($this->user->image_url)) {
+			if (config('app.APP_ENV') == 'local') {
+				// En local se mantiene el placeholder de freepik, igual que en el layout default
+				$this->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', $this->x_incial, $this->x_incial, $logo_w, $logo_h);
+			} else {
+				$this->Image($this->user->image_url, $this->x_incial, $this->x_incial, $logo_w, $logo_h);
+			}
+		}
+
+		// La info de la empresa arranca debajo del logo (no al costado, como en el layout default)
+		$this->y = $this->x_incial + $logo_h + 3;
+
+		$this->SetFont('Arial', 'B', 12);
+		$this->x = $this->x_incial;
+		$this->MultiCell($this->cell_ancho, 7, $this->user->company_name, $this->b, 'L', 0);
+
+		$domicilio = null;
+		if (
+			$this->afip_ticket
+			&& !is_null($this->afip_ticket->afip_information)
+		) {
+			$domicilio = $this->afip_ticket->afip_information->domicilio_comercial;
+		} else {
+			$punto_venta = AfipInformation::where('user_id', $this->user->id)
+										->first();
+
+			if ($punto_venta) {
+				$domicilio = $punto_venta->domicilio_comercial;
+			}
+		}
+
+		$this->SetFont('Arial', '', 10);
+		if ($domicilio) {
+			$this->x = $this->x_incial;
+			$this->MultiCell($this->cell_ancho, 7, $domicilio, $this->b, 'L', 0);
+		}
+
+		$phone = $this->user->phone;
+		if (
+			$this->sale->address
+			&& $this->sale->address->phone
+		) {
+			$phone = $this->sale->address->phone;
+		}
+
+		$this->x = $this->x_incial;
+		$this->Cell($this->cell_ancho, 7, 'Tel: '.$phone, $this->b, 1, 'L');
+
+		// Nota: a diferencia del layout default, aca NO se pisa $this->y con "$this->y = $ancho_cell;"
+		// porque la info ya quedo posicionada correctamente por los MultiCell/Cell de arriba.
+		$this->y += 5;
+	}
+
+	/**
+	 * Calcula el alto (en mm) que va a ocupar el logo cuando esta activo el modo "full width".
+	 * Usa getimagesize() sobre la imagen del usuario para mantener la proporcion real;
+	 * si falla (URL no accesible, formato invalido, etc.) cae a un fallback cuadrado
+	 * para no romper ni el render ni el calculo de altura del PDF (getPdfHeight).
+	 * Se reutiliza tanto en logoFullWidth() como en getPdfHeight().
+	 * @return float alto estimado del logo en mm
+	 */
+	function getLogoFullWidthHeight() {
+		$logo_w = $this->cell_ancho;
+
+		// Fallback por default: logo cuadrado, igual que el comportamiento historico
+		$logo_h = $logo_w;
+
+		if (!is_null($this->user->image_url) && config('app.APP_ENV') != 'local') {
+			// @ para no romper el render si la imagen remota no esta disponible
+			$dim = @getimagesize($this->user->image_url);
+
+			if ($dim && !empty($dim[0]) && !empty($dim[1])) {
+				$logo_h = $logo_w * $dim[1] / $dim[0];
+			}
+		}
+
+		return $logo_h;
 	}
 
 	function items() {
@@ -231,10 +339,11 @@ class SaleTicketPdf extends fpdf {
 		
 		if ($this->ancho > 60) {
 
-			$ancho_price = $ancho_price / 2; 
+			$ancho_price = $ancho_price / 2;
 		}
 
-
+		// Fila de encabezado de columnas (Producto / Precio / Total), alineada con los anchos y x reales de los items
+		$this->itemsHeader($ancho_description, $ancho_price);
 
 		foreach ($this->sale->combos as $combo) {
 			$this->SetFont('Arial', '', 9);
@@ -255,7 +364,7 @@ class SaleTicketPdf extends fpdf {
 		}
 
 		foreach ($this->sale->articles as $article) {
-			$this->SetFont('Arial', '', 12);
+			$this->SetFont('Arial', '', $this->name_font_size);
 			$y_1 = $this->y;
 			$this->MultiCell($ancho_description, $this->line_height, GeneralHelper::article_name($article)." ({$article->pivot->amount})", 'BT', 'L', 0);
 			$y_2 = $this->y;
@@ -263,7 +372,7 @@ class SaleTicketPdf extends fpdf {
 			$this->x = $ancho_description + 2;
 			$this->y = $y_1;
 
-			$this->SetFont('Arial', 'B', 10);
+			$this->SetFont('Arial', 'B', $this->price_font_size);
 
 			if ($this->ancho > 60) {
 
@@ -284,7 +393,7 @@ class SaleTicketPdf extends fpdf {
 		}
 
 		foreach ($this->sale->promocion_vinotecas as $promo) {
-			$this->SetFont('Arial', '', 12);
+			$this->SetFont('Arial', '', $this->name_font_size);
 			$y_1 = $this->y;
 			$this->MultiCell($ancho_description, $this->line_height, $promo->name." ({$promo->pivot->amount})", 'BT', 'L', 0);
 			$y_2 = $this->y;
@@ -292,7 +401,7 @@ class SaleTicketPdf extends fpdf {
 			$this->x = $ancho_description + 2;
 			$this->y = $y_1;
 
-			$this->SetFont('Arial', 'B', 10);
+			$this->SetFont('Arial', 'B', $this->price_font_size);
 
 			if ($this->ancho > 60) {
 
@@ -306,7 +415,7 @@ class SaleTicketPdf extends fpdf {
 		}
 
 		foreach ($this->sale->services as $service) {
-			$this->SetFont('Arial', '', 12);
+			$this->SetFont('Arial', '', $this->name_font_size);
 			$y_1 = $this->y;
 			$this->MultiCell($ancho_description, $this->line_height, $service->name." ({$service->pivot->amount})", 'BT', 'L', 0);
 			$y_2 = $this->y;
@@ -314,7 +423,7 @@ class SaleTicketPdf extends fpdf {
 			$this->x = $ancho_description + 2;
 			$this->y = $y_1;
 
-			$this->SetFont('Arial', 'B', 10);
+			$this->SetFont('Arial', 'B', $this->price_font_size);
 
 			if ($this->ancho > 60) {
 
@@ -326,6 +435,34 @@ class SaleTicketPdf extends fpdf {
 			$this->x = $this->x_incial;
 			$this->y = $y_2;
 		}
+	}
+
+	/**
+	 * Dibuja la fila de encabezado de columnas (Producto / Precio / Total, o Producto / Total en tickets angostos)
+	 * usando exactamente los mismos anchos y posiciones x que las filas de items, para que queden alineadas.
+	 * @param float $ancho_description ancho de la columna "Producto"
+	 * @param float $ancho_price ancho de cada columna de precio ("Precio" y/o "Total")
+	 * @return void
+	 */
+	function itemsHeader($ancho_description, $ancho_price) {
+		// Tamaño de fuente del encabezado: el de precio, pero acotado a 9 para que no compita visualmente con los items
+		$this->SetFont('Arial', 'B', min($this->price_font_size, 9));
+		// Fondo gris claro + borde inferior para dar un divisor sutil entre encabezado e items
+		$this->SetFillColor(240, 240, 240);
+
+		$this->x = $this->x_incial;
+		$this->Cell($ancho_description, $this->line_height, 'Producto', 'B', 0, 'L', 1);
+
+		if ($this->ancho > 60) {
+			$this->Cell($ancho_price, $this->line_height, 'Precio', 'B', 0, 'R', 1);
+		}
+
+		$this->Cell($ancho_price, $this->line_height, 'Total', 'B', 1, 'R', 1);
+
+		// Restaurar color de relleno y texto normal para que no afecte al resto del render
+		$this->SetFillColor(255, 255, 255);
+		$this->SetTextColor(0, 0, 0);
+		$this->x = $this->x_incial;
 	}
 
 	function totalItem($item) {
@@ -510,6 +647,13 @@ class SaleTicketPdf extends fpdf {
 		if (!is_null($this->afip_ticket)) {
 			$height += 120;
 		}
+
+		// Si el logo full width esta activo, la info de la empresa pasa a ir debajo del logo (no al costado),
+		// por lo que hay que reservar el alto del logo + un margen extra para esa info (~20mm)
+		if (!empty($this->logo_full_width)) {
+			$height += $this->getLogoFullWidthHeight() + 20;
+		}
+
 		foreach ($this->sale->combos as $combo) {
 			$height += $this->getHeight($combo, 20);
 			foreach ($combo->articles as $article) {
@@ -517,9 +661,11 @@ class SaleTicketPdf extends fpdf {
 			}
 		}
 		foreach ($this->sale->articles as $article) {
-			$height += $this->getHeight($article, 8);
+			// Se escala el aporte por linea segun la fuente configurada del nombre, para no cortar
+			// contenido cuando el usuario sube el tamaño por encima del default historico (12)
+			$height += $this->getHeight($article, 8) * ($this->name_font_size / 12);
 		}
-		
+
 		if ($this->sale->observations) {
 			$renglones = strlen($this->sale->observations) / 20;
 			if ($renglones < 1) {
@@ -527,7 +673,7 @@ class SaleTicketPdf extends fpdf {
 			}
 			$height += $renglones * 5;
 		}
-		// $height += 
+		// $height +=
 		return $height;
 	}
 
