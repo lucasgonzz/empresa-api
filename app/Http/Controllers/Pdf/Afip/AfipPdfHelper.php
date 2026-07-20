@@ -1098,32 +1098,48 @@ class AfipPdfHelper
     public static function enforce_fiscal_required_fields($layout)
     {
         /**
-         * Campos obligatorios del emisor en perfiles fiscales (no se pueden ocultar).
+         * Orden canónico fiscal: fuente única de verdad = el propio default del modelo.
+         * Derivarlo de acá (en vez de duplicar las listas) garantiza que enforce e
+         * default_header_layout nunca se desincronicen, y que enforce sea IDEMPOTENTE
+         * sobre el default (mismo emisor.izquierda/derecha de salida que de entrada) ->
+         * la salida fiscal del caso sin header_layout custom queda byte-idéntica.
          */
-        $required_izquierda = ['razon_social', 'domicilio_comercial', 'condicion_iva'];
-        $required_derecha = ['numero_comprobante', 'fecha_emision', 'cuit', 'ingresos_brutos', 'inicio_actividades', 'punto_venta'];
+        $default = \App\Models\PdfColumnProfile::default_header_layout(true);
+        $canonical_izquierda = $default['emisor']['izquierda'];
+        $canonical_derecha = $default['emisor']['derecha'];
 
         $current_izquierda = (isset($layout['emisor']['izquierda']) && is_array($layout['emisor']['izquierda']))
             ? $layout['emisor']['izquierda']
-            : [];
+            : array();
         $current_derecha = (isset($layout['emisor']['derecha']) && is_array($layout['emisor']['derecha']))
             ? $layout['emisor']['derecha']
-            : [];
+            : array();
 
-        foreach ($required_izquierda as $field) {
-            if (!in_array($field, $current_izquierda, true)) {
-                $current_izquierda[] = $field;
+        /**
+         * Extras del usuario = campos NO obligatorios (los únicos admitidos en fiscal son
+         * web/telefono/email), preservando el orden relativo en que vengan. Van DESPUÉS del
+         * bloque obligatorio: nunca pueden empujar ni reordenar los campos legales.
+         */
+        $extras_izquierda = array();
+        foreach ($current_izquierda as $field) {
+            if (!in_array($field, $canonical_izquierda, true)) {
+                $extras_izquierda[] = $field;
             }
         }
 
-        foreach ($required_derecha as $field) {
-            if (!in_array($field, $current_derecha, true)) {
-                $current_derecha[] = $field;
+        $extras_derecha = array();
+        foreach ($current_derecha as $field) {
+            if (!in_array($field, $canonical_derecha, true)) {
+                $extras_derecha[] = $field;
             }
         }
 
-        $layout['emisor']['izquierda'] = $current_izquierda;
-        $layout['emisor']['derecha'] = $current_derecha;
+        /**
+         * Obligatorios SIEMPRE primero y en orden canónico; extras opcionales al final.
+         * Solo se sobrescribe el bloque emisor; el resto de $layout (receptor, etc.) queda intacto.
+         */
+        $layout['emisor']['izquierda'] = array_merge($canonical_izquierda, $extras_izquierda);
+        $layout['emisor']['derecha'] = array_merge($canonical_derecha, $extras_derecha);
 
         return $layout;
     }
