@@ -547,6 +547,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('article-variant', 'ArticleVariantController@store');
     Route::put('article-variant/{id}', 'ArticleVariantController@update');
     Route::delete('article-variant/{id}', 'ArticleVariantController@destroy');
+    Route::put('article/{id}/variants-disponibilidad', 'ArticleVariantController@set_disponibilidad_masiva');
 
     Route::resource('payment-method-installment', 'PaymentMethodInstallmentController');
 

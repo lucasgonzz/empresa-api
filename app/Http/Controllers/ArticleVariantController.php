@@ -2,48 +2,46 @@
 
 namespace App\Http\Controllers;
 
-use App\Http\Controllers\Helpers\ArticleVariantHelper;
+use App\Http\Controllers\Helpers\article\ArticleVariantGeneratorHelper;
 use App\Models\ArticleVariant;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
 
 class ArticleVariantController extends Controller
 {
+    /**
+     * Genera/actualiza las variantes de un artículo.
+     *
+     * El cálculo del cartesiano y el diff incremental no destructivo ahora los hace el back
+     * (ver ArticleVariantGeneratorHelper) a partir de las article_properties ya guardadas en DB
+     * para el artículo. El front solo manda la intención (article_id); ya no arma ni postea el
+     * listado completo de variantes calculado en el mixin de JS.
+     *
+     * @param Request $request Espera `article_id`.
+     * @return \Illuminate\Http\JsonResponse Set completo de variantes del artículo, con withAll().
+     */
     function store(Request $request) {
+        // Id del artículo cuyas variantes se van a generar/actualizar.
         $article_id = $request->article_id;
 
-        $helper = new ArticleVariantHelper($article_id);
+        // El helper lee las article_properties/article_property_values desde la DB (fuente de verdad),
+        // calcula el cartesiano y aplica el diff: crea las combinaciones nuevas (ocultas), no toca las
+        // que ya existían y oculta (sin borrar) las que dejaron de ser válidas.
+        $generator = new ArticleVariantGeneratorHelper($article_id);
+        $models = $generator->generate();
 
-        $helper->check_cambio_en_cantidad_propiedades($request->models);
-
-        foreach ($request->models as $model) {
-
-            // Chequear si hay mas propiedades que antes, si es asi eliminar todo lo que esta hasta el momento
-
-
-
-
-
-            if (!$helper->variant_ya_esta_creada($model)) {
-
-                $article_variant = ArticleVariant::create([
-                    'article_id'                => $model['article_id'],
-                    'price'                     => null,
-                    'variant_description'       => $model['variant_description'],
-                    // 'image_url'                 => $model['image_url'],
-                ]);
-
-                $this->attachArticlePropertyValues($article_variant, $model['article_property_values']);
-
-                Log::info('se creo variante '.$article_variant['variant_description']);
-            } 
-        }
-        $models = ArticleVariant::where('article_id', $article_id)
-                                    ->withAll()
-                                    ->get();
         return response()->json(['models' => $models], 201);
     }
 
+    /**
+     * Actualiza una variante puntual (price/image_url/oculta).
+     *
+     * Nota: el manejo de `stock` en este método queda pendiente de revisión en el prompt 521
+     * (pasaría a manejarse por depósito vía addresses); no se toca acá salvo mantener la firma.
+     *
+     * @param Request $request Espera stock, price, image_url, oculta.
+     * @param int $id Id de la ArticleVariant a actualizar.
+     * @return \Illuminate\Http\JsonResponse Variante actualizada.
+     */
     function update(Request $request, $id) {
         $model = ArticleVariant::find($id);
         $model->stock = $request->stock;
@@ -53,6 +51,51 @@ class ArticleVariantController extends Controller
         $model->save();
 
         return response()->json(['model' => $model], 200);
+    }
+
+    /**
+     * Actualiza en bloque la disponibilidad (`oculta`) de todas las variantes de un artículo.
+     *
+     * Acciones soportadas en `request->accion`:
+     * - 'todas'     -> disponibles todas (oculta = false).
+     * - 'ninguna'   -> ninguna disponible (oculta = true).
+     * - 'con_stock' -> disponibles solo las que tienen stock > 0; el resto se oculta.
+     *
+     * @param Request $request Espera `accion`.
+     * @param int $article_id Id del artículo.
+     * @return \Illuminate\Http\JsonResponse Set completo de variantes del artículo, con withAll().
+     */
+    function set_disponibilidad_masiva(Request $request, $article_id) {
+        // Acción elegida por el usuario para la disponibilidad masiva.
+        $accion = $request->accion;
+
+        if ($accion == 'todas') {
+            // Todas las variantes del artículo pasan a estar disponibles.
+            ArticleVariant::where('article_id', $article_id)->update(['oculta' => false]);
+
+        } else if ($accion == 'ninguna') {
+            // Ninguna variante del artículo queda disponible.
+            ArticleVariant::where('article_id', $article_id)->update(['oculta' => true]);
+
+        } else if ($accion == 'con_stock') {
+            // Disponibles las que tienen stock > 0...
+            ArticleVariant::where('article_id', $article_id)
+                            ->where('stock', '>', 0)
+                            ->update(['oculta' => false]);
+
+            // ...y ocultas el resto (sin stock cargado o stock <= 0).
+            ArticleVariant::where('article_id', $article_id)
+                            ->where(function ($query) {
+                                $query->whereNull('stock')
+                                        ->orWhere('stock', '<=', 0);
+                            })
+                            ->update(['oculta' => true]);
+        }
+
+        $models = ArticleVariant::where('article_id', $article_id)
+                                    ->withAll()
+                                    ->get();
+        return response()->json(['models' => $models], 200);
     }
 
     function deleteVariants($article_id) {
@@ -65,11 +108,5 @@ class ArticleVariantController extends Controller
             $model->delete();
         }
         return response(null);
-    }
-
-    function attachArticlePropertyValues($article_variant, $article_properties) {
-        foreach ($article_properties as $article_property) {
-            $article_variant->article_property_values()->attach($article_property['id']);
-        }
     }
 }
