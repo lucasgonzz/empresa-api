@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Exports\ProviderExport;
 use App\Http\Controllers\Helpers\ExportHistoryHelper;
 use App\Http\Controllers\Helpers\jobs\BackgroundJobFailureHandler;
+use App\Jobs\Concerns\InstrumentaMemoria;
 use App\Models\ExportHistory;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
@@ -19,7 +20,7 @@ use Maatwebsite\Excel\Facades\Excel;
 
 class ProcessProviderExportJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels, InstrumentaMemoria;
 
     /**
      * Timeout amplio para exportaciones con muchos registros.
@@ -80,6 +81,10 @@ class ProcessProviderExportJob implements ShouldQueue
         $export_history = ExportHistory::find($this->export_history_id);
 
         try {
+            // Best effort: subir memory_limit del worker si viene bajo, y cortar temprano si ya arrancamos al tope.
+            $this->asegurar_memoria_minima();
+            $this->verificar_memoria_disponible('exportación de proveedores');
+
             $owner_user = User::find($this->owner_user_id);
             if (is_null($owner_user)) {
                 Log::warning('ProcessProviderExportJob: owner no encontrado', [
@@ -127,6 +132,16 @@ class ProcessProviderExportJob implements ShouldQueue
                 'owner_id' => $owner_user->id,
                 'is_only_for_auth_user' => $this->auth_user_id,
             ]));
+
+            // Instrumentación: pico de memoria del proceso durante esta exportación (para diagnosticar OOM).
+            if (!is_null($export_history)) {
+                $export_history->peak_memory_mb = $this->peak_memory_mb();
+                $export_history->memory_limit_mb = $this->memory_limit_mb();
+                $export_history->save();
+
+                Log::info('Exportación finalizada — pico memoria: ' . $export_history->peak_memory_mb
+                    . ' MB de ' . ($export_history->memory_limit_mb ?: 'sin límite') . ' MB');
+            }
         } catch (\Throwable $e) {
 
             Log::error('ProcessProviderExportJob: error al generar exportacion', [

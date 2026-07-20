@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Exports\ArticleExport;
 use App\Http\Controllers\Helpers\ExportHistoryHelper;
 use App\Http\Controllers\Helpers\jobs\BackgroundJobFailureHandler;
+use App\Jobs\Concerns\InstrumentaMemoria;
 use App\Models\Article;
 use App\Models\ExportHistory;
 use App\Models\User;
@@ -20,7 +21,7 @@ use Maatwebsite\Excel\Facades\Excel;
 
 class ProcessArticleExportJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels, InstrumentaMemoria;
 
     /**
      * Define timeout amplio para exportaciones grandes.
@@ -90,6 +91,10 @@ class ProcessArticleExportJob implements ShouldQueue
         $export_history = ExportHistory::find($this->export_history_id);
 
         try {
+            // Best effort: subir memory_limit del worker si viene bajo, y cortar temprano si ya arrancamos al tope.
+            $this->asegurar_memoria_minima();
+            $this->verificar_memoria_disponible('exportación de artículos');
+
             $owner_user = User::find($this->owner_user_id);
             if (is_null($owner_user)) {
                 Log::warning('ProcessArticleExportJob: owner no encontrado', [
@@ -147,6 +152,16 @@ class ProcessArticleExportJob implements ShouldQueue
                 'owner_id' => $owner_user->id,
                 'is_only_for_auth_user' => $this->auth_user_id,
             ]));
+
+            // Instrumentación: pico de memoria del proceso durante esta exportación (para diagnosticar OOM).
+            if (!is_null($export_history)) {
+                $export_history->peak_memory_mb = $this->peak_memory_mb();
+                $export_history->memory_limit_mb = $this->memory_limit_mb();
+                $export_history->save();
+
+                Log::info('Exportación finalizada — pico memoria: ' . $export_history->peak_memory_mb
+                    . ' MB de ' . ($export_history->memory_limit_mb ?: 'sin límite') . ' MB');
+            }
         } catch (\Throwable $e) {
 
             Log::error('ProcessArticleExportJob: error al generar exportacion', [
