@@ -338,6 +338,16 @@ class NewSalePdf extends fpdf
              */
             if ($this->should_print_total_in_footer()) {
 
+                /**
+                 * Sub Total + descuentos/recargos antes del Total, mismo criterio
+                 * de gating (show_subtotal_in_footer, hay o no descuentos/recargos)
+                 * que ya usa el path fiscal de última página. Usa el total bruto
+                 * final ya precalculado (get_final_total_bruto), NO el acumulado
+                 * incremental: en modo "cada página" Footer() puede ejecutarse
+                 * antes de haber sumado todos los ítems del documento.
+                 */
+                $this->descuentos_y_recargos($this->get_final_total_bruto());
+
                 $this->SetFont('Arial', 'B', 12);
                 $this->Cell(200, 10, 'Total: '.Numbers::price($this->sale->total, true, $this->sale->moneda_id), $this->b, 1, 'R');
             }
@@ -375,9 +385,17 @@ class NewSalePdf extends fpdf
         }
     }
 
-    function descuentos_y_recargos() {
+    function descuentos_y_recargos($total_bruto_override = null) {
 
-        $this->total_bruto = $this->total_articles + $this->total_combos + $this->total_promocion_vinotecas + $this->total_services;
+        /**
+         * Si se pasa un valor explícito (ej. el total bruto final precalculado
+         * para el pie de "cada página"), se usa ese. Si no, se mantiene el
+         * cálculo incremental de siempre (correcto en el path de última página,
+         * donde este método se llama después de haber impreso todos los ítems).
+         */
+        $this->total_bruto = $total_bruto_override !== null
+            ? $total_bruto_override
+            : $this->total_articles + $this->total_combos + $this->total_promocion_vinotecas + $this->total_services;
 
         if ($this->total_bruto != $this->sale->total) {
 
@@ -998,12 +1016,46 @@ class NewSalePdf extends fpdf
     function sub_total($item) {
 
         $amount = $item->pivot->amount;
-        
+
         $total = $item->pivot->price * $amount;
         if (!is_null($item->pivot->discount)) {
             $total -= $total * ($item->pivot->discount / 100);
         }
         return $total;
+    }
+
+    /**
+     * Cache del total bruto final (suma de sub_total() de TODOS los ítems de
+     * la venta), calculado una sola vez la primera vez que se necesita.
+     * A diferencia de $this->total_bruto (acumulador incremental que se arma
+     * mientras se imprimen los ítems), este valor es siempre el final completo
+     * — necesario para mostrar un Sub Total correcto en páginas que no son la
+     * última, cuando el perfil imprime el pie en cada hoja.
+     *
+     * @var float|null
+     */
+    private $final_total_bruto = null;
+
+    /**
+     * Devuelve el total bruto final de la venta (suma de todos los ítems,
+     * sin importar cuántos se llevan impresos todavía). Memoizado.
+     *
+     * @return float
+     */
+    private function get_final_total_bruto(): float
+    {
+        if ($this->final_total_bruto === null) {
+
+            $total = 0;
+
+            foreach ($this->get_sale_items() as $item) {
+                $total += $this->sub_total($item);
+            }
+
+            $this->final_total_bruto = $total;
+        }
+
+        return $this->final_total_bruto;
     }
 
     /**
