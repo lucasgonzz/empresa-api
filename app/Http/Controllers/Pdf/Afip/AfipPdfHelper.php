@@ -1527,14 +1527,6 @@ class AfipPdfHelper
         $right_end_y = $pdf->y;
         $pdf->y = max($left_end_y, $right_end_y);
 
-        /**
-         * Caja de conversión a pesos para ventas en moneda extranjera.
-         */
-        if ((int) $sale->moneda_id === 2 && (float) $sale->valor_dolar > 0 && $cbte_letra === 'E') {
-            $total_pesos = $total * (float) $sale->valor_dolar;
-            self::print_footer_conversion_box($pdf, $page_left, $page_width, $sale->valor_dolar, $total_pesos);
-        }
-
         $pdf->y += 3;
     }
 
@@ -1583,41 +1575,6 @@ class AfipPdfHelper
 
         $pdf->SetFont('Arial', $bold_value ? 'B' : '', 9);
         $pdf->Cell($value_col_w, $line_h, $value, 0, 1, 'R');
-    }
-
-    /**
-     * Dibuja la caja de conversión a pesos argentinos (comprobantes en moneda extranjera).
-     *
-     * @param mixed $pdf Instancia FPDF.
-     * @param float $x Inicio X de la caja.
-     * @param float $width Ancho de la caja.
-     * @param float $tipo_cambio Cotización utilizada.
-     * @param float $total_pesos Total convertido a ARS.
-     * @return void
-     */
-    protected static function print_footer_conversion_box($pdf, $x, $width, $tipo_cambio, $total_pesos): void
-    {
-        $box_y = $pdf->y + 2;
-        $box_h = 10;
-        $inner_pad = 2;
-        $text_width = 145;
-
-        $conversion_text = 'El total de este comprobante, expresado en Pesos Argentinos considerando un tipo de cambio consignado de '
-            .number_format((float) $tipo_cambio, 6, ',', '.')
-            .', asciende a:';
-
-        $pdf->y = $box_y + $inner_pad;
-        $pdf->x = $x + $inner_pad;
-        $pdf->SetFont('Arial', '', 8);
-        $pdf->MultiCell($text_width, 4, $conversion_text, 0, 'L');
-
-        $pdf->y = $box_y + 3;
-        $pdf->x = $x + $text_width;
-        $pdf->SetFont('Arial', 'B', 10);
-        $pdf->Cell($width - $text_width - $inner_pad, 5, '$ '.Numbers::price($total_pesos), 0, 0, 'R');
-
-        self::draw_box($pdf, $x, $box_y, $width, $box_h);
-        $pdf->y = $box_y + $box_h;
     }
 
     /**
