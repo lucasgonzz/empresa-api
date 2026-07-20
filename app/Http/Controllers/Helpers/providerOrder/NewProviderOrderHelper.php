@@ -246,6 +246,28 @@ class NewProviderOrderHelper {
                 continue;
             }
 
+            // Prompt 516: consistencia neto/bruto al costo (Capa 1), mismo criterio que el
+            // back-out de costo del prompt 514. Si el costo extra vino FACTURADO con alícuota
+            // propia (`iva_id`) y el usuario es Responsable Inscripto (IVA recuperable ->
+            // `aplicar_iva_al_costo` OFF), el IVA de ese costo extra es crédito fiscal, no costo:
+            // se prorratea el NETO (se le saca el IVA con SU propia alícuota, no la de los
+            // artículos). Si es Monotributista (`aplicar_iva_al_costo` ON) o el costo extra no
+            // está facturado, se prorratea el monto entero (comportamiento actual, sin cambios).
+            if ($extra_cost->facturado && (int)$extra_cost->iva_id > 0 && !$this->user->aplicar_iva_al_costo) {
+
+                $iva_costo_extra = $this->get_iva($extra_cost->iva_id);
+
+                if (!is_null($iva_costo_extra)) {
+
+                    $alicuota_costo_extra = (float)$iva_costo_extra->percentage;
+
+                    if ($alicuota_costo_extra > 0) {
+                        // Back-out "final -> neto": neto = bruto / (1 + alicuota/100).
+                        $valor_costo_extra = $valor_costo_extra / (1 + ($alicuota_costo_extra / 100));
+                    }
+                }
+            }
+
             foreach ($this->provider_order->articles as $article) {
 
                 // Subtotal de este ítem, calculado con la misma lógica que usa set_totales()
