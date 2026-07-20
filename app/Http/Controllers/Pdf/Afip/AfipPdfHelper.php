@@ -1388,6 +1388,90 @@ class AfipPdfHelper
     }
 
     /**
+     * Estima la altura total (en mm) que va a ocupar AfipPdfHelper::footer() para
+     * este comprobante, sin dibujar nada. Replica la misma lógica de ramas que
+     * print_footer_importes_block() + print_footer_official_block(): letra E
+     * (exportación) omite la tabla de Otros Tributos; letra A/B agrega el
+     * desglose de IVA (Importe Neto Gravado + alícuotas). El bloque oficial
+     * (QR + logo AFIP + CAE) es prácticamente constante porque el QR de 45mm
+     * domina el alto.
+     *
+     * Nota (prompt 532): al momento de escribir este método, el grupo 127
+     * (528_afip_quitar_caja_conversion_pesos_footer.md) ya se había ejecutado
+     * y `print_footer_conversion_box()` ya no existe en print_footer_importes_block(),
+     * por lo que este estimador no reserva altura extra para esa caja: en letra E
+     * la estimación es la misma en pesos que en dólares.
+     *
+     * IMPORTANTE: si se modifica el layout de print_footer_importes_block() o
+     * print_footer_official_block() (nuevas filas, tamaños de fuente/celda
+     * distintos, se agrega/saca algún bloque), este método tiene que actualizarse
+     * en el mismo cambio o la estimación queda desincronizada del render real.
+     *
+     * @param mixed $afip_ticket Ticket AFIP (no llamar si is_afip_ticket es false).
+     * @param mixed $sale Venta asociada.
+     * @param bool $show_importes Si el bloque de importes se va a imprimir (espeja el parámetro homónimo de footer()).
+     * @return float Altura estimada en mm.
+     */
+    public static function estimate_footer_height($afip_ticket, $sale, bool $show_importes = true): float
+    {
+        /**
+         * Alto de renglón de la tabla/columna de importes, igual al usado en
+         * print_footer_importes_block() ($row_h = 5).
+         */
+        $row_h = 5;
+        /**
+         * Acumulador de altura estimada total en mm.
+         */
+        $height = 0;
+
+        if ($show_importes) {
+
+            /**
+             * Letra del comprobante: define qué filas se muestran (mismo criterio
+             * que print_footer_importes_block()).
+             */
+            $cbte_letra = (string) $afip_ticket->cbte_letra;
+            $es_exportacion = $cbte_letra === 'E';
+
+            /**
+             * Columna izquierda (tabla Otros Tributos): título + encabezado + filas
+             * fijas + subtotal. Ausente por completo en comprobantes de exportación.
+             */
+            $left_height = $es_exportacion
+                ? 0
+                : ($row_h * 2) + (count(self::$otros_tributos_rows) * $row_h) + $row_h;
+
+            /**
+             * Columna derecha: moneda + (si A/B) neto gravado + alícuotas de IVA
+             * + (si no exportación) Otros Tributos + Importe Total.
+             */
+            $right_height = $row_h;
+            if ($cbte_letra === 'A' || $cbte_letra === 'B') {
+                $right_height += $row_h + (count(self::$iva_rate_labels) * $row_h);
+            }
+            if (!$es_exportacion) {
+                $right_height += $row_h;
+            }
+            $right_height += $row_h + 1;
+
+            /**
+             * La altura real del bloque de importes queda determinada por la columna
+             * más alta de las dos (izquierda/derecha), más los márgenes que agrega
+             * print_footer_importes_block() (5 antes de empezar y 3 después).
+             */
+            $height += 5 + max($left_height, $right_height) + 3;
+        }
+
+        /**
+         * Bloque oficial (QR + logo AFIP + leyenda + CAE): altura casi constante,
+         * el QR de 45mm domina por sobre el bloque central y el de CAE.
+         */
+        $height += 51;
+
+        return $height;
+    }
+
+    /**
      * Bloque de importes: tabla Otros Tributos + resumen fiscal (modelo AFIP).
      *
      * @param mixed $pdf Instancia FPDF.

@@ -1019,7 +1019,23 @@ class NewSalePdf extends fpdf
          */
         if ($this->show_totals_on_each_page) {
 
-            $base_limit_y = $this->afip_ticket ? 210 : 260;
+            /**
+             * Para comprobantes fiscales, la altura reservada para el pie ya no
+             * es un número fijo (antes 210): se calcula según la letra del
+             * comprobante y la moneda (AfipPdfHelper::estimate_footer_height),
+             * porque el pie AFIP varía bastante entre letra A/B (con desglose
+             * de IVA), C (sin desglose) y E/exportación.
+             */
+            $fiscal_footer_reserved = $this->is_afip_ticket
+                ? AfipPdfHelper::estimate_footer_height(
+                    $this->afip_ticket,
+                    $this->sale,
+                    $this->should_print_total_in_footer()
+                )
+                : 0;
+
+            $base_limit_y = $this->is_afip_ticket ? (285 - $fiscal_footer_reserved) : 260;
+
             /**
              * Reserva extra cuando el perfil agrega comisiones/costos y/o texto libre
              * en cada pie para evitar superposición con filas de ítems.
@@ -1094,6 +1110,28 @@ class NewSalePdf extends fpdf
      */
     private function get_last_page_footer_break_limit_y(bool $with_total_block): int
     {
+        if ($this->is_afip_ticket) {
+            /**
+             * El pie fiscal (AfipPdfHelper::footer) tiene altura variable según
+             * letra de comprobante y moneda (ver AfipPdfHelper::estimate_footer_height).
+             * Se resta esa altura real de 285 (mismo límite inferior usable de
+             * página que usa get_items_page_break_limit_y en el path sin "cada
+             * página") para decidir si hace falta un salto de página antes de
+             * imprimir el pie fiscal completo en la última hoja.
+             */
+            $fiscal_footer_height = AfipPdfHelper::estimate_footer_height(
+                $this->afip_ticket,
+                $this->sale,
+                $with_total_block
+            );
+
+            $extra_reserved_height = $this->estimate_optional_footer_extras_height()
+                + $this->estimate_footer_text_height()
+                + $this->estimate_observations_height();
+
+            return max(120, 285 - $fiscal_footer_height - $extra_reserved_height);
+        }
+
         $base_limit_y = $with_total_block ? 265 : 275;
 
         /**
