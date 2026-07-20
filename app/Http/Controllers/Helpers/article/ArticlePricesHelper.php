@@ -298,7 +298,60 @@ class ArticlePricesHelper {
     }
 
     static function hasIva($article) {
-        return !is_null($article->iva) && $article->iva->percentage != '0' && $article->iva->percentage != 'Exento' && $article->iva->percentage != 'No Gravado'; 
+        return !is_null($article->iva) && $article->iva->percentage != '0' && $article->iva->percentage != 'Exento' && $article->iva->percentage != 'No Gravado';
+    }
+
+    /**
+     * Prompt 514 — "Back-out" de IVA sobre un costo BRUTO, para dejarlo NETO.
+     *
+     * Convención del sistema (decisión de Lucas, 18/7): `articles.cost` y `article_provider.cost`
+     * son SIEMPRE netos (sin IVA). Cuando el precio de origen (lista del proveedor, orden de
+     * compra, import) viene CON IVA incluido, hay que sacárselo ANTES de escribir el costo, usando
+     * la alícuota propia del artículo — no una alícuota global — para no inflar el costeo de un
+     * Responsable Inscripto (para quien el IVA es crédito fiscal recuperable, no costo) ni duplicar
+     * el IVA de un Monotributista, a quien el pipeline de precios (ArticleHelper::aplicar_iva_al_costo,
+     * ArticlePricesHelper::aplicar_iva) ya se lo vuelve a sumar una sola vez sobre el costo neto.
+     *
+     * Fórmula: neto = bruto / (1 + alicuota/100).
+     *
+     * Reusa exactamente el mismo criterio de "el artículo tiene IVA aplicable" que aplicar_iva()
+     * (aplicar_iva() del artículo + hasIva(), que descarta alícuota 0/Exento/No Gravado), para que
+     * el back-out en la escritura sea simétrico con el IVA que se vuelve a sumar en la lectura.
+     *
+     * @param  \App\Models\Article $article      Artículo cuya alícuota de IVA se usa para el back-out.
+     * @param  float|string        $cost_bruto   Costo con IVA incluido, tal cual vino del origen.
+     * @return float                             Costo neto (sin IVA). Si el artículo no tiene IVA
+     *                                            aplicable (sin alícuota, 0%, Exento o No Gravado, o
+     *                                            aplicar_iva desactivado), devuelve el bruto sin tocar.
+     */
+    static function back_out_iva($article, $cost_bruto) {
+
+        $cost_bruto = (float)$cost_bruto;
+
+        if (is_null($article)) {
+            return $cost_bruto;
+        }
+
+        // Misma condición que aplicar_iva(): el artículo tiene que tener aplicar_iva ON y una
+        // alícuota cargada que no sea 0/Exento/No Gravado. Si no la tiene, no hay IVA que sacar.
+        if (!$article->aplicar_iva) {
+            return $cost_bruto;
+        }
+
+        // Se fuerza recarga (no loadMissing) por si el artículo trae la relación `iva` cacheada de
+        // ANTES de que update_iva() le cambiara el iva_id en memoria dentro de este mismo request
+        // (mismo criterio que usa aplicar_iva()): sin esto, el back-out podría calcular con una
+        // alícuota vieja.
+        $article->load('iva');
+
+        if (!Self::hasIva($article)) {
+            return $cost_bruto;
+        }
+
+        // Back-out: neto = bruto / (1 + alicuota/100).
+        $alicuota = (float)$article->iva->percentage;
+
+        return $cost_bruto / (1 + ($alicuota / 100));
     }
 
     static function aplicar_descuentos($article, $price, $des = []) {

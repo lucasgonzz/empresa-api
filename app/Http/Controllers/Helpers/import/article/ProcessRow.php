@@ -79,6 +79,13 @@ class ProcessRow {
      */
     protected $forced_blank_props = [];
 
+    /**
+     * Prompt 514: hook preparado (sin fuente en la UI aún, ver comentario en el constructor) para
+     * el mismo criterio "precios incluyen IVA" de la compra manual. Default false = comportamiento
+     * idéntico al de siempre (no se toca ningún costo).
+     */
+    protected $precios_incluyen_iva = false;
+
 
     /**
      * Constructor: recibe los datos necesarios para procesar las filas
@@ -101,6 +108,22 @@ class ProcessRow {
 
         // Prompt 310: flags "permitir valores en blanco" por columna mapeada (default vacío = todas en false).
         $this->blank_flags = isset($data['blank_flags']) && is_array($data['blank_flags']) ? $data['blank_flags'] : [];
+
+        /*
+         * Prompt 514 — Hook preparado (todavía sin fuente en la UI de import) para el mismo
+         * criterio de "precios incluyen IVA" que ya tiene la compra manual
+         * (ProviderOrder::precios_incluyen_iva, prompt 513, aplicado en
+         * NewProviderOrderHelper::update_cost()/catalogar_costo_proveedor(), prompt 514): si el
+         * Excel importado trae costos CON IVA incluido, hay que sacárselo antes de escribir
+         * articles.cost / article_provider.cost (que son siempre NETOS por convención).
+         *
+         * Hoy ningún llamador de ProcessRow pasa esta clave, así que $this->precios_incluyen_iva
+         * queda siempre en false y back_out_iva_import() es un no-op — el import se comporta
+         * exactamente igual que antes de este prompt. Cuando el import agregue un flag equivalente
+         * (fuera de scope de este prompt, ver prompt 517 para el frontend), alcanza con pasar
+         * 'precios_incluyen_iva' => true/false en el array $data de este constructor.
+         */
+        $this->precios_incluyen_iva = isset($data['precios_incluyen_iva']) ? (bool)$data['precios_incluyen_iva'] : false;
 
         $this->set_price_types();
         $this->set_addresses();
@@ -214,6 +237,49 @@ class ProcessRow {
             ->get()
             ->mapWithKeys(fn ($i) => [trim((string)$i->percentage) => (int)$i->id])
             ->toArray();
+    }
+
+    /**
+     * Prompt 514 — Hook de back-out de IVA para el import (ver comentario detallado en el
+     * constructor y en el punto donde se llama, dentro de procesar()).
+     *
+     * Mismo criterio y misma fórmula que ArticlePricesHelper::back_out_iva() (usado por la compra
+     * manual en NewProviderOrderHelper): neto = bruto / (1 + alicuota/100), usando la alícuota
+     * PROPIA del artículo/fila (por `iva_id`), nunca una alícuota global. No usa
+     * ArticlePricesHelper::back_out_iva() directamente porque ese método espera una instancia de
+     * Article (con su relación `iva`) y acá, en el momento en que se arma $data, todavía no existe
+     * necesariamente un Article persistido — solo tenemos el `iva_id` de la fila del Excel.
+     *
+     * Con $this->precios_incluyen_iva en false (hoy siempre, ver constructor) es un no-op.
+     *
+     * @param  mixed    $cost    Costo tal cual lo devolvió get_number() (string numérico o null).
+     * @param  int|null $iva_id  Id de la alícuota de IVA de la fila (columna 'iva' del Excel).
+     * @return mixed             Costo neto (string numérico, mismo formato que get_number()) si
+     *                           corresponde hacer el back-out; si no, $cost sin modificar.
+     */
+    private function back_out_iva_import($cost, $iva_id)
+    {
+        if (!$this->precios_incluyen_iva || is_null($cost) || $cost === '') {
+            return $cost;
+        }
+
+        // Sin alícuota conocida para esta fila no se puede hacer el back-out: se deja el costo
+        // tal cual vino (conservador, evita restar IVA "a ciegas").
+        if (is_null($iva_id)) {
+            return $cost;
+        }
+
+        $iva = Iva::find($iva_id);
+
+        // Mismo criterio que ArticlePricesHelper::hasIva(): sin alícuota real (0/Exento/No
+        // Gravado) no hay IVA que sacar.
+        if (is_null($iva) || in_array((string)$iva->percentage, ['0', 'Exento', 'No Gravado'], true)) {
+            return $cost;
+        }
+
+        $neto = (float)$cost / (1 + ((float)$iva->percentage / 100));
+
+        return number_format($neto, 2, '.', '');
     }
 
     function set_se_importaron_price_types() {
@@ -368,6 +434,16 @@ class ProcessRow {
             $iva_id = $this->get_iva_id($row);
             $data['iva_id'] = $iva_id;
             $this->terminar('set iva_id');
+        }
+
+        /*
+         * Prompt 514 — Back-out de IVA del costo importado (hook, ver comentario en el
+         * constructor). Con $this->precios_incluyen_iva en false (caso de hoy, siempre) esta
+         * llamada es un no-op y $data['cost'] queda intacto. Se ubica acá porque recién en este
+         * punto ya están resueltos $data['cost'] (props_to_add) y $data['iva_id'] de la fila.
+         */
+        if (isset($data['cost'])) {
+            $data['cost'] = $this->back_out_iva_import($data['cost'], $data['iva_id'] ?? null);
         }
 
 

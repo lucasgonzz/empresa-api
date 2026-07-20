@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\providerOrder;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -843,8 +844,10 @@ class NewProviderOrderHelper {
      * (movimiento de stock).
      *
      * Alimenta la futura recomendación de "a qué proveedor conviene comprar": guarda el costo
-     * BRUTO (mismo valor que setea update_cost(), sin descuentos aplicados) más el
-     * `provider_code`, sin tocar la relación del artículo con otros proveedores.
+     * NETO (mismo valor que setea update_cost() luego del back-out de IVA del prompt 514, sin
+     * descuentos aplicados) más el `provider_code`, sin tocar la relación del artículo con otros
+     * proveedores. Se normaliza acá también para que la comparación de costo entre proveedores sea
+     * homogénea (todos netos), sin importar si cada proveedor factura con IVA incluido o no.
      *
      * Gate: solo se llama con `update_prices` ON (ver update_article()).
      */
@@ -856,13 +859,22 @@ class NewProviderOrderHelper {
             return;
         }
 
-        // Costo bruto literal cargado en el pivot de esta compra (mismo valor que usa update_cost()).
+        // Costo bruto literal cargado en el pivot de esta compra (mismo valor que usa update_cost()
+        // antes del back-out).
         $cost = (isset($new_article['pivot']['cost']) && $new_article['pivot']['cost'] != '')
             ? $new_article['pivot']['cost']
             : null;
 
         if (is_null($cost)) {
             return;
+        }
+
+        // Prompt 514: mismo back-out que update_cost() — si la orden trae precios con IVA incluido,
+        // se guarda el costo NETO también en article_provider, para mantener la convención
+        // "articles.cost / article_provider.cost siempre netos" y no inflar la comparación entre
+        // proveedores.
+        if ($this->provider_order->precios_incluyen_iva) {
+            $cost = ArticlePricesHelper::back_out_iva($article, $cost);
         }
 
         $pivot_data = [
@@ -1048,19 +1060,28 @@ class NewProviderOrderHelper {
 
         $cost = null;
 
-        if (isset($new_article['pivot']['cost']) 
+        if (isset($new_article['pivot']['cost'])
             && $new_article['pivot']['cost'] != '') {
 
             $cost = $new_article['pivot']['cost'];
         }
 
-        if (!is_null($cost) 
+        // Prompt 514: `articles.cost` es SIEMPRE neto (sin IVA), por convención del sistema. Si la
+        // orden de compra tiene `precios_incluyen_iva` ON, el costo que llega en el pivot viene con
+        // IVA incluido (precio de lista del proveedor) y hay que sacárselo ANTES de guardarlo, con
+        // la alícuota propia del artículo (ArticlePricesHelper::back_out_iva). Con el flag OFF (o
+        // sin cargar) el comportamiento queda idéntico al de siempre: se guarda el valor tal cual.
+        if (!is_null($cost) && $this->provider_order->precios_incluyen_iva) {
+            $cost = ArticlePricesHelper::back_out_iva($article, $cost);
+        }
+
+        if (!is_null($cost)
 
             && $article->cost != $cost) {
 
 
             $article->cost = $cost;
-            
+
             if (
                 isset($new_article['pivot'])
                 && isset($new_article['pivot']['cost_in_dollars'])
