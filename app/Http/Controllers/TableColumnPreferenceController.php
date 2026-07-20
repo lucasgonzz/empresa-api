@@ -12,7 +12,7 @@ class TableColumnPreferenceController extends Controller
      */
     protected function assert_preference_type(string $preference_type): void
     {
-        if (in_array($preference_type, ['table', 'search', 'form_has_many'], true)) {
+        if (in_array($preference_type, ['table', 'search', 'form_has_many', 'global_search'], true)) {
             return;
         }
 
