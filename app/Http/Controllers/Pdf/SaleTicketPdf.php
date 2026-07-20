@@ -453,6 +453,11 @@ class SaleTicketPdf extends fpdf {
 		$this->x = $this->x_incial;
 		$this->Cell($ancho_description, $this->line_height, 'Producto', 'B', 0, 'L', 1);
 
+		// Forzar posicionamiento absoluto de x antes de las celdas de precio/total, igual que hacen
+		// los 3 loops de items() (articles, promocion_vinotecas, services), para que el encabezado
+		// quede alineado con los valores y no dependa del avance natural de celdas de FPDF
+		$this->x = $ancho_description + 2;
+
 		if ($this->ancho > 60) {
 			$this->Cell($ancho_price, $this->line_height, 'Precio', 'B', 0, 'R', 1);
 		}
