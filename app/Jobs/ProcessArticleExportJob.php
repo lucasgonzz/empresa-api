@@ -4,12 +4,12 @@ namespace App\Jobs;
 
 use App\Exports\ArticleExport;
 use App\Http\Controllers\Helpers\ExportHistoryHelper;
+use App\Http\Controllers\Helpers\jobs\BackgroundJobFailureHandler;
 use App\Models\Article;
 use App\Models\ExportHistory;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
 use Carbon\Carbon;
-use Exception;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -147,39 +147,52 @@ class ProcessArticleExportJob implements ShouldQueue
                 'owner_id' => $owner_user->id,
                 'is_only_for_auth_user' => $this->auth_user_id,
             ]));
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
+
             Log::error('ProcessArticleExportJob: error al generar exportacion', [
-                'owner_user_id' => $this->owner_user_id,
-                'auth_user_id' => $this->auth_user_id,
-                'article_ids_count' => count($this->article_ids),
+                'owner_user_id'     => $this->owner_user_id,
+                'auth_user_id'      => $this->auth_user_id,
                 'export_history_id' => $this->export_history_id,
-                'message' => $e->getMessage(),
-                'archivo' => $e->getFile(),
-                'linea' => $e->getLine(),
+                'message'           => $e->getMessage(),
+                'archivo'           => $e->getFile(),
+                'linea'             => $e->getLine(),
             ]);
 
-            if ($export_history) {
-                ExportHistoryHelper::mark_failed($export_history, $e->getMessage());
-            }
+            // Punto único idempotente: marca 'failed' + notifica (una sola vez, aunque después corra failed()).
+            BackgroundJobFailureHandler::marcar_export_fallido(
+                $this->export_history_id,
+                $this->owner_user_id,
+                $this->auth_user_id,
+                'No se pudo generar el excel de articulos',
+                $e->getMessage()
+            );
 
-            $owner_user = User::find($this->owner_user_id);
-            if (!is_null($owner_user)) {
-                $functions_to_execute = [
-                    [
-                        'btn_text' => 'Entendido',
-                        'btn_variant' => 'primary',
-                    ],
-                ];
-
-                $owner_user->notify(new GlobalNotification([
-                    'message_text' => 'No se pudo generar el excel de articulos',
-                    'color_variant' => 'danger',
-                    'functions_to_execute' => $functions_to_execute,
-                    'info_to_show' => [],
-                    'owner_id' => $owner_user->id,
-                    'is_only_for_auth_user' => $this->auth_user_id,
-                ]));
-            }
+            // Re-lanzamos: deja traza en failed_jobs y evita que el job se marque como exitoso.
+            throw $e;
         }
+    }
+
+    /**
+     * Se ejecuta cuando el job falla en forma definitiva, INCLUIDO cuando el proceso murió sin llegar al
+     * catch del handle() (OOM, kill del LVE de CloudLinux, timeout de proceso, worker reiniciado →
+     * MaxAttemptsExceededException lanzada por el Worker). Corre en un proceso fresco: puede escribir en la
+     * BD y notificar aunque el proceso anterior haya muerto por falta de memoria.
+     *
+     * Idempotente vía BackgroundJobFailureHandler: si el catch del handle() ya lo marcó, esto es no-op.
+     *
+     * @param  \Throwable  $e
+     * @return void
+     */
+    public function failed($e)
+    {
+        $motivo = !is_null($e) ? $e->getMessage() : null;
+
+        BackgroundJobFailureHandler::marcar_export_fallido(
+            $this->export_history_id,
+            $this->owner_user_id,
+            $this->auth_user_id,
+            'No se pudo generar el excel de articulos',
+            $motivo
+        );
     }
 }
