@@ -65,6 +65,11 @@ class Kernel extends ConsoleKernel
         $schedule->command('imports:detectar-colgadas')
             ->everyFiveMinutes()
             ->withoutOverlapping();
+
+        /* Watchdog de historiales colgados: desbloquea exportaciones (y a futuro imports) que murieron sin traza. */
+        $schedule->command('historiales:detectar-colgados')
+            ->everyFiveMinutes()
+            ->withoutOverlapping();
     }
 
     /**
