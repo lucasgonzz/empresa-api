@@ -360,6 +360,13 @@ class NewSalePdf extends fpdf
          * seguido del texto de pie de página si está configurado.
          */
         if ($this->is_afip_ticket && $this->ticket_info_helper && $this->ticket_info_helper->has_afip_context() && $this->should_print_totals_in_footer()) {
+            /**
+             * Las observaciones son parte del pie fiscal y van ARRIBA de todo el
+             * bloque AFIP/ARCA (tabla Otros Tributos, importes, QR y logo ARCA).
+             * Al imprimirlas dentro de este branch fiscal se repiten en cada hoja
+             * igual que el resto del pie cuando el perfil pide "pie en cada hoja".
+             */
+            $this->print_observations_block();
             AfipPdfHelper::footer(
                 $this,
                 $this->afip_ticket,
@@ -379,8 +386,12 @@ class NewSalePdf extends fpdf
          * El espacio ya fue reservado en get_items_page_break_limit_y(), por lo que
          * acá no se dispara ningún salto de página (no es seguro llamar AddPage()
          * desde dentro de Footer(), FPDF lo invoca recursivamente).
+         *
+         * Solo perfil comercial (remito): en perfil fiscal las observaciones ya se
+         * imprimieron ARRIBA del bloque AFIP (ver branch fiscal más arriba), así que
+         * acá se excluye el caso fiscal para no dibujarlas dos veces.
          */
-        if ($this->should_print_totals_in_footer()) {
+        if (!$this->is_afip_ticket && $this->should_print_totals_in_footer()) {
             $this->print_observations_block();
         }
     }
@@ -1665,6 +1676,12 @@ class NewSalePdf extends fpdf
          */
         if ($this->ticket_info_helper && $this->ticket_info_helper->has_afip_context()) {
 
+            /**
+             * Observaciones como parte del pie fiscal: van ARRIBA de la tabla de
+             * Otros Tributos, de los importes y del bloque oficial (QR + logo ARCA + CAE).
+             */
+            $this->print_observations_block();
+
             $this->descuentos_y_recargos();
 
             AfipPdfHelper::footer(
@@ -1677,9 +1694,13 @@ class NewSalePdf extends fpdf
             );
             $this->print_optional_footer_extras();
             $this->print_footer_text_block();
+        } else {
+            /**
+             * Perfil marcado como fiscal pero sin contexto AFIP resoluble: se
+             * mantiene la impresión de observaciones al cierre para no perderlas.
+             */
+            $this->print_observations_block();
         }
-
-        $this->print_observations_block();
     }
 }
 
