@@ -4,9 +4,11 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
+use App\Http\Controllers\Helpers\WhatsappTemplateHelper;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
+use App\Models\WhatsappTemplate;
 use App\Services\WhatsappBotAiService;
 use App\Services\WhatsappBotSendService;
 use Illuminate\Http\JsonResponse;
@@ -153,6 +155,61 @@ class WhatsappChatController extends Controller
         // Empleado autenticado (sin resolver al owner) que efectivamente mandó el mensaje.
         $sent_by_user_id = $this->userId(false);
         $message = WhatsappChatHelper::store_outbound_manual_message($chat, $body, $wa_message_id, $sent_by_user_id);
+
+        return response()->json(['model' => $this->fullModel('WhatsappChatMessage', $message->id)], 201);
+    }
+
+    /**
+     * Manda una plantilla de Meta a un chat (grupo 137, Prompt 04). Es el ÚNICO camino
+     * para mandar mensajes cuando la ventana de 24 h está cerrada
+     * (`!$chat->is_within_service_window()`), pero también funciona con la ventana
+     * abierta. Valida que la plantilla sea del owner autenticado, esté `aprobada` y que
+     * la cantidad de variables recibidas coincida con la que declara la plantilla.
+     *
+     * @param  Request  $request  Espera `template_id` y `variables` (array, en el mismo orden que la plantilla).
+     * @param  int  $id
+     * @return JsonResponse
+     */
+    public function send_template(Request $request, $id): JsonResponse
+    {
+        $chat = $this->find_owned_chat($id);
+        if (is_null($chat)) {
+            return response()->json(['message' => 'Chat no encontrado.'], 404);
+        }
+
+        $template = WhatsappTemplate::where('id', $request->template_id)
+            ->where('user_id', $chat->user_id)
+            ->first();
+        if (is_null($template)) {
+            return response()->json(['message' => 'Plantilla no encontrada.'], 404);
+        }
+
+        $variables = is_array($request->variables) ? $request->variables : [];
+        $validation_error = WhatsappTemplateHelper::validate_for_send($template, $variables);
+        if (! is_null($validation_error)) {
+            return response()->json(['message' => $validation_error], 422);
+        }
+
+        $config = WhatsappBotConfig::where('user_id', $chat->user_id)->first();
+        if (is_null($config)) {
+            return response()->json(['message' => 'No hay una configuración de WhatsApp activa para esta empresa.'], 422);
+        }
+
+        $send_service = new WhatsappBotSendService();
+        $wa_message_id = $send_service->send_template($chat->phone, $template, $variables, $config);
+
+        // Cuerpo final ya con las variables reemplazadas, para mostrarlo como cualquier otro mensaje del chat.
+        $rendered_body = $template->render_body($variables);
+
+        // Empleado autenticado (sin resolver al owner) que efectivamente mandó la plantilla.
+        $sent_by_user_id = $this->userId(false);
+        $message = WhatsappChatHelper::store_outbound_template_message(
+            $chat,
+            $rendered_body,
+            $wa_message_id,
+            $sent_by_user_id,
+            $template->meta_template_name
+        );
 
         return response()->json(['model' => $this->fullModel('WhatsappChatMessage', $message->id)], 201);
     }

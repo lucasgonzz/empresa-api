@@ -123,17 +123,37 @@ class WhatsappChatHelper
     }
 
     /**
+     * Guarda un mensaje `out` enviado como plantilla de Meta (endpoint
+     * `POST whatsapp-chats/{id}/send-template`, grupo 137 Prompt 04) y emite el
+     * broadcast. Es el único camino para responder cuando la ventana de 24 h está
+     * cerrada. `$body` ya debe venir con las variables reemplazadas
+     * (`WhatsappTemplate::render_body()`), no con los placeholders `{{1}}`, `{{2}}`...
+     *
+     * @param  WhatsappChat  $chat  Chat al que pertenece el mensaje.
+     * @param  string  $body  Preview de la plantilla con las variables ya reemplazadas.
+     * @param  string|null  $wa_message_id  Id que devolvió Kapso al enviar (puede no venir).
+     * @param  int|null  $sent_by_user_id  Empleado autenticado que lo mandó.
+     * @param  string  $template_meta_name  Nombre técnico de la plantilla usada en Meta.
+     * @return WhatsappChatMessage
+     */
+    public static function store_outbound_template_message(WhatsappChat $chat, $body, $wa_message_id, $sent_by_user_id, $template_meta_name)
+    {
+        return self::store_outbound_message($chat, $body, $wa_message_id, 'plantilla', $sent_by_user_id, $template_meta_name);
+    }
+
+    /**
      * Lógica común de persistencia de un mensaje saliente (compartida entre la respuesta
-     * de IA y el envío manual desde el módulo).
+     * de IA, el envío manual y el envío de plantilla desde el módulo).
      *
      * @param  WhatsappChat  $chat
      * @param  string  $body
      * @param  string|null  $wa_message_id
-     * @param  string  $source  'ia' | 'manual'.
+     * @param  string  $source  'ia' | 'manual' | 'plantilla'.
      * @param  int|null  $sent_by_user_id
+     * @param  string|null  $template_meta_name  Solo aplica a source 'plantilla'.
      * @return WhatsappChatMessage
      */
-    private static function store_outbound_message(WhatsappChat $chat, $body, $wa_message_id, $source, $sent_by_user_id)
+    private static function store_outbound_message(WhatsappChat $chat, $body, $wa_message_id, $source, $sent_by_user_id, $template_meta_name = null)
     {
         $message = WhatsappChatMessage::create([
             'whatsapp_chat_id' => $chat->id,
@@ -143,6 +163,7 @@ class WhatsappChatHelper
             'body' => $body,
             'wa_message_id' => $wa_message_id,
             'delivery_status' => 'pendiente',
+            'template_meta_name' => $template_meta_name,
         ]);
 
         $chat->last_message_at = now();

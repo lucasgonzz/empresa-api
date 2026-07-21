@@ -309,6 +309,8 @@ class DatabaseSeeder extends Seeder
         /* Extensión + permisos del módulo de chats de WhatsApp con clientes (grupo 137). */
         $this->call(ExtencionEmpresaWhatsappSeeder::class);
         $this->call(PermissionEmpresaWhatsappSeeder::class);
+        /* Plantillas estándar `cc_cli_*` para las empresas con el bot ya configurado (grupo 137, Prompt 04). */
+        $this->call(WhatsappTemplateStandardSeeder::class);
         $this->call(ConceptoStockMovementSeeder::class);
         $this->call(UnidadMedidaSeeder::class);
         $this->call(PermissionSeeder::class);

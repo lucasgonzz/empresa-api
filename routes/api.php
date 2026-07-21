@@ -744,6 +744,16 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
     Route::put('whatsapp-chats/{id}/toggle-ai', 'WhatsappChatController@toggle_ai');
     Route::put('whatsapp-chats/{id}/link-client', 'WhatsappChatController@link_client');
     Route::put('whatsapp-chats/{id}/read', 'WhatsappChatController@mark_read');
+
+    // Envío de plantilla de Meta (grupo 137, Prompt 04): único camino cuando la ventana de 24 h está cerrada.
+    Route::post('whatsapp-chats/{id}/send-template', 'WhatsappChatController@send_template');
+
+    // CRUD de plantillas de WhatsApp (grupo 137, Prompt 04).
+    Route::get('whatsapp-templates', 'WhatsappTemplateController@index');
+    Route::post('whatsapp-templates', 'WhatsappTemplateController@store');
+    Route::put('whatsapp-templates/{id}', 'WhatsappTemplateController@update');
+    Route::delete('whatsapp-templates/{id}', 'WhatsappTemplateController@destroy');
+    Route::put('whatsapp-templates/{id}/solicitar-alta', 'WhatsappTemplateController@solicitar_alta');
 });
 
 // Callback público Mercado Libre (notificaciones); sin auth Sanctum.
