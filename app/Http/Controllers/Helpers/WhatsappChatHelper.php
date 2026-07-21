@@ -142,18 +142,40 @@ class WhatsappChatHelper
     }
 
     /**
+     * Guarda un mensaje `out` con un documento adjunto (grupo 137, Prompt 05: comprobante
+     * de venta enviado por el agente, manual o automático) y emite el broadcast. `$source`
+     * distingue el origen: 'sistema' (job automático), 'manual' (botón del modal de Ventas)
+     * o 'plantilla' (ventana cerrada, se mandó como header DOCUMENT de `cc_cli_comprobante`).
+     *
+     * @param  WhatsappChat  $chat  Chat al que pertenece el mensaje.
+     * @param  string  $body  Caption o preview de la plantilla ya con las variables reemplazadas.
+     * @param  string|null  $wa_message_id  Id que devolvió Kapso al enviar (puede no venir).
+     * @param  int|null  $sent_by_user_id  Empleado autenticado que lo mandó (null si fue automático).
+     * @param  string  $source  'sistema' | 'manual' | 'plantilla'.
+     * @param  string  $media_url  URL pública del documento enviado.
+     * @param  string|null  $template_meta_name  Solo aplica cuando `$source` = 'plantilla'.
+     * @return WhatsappChatMessage
+     */
+    public static function store_outbound_document_message(WhatsappChat $chat, $body, $wa_message_id, $sent_by_user_id, $source, $media_url, $template_meta_name = null)
+    {
+        return self::store_outbound_message($chat, $body, $wa_message_id, $source, $sent_by_user_id, $template_meta_name, 'document', $media_url);
+    }
+
+    /**
      * Lógica común de persistencia de un mensaje saliente (compartida entre la respuesta
-     * de IA, el envío manual y el envío de plantilla desde el módulo).
+     * de IA, el envío manual, el envío de plantilla y el envío de documentos desde el módulo).
      *
      * @param  WhatsappChat  $chat
      * @param  string  $body
      * @param  string|null  $wa_message_id
-     * @param  string  $source  'ia' | 'manual' | 'plantilla'.
+     * @param  string  $source  'ia' | 'manual' | 'plantilla' | 'sistema'.
      * @param  int|null  $sent_by_user_id
      * @param  string|null  $template_meta_name  Solo aplica a source 'plantilla'.
+     * @param  string|null  $media_type  'document' si el mensaje trae un adjunto (Prompt 05), null si es texto plano.
+     * @param  string|null  $media_url  URL del adjunto, solo si `$media_type` no es null.
      * @return WhatsappChatMessage
      */
-    private static function store_outbound_message(WhatsappChat $chat, $body, $wa_message_id, $source, $sent_by_user_id, $template_meta_name = null)
+    private static function store_outbound_message(WhatsappChat $chat, $body, $wa_message_id, $source, $sent_by_user_id, $template_meta_name = null, $media_type = null, $media_url = null)
     {
         $message = WhatsappChatMessage::create([
             'whatsapp_chat_id' => $chat->id,
@@ -164,6 +186,8 @@ class WhatsappChatHelper
             'wa_message_id' => $wa_message_id,
             'delivery_status' => 'pendiente',
             'template_meta_name' => $template_meta_name,
+            'media_type' => $media_type,
+            'media_url' => $media_url,
         ]);
 
         $chat->last_message_at = now();

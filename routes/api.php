@@ -748,6 +748,9 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
     // Envío de plantilla de Meta (grupo 137, Prompt 04): único camino cuando la ventana de 24 h está cerrada.
     Route::post('whatsapp-chats/{id}/send-template', 'WhatsappChatController@send_template');
 
+    // Comprobante de venta enviado por el agente (grupo 137, Prompt 05): botón manual del modal de Ventas.
+    Route::post('sales/{id}/send-whatsapp-agent', 'SaleController@send_whatsapp_agent');
+
     // CRUD de plantillas de WhatsApp (grupo 137, Prompt 04).
     Route::get('whatsapp-templates', 'WhatsappTemplateController@index');
     Route::post('whatsapp-templates', 'WhatsappTemplateController@store');
