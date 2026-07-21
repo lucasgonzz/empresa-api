@@ -739,6 +739,8 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
     Route::get('whatsapp-chats/{id}/messages', 'WhatsappChatController@messages');
     Route::post('whatsapp-chats', 'WhatsappChatController@store');
     Route::post('whatsapp-chats/{id}/messages', 'WhatsappChatController@send_message');
+    Route::post('whatsapp-chats/{id}/suggest', 'WhatsappChatController@suggest');
+    Route::post('whatsapp-chats/{id}/summary', 'WhatsappChatController@summary');
     Route::put('whatsapp-chats/{id}/toggle-ai', 'WhatsappChatController@toggle_ai');
     Route::put('whatsapp-chats/{id}/link-client', 'WhatsappChatController@link_client');
     Route::put('whatsapp-chats/{id}/read', 'WhatsappChatController@mark_read');

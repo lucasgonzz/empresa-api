@@ -108,8 +108,10 @@ class WhatsappBotController extends Controller
             return;
         }
 
+        // Firma nueva del Prompt 03: recibe el chat ya persistido (con el mensaje 'in' recién
+        // guardado) para poder armar historial + personalidad configurable + RAG.
         $ai_service   = new WhatsappBotAiService();
-        $ai_response  = $ai_service->generate_response((string) $body, $user_id, $config);
+        $ai_response  = $ai_service->generate_response($chat, $config);
 
         if ($ai_response !== '') {
             $send_service   = new WhatsappBotSendService();

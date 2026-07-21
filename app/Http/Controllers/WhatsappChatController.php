@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
+use App\Services\WhatsappBotAiService;
 use App\Services\WhatsappBotSendService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -212,6 +213,54 @@ class WhatsappChatController extends Controller
         $chat->save();
 
         return response()->json(['model' => $this->fullModel('WhatsappChat', $chat->id)], 200);
+    }
+
+    /**
+     * Genera una respuesta sugerida con IA para el chat (misma personalidad, mismas reglas
+     * fijas y mismo historial que usaría la respuesta automática del webhook), pero NO la
+     * envía ni la persiste: el front la carga en el input para que el operador la edite y
+     * la mande a mano por `POST whatsapp-chats/{id}/messages` (Prompt 02).
+     *
+     * @param  int  $id
+     * @return JsonResponse
+     */
+    public function suggest($id): JsonResponse
+    {
+        $chat = $this->find_owned_chat($id);
+        if (is_null($chat)) {
+            return response()->json(['message' => 'Chat no encontrado.'], 404);
+        }
+
+        $config = WhatsappBotConfig::where('user_id', $chat->user_id)->first();
+        if (is_null($config)) {
+            return response()->json(['message' => 'No hay una configuración de WhatsApp activa para esta empresa.'], 422);
+        }
+
+        $ai_service = new WhatsappBotAiService();
+        $suggestion = $ai_service->generate_response($chat, $config);
+
+        return response()->json(['suggestion' => $suggestion], 200);
+    }
+
+    /**
+     * Genera un resumen de la conversación con IA (últimos 100 mensajes). Es una llamada
+     * aparte de `suggest()`: no usa personalidad ni catálogo, solo una consigna fija de
+     * resumen. No persiste nada ni crea filas en `whatsapp_chat_messages`.
+     *
+     * @param  int  $id
+     * @return JsonResponse
+     */
+    public function summary($id): JsonResponse
+    {
+        $chat = $this->find_owned_chat($id);
+        if (is_null($chat)) {
+            return response()->json(['message' => 'Chat no encontrado.'], 404);
+        }
+
+        $ai_service = new WhatsappBotAiService();
+        $summary = $ai_service->generate_summary($chat);
+
+        return response()->json(['summary' => $summary], 200);
     }
 
     /**
