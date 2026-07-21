@@ -366,6 +366,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('client', 'ClientController');
     Route::post('client/excel/import', 'ClientController@import');
     Route::get('client/get-afip-information-by-cuit/{cuit}', 'ClientController@get_afip_information_by_cuit');
+    Route::patch('client/{id}/phone', 'ClientController@update_phone');
 
     Route::resource('seller', 'SellerController');
     Route::resource('price-type', 'PriceTypeController');
@@ -546,6 +547,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('article-variant', 'ArticleVariantController@store');
     Route::put('article-variant/{id}', 'ArticleVariantController@update');
     Route::delete('article-variant/{id}', 'ArticleVariantController@destroy');
+    Route::put('article/{id}/variants-disponibilidad', 'ArticleVariantController@set_disponibilidad_masiva');
 
     Route::resource('payment-method-installment', 'PaymentMethodInstallmentController');
 
@@ -728,6 +730,33 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('whatsapp-bot/config', 'WhatsappBotController@update_config');
     Route::put('whatsapp-bot/config', 'WhatsappBotController@update_config');
     Route::put('whatsapp-bot/config/{id}', 'WhatsappBotController@update_config');
+});
+
+// Endpoints REST del módulo de chats de WhatsApp con clientes (grupo 137, Prompt 02),
+// gateados por auth Sanctum + la extensión 'whatsapp' (ver ExtencionEmpresaWhatsappSeeder).
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(function () {
+    Route::get('whatsapp-chats', 'WhatsappChatController@index');
+    Route::get('whatsapp-chats/{id}/messages', 'WhatsappChatController@messages');
+    Route::post('whatsapp-chats', 'WhatsappChatController@store');
+    Route::post('whatsapp-chats/{id}/messages', 'WhatsappChatController@send_message');
+    Route::post('whatsapp-chats/{id}/suggest', 'WhatsappChatController@suggest');
+    Route::post('whatsapp-chats/{id}/summary', 'WhatsappChatController@summary');
+    Route::put('whatsapp-chats/{id}/toggle-ai', 'WhatsappChatController@toggle_ai');
+    Route::put('whatsapp-chats/{id}/link-client', 'WhatsappChatController@link_client');
+    Route::put('whatsapp-chats/{id}/read', 'WhatsappChatController@mark_read');
+
+    // Envío de plantilla de Meta (grupo 137, Prompt 04): único camino cuando la ventana de 24 h está cerrada.
+    Route::post('whatsapp-chats/{id}/send-template', 'WhatsappChatController@send_template');
+
+    // Comprobante de venta enviado por el agente (grupo 137, Prompt 05): botón manual del modal de Ventas.
+    Route::post('sales/{id}/send-whatsapp-agent', 'SaleController@send_whatsapp_agent');
+
+    // CRUD de plantillas de WhatsApp (grupo 137, Prompt 04).
+    Route::get('whatsapp-templates', 'WhatsappTemplateController@index');
+    Route::post('whatsapp-templates', 'WhatsappTemplateController@store');
+    Route::put('whatsapp-templates/{id}', 'WhatsappTemplateController@update');
+    Route::delete('whatsapp-templates/{id}', 'WhatsappTemplateController@destroy');
+    Route::put('whatsapp-templates/{id}/solicitar-alta', 'WhatsappTemplateController@solicitar_alta');
 });
 
 // Callback público Mercado Libre (notificaciones); sin auth Sanctum.

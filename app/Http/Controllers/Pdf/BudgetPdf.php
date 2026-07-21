@@ -257,7 +257,7 @@ class BudgetPdf extends fpdf {
 
 		// $this->Cell($this->getFields()['Codigo'], $this->line_height, $article->bar_code, $this->b, 0, 'L');
 		$y_1 = $this->y;
-		$this->MultiCell($this->getFields()['Producto'], $this->line_height, $article->name, $this->b, 'L', false);
+		$this->MultiCell($this->getFields()['Producto'], $this->line_height, GeneralHelper::article_name($article), $this->b, 'L', false);
 		
 		$this->x = PdfHelper::getWidthUntil('Producto', $this->getFields());
 	    $y_2 = $this->y;

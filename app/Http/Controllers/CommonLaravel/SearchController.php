@@ -51,9 +51,10 @@ class SearchController extends Controller
 
                 if (isset($filter['ordenar_de'])
                 && $filter['ordenar_de'] != '') {
-                    $models = $models->orderBy($filter['key'], $filter['ordenar_de']);
-
-                    // Log::info('ordenando por '.$filter['key']. ' de '.$filter['ordenar_de']);
+                    // Delegamos el ordenamiento en un helper que sabe ordenar tanto por columnas
+                    // propias del modelo como por la columna visible de una relacion belongsTo
+                    // (categoria, proveedor, marca, etc). Ver apply_order_filter mas abajo.
+                    $models = $this->apply_order_filter($models, $model_name, $filter);
 
                     $used_filters[] = [
                         'key'       => $filter['key'],
@@ -456,6 +457,79 @@ class SearchController extends Controller
             }
             return $models;
         }
+    }
+
+    /**
+     * Aplica el ordenamiento pedido por un filtro.
+     *
+     * Para filtros de relacion (select/search cuya key es un FK con forma "<relacion>_id"),
+     * ordena por la columna VISIBLE de la relacion (por ejemplo el nombre de la categoria),
+     * no por el id del FK. Lo hace con una subconsulta correlacionada (sin JOIN) para no
+     * colisionar con withAll() ni multiplicar filas en la paginacion. Si no es una relacion
+     * belongsTo resoluble, cae al orderBy directo sobre la columna (comportamiento previo,
+     * seguro para columnas propias y enums).
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $models     Query en construccion.
+     * @param string                                $model_name Clase Eloquent del modelo filtrado.
+     * @param array                                 $filter     Filtro con key, type y ordenar_de.
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    protected function apply_order_filter($models, $model_name, $filter)
+    {
+        // Direccion de orden pedida (ASC o DESC).
+        $direction = $filter['ordenar_de'];
+        // Columna o FK sobre la que se pidio ordenar.
+        $key = $filter['key'];
+        // Tipo del filtro (number, text, date, select, search, ...).
+        $type = isset($filter['type']) ? $filter['type'] : null;
+
+        // Solo intentamos orden por relacion cuando el filtro es de relacion (select/search) y su
+        // key tiene forma de FK "<algo>_id". El resto ordena directo por la columna.
+        $is_relation_filter = ($type === 'select' || $type === 'search')
+            && strlen($key) > 3
+            && substr($key, -3) === '_id';
+
+        if ($is_relation_filter) {
+            // Nombre del metodo de relacion por convencion: category_id -> category.
+            $relation_method = substr($key, 0, -3);
+
+            // Instancia del modelo para resolver la relacion real via Eloquent (sin adivinar plurales).
+            $instance = new $model_name();
+
+            if (method_exists($instance, $relation_method)) {
+                // Resolvemos la relacion declarada en el modelo.
+                $relation = $instance->$relation_method();
+
+                // Solo belongsTo tiene un unico FK ordenable de forma correlacionada.
+                if ($relation instanceof \Illuminate\Database\Eloquent\Relations\BelongsTo) {
+                    // Tabla del modelo relacionado (ej: categories) tomada del propio Eloquent.
+                    $related_table = $relation->getRelated()->getTable();
+                    // Clave primaria referenciada en la tabla relacionada (normalmente id).
+                    $related_key = $relation->getOwnerKeyName();
+                    // Tabla del modelo que se esta filtrando (ej: articles).
+                    $own_table = $instance->getTable();
+
+                    // Columna visible de la relacion: la que manda el front (order_relation_prop)
+                    // o "name" por defecto. Para el IVA, por ejemplo, el front manda "percentage".
+                    $order_column = (isset($filter['order_relation_prop']) && $filter['order_relation_prop'] != '')
+                        ? $filter['order_relation_prop']
+                        : 'name';
+
+                    // Subconsulta correlacionada: por cada fila del modelo trae el valor visible de
+                    // su relacion (ej: el name de su categoria) para usarlo como criterio de orden.
+                    $order_subquery = \Illuminate\Support\Facades\DB::table($related_table)
+                        ->select($related_table.'.'.$order_column)
+                        ->whereColumn($related_table.'.'.$related_key, $own_table.'.'.$key)
+                        ->limit(1);
+
+                    // Ordenamos por el resultado de la subconsulta (por el nombre de la relacion).
+                    return $models->orderBy($order_subquery, $direction);
+                }
+            }
+        }
+
+        // Comportamiento previo: orden directo por la columna propia del modelo.
+        return $models->orderBy($key, $direction);
     }
 
     function saveIfNotExist(Request $request, $_model_name, $property, $query) {

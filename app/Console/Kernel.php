@@ -60,6 +60,16 @@ class Kernel extends ConsoleKernel
         // Captura el snapshot de deuda diario (clientes y proveedores) a las 23:59.
         // Registra los saldos actuales de credit_accounts para análisis histórico.
         $schedule->command('debt:snapshot')->dailyAt('23:59');
+
+        /* Watchdog de importaciones colgadas: desbloquea imports que murieron sin dejar traza. */
+        $schedule->command('imports:detectar-colgadas')
+            ->everyFiveMinutes()
+            ->withoutOverlapping();
+
+        /* Watchdog de historiales colgados: desbloquea exportaciones (y a futuro imports) que murieron sin traza. */
+        $schedule->command('historiales:detectar-colgados')
+            ->everyFiveMinutes()
+            ->withoutOverlapping();
     }
 
     /**
@@ -86,6 +96,11 @@ class Kernel extends ConsoleKernel
      */
     protected function commands()
     {
+        // $this->load() escanea todas las clases Command dentro de app/Console/Commands
+        // y las registra automáticamente (no hace falta listarlas una por una acá).
+        // El comando `reconciliar_stock_variantes` (prompt 521, reconciliación defensiva
+        // de stock de variantes) queda disponible por este mismo mecanismo; a propósito
+        // no se le agrega entrada en $schedule() porque es de corrida manual, no periódica.
         $this->load(__DIR__.'/Commands');
 
         require base_path('routes/console.php');

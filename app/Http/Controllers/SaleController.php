@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\SaleWhatsappSendException;
 use App\Exports\SalesBreakdownExport;
 use App\Exports\SalesFullExport;
 use App\Http\Controllers\AfipWsController;
@@ -27,6 +28,8 @@ use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
 use App\Http\Controllers\Helpers\sale\SaleNotaCreditoAfipHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
+use App\Jobs\SendSaleWhatsappJob;
+use App\Services\SaleWhatsappSenderService;
 use App\Http\Controllers\Pdf\EtiquetaEnvioPdf;
 use App\Http\Controllers\Pdf\NewSalePdf;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
@@ -255,6 +258,14 @@ class SaleController extends Controller
 
             ComercioCityMailHelper::new_sale($model);
 
+            /**
+             * Envío automático opcional del comprobante por WhatsApp (grupo 137, Prompt 05).
+             * Se despacha DESPUÉS del commit, nunca dentro de la transacción de guardado: si
+             * el envío falla, la venta ya guardada no se ve afectada. El job revalida config
+             * activa, opt-in (auto_send_sale_pdf) y cliente con teléfono por su cuenta.
+             */
+            SendSaleWhatsappJob::dispatch($model->id);
+
             return response()->json(['model' => $this->fullModel('Sale', $model->id)], 201);
 
         } catch(\Throwable $e) {
@@ -409,6 +420,14 @@ class SaleController extends Controller
                 ComercioCityMailHelper::new_sale($model, true);
             }
 
+            /**
+             * Envío automático opcional del comprobante por WhatsApp (grupo 137, Prompt 05).
+             * Mismo punto que el mail de arriba: después del commit, nunca dentro de la
+             * transacción. El job revalida config activa, opt-in (auto_send_sale_pdf) y
+             * cliente con teléfono por su cuenta.
+             */
+            SendSaleWhatsappJob::dispatch($model->id);
+
             return response()->json(['model' => $this->fullModel('Sale', $model->id)], 200);
         
         } catch(\Throwable $e) {
@@ -527,6 +546,38 @@ class SaleController extends Controller
         }
         // $this->sendAddModelNotification('Sale', $id);
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
+    }
+
+    /**
+     * Envía el comprobante de la venta al cliente por el agente de WhatsApp (grupo 137,
+     * Prompt 05). Camino manual: lo llama el botón del modal de Ventas (Prompt 06). Con la
+     * ventana de 24 h abierta manda el PDF directo por `send_document`; cerrada, usa la
+     * plantilla `cc_cli_comprobante`. Ante cualquier condición esperable (sin teléfono, sin
+     * configuración, plantilla no aprobada) responde 422 con un código controlado para que
+     * el front lo muestre, en vez de un 500 genérico.
+     *
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function send_whatsapp_agent($id) {
+        $sale = Sale::where('id', $id)
+            ->where('user_id', $this->userId())
+            ->first();
+
+        if (is_null($sale)) {
+            return response()->json(['message' => 'Venta no encontrada.'], 404);
+        }
+
+        $sender_service = new SaleWhatsappSenderService();
+
+        try {
+            // Empleado autenticado (sin resolver al owner) que efectivamente disparó el envío manual.
+            $message = $sender_service->send_sale($sale, $this->userId(false));
+
+            return response()->json(['model' => $this->fullModel('WhatsappChatMessage', $message->id)], 201);
+        } catch (SaleWhatsappSendException $e) {
+            return response()->json(['code' => $e->error_code(), 'message' => $e->getMessage()], 422);
+        }
     }
 
     function pdf(Request $request, $id) {

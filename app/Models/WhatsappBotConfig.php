@@ -10,6 +10,10 @@ class WhatsappBotConfig extends Model
 
     protected $casts = [
         'is_active' => 'boolean',
+        // Si los chats nuevos nacen con la respuesta automática de IA prendida por defecto.
+        'ai_enabled_default' => 'boolean',
+        // Si se debe enviar automáticamente el comprobante PDF de la venta por el agente.
+        'auto_send_sale_pdf' => 'boolean',
     ];
 
     /**

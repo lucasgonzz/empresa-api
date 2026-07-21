@@ -36,9 +36,23 @@ class PdfColumnProfileSeeder extends Seeder
                     'Código de barras',
                     'Nombre del artículo',
                     'Cantidad',
-                    'Precio unitario',
+                    /**
+                     * Ancho fijo (no tomado del catálogo `pdf_column_options.default_width`):
+                     * Precio unitario y Subtotal línea quedaban con anchos viejos/chicos si el
+                     * catálogo no estaba resincronizado, dejando un hueco a la derecha del PDF.
+                     * Fijándolos acá se garantiza que la suma de las 8 columnas de este perfil
+                     * cierre siempre en 200mm (printable_width_mm 210 - margin_mm 5 x2 lados),
+                     * ocupando todo el ancho disponible cada vez que se corre el seeder.
+                     */
+                    [
+                        'name'  => 'Precio unitario',
+                        'width' => 28,
+                    ],
                     'Descuento porcentaje',
-                    'Subtotal línea',
+                    [
+                        'name'  => 'Subtotal línea',
+                        'width' => 32,
+                    ],
                 ],
             ],
             [
@@ -88,4 +102,3 @@ class PdfColumnProfileSeeder extends Seeder
         }
     }
 }
-

@@ -22,4 +22,15 @@ class AfipInformation extends Model
     public function iva_condition() {
         return $this->belongsTo('App\Models\IvaCondition');
     }
+
+    /**
+     * Sucursal (address) a la que pertenece este afip_information.
+     * Relación inversa de Address->afip_informations().
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
+     */
+    public function address()
+    {
+        return $this->belongsTo('App\Models\Address', 'address_id');
+    }
 }

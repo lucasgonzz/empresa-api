@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Events\ImportStatusUpdated;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Imports\ArticleImport;
 use App\Models\ArticleImportResult;
 use App\Models\ArticleImportResultObservation;
@@ -98,6 +99,9 @@ class ProcessArticleChunk implements ShouldQueue
 
         $inicio = microtime(true);
 
+        /* Best effort: si el memory_limit del worker es bajo, lo subimos (solo hacia arriba). En hosting
+           compartido puede estar capado y el ini_set fallar silenciosamente; no pasa nada si no aplica. */
+        $this->asegurar_memoria_minima();
 
         try {
 
@@ -107,6 +111,10 @@ class ProcessArticleChunk implements ShouldQueue
             if ($this->import_status->status == 'fallo') {
                 return;
             }
+
+            /* Guard de memoria: si ya arrancamos cerca del techo, fallamos con un mensaje accionable AHORA
+               en vez de crashear crudo por OOM (que la cola recién detecta ~40 min después). */
+            $this->verificar_memoria_disponible();
 
             /*
                 Feedback inmediato al usuario:
@@ -165,30 +173,124 @@ class ProcessArticleChunk implements ShouldQueue
 
         } catch (\Throwable $e) {
 
+            $duracion = microtime(true) - $inicio;
+            Log::error('Error al importar, desde ProcessArticleChunk handle. Chunk #' . $this->chunk_number
+                . '. Tardó ' . number_format($duracion, 3) . ' seg. Mensaje: ' . $e->getMessage()
+                . ' — ' . $e->getFile() . ':' . $e->getLine());
 
-            Log::error('Error al importar, desde ProcessArticleChunk handle');
-            Log::error('Mensaje: ' . $e->getMessage());
-            Log::error('Archivo: ' . $e->getFile());
-            Log::error('Línea: ' . $e->getLine());
-            // Log::error('Trace: ' . $e->getTraceAsString());
+            /* Un único punto de fallo (idempotente): marca history+status en 'fallo', guarda motivo humano
+               + log completo + lote, notifica y limpia cache. Ver ImportFailureHandler. */
+            ImportFailureHandler::desde_excepcion(
+                $this->import_history_id,
+                $this->import_status_id,
+                $this->user_id,
+                $e,
+                $this->chunk_number,
+                array('start_row' => $this->start_row, 'finish_row' => $this->finish_row)
+            );
 
+            throw $e; // detiene la chain
+        }
+    }
 
-            $fin = microtime(true);
+    /**
+     * Se ejecuta cuando el job falla en forma definitiva, INCLUIDO cuando el proceso muere sin llegar al
+     * catch del handle() (OOM, timeout de proceso, worker reiniciado → MaxAttemptsExceededException que
+     * lanza el Worker, no el handle). Corre en un proceso fresco: puede escribir en la BD aunque el
+     * proceso anterior haya muerto por falta de memoria.
+     *
+     * Idempotente vía ImportFailureHandler: si el catch del handle() ya lo marcó, esto es no-op.
+     *
+     * @param  \Throwable  $e
+     * @return void
+     */
+    public function failed($e)
+    {
+        ImportFailureHandler::desde_excepcion(
+            $this->import_history_id,
+            $this->import_status_id,
+            $this->user_id,
+            $e,
+            $this->chunk_number,
+            array('start_row' => $this->start_row, 'finish_row' => $this->finish_row)
+        );
+    }
 
-            $duracion = $fin - $inicio;
-            Log::warning("FIN Job Chunk #{$this->chunk_number} del lote {$this->batchId()}. PID: " . getmypid() . " - Tardó en procesarse: " . number_format($duracion, 3) . " segundos");
+    /**
+     * Sube el memory_limit a un piso razonable si está por debajo (nunca lo baja). Best effort:
+     * en hosting compartido puede estar capado y el ini_set no tener efecto.
+     *
+     * @return void
+     */
+    private function asegurar_memoria_minima()
+    {
+        $piso_bytes = 512 * 1024 * 1024; // 512 MB
+        $actual = $this->memory_limit_bytes();
 
-            Log::info('Tardo en procesarce: '.number_format($duracion, 3).' segundos');
+        // -1 => sin límite: no tocar. 0 => no se pudo parsear: no tocar.
+        if ($actual > 0 && $actual < $piso_bytes) {
+            @ini_set('memory_limit', '512M');
+        }
+    }
 
-            $this->set_import_history_error($e);
+    /**
+     * Si ya estamos usando más del 85% del memory_limit al arrancar el lote, corta con un mensaje claro.
+     * Mejor un fallo accionable inmediato que un OOM crudo que la cola recién detecta ~40 min después.
+     *
+     * @return void
+     */
+    private function verificar_memoria_disponible()
+    {
+        $limite = $this->memory_limit_bytes();
 
-            $this->notificar_error_import_status($e->getMessage());
+        if ($limite <= 0) {
+            return; // sin límite o no parseable: nada que verificar
+        }
 
-            $error_message = $this->get_full_error($e);
-            ArticleImportHelper::error_notification($this->user, null, $error_message);
+        $en_uso = memory_get_usage(true);
+        $umbral = (int) ($limite * 0.85);
 
+        if ($en_uso > $umbral) {
+            $usados_mb = number_format($en_uso / 1048576, 0);
+            $limite_mb = number_format($limite / 1048576, 0);
 
-            throw $e; // ✅ Esto detiene la chain
+            throw new \RuntimeException(
+                'Memoria insuficiente al iniciar el lote ' . $this->chunk_number . ': '
+                . $usados_mb . ' MB usados de ' . $limite_mb . ' MB. '
+                . 'Bajá el tamaño del archivo o la variable ARTICLE_EXCEL_CHUNK_SIZE, o subí el memory_limit del worker.'
+            );
+        }
+    }
+
+    /**
+     * Devuelve el memory_limit vigente en bytes. -1 (sin límite) => -1. Sin poder parsear => 0.
+     *
+     * @return int
+     */
+    private function memory_limit_bytes()
+    {
+        $raw = trim((string) ini_get('memory_limit'));
+
+        if ($raw === '' || $raw === '-1') {
+            return -1;
+        }
+
+        $unidad = strtoupper(substr($raw, -1));
+        $numero = (int) $raw;
+
+        switch ($unidad) {
+            case 'G':
+                return $numero * 1024 * 1024 * 1024;
+            case 'M':
+                return $numero * 1024 * 1024;
+            case 'K':
+                return $numero * 1024;
+            default:
+                // valor en bytes puro
+                if (is_numeric($raw)) {
+                    return (int) $raw;
+                }
+                return 0;
         }
     }
 
@@ -254,28 +356,6 @@ class ProcessArticleChunk implements ShouldQueue
         ]);
     }
 
-    function set_import_history_error($e) {
-        $this->import_history->status = 'error';
-
-        $error_message = $this->get_full_error($e);
-
-        $this->import_history->error_message = $error_message;
-        $this->import_history->save();
-
-        $this->notificar_import_status();
-    }
-
-    function get_full_error($e) {
-
-        $error_message = '';
-        $error_message .= ' | Mensaje: ' . $e->getMessage();
-        $error_message .= ' | Archivo: ' . $e->getFile();
-        $error_message .= ' | Línea: ' . $e->getLine();
-        // $error_message .= ' | Trace: ' . $e->getTraceAsString();
-
-        return $error_message;
-    }
-
     function crear_article_import() {
 
         try {
@@ -310,31 +390,11 @@ class ProcessArticleChunk implements ShouldQueue
         }
     }
 
-    function guardar_error_en_import_history($e) {
-
-        $this->import_history->status = 'error';
-
-            Log::error('Mensaje: ' . $e->getMessage());
-            Log::error('Archivo: ' . $e->getFile());
-            Log::error('Línea: ' . $e->getLine());
-    }
-
-
     function repasar_variantes() {
 
         Artisan::call('set_article_address_stock_from_variants', [
             'user_id' => $this->user->id
         ]);
-    }
-
-    function notificar_error_import_status($error) {
-
-        $this->import_status->error_message = $error;
-        $this->import_status->status = 'fallo';
-        $this->import_status->save();
-
-        $this->user->notify(new ImportStatusNotification($this->import_status, $this->user->id));
-		
     }
 
     function update_import_status() {
@@ -512,6 +572,16 @@ class ProcessArticleChunk implements ShouldQueue
         $dur = $fin - $this->inicio_chunk;
         $this->import_result->terminado_at = Carbon::now();
         $this->import_result->duration = $dur;
+
+        /* Instrumentación: pico de memoria del proceso durante este lote. Si el pico sube lote a lote
+           hacia el memory_limit, el cuelgue del lote ~20 es OOM. */
+        $limite_bytes = $this->memory_limit_bytes();
+        $this->import_result->peak_memory_mb = round(memory_get_peak_usage(true) / 1048576, 2);
+        $this->import_result->memory_limit_mb = $limite_bytes > 0 ? (int) round($limite_bytes / 1048576) : null;
+
+        Log::info('Lote ' . $this->chunk_number . ' — pico memoria: ' . $this->import_result->peak_memory_mb
+            . ' MB de ' . ($this->import_result->memory_limit_mb ?: 'sin límite') . ' MB');
+
         $this->import_result->save();
 
         $rows_observations              = $observations['rows_observations'];

@@ -139,6 +139,7 @@ class BudgetDuplicarHelper {
                 'bar_code' => $article->bar_code,
                 'provider_code' => $article->provider_code,
                 'name' => $article->name,
+                'name_vender_personalizado' => $article->pivot->name,
                 'pivot' => [
                     'amount' => $article->pivot->amount,
                     'bonus' => $article->pivot->bonus,

@@ -38,19 +38,39 @@ class DevolucionesController extends Controller
             // Validar que el client_id recibido corresponda al cliente real de la venta.
             // Evita que un client_id residual del frontend (de una búsqueda anterior)
             // quede asignado a una nota de crédito de una venta sin cliente.
+            // Esta validación SOLO aplica cuando la devolución está atada a una venta
+            // (request->sale_id presente). Cuando la devolución se crea desde cero (módulo
+            // de Devoluciones sin venta de origen) no hay sale_client_id contra el cual
+            // comparar, y el client_id elegido a mano por el usuario es el válido.
+            // FIX 17/7/2026 (Lucas): antes, sin sale_id, $sale_client_id quedaba en null y
+            // "$request->client_id == null" daba siempre false -- se saltaba la carga de
+            // model_id/credit_account_id y la NC se creaba sin cliente asignado y sin
+            // movimiento en cuenta corriente, en silencio, aunque el checkbox estuviera activo.
             $sale_client_id = null;
-            if ($request->sale_id) {
+            $hay_venta_asociada = (bool) $request->sale_id;
+            if ($hay_venta_asociada) {
                 $sale_for_validation = Sale::find($request->sale_id);
                 if ($sale_for_validation) {
                     $sale_client_id = $sale_for_validation->client_id;
                 }
             }
 
-            if (
-                $request->generar_current_acount
-                && !is_null($request->client_id)
-                && $request->client_id == $sale_client_id
-            ) {
+            $client_id_valido = $hay_venta_asociada
+                ? $request->client_id == $sale_client_id
+                : true;
+
+            if ($request->generar_current_acount && !is_null($request->client_id)) {
+
+                if (!$client_id_valido) {
+                    // Antes esto se ignoraba en silencio (ver comentario arriba): se
+                    // guardaba una NC sin cliente ni movimiento en CC y se devolvía 201
+                    // como si hubiese salido bien. Ahora corta explícito -- si hay venta
+                    // asociada y el cliente no coincide es un dato inconsistente del
+                    // frontend (client_id residual) y no debe generar una NC a medias sin
+                    // avisar. Cae en el catch(\Throwable $e) de más abajo -> rollback + 500.
+                    throw new \Exception('El cliente seleccionado no corresponde al cliente de la venta indicada. No se generó el movimiento en cuenta corriente.');
+                }
+
                 $model_id = $request->client_id;
 
                 $moneda_id = $this->get_moneda_id($request);

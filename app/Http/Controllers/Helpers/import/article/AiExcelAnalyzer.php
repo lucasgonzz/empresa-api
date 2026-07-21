@@ -1213,27 +1213,34 @@ PROMPT;
          * Valores aceptados para cada campo de la recomendación.
          * Se usan para validar la respuesta de Claude antes de retornarla.
          */
-        $valid_claves    = ['bar_code', 'provider_code', 'name'];
+        $valid_claves    = ['numero', 'bar_code', 'sku', 'provider_code', 'name'];
         $valid_politicas = ['actualizar_todos', 'actualizar_uno', 'crear_nuevo'];
 
         /*
          * Derivamos qué columnas clave están disponibles en este Excel.
          * Se hace antes del try/catch para que el fallback también pueda usarlas.
          * Solo se marca true si la columna está efectivamente mapeada en el Excel.
+         * Prioridad de identidad del sistema: numero -> bar_code -> sku -> provider_code -> name.
          */
+        $tiene_numero        = false;
         $tiene_bar_code      = false;
+        $tiene_sku           = false;
         $tiene_provider_code = false;
         $tiene_nombre        = false;
 
         foreach ($column_mapping as $col) {
             $prop = $col['system_property'] ?? null;
+            if ($prop === 'numero')              $tiene_numero        = true;
             if ($prop === 'codigo_de_barras')    $tiene_bar_code      = true;
+            if ($prop === 'sku')                 $tiene_sku           = true;
             if ($prop === 'codigo_de_proveedor') $tiene_provider_code = true;
             if ($prop === 'nombre')              $tiene_nombre        = true;
         }
 
         /* Textos "Sí" / "No" para el prompt. */
+        $numero_disponible        = $tiene_numero        ? 'Sí' : 'No';
         $bar_code_disponible      = $tiene_bar_code      ? 'Sí' : 'No';
+        $sku_disponible           = $tiene_sku           ? 'Sí' : 'No';
         $provider_code_disponible = $tiene_provider_code ? 'Sí' : 'No';
         $nombre_disponible        = $tiene_nombre        ? 'Sí' : 'No';
 
@@ -1253,30 +1260,30 @@ Análisis del archivo:
 - Provider_codes del Excel que ya existen en BD para OTROS proveedores: {$stats['provider_codes_existentes_otros_proveedores']}
 
 Columnas disponibles en este Excel:
+- Número interno del artículo (ID del sistema): {$numero_disponible}
 - Código de barras (bar_code): {$bar_code_disponible}
+- SKU (sku): {$sku_disponible}
 - Código de proveedor (provider_code): {$provider_code_disponible}
 - Nombre del artículo: {$nombre_disponible}
 
-IMPORTANTE: solo podés recomendar usar una clave de identidad si esa columna existe en el Excel.
-Si bar_code NO existe, no recomiendes bar_code como clave_identidad.
-Si provider_code NO existe, no recomiendes provider_code como clave_identidad.
-Si ninguno de los dos existe, recomendá name.
+IMPORTANTE: solo podés recomendar usar una clave de identidad si esa columna existe en el Excel (ver "Columnas disponibles" arriba). Si una columna NO está disponible, no la recomiendes.
 
 Decisión 1 - clave_identidad: qué campo usar para identificar un artículo como "el mismo".
-- "bar_code": usar cuando la columna bar_code está disponible. Es la clave de identidad natural para artículos y siempre debe preferirse cuando existe. Si hay bar_codes repetidos en el Excel (bar_codes_duplicados_intra_archivo > 0), igualmente se usa bar_code como clave: el sistema garantiza que no se crean artículos con bar_code repetido procesando un único artículo por código, actualizándolo con la información de la última fila del Excel que lo contenga.
-- "provider_code": usar cuando bar_code no está disponible. Es la opción más común en listas de proveedor.
-- "name": último recurso, solo si ni bar_code ni provider_code están disponibles.
-
-IMPORTANTE: solo podés recomendar una clave si esa columna existe en el Excel (ver "Columnas disponibles" arriba).
+Elegí SIEMPRE la primera opción disponible en este orden de prioridad (de más confiable a menos):
+1. "numero": el número interno (ID del sistema). Es la clave más confiable y sólo aparece cuando el Excel fue exportado desde este mismo sistema. Si está disponible, preferila por sobre todas.
+2. "bar_code": el código de barras. Clave de identidad natural del artículo. Preferila si no hay número.
+3. "sku": el SKU del artículo. Usala si no hay número ni código de barras.
+4. "provider_code": el código de proveedor. Típico de listas de proveedor; usala si no hay número, código de barras ni SKU.
+5. "name": el nombre del artículo. Último recurso, sólo si ninguna de las anteriores está disponible.
 
 Decisión 2 - politica_colision: qué hacer cuando una fila del Excel coincide con artículos ya existentes en el sistema.
 - "actualizar_todos": el sistema encuentra TODOS los artículos con ese código y los actualiza o crea. SOLO válido cuando clave_identidad = "provider_code" y hay provider_codes repetidos en el Excel.
-- "actualizar_uno": actualiza o crea un único artículo por fila. Es la opción correcta para bar_code y name (que deben ser únicos), y también para provider_code cuando no hay repetidos.
+- "actualizar_uno": actualiza o crea un único artículo por fila. Es la opción correcta para numero, bar_code, sku y name (que deben ser únicos), y también para provider_code cuando no hay repetidos.
 - "crear_nuevo": NUNCA recomiendes esta opción. Está reservada para casos manuales.
 
 REGLAS CRÍTICAS para politica_colision (aplicar en orden):
-1. Si clave_identidad es "bar_code" o "name": recomendá SIEMPRE "actualizar_uno". No puede haber dos artículos con el mismo código de barras ni con el mismo nombre. Ignorar los conteos de repetidos.
-2. Si clave_identidad es "provider_code" y provider_codes_duplicados_intra_archivo > 0: recomendá "actualizar_todos". El sistema creará un artículo por cada fila en primera importación, y actualizará todos los coincidentes en reimportaciones.
+1. Si clave_identidad es "numero", "bar_code", "sku" o "name": recomendá SIEMPRE "actualizar_uno". Ninguna de estas claves puede repetirse en dos artículos del sistema. Ignorar los conteos de repetidos.
+2. Si clave_identidad es "provider_code" y provider_codes_duplicados_intra_archivo > 0: recomendá "actualizar_todos".
 3. Si clave_identidad es "provider_code" y provider_codes_duplicados_intra_archivo = 0: recomendá "actualizar_uno".
 
 Para el campo "explicacion":
@@ -1291,7 +1298,7 @@ Para el campo "explicacion":
 
 Respondé SOLO con un JSON válido, sin markdown ni texto adicional:
 {
-  "clave_identidad": "bar_code" | "provider_code" | "name",
+  "clave_identidad": "numero" | "bar_code" | "sku" | "provider_code" | "name",
   "politica_colision": "actualizar_todos" | "actualizar_uno" | "crear_nuevo",
   "explicacion": "texto claro y conciso"
 }
@@ -1332,11 +1339,12 @@ PROMPT;
              * Claude puede malinterpretar el valor numérico de provider_codes_duplicados_intra_archivo.
              * La regla es simple y no requiere juicio subjetivo: si hay códigos repetidos en el Excel
              * y la clave es provider_code, la política debe ser actualizar_todos sin excepción.
-             * Para bar_code y name nunca puede haber repetidos, así que siempre actualizar_uno.
+             * Para numero, bar_code, sku y name nunca puede haber repetidos, así que siempre actualizar_uno.
              */
             if ($clave_identidad === 'provider_code' && $stats['provider_codes_duplicados_intra_archivo'] > 0) {
                 $politica_colision = 'actualizar_todos';
-            } elseif ($clave_identidad === 'bar_code' || $clave_identidad === 'name') {
+            } elseif (in_array($clave_identidad, ['numero', 'bar_code', 'sku', 'name'], true)) {
+                // Claves únicas del sistema: nunca puede haber dos artículos con el mismo valor.
                 $politica_colision = 'actualizar_uno';
             }
 
@@ -1357,13 +1365,15 @@ PROMPT;
             ]);
 
             /*
-             * Fallback heurístico: prioridad bar_code → provider_code → name.
-             * Bar_code siempre se prefiere cuando está disponible, incluso con duplicados,
-             * porque el sistema garantiza que no se crean artículos con bar_code repetido
-             * (la última aparición en el Excel sobrescribe a las anteriores).
+             * Fallback heurístico con la MISMA prioridad que el matching real
+             * (ArticleIndexCache::find_with_index): numero -> bar_code -> sku -> provider_code -> name.
              */
-            if ($tiene_bar_code) {
+            if ($tiene_numero) {
+                $clave_fallback = 'numero';
+            } elseif ($tiene_bar_code) {
                 $clave_fallback = 'bar_code';
+            } elseif ($tiene_sku) {
+                $clave_fallback = 'sku';
             } elseif ($tiene_provider_code) {
                 $clave_fallback = 'provider_code';
             } else {
@@ -1372,12 +1382,12 @@ PROMPT;
 
             /*
              * Fallback heurístico para politica_colision:
-             * - bar_code y name son siempre únicos: actualizar_uno.
+             * - numero, bar_code, sku y name son siempre únicos: actualizar_uno.
              * - provider_code con repetidos en el Excel: actualizar_todos.
              * - provider_code sin repetidos: actualizar_uno.
              * Nunca se recomienda crear_nuevo en el fallback.
              */
-            if ($clave_fallback === 'bar_code' || $clave_fallback === 'name') {
+            if (in_array($clave_fallback, ['numero', 'bar_code', 'sku', 'name'], true)) {
                 $politica_fallback = 'actualizar_uno';
             } elseif (
                 $clave_fallback === 'provider_code'
