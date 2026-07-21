@@ -732,6 +732,18 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('whatsapp-bot/config/{id}', 'WhatsappBotController@update_config');
 });
 
+// Endpoints REST del módulo de chats de WhatsApp con clientes (grupo 137, Prompt 02),
+// gateados por auth Sanctum + la extensión 'whatsapp' (ver ExtencionEmpresaWhatsappSeeder).
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(function () {
+    Route::get('whatsapp-chats', 'WhatsappChatController@index');
+    Route::get('whatsapp-chats/{id}/messages', 'WhatsappChatController@messages');
+    Route::post('whatsapp-chats', 'WhatsappChatController@store');
+    Route::post('whatsapp-chats/{id}/messages', 'WhatsappChatController@send_message');
+    Route::put('whatsapp-chats/{id}/toggle-ai', 'WhatsappChatController@toggle_ai');
+    Route::put('whatsapp-chats/{id}/link-client', 'WhatsappChatController@link_client');
+    Route::put('whatsapp-chats/{id}/read', 'WhatsappChatController@mark_read');
+});
+
 // Callback público Mercado Libre (notificaciones); sin auth Sanctum.
 Route::post('meli/notifications', 'MeLiOrderController@receive_notification');
 

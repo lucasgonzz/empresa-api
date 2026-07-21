@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Models\WhatsappBotConfig;
 use App\Services\WhatsappBotAiService;
 use App\Services\WhatsappBotSendService;
@@ -12,8 +13,26 @@ use Illuminate\Support\Facades\Log;
 class WhatsappBotController extends Controller
 {
     /**
-     * Webhook público que Kapso llama al recibir un mensaje de WhatsApp del cliente final.
-     * No requiere autenticación Sanctum.
+     * Eventos de estado de entrega que Kapso reenvía desde Meta para un mensaje ya
+     * enviado por el bot o por el módulo (Prompt 02, grupo 137).
+     *
+     * @var array<int, string>
+     */
+    private const DELIVERY_STATUS_EVENTS = [
+        'whatsapp.message.sent',
+        'whatsapp.message.delivered',
+        'whatsapp.message.read',
+        'whatsapp.message.failed',
+    ];
+
+    /**
+     * Webhook público que Kapso llama al recibir un mensaje de WhatsApp del cliente final,
+     * o al reportar un cambio de estado de entrega de un mensaje ya enviado.
+     * No requiere autenticación Sanctum (Kapso no manda un token Sanctum); la seguridad
+     * la da la firma HMAC verificada en `verify_signature()`.
+     *
+     * Siempre devuelve 200 a Kapso (salvo firma inválida) para que no reintente indefinidamente;
+     * cualquier error de procesamiento interno se loguea pero no cambia la respuesta HTTP.
      */
     public function receive(Request $request): JsonResponse
     {
@@ -36,13 +55,38 @@ class WhatsappBotController extends Controller
         }
 
         $event_type = $this->resolve_event_type($request, $payload);
-        if ($event_type !== 'whatsapp.message.received') {
-            return response()->json(['ok' => true], 200);
+
+        // Todo el procesamiento nuevo (persistencia, estados) va protegido: un error acá
+        // nunca debe hacer perder el 200 hacia Kapso ni frenar el reintento de otros eventos.
+        try {
+            if ($event_type === 'whatsapp.message.received') {
+                $this->handle_message_received($config, $payload);
+            } elseif (in_array($event_type, self::DELIVERY_STATUS_EVENTS, true)) {
+                WhatsappChatHelper::handle_delivery_status_event($event_type, $payload);
+            }
+        } catch (\Throwable $e) {
+            Log::channel('daily')->error('WhatsappBotController: excepción no controlada procesando el webhook.', [
+                'event' => $event_type,
+                'error' => $e->getMessage(),
+            ]);
         }
 
+        return response()->json(['ok' => true], 200);
+    }
+
+    /**
+     * Procesa un mensaje entrante: lo persiste (chat + mensaje), y si corresponde,
+     * genera y envía la respuesta de IA, persistiéndola también.
+     *
+     * @param  WhatsappBotConfig  $config
+     * @param  array  $payload  Payload completo del webhook.
+     * @return void
+     */
+    private function handle_message_received(WhatsappBotConfig $config, array $payload): void
+    {
         $parsed = $this->parse_inbound_message($payload);
         if ($parsed === null || trim((string) ($parsed['body'] ?? '')) === '') {
-            return response()->json(['ok' => true], 200);
+            return;
         }
 
         $user_id = (int) $config->user_id;
@@ -56,12 +100,22 @@ class WhatsappBotController extends Controller
             'user_id' => $user_id,
         ]);
 
+        // Persiste el chat (con auto-vinculación de cliente si corresponde) y el mensaje 'in'.
+        $chat = WhatsappChatHelper::store_inbound_message($user_id, $from, (string) $body, $payload, $config);
+
+        // La IA solo responde si el bot está activo a nivel empresa Y el chat puntual no la tiene apagada.
+        if (! $config->is_active || ! $chat->ai_enabled) {
+            return;
+        }
+
         $ai_service   = new WhatsappBotAiService();
         $ai_response  = $ai_service->generate_response((string) $body, $user_id, $config);
 
         if ($ai_response !== '') {
-            $send_service = new WhatsappBotSendService();
-            $send_service->send_text($from, $ai_response, $config);
+            $send_service   = new WhatsappBotSendService();
+            $wa_message_id  = $send_service->send_text($from, $ai_response, $config);
+
+            WhatsappChatHelper::store_outbound_ai_message($chat, $ai_response, $wa_message_id);
 
             Log::channel('daily')->info('WhatsappBotController: respuesta enviada.', [
                 'to'       => $from,
@@ -73,8 +127,6 @@ class WhatsappBotController extends Controller
                 'user_id' => $user_id,
             ]);
         }
-
-        return response()->json(['ok' => true], 200);
     }
 
     /**
