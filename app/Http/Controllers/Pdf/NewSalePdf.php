@@ -236,7 +236,27 @@ class NewSalePdf extends fpdf
          * sin banda "ORIGINAL" ni datos exclusivos de AFIP. El cuadrante izquierdo
          * del bloque del cliente (receptor) también es configurable en este camino.
          */
-        AfipPdfHelper::header_comercial($this, $this->sale, $this->user, $header_layout);
+        /**
+         * Cuenta corriente para el cuadrante derecho del bloque del cliente del
+         * remito no fiscal: se calcula acá (mismo gating que antes usaba el
+         * recuadro suelto) y se pasa ya resuelta al header comercial. null cuando
+         * la venta no corresponde a cuenta corriente (contado) -> cuadrante derecho vacio.
+         */
+        $current_acount_data = null;
+        if (
+            $this->show_total_in_footer
+            && !is_null($this->sale->client)
+            && $this->sale->save_current_acount
+            && !is_null($this->sale->current_acount)
+        ) {
+            $current_acount_data = PdfHelper::buildCurrentAcountData(
+                $this,
+                $this->sale->current_acount,
+                $this->sale->total
+            );
+        }
+
+        AfipPdfHelper::header_comercial($this, $this->sale, $this->user, $header_layout, $current_acount_data);
 
         /**
          * Vendedor: se preserva debajo del header unificado cuando la extensión
@@ -265,26 +285,6 @@ class NewSalePdf extends fpdf
             && !is_null($this->sale->client->description)
         ) {
             PdfHelper::client_description($this, $this->sale->client, $this->y);
-        }
-
-        /**
-         * Cuenta corriente: Saldo anterior / Compra actual / Saldo, cuando la venta
-         * tiene cliente, guarda cuenta corriente y el perfil muestra el total en el pie.
-         */
-        if (
-            $this->show_total_in_footer
-            && !is_null($this->sale->client)
-            && $this->sale->save_current_acount
-            && !is_null($this->sale->current_acount)
-        ) {
-            PdfHelper::currentAcountInfo(
-                $this,
-                $this->sale->current_acount,
-                $this->sale->client_id,
-                $this->sale->total,
-                $this->y,
-                $this->user
-            );
         }
 
         /**
@@ -334,22 +334,17 @@ class NewSalePdf extends fpdf
 
             $this->x = $this->start_x;
             /**
-             * Total general visible/oculto según configuración del perfil.
+             * Caja de totales COMPLETA (Sub Total + descuentos/recargos + Total),
+             * la MISMA que el path de última página (print_totals_box()), replicada
+             * en el pie de CADA hoja. Se dibuja con render_totals_box_snapshot()
+             * (fija los acumuladores a los totales finales por bucket y los
+             * restaura) para que salga idéntica y correcta en todas las hojas sin
+             * corromper la suma incremental que hacen los ítems. Reemplaza al
+             * enfoque del prompt 533 (Cell suelto vía descuentos_y_recargos()),
+             * que mostraba solo el Total en cada hoja.
              */
             if ($this->should_print_total_in_footer()) {
-
-                /**
-                 * Sub Total + descuentos/recargos antes del Total, mismo criterio
-                 * de gating (show_subtotal_in_footer, hay o no descuentos/recargos)
-                 * que ya usa el path fiscal de última página. Usa el total bruto
-                 * final ya precalculado (get_final_total_bruto), NO el acumulado
-                 * incremental: en modo "cada página" Footer() puede ejecutarse
-                 * antes de haber sumado todos los ítems del documento.
-                 */
-                $this->descuentos_y_recargos($this->get_final_total_bruto());
-
-                $this->SetFont('Arial', 'B', 12);
-                $this->Cell(200, 10, 'Total: '.Numbers::price($this->sale->total, true, $this->sale->moneda_id), $this->b, 1, 'R');
+                $this->render_totals_box_snapshot();
             }
             $this->print_optional_footer_extras();
             $this->print_footer_text_block();
@@ -1070,6 +1065,137 @@ class NewSalePdf extends fpdf
     }
 
     /**
+     * Cache de los totales FINALES por bucket (suma de sub_total() de TODOS los
+     * ítems de cada tipo), calculado una sola vez. A diferencia de los
+     * acumuladores incrementales ($this->total_articles, etc.), que se arman
+     * mientras se imprime la tabla, estos son siempre los finales completos.
+     * Se usan para renderizar la caja de totales en el pie de CADA hoja con
+     * montos correctos, sin depender de cuántos ítems se llevan impresos.
+     *
+     * @var array<string, float>|null
+     */
+    private $final_bucket_totals = null;
+
+    /**
+     * Devuelve ['articles' => x, 'combos' => y, 'promocion_vinotecas' => z,
+     * 'services' => w] con la suma final de cada bucket. Memoizado. Misma
+     * clasificación que sumar_totales(), pero sobre acumuladores locales
+     * (no muta el estado de la instancia).
+     *
+     * @return array<string, float>
+     */
+    private function get_final_bucket_totals(): array
+    {
+        if ($this->final_bucket_totals === null) {
+
+            $articles = 0;
+            $combos = 0;
+            $promocion_vinotecas = 0;
+            $services = 0;
+
+            foreach ($this->get_sale_items() as $item) {
+                if ($item->is_article) {
+                    $articles += $this->sub_total($item);
+                } else if ($item->is_combo) {
+                    $combos += $this->sub_total($item);
+                } else if ($item->is_promocion_vinotecas) {
+                    $promocion_vinotecas += $this->sub_total($item);
+                } else if ($item->is_service) {
+                    $services += $this->sub_total($item);
+                }
+            }
+
+            $this->final_bucket_totals = [
+                'articles' => $articles,
+                'combos' => $combos,
+                'promocion_vinotecas' => $promocion_vinotecas,
+                'services' => $services,
+            ];
+        }
+
+        return $this->final_bucket_totals;
+    }
+
+    /**
+     * Renderiza la caja de totales completa (print_totals_box()) fijando
+     * temporalmente los acumuladores a los totales FINALES por bucket y
+     * restaurándolos después. Necesario para usar print_totals_box() en el
+     * pie de CADA hoja: print_totals_box() muta total_articles/total_combos/...
+     * (vía build_discount_rows()/build_surchage_rows()) y en modo "cada página"
+     * Footer() se ejecuta una vez por hoja — sin este snapshot, los montos
+     * saldrían corrompidos en las hojas siguientes.
+     *
+     * @return void
+     */
+    private function render_totals_box_snapshot(): void
+    {
+        $snapshot_articles = $this->total_articles;
+        $snapshot_combos = $this->total_combos;
+        $snapshot_promocion_vinotecas = $this->total_promocion_vinotecas;
+        $snapshot_services = $this->total_services;
+        $snapshot_total_bruto = $this->total_bruto;
+
+        $buckets = $this->get_final_bucket_totals();
+        $this->total_articles = $buckets['articles'];
+        $this->total_combos = $buckets['combos'];
+        $this->total_promocion_vinotecas = $buckets['promocion_vinotecas'];
+        $this->total_services = $buckets['services'];
+
+        $this->print_totals_box();
+
+        $this->total_articles = $snapshot_articles;
+        $this->total_combos = $snapshot_combos;
+        $this->total_promocion_vinotecas = $snapshot_promocion_vinotecas;
+        $this->total_services = $snapshot_services;
+        $this->total_bruto = $snapshot_total_bruto;
+    }
+
+    /**
+     * Cache del alto reservado para la caja de totales del pie de "cada hoja".
+     * Se calcula con los totales FINALES por bucket (mismo criterio que la caja
+     * real) para que el límite de salto de página deje siempre lugar suficiente,
+     * sin importar en qué hoja se dibuje. 0 cuando no se imprime el total.
+     *
+     * @var float|null
+     */
+    private $reserved_totals_box_height = null;
+
+    /**
+     * Alto (mm) a reservar para la caja de totales cuando el pie va en cada hoja.
+     *
+     * @return float
+     */
+    private function get_reserved_totals_box_height(): float
+    {
+        if (! $this->should_print_total_in_footer()) {
+            return 0;
+        }
+
+        if ($this->reserved_totals_box_height === null) {
+
+            $snapshot_articles = $this->total_articles;
+            $snapshot_combos = $this->total_combos;
+            $snapshot_promocion_vinotecas = $this->total_promocion_vinotecas;
+            $snapshot_services = $this->total_services;
+
+            $buckets = $this->get_final_bucket_totals();
+            $this->total_articles = $buckets['articles'];
+            $this->total_combos = $buckets['combos'];
+            $this->total_promocion_vinotecas = $buckets['promocion_vinotecas'];
+            $this->total_services = $buckets['services'];
+
+            $this->reserved_totals_box_height = $this->estimate_totals_box_height();
+
+            $this->total_articles = $snapshot_articles;
+            $this->total_combos = $snapshot_combos;
+            $this->total_promocion_vinotecas = $snapshot_promocion_vinotecas;
+            $this->total_services = $snapshot_services;
+        }
+
+        return $this->reserved_totals_box_height;
+    }
+
+    /**
      * Devuelve el límite Y para salto de página durante impresión de ítems.
      *
      * @return int
@@ -1100,12 +1226,21 @@ class NewSalePdf extends fpdf
             $base_limit_y = $this->is_afip_ticket ? (285 - $fiscal_footer_reserved) : 260;
 
             /**
+             * En el remito no fiscal, el pie de cada hoja ahora dibuja la caja de
+             * totales completa (Sub Total + descuentos/recargos + Total); hay que
+             * reservarle el alto para que los ítems no se le superpongan. En el
+             * path fiscal ese alto ya está contemplado en $fiscal_footer_reserved.
+             */
+            $totals_box_reserved = $this->is_afip_ticket ? 0 : $this->get_reserved_totals_box_height();
+
+            /**
              * Reserva extra cuando el perfil agrega comisiones/costos y/o texto libre
              * en cada pie para evitar superposición con filas de ítems.
              */
             $extra_reserved_height = $this->estimate_optional_footer_extras_height()
                 + $this->estimate_footer_text_height()
-                + $this->estimate_observations_height();
+                + $this->estimate_observations_height()
+                + $totals_box_reserved;
 
             return max(120, $base_limit_y - $extra_reserved_height);
         }

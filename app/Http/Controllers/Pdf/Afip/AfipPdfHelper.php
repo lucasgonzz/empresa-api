@@ -253,7 +253,7 @@ class AfipPdfHelper
      *     default por código), resuelto por el caller (NewSalePdf::Header()).
      * @return void
      */
-    public static function header_comercial($pdf, $sale, $user, $layout): void
+    public static function header_comercial($pdf, $sale, $user, $layout, $current_acount_data = null): void
     {
         /**
          * Posición inicial, igual que el header fiscal.
@@ -306,7 +306,7 @@ class AfipPdfHelper
          */
         if (!is_null($sale->client)) {
             $pdf->y += 2;
-            self::print_receptor_block_comercial($pdf, $sale, $layout);
+            self::print_receptor_block_comercial($pdf, $sale, $layout, $current_acount_data);
             $pdf->y += 2;
         }
     }
@@ -1243,17 +1243,20 @@ class AfipPdfHelper
      * (header_comercial). A diferencia de print_receptor_block() (fiscal, fijo por
      * requisito AFIP), acá el cuadrante IZQUIERDO es configurable vía
      * header_layout['receptor']['izquierda'] (cliente + Vendedor/Empleado). El cuadrante
-     * derecho sigue mostrando nombre y domicilio del cliente, igual que el fiscal: no es
-     * el bloque de cuenta corriente (ese se imprime aparte, ver PdfHelper::currentAcountInfo()
-     * llamado desde NewSalePdf::Header()); acá se preserva sin cambios porque el prompt no
-     * pide modificarlo.
+     * DERECHO ya NO muestra "Apellido y Nombre / Razón Social" ni "Domicilio Comercial"
+     * (eso es dato de receptor exclusivo de la factura AFIP, ver print_receptor_block()):
+     * ahora muestra la cuenta corriente (Saldo anterior / Compra actual / Saldo /
+     * Vendedor), calculada en NewSalePdf::Header() vía PdfHelper::buildCurrentAcountData()
+     * y recibida ya resuelta en $current_acount_data. Cuando la venta es contado (sin
+     * cuenta corriente), $current_acount_data llega null y el cuadrante derecho queda vacío.
      *
      * @param mixed $pdf Instancia FPDF.
      * @param mixed $sale Venta asociada.
      * @param array<string, mixed> $layout header_layout efectivo (guardado en el perfil o el default).
+     * @param array<string, mixed>|null $current_acount_data Datos de cuenta corriente ya calculados (PdfHelper::buildCurrentAcountData()), o null si la venta no tiene cuenta corriente.
      * @return void
      */
-    protected static function print_receptor_block_comercial($pdf, $sale, $layout): void
+    protected static function print_receptor_block_comercial($pdf, $sale, $layout, $current_acount_data = null): void
     {
         $client = $sale->client;
         $start_y = $pdf->y;
@@ -1298,25 +1301,50 @@ class AfipPdfHelper
         $left_end_y = $pdf->y;
 
         /**
-         * Columna derecha: nombre y domicilio del cliente (fija, igual que el fiscal).
+         * Columna derecha del remito no fiscal: cuenta corriente (Saldo anterior /
+         * Compra actual / Saldo / Vendedor), NO "Apellido y Nombre / Domicilio"
+         * (eso es dato de receptor exclusivo de la factura AFIP, ver
+         * print_receptor_block()). Si la venta es contado (sin cuenta corriente),
+         * $current_acount_data llega null y el cuadrante derecho queda vacio.
          */
         $pdf->y = $start_y + 2;
 
-        self::print_label_value_multiline(
-            $pdf,
-            'Apellido y Nombre / Razón Social: ',
-            (string) $client->name,
-            $right_content_x,
-            $right_content_width
-        );
+        if (!is_null($current_acount_data)) {
 
-        self::print_label_value_multiline(
-            $pdf,
-            'Domicilio Comercial: ',
-            (string) $client->address,
-            $right_content_x,
-            $right_content_width
-        );
+            self::print_label_value_line(
+                $pdf,
+                'Saldo anterior: ',
+                '$'.Numbers::price($current_acount_data['saldo_anterior']),
+                $right_content_x,
+                $right_content_width
+            );
+
+            self::print_label_value_line(
+                $pdf,
+                'Compra actual: ',
+                '$'.Numbers::price($current_acount_data['compra_actual']),
+                $right_content_x,
+                $right_content_width
+            );
+
+            self::print_label_value_line(
+                $pdf,
+                'Saldo: ',
+                '$'.Numbers::price($current_acount_data['saldo']),
+                $right_content_x,
+                $right_content_width
+            );
+
+            if (!is_null($current_acount_data['vendedor'])) {
+                self::print_label_value_line(
+                    $pdf,
+                    'Vendedor: ',
+                    (string) $current_acount_data['vendedor'],
+                    $right_content_x,
+                    $right_content_width
+                );
+            }
+        }
 
         $end_y = max($left_end_y, $pdf->y) + 2;
 

@@ -634,6 +634,33 @@ class PdfHelper {
 	}
 
 	/*
+		Devuelve los valores de cuenta corriente ya calculados (sin dibujar),
+		para poder renderizarlos dentro del cuadrante derecho del bloque del
+		cliente en el remito no fiscal. Mismos numeros que currentAcountInfo().
+		'vendedor' es null cuando el usuario no tiene mostrar_vendedor_en_venta_pdf.
+	*/
+	static function buildCurrentAcountData($instance, $current_acount, $compra_actual) {
+		$saldo_anterior = CurrentAcountHelper::getSaldo($current_acount->credit_account_id, $current_acount);
+
+		$vendedor = null;
+		$user = UserHelper::getFullModel();
+		if ($user && $user->mostrar_vendedor_en_venta_pdf) {
+			if (!is_null($instance->sale->employee)) {
+				$vendedor = $instance->sale->employee->name;
+			} else {
+				$vendedor = $user->name;
+			}
+		}
+
+		return [
+			'saldo_anterior'	=> $saldo_anterior,
+			'compra_actual'		=> $compra_actual,
+			'saldo'				=> $saldo_anterior + $compra_actual,
+			'vendedor'			=> $vendedor,
+		];
+	}
+
+	/*
 		y_final_model_info es el valor final de y luego de mostrar todas las model_props,
 		uso el mismo valor para que las lineas de la caja de right_info sea del mismo tamaño
 	*/
