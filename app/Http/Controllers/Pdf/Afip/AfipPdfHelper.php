@@ -88,9 +88,17 @@ class AfipPdfHelper
      * Campos del emisor que se imprimen con print_label_value_multiline() (soportan
      * texto largo en varias líneas). El resto usa print_label_value_line() (renglón simple).
      *
+     * 'condicion_iva' se agregó acá (Prompt 554) porque valores largos como
+     * "Responsable inscripto" desbordaban el ancho de la columna izquierda (calculado en
+     * función del tamaño del logo, ver $beside_logo_width en print_emisor_header_block())
+     * cuando se imprimía con print_label_value_line(), que no hace wrap en FPDF. Este campo
+     * solo aparece en el layout izquierdo del emisor (ver PdfColumnProfile::default_header_layout()),
+     * por lo que el cambio no afecta el panel derecho. El resto de los campos izquierdos
+     * (cuit, ingresos_brutos, fechas) son cortos por naturaleza y no tienen riesgo real de desborde.
+     *
      * @var array<int, string>
      */
-    protected static $emisor_multiline_fields = ['razon_social', 'domicilio_comercial'];
+    protected static $emisor_multiline_fields = ['razon_social', 'domicilio_comercial', 'condicion_iva'];
 
     /**
      * Campos del emisor que se imprimen SIEMPRE que exista $afip_information resuelto,
