@@ -19,6 +19,11 @@ class ProviderOrderExtraCostController extends Controller
             // arancel_importacion, otro). Si viene tipado, se prorratea y materializa como
             // recargo de artículo al procesar la orden (ver NewProviderOrderHelper).
             'tipo'                      => $request->tipo,
+            'facturado'                 => $request->facturado,
+            'iva_id'                    => $request->iva_id,
+            'en_factura_compra'         => $request->en_factura_compra,
+            'emisor_cuit'               => $request->emisor_cuit,
+            'emisor_razon_social'       => $request->emisor_razon_social,
         ]);
         if (!is_null($request->model_id)) {
             $this->sendAddModelNotification('provider_order', $model->provider_order_id, false);
@@ -40,6 +45,11 @@ class ProviderOrderExtraCostController extends Controller
         if (!is_null($request->tipo)) {
             $model->tipo = $request->tipo;
         }
+        $model->facturado             = $request->facturado;
+        $model->iva_id                = $request->iva_id;
+        $model->en_factura_compra     = $request->en_factura_compra;
+        $model->emisor_cuit           = $request->emisor_cuit;
+        $model->emisor_razon_social   = $request->emisor_razon_social;
         $model->save();
         $this->sendAddModelNotification('provider_order', $model->provider_order_id, false);
         return response()->json(['model' => $this->fullModel('ProviderOrderExtraCost', $model->id)], 200);

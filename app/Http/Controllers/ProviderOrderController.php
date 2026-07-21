@@ -69,6 +69,7 @@ class ProviderOrderController extends Controller
             'days_to_advise'                            => $request->days_to_advise,
             'update_stock'                              => $request->update_stock,
             'update_prices'                             => $request->update_prices,
+            'precios_incluyen_iva'                      => $request->precios_incluyen_iva,
             'moneda_id'                                 => $request->moneda_id,
             'generate_current_acount'                   => $request->generate_current_acount,
             'address_id'                                => $request->address_id,
@@ -112,9 +113,10 @@ class ProviderOrderController extends Controller
         $model->days_to_advise                              = $request->days_to_advise;
         $model->update_stock                                = $request->update_stock;
         $model->update_prices                               = $request->update_prices;
+        $model->precios_incluyen_iva                        = $request->precios_incluyen_iva;
         $model->generate_current_acount                     = $request->generate_current_acount;
-        $model->numero_comprobante                          = $request->numero_comprobante;        
-        $model->moneda_id                                   = $request->moneda_id;        
+        $model->numero_comprobante                          = $request->numero_comprobante;
+        $model->moneda_id                                   = $request->moneda_id;
         $model->save();
 
 
