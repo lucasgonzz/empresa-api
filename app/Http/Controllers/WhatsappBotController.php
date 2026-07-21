@@ -142,17 +142,52 @@ class WhatsappBotController extends Controller
 
     /**
      * Crea o actualiza la configuración del bot para el usuario autenticado.
+     *
+     * Los campos técnicos (kapso_api_key, phone_number_id, webhook_secret, is_active) se
+     * cargan desde ABM → Integraciones (equipo de ComercioCity). Los campos de
+     * configuración funcional del agente (agent_personality, ai_enabled_default,
+     * auto_send_sale_pdf; grupo 137, Prompt 07) se editan desde la pantalla de
+     * Configuración del módulo WhatsApp, solo visible para el dueño. Ambas pantallas
+     * pegan al mismo endpoint pero cada una manda solo sus propios campos: cada campo
+     * se arma con `$request->has(...)` para no pisar con `null`/`false` lo que la otra
+     * pantalla ya tiene guardado.
      */
     public function update_config(Request $request): JsonResponse
     {
+        // Se arranca vacío y se agrega cada campo solo si vino en el request.
+        $data = [];
+
+        if ($request->has('kapso_api_key')) {
+            $data['kapso_api_key'] = $request->kapso_api_key;
+        }
+        if ($request->has('phone_number_id')) {
+            $data['phone_number_id'] = $request->phone_number_id;
+        }
+        if ($request->has('webhook_secret')) {
+            $data['webhook_secret'] = $request->webhook_secret;
+        }
+        if ($request->has('is_active')) {
+            $data['is_active'] = (bool) $request->is_active;
+        }
+
+        // Personalidad del agente IA (texto libre definido por el dueño).
+        if ($request->has('agent_personality')) {
+            $data['agent_personality'] = $request->agent_personality;
+        }
+
+        // Si los chats nuevos nacen con la respuesta automática de IA prendida.
+        if ($request->has('ai_enabled_default')) {
+            $data['ai_enabled_default'] = (bool) $request->ai_enabled_default;
+        }
+
+        // Si se envía el comprobante PDF de la venta automáticamente por WhatsApp.
+        if ($request->has('auto_send_sale_pdf')) {
+            $data['auto_send_sale_pdf'] = (bool) $request->auto_send_sale_pdf;
+        }
+
         $config = WhatsappBotConfig::updateOrCreate(
             ['user_id' => $this->userId()],
-            [
-                'kapso_api_key'   => $request->kapso_api_key,
-                'phone_number_id' => $request->phone_number_id,
-                'webhook_secret'  => $request->webhook_secret,
-                'is_active'       => (bool) $request->is_active,
-            ]
+            $data
         );
 
         return response()->json(['model' => $config], 200);
