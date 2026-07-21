@@ -37,6 +37,10 @@ class OnlineConfiguration extends Model
         'notificar_pedido_al_negocio' => 'boolean',
         'notificar_pedido_al_cliente' => 'boolean',
         'avisar_ingreso_stock_por_mail' => 'boolean',
+        // Login con Google de la tienda online (prompt 589, grupo 164): master switch. No hace
+        // falta agregar google_client_id/google_client_secret a $fillable: el modelo usa
+        // $guarded = [] (mass assignment abierto), y ademas el controller las asigna una por una.
+        'google_login_enabled' => 'boolean',
     ];
 
     function scopeWithAll($q) {
