@@ -132,4 +132,11 @@ class User extends Authenticatable
     public function whatsapp_bot_config() {
         return $this->hasOne(WhatsappBotConfig::class);
     }
+
+    /**
+     * Chats de WhatsApp de los clientes de esta empresa (módulo grupo 137).
+     */
+    public function whatsapp_chats() {
+        return $this->hasMany(WhatsappChat::class);
+    }
 }

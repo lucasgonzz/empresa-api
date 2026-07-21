@@ -66,7 +66,16 @@ class Client extends Model
     public function location() {
         return $this->belongsTo('App\Models\Location');
     }
-    
+
+    /**
+     * Chat de WhatsApp vinculado a este cliente (módulo grupo 137). Un chat puede existir
+     * sin cliente todavía (client_id null en whatsapp_chats), pero un cliente tiene a lo
+     * sumo un chat.
+     */
+    public function whatsapp_chat() {
+        return $this->hasOne('App\Models\WhatsappChat');
+    }
+
     // public function errors() {
     //     return $this->hasMany('App\Models\Hola');
     // }
