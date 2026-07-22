@@ -5,6 +5,7 @@ namespace Tests\Feature\Compras;
 use App\Models\Address;
 use App\Models\Article;
 use App\Models\Provider;
+use App\Models\ProviderDiscount;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
@@ -16,8 +17,23 @@ use Tests\TestCase;
  * Clase base de los tests de compras (modulo Provider Order), Grupo 184 - Prompt 613.
  *
  * Usa `DatabaseTransactions` (NO `RefreshDatabase`): cada test corre dentro de una transaccion que
- * se revierte al terminar, para que una compra confirmada en un test no contamine el siguiente, sin
- * pagar el costo de reconstruir 600+ migraciones por test.
+ * en teoria se revierte al terminar, para que una compra confirmada en un test no contamine el
+ * siguiente, sin pagar el costo de reconstruir 600+ migraciones por test.
+ *
+ * ⚠️ DEUDA TECNICA ALTA (hallazgo real, Prompt 615): en este entorno `DatabaseTransactions` NO
+ * revierte nada de verdad. Las ~360 tablas de `empresa_testing` son motor MyISAM (no InnoDB), que
+ * no soporta transacciones — `BEGIN`/`ROLLBACK` se ejecutan sin error pero son no-ops para esas
+ * tablas, asi que cualquier cambio que un test haga (compras confirmadas, articulos editados,
+ * cuentas corrientes) queda PERMANENTE en la base de testing entre corridas. Los tests de costeo
+ * (614/615) no lo notan porque siempre pisan los mismos valores absolutos (cost, total) en cada
+ * corrida — el resultado es idempotente aunque no haya rollback real. Pero cualquier test que dependa
+ * de un valor RELATIVO al estado previo (stock acumulado, saldo de cuenta corriente, o un campo que
+ * se edita a un valor DISTINTO del que trae el seeder, como `iva_id`) puede corromper el fixture
+ * para las corridas siguientes en silencio. Si un test necesita mutar un campo del fixture a un
+ * valor distinto del original, tiene que restaurarlo el mismo (ver `try/finally` en
+ * `Costeo_MT_Test::deriva_por_alicuota_editada_es_comportamiento_documentado_no_bug`, Prompt 615).
+ * Arreglar esto de raiz (migrar el motor de las tablas a InnoDB, o cambiar a `RefreshDatabase`) es
+ * un cambio grande fuera del alcance de este prompt — queda registrado para que Lucas decida.
  *
  * Los tests concretos (prompts 614/615/616) extienden esta clase y usan sus helpers protegidos
  * (`articulo`, `proveedor`, `set_condicion_iva`, `payload_compra`, `item`) para resolver todo por
@@ -105,6 +121,33 @@ abstract class ComprasTestCase extends TestCase
     protected function proveedor($nombre)
     {
         return Provider::where('name', $nombre)->first();
+    }
+
+    /**
+     * Neutraliza, solo para el test en curso, las bonificaciones de catalogo del proveedor Buenos
+     * Aires (10% y 5%, ver `TestingFerreteriaSeeder::seed_bonificaciones`).
+     *
+     * Movido acá (Grupo 184, Prompt 615) desde `Costeo_RRII_Test` (Prompt 614), porque los tests
+     * de MT/multi-alicuota (este mismo prompt) tambien arman compras "limpias" (sin descuentos de
+     * catalogo en juego) contra Buenos Aires y necesitan el mismo seguro. `ProviderOrderController::
+     * store()` llama a `precargar_bonificaciones_proveedor()`, que copia AUTOMATICAMENTE las
+     * bonificaciones del proveedor como `provider_order_discounts` de la orden apenas se crea (si
+     * la orden no trae descuentos propios) — y varios articulos de este fixture (Pinza, Alicate,
+     * Cuchilla, Martillo acero, Cuchara) son de Buenos Aires, el proveedor que el fixture del
+     * Prompt 613 dejo con bonificaciones a proposito (para los prompts de descuentos, 616/617).
+     * Sin este helper, los totales de estos tests quedarian contaminados por un descuento que la
+     * especificacion no pidio. Se borra la fila maestra de `provider_discounts` (no la orden ni
+     * sus `provider_order_discounts`, que en el momento de llamar a este helper todavia no
+     * existen): al no haber nada que copiar, `precargar_bonificaciones_proveedor()` no crea nada.
+     * `DatabaseTransactions` revierte el borrado al terminar cada test.
+     *
+     * @return void
+     */
+    protected function quitar_bonificaciones_de_buenos_aires()
+    {
+        $proveedor_bsas = $this->proveedor(TestingFerreteriaSeeder::PROVIDER_BSAS);
+
+        ProviderDiscount::where('provider_id', $proveedor_bsas->id)->delete();
     }
 
     /**

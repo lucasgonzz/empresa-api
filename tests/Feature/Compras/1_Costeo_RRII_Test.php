@@ -2,7 +2,6 @@
 
 namespace Tests\Feature\Compras;
 
-use App\Models\ProviderDiscount;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderAfipTicket;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
@@ -25,32 +24,6 @@ class Costeo_RRII_Test extends ComprasTestCase
      * Delta de tolerancia para comparaciones de plata (nunca `assertSame` sobre floats).
      */
     const DELTA = 0.01;
-
-    /**
-     * Neutraliza, solo para el test en curso, las bonificaciones de catalogo del proveedor Buenos
-     * Aires (10% y 5%, ver `TestingFerreteriaSeeder::seed_bonificaciones`).
-     *
-     * Los numeros de la especificacion de este prompt (12100, 13000, 15730, etc.) son "compra
-     * limpia": ningun descuento de compra en juego, solo costo x cantidad + IVA. Pero
-     * `ProviderOrderController::store()` llama a `precargar_bonificaciones_proveedor()`, que
-     * copia AUTOMATICAMENTE las bonificaciones del proveedor como `provider_order_discounts` de
-     * la orden apenas se crea (si la orden no trae descuentos propios) — y todos los articulos de
-     * este prompt (Pinza, Alicate, Cuchilla) son de Buenos Aires, el proveedor que el fixture del
-     * Prompt 613 dejo con bonificaciones a proposito (para los prompts de descuentos, 615/616).
-     * Sin este helper, los totales de esta suite quedarian contaminados por un descuento que la
-     * especificacion no pidio. Se borra la fila maestra de `provider_discounts` (no la orden ni
-     * sus `provider_order_discounts`, que en el momento de llamar a este helper todavia no
-     * existen): al no haber nada que copiar, `precargar_bonificaciones_proveedor()` no crea nada.
-     * `DatabaseTransactions` revierte el borrado al terminar cada test.
-     *
-     * @return void
-     */
-    protected function quitar_bonificaciones_de_buenos_aires()
-    {
-        $proveedor_bsas = $this->proveedor(TestingFerreteriaSeeder::PROVIDER_BSAS);
-
-        ProviderDiscount::where('provider_id', $proveedor_bsas->id)->delete();
-    }
 
     /**
      * Test 1 — precios NO incluyen IVA (`precios_incluyen_iva = 0`): el costo tipeado ya es neto,
