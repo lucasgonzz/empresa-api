@@ -3,7 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\UserHelper;
-use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
+use App\Http\Controllers\Helpers\VenderSearchHelper;
 use App\Models\Article;
 use App\Models\ArticleVariant;
 use Illuminate\Http\Request;
@@ -174,36 +174,58 @@ class VenderController extends Controller
         ];
     }
 
+    /**
+     * Busqueda de articulos del modulo de Vender (search modal). Este endpoint sigue vivo como
+     * respaldo del frontend viejo (Prompt 04, grupo 179: el buscador general ahora soporta el
+     * mismo comportamiento via `contexto`); su respuesta y su comportamiento NO cambian, solo se
+     * movio la logica de negocio (exclusion de insumos, codigo de barras exacto y expansion de
+     * variantes) a `VenderSearchHelper` para que `SearchController::globalSearch` pueda reusarla.
+     *
+     * @param Request $request
+     * @param int|bool $from_provider_order_or_recipe Si viene de un pedido a proveedor o receta
+     *        (no excluye insumos, y habilita la busqueda exacta por codigo de barras aunque el
+     *        cliente no tenga la extension `search_bar_code_en_vender`).
+     * @return \Illuminate\Http\JsonResponse Forma plana (current_page/data/per_page/total/last_page
+     *         en la raiz), distinta de la de `globalSearch`.
+     */
     function search_nombre(Request $request, $from_provider_order_or_recipe = 0) {
 
+        // Palabras del criterio de busqueda, tal como las separa el helper.
         $keywords = explode(' ', trim($request->query_value));
 
+        // Extensiones que habilitan busqueda por descripcion y por codigo de barras (parcial).
         $search_descripcion_en_vender = UserHelper::hasExtencion('search_descripcion_en_vender');
         $search_bar_code_en_vender = UserHelper::hasExtencion('search_bar_code_en_vender');
 
+        // Filtros fijos propios de Vender (categoria y opcion de stock).
         $category_id = $request->category_id;
         $stock_option = $request->stock_option;
 
+        // Paginado manual (la expansion de variantes cambia la cantidad de filas).
         $per_page = 50;
         $current_page = LengthAwarePaginator::resolveCurrentPage();
 
-        $results = collect();
+        // Contexto equivalente para el helper: 'provider_order' cubre tanto pedido a proveedor
+        // como receta (ambos casos comparten exactamente la misma logica de exclusion de insumos
+        // y de codigo de barras que hoy tenia este flag unico).
+        $contexto = $from_provider_order_or_recipe ? 'provider_order' : 'vender';
+
         // 1. Buscar todos los artículos cuyo name o provider_code coincidan con alguna palabra
         $articles = Article::where('status', 'active')
                         ->where('user_id', $this->userId());
 
-        if (!$from_provider_order_or_recipe) {
-            $articles->where(function($q) {
-                            $q->where('es_insumo', 0)
-                                ->orWhereNull('es_insumo');
-                        });
-        } 
+        // Exclusion de insumos, delegada en el helper (salvo pedido a proveedor / receta).
+        $articles = VenderSearchHelper::apply_conditions($articles, $request->query_value, $contexto);
 
-        $articles->where(function ($query_builder) use ($keywords, $from_provider_order_or_recipe, $search_descripcion_en_vender, $search_bar_code_en_vender) {
+        // Callback de coincidencia exacta por codigo de barras (articulo y variantes), delegado en
+        // el helper para reusar la misma logica que usa el buscador general con contexto Vender.
+        $bar_code_condition = VenderSearchHelper::bar_code_condition_callback();
+
+        $articles->where(function ($query_builder) use ($keywords, $from_provider_order_or_recipe, $search_descripcion_en_vender, $search_bar_code_en_vender, $bar_code_condition) {
                             if (count($keywords) === 1) {
                                 $keyword = $keywords[0];
 
-                                $query_builder->where(function ($q) use ($keyword, $from_provider_order_or_recipe, $search_descripcion_en_vender, $search_bar_code_en_vender) {
+                                $query_builder->where(function ($q) use ($keyword, $keywords, $from_provider_order_or_recipe, $search_descripcion_en_vender, $search_bar_code_en_vender, $bar_code_condition) {
                                     $q->where('name', 'LIKE', "%$keyword%")
                                       ->orWhere('provider_code', 'LIKE', "%$keyword%");
 
@@ -221,10 +243,7 @@ class VenderController extends Controller
                                             Log::info('from_provider_order_or_recipe '.$keyword);
                                         }
 
-                                        $q->orWhere('bar_code', $keyword);
-                                        $q->orWhereHas('article_variants', function ($variant_query) use ($keyword) {
-                                            $variant_query->where('bar_code', $keyword);
-                                        });
+                                        $bar_code_condition($q, $keywords);
                                     }
                                 });
                             } else {
@@ -271,136 +290,9 @@ class VenderController extends Controller
 
         Log::info(count($articles). ' articulos');
 
-        $results = $articles;
-
-        if (UserHelper::hasExtencion('article_variants')) {
-            
-            foreach ($articles as $article) {
-
-                // Detectar qué palabras de la búsqueda coincidieron con el nombre, código o barcode del artículo/variante
-                $matched_keywords = collect($keywords)->filter(function ($word) use ($article, $search_bar_code_en_vender) {
-                    $word_lower = mb_strtolower($word, 'UTF-8');
-
-                    if (strpos(
-                            mb_strtolower($article->name ?? '', 'UTF-8'),
-                            $word_lower
-                        ) !== false ||
-                        strpos(
-                            mb_strtolower($article->provider_code ?? '', 'UTF-8'),
-                            $word_lower
-                        ) !== false) {
-                        return true;
-                    }
-
-                    if ($search_bar_code_en_vender) {
-                        if (strpos(
-                                mb_strtolower($article->bar_code ?? '', 'UTF-8'),
-                                $word_lower
-                            ) !== false) {
-                            return true;
-                        }
-
-                        foreach ($article->article_variants as $variant) {
-                            if (strpos(
-                                    mb_strtolower($variant->bar_code ?? '', 'UTF-8'),
-                                    $word_lower
-                                ) !== false) {
-                                return true;
-                            }
-                        }
-                    }
-
-                    return false;
-                })->values();
-
-                // Palabras restantes para buscar dentro de variant_description
-                $remaining_keywords = array_diff($keywords, $matched_keywords->toArray());
-
-                // Si el artículo tiene variantes
-                if ($article->article_variants->count() > 0) {
-
-                    Log::info('Buscando variantes');
-
-                    // Coincidencia exacta por barcode de variante: devolver solo esa variante
-                    if ($search_bar_code_en_vender && count($keywords) === 1) {
-                        $keyword = $keywords[0];
-                        $matching_variants_by_bar_code = $article->article_variants->filter(function ($variant) use ($keyword) {
-                            return ($variant->bar_code ?? '') === $keyword;
-                        });
-
-                        if ($matching_variants_by_bar_code->count() > 0) {
-                            foreach ($matching_variants_by_bar_code as $variant) {
-
-                                $variant_final_price = $this->get_variant_price($variant);
-
-                                $results->push((object)[
-                                    'is_variant'            => true,
-                                    'id'                    => $variant->article->id,
-                                    'variant_id'            => $variant->id,
-                                    'variant_description'   => $variant->variant_description,
-                                    'final_price'           => $variant_final_price,
-                                    // Capa 3 (Prompt 263): desglose por metodo de pago con `precio_base_incluye_tarjeta`
-                                    'precios_por_metodo_pago' => ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($variant_final_price, $this->userId()),
-                                    'price_types'           => $article->price_types,
-                                    'bar_code'              => $variant->bar_code,
-                                    'name'                  => $article->name. ' '.$variant->variant_description,
-                                    'article'               => $article,
-                                    'images'                => $this->get_variant_images($variant),
-                                    'addresses'             => $variant->addresses,
-                                ]);
-                            }
-
-                            continue;
-                        }
-                    }
-
-                    // Filtrar variantes que coincidan con todas las palabras restantes
-                    $matching_variants = $article->article_variants->filter(function ($variant) use ($remaining_keywords) {
-                        foreach ($remaining_keywords as $word) {
-                            if (strpos(
-                                    mb_strtolower($variant->variant_description ?? '', 'UTF-8'),
-                                    mb_strtolower($word, 'UTF-8')
-                                ) === false) {
-                                return false;
-                            }
-                        }
-                        return true;
-                    });
-
-                    if ($matching_variants->count() > 0) {
-                        foreach ($matching_variants as $variant) {
-
-                            $variant_final_price = $this->get_variant_price($variant);
-
-                            $results->push((object)[
-                                'is_variant'            => true,
-                                'id'                    => $variant->article->id,
-                                'variant_id'            => $variant->id,
-                                'variant_description'   => $variant->variant_description,
-                                'final_price'           => $variant_final_price,
-                                // Capa 3 (Prompt 263): desglose por metodo de pago con `precio_base_incluye_tarjeta`
-                                'precios_por_metodo_pago' => ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($variant_final_price, $this->userId()),
-                                'price_types'           => $article->price_types,
-                                'bar_code'              => $variant->bar_code,
-                                'name'                  => $article->name. ' '.$variant->variant_description,
-                                'article'               => $article,
-                                'images'                => $this->get_variant_images($variant),
-                                'addresses'             => $variant->addresses,
-                            ]);
-                        }
-                    }
-
-                } else {
-                    // Si no tiene variantes, y al menos una keyword matcheó → agregar el artículo
-                    if ($matched_keywords->isNotEmpty()) {
-                        $article->is_variant = false;
-                        // Capa 3 (Prompt 263, hotfix Prompt 313): `precios_por_metodo_pago` viene del
-                        // accessor del modelo Article, no hace falta asignarlo aca.
-                        $results->push($article);
-                    }
-                }
-            }
-        }
+        // Expansion de variantes en filas propias, delegada en el helper (mismas claves y mismo
+        // orden de casos que antes de este prompt).
+        $results = VenderSearchHelper::expand_variants($articles, $request->query_value);
 
         // Paginar manualmente
         $paginated = new LengthAwarePaginator(
@@ -418,31 +310,5 @@ class VenderController extends Controller
             'last_page' => $paginated->lastPage(),
         ], 200);
 
-    }
-
-
-
-
-    function get_variant_images($variant) {
-        $images = $variant->article->images;
-        if (!is_null($variant->image_url)) {
-            $images = [
-                [
-                    env('IMAGE_URL_PROP_NAME', 'image_url') => $variant->image_url,
-                ]
-            ];
-        }
-        return $images;
-    }
-
-    function get_variant_price($variant) {
-
-        $final_price = $variant->article->final_price;
-
-        if (!is_null($variant->price)) {
-            $final_price = $variant->price;
-        }
-
-        return $final_price;
     }
 }

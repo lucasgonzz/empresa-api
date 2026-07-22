@@ -35,9 +35,18 @@ class GlobalSearchQueryHelper
      * @param string $conector 'or' o 'and'. Une el grupo estricto con el distribuido.
      * @param string $table Tabla del modelo, para validar columnas y tipos contra el schema.
      * @param \Illuminate\Database\Eloquent\Model $model_instance Instancia para chequear relaciones.
+     * @param callable|null $extra_text_conditions (Prompt 04, contexto Vender del buscador general)
+     *        Callback opcional `function($sub, array $keywords)` con condiciones extra de texto
+     *        (ej: coincidencia exacta de codigo de barras) que se agregan DENTRO del mismo grupo de
+     *        coincidencia de texto, en vez de colgarse como un AND aparte. Se invoca una vez por
+     *        cada alternativa del grupo estricto (recibe TODAS las palabras, un `orWhere` mas del
+     *        grupo) y una vez por cada palabra del grupo distribuido (recibe tambien todas las
+     *        palabras, para que el callback decida si le aporta algo a esa palabra puntual o no; es
+     *        una prop mas del "pozo comun"). El callback es responsable de no agregar ninguna
+     *        condicion cuando no corresponda (Eloquent ignora un nested where sin condiciones).
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public static function apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance)
+    public static function apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance, $extra_text_conditions = null)
     {
         // Criterio de texto normalizado. Si viene vacío, la búsqueda puede ser solo por filtros
         // fijos (extra_filters): no tocamos la query.
@@ -116,9 +125,14 @@ class GlobalSearchQueryHelper
             }
         }
 
-        // Si tras normalizar no quedo ninguna prop ni relacion valida, no filtrar por nada es
-        // preferible a devolver cero resultados sin explicacion.
-        if (empty($strict_props) && empty($distributed_props) && empty($strict_relations) && empty($distributed_relations)) {
+        // Si tras normalizar no quedo ninguna prop ni relacion valida, y tampoco hay condiciones
+        // extra de texto (contexto Vender), no filtrar por nada es preferible a devolver cero
+        // resultados sin explicacion.
+        if (
+            empty($strict_props) && empty($distributed_props)
+            && empty($strict_relations) && empty($distributed_relations)
+            && is_null($extra_text_conditions)
+        ) {
             return $models;
         }
 
@@ -131,7 +145,8 @@ class GlobalSearchQueryHelper
             $distributed_relations,
             $keywords,
             $conector,
-            $table
+            $table,
+            $extra_text_conditions
         ) {
             // Hay grupo estricto si hay al menos una prop o relacion en modo 'todas'.
             $has_strict_group = !empty($strict_props) || !empty($strict_relations);
@@ -145,10 +160,18 @@ class GlobalSearchQueryHelper
             if ($has_strict_group) {
                 // Grupo estricto: estructura de hoy del buscador general. OR entre props/relaciones,
                 // con AND de todas las palabras adentro de cada una.
-                $add_strict_group = function ($grupo) use ($strict_props, $strict_relations, $keywords, $table) {
+                $add_strict_group = function ($grupo) use ($strict_props, $strict_relations, $keywords, $table, $extra_text_conditions) {
                     foreach ($strict_props as $prop) {
                         $grupo->orWhere(function ($sub) use ($prop, $keywords, $table) {
                             self::apply_all_keywords($sub, $prop, $keywords, $table);
+                        });
+                    }
+
+                    // Condiciones extra de texto (contexto Vender, Prompt 04): un `orWhere` mas del
+                    // grupo. El callback decide si le aporta algo a este criterio o no.
+                    if ($extra_text_conditions) {
+                        $grupo->orWhere(function ($sub) use ($extra_text_conditions, $keywords) {
+                            call_user_func($extra_text_conditions, $sub, $keywords);
                         });
                     }
 
@@ -188,9 +211,9 @@ class GlobalSearchQueryHelper
             if ($has_distributed_group) {
                 // Grupo distribuido: estructura de Vender. AND de palabras, con OR entre props y
                 // relaciones del "pozo comun" adentro de cada palabra.
-                $add_distributed_group = function ($grupo) use ($distributed_props, $distributed_relations, $keywords, $table) {
+                $add_distributed_group = function ($grupo) use ($distributed_props, $distributed_relations, $keywords, $table, $extra_text_conditions) {
                     foreach ($keywords as $keyword) {
-                        $grupo->where(function ($sub) use ($distributed_props, $distributed_relations, $keyword, $table) {
+                        $grupo->where(function ($sub) use ($distributed_props, $distributed_relations, $keyword, $keywords, $table, $extra_text_conditions) {
                             foreach ($distributed_props as $prop) {
                                 self::apply_single_keyword($sub, $prop, $keyword, $table);
                             }
@@ -207,6 +230,17 @@ class GlobalSearchQueryHelper
                                     });
                                 });
                             }
+
+                            // Condiciones extra de texto (contexto Vender, Prompt 04): una prop mas
+                            // del "pozo comun" de esta palabra. Se le pasan TODAS las palabras del
+                            // criterio (no solo esta) para que el callback pueda decidir que solo
+                            // aporta cuando el criterio completo es una unica palabra (ej: codigo de
+                            // barras exacto).
+                            if ($extra_text_conditions) {
+                                $sub->orWhere(function ($extra_sub) use ($extra_text_conditions, $keywords) {
+                                    call_user_func($extra_text_conditions, $extra_sub, $keywords);
+                                });
+                            }
                         });
                     }
                 };
@@ -220,6 +254,16 @@ class GlobalSearchQueryHelper
                         $add_distributed_group($grupo);
                     });
                 }
+            }
+
+            // Caso borde: no hay props ni relaciones validas (ni estrictas ni distribuidas), pero
+            // sí hay condiciones extra de texto (contexto Vender sin props configuradas). Sin esto
+            // el metodo ya habria retornado antes de armar este where(function...) y el callback
+            // nunca se ejecutaria.
+            if (!$has_strict_group && !$has_distributed_group && $extra_text_conditions) {
+                $query->where(function ($grupo) use ($extra_text_conditions, $keywords) {
+                    call_user_func($extra_text_conditions, $grupo, $keywords);
+                });
             }
         });
     }

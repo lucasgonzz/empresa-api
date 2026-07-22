@@ -9,8 +9,10 @@ use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\ExtraFiltersHelper;
 use App\Http\Controllers\Helpers\GlobalSearchQueryHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
+use App\Http\Controllers\Helpers\VenderSearchHelper;
 use App\Services\Filter\FilterHistoryService;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\Log;
 
 class SearchController extends Controller
@@ -644,6 +646,22 @@ class SearchController extends Controller
      *                   Cualquier otro operador, o una key que no sea columna de la tabla, se ignora
      *                   en silencio.
      * - per_page        (int)    Tamaño de página (clamp 1..200, default 50). Página vía ?page=.
+     * - contexto        (string|null) (Prompt 04, grupo 179) Flag opcional que declara que la
+     *                   llamada viene de un módulo con lógica propia de búsqueda. Únicamente
+     *                   soportado hoy para el modelo `article`, whitelist estricta en
+     *                   `VenderSearchHelper::is_valid_contexto`:
+     *                     - 'vender': excluye insumos, agrega coincidencia EXACTA de código de
+     *                       barras (artículo y variantes) cuando el criterio es una sola palabra, y
+     *                       expande las variantes de cada artículo en filas propias con su propio
+     *                       precio/imágenes/depósitos (mismo comportamiento que
+     *                       `VenderController::search_nombre`).
+     *                     - 'provider_order' / 'recipe': igual que 'vender' pero SIN excluir
+     *                       insumos (pedido a proveedor y receta los necesitan).
+     *                   Sin `contexto` válido (o con un modelo distinto de `article`), `globalSearch`
+     *                   sigue su camino normal: sin variantes expandidas, sin excluir insumos,
+     *                   paginado con `paginate()` de Eloquent. La forma de la respuesta es SIEMPRE
+     *                   la misma (`{ models: { data, last_page, total, ... } }`), tenga o no
+     *                   `contexto` — nunca la forma plana de `search_nombre`.
      *
      * @param Request $request
      * @param string $model_name_param Nombre del modelo en snake_case (ej: 'article').
@@ -673,6 +691,14 @@ class SearchController extends Controller
         // relaciones. Default 'or': alcanza con que se cumpla uno de los dos grupos.
         $conector = $request->input('conector', 'or');
 
+        // Contexto opcional (Prompt 04, grupo 179): declara que la llamada viene de un módulo con
+        // lógica propia de búsqueda (hoy, Vender / pedido a proveedor / receta). Ver PHPDoc arriba.
+        $contexto = $request->input('contexto', null);
+
+        // Solo el modelo article tiene lógica de contexto (Vender busca artículos). Cualquier otro
+        // modelo, o un contexto fuera de la whitelist, sigue el camino normal sin tocar nada de esto.
+        $usar_contexto_vender = $model_name_param == 'article' && VenderSearchHelper::is_valid_contexto($contexto);
+
         // Instancia temporal del modelo, usada solo para chequear existencia de columnas/relaciones
         // antes de armar la query (evita 500 por prop o relación inexistente).
         $model_instance = new $model_name();
@@ -682,11 +708,22 @@ class SearchController extends Controller
 
         $models = $model_name::where('user_id', $this->userId())->withAll();
 
+        // Exclusión de insumos (contexto Vender), aplicada ANTES del grupo de coincidencia de texto
+        // para que quede AND'eada con el resto de la query, igual que search_nombre.
+        if ($usar_contexto_vender) {
+            $models = VenderSearchHelper::apply_conditions($models, $query_value, $contexto);
+        }
+
+        // Callback de condiciones extra de texto (coincidencia exacta de código de barras, artículo
+        // y variantes), solo con contexto Vender válido. Se le pasa a GlobalSearchQueryHelper::apply
+        // para que quede DENTRO del mismo grupo de coincidencia de texto (no como un AND aparte).
+        $extra_text_conditions = $usar_contexto_vender ? VenderSearchHelper::bar_code_condition_callback() : null;
+
         // Grupo de coincidencia de texto (props + relaciones, con su keyword_mode y el conector),
         // delegado en GlobalSearchQueryHelper. Reemplaza el armado inline que antes mezclaba OR de
         // props con AND de palabras adentro de cada una (ver PHPDoc del helper para la lógica de
         // los dos modos y su combinación).
-        $models = GlobalSearchQueryHelper::apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance);
+        $models = GlobalSearchQueryHelper::apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance, $extra_text_conditions);
 
         // AND de filtros extra, fuera del closure del grupo OR para que sean condiciones AND reales.
         // Delegado en ExtraFiltersHelper::apply (whitelist de operadores genéricos: '=', 'like',
@@ -708,7 +745,29 @@ class SearchController extends Controller
             $per_page = 200;
         }
 
-        $models = $models->orderBy('created_at', 'DESC')->paginate($per_page);
+        $models = $models->orderBy('created_at', 'DESC');
+
+        if ($usar_contexto_vender) {
+
+            // La expansión de variantes cambia la cantidad de filas: no se puede paginar con
+            // paginate() de Eloquent (paginaría ANTES de expandir). Se trae todo con get() y se
+            // pagina a mano, igual que hace hoy search_nombre.
+            $articles = $models->get();
+
+            $results = VenderSearchHelper::expand_variants($articles, $query_value);
+
+            $current_page = LengthAwarePaginator::resolveCurrentPage();
+
+            $models = new LengthAwarePaginator(
+                $results->forPage($current_page, $per_page)->values(),
+                $results->count(),
+                $per_page,
+                $current_page
+            );
+        } else {
+
+            $models = $models->paginate($per_page);
+        }
 
         return response()->json(['models' => $models], 200);
     }
