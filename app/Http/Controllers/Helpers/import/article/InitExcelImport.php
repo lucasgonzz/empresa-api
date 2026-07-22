@@ -147,7 +147,14 @@ class InitExcelImport
         Bus::batch($this->jobs)
             ->name('import_history_' . $this->import_history->id)
             ->onConnection($queue_connection)
-            ->onQueue('default')
+            /*
+             * No se puede hardcodear 'default' acá: pisaría el aislamiento por
+             * instalación (QUEUE_NAME) definido en config/queue.php. Se resuelve
+             * dinámicamente el nombre de cola configurado para la conexión activa
+             * ($queue_connection), para que el batch quede en la misma cola que
+             * escucha el worker de esta instalación.
+             */
+            ->onQueue(config("queue.connections.{$queue_connection}.queue"))
             ->then(function (Batch $batch) {
 
                 Log::info('BATCH THEN ejecutado', [
