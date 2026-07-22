@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
+use App\Http\Controllers\Helpers\ExtraFiltersHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Services\Filter\FilterHistoryService;
 use Illuminate\Http\Request;
@@ -616,6 +617,14 @@ class SearchController extends Controller
      * - props           (array)  Columnas propias del modelo a considerar en el OR (ej: ["name","bar_code"]).
      * - relation_props  (array)  Objetos { relation, props } para OR contra relaciones vía whereHas.
      * - extra_filters   (array)  Objetos { key, operator, value } que ANDean sobre el resultado del OR.
+     *                   Delegado en ExtraFiltersHelper::apply. Whitelist de operadores: '=' (igualdad,
+     *                   admite 0 como valor legítimo), 'like' (contains), '>' / '<' / '>=' / '<='
+     *                   (comparación numérica, solo si la columna es numérica y el valor también lo
+     *                   es), 'numeric_presence' (solo columnas numéricas; valores 'con_valor' = no
+     *                   nula, 'positivo' = mayor a cero, 'todos' = sin filtro), y los legacy
+     *                   'category' (fuerza category_id) y 'stock_option' (con_stock / hayan_tenido_stock
+     *                   / sin_stock / con_o_sin_stock). Cualquier otro operador, o una key que no sea
+     *                   columna de la tabla, se ignora en silencio.
      * - per_page        (int)    Tamaño de página (clamp 1..200, default 50). Página vía ?page=.
      *
      * @param Request $request
@@ -720,42 +729,11 @@ class SearchController extends Controller
         });
 
         // AND de filtros extra, fuera del closure del grupo OR para que sean condiciones AND reales.
-        // Whitelist de operadores: cualquier otro valor de "operator" se ignora (no se ejecuta SQL
-        // arbitrario con la key/valor que venga del request).
-        foreach ($extra_filters as $extra_filter) {
-
-            if (!isset($extra_filter['key']) || !isset($extra_filter['operator'])) {
-                continue;
-            }
-
-            $key = $extra_filter['key'];
-            $operator = $extra_filter['operator'];
-            $value = isset($extra_filter['value']) ? $extra_filter['value'] : null;
-
-            // Ignorar filtros sin valor útil o marcados explícitamente como "sin filtro".
-            if ($value === null || $value === '' || $value === 0 || $value === '0' || $value === 'con_o_sin_stock') {
-                continue;
-            }
-
-            if ($operator == '=') {
-                $models->where($key, $value);
-            } else if ($operator == 'like') {
-                $models->where($key, 'like', '%'.$value.'%');
-            } else if ($operator == 'category') {
-                // Filtro por categoría: misma lógica que el buscador de artículos en VenderController.
-                $models->where('category_id', $value);
-            } else if ($operator == 'stock_option') {
-                // Filtro de stock: reusa la lógica existente de VenderController::search_nombre.
-                // Valores soportados por el select del frontend: con_stock, hayan_tenido_stock
-                // (con_o_sin_stock ya se filtró arriba, no aplica ningún where).
-                if ($value == 'con_stock') {
-                    $models->where('stock', '>', 0);
-                } else if ($value == 'hayan_tenido_stock' || $value == 'sin_stock') {
-                    $models->whereNotNull('stock');
-                }
-            }
-            // Operadores fuera de la whitelist: se ignoran silenciosamente.
-        }
+        // Delegado en ExtraFiltersHelper::apply (whitelist de operadores genéricos: '=', 'like',
+        // comparación numérica '>','<','>=','<=', 'numeric_presence', y los legacy 'category' y
+        // 'stock_option'). Cualquier operador fuera de la whitelist se ignora en silencio (no se
+        // ejecuta SQL arbitrario con la key/valor que venga del request).
+        $models = ExtraFiltersHelper::apply($models, $table, $extra_filters);
 
         if ($model_name_param == 'article') {
             $models = $models->where('status', 'active');
@@ -780,21 +758,16 @@ class SearchController extends Controller
      * `information_schema` directamente (sin Doctrine DBAL, que rompe con "Unknown database type
      * enum" apenas la tabla tiene alguna columna enum, sin importar qué columna se pida).
      *
+     * Se conserva este método (sus llamadores actuales dentro de `globalSearch` no cambian de
+     * comportamiento), pero delega en `ExtraFiltersHelper::is_numeric_column`, que es ahora la
+     * implementación real y reusable por cualquier buscador (ver ExtraFiltersHelper).
+     *
      * @param string $table Nombre de la tabla (sin prefijo de base de datos).
      * @param string $column Nombre de la columna a chequear.
      * @return bool
      */
     protected function is_numeric_column($table, $column) {
-        $row = \Illuminate\Support\Facades\DB::selectOne(
-            'SELECT DATA_TYPE as data_type FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?',
-            [$table, $column]
-        );
-
-        if (!$row) {
-            return false;
-        }
-
-        return in_array($row->data_type, ['int', 'bigint', 'smallint', 'tinyint', 'mediumint', 'decimal', 'float', 'double']);
+        return ExtraFiltersHelper::is_numeric_column($table, $column);
     }
 
     /**
