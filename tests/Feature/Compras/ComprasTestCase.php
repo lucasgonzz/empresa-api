@@ -44,6 +44,16 @@ abstract class ComprasTestCase extends TestCase
     use DatabaseTransactions;
 
     /**
+     * Copia (arrays, no instancias) de las bonificaciones de Buenos Aires que
+     * `quitar_bonificaciones_de_buenos_aires()` haya borrado en el test en curso, para que
+     * `tearDown()` las recree y no corrompa el fixture para el resto de la suite (Prompt 616).
+     * `null` cuando el test no llamo a ese helper.
+     *
+     * @var array<int,array<string,mixed>>|null
+     */
+    protected $bonificaciones_bsas_borradas = null;
+
+    /**
      * setUp de cada test: corre los dos seguros de entorno (base de testing real, fixture
      * sembrado) y autentica al usuario de prueba antes de que arranque el test concreto.
      *
@@ -139,7 +149,16 @@ abstract class ComprasTestCase extends TestCase
      * especificacion no pidio. Se borra la fila maestra de `provider_discounts` (no la orden ni
      * sus `provider_order_discounts`, que en el momento de llamar a este helper todavia no
      * existen): al no haber nada que copiar, `precargar_bonificaciones_proveedor()` no crea nada.
-     * `DatabaseTransactions` revierte el borrado al terminar cada test.
+     *
+     * CORRECCION (Grupo 184, Prompt 616): el comentario original decia que `DatabaseTransactions`
+     * revierte el borrado al terminar el test — FALSO, y es justo la deuda de MyISAM documentada
+     * en el docblock de esta clase (ninguna de las ~360 tablas soporta transacciones de verdad).
+     * Sin restaurar, esto dejaba a Buenos Aires SIN bonificaciones para siempre en la base de
+     * testing apenas corria un test que llamara a este helper — bug real detectado al escribir
+     * los tests de descuentos (616), que SI necesitan que las bonificaciones esten presentes y
+     * fallaban en rojo por este motivo al correr la suite completa. Ahora se guarda una copia de
+     * los datos originales (no las instancias) antes de borrar, y `tearDown()` los recrea
+     * siempre, sin importar como termine el test.
      *
      * @return void
      */
@@ -147,7 +166,38 @@ abstract class ComprasTestCase extends TestCase
     {
         $proveedor_bsas = $this->proveedor(TestingFerreteriaSeeder::PROVIDER_BSAS);
 
+        $this->bonificaciones_bsas_borradas = ProviderDiscount::where('provider_id', $proveedor_bsas->id)
+                                                                ->get()
+                                                                ->map(function ($discount) {
+                                                                    return $discount->toArray();
+                                                                })
+                                                                ->all();
+
         ProviderDiscount::where('provider_id', $proveedor_bsas->id)->delete();
+    }
+
+    /**
+     * tearDown de cada test: si `quitar_bonificaciones_de_buenos_aires()` borro bonificaciones
+     * durante este test, las recrea acá (mismos datos, sin el `id` original) para dejar el
+     * fixture intacto de cara al resto de la suite — ver la correccion documentada arriba.
+     *
+     * @return void
+     */
+    protected function tearDown(): void
+    {
+        if (!is_null($this->bonificaciones_bsas_borradas)) {
+
+            foreach ($this->bonificaciones_bsas_borradas as $datos_bonificacion) {
+
+                unset($datos_bonificacion['id']);
+
+                ProviderDiscount::create($datos_bonificacion);
+            }
+
+            $this->bonificaciones_bsas_borradas = null;
+        }
+
+        parent::tearDown();
     }
 
     /**
@@ -259,5 +309,79 @@ abstract class ComprasTestCase extends TestCase
             'provider_code' => $articulo->provider_code,
             'pivot'         => $pivot,
         ];
+    }
+
+    /**
+     * Guarda una "foto" de los campos de un Article que los tests de compras pueden mutar
+     * (costo, stock, proveedor, costo_real, precio) antes de confirmar una compra sobre él.
+     *
+     * Agregado (Grupo 184, Prompt 616): los tests de descuentos/costos-extra/cantidad-recibida
+     * confirman compras reales contra articulos del fixture compartido, y por la deuda de MyISAM
+     * documentada arriba (DatabaseTransactions no revierte nada de verdad) esas mutaciones quedan
+     * PERMANENTES. `stock` en particular es ACUMULATIVO (cada compra con `update_stock=1` suma la
+     * cantidad recibida/pedida, no la pisa), asi que un test que dependa de un stock inicial
+     * conocido (ver `Cantidad_Recibida_Test::el_stock_sigue_a_la_cantidad_recibida`) tiene que
+     * fijar un punto de partida controlado y restaurar el original al terminar, sin importar si
+     * el assert de en medio falla (por eso siempre en un try/finally, ver
+     * `restaurar_articulo()`).
+     *
+     * @param \App\Models\Article $articulo
+     * @return array<string,mixed>
+     */
+    protected function snapshot_articulo($articulo)
+    {
+        $articulo->refresh();
+
+        // Hallazgo (Prompt 616): para un articulo con depositos asignados (`addresses()`,
+        // belongsToMany con pivot `amount`), `articles.stock` es un valor DERIVADO — lo
+        // recalcula `ArticleHelper::setArticleStockFromAddresses()` sumando el `amount` de cada
+        // deposito — no la fuente de verdad. Forzar solo `articles.stock` a mano (sin tocar el
+        // pivot del deposito) queda pisado apenas corre el siguiente movimiento de stock. Por eso
+        // acá se guarda tambien el `amount` de cada deposito vigente, para poder restaurarlo.
+        $articulo->load('addresses');
+
+        $address_amounts = [];
+        foreach ($articulo->addresses as $address) {
+            $address_amounts[$address->id] = $address->pivot->amount;
+        }
+
+        return [
+            'cost'             => $articulo->cost,
+            'stock'            => $articulo->stock,
+            'provider_id'      => $articulo->provider_id,
+            'costo_real'       => $articulo->costo_real,
+            'price'            => $articulo->price,
+            'address_amounts'  => $address_amounts,
+        ];
+    }
+
+    /**
+     * Restaura en un Article los campos guardados por `snapshot_articulo()`. Escribe directo
+     * (sin pasar por StockMovementController ni ArticleHelper::setFinalPrice) porque el objetivo
+     * es dejar la fila EXACTAMENTE como estaba antes del test, no re-derivar nada. `timestamps`
+     * en false para no ensuciar el `updated_at` del fixture en cada corrida (mismo criterio que
+     * `NewProviderOrderHelper::update_article_provider()`).
+     *
+     * @param \App\Models\Article $articulo
+     * @param array<string,mixed> $snapshot Valor devuelto por `snapshot_articulo()`.
+     * @return void
+     */
+    protected function restaurar_articulo($articulo, $snapshot)
+    {
+        $articulo->refresh();
+
+        $articulo->cost        = $snapshot['cost'];
+        $articulo->stock       = $snapshot['stock'];
+        $articulo->provider_id = $snapshot['provider_id'];
+        $articulo->costo_real  = $snapshot['costo_real'];
+        $articulo->price       = $snapshot['price'];
+        $articulo->timestamps  = false;
+        $articulo->save();
+
+        // Restaura el `amount` de cada deposito (ver nota en snapshot_articulo): si el articulo
+        // tiene depositos asignados, es la fuente de verdad real del stock, no la columna.
+        foreach ($snapshot['address_amounts'] as $address_id => $amount) {
+            $articulo->addresses()->updateExistingPivot($address_id, ['amount' => $amount]);
+        }
     }
 }
