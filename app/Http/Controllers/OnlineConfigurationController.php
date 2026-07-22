@@ -107,6 +107,16 @@ class OnlineConfigurationController extends Controller
         // ya guardado para editarlo desde la UI, no es una contraseña de un tercero.
         $model->google_client_secret  = $request->google_client_secret;
 
+        // Mercado Pago / Zippin (grupo 169, prompt 597): desde el panel solo se togglea el
+        // master switch de cada integracion. Los tokens OAuth (*_access_token, *_refresh_token)
+        // y los datos que devuelve el propio OAuth (mp_user_id, mp_public_key, zippin_account_id,
+        // *_token_expires_at) los escriben unicamente los callbacks de OAuth (prompts 598/599),
+        // nunca este endpoint: por eso no se leen esos campos del $request aca. $request->boolean()
+        // nunca devuelve null: si la clave no viene, cae al valor actual del modelo (o false si
+        // todavia no existe), asi el save nunca pisa un true existente con null.
+        $model->mp_enabled      = $request->boolean('mp_enabled', $model->mp_enabled ?? false);
+        $model->zippin_enabled  = $request->boolean('zippin_enabled', $model->zippin_enabled ?? false);
+
         $model->save();
         $this->sendAddModelNotification('OnlineConfiguration', $model->id);
         // $this->fullModel() ya devuelve el modelo con mail_password oculto por el $hidden del
