@@ -70,6 +70,13 @@ class Kernel extends ConsoleKernel
         $schedule->command('historiales:detectar-colgados')
             ->everyFiveMinutes()
             ->withoutOverlapping();
+
+        // Renueva los access_token de Mercado Pago próximos a vencer (grupo 170, prompt 598).
+        // Corre para TODOS los comercios con mp_enabled=true (no depende de company_owner /
+        // extensiones), porque el vínculo OAuth es por online_configuration, no por instancia.
+        $schedule->command('mercadopago:refresh-tokens')
+            ->daily()
+            ->withoutOverlapping();
     }
 
     /**

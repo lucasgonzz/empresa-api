@@ -515,6 +515,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('/mercado-pago/payment/{payment_id}', 'MercadoPagoController@payment');
 
+    // OAuth de Mercado Pago (grupo 170, prompt 598): el comercio autenticado conecta/desconecta
+    // su propia cuenta para cobrar. El callback (público, sin auth) se declara más abajo, fuera
+    // de este grupo de middleware, porque es un redirect del navegador del comercio hacia este
+    // backend y el comercio se identifica por el `state` persistido en connect, no por sesión.
+    Route::get('integraciones/mercadopago/connect', 'MercadoPagoOAuthController@connect');
+    Route::post('integraciones/mercadopago/disconnect', 'MercadoPagoOAuthController@disconnect');
+
     Route::get('report/from-date/{from_date}/{until_date?}/{employee_id?}', 'CajaViejaController@reports');
     Route::get('chart/from-date/{from_date}/{until_date?}', 'CajaViejaController@charts');
 
@@ -761,6 +768,12 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
 
 // Callback público Mercado Libre (notificaciones); sin auth Sanctum.
 Route::post('meli/notifications', 'MeLiOrderController@receive_notification');
+
+// Callback público OAuth Mercado Pago (grupo 170, prompt 598): redirect del navegador del
+// comercio de vuelta a este backend tras autorizar en Mercado Pago. Sin auth Sanctum a
+// propósito (el navegador no manda el bearer token del SPA en esta redirección); el comercio se
+// identifica mediante el `state` aleatorio que connect persistió y que este endpoint valida.
+Route::get('integraciones/mercadopago/callback', 'MercadoPagoOAuthController@callback');
 
 
 // Plans

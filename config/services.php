@@ -109,4 +109,32 @@ return [
         'timeout'   => (int) env('UPCITEMDB_TIMEOUT', 8),
     ],
 
+    /**
+     * OAuth de Mercado Pago (grupo 170, prompt 598): credenciales de la APLICACIÓN de
+     * ComercioCity dada de alta en Mercado Pago Developers (NO son credenciales del comercio;
+     * las de cada comercio se guardan en su online_configuration tras el OAuth). Con este
+     * client_id/client_secret la app pide autorización a la cuenta de Mercado Pago de cada
+     * comercio y procesa pagos EN SU NOMBRE (no se usa application_fee/marketplace_fee).
+     */
+    'mercadopago' => [
+        // client_id de la app de ComercioCity en Mercado Pago Developers.
+        'app_id'             => env('MP_APP_ID'),
+        // client_secret de la app de ComercioCity. Nunca debe loguearse ni exponerse en un response.
+        'app_secret'         => env('MP_APP_SECRET'),
+        // URL de este backend a la que Mercado Pago redirige tras autorizar (debe coincidir
+        // exactamente con la registrada en la app de Mercado Pago Developers).
+        'oauth_redirect_uri' => env('MP_OAUTH_REDIRECT_URI'),
+        // Pantalla de Integraciones del SPA de empresa a la que se vuelve luego del callback,
+        // con ?mp=ok o ?mp=error agregado. Configurable porque empresa-api y empresa-spa pueden
+        // vivir en dominios distintos según el cliente.
+        'spa_redirect_url'   => env('MP_OAUTH_SPA_REDIRECT_URL'),
+        // Mismo problema de cURL error 60 en WAMP/Windows que mercadolibre/google_custom_search:
+        // sin CA bundle, verify=false salvo en producción.
+        'guzzle_verify' => filter_var(
+            env('MP_GUZZLE_VERIFY_SSL', env('APP_ENV') === 'production'),
+            FILTER_VALIDATE_BOOLEAN
+        ),
+        'guzzle_ca_bundle' => env('MP_GUZZLE_CA_BUNDLE', ''),
+    ],
+
 ];
