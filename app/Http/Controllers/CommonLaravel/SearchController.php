@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\ExtraFiltersHelper;
+use App\Http\Controllers\Helpers\GlobalSearchQueryHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Services\Filter\FilterHistoryService;
 use Illuminate\Http\Request;
@@ -614,17 +615,34 @@ class SearchController extends Controller
      * Payload esperado (JSON body, POST):
      * - query_value    (string) Criterio de texto. OJO: se llama `query_value`, nunca `query`
      *                   (`$request->query` es una propiedad real de Symfony\Request, no un input).
-     * - props           (array)  Columnas propias del modelo a considerar en el OR (ej: ["name","bar_code"]).
-     * - relation_props  (array)  Objetos { relation, props } para OR contra relaciones vía whereHas.
-     * - extra_filters   (array)  Objetos { key, operator, value } que ANDean sobre el resultado del OR.
-     *                   Delegado en ExtraFiltersHelper::apply. Whitelist de operadores: '=' (igualdad,
-     *                   admite 0 como valor legítimo), 'like' (contains), '>' / '<' / '>=' / '<='
-     *                   (comparación numérica, solo si la columna es numérica y el valor también lo
-     *                   es), 'numeric_presence' (solo columnas numéricas; valores 'con_valor' = no
-     *                   nula, 'positivo' = mayor a cero, 'todos' = sin filtro), y los legacy
-     *                   'category' (fuerza category_id) y 'stock_option' (con_stock / hayan_tenido_stock
-     *                   / sin_stock / con_o_sin_stock). Cualquier otro operador, o una key que no sea
-     *                   columna de la tabla, se ignora en silencio.
+     * - props           (array)  Columnas propias del modelo a considerar en el grupo de coincidencia
+     *                   (ej: ["name","bar_code"] o [{key:"name",keyword_mode:"todas"}]). Cada item
+     *                   puede venir como string suelto (payload viejo del frontend, se trata como
+     *                   keyword_mode 'alguna') o como objeto { key, keyword_mode }, con keyword_mode
+     *                   'todas' (la prop debe contener TODAS las palabras del criterio ella sola) o
+     *                   'alguna' (la prop aporta al "pozo común": alcanza con que aporte alguna
+     *                   palabra, mientras el resto aparezca en otra prop del pozo). Default 'alguna'.
+     *                   IMPORTANTE: el payload viejo (array de strings) sigue funcionando, pero
+     *                   CAMBIA de comportamiento respecto de antes de este prompt: pasa del modo
+     *                   estricto ('todas', el de siempre) al distribuido ('alguna', el que usa
+     *                   Vender), que es el nuevo default pedido. Es intencional.
+     * - relation_props  (array)  Objetos { relation, props, keyword_mode } para el grupo de
+     *                   coincidencia contra relaciones vía whereHas. Mismo significado de
+     *                   keyword_mode que en props (default 'alguna' si no viene).
+     * - conector        (string) 'or' (default) o 'and'. Conecta el grupo de props/relaciones en
+     *                   modo 'todas' (estricto) con el grupo en modo 'alguna' (distribuido). Con
+     *                   'and', ambos grupos tienen que cumplirse; con 'or' (o cualquier otro valor),
+     *                   alcanza con que se cumpla uno de los dos. Ver GlobalSearchQueryHelper::apply.
+     * - extra_filters   (array)  Objetos { key, operator, value } que ANDean sobre el resultado del
+     *                   grupo de coincidencia de texto. Delegado en ExtraFiltersHelper::apply.
+     *                   Whitelist de operadores: '=' (igualdad, admite 0 como valor legítimo),
+     *                   'like' (contains), '>' / '<' / '>=' / '<=' (comparación numérica, solo si la
+     *                   columna es numérica y el valor también lo es), 'numeric_presence' (solo
+     *                   columnas numéricas; valores 'con_valor' = no nula, 'positivo' = mayor a
+     *                   cero, 'todos' = sin filtro), y los legacy 'category' (fuerza category_id) y
+     *                   'stock_option' (con_stock / hayan_tenido_stock / sin_stock / con_o_sin_stock).
+     *                   Cualquier otro operador, o una key que no sea columna de la tabla, se ignora
+     *                   en silencio.
      * - per_page        (int)    Tamaño de página (clamp 1..200, default 50). Página vía ?page=.
      *
      * @param Request $request
@@ -651,6 +669,10 @@ class SearchController extends Controller
         $relation_props = $request->input('relation_props', []);
         $extra_filters = $request->input('extra_filters', []);
 
+        // Conector entre el grupo estricto ('todas') y el grupo distribuido ('alguna') de props y
+        // relaciones. Default 'or': alcanza con que se cumpla uno de los dos grupos.
+        $conector = $request->input('conector', 'or');
+
         // Instancia temporal del modelo, usada solo para chequear existencia de columnas/relaciones
         // antes de armar la query (evita 500 por prop o relación inexistente).
         $model_instance = new $model_name();
@@ -660,73 +682,11 @@ class SearchController extends Controller
 
         $models = $model_name::where('user_id', $this->userId())->withAll();
 
-        $models = $models->where(function ($query) use ($request, $props, $relation_props, $query_value, $table, $model_instance) {
-
-            // OR por cada prop propia del modelo.
-            foreach ($props as $prop) {
-
-                // Prop inexistente en la tabla: se ignora (no rompe la búsqueda).
-                if (!\Illuminate\Support\Facades\Schema::hasColumn($table, $prop)) {
-                    continue;
-                }
-
-                // Guard numérico: columnas numéricas (id, num, o cualquier columna con tipo numérico
-                // en el schema) solo entran al OR si el criterio también es numérico, y con match
-                // exacto (nunca LIKE sobre columna numérica con texto).
-                // NOTA: no usamos Schema::getColumnType() (Doctrine DBAL) porque rompe con
-                // "Unknown database type enum" apenas la tabla tiene UNA columna enum (ej: articles.status),
-                // sin importar qué columna se esté consultando. Se resuelve el tipo real vía
-                // information_schema, que no depende del mapeo de tipos de Doctrine.
-                $is_numeric_column = ($prop == 'id' || $prop == 'num' || $this->is_numeric_column($table, $prop));
-
-                if ($is_numeric_column) {
-                    if (is_numeric($query_value)) {
-                        $query->orWhere($prop, $query_value);
-                    }
-                    // Si el criterio no es numérico, esta prop numérica se omite del OR.
-                    continue;
-                }
-
-                // Prop de texto: AND de keywords (mismo criterio que searchFromModal).
-                $query->orWhere(function ($sub) use ($prop, $query_value) {
-                    $keywords = explode(' ', $query_value);
-                    foreach ($keywords as $keyword) {
-                        $sub->whereRaw($prop.' LIKE ?', ["%$keyword%"]);
-                    }
-                });
-            }
-
-            // OR por cada relación pedida (whereHas), con OR interno entre sus props y AND de keywords.
-            foreach ($relation_props as $relation_prop) {
-
-                if (!isset($relation_prop['relation']) || !isset($relation_prop['props'])) {
-                    continue;
-                }
-
-                $relation = $relation_prop['relation'];
-
-                // Relación inexistente en el modelo: se ignora (no rompe la búsqueda).
-                if (!method_exists($model_instance, $relation)) {
-                    continue;
-                }
-
-                $relation_field_props = $relation_prop['props'];
-
-                $query->orWhereHas($relation, function ($sub_relation) use ($relation_field_props, $query_value) {
-                    $sub_relation->where(function ($sub) use ($relation_field_props, $query_value) {
-                        foreach ($relation_field_props as $relation_field_prop) {
-                            $sub->orWhere(function ($sub_prop) use ($relation_field_prop, $query_value) {
-                                $keywords = explode(' ', $query_value);
-                                foreach ($keywords as $keyword) {
-                                    $sub_prop->whereRaw($relation_field_prop.' LIKE ?', ["%$keyword%"]);
-                                }
-                            });
-                        }
-                    });
-                });
-            }
-
-        });
+        // Grupo de coincidencia de texto (props + relaciones, con su keyword_mode y el conector),
+        // delegado en GlobalSearchQueryHelper. Reemplaza el armado inline que antes mezclaba OR de
+        // props con AND de palabras adentro de cada una (ver PHPDoc del helper para la lógica de
+        // los dos modos y su combinación).
+        $models = GlobalSearchQueryHelper::apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance);
 
         // AND de filtros extra, fuera del closure del grupo OR para que sean condiciones AND reales.
         // Delegado en ExtraFiltersHelper::apply (whitelist de operadores genéricos: '=', 'like',
