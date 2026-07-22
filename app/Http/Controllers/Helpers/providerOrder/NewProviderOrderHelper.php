@@ -253,6 +253,18 @@ class NewProviderOrderHelper {
             // se prorratea el NETO (se le saca el IVA con SU propia alícuota, no la de los
             // artículos). Si es Monotributista (`aplicar_iva_al_costo` ON) o el costo extra no
             // está facturado, se prorratea el monto entero (comportamiento actual, sin cambios).
+            //
+            // Nota (Prompt 610, Tarea 2 — decisión documentada): esta condición sigue usando el
+            // campo legacy `$this->user->aplicar_iva_al_costo` a propósito, NO
+            // `get_condicion_iva_precios()`. Ambos resuelven la misma pregunta (¿la cuenta es
+            // RRII o MT?) pero `condicion_iva_precios` todavía no existe como columna real
+            // (depende del Prompt 608, que no corrió) — `get_condicion_iva_precios()` hoy SIEMPRE
+            // cae a 'RRII' por el fallback seguro del Prompt 609. Cambiar esta condición ahora
+            // rompería en producción el costeo de cualquier cuenta MT que ya tiene
+            // `aplicar_iva_al_costo = true` cargado. Cuando el Prompt 608 aterrice la columna real
+            // y se migren los usuarios existentes, unificar este punto para que use
+            // `get_condicion_iva_precios()` igual que `update_cost()` y `catalogar_costo_proveedor()`
+            // — queda registrado como deuda técnica de prioridad media.
             if ($extra_cost->facturado && (int)$extra_cost->iva_id > 0 && !$this->user->aplicar_iva_al_costo) {
 
                 $iva_costo_extra = $this->get_iva($extra_cost->iva_id);
@@ -694,8 +706,13 @@ class NewProviderOrderHelper {
      * comportamiento actual del sistema (costos netos, IVA sumado al final), opción conservadora.
      *
      * @return string 'RRII' o 'MT'.
+     *
+     * Nota (Prompt 610): pasa de `private` a `public` porque `ModoFacturacionHelper::calcular_iva()`
+     * necesita la misma condición para decidir qué muestra la factura automática (neto+desglose de
+     * IVA para RRII, solo total para MT) — se reusa este único punto de verdad en vez de duplicar
+     * la lectura de `configuration->condicion_iva_precios` en otra clase.
      */
-    private function get_condicion_iva_precios() {
+    function get_condicion_iva_precios() {
 
         if (is_null($this->user) || is_null($this->user->configuration)) {
             return 'RRII';

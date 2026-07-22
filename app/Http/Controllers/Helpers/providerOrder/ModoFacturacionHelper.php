@@ -37,8 +37,16 @@ class ModoFacturacionHelper
         // total en base a las facturas (`total_from_provider_order_afip_tickets`).
         $helper->set_totales();
 
-        // 1) Deja solo el primer afip_ticket del provider_order
-        $afip_tickets = ProviderOrderAfipTicket::where('provider_order_id', $provider_order->id)->get();
+        // 1) Deja solo el primer afip_ticket "principal" del provider_order (el de la compra en
+        // sí). Prompt 610: se filtra explícitamente por `provider_order_extra_cost_id IS NULL`
+        // porque los comprobantes "aparte" generados por un costo extra (ver
+        // sincronizar_tickets_costos_extra_aparte() más abajo) tienen su propio ciclo de vida
+        // idempotente — si se los dejara caer acá, se borrarían y recrearían en cada guardado de
+        // la compra, perdiendo el número de comprobante/fecha que el usuario ya les hubiera
+        // cargado a mano.
+        $afip_tickets = ProviderOrderAfipTicket::where('provider_order_id', $provider_order->id)
+                                                ->whereNull('provider_order_extra_cost_id')
+                                                ->get();
         $index = 0;
         foreach ($afip_tickets as $afip_ticket) {
             if ($index >= 1) {
@@ -64,21 +72,59 @@ class ModoFacturacionHelper
                 'user_id'           => $provider_order->user_id ?? null,
                 // 'auto_calculated'   => 1,
             ]);
-        } 
+        }
 
 
-        // 3) autocalcular IVA por alícuota desde artículos (pivot iva_id + cost + amount + discount)
+        // Prompt 610 — Tarea 1: qué muestra la factura automática depende de la condición de
+        // IVA de la cuenta (misma fuente de verdad que el Prompt 609: `NewProviderOrderHelper::
+        // get_condicion_iva_precios()`, con su mismo fallback seguro a 'RRII' mientras
+        // `condicion_iva_precios` no exista como columna real).
+        $condicion = $helper->get_condicion_iva_precios();
+
+        if ($condicion == 'MT') {
+            self::calcular_ticket_monotributista($provider_order, $ticket);
+        } else {
+            self::calcular_ticket_responsable_inscripto($provider_order, $helper, $ticket);
+        }
+
+        // Prompt 516/610: costos extra facturados con `en_factura_compra = false` (ej. flete
+        // tercerizado, facturado por otro CUIT) generan un comprobante APARTE por costo extra,
+        // idempotente (no se duplica al re-guardar la compra). Corre después de guardar el
+        // ticket principal porque no lo toca (son registros `provider_order_afip_ticket`
+        // independientes).
+        self::sincronizar_tickets_costos_extra_aparte($provider_order, $helper, $condicion);
+    }
+
+    /**
+     * Prompt 610 — Tarea 1: arma el ticket "principal" de la compra para una cuenta Responsable
+     * Inscripto — comportamiento de siempre: neto + desglose de IVA por alícuota
+     * (`provider_order_afip_ticket_ivas`) + total.
+     *
+     * @param  ProviderOrder                                          $provider_order
+     * @param  \App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper $helper
+     * @param  ProviderOrderAfipTicket                                $ticket          Ticket principal ya creado/reusado.
+     * @return void
+     */
+    private static function calcular_ticket_responsable_inscripto(ProviderOrder $provider_order, $helper, ProviderOrderAfipTicket $ticket): void
+    {
+        // autocalcular IVA por alícuota desde artículos (pivot iva_id + cost + amount + discount)
         $ivas = self::get_ivas($provider_order, $helper);
 
         // Prompt 516: los costos extra (flete, seguro) facturados con `en_factura_compra = true`
         // entran en la MISMA factura de la compra: se mergean por alícuota propia (`iva_id` del
         // costo extra, no la de los artículos) junto con el desglose de los artículos. Los
         // costos extra facturados con `en_factura_compra = false` NO entran acá: se resuelven
-        // aparte, en un comprobante propio (ver más abajo), porque tienen otro emisor.
+        // aparte, en un comprobante propio, porque tienen otro emisor.
         $ivas = self::merge_ivas($ivas, self::get_ivas_costos_extra_en_factura($provider_order, $helper));
 
-        // Si todavía no creaste la tabla ticket_ivas, por ahora
-        // solo calculamos totales generales:
+        // Prompt 610 — Tarea 1: redondea cada alícuota a 2 decimales (mismo tipo de columna que
+        // `provider_order_afip_ticket_ivas.neto`/`iva_importe`) y absorbe en la de mayor importe
+        // el centavo de diferencia que puede quedar por redondear cada fila de forma
+        // independiente, para que neto + IVA sumado por fila dé EXACTAMENTE el total del
+        // comprobante (crítico con `precios_incluyen_iva = true`, donde el neto sale de
+        // descomponer el bruto línea por línea con su propia alícuota).
+        $ivas = self::redondear_ivas_sin_diferencia($ivas);
+
         $total_neto = 0;
         $total_iva  = 0;
 
@@ -100,12 +146,49 @@ class ModoFacturacionHelper
         $ticket->total_iva = round($total_iva, 2);
         $ticket->total     = round($total_neto + $total_iva, 2);
         $ticket->save();
+    }
 
-        // Prompt 516: costos extra facturados con `en_factura_compra = false` (ej. flete
-        // tercerizado, facturado por otro CUIT) generan comprobante(s) APARTE, uno por emisor
-        // distinto, con su propio desglose de IVA. Corre después de guardar el ticket principal
-        // porque no lo toca (son registros `provider_order_afip_ticket` independientes).
-        self::crear_tickets_costos_extra_aparte($provider_order, $helper);
+    /**
+     * Prompt 610 — Tarea 1: arma el ticket "principal" de la compra para una cuenta
+     * Monotributista — un MT no discrimina IVA (lo que paga es un monto final, sin crédito
+     * fiscal recuperable), así que la factura le muestra SOLO el total: sin neto, sin desglose
+     * de IVA (no se crean `provider_order_afip_ticket_ivas`), sin total de IVA.
+     *
+     * El total es la suma de `cantidad * costo_pagado` de cada línea (ya neto de descuentos
+     * individuales y de compra, calculados por `NewProviderOrderHelper::set_totales()`, que
+     * corrió justo antes en `calcular_iva()`) más los costos extra que entran en esta misma
+     * factura (`facturado = true` y `en_factura_compra = true`), tomados por su valor BRUTO
+     * completo — un MT no le saca IVA a nada.
+     *
+     * `total_iva` queda en `NULL` a propósito (no en `0`): para un MT el IVA "no aplica" (no se
+     * calcula), algo distinto de "el IVA da 0", que sí puede pasar en una cuenta RRII con
+     * artículos exentos. Deja que el frontend distinga ambos casos.
+     *
+     * @param  ProviderOrder            $provider_order
+     * @param  ProviderOrderAfipTicket  $ticket          Ticket principal ya creado/reusado.
+     * @return void
+     */
+    private static function calcular_ticket_monotributista(ProviderOrder $provider_order, ProviderOrderAfipTicket $ticket): void
+    {
+        // Suma de líneas ya neta de descuentos individuales y de compra ($sub_total = bruto de
+        // todas las líneas sin descontar nada, $total_descuento = individuales + de compra ya
+        // sumados por set_totales()).
+        $total_lineas = (float)$provider_order->sub_total - (float)$provider_order->total_descuento;
+
+        $total_extra_en_factura = 0;
+
+        $provider_order->loadMissing('provider_order_extra_costs');
+
+        foreach ($provider_order->provider_order_extra_costs as $extra_cost) {
+
+            if ($extra_cost->facturado && $extra_cost->en_factura_compra) {
+                $total_extra_en_factura += (float)$extra_cost->value;
+            }
+        }
+
+        $ticket->total_iva = null;
+        $ticket->total      = round($total_lineas + $total_extra_en_factura, 2);
+        $ticket->save();
     }
 
     /**
@@ -179,28 +262,43 @@ class ModoFacturacionHelper
     }
 
     /**
-     * Prompt 516: genera un `provider_order_afip_ticket` APARTE (con su propio `emisor_cuit`/
-     * `emisor_razon_social`) por cada emisor distinto entre los costos extra facturados con
-     * `en_factura_compra = false`. Ej: dos costos extra "flete" facturados por el mismo
-     * transportista van en UN solo comprobante; si hubiera costos extra de emisores distintos,
-     * cada uno se agrupa en su propio comprobante.
+     * Prompt 516/610: sincroniza (crea o actualiza, sin duplicar) un `provider_order_afip_ticket`
+     * APARTE por cada costo extra facturado con `en_factura_compra = false` (ej. flete
+     * tercerizado, facturado por otro CUIT distinto del proveedor de la compra).
      *
-     * No crea comprobantes vacíos: si no hay costos extra en esta condición, no hace nada. Los
-     * comprobantes de una corrida anterior ya fueron eliminados por `calcular_iva()` (paso 1,
-     * "deja solo el primer afip_ticket"), así que esta función siempre parte de cero.
+     * Idempotencia (Prompt 610, Tarea 3 — antes no existía y era el bug real: `calcular_iva()`
+     * borraba y recreaba TODOS los comprobantes en cada guardado de la compra, perdiendo el
+     * número de comprobante/fecha que el usuario ya le hubiera cargado a mano al comprobante
+     * aparte): cada comprobante aparte queda referenciado 1 a 1 a su costo extra de origen vía
+     * `provider_order_afip_tickets.provider_order_extra_cost_id` (columna agregada en este mismo
+     * prompt). Antes de crear uno nuevo, se busca si ya existe el de ese costo extra puntual —
+     * si existe, se actualiza (total/IVA/emisor) sin tocar su `id` ni el `code`/fecha que el
+     * usuario ya haya completado. Al final se borran los comprobantes aparte "huérfanos" (el
+     * costo extra que los generó se borró, dejó de estar facturado, o pasó a
+     * `en_factura_compra = true`).
+     *
+     * Nota (cambio de criterio respecto del Prompt 516): antes se agrupaban varios costos extra
+     * del MISMO emisor en un solo comprobante ("dos fletes del mismo transportista van juntos").
+     * Se pasa a UN comprobante POR costo extra porque la idempotencia pedida acá necesita una
+     * referencia 1 a 1 clara (`provider_order_extra_cost_id`) para saber qué comprobante
+     * corresponde a qué costo extra sin ambigüedad — agrupar por emisor complicaría esa
+     * referencia (un comprobante ligado a N costos extra) sin necesidad real planteada por este
+     * prompt. Si más adelante hace falta volver a agrupar por emisor, se puede resolver con una
+     * tabla pivot dedicada; queda fuera de alcance acá.
      *
      * @param  ProviderOrder $provider_order
      * @param  $helper                        NewProviderOrderHelper (para `get_iva()`).
+     * @param  string        $condicion       'RRII' o 'MT' (misma condición que decide el
+     *                                        ticket principal).
      * @return void
      */
-    private static function crear_tickets_costos_extra_aparte(ProviderOrder $provider_order, $helper): void
+    private static function sincronizar_tickets_costos_extra_aparte(ProviderOrder $provider_order, $helper, string $condicion): void
     {
         $provider_order->loadMissing('provider_order_extra_costs');
 
-        // Agrupa los costos extra "aparte" por emisor (CUIT como clave principal; si no hay
-        // CUIT cargado, se agrupa por razón social; si no hay ninguno de los dos, van todos
-        // juntos en un comprobante "sin emisor cargado" para no perder el desglose de IVA).
-        $grupos = [];
+        // IDs de costo extra que siguen calificando para comprobante aparte en esta corrida —
+        // se usa al final para detectar y borrar comprobantes "huérfanos".
+        $extra_cost_ids_vigentes = [];
 
         foreach ($provider_order->provider_order_extra_costs as $extra_cost) {
 
@@ -208,64 +306,159 @@ class ModoFacturacionHelper
                 continue;
             }
 
-            $desglose = self::desglosar_costo_extra($extra_cost, $helper);
+            $valor_bruto = (float)$extra_cost->value;
 
-            if (is_null($desglose)) {
+            if ($valor_bruto <= 0) {
                 continue;
             }
 
-            $cuit   = trim((string)$extra_cost->emisor_cuit);
-            $razon  = trim((string)$extra_cost->emisor_razon_social);
-            $clave  = $cuit !== '' ? $cuit : ($razon !== '' ? 'razon:'.$razon : 'sin_emisor');
+            $extra_cost_ids_vigentes[] = $extra_cost->id;
 
-            if (!isset($grupos[$clave])) {
-                $grupos[$clave] = [
-                    'emisor_cuit'         => $cuit !== '' ? $cuit : null,
-                    'emisor_razon_social' => $razon !== '' ? $razon : null,
-                    'ivas'                => [],
-                ];
+            // Busca el comprobante YA generado para este costo extra puntual (idempotencia); si
+            // no existe todavía, se crea uno nuevo (sin `code`/fecha propia: eso lo completa el
+            // usuario después, mismo criterio que el comprobante principal auto-generado).
+            $ticket_aparte = ProviderOrderAfipTicket::where('provider_order_extra_cost_id', $extra_cost->id)->first();
+
+            if (is_null($ticket_aparte)) {
+                $ticket_aparte                                = new ProviderOrderAfipTicket();
+                $ticket_aparte->provider_order_id             = $provider_order->id;
+                $ticket_aparte->provider_order_extra_cost_id  = $extra_cost->id;
+                $ticket_aparte->issued_at                     = $provider_order->created_at;
+                $ticket_aparte->retenciones                   = 0;
+                $ticket_aparte->user_id                       = $provider_order->user_id ?? null;
             }
 
-            $iva_id = (int)$extra_cost->iva_id;
+            $ticket_aparte->emisor_cuit         = trim((string)$extra_cost->emisor_cuit) !== '' ? $extra_cost->emisor_cuit : null;
+            $ticket_aparte->emisor_razon_social = trim((string)$extra_cost->emisor_razon_social) !== '' ? $extra_cost->emisor_razon_social : null;
 
-            if (isset($grupos[$clave]['ivas'][$iva_id])) {
-                $grupos[$clave]['ivas'][$iva_id]['neto']        += $desglose['neto'];
-                $grupos[$clave]['ivas'][$iva_id]['importe_iva'] += $desglose['importe_iva'];
+            $desglose = ($condicion == 'MT') ? null : self::desglosar_costo_extra($extra_cost, $helper);
+
+            if (is_null($desglose)) {
+
+                // MT (no discrimina IVA) o RRII sin alícuota cargada (no se puede desglosar):
+                // en ambos casos se guarda directo el bruto como total, sin desglose de IVA.
+                $ticket_aparte->total_iva = null;
+                $ticket_aparte->total     = round($valor_bruto, 2);
+                $ticket_aparte->save();
+
+                ProviderOrderAfipTicketIva::where('provider_order_afip_ticket_id', $ticket_aparte->id)->delete();
+
             } else {
-                $grupos[$clave]['ivas'][$iva_id] = $desglose;
-            }
-        }
 
-        foreach ($grupos as $grupo) {
+                // RRII con alícuota cargada: desglose neto/IVA con la alícuota PROPIA del costo
+                // extra (redondeado a 2 decimales, mismo criterio que el ticket principal).
+                $ivas_redondeados = self::redondear_ivas_sin_diferencia([(int)$extra_cost->iva_id => $desglose]);
+                $valor_redondeado = reset($ivas_redondeados);
 
-            $total_neto = 0;
-            $total_iva  = 0;
+                $ticket_aparte->total_iva = round($valor_redondeado['importe_iva'], 2);
+                $ticket_aparte->total     = round($valor_redondeado['neto'] + $valor_redondeado['importe_iva'], 2);
+                $ticket_aparte->save();
 
-            foreach ($grupo['ivas'] as $value) {
-                $total_neto += $value['neto'];
-                $total_iva  += $value['importe_iva'];
-            }
+                ProviderOrderAfipTicketIva::where('provider_order_afip_ticket_id', $ticket_aparte->id)->delete();
 
-            $ticket_aparte = ProviderOrderAfipTicket::create([
-                'provider_order_id'    => $provider_order->id,
-                'issued_at'            => $provider_order->created_at,
-                'emisor_cuit'          => $grupo['emisor_cuit'],
-                'emisor_razon_social'  => $grupo['emisor_razon_social'],
-                'total_iva'            => round($total_iva, 2),
-                'total'                => round($total_neto + $total_iva, 2),
-                'retenciones'          => 0,
-                'user_id'              => $provider_order->user_id ?? null,
-            ]);
-
-            foreach ($grupo['ivas'] as $iva_id => $value) {
                 ProviderOrderAfipTicketIva::create([
                     'provider_order_afip_ticket_id' => $ticket_aparte->id,
-                    'iva_id'                        => $iva_id,
-                    'neto'                          => $value['neto'],
-                    'iva_importe'                   => $value['importe_iva'],
+                    'iva_id'                         => (int)$extra_cost->iva_id,
+                    'neto'                           => $valor_redondeado['neto'],
+                    'iva_importe'                    => $valor_redondeado['importe_iva'],
                 ]);
             }
         }
+
+        // Limpieza de comprobantes aparte "huérfanos": el costo extra que los generó se borró,
+        // dejó de estar facturado, o pasó a `en_factura_compra = true` (ya no le corresponde
+        // comprobante aparte).
+        $query_huerfanos = ProviderOrderAfipTicket::where('provider_order_id', $provider_order->id)
+                                                    ->whereNotNull('provider_order_extra_cost_id');
+
+        if (count($extra_cost_ids_vigentes) > 0) {
+            $query_huerfanos->whereNotIn('provider_order_extra_cost_id', $extra_cost_ids_vigentes);
+        }
+
+        foreach ($query_huerfanos->get() as $huerfano) {
+            ProviderOrderAfipTicketIva::where('provider_order_afip_ticket_id', $huerfano->id)->delete();
+            $huerfano->delete();
+        }
+    }
+
+    /**
+     * Prompt 610: redondea cada fila de un desglose de IVA (`[iva_id => ['neto' => x,
+     * 'importe_iva' => y]]`) a 2 decimales — mismo tipo de columna que
+     * `provider_order_afip_ticket_ivas.neto`/`iva_importe` (`decimal(20,2)`) — y absorbe en la
+     * alícuota de MAYOR importe (neto + IVA) el centavo de diferencia que puede quedar por
+     * redondear cada fila de forma independiente, para que la suma de netos + la suma de IVA por
+     * fila dé EXACTAMENTE el mismo total que redondear la suma cruda una sola vez.
+     *
+     * Sin esto, sumar filas ya redondeadas individualmente por MySQL (`decimal(20,2)`) puede
+     * quedar un centavo por debajo o por arriba del total del comprobante (que se calcula sobre
+     * los valores crudos, sin redondear por fila) — más notorio con `precios_incluyen_iva = true`,
+     * donde el neto sale de descomponer el bruto línea por línea con su propia alícuota.
+     *
+     * @param  array $ivas [iva_id => ['neto' => x, 'importe_iva' => y]] (valores crudos, sin redondear)
+     * @return array        mismo shape, valores ya redondeados a 2 decimales y ajustados para cerrar sin diferencia
+     */
+    private static function redondear_ivas_sin_diferencia(array $ivas): array
+    {
+        if (empty($ivas)) {
+            return $ivas;
+        }
+
+        // Totales "crudos" (sin redondear por fila): el objetivo a igualar después de redondear
+        // cada alícuota por separado.
+        $total_neto_objetivo = 0;
+        $total_iva_objetivo  = 0;
+
+        foreach ($ivas as $value) {
+            $total_neto_objetivo += $value['neto'];
+            $total_iva_objetivo  += $value['importe_iva'];
+        }
+
+        $total_neto_objetivo = round($total_neto_objetivo, 2);
+        $total_iva_objetivo  = round($total_iva_objetivo, 2);
+
+        // Redondea cada fila a 2 decimales de forma independiente.
+        $redondeados = [];
+        foreach ($ivas as $iva_id => $value) {
+            $redondeados[$iva_id] = [
+                'neto'        => round($value['neto'], 2),
+                'importe_iva' => round($value['importe_iva'], 2),
+            ];
+        }
+
+        $suma_neto = 0;
+        $suma_iva  = 0;
+        foreach ($redondeados as $value) {
+            $suma_neto += $value['neto'];
+            $suma_iva  += $value['importe_iva'];
+        }
+
+        $diff_neto = round($total_neto_objetivo - $suma_neto, 2);
+        $diff_iva  = round($total_iva_objetivo - $suma_iva, 2);
+
+        if ($diff_neto != 0 || $diff_iva != 0) {
+
+            // Se busca la alícuota de mayor importe (neto + IVA) del comprobante, para que el
+            // ajuste de centavos quede lo menos visible posible.
+            $iva_id_mayor  = null;
+            $importe_mayor = -1;
+
+            foreach ($redondeados as $iva_id => $value) {
+
+                $importe = $value['neto'] + $value['importe_iva'];
+
+                if ($importe > $importe_mayor) {
+                    $importe_mayor = $importe;
+                    $iva_id_mayor  = $iva_id;
+                }
+            }
+
+            if (!is_null($iva_id_mayor)) {
+                $redondeados[$iva_id_mayor]['neto']        = round($redondeados[$iva_id_mayor]['neto'] + $diff_neto, 2);
+                $redondeados[$iva_id_mayor]['importe_iva'] = round($redondeados[$iva_id_mayor]['importe_iva'] + $diff_iva, 2);
+            }
+        }
+
+        return $redondeados;
     }
 
     /**
