@@ -522,6 +522,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('integraciones/mercadopago/connect', 'MercadoPagoOAuthController@connect');
     Route::post('integraciones/mercadopago/disconnect', 'MercadoPagoOAuthController@disconnect');
 
+    // OAuth de Zippin (grupo 171, prompt 599): el comercio autenticado conecta/desconecta su
+    // propia cuenta para gestionar envíos. El callback (público, sin auth) se declara más abajo,
+    // fuera de este grupo de middleware, mismo criterio que mercadopago/callback.
+    Route::get('integraciones/zippin/connect', 'ZippinOAuthController@connect');
+    Route::post('integraciones/zippin/disconnect', 'ZippinOAuthController@disconnect');
+
     Route::get('report/from-date/{from_date}/{until_date?}/{employee_id?}', 'CajaViejaController@reports');
     Route::get('chart/from-date/{from_date}/{until_date?}', 'CajaViejaController@charts');
 
@@ -774,6 +780,12 @@ Route::post('meli/notifications', 'MeLiOrderController@receive_notification');
 // propósito (el navegador no manda el bearer token del SPA en esta redirección); el comercio se
 // identifica mediante el `state` aleatorio que connect persistió y que este endpoint valida.
 Route::get('integraciones/mercadopago/callback', 'MercadoPagoOAuthController@callback');
+
+// Callback público OAuth Zippin (grupo 171, prompt 599): redirect del navegador del comercio de
+// vuelta a este backend tras autorizar en Zippin. Sin auth Sanctum a propósito (el navegador no
+// manda el bearer token del SPA en esta redirección); el comercio se identifica mediante el
+// `state` aleatorio que connect persistió y que este endpoint valida.
+Route::get('integraciones/zippin/callback', 'ZippinOAuthController@callback');
 
 
 // Plans

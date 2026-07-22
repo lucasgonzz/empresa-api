@@ -77,6 +77,13 @@ class Kernel extends ConsoleKernel
         $schedule->command('mercadopago:refresh-tokens')
             ->daily()
             ->withoutOverlapping();
+
+        // Renueva los access_token de Zippin próximos a vencer (grupo 171, prompt 599).
+        // Corre para TODOS los comercios con zippin_enabled=true (no depende de company_owner /
+        // extensiones), porque el vínculo OAuth es por online_configuration, no por instancia.
+        $schedule->command('zippin:refresh-tokens')
+            ->daily()
+            ->withoutOverlapping();
     }
 
     /**
