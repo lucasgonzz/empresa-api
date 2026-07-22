@@ -38,7 +38,11 @@ return [
             'driver' => 'database',
             'table' => 'jobs',
             'queue' => 'default', // Para la cola 'default'
-            'retry_after' => 2400,
+            // retry_after debe superar el timeout máximo de cualquier job en esta cola.
+            // Jobs pesados (exportaciones, importaciones, actualizaciones masivas) declaran timeout = 3600 (60 min).
+            // Configurar en 4200 segundos (70 min) asegura que Laravel no marque un job como "abandonado"
+            // si todavía está en ejecución.
+            'retry_after' => 4200,
             'after_commit' => true,
         ],
 
