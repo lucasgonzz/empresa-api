@@ -259,7 +259,9 @@ class NewProviderOrderHelper {
 
                 if (!is_null($iva_costo_extra)) {
 
-                    $alicuota_costo_extra = (float)$iva_costo_extra->percentage;
+                    // Prompt 609: alícuota numérica segura (is_numeric antes de castear), por si
+                    // el costo extra viene facturado con un IVA 'Exento'/'No Gravado' (texto).
+                    $alicuota_costo_extra = $this->get_alicuota_numerica($iva_costo_extra);
 
                     if ($alicuota_costo_extra > 0) {
                         // Back-out "final -> neto": neto = bruto / (1 + alicuota/100).
@@ -280,9 +282,9 @@ class NewProviderOrderHelper {
                     continue;
                 }
 
-                // Cantidad comprada del ítem (pivot de la orden), para llevar el monto
-                // prorrateado del ítem a un valor unitario.
-                $cantidad = (float)$article->pivot->amount;
+                // Cantidad comprada del ítem (Prompt 609: recibida si está completada -incluido
+                // 0-, sino pedida), para llevar el monto prorrateado del ítem a un valor unitario.
+                $cantidad = $this->get_cantidad_efectiva($article);
 
                 if ($cantidad <= 0) {
                     continue;
@@ -525,12 +527,16 @@ class NewProviderOrderHelper {
         $this->provider_order->total_costos_extra            = $total_costos_extra;
 
 
-        if ($this->provider_order->total_with_iva) {
+        // Prompt 609 - Tarea 5: un Monotributista no suma el IVA por encima del total (ya está
+        // "adentro" de lo que tipeó/pagó en cada línea, no se recupera aparte como crédito fiscal).
+        // La columna de IVA de la compra sigue calculándose y mostrándose (prompt 611), solo se deja
+        // de sumar acá.
+        if ($this->provider_order->total_with_iva && $this->get_condicion_iva_precios() != 'MT') {
 
             $total_sin_iva = $total;
 
             $total += $total_iva;
-            
+
             $des[] = 'APLICANDO IVA';
             $des[] = 'Total en '.Numbers::price($total_sin_iva, true).' mas '.Numbers::price($total_iva, true).' de IVA = '.Numbers::price($total, true);
         }
@@ -578,7 +584,10 @@ class NewProviderOrderHelper {
             $cost *= $valor_dolar;
         }
 
-        $total_article = $cost * (float)($article->pivot->amount);
+        // Prompt 609 - Tarea 6: cantidad recibida si está completada (incluido 0), sino pedida.
+        $cantidad_efectiva = $this->get_cantidad_efectiva($article);
+
+        $total_article = $cost * $cantidad_efectiva;
 
         if (
             (
@@ -587,7 +596,7 @@ class NewProviderOrderHelper {
             )
             && $article->pivot->price
         ) {
-            $total_article = (float)$article->pivot->price * (float)($article->pivot->amount);
+            $total_article = (float)$article->pivot->price * $cantidad_efectiva;
         }
 
         if (!is_null($article->presentacion)) {
@@ -615,8 +624,9 @@ class NewProviderOrderHelper {
             $iva = $this->get_iva($article->pivot->iva_id);
 
             if (!is_null($iva)) {
-                
-                $importe_iva = $total_article * (float)$iva->percentage / 100;
+
+                // Prompt 609: alícuota numérica segura (is_numeric antes de castear).
+                $importe_iva = $total_article * $this->get_alicuota_numerica($iva) / 100;
 
                 $article_iva['iva_id']      = $iva->id;
                 $article_iva['neto']        = $total_article;
@@ -641,7 +651,7 @@ class NewProviderOrderHelper {
         $iva = null;
 
         foreach ($this->ivas as $_iva) {
-            
+
             if ($_iva->id == $iva_id) {
 
                 $iva = $_iva;
@@ -649,6 +659,75 @@ class NewProviderOrderHelper {
         }
 
         return $iva;
+    }
+
+    /**
+     * Prompt 609 — Tarea 1: devuelve la alícuota NUMÉRICA de un IVA, tratando explícitamente como 0
+     * los valores no numéricos que puede tener `ivas.percentage` ('Exento', 'No Gravado', guardados
+     * como texto). No confiar en el casteo implícito de PHP: `(float)'Exento'` da 0 "por casualidad",
+     * pero no queremos depender de eso — se valida con is_numeric() antes de castear.
+     *
+     * @param  \App\Models\Iva|null $iva
+     * @return float Alícuota numérica (0 si el IVA es null, no tiene percentage, o percentage no es
+     *               numérico).
+     */
+    private function get_alicuota_numerica($iva) {
+
+        if (is_null($iva) || !isset($iva->percentage)) {
+            return 0;
+        }
+
+        if (!is_numeric($iva->percentage)) {
+            // 'Exento' y 'No Gravado' se guardan como texto en la columna percentage.
+            return 0;
+        }
+
+        return (float)$iva->percentage;
+    }
+
+    /**
+     * Prompt 609 — Tarea 2: resuelve la condición de IVA para costeo (`'RRII'` o `'MT'`) de la
+     * cuenta dueña de esta compra, leyendo `condicion_iva_precios` desde su configuración
+     * (`UserConfiguration`, columna agregada por el Prompt 608).
+     *
+     * Si no hay configuración cargada (o el valor no es exactamente `'MT'`), se asume `'RRII'` —
+     * comportamiento actual del sistema (costos netos, IVA sumado al final), opción conservadora.
+     *
+     * @return string 'RRII' o 'MT'.
+     */
+    private function get_condicion_iva_precios() {
+
+        if (is_null($this->user) || is_null($this->user->configuration)) {
+            return 'RRII';
+        }
+
+        if ($this->user->configuration->condicion_iva_precios == 'MT') {
+            return 'MT';
+        }
+
+        return 'RRII';
+    }
+
+    /**
+     * Prompt 609 — Tarea 6: cantidad efectiva a usar en los cálculos de costeo/totales de un
+     * artículo de la compra.
+     *
+     * Usa la cantidad RECIBIDA siempre que esté completada (incluido el caso `0`: "pedí 10, recibí
+     * 0"), y cae a la cantidad PEDIDA (`pivot->amount`) solo cuando la recibida esté vacía/null (el
+     * usuario no la completó porque asumió que llegó todo). Se chequea con isset()/is_null(), NO con
+     * un chequeo de falsy, porque `0` es falsy en PHP y confundirlo con "no cargada" es justo el bug
+     * a evitar acá.
+     *
+     * @param  \App\Models\Article $article Artículo de la compra, con su pivot ya cargado.
+     * @return float
+     */
+    private function get_cantidad_efectiva($article) {
+
+        if (isset($article->pivot->received) && !is_null($article->pivot->received)) {
+            return (float)$article->pivot->received;
+        }
+
+        return (float)$article->pivot->amount;
     }
 
     function set_current_acount() {
@@ -895,8 +974,12 @@ class NewProviderOrderHelper {
         // se guarda el costo NETO también en article_provider, para mantener la convención
         // "articles.cost / article_provider.cost siempre netos" y no inflar la comparación entre
         // proveedores.
-        if ($this->provider_order->precios_incluyen_iva) {
-            $cost = ArticlePricesHelper::back_out_iva($article, $cost);
+        //
+        // Prompt 609 - Tarea 3: branching por condición de IVA de la cuenta. Un Monotributista
+        // trata el costo tipeado SIEMPRE como bruto (se ignora `precios_incluyen_iva` de la
+        // compra); un Responsable Inscripto respeta el flag como hasta ahora.
+        if ($this->get_condicion_iva_precios() == 'MT' || $this->provider_order->precios_incluyen_iva) {
+            $cost = ArticlePricesHelper::back_out_iva($article, $cost, $this->user);
         }
 
         $pivot_data = [
@@ -1093,8 +1176,13 @@ class NewProviderOrderHelper {
         // IVA incluido (precio de lista del proveedor) y hay que sacárselo ANTES de guardarlo, con
         // la alícuota propia del artículo (ArticlePricesHelper::back_out_iva). Con el flag OFF (o
         // sin cargar) el comportamiento queda idéntico al de siempre: se guarda el valor tal cual.
-        if (!is_null($cost) && $this->provider_order->precios_incluyen_iva) {
-            $cost = ArticlePricesHelper::back_out_iva($article, $cost);
+        //
+        // Prompt 609 - Tarea 3: branching por condición de IVA de la cuenta (`condicion_iva_precios`
+        // de la configuración del usuario). Un Monotributista SIEMPRE trata el costo tipeado como
+        // bruto (se ignora el flag `precios_incluyen_iva` de la compra, forzado a `true`); un
+        // Responsable Inscripto respeta el flag como hasta ahora.
+        if (!is_null($cost) && ($this->get_condicion_iva_precios() == 'MT' || $this->provider_order->precios_incluyen_iva)) {
+            $cost = ArticlePricesHelper::back_out_iva($article, $cost, $this->user);
         }
 
         if (!is_null($cost)

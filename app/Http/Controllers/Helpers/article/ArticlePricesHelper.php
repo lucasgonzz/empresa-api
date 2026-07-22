@@ -275,8 +275,15 @@ class ArticlePricesHelper {
 
         $precio_con_iva = $price;
 
-        if ($article->aplicar_iva) {
-            
+        // Prompt 609: un Monotributista no recupera IVA, así que el costo real (y cualquier precio
+        // que pase por acá) SIEMPRE lo incorpora, sin importar el flag articles.aplicar_iva —
+        // ese control queda oculto para MT en el listado (prompt 612), así que si el cálculo
+        // dependiera de él y quedara en 0 (ej. cuenta que migró de RRII a MT), el costo se hundiría
+        // en silencio.
+        $es_monotributista = Self::es_monotributista_para_costeo($user);
+
+        if ($article->aplicar_iva || $es_monotributista) {
+
             $article->load('iva');
 
             if (Self::hasIva($article)) {
@@ -302,6 +309,27 @@ class ArticlePricesHelper {
     }
 
     /**
+     * Prompt 609 — determina si, para efectos de costeo (compra a proveedor y costo real de
+     * catálogo), el usuario dueño de la compra está en condición Monotributista.
+     *
+     * Lee `condicion_iva_precios` de la configuración del usuario (columna agregada por el
+     * Prompt 608). Si no hay configuración cargada, o el valor no es exactamente `'MT'`, se asume
+     * Responsable Inscripto — mismo criterio conservador que el default `'RRII'` de la migración
+     * 608 (las cuentas existentes no cambian de comportamiento si el campo todavía no está seteado).
+     *
+     * @param  \App\Models\User|null $user
+     * @return bool
+     */
+    static function es_monotributista_para_costeo($user) {
+
+        if (is_null($user) || is_null($user->configuration)) {
+            return false;
+        }
+
+        return $user->configuration->condicion_iva_precios == 'MT';
+    }
+
+    /**
      * Prompt 514 — "Back-out" de IVA sobre un costo BRUTO, para dejarlo NETO.
      *
      * Convención del sistema (decisión de Lucas, 18/7): `articles.cost` y `article_provider.cost`
@@ -320,11 +348,16 @@ class ArticlePricesHelper {
      *
      * @param  \App\Models\Article $article      Artículo cuya alícuota de IVA se usa para el back-out.
      * @param  float|string        $cost_bruto   Costo con IVA incluido, tal cual vino del origen.
+     * @param  \App\Models\User|null $user       Dueño de la compra (Prompt 609). Si es Monotributista,
+     *                                            se descompone SIEMPRE, ignorando `articles.aplicar_iva`
+     *                                            (ese control queda oculto para MT en el listado,
+     *                                            prompt 612).
      * @return float                             Costo neto (sin IVA). Si el artículo no tiene IVA
-     *                                            aplicable (sin alícuota, 0%, Exento o No Gravado, o
-     *                                            aplicar_iva desactivado), devuelve el bruto sin tocar.
+     *                                            aplicable (sin alícuota, 0%, Exento o No Gravado), o
+     *                                            tiene aplicar_iva desactivado y el usuario no es
+     *                                            Monotributista, devuelve el bruto sin tocar.
      */
-    static function back_out_iva($article, $cost_bruto) {
+    static function back_out_iva($article, $cost_bruto, $user = null) {
 
         $cost_bruto = (float)$cost_bruto;
 
@@ -332,9 +365,14 @@ class ArticlePricesHelper {
             return $cost_bruto;
         }
 
-        // Misma condición que aplicar_iva(): el artículo tiene que tener aplicar_iva ON y una
-        // alícuota cargada que no sea 0/Exento/No Gravado. Si no la tiene, no hay IVA que sacar.
-        if (!$article->aplicar_iva) {
+        // Prompt 609: un Monotributista siempre trata el costo tipeado como bruto y lo descompone,
+        // sin importar el flag articles.aplicar_iva.
+        $es_monotributista = Self::es_monotributista_para_costeo($user);
+
+        // Misma condición que aplicar_iva(): el artículo tiene que tener aplicar_iva ON (o el
+        // usuario ser Monotributista) y una alícuota cargada que no sea 0/Exento/No Gravado. Si no,
+        // no hay IVA que sacar.
+        if (!$article->aplicar_iva && !$es_monotributista) {
             return $cost_bruto;
         }
 
