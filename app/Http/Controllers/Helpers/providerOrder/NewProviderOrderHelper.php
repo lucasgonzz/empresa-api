@@ -543,7 +543,17 @@ class NewProviderOrderHelper {
         // "adentro" de lo que tipeó/pagó en cada línea, no se recupera aparte como crédito fiscal).
         // La columna de IVA de la compra sigue calculándose y mostrándose (prompt 611), solo se deja
         // de sumar acá.
-        if ($this->provider_order->total_with_iva && $this->get_condicion_iva_precios() != 'MT') {
+        //
+        // Prompt 614: mismo razonamiento aplica para un Responsable Inscripto cuando la orden trae
+        // `precios_incluyen_iva` ON: en ese caso `$total_articulos` (y por lo tanto `$total`, que
+        // arranca en `$total_articulos`) YA es el precio final tipeado con IVA incluido — el IVA
+        // no es un crédito fiscal a sumar aparte sobre ese número, ya está "adentro". Sumar
+        // `$total_iva` encima duplicaba el IVA (bug real detectado al automatizar el costeo con
+        // PHPUnit: una compra de 1210 x 10 con `precios_incluyen_iva=1` daba total 14200 en vez de
+        // los 12100 que efectivamente cuestan esos artículos, la misma plata que tipeada neta). Con
+        // el flag OFF (comportamiento de siempre) no cambia nada: el costo tipeado es neto y el IVA
+        // sí hay que sumarlo aparte para llegar al total final.
+        if ($this->provider_order->total_with_iva && $this->get_condicion_iva_precios() != 'MT' && !$this->provider_order->precios_incluyen_iva) {
 
             $total_sin_iva = $total;
 

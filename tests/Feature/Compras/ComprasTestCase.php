@@ -9,6 +9,7 @@ use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 /**
@@ -111,12 +112,37 @@ abstract class ComprasTestCase extends TestCase
      * recarga la relacion, para que los helpers que la leen en el mismo request
      * (`NewProviderOrderHelper::get_condicion_iva_precios()`) vean el valor actualizado.
      *
+     * Guarda (Prompt 614): la columna `user_configurations.condicion_iva_precios` todavia NO
+     * existe en el esquema real — depende del Prompt 608, que segun la documentacion de
+     * `NewProviderOrderHelper::get_condicion_iva_precios()` "no corrio" — asi que escribirla
+     * unconditionalmente rompe con `SQLSTATE[42S22]: Column not found` incluso al pedir 'RRII'.
+     * Como el propio fallback de esa funcion ya devuelve 'RRII' cuando la configuracion no tiene
+     * el valor (comportamiento conservador documentado en el Prompt 609), pedir 'RRII' acá sin que
+     * la columna exista es un no-op seguro. Pedir 'MT' sin la columna sí es un escenario que esta
+     * clase base no puede armar todavia: se aborta el test con un mensaje explicito en vez de
+     * fallar con un error de SQL críptico, para que un futuro prompt (615/616, condicion MT) sepa
+     * exactamente por que no puede correr hasta que el Prompt 608 aterrice la columna.
+     *
      * @param string $valor 'RRII' o 'MT'.
      * @return void
      */
     protected function set_condicion_iva($valor)
     {
         $user = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
+
+        if (!Schema::hasColumn('user_configurations', 'condicion_iva_precios')) {
+
+            if ($valor == 'MT') {
+                $this->markTestSkipped(
+                    'Falta la columna user_configurations.condicion_iva_precios (Prompt 608, no '.
+                    'corrio todavia): no se puede forzar la condicion MT. RRII sigue funcionando '.
+                    'porque es el fallback seguro de NewProviderOrderHelper::get_condicion_iva_precios().'
+                );
+            }
+
+            // 'RRII' sin la columna: no-op, ya es el fallback por defecto del sistema.
+            return;
+        }
 
         $user->configuration->condicion_iva_precios = $valor;
         $user->configuration->save();
