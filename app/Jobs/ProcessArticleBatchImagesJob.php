@@ -4,8 +4,10 @@ namespace App\Jobs;
 
 use App\Events\ArticleBatchImagesProcessed;
 use App\Models\Article;
+use App\Models\ArticleImageSearchAttempt;
 use App\Models\GeocoderCounter;
 use App\Models\Image;
+use App\Services\ArticleImageValidationService;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use App\Services\Traits\GoogleSearchHelpers;
 use Carbon\Carbon;
@@ -16,6 +18,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Intervention\Image\ImageManager;
 
 class ProcessArticleBatchImagesJob implements ShouldQueue
@@ -25,8 +28,19 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
     /** @var int Intentos máximos antes de marcar el job como fallido. */
     public $tries = 1;
 
-    /** @var int Tiempo máximo de ejecución en segundos (10 minutos). */
-    public $timeout = 600;
+    /**
+     * @var int Tiempo máximo de ejecución en segundos (30 minutos). Subido de 600 a 1800
+     * (grupo 201, prompt 03): con validación por visión IA de cada candidata, una corrida de
+     * 100 artículos puede superar los 10 minutos previos.
+     */
+    public $timeout = 1800;
+
+    /**
+     * @var int Máximo de imágenes candidatas de Google que se evalúan por query. El resto
+     * queda registrado en `candidates` con outcome `not_evaluated`, sin gastar descarga ni
+     * llamada a la IA (evita corridas de media hora con muchos artículos).
+     */
+    const MAX_CANDIDATES_PER_QUERY = 3;
 
     /** @var array IDs de los artículos a procesar. */
     protected $article_ids;
@@ -65,16 +79,27 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
     }
 
     /**
-     * Procesa cada artículo: busca imagen en Google, descarga, recorta y guarda.
-     * Emite el evento ArticleBatchImagesProcessed al finalizar con el resumen.
+     * Procesa cada artículo: busca imagen en Google, valida cada candidata (prefiltro de texto +
+     * visión IA vía ArticleImageValidationService), descarga (con fallback al thumbnail de
+     * Google si el link directo falla), recorta y guarda. Registra un diagnóstico completo por
+     * artículo + criterio en `article_image_search_attempts` (ArticleImageSearchAttempt) y emite
+     * el evento ArticleBatchImagesProcessed al finalizar con el resumen.
      *
      * @return void
      */
     public function handle()
     {
+        // UUID que agrupa todas las filas de diagnóstico de esta corrida del job.
+        $batch_uuid = (string) Str::uuid();
+
+        // Instancia única del validador por IA: el contador de llamadas (max_calls_batch) tiene
+        // que ser por corrida completa, no por artículo.
+        $validation_service = new ArticleImageValidationService();
+
         $processed              = 0;
         $skipped                = 0;
         $skipped_names          = [];
+        $skipped_items          = [];
         $skipped_by_quota       = 0;
         $skipped_by_quota_names = [];
         $quota_reached          = false;
@@ -84,10 +109,14 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
 
         $counter = $this->get_or_create_counter();
 
+        // Purga los intentos viejos del usuario para que la tabla de diagnóstico no crezca sin techo.
+        ArticleImageSearchAttempt::purge_old($this->user_id, 30);
+
         Log::info(sprintf(
-            '[BatchImages] Inicio batch (%d artículos), api_key ...%s',
+            '[BatchImages] Inicio batch (%d artículos), api_key ...%s, batch_uuid %s',
             count($this->article_ids),
-            substr($this->google_api_key, -8)
+            substr($this->google_api_key, -8),
+            $batch_uuid
         ));
 
         foreach ($this->article_ids as $article_id) {
@@ -120,22 +149,66 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
              */
             $search_queries = $this->get_search_queries($article);
             if (empty($search_queries)) {
+                $detail = 'El artículo no tiene código de barras válido ni nombre, así que no había con qué buscar.';
+
+                $this->write_attempt(
+                    $batch_uuid,
+                    $article,
+                    'none',
+                    1,
+                    '',
+                    null,
+                    null,
+                    null,
+                    ArticleImageSearchAttempt::OUTCOME_NO_QUERY,
+                    $detail,
+                    null
+                );
+
                 $skipped++;
                 $skipped_names[] = $this->get_article_display_name($article);
+                $skipped_items[] = [
+                    'article_id' => $article->id,
+                    'name'       => $this->get_article_display_name($article),
+                    'summary'    => $detail,
+                ];
                 Log::info('ProcessArticleBatchImagesJob: artículo sin query de búsqueda.', ['article_id' => $article->id]);
                 continue;
             }
 
-            $saved_url      = null;
-            $confidence     = null;
-            $quota_exceeded = false;
+            $saved_url          = null;
+            $ratio_confidence   = null;
+            $ai_confidence      = null;
+            $ai_evaluated       = null;
+            $quota_exceeded_mid = false;
+            $article_details    = [];
 
             foreach ($search_queries as $query_index => $search_query) {
-                $criterion = $search_query['criterion'];
-                $query     = $search_query['query'];
+                $criterion       = $search_query['criterion'];
+                $query           = $search_query['query'];
+                $criterion_order = $query_index + 1;
+                $criterion_label = $this->get_criterion_label($criterion);
+                $query_suffix    = $this->get_query_display_suffix($criterion, $query);
 
                 if ($counter->counter >= $this->google_cuota) {
-                    $quota_exceeded = true;
+                    $detail = 'No se llegó a buscar: se agotó la cuota diaria de búsquedas de Google.';
+
+                    $this->write_attempt(
+                        $batch_uuid,
+                        $article,
+                        $criterion,
+                        $criterion_order,
+                        $query,
+                        null,
+                        null,
+                        null,
+                        ArticleImageSearchAttempt::OUTCOME_QUOTA,
+                        $detail,
+                        null
+                    );
+                    $article_details[] = $detail;
+
+                    $quota_exceeded_mid = true;
                     break;
                 }
 
@@ -154,33 +227,238 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
                 $search_result = $this->fetch_google_image_results($query, $counter);
                 $this->log_article_search_result($article, $criterion, $query, $search_result);
 
-                $items = $search_result['items'];
-                if ($items === null || empty($items)) {
+                $items                = $search_result['items'];
+                $api_error            = $search_result['api_error'];
+                $google_total_results = $search_result['total_results'];
+                $google_items_count   = $items !== null ? count($items) : null;
+
+                if ($items === null) {
+                    $detail = sprintf(
+                        'Se buscó por %s%s y Google devolvió un error: %s.',
+                        $criterion_label,
+                        $query_suffix,
+                        $api_error ?: 'desconocido'
+                    );
+
+                    $this->write_attempt(
+                        $batch_uuid,
+                        $article,
+                        $criterion,
+                        $criterion_order,
+                        $query,
+                        $google_items_count,
+                        $google_total_results,
+                        $api_error,
+                        ArticleImageSearchAttempt::OUTCOME_API_ERROR,
+                        $detail,
+                        null
+                    );
+                    $article_details[] = $detail;
+                    continue;
+                }
+
+                if (empty($items)) {
+                    $detail = sprintf(
+                        'Se buscó por %s%s y Google no devolvió ninguna imagen.',
+                        $criterion_label,
+                        $query_suffix
+                    );
+
+                    $this->write_attempt(
+                        $batch_uuid,
+                        $article,
+                        $criterion,
+                        $criterion_order,
+                        $query,
+                        $google_items_count,
+                        $google_total_results,
+                        $api_error,
+                        ArticleImageSearchAttempt::OUTCOME_NO_RESULTS,
+                        $detail,
+                        null
+                    );
+                    $article_details[] = $detail;
                     continue;
                 }
 
                 /*
-                 * Probar cada resultado en orden (igual que select_first_available_image en el SPA).
-                 * Si ninguna imagen de esta query sirve, se intenta la siguiente query (p. ej. nombre).
+                 * Pipeline por candidata (máximo MAX_CANDIDATES_PER_QUERY, en orden):
+                 * 1) prefiltro de texto gratuito, 2) descarga con fallback a thumbnail,
+                 * 3) validación por visión IA. Se registra el resultado de cada paso.
                  */
-                foreach ($items as $item) {
-                    $quality   = $this->evaluate_image_quality($item);
-                    $saved_url = $this->download_crop_and_save($quality['url']);
+                $candidates_log = [];
+                $resolved       = false;
+                $position       = 0;
 
-                    if ($saved_url === null) {
+                foreach ($items as $item) {
+                    $position++;
+
+                    /* Ya se resolvió el artículo con una candidata anterior, o se alcanzó el tope. */
+                    if ($resolved || $position > self::MAX_CANDIDATES_PER_QUERY) {
+                        $candidates_log[] = $this->build_candidate_entry(
+                            $position,
+                            $item,
+                            ArticleImageSearchAttempt::CANDIDATE_OUTCOME_NOT_EVALUATED,
+                            'No se llegó a evaluar: ya se había resuelto el artículo o se alcanzó el tope de candidatas.'
+                        );
                         continue;
                     }
 
-                    $confidence = $quality['confidence'];
+                    /* Paso 1: prefiltro de texto, gratuito (sin descarga ni llamada a IA). */
+                    $prefilter = $validation_service->prefilter($item);
+                    if ($prefilter['rejected']) {
+                        $candidates_log[] = $this->build_candidate_entry(
+                            $position,
+                            $item,
+                            ArticleImageSearchAttempt::CANDIDATE_OUTCOME_REJECTED_BY_PREFILTER,
+                            $prefilter['reason']
+                        );
+                        continue;
+                    }
+
+                    /* Paso 2: descarga del link directo; si falla, reintentar con el thumbnail de Google. */
+                    $quality        = $this->evaluate_image_quality($item);
+                    $download       = $this->download_crop_and_save($quality['url']);
+                    $used_thumbnail = false;
+
+                    if ($download['url'] === null && !empty($item['image']['thumbnailLink'])) {
+                        $download       = $this->download_crop_and_save($item['image']['thumbnailLink']);
+                        $used_thumbnail = true;
+                    }
+
+                    if ($download['url'] === null) {
+                        $candidate_extra = ['used_thumbnail' => $used_thumbnail];
+
+                        if ($download['failure'] === 'format') {
+                            $candidates_log[] = $this->build_candidate_entry(
+                                $position,
+                                $item,
+                                ArticleImageSearchAttempt::CANDIDATE_OUTCOME_NOT_PROCESSABLE,
+                                'Se descargó el archivo pero no es una imagen que el sistema pueda procesar.',
+                                $candidate_extra
+                            );
+                            continue;
+                        }
+
+                        if ($download['http_status'] !== null) {
+                            $candidate_extra['http_status'] = $download['http_status'];
+                        }
+
+                        $candidates_log[] = $this->build_candidate_entry(
+                            $position,
+                            $item,
+                            ArticleImageSearchAttempt::CANDIDATE_OUTCOME_DOWNLOAD_FAILED,
+                            'La imagen existe pero el sitio no permitió descargarla desde el servidor.',
+                            $candidate_extra
+                        );
+                        continue;
+                    }
+
+                    /* Paso 3: validación por visión IA sobre el binario recién guardado en disco. */
+                    $saved_file_path = storage_path('app/public/'.basename($download['url']));
+                    $image_binary    = file_exists($saved_file_path) ? file_get_contents($saved_file_path) : false;
+
+                    if ($image_binary === false || $image_binary === '') {
+                        if (file_exists($saved_file_path)) {
+                            unlink($saved_file_path);
+                        }
+
+                        $candidates_log[] = $this->build_candidate_entry(
+                            $position,
+                            $item,
+                            ArticleImageSearchAttempt::CANDIDATE_OUTCOME_NOT_PROCESSABLE,
+                            'Se descargó el archivo pero no es una imagen que el sistema pueda procesar.',
+                            ['used_thumbnail' => $used_thumbnail]
+                        );
+                        continue;
+                    }
+
+                    $validation = $validation_service->validate($image_binary, $article);
+
+                    if (!$validation['accepted']) {
+                        /* La imagen se descartó por IA: borrar el archivo ya guardado para no llenar storage. */
+                        if (file_exists($saved_file_path)) {
+                            unlink($saved_file_path);
+                        }
+
+                        $candidates_log[] = $this->build_candidate_entry(
+                            $position,
+                            $item,
+                            ArticleImageSearchAttempt::CANDIDATE_OUTCOME_REJECTED_BY_AI,
+                            $validation['reason'],
+                            [
+                                'used_thumbnail' => $used_thumbnail,
+                                'ai_type'        => $validation['type'],
+                                'ai_confidence'  => $validation['confidence'],
+                            ]
+                        );
+                        continue;
+                    }
+
+                    /* Candidata aceptada: se asigna. Las restantes quedan registradas como not_evaluated. */
+                    $candidates_log[] = $this->build_candidate_entry(
+                        $position,
+                        $item,
+                        ArticleImageSearchAttempt::CANDIDATE_OUTCOME_ASSIGNED,
+                        $validation['reason'],
+                        [
+                            'used_thumbnail' => $used_thumbnail,
+                            'ai_type'        => $validation['type'],
+                            'ai_confidence'  => $validation['confidence'],
+                        ]
+                    );
+
+                    $saved_url        = $download['url'];
+                    $ratio_confidence = $quality['confidence'];
+                    $ai_confidence    = $validation['confidence'];
+                    $ai_evaluated     = $validation['evaluated'];
+                    $resolved         = true;
+                }
+
+                if ($resolved) {
+                    $detail = sprintf('Se encontró y asignó una imagen buscando por %s.', $criterion_label);
+
+                    $this->write_attempt(
+                        $batch_uuid,
+                        $article,
+                        $criterion,
+                        $criterion_order,
+                        $query,
+                        $google_items_count,
+                        $google_total_results,
+                        $api_error,
+                        ArticleImageSearchAttempt::OUTCOME_ASSIGNED,
+                        $detail,
+                        $candidates_log
+                    );
+                    $article_details[] = $detail;
                     break;
                 }
 
-                if ($saved_url !== null) {
-                    break;
-                }
+                $detail = sprintf(
+                    'Se buscó por %s%s y Google devolvió %d imágenes, pero ninguna se pudo usar.',
+                    $criterion_label,
+                    $query_suffix,
+                    count($items)
+                );
+
+                $this->write_attempt(
+                    $batch_uuid,
+                    $article,
+                    $criterion,
+                    $criterion_order,
+                    $query,
+                    $google_items_count,
+                    $google_total_results,
+                    $api_error,
+                    ArticleImageSearchAttempt::OUTCOME_ALL_CANDIDATES_REJECTED,
+                    $detail,
+                    $candidates_log
+                );
+                $article_details[] = $detail;
             }
 
-            if ($quota_exceeded && $saved_url === null) {
+            if ($quota_exceeded_mid && $saved_url === null) {
                 $quota_reached = true;
                 $skipped_by_quota++;
                 $skipped_by_quota_names[] = $this->get_article_display_name($article);
@@ -195,6 +473,11 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
             if ($saved_url === null) {
                 $skipped++;
                 $skipped_names[] = $this->get_article_display_name($article);
+                $skipped_items[] = [
+                    'article_id' => $article->id,
+                    'name'       => $this->get_article_display_name($article),
+                    'summary'    => implode(' ', $article_details),
+                ];
                 Log::info('ProcessArticleBatchImagesJob: ninguna query ni imagen de Google pudo utilizarse.', [
                     'article_id' => $article->id,
                     'queries'    => $search_queries,
@@ -217,7 +500,21 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
 
             $processed++;
 
-            if ($confidence === 'medium' || $confidence === 'low') {
+            /*
+             * Confianza final = la menor entre la del aspect ratio y la de la IA (low < medium <
+             * high). Si la IA no pudo evaluar la imagen, el artículo va siempre a revisión
+             * manual, sea cual sea el aspect ratio.
+             */
+            if ($ai_evaluated === false) {
+                $goes_to_review = true;
+            } else {
+                $final_confidence = $this->confidence_rank($ai_confidence) <= $this->confidence_rank($ratio_confidence)
+                    ? $ai_confidence
+                    : $ratio_confidence;
+                $goes_to_review = ($final_confidence === 'medium' || $final_confidence === 'low');
+            }
+
+            if ($goes_to_review) {
                 $needs_review++;
                 $needs_review_items[] = [
                     'article_id' => $article->id,
@@ -227,8 +524,10 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
             }
 
             Log::info('ProcessArticleBatchImagesJob: imagen asignada exitosamente.', [
-                'article_id' => $article->id,
-                'confidence' => $confidence,
+                'article_id'       => $article->id,
+                'ratio_confidence' => $ratio_confidence,
+                'ai_confidence'    => $ai_confidence,
+                'ai_evaluated'     => $ai_evaluated,
             ]);
         }
 
@@ -261,11 +560,14 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
             $needs_review_items,
             $quota_reached,
             $skipped_by_quota,
-            $skipped_by_quota_names
+            $skipped_by_quota_names,
+            $batch_uuid,
+            $skipped_items
         ));
 
         Log::info('ProcessArticleBatchImagesJob: finalizado.', [
             'user_id'          => $this->user_id,
+            'batch_uuid'       => $batch_uuid,
             'processed'        => $processed,
             'skipped'          => $skipped,
             'skipped_by_quota' => $skipped_by_quota,
@@ -399,30 +701,41 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
 
     /**
      * Descarga una imagen por URL, la recorta a cuadrado 1:1 centrado y la guarda como .webp.
-     * Retorna la URL pública del archivo guardado, o null si la descarga o el procesamiento fallan.
+     *
+     * Antes devolvía directamente la URL pública o null (grupo 201, prompt 03: pasa a devolver
+     * un array para distinguir un fallo de descarga HTTP de un fallo de procesamiento de
+     * Intervention, y para poder reportar el http_status en el diagnóstico de intentos).
      *
      * @param string $image_url URL de la imagen a descargar.
-     * @return string|null
+     * @return array {
+     *     url:         string|null,       URL pública del archivo guardado, o null si falló.
+     *     failure:     'http'|'format'|null,  motivo del fallo (null si tuvo éxito).
+     *     http_status: int|null,          status HTTP de la descarga, si se llegó a tener respuesta.
+     * }
      */
-    private function download_crop_and_save(string $image_url): ?string
+    private function download_crop_and_save(string $image_url): array
     {
+        $http_status = null;
+
         try {
             $http_response = $this->google_http()
                 ->timeout(8)
                 ->withHeaders(['User-Agent' => 'Mozilla/5.0'])
                 ->get($image_url);
 
+            $http_status = $http_response->status();
+
             if (!$http_response->successful()) {
-                return null;
+                return ['url' => null, 'failure' => 'http', 'http_status' => $http_status];
             }
 
             $image_data = $http_response->body();
         } catch (\Exception $e) {
-            return null;
+            return ['url' => null, 'failure' => 'http', 'http_status' => null];
         }
 
         if ($image_data === '' || $image_data === null) {
-            return null;
+            return ['url' => null, 'failure' => 'http', 'http_status' => $http_status];
         }
 
         try {
@@ -439,23 +752,27 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
             $filename = time().rand(1, 100000).'.webp';
             $img->save(storage_path().'/app/public/'.$filename);
         } catch (\Exception $e) {
-            return null;
+            return ['url' => null, 'failure' => 'format', 'http_status' => $http_status];
         }
 
         if (config('app.APP_ENV') == 'local') {
-            return 'http://empresa.local:8000/storage/'.$filename;
+            return ['url' => 'http://empresa.local:8000/storage/'.$filename, 'failure' => null, 'http_status' => $http_status];
         }
 
         if (config('app.VPS')) {
-            return config('app.APP_URL').'/storage/'.$filename;
+            return ['url' => config('app.APP_URL').'/storage/'.$filename, 'failure' => null, 'http_status' => $http_status];
         }
 
-        return config('app.APP_URL').'/public/storage/'.$filename;
+        return ['url' => config('app.APP_URL').'/public/storage/'.$filename, 'failure' => null, 'http_status' => $http_status];
     }
 
     /**
      * Evalúa la calidad de una imagen según su aspect ratio.
      * Usa los campos `image.width` e `image.height` del resultado de Google Custom Search.
+     *
+     * Se conserva tal cual (grupo 201, prompt 03: no se cambia esta lógica), pero deja de ser
+     * la única señal que decide si una imagen se asigna: ahora convive con el prefiltro de texto
+     * y la validación por visión IA de ArticleImageValidationService.
      *
      * @param array $item Resultado individual de Google Custom Search.
      * @return array Con claves `url` (string) y `confidence` ('high'|'medium'|'low').
@@ -480,6 +797,122 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
         }
 
         return ['url' => $item['link'], 'confidence' => $confidence];
+    }
+
+    /**
+     * Convierte una confianza ('high'|'medium'|'low') en un ranking numérico para poder
+     * quedarse con la menor entre dos confianzas (regla 06 del prompt 03: la confianza final
+     * de una imagen asignada es la menor entre el aspect ratio y la de la IA).
+     *
+     * @param string $confidence 'high'|'medium'|'low'.
+     * @return int 3 para high, 2 para medium, 1 para low (o cualquier otro valor inesperado).
+     */
+    private function confidence_rank(string $confidence): int
+    {
+        if ($confidence === 'high') {
+            return 3;
+        }
+
+        if ($confidence === 'medium') {
+            return 2;
+        }
+
+        return 1;
+    }
+
+    /**
+     * Arma una fila del array `candidates` que se guarda en ArticleImageSearchAttempt para una
+     * imagen candidata de Google Custom Search, con los datos comunes (posición, urls, título,
+     * dimensiones) más el outcome/motivo del paso del pipeline en el que se descartó o asignó.
+     *
+     * @param int    $position Posición (1-based) de la candidata dentro de los items de Google.
+     * @param array  $item     Item individual de Google Custom Search.
+     * @param string $outcome  Uno de ArticleImageSearchAttempt::CANDIDATE_OUTCOME_*.
+     * @param string $reason   Frase corta en castellano, lista para mostrar en pantalla.
+     * @param array  $extra    Claves opcionales adicionales (http_status, used_thumbnail, ai_type, ai_confidence).
+     * @return array
+     */
+    private function build_candidate_entry(int $position, array $item, string $outcome, string $reason, array $extra = []): array
+    {
+        $entry = [
+            'position'      => $position,
+            'image_url'     => isset($item['link']) ? $item['link'] : null,
+            'thumbnail_url' => isset($item['image']['thumbnailLink']) ? $item['image']['thumbnailLink'] : null,
+            'context_url'   => isset($item['image']['contextLink']) ? $item['image']['contextLink'] : null,
+            'title'         => isset($item['title']) ? $item['title'] : null,
+            'width'         => isset($item['image']['width']) ? (int) $item['image']['width'] : null,
+            'height'        => isset($item['image']['height']) ? (int) $item['image']['height'] : null,
+            'outcome'       => $outcome,
+            'reason'        => $reason,
+        ];
+
+        return array_merge($entry, $extra);
+    }
+
+    /**
+     * Sufijo con el valor de la query para mostrar en el `outcome_detail`, solo cuando el
+     * criterio es código de barras (el número no es obvio de por sí). Por nombre no se agrega,
+     * porque el nombre del artículo ya es legible en el mensaje.
+     *
+     * @param string $criterion 'bar_code' o 'name'.
+     * @param string $query     Valor de la query.
+     * @return string
+     */
+    private function get_query_display_suffix(string $criterion, string $query): string
+    {
+        if ($criterion === 'bar_code') {
+            return ' ('.$query.')';
+        }
+
+        return '';
+    }
+
+    /**
+     * Crea una fila de diagnóstico en `article_image_search_attempts` para un artículo +
+     * criterio de búsqueda probado en esta corrida del job.
+     *
+     * @param string      $batch_uuid           UUID de la corrida.
+     * @param Article     $article              Artículo procesado.
+     * @param string      $criterion             'bar_code', 'name' o 'none' (sin query posible).
+     * @param int         $criterion_order       1 = primer criterio probado, 2 = segundo.
+     * @param string      $query                 Texto enviado a Google (vacío si no hubo query).
+     * @param int|null    $google_items_count    Cantidad de items devueltos por Google.
+     * @param int|null    $google_total_results  totalResults de la respuesta de Google.
+     * @param string|null $api_error             Mensaje de error de Google, si lo hubo.
+     * @param string      $outcome               Uno de ArticleImageSearchAttempt::OUTCOME_*.
+     * @param string      $outcome_detail        Frase en castellano lista para mostrar en pantalla.
+     * @param array|null  $candidates            Detalle por candidata (ver build_candidate_entry).
+     * @return void
+     */
+    private function write_attempt(
+        string $batch_uuid,
+        Article $article,
+        string $criterion,
+        int $criterion_order,
+        string $query,
+        ?int $google_items_count,
+        ?int $google_total_results,
+        ?string $api_error,
+        string $outcome,
+        string $outcome_detail,
+        ?array $candidates
+    ): void {
+        ArticleImageSearchAttempt::create([
+            'user_id'              => $this->user_id,
+            'batch_uuid'           => $batch_uuid,
+            'article_id'           => $article->id,
+            'article_name'         => $article->name,
+            'article_bar_code'     => $article->bar_code,
+            'criterion'            => $criterion,
+            'criterion_order'      => $criterion_order,
+            'query'                => $query,
+            'google_items_count'   => $google_items_count,
+            'google_total_results' => $google_total_results,
+            'api_error'            => $api_error,
+            'outcome'              => $outcome,
+            'outcome_detail'       => $outcome_detail,
+            'candidates'           => $candidates,
+        ]);
     }
 
     /**
