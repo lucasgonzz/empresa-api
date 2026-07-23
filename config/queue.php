@@ -37,8 +37,19 @@ return [
         'database' => [
             'driver' => 'database',
             'table' => 'jobs',
-            'queue' => 'default', // Para la cola 'default'
-            'retry_after' => 2400,
+            /*
+             * Aísla la cola por instalación: instalaciones que comparten la misma base
+             * de datos (Fénix, Galván, etc.) definen QUEUE_NAME en su .env con el nombre
+             * de su negocio para que su worker solo tome/encole sus propios jobs y no
+             * los de otra instalación. Sin QUEUE_NAME seteada, el comportamiento sigue
+             * siendo exactamente el mismo que antes: cola 'default'.
+             */
+            'queue' => env('QUEUE_NAME', 'default'),
+            // retry_after debe superar el timeout máximo de cualquier job en esta cola.
+            // Jobs pesados (exportaciones, importaciones, actualizaciones masivas) declaran timeout = 3600 (60 min).
+            // Configurar en 4200 segundos (70 min) asegura que Laravel no marque un job como "abandonado"
+            // si todavía está en ejecución.
+            'retry_after' => 4200,
             'after_commit' => true,
         ],
 
@@ -65,7 +76,13 @@ return [
         'redis' => [
             'driver' => 'redis',
             'connection' => 'default',
-            'queue' => env('REDIS_QUEUE', 'default'),
+            /*
+             * Mismo criterio de aislamiento que la conexión 'database': prioriza
+             * QUEUE_NAME. Si no está seteada, cae a REDIS_QUEUE como fallback legacy
+             * para instalaciones que ya la tuvieran configurada específicamente para
+             * redis, y si tampoco existe, usa 'default' como siempre.
+             */
+            'queue' => env('QUEUE_NAME', env('REDIS_QUEUE', 'default')),
             'retry_after' => 9000,
             'block_for' => null,
             'after_commit' => false,

@@ -386,6 +386,7 @@ class DemoSetupHelper
             'secondary_color'               => '#333333',
             'text_color'                    => '#EDEDED',
             'hover_text_color'              => '#FFFFFF',
+            'background_color'              => '#FFFFFF',
             'titulo_quienes_somos'              => 'Quienes somos',
             'article_description_font_size' => 16,
 

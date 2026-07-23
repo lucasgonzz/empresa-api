@@ -162,7 +162,11 @@ class UserSetupHelper
             'cotizar_precios_en_dolares'    => !empty($data['cotizar_precios_en_dolares']) ? 1 : 0,
             'base_de_datos'                 => 'empresa_prueba_1',
             'google_custom_search_api_key'  => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
-            'google_cuota'                  => 10,
+            // Cuota de Google del usuario real: la manda admin-api (RunUserSetupService, configurable
+            // desde admin-spa vía AdminSetting); si no llega (llamada directa, instalación vieja), 100.
+            'google_cuota'                  => (isset($data['google_cuota']) && is_numeric($data['google_cuota']))
+                ? (int) $data['google_cuota']
+                : 100,
         ]);
     }
 

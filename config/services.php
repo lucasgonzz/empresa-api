@@ -76,6 +76,28 @@ return [
         'verify_ssl' => filter_var(env('ANTHROPIC_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
     ],
 
+    /**
+     * Validación de imagen por visión IA (grupo 201, prompt 02): antes de asignar una imagen
+     * encontrada por Google a un artículo, ArticleImageValidationService le pide a Claude que
+     * confirme si la imagen realmente muestra el producto (y no una lista de precios, un
+     * catálogo en PDF, un logo, etc). Reutiliza la ANTHROPIC_API_KEY / ca_bundle / verify_ssl
+     * del bloque 'anthropic' de arriba; estas claves son propias de este servicio puntual.
+     */
+    'article_image_validation' => [
+        // Permite apagar la validación por completo (fail-open): en false, el servicio
+        // devuelve 'evaluated' => false y 'accepted' => true sin llamar a la API.
+        'enabled'          => filter_var(env('ARTICLE_IMAGE_VALIDATION_ENABLED', true), FILTER_VALIDATE_BOOLEAN),
+        // Modelo de Claude usado para la validación (uno económico, alcanza para esta tarea).
+        'model'            => env('ARTICLE_IMAGE_VALIDATION_MODEL', 'claude-haiku-4-5-20251001'),
+        // Timeout en segundos de la request HTTP a Anthropic.
+        'timeout'          => (int) env('ARTICLE_IMAGE_VALIDATION_TIMEOUT', 25),
+        // Lado mayor máximo (px) al que se redimensiona la imagen antes de mandarla a la IA,
+        // para bajar el costo en tokens sin perder precisión de la validación.
+        'max_side'         => (int) env('ARTICLE_IMAGE_VALIDATION_MAX_SIDE', 512),
+        // Techo de llamadas reales a Anthropic por corrida de batch (protección de costo).
+        'max_calls_batch'  => (int) env('ARTICLE_IMAGE_VALIDATION_MAX_CALLS_BATCH', 300),
+    ],
+
     /*
      * API OpenAI — embeddings vectoriales del catálogo de artículos (text-embedding-3-small).
      * El token se configura en .env como OPENAI_API_KEY.
@@ -107,6 +129,76 @@ return [
         'enabled'   => filter_var(env('UPCITEMDB_ENABLED', true), FILTER_VALIDATE_BOOLEAN),
         'daily_cap' => (int) env('UPCITEMDB_DAILY_CAP', 90),
         'timeout'   => (int) env('UPCITEMDB_TIMEOUT', 8),
+    ],
+
+    /**
+     * OAuth de Mercado Pago (grupo 170, prompt 598): credenciales de la APLICACIÓN de
+     * ComercioCity dada de alta en Mercado Pago Developers (NO son credenciales del comercio;
+     * las de cada comercio se guardan en su online_configuration tras el OAuth). Con este
+     * client_id/client_secret la app pide autorización a la cuenta de Mercado Pago de cada
+     * comercio y procesa pagos EN SU NOMBRE (no se usa application_fee/marketplace_fee).
+     */
+    'mercadopago' => [
+        // client_id de la app de ComercioCity en Mercado Pago Developers.
+        'app_id'             => env('MP_APP_ID'),
+        // client_secret de la app de ComercioCity. Nunca debe loguearse ni exponerse en un response.
+        'app_secret'         => env('MP_APP_SECRET'),
+        // URL de este backend a la que Mercado Pago redirige tras autorizar (debe coincidir
+        // exactamente con la registrada en la app de Mercado Pago Developers).
+        'oauth_redirect_uri' => env('MP_OAUTH_REDIRECT_URI'),
+        // Pantalla de Integraciones del SPA de empresa a la que se vuelve luego del callback,
+        // con ?mp=ok o ?mp=error agregado. Configurable porque empresa-api y empresa-spa pueden
+        // vivir en dominios distintos según el cliente.
+        'spa_redirect_url'   => env('MP_OAUTH_SPA_REDIRECT_URL'),
+        // Mismo problema de cURL error 60 en WAMP/Windows que mercadolibre/google_custom_search:
+        // sin CA bundle, verify=false salvo en producción.
+        'guzzle_verify' => filter_var(
+            env('MP_GUZZLE_VERIFY_SSL', env('APP_ENV') === 'production'),
+            FILTER_VALIDATE_BOOLEAN
+        ),
+        'guzzle_ca_bundle' => env('MP_GUZZLE_CA_BUNDLE', ''),
+    ],
+
+    /**
+     * OAuth de Zippin (grupo 171, prompt 599): credenciales de la APLICACIÓN de ComercioCity
+     * dada de alta en el programa de integradores de Zippin (NO son credenciales del comercio;
+     * las de cada comercio se guardan en su online_configuration tras el OAuth). Con este
+     * client_id/client_secret la app pide autorización a la cuenta Zipnova de cada comercio y
+     * gestiona sus envíos EN SU NOMBRE.
+     *
+     * Las URLs de autorización/token/cuenta se dejan configurables (con valor por defecto) en
+     * vez de hardcodeadas, porque el prompt pide verificarlas contra la doc oficial vigente de
+     * Zippin (docs.zipnova.com) al implementar. Ajustar vía .env si difieren de la doc real.
+     */
+    'zippin' => [
+        // client_id de la app de ComercioCity en Zippin.
+        'client_id'          => env('ZIPPIN_CLIENT_ID'),
+        // client_secret de la app de ComercioCity. Nunca debe loguearse ni exponerse en un response.
+        'client_secret'      => env('ZIPPIN_CLIENT_SECRET'),
+        // URL de este backend a la que Zippin redirige tras autorizar (debe coincidir
+        // exactamente con la registrada en la app de Zippin).
+        'oauth_redirect_uri' => env('ZIPPIN_OAUTH_REDIRECT_URI'),
+        // Pantalla de autorización de Zippin que el comercio abre para conectar su cuenta.
+        // Verificado contra docs.zipnova.com/envios/principios/autorizacion-con-oauth (22/7/2026):
+        // el dominio real es zipnova.com.ar, no zippin.com.ar.
+        'authorization_url'  => env('ZIPPIN_AUTHORIZATION_URL', 'https://api.zipnova.com.ar/oauth/authorize'),
+        // Endpoint de canje/refresh de tokens de Zippin (sin el prefijo v2, ver prompt 599).
+        'token_url'          => env('ZIPPIN_TOKEN_URL', 'https://api.zipnova.com.ar/oauth/token'),
+        // Endpoint para obtener el account_id de la cuenta Zipnova recién conectada (no confirmado
+        // en la doc oficial; fetch_account_id() del service prueba tanto account_id como id).
+        'account_url'        => env('ZIPPIN_ACCOUNT_URL', 'https://api.zipnova.com.ar/v2/account'),
+        // Permisos/scopes de Zippin separados por espacio, formato con punto según doc oficial.
+        'oauth_scopes'       => env('ZIPPIN_OAUTH_SCOPES', 'shipments.create shipments.quote accounts.show'),
+        // Pantalla de Integraciones del SPA de empresa a la que se vuelve luego del callback,
+        // con ?zippin=ok o ?zippin=error agregado.
+        'spa_redirect_url'   => env('ZIPPIN_OAUTH_SPA_REDIRECT_URL'),
+        // Mismo problema de cURL error 60 en WAMP/Windows que mercadopago/mercadolibre: sin CA
+        // bundle, verify=false salvo en producción.
+        'guzzle_verify' => filter_var(
+            env('ZIPPIN_GUZZLE_VERIFY_SSL', env('APP_ENV') === 'production'),
+            FILTER_VALIDATE_BOOLEAN
+        ),
+        'guzzle_ca_bundle' => env('ZIPPIN_GUZZLE_CA_BUNDLE', ''),
     ],
 
 ];

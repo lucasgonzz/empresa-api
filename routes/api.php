@@ -71,6 +71,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Prompt 358: prueba de la config SMTP propia del cliente. La usa el dueño del comercio desde
     // el ERP (no es pública), por eso va dentro del mismo grupo de middleware de autenticación.
     Route::post('online-configuration/test-mail', 'OnlineConfigurationController@testMail');
+    // Grupo 202, prompt 02: paleta de colores generada por IA a partir del logo del comercio.
+    // Tiene que quedar ANTES de cualquier ruta 'online-configuration/{id}' para que Laravel no
+    // matchee 'generate-palette' como si fuera un {id}.
+    Route::post('online-configuration/generate-palette', 'OnlineConfigurationController@generatePalette');
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
     Route::get('update-feature', 'UpdateFeatureController@index');
 
@@ -515,6 +519,19 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('/mercado-pago/payment/{payment_id}', 'MercadoPagoController@payment');
 
+    // OAuth de Mercado Pago (grupo 170, prompt 598): el comercio autenticado conecta/desconecta
+    // su propia cuenta para cobrar. El callback (público, sin auth) se declara más abajo, fuera
+    // de este grupo de middleware, porque es un redirect del navegador del comercio hacia este
+    // backend y el comercio se identifica por el `state` persistido en connect, no por sesión.
+    Route::get('integraciones/mercadopago/connect', 'MercadoPagoOAuthController@connect');
+    Route::post('integraciones/mercadopago/disconnect', 'MercadoPagoOAuthController@disconnect');
+
+    // OAuth de Zippin (grupo 171, prompt 599): el comercio autenticado conecta/desconecta su
+    // propia cuenta para gestionar envíos. El callback (público, sin auth) se declara más abajo,
+    // fuera de este grupo de middleware, mismo criterio que mercadopago/callback.
+    Route::get('integraciones/zippin/connect', 'ZippinOAuthController@connect');
+    Route::post('integraciones/zippin/disconnect', 'ZippinOAuthController@disconnect');
+
     Route::get('report/from-date/{from_date}/{until_date?}/{employee_id?}', 'CajaViejaController@reports');
     Route::get('chart/from-date/{from_date}/{until_date?}', 'CajaViejaController@charts');
 
@@ -589,6 +606,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('google/custom-search/aumentar-contador', 'GoogleController@aumentar_contador_custom_search');
     Route::get('google/get-current', 'GoogleController@get_current');
     Route::post('google/batch-assign-images', 'GoogleController@batch_assign_images');
+
+    // Diagnóstico de intentos de búsqueda de imagen automática (grupo 201): últimas corridas y detalle por corrida.
+    Route::get('article-image-search-attempts/recent', 'ArticleImageSearchAttemptController@recent_batches');
+    Route::get('article-image-search-attempts/batch/{batch_uuid}', 'ArticleImageSearchAttemptController@by_batch');
 
     // Descripciones inteligentes: preview individual, guardado, batch masivo (job + Pusher) y revisión.
     Route::post('article-description-ai/preview/{article_id}', 'ArticleDescriptionAiController@preview');
@@ -761,6 +782,18 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
 
 // Callback público Mercado Libre (notificaciones); sin auth Sanctum.
 Route::post('meli/notifications', 'MeLiOrderController@receive_notification');
+
+// Callback público OAuth Mercado Pago (grupo 170, prompt 598): redirect del navegador del
+// comercio de vuelta a este backend tras autorizar en Mercado Pago. Sin auth Sanctum a
+// propósito (el navegador no manda el bearer token del SPA en esta redirección); el comercio se
+// identifica mediante el `state` aleatorio que connect persistió y que este endpoint valida.
+Route::get('integraciones/mercadopago/callback', 'MercadoPagoOAuthController@callback');
+
+// Callback público OAuth Zippin (grupo 171, prompt 599): redirect del navegador del comercio de
+// vuelta a este backend tras autorizar en Zippin. Sin auth Sanctum a propósito (el navegador no
+// manda el bearer token del SPA en esta redirección); el comercio se identifica mediante el
+// `state` aleatorio que connect persistió y que este endpoint valida.
+Route::get('integraciones/zippin/callback', 'ZippinOAuthController@callback');
 
 
 // Plans
