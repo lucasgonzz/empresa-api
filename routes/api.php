@@ -595,10 +595,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     Route::resource('column-position', 'ColumnPositionController');
+    // El where() es solo un guard de forma: valida que el segmento sea un identificador valido.
+    // La lista completa de preference_type validos vive en TableColumnPreferenceController::assert_preference_type()
+    // que aborta 404 para tipos invalidos. Esto evita duplicar la lista de tipos en dos lugares.
     Route::get('table-column-preference/{model_name}/{preference_type}', 'TableColumnPreferenceController@show')
-        ->where('preference_type', 'table|search|global_search|btm_[a-z0-9_]+');
+        ->where('preference_type', '[a-z0-9_]+');
     Route::put('table-column-preference/{model_name}/{preference_type}', 'TableColumnPreferenceController@update')
-        ->where('preference_type', 'table|search|global_search|btm_[a-z0-9_]+');
+        ->where('preference_type', '[a-z0-9_]+');
 
     Route::resource('table-column-preferences', 'TableColumnPreferenceCrudController');
     Route::get('pdf-column-options', 'PdfColumnOptionController@index');
