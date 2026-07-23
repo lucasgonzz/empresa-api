@@ -603,6 +603,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('google/get-current', 'GoogleController@get_current');
     Route::post('google/batch-assign-images', 'GoogleController@batch_assign_images');
 
+    // Diagnóstico de intentos de búsqueda de imagen automática (grupo 201): últimas corridas y detalle por corrida.
+    Route::get('article-image-search-attempts/recent', 'ArticleImageSearchAttemptController@recent_batches');
+    Route::get('article-image-search-attempts/batch/{batch_uuid}', 'ArticleImageSearchAttemptController@by_batch');
+
     // Descripciones inteligentes: preview individual, guardado, batch masivo (job + Pusher) y revisión.
     Route::post('article-description-ai/preview/{article_id}', 'ArticleDescriptionAiController@preview');
     Route::post('article-description-ai/store/{article_id}', 'ArticleDescriptionAiController@store');
