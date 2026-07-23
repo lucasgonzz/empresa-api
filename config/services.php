@@ -76,6 +76,28 @@ return [
         'verify_ssl' => filter_var(env('ANTHROPIC_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
     ],
 
+    /**
+     * Validación de imagen por visión IA (grupo 201, prompt 02): antes de asignar una imagen
+     * encontrada por Google a un artículo, ArticleImageValidationService le pide a Claude que
+     * confirme si la imagen realmente muestra el producto (y no una lista de precios, un
+     * catálogo en PDF, un logo, etc). Reutiliza la ANTHROPIC_API_KEY / ca_bundle / verify_ssl
+     * del bloque 'anthropic' de arriba; estas claves son propias de este servicio puntual.
+     */
+    'article_image_validation' => [
+        // Permite apagar la validación por completo (fail-open): en false, el servicio
+        // devuelve 'evaluated' => false y 'accepted' => true sin llamar a la API.
+        'enabled'          => filter_var(env('ARTICLE_IMAGE_VALIDATION_ENABLED', true), FILTER_VALIDATE_BOOLEAN),
+        // Modelo de Claude usado para la validación (uno económico, alcanza para esta tarea).
+        'model'            => env('ARTICLE_IMAGE_VALIDATION_MODEL', 'claude-haiku-4-5-20251001'),
+        // Timeout en segundos de la request HTTP a Anthropic.
+        'timeout'          => (int) env('ARTICLE_IMAGE_VALIDATION_TIMEOUT', 25),
+        // Lado mayor máximo (px) al que se redimensiona la imagen antes de mandarla a la IA,
+        // para bajar el costo en tokens sin perder precisión de la validación.
+        'max_side'         => (int) env('ARTICLE_IMAGE_VALIDATION_MAX_SIDE', 512),
+        // Techo de llamadas reales a Anthropic por corrida de batch (protección de costo).
+        'max_calls_batch'  => (int) env('ARTICLE_IMAGE_VALIDATION_MAX_CALLS_BATCH', 300),
+    ],
+
     /*
      * API OpenAI — embeddings vectoriales del catálogo de artículos (text-embedding-3-small).
      * El token se configura en .env como OPENAI_API_KEY.

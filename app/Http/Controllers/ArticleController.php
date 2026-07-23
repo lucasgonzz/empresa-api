@@ -906,14 +906,21 @@ class ArticleController extends Controller
 
     function ultimos_actualizados() {
 
+        // Solo articulos activos, mismo criterio que index(), articles_por_defecto() y los tres
+        // buscadores de SearchController: un articulo que ningun buscador encuentra tampoco se
+        // lista. Los inactivos son los "fantasma" que crean SaleProviderOrderHelper y
+        // ProviderOrderArticleImport, y que NewProviderOrderHelper::check_article_status() activa
+        // cuando la orden de compra actualiza stock.
         $articulos_por_defecto = Article::where('user_id', $this->userId())
                                         ->orderBy('id', 'DESC')
                                         ->where('default_in_vender', 1)
+                                        ->where('status', 'active')
                                         ->withAll()
                                         ->get();
-                                        
+
         $models = Article::where('user_id', $this->userId())
                             ->orderBy('id', 'DESC')
+                            ->where('status', 'active')
                             ->where(function($q) {
                                 $q->where('es_insumo', 0)
                                     ->orWhereNull('es_insumo');

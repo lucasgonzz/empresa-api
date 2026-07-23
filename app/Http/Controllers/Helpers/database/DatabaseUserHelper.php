@@ -69,6 +69,7 @@ class DatabaseUserHelper {
             'order_description'               => $online_configuration->order_description,
             'article_description_font_size'   => $online_configuration->article_description_font_size,
             'mostrar_catalogo'                => $online_configuration->mostrar_catalogo,
+            'background_color'                => $online_configuration->background_color,
         ]);
         
         echo 'Se creo online_configuration '.$online_configuration->id.' </br>';

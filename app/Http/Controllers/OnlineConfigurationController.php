@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ClientMailConfigHelper;
 use App\Models\OnlineConfiguration;
+use App\Services\LogoPaletteAiService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Validator;
@@ -37,6 +38,7 @@ class OnlineConfigurationController extends Controller
         $model->secondary_color                 = $request->secondary_color;
         $model->text_color                      = $request->text_color;
         $model->hover_text_color                = $request->hover_text_color;
+        $model->background_color                = $request->background_color;
         $model->mensaje_contacto                = $request->mensaje_contacto;                     
         $model->show_articles_without_images    = $request->show_articles_without_images;
         $model->text_precio_pausado             = $request->text_precio_pausado;
@@ -165,5 +167,32 @@ class OnlineConfigurationController extends Controller
             // le dice al dueño del comercio por que no le anda el correo (ej. auth rechazada).
             return response()->json(['message' => 'Error al enviar el mail de prueba: '.$e->getMessage()], 422);
         }
+    }
+
+    /**
+     * Genera hasta 3 propuestas de paleta de colores para la tienda online a partir del logo
+     * del comercio (tienda si tiene, si no el de empresa), usando IA con vision + validacion
+     * determinista de contraste (grupo 202, prompt 02).
+     *
+     * El user_id se resuelve siempre por sesion ($this->userId()): nunca se acepta por request,
+     * para que no se pueda pedir la paleta de un logo ajeno.
+     *
+     * @param Request $request  No se lee ningun campo del body; se deja por firma estandar.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function generatePalette(Request $request) {
+        $result = (new LogoPaletteAiService())->generate($this->userId());
+
+        if (!$result['ok']) {
+            // El mensaje ya viene en español y apto para el usuario (nunca el error crudo de la
+            // API de Anthropic ni el texto que devolvio Claude).
+            return response()->json(['message' => $result['message']], 422);
+        }
+
+        return response()->json([
+            'palettes'           => $result['palettes'],
+            'logo_source'        => $result['logo_source'],
+            'logo_is_monochrome' => $result['logo_is_monochrome'],
+        ], 200);
     }
 }

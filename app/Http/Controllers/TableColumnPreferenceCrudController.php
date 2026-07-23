@@ -14,12 +14,14 @@ class TableColumnPreferenceCrudController extends Controller
         $real_user_id = $this->userId(false);
         $owner_id = $this->userId(true);
 
-        $mine = TableColumnPreference::where('user_id', $real_user_id)->get();
+        // orderBy determinista por id: si quedaran duplicados sin limpiar en alguna base,
+        // el resultado no depende del orden fisico de la tabla ni de un sort inestable despues.
+        $mine = TableColumnPreference::where('user_id', $real_user_id)->orderBy('id', 'desc')->get();
 
         if ($real_user_id == $owner_id) {
             $models = $mine;
         } else {
-            $owner_models = TableColumnPreference::where('user_id', $owner_id)->get();
+            $owner_models = TableColumnPreference::where('user_id', $owner_id)->orderBy('id', 'desc')->get();
 
             $mine_keys = $mine->map(function ($item) {
                 return $item->model_name . '|' . $item->preference_type;

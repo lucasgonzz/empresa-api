@@ -22,16 +22,28 @@ class ArticleBatchImagesProcessed implements ShouldBroadcastNow
     public $skipped_by_quota;
     public $skipped_by_quota_names;
 
+    /** @var string UUID de la corrida del job, agrupa las filas de ArticleImageSearchAttempt (grupo 201, prompt 03). */
+    public $batch_uuid;
+
     /**
-     * @param int   $user_id                ID del usuario dueño.
-     * @param int   $processed              Cantidad de artículos con imagen asignada.
-     * @param int   $skipped                Cantidad de artículos procesados sin imagen asignada.
-     * @param array $skipped_names          Nombres de los artículos sin imagen.
-     * @param int   $needs_review           Cantidad de artículos con imagen de baja confianza.
-     * @param array $needs_review_items     Artículos con imagen para revisar (id, nombre, image_url).
-     * @param bool  $quota_reached          Si el procesamiento se cortó por alcanzar la cuota diaria.
-     * @param int   $skipped_by_quota       Cantidad de artículos sin procesar por cuota agotada.
-     * @param array $skipped_by_quota_names Nombres de los artículos sin procesar por cuota agotada.
+     * @var array Un elemento por artículo sin imagen asignada, con
+     * `['article_id' => ..., 'name' => ..., 'summary' => ...]`, donde `summary` junta en una
+     * frase los `outcome_detail` de los intentos de búsqueda de ese artículo (grupo 201, prompt 03).
+     */
+    public $skipped_items;
+
+    /**
+     * @param int    $user_id                ID del usuario dueño.
+     * @param int    $processed              Cantidad de artículos con imagen asignada.
+     * @param int    $skipped                Cantidad de artículos procesados sin imagen asignada.
+     * @param array  $skipped_names          Nombres de los artículos sin imagen.
+     * @param int    $needs_review           Cantidad de artículos con imagen de baja confianza.
+     * @param array  $needs_review_items     Artículos con imagen para revisar (id, nombre, image_url).
+     * @param bool   $quota_reached          Si el procesamiento se cortó por alcanzar la cuota diaria.
+     * @param int    $skipped_by_quota       Cantidad de artículos sin procesar por cuota agotada.
+     * @param array  $skipped_by_quota_names Nombres de los artículos sin procesar por cuota agotada.
+     * @param string $batch_uuid             UUID de la corrida (agrupa las filas de ArticleImageSearchAttempt).
+     * @param array  $skipped_items          Detalle por artículo sin imagen (id, nombre, resumen del motivo).
      */
     public function __construct(
         int $user_id,
@@ -42,7 +54,9 @@ class ArticleBatchImagesProcessed implements ShouldBroadcastNow
         array $needs_review_items,
         bool $quota_reached,
         int $skipped_by_quota,
-        array $skipped_by_quota_names
+        array $skipped_by_quota_names,
+        string $batch_uuid = '',
+        array $skipped_items = []
     ) {
         $this->user_id                = $user_id;
         $this->processed              = $processed;
@@ -53,6 +67,8 @@ class ArticleBatchImagesProcessed implements ShouldBroadcastNow
         $this->quota_reached          = $quota_reached;
         $this->skipped_by_quota       = $skipped_by_quota;
         $this->skipped_by_quota_names = $skipped_by_quota_names;
+        $this->batch_uuid             = $batch_uuid;
+        $this->skipped_items          = $skipped_items;
     }
 
     /**
@@ -89,6 +105,8 @@ class ArticleBatchImagesProcessed implements ShouldBroadcastNow
             'quota_reached'          => $this->quota_reached,
             'skipped_by_quota'       => $this->skipped_by_quota,
             'skipped_by_quota_names' => $this->skipped_by_quota_names,
+            'batch_uuid'             => $this->batch_uuid,
+            'skipped_items'          => $this->skipped_items,
         ];
     }
 }

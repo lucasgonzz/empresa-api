@@ -76,6 +76,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Prompt 358: prueba de la config SMTP propia del cliente. La usa el dueño del comercio desde
     // el ERP (no es pública), por eso va dentro del mismo grupo de middleware de autenticación.
     Route::post('online-configuration/test-mail', 'OnlineConfigurationController@testMail');
+    // Grupo 202, prompt 02: paleta de colores generada por IA a partir del logo del comercio.
+    // Tiene que quedar ANTES de cualquier ruta 'online-configuration/{id}' para que Laravel no
+    // matchee 'generate-palette' como si fuera un {id}.
+    Route::post('online-configuration/generate-palette', 'OnlineConfigurationController@generatePalette');
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
     Route::get('update-feature', 'UpdateFeatureController@index');
 
@@ -619,6 +623,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('google/custom-search/aumentar-contador', 'GoogleController@aumentar_contador_custom_search');
     Route::get('google/get-current', 'GoogleController@get_current');
     Route::post('google/batch-assign-images', 'GoogleController@batch_assign_images');
+
+    // Diagnóstico de intentos de búsqueda de imagen automática (grupo 201): últimas corridas y detalle por corrida.
+    Route::get('article-image-search-attempts/recent', 'ArticleImageSearchAttemptController@recent_batches');
+    Route::get('article-image-search-attempts/batch/{batch_uuid}', 'ArticleImageSearchAttemptController@by_batch');
 
     // Descripciones inteligentes: preview individual, guardado, batch masivo (job + Pusher) y revisión.
     Route::post('article-description-ai/preview/{article_id}', 'ArticleDescriptionAiController@preview');
