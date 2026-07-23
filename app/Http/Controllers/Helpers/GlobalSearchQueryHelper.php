@@ -105,8 +105,15 @@ class GlobalSearchQueryHelper
 
             $relation = $relation_prop['relation'];
 
-            if (!method_exists($model_instance, $relation)) {
-                // Relacion inexistente en el modelo: se ignora (no rompe la busqueda).
+            // Props de la relacion ya validadas contra el schema real de la tabla relacionada
+            // (mismo criterio que Schema::hasColumn para las props propias): si la relacion no
+            // existe, no es una relacion de Eloquent real, o ninguna de sus props resuelve contra
+            // el schema, valid_relation_props() devuelve un array vacio.
+            $relation_field_props = self::valid_relation_props($model_instance, $relation, (array) $relation_prop['props']);
+
+            if (empty($relation_field_props)) {
+                // Relacion inexistente, no-relacion, o sin ninguna columna real por la que
+                // buscar: se ignora (no rompe la busqueda).
                 continue;
             }
 
@@ -115,7 +122,7 @@ class GlobalSearchQueryHelper
 
             $relation_entry = [
                 'relation' => $relation,
-                'props'    => (array) $relation_prop['props'],
+                'props'    => $relation_field_props,
             ];
 
             if ($keyword_mode === 'todas') {
@@ -266,6 +273,70 @@ class GlobalSearchQueryHelper
                 });
             }
         });
+    }
+
+    /**
+     * Valida las props de una relacion tildada en el buscador general contra el schema real de
+     * la tabla relacionada, con el mismo criterio que ya se usa para las props propias
+     * (Schema::hasColumn): lo que no se puede resolver se ignora en silencio, nunca rompe la
+     * busqueda. Ademas de existir como columna, la relacion en si tiene que ser una relacion de
+     * Eloquent real (instanceof Relation) y no simplemente un metodo publico cualquiera del
+     * modelo que coincida con method_exists (ver contexto tecnico del prompt 01, grupo 195).
+     *
+     * @param \Illuminate\Database\Eloquent\Model $model_instance Instancia del modelo base (ej: Article).
+     * @param mixed $relation Nombre del metodo de relacion tal como llega del frontend.
+     * @param array $props Props de la relacion tal como llegan del frontend (sin validar).
+     * @return array Subconjunto de $props que existen como columna en la tabla relacionada
+     *         (reindexado), o array vacio si la relacion no resuelve a una relacion de Eloquent.
+     */
+    protected static function valid_relation_props($model_instance, $relation, $props)
+    {
+        // Relacion vacia, de tipo invalido, o que ni siquiera existe como metodo del modelo:
+        // no hay nada que resolver.
+        if (empty($relation) || !is_string($relation) || !method_exists($model_instance, $relation)) {
+            return [];
+        }
+
+        // Invocar el metodo puede lanzar cualquier cosa (ej: un metodo que no es una relacion y
+        // espera argumentos, o que hace algo distinto adentro); si eso pasa, la relacion se
+        // descarta sin romper la busqueda.
+        try {
+            $relation_instance = $model_instance->{$relation}();
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        // Lo devuelto tiene que ser una relacion de Eloquent real. Esto cubre el caso de un
+        // metodo publico que existe en el modelo pero no es una relacion (method_exists por si
+        // solo no alcanza para saber si orWhereHas es seguro).
+        if (!($relation_instance instanceof \Illuminate\Database\Eloquent\Relations\Relation)) {
+            return [];
+        }
+
+        // Tabla real de la relacion, para validar las props contra su schema.
+        $related_table = $relation_instance->getRelated()->getTable();
+
+        // Solo quedan las props que son string no vacio, con formato de nombre de columna
+        // (sin espacios ni caracteres raros que puedan colarse en el whereRaw), y que existen
+        // de verdad en la tabla relacionada.
+        $valid_props = [];
+        foreach ($props as $prop) {
+            if (!is_string($prop) || $prop === '') {
+                continue;
+            }
+
+            if (!preg_match('/^[a-zA-Z0-9_]+$/', $prop)) {
+                continue;
+            }
+
+            if (!Schema::hasColumn($related_table, $prop)) {
+                continue;
+            }
+
+            $valid_props[] = $prop;
+        }
+
+        return array_values($valid_props);
     }
 
     /**
