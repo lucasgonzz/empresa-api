@@ -2980,6 +2980,8 @@ class HelperController extends Controller
             'limit_items_in_sale_per_page'          => null,
             'can_make_afip_tickets'                 => 1,
             'user_id'                               => $user->id,
+            // Toda cuenta nueva nace como Responsable Inscripto (comportamiento actual del sistema).
+            'condicion_iva_precios'                 => UserConfiguration::CONDICION_RRII,
         ]);
     }
 

@@ -71,6 +71,8 @@ class UsersTableSeeder extends Seeder
             'limit_items_in_sale_per_page'          => null,
             'can_make_afip_tickets'                 => 1,
             'user_id'                               => $commerce->id,
+            // Toda cuenta nueva nace como Responsable Inscripto (comportamiento actual del sistema).
+            'condicion_iva_precios'                 => UserConfiguration::CONDICION_RRII,
         ]);
 
         AfipInformation::create([
@@ -127,6 +129,8 @@ class UsersTableSeeder extends Seeder
             'limit_items_in_sale_per_page'          => null,
             'can_make_afip_tickets'                 => 1,
             'user_id'                               => $commerce->id,
+            // Toda cuenta nueva nace como Responsable Inscripto (comportamiento actual del sistema).
+            'condicion_iva_precios'                 => UserConfiguration::CONDICION_RRII,
         ]);
 
         AfipInformation::create([
