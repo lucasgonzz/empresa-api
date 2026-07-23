@@ -37,6 +37,7 @@ class OnlineConfigurationController extends Controller
         $model->secondary_color                 = $request->secondary_color;
         $model->text_color                      = $request->text_color;
         $model->hover_text_color                = $request->hover_text_color;
+        $model->background_color                = $request->background_color;
         $model->mensaje_contacto                = $request->mensaje_contacto;                     
         $model->show_articles_without_images    = $request->show_articles_without_images;
         $model->text_precio_pausado             = $request->text_precio_pausado;

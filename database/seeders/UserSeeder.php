@@ -72,6 +72,7 @@ class UserSeeder extends Seeder
                     'secondary_color'               => '#333333',
                     'text_color'                    => '#EDEDED',
                     'hover_text_color'              => '#FFFFFF',
+                    'background_color'              => '#FFFFFF',
                 ],
                 'base_de_datos'                     => 'empresa_prueba_1',
 
