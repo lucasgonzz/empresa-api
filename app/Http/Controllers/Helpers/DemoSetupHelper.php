@@ -133,8 +133,9 @@ class DemoSetupHelper
         $client = Client::create([
             'name'      => $data['name'],
             'user_id'   => config('app.USER_ID'),
+            'email'     => $data['email'] ?? null,
         ]);
-        
+
         CreditAccountHelper::crear_credit_accounts('client', $client->id);
     }
 

@@ -529,6 +529,19 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('/mercado-pago/payment/{payment_id}', 'MercadoPagoController@payment');
 
+    // OAuth de Mercado Pago (grupo 170, prompt 598): el comercio autenticado conecta/desconecta
+    // su propia cuenta para cobrar. El callback (público, sin auth) se declara más abajo, fuera
+    // de este grupo de middleware, porque es un redirect del navegador del comercio hacia este
+    // backend y el comercio se identifica por el `state` persistido en connect, no por sesión.
+    Route::get('integraciones/mercadopago/connect', 'MercadoPagoOAuthController@connect');
+    Route::post('integraciones/mercadopago/disconnect', 'MercadoPagoOAuthController@disconnect');
+
+    // OAuth de Zippin (grupo 171, prompt 599): el comercio autenticado conecta/desconecta su
+    // propia cuenta para gestionar envíos. El callback (público, sin auth) se declara más abajo,
+    // fuera de este grupo de middleware, mismo criterio que mercadopago/callback.
+    Route::get('integraciones/zippin/connect', 'ZippinOAuthController@connect');
+    Route::post('integraciones/zippin/disconnect', 'ZippinOAuthController@disconnect');
+
     Route::get('report/from-date/{from_date}/{until_date?}/{employee_id?}', 'CajaViejaController@reports');
     Route::get('chart/from-date/{from_date}/{until_date?}', 'CajaViejaController@charts');
 
@@ -561,6 +574,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('article-variant', 'ArticleVariantController@store');
     Route::put('article-variant/{id}', 'ArticleVariantController@update');
     Route::delete('article-variant/{id}', 'ArticleVariantController@destroy');
+    Route::put('article/{id}/variants-disponibilidad', 'ArticleVariantController@set_disponibilidad_masiva');
 
     Route::resource('payment-method-installment', 'PaymentMethodInstallmentController');
 
@@ -745,8 +759,47 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('whatsapp-bot/config/{id}', 'WhatsappBotController@update_config');
 });
 
+// Endpoints REST del módulo de chats de WhatsApp con clientes (grupo 137, Prompt 02),
+// gateados por auth Sanctum + la extensión 'whatsapp' (ver ExtencionEmpresaWhatsappSeeder).
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(function () {
+    Route::get('whatsapp-chats', 'WhatsappChatController@index');
+    Route::get('whatsapp-chats/{id}/messages', 'WhatsappChatController@messages');
+    Route::post('whatsapp-chats', 'WhatsappChatController@store');
+    Route::post('whatsapp-chats/{id}/messages', 'WhatsappChatController@send_message');
+    Route::post('whatsapp-chats/{id}/suggest', 'WhatsappChatController@suggest');
+    Route::post('whatsapp-chats/{id}/summary', 'WhatsappChatController@summary');
+    Route::put('whatsapp-chats/{id}/toggle-ai', 'WhatsappChatController@toggle_ai');
+    Route::put('whatsapp-chats/{id}/link-client', 'WhatsappChatController@link_client');
+    Route::put('whatsapp-chats/{id}/read', 'WhatsappChatController@mark_read');
+
+    // Envío de plantilla de Meta (grupo 137, Prompt 04): único camino cuando la ventana de 24 h está cerrada.
+    Route::post('whatsapp-chats/{id}/send-template', 'WhatsappChatController@send_template');
+
+    // Comprobante de venta enviado por el agente (grupo 137, Prompt 05): botón manual del modal de Ventas.
+    Route::post('sales/{id}/send-whatsapp-agent', 'SaleController@send_whatsapp_agent');
+
+    // CRUD de plantillas de WhatsApp (grupo 137, Prompt 04).
+    Route::get('whatsapp-templates', 'WhatsappTemplateController@index');
+    Route::post('whatsapp-templates', 'WhatsappTemplateController@store');
+    Route::put('whatsapp-templates/{id}', 'WhatsappTemplateController@update');
+    Route::delete('whatsapp-templates/{id}', 'WhatsappTemplateController@destroy');
+    Route::put('whatsapp-templates/{id}/solicitar-alta', 'WhatsappTemplateController@solicitar_alta');
+});
+
 // Callback público Mercado Libre (notificaciones); sin auth Sanctum.
 Route::post('meli/notifications', 'MeLiOrderController@receive_notification');
+
+// Callback público OAuth Mercado Pago (grupo 170, prompt 598): redirect del navegador del
+// comercio de vuelta a este backend tras autorizar en Mercado Pago. Sin auth Sanctum a
+// propósito (el navegador no manda el bearer token del SPA en esta redirección); el comercio se
+// identifica mediante el `state` aleatorio que connect persistió y que este endpoint valida.
+Route::get('integraciones/mercadopago/callback', 'MercadoPagoOAuthController@callback');
+
+// Callback público OAuth Zippin (grupo 171, prompt 599): redirect del navegador del comercio de
+// vuelta a este backend tras autorizar en Zippin. Sin auth Sanctum a propósito (el navegador no
+// manda el bearer token del SPA en esta redirección); el comercio se identifica mediante el
+// `state` aleatorio que connect persistió y que este endpoint valida.
+Route::get('integraciones/zippin/callback', 'ZippinOAuthController@callback');
 
 
 // Plans

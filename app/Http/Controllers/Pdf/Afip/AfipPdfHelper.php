@@ -88,9 +88,17 @@ class AfipPdfHelper
      * Campos del emisor que se imprimen con print_label_value_multiline() (soportan
      * texto largo en varias líneas). El resto usa print_label_value_line() (renglón simple).
      *
+     * 'condicion_iva' se agregó acá (Prompt 554) porque valores largos como
+     * "Responsable inscripto" desbordaban el ancho de la columna izquierda (calculado en
+     * función del tamaño del logo, ver $beside_logo_width en print_emisor_header_block())
+     * cuando se imprimía con print_label_value_line(), que no hace wrap en FPDF. Este campo
+     * solo aparece en el layout izquierdo del emisor (ver PdfColumnProfile::default_header_layout()),
+     * por lo que el cambio no afecta el panel derecho. El resto de los campos izquierdos
+     * (cuit, ingresos_brutos, fechas) son cortos por naturaleza y no tienen riesgo real de desborde.
+     *
      * @var array<int, string>
      */
-    protected static $emisor_multiline_fields = ['razon_social', 'domicilio_comercial'];
+    protected static $emisor_multiline_fields = ['razon_social', 'domicilio_comercial', 'condicion_iva'];
 
     /**
      * Campos del emisor que se imprimen SIEMPRE que exista $afip_information resuelto,
@@ -245,7 +253,7 @@ class AfipPdfHelper
      *     default por código), resuelto por el caller (NewSalePdf::Header()).
      * @return void
      */
-    public static function header_comercial($pdf, $sale, $user, $layout): void
+    public static function header_comercial($pdf, $sale, $user, $layout, $current_acount_data = null): void
     {
         /**
          * Posición inicial, igual que el header fiscal.
@@ -298,7 +306,7 @@ class AfipPdfHelper
          */
         if (!is_null($sale->client)) {
             $pdf->y += 2;
-            self::print_receptor_block_comercial($pdf, $sale, $layout);
+            self::print_receptor_block_comercial($pdf, $sale, $layout, $current_acount_data);
             $pdf->y += 2;
         }
     }
@@ -1098,32 +1106,48 @@ class AfipPdfHelper
     public static function enforce_fiscal_required_fields($layout)
     {
         /**
-         * Campos obligatorios del emisor en perfiles fiscales (no se pueden ocultar).
+         * Orden canónico fiscal: fuente única de verdad = el propio default del modelo.
+         * Derivarlo de acá (en vez de duplicar las listas) garantiza que enforce e
+         * default_header_layout nunca se desincronicen, y que enforce sea IDEMPOTENTE
+         * sobre el default (mismo emisor.izquierda/derecha de salida que de entrada) ->
+         * la salida fiscal del caso sin header_layout custom queda byte-idéntica.
          */
-        $required_izquierda = ['razon_social', 'domicilio_comercial', 'condicion_iva'];
-        $required_derecha = ['numero_comprobante', 'fecha_emision', 'cuit', 'ingresos_brutos', 'inicio_actividades', 'punto_venta'];
+        $default = \App\Models\PdfColumnProfile::default_header_layout(true);
+        $canonical_izquierda = $default['emisor']['izquierda'];
+        $canonical_derecha = $default['emisor']['derecha'];
 
         $current_izquierda = (isset($layout['emisor']['izquierda']) && is_array($layout['emisor']['izquierda']))
             ? $layout['emisor']['izquierda']
-            : [];
+            : array();
         $current_derecha = (isset($layout['emisor']['derecha']) && is_array($layout['emisor']['derecha']))
             ? $layout['emisor']['derecha']
-            : [];
+            : array();
 
-        foreach ($required_izquierda as $field) {
-            if (!in_array($field, $current_izquierda, true)) {
-                $current_izquierda[] = $field;
+        /**
+         * Extras del usuario = campos NO obligatorios (los únicos admitidos en fiscal son
+         * web/telefono/email), preservando el orden relativo en que vengan. Van DESPUÉS del
+         * bloque obligatorio: nunca pueden empujar ni reordenar los campos legales.
+         */
+        $extras_izquierda = array();
+        foreach ($current_izquierda as $field) {
+            if (!in_array($field, $canonical_izquierda, true)) {
+                $extras_izquierda[] = $field;
             }
         }
 
-        foreach ($required_derecha as $field) {
-            if (!in_array($field, $current_derecha, true)) {
-                $current_derecha[] = $field;
+        $extras_derecha = array();
+        foreach ($current_derecha as $field) {
+            if (!in_array($field, $canonical_derecha, true)) {
+                $extras_derecha[] = $field;
             }
         }
 
-        $layout['emisor']['izquierda'] = $current_izquierda;
-        $layout['emisor']['derecha'] = $current_derecha;
+        /**
+         * Obligatorios SIEMPRE primero y en orden canónico; extras opcionales al final.
+         * Solo se sobrescribe el bloque emisor; el resto de $layout (receptor, etc.) queda intacto.
+         */
+        $layout['emisor']['izquierda'] = array_merge($canonical_izquierda, $extras_izquierda);
+        $layout['emisor']['derecha'] = array_merge($canonical_derecha, $extras_derecha);
 
         return $layout;
     }
@@ -1219,17 +1243,20 @@ class AfipPdfHelper
      * (header_comercial). A diferencia de print_receptor_block() (fiscal, fijo por
      * requisito AFIP), acá el cuadrante IZQUIERDO es configurable vía
      * header_layout['receptor']['izquierda'] (cliente + Vendedor/Empleado). El cuadrante
-     * derecho sigue mostrando nombre y domicilio del cliente, igual que el fiscal: no es
-     * el bloque de cuenta corriente (ese se imprime aparte, ver PdfHelper::currentAcountInfo()
-     * llamado desde NewSalePdf::Header()); acá se preserva sin cambios porque el prompt no
-     * pide modificarlo.
+     * DERECHO ya NO muestra "Apellido y Nombre / Razón Social" ni "Domicilio Comercial"
+     * (eso es dato de receptor exclusivo de la factura AFIP, ver print_receptor_block()):
+     * ahora muestra la cuenta corriente (Saldo anterior / Compra actual / Saldo /
+     * Vendedor), calculada en NewSalePdf::Header() vía PdfHelper::buildCurrentAcountData()
+     * y recibida ya resuelta en $current_acount_data. Cuando la venta es contado (sin
+     * cuenta corriente), $current_acount_data llega null y el cuadrante derecho queda vacío.
      *
      * @param mixed $pdf Instancia FPDF.
      * @param mixed $sale Venta asociada.
      * @param array<string, mixed> $layout header_layout efectivo (guardado en el perfil o el default).
+     * @param array<string, mixed>|null $current_acount_data Datos de cuenta corriente ya calculados (PdfHelper::buildCurrentAcountData()), o null si la venta no tiene cuenta corriente.
      * @return void
      */
-    protected static function print_receptor_block_comercial($pdf, $sale, $layout): void
+    protected static function print_receptor_block_comercial($pdf, $sale, $layout, $current_acount_data = null): void
     {
         $client = $sale->client;
         $start_y = $pdf->y;
@@ -1274,25 +1301,50 @@ class AfipPdfHelper
         $left_end_y = $pdf->y;
 
         /**
-         * Columna derecha: nombre y domicilio del cliente (fija, igual que el fiscal).
+         * Columna derecha del remito no fiscal: cuenta corriente (Saldo anterior /
+         * Compra actual / Saldo / Vendedor), NO "Apellido y Nombre / Domicilio"
+         * (eso es dato de receptor exclusivo de la factura AFIP, ver
+         * print_receptor_block()). Si la venta es contado (sin cuenta corriente),
+         * $current_acount_data llega null y el cuadrante derecho queda vacio.
          */
         $pdf->y = $start_y + 2;
 
-        self::print_label_value_multiline(
-            $pdf,
-            'Apellido y Nombre / Razón Social: ',
-            (string) $client->name,
-            $right_content_x,
-            $right_content_width
-        );
+        if (!is_null($current_acount_data)) {
 
-        self::print_label_value_multiline(
-            $pdf,
-            'Domicilio Comercial: ',
-            (string) $client->address,
-            $right_content_x,
-            $right_content_width
-        );
+            self::print_label_value_line(
+                $pdf,
+                'Saldo anterior: ',
+                '$'.Numbers::price($current_acount_data['saldo_anterior']),
+                $right_content_x,
+                $right_content_width
+            );
+
+            self::print_label_value_line(
+                $pdf,
+                'Compra actual: ',
+                '$'.Numbers::price($current_acount_data['compra_actual']),
+                $right_content_x,
+                $right_content_width
+            );
+
+            self::print_label_value_line(
+                $pdf,
+                'Saldo: ',
+                '$'.Numbers::price($current_acount_data['saldo']),
+                $right_content_x,
+                $right_content_width
+            );
+
+            if (!is_null($current_acount_data['vendedor'])) {
+                self::print_label_value_line(
+                    $pdf,
+                    'Vendedor: ',
+                    (string) $current_acount_data['vendedor'],
+                    $right_content_x,
+                    $right_content_width
+                );
+            }
+        }
 
         $end_y = max($left_end_y, $pdf->y) + 2;
 
@@ -1385,6 +1437,90 @@ class AfipPdfHelper
         }
 
         self::print_footer_official_block($pdf, $afip_ticket);
+    }
+
+    /**
+     * Estima la altura total (en mm) que va a ocupar AfipPdfHelper::footer() para
+     * este comprobante, sin dibujar nada. Replica la misma lógica de ramas que
+     * print_footer_importes_block() + print_footer_official_block(): letra E
+     * (exportación) omite la tabla de Otros Tributos; letra A/B agrega el
+     * desglose de IVA (Importe Neto Gravado + alícuotas). El bloque oficial
+     * (QR + logo AFIP + CAE) es prácticamente constante porque el QR de 45mm
+     * domina el alto.
+     *
+     * Nota (prompt 532): al momento de escribir este método, el grupo 127
+     * (528_afip_quitar_caja_conversion_pesos_footer.md) ya se había ejecutado
+     * y `print_footer_conversion_box()` ya no existe en print_footer_importes_block(),
+     * por lo que este estimador no reserva altura extra para esa caja: en letra E
+     * la estimación es la misma en pesos que en dólares.
+     *
+     * IMPORTANTE: si se modifica el layout de print_footer_importes_block() o
+     * print_footer_official_block() (nuevas filas, tamaños de fuente/celda
+     * distintos, se agrega/saca algún bloque), este método tiene que actualizarse
+     * en el mismo cambio o la estimación queda desincronizada del render real.
+     *
+     * @param mixed $afip_ticket Ticket AFIP (no llamar si is_afip_ticket es false).
+     * @param mixed $sale Venta asociada.
+     * @param bool $show_importes Si el bloque de importes se va a imprimir (espeja el parámetro homónimo de footer()).
+     * @return float Altura estimada en mm.
+     */
+    public static function estimate_footer_height($afip_ticket, $sale, bool $show_importes = true): float
+    {
+        /**
+         * Alto de renglón de la tabla/columna de importes, igual al usado en
+         * print_footer_importes_block() ($row_h = 5).
+         */
+        $row_h = 5;
+        /**
+         * Acumulador de altura estimada total en mm.
+         */
+        $height = 0;
+
+        if ($show_importes) {
+
+            /**
+             * Letra del comprobante: define qué filas se muestran (mismo criterio
+             * que print_footer_importes_block()).
+             */
+            $cbte_letra = (string) $afip_ticket->cbte_letra;
+            $es_exportacion = $cbte_letra === 'E';
+
+            /**
+             * Columna izquierda (tabla Otros Tributos): título + encabezado + filas
+             * fijas + subtotal. Ausente por completo en comprobantes de exportación.
+             */
+            $left_height = $es_exportacion
+                ? 0
+                : ($row_h * 2) + (count(self::$otros_tributos_rows) * $row_h) + $row_h;
+
+            /**
+             * Columna derecha: moneda + (si A/B) neto gravado + alícuotas de IVA
+             * + (si no exportación) Otros Tributos + Importe Total.
+             */
+            $right_height = $row_h;
+            if ($cbte_letra === 'A' || $cbte_letra === 'B') {
+                $right_height += $row_h + (count(self::$iva_rate_labels) * $row_h);
+            }
+            if (!$es_exportacion) {
+                $right_height += $row_h;
+            }
+            $right_height += $row_h + 1;
+
+            /**
+             * La altura real del bloque de importes queda determinada por la columna
+             * más alta de las dos (izquierda/derecha), más los márgenes que agrega
+             * print_footer_importes_block() (5 antes de empezar y 3 después).
+             */
+            $height += 5 + max($left_height, $right_height) + 3;
+        }
+
+        /**
+         * Bloque oficial (QR + logo AFIP + leyenda + CAE): altura casi constante,
+         * el QR de 45mm domina por sobre el bloque central y el de CAE.
+         */
+        $height += 51;
+
+        return $height;
     }
 
     /**
@@ -1527,14 +1663,6 @@ class AfipPdfHelper
         $right_end_y = $pdf->y;
         $pdf->y = max($left_end_y, $right_end_y);
 
-        /**
-         * Caja de conversión a pesos para ventas en moneda extranjera.
-         */
-        if ((int) $sale->moneda_id === 2 && (float) $sale->valor_dolar > 0 && $cbte_letra === 'E') {
-            $total_pesos = $total * (float) $sale->valor_dolar;
-            self::print_footer_conversion_box($pdf, $page_left, $page_width, $sale->valor_dolar, $total_pesos);
-        }
-
         $pdf->y += 3;
     }
 
@@ -1583,41 +1711,6 @@ class AfipPdfHelper
 
         $pdf->SetFont('Arial', $bold_value ? 'B' : '', 9);
         $pdf->Cell($value_col_w, $line_h, $value, 0, 1, 'R');
-    }
-
-    /**
-     * Dibuja la caja de conversión a pesos argentinos (comprobantes en moneda extranjera).
-     *
-     * @param mixed $pdf Instancia FPDF.
-     * @param float $x Inicio X de la caja.
-     * @param float $width Ancho de la caja.
-     * @param float $tipo_cambio Cotización utilizada.
-     * @param float $total_pesos Total convertido a ARS.
-     * @return void
-     */
-    protected static function print_footer_conversion_box($pdf, $x, $width, $tipo_cambio, $total_pesos): void
-    {
-        $box_y = $pdf->y + 2;
-        $box_h = 10;
-        $inner_pad = 2;
-        $text_width = 145;
-
-        $conversion_text = 'El total de este comprobante, expresado en Pesos Argentinos considerando un tipo de cambio consignado de '
-            .number_format((float) $tipo_cambio, 6, ',', '.')
-            .', asciende a:';
-
-        $pdf->y = $box_y + $inner_pad;
-        $pdf->x = $x + $inner_pad;
-        $pdf->SetFont('Arial', '', 8);
-        $pdf->MultiCell($text_width, 4, $conversion_text, 0, 'L');
-
-        $pdf->y = $box_y + 3;
-        $pdf->x = $x + $text_width;
-        $pdf->SetFont('Arial', 'B', 10);
-        $pdf->Cell($width - $text_width - $inner_pad, 5, '$ '.Numbers::price($total_pesos), 0, 0, 'R');
-
-        self::draw_box($pdf, $x, $box_y, $width, $box_h);
-        $pdf->y = $box_y + $box_h;
     }
 
     /**

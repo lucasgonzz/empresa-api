@@ -4,11 +4,12 @@ namespace App\Jobs;
 
 use App\Exports\ClientExport;
 use App\Http\Controllers\Helpers\ExportHistoryHelper;
+use App\Http\Controllers\Helpers\jobs\BackgroundJobFailureHandler;
+use App\Jobs\Concerns\InstrumentaMemoria;
 use App\Models\ExportHistory;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
 use Carbon\Carbon;
-use Exception;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -19,7 +20,7 @@ use Maatwebsite\Excel\Facades\Excel;
 
 class ProcessClientExportJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels, InstrumentaMemoria;
 
     /**
      * Timeout amplio para exportaciones con muchos registros.
@@ -80,6 +81,10 @@ class ProcessClientExportJob implements ShouldQueue
         $export_history = ExportHistory::find($this->export_history_id);
 
         try {
+            // Best effort: subir memory_limit del worker si viene bajo, y cortar temprano si ya arrancamos al tope.
+            $this->asegurar_memoria_minima();
+            $this->verificar_memoria_disponible('exportación de clientes');
+
             $owner_user = User::find($this->owner_user_id);
             if (is_null($owner_user)) {
                 Log::warning('ProcessClientExportJob: owner no encontrado', [
@@ -126,38 +131,62 @@ class ProcessClientExportJob implements ShouldQueue
                 'owner_id' => $owner_user->id,
                 'is_only_for_auth_user' => $this->auth_user_id,
             ]));
-        } catch (Exception $e) {
+
+            // Instrumentación: pico de memoria del proceso durante esta exportación (para diagnosticar OOM).
+            if (!is_null($export_history)) {
+                $export_history->peak_memory_mb = $this->peak_memory_mb();
+                $export_history->memory_limit_mb = $this->memory_limit_mb();
+                $export_history->save();
+
+                Log::info('Exportación finalizada — pico memoria: ' . $export_history->peak_memory_mb
+                    . ' MB de ' . ($export_history->memory_limit_mb ?: 'sin límite') . ' MB');
+            }
+        } catch (\Throwable $e) {
+
             Log::error('ProcessClientExportJob: error al generar exportacion', [
-                'owner_user_id' => $this->owner_user_id,
-                'auth_user_id' => $this->auth_user_id,
+                'owner_user_id'     => $this->owner_user_id,
+                'auth_user_id'      => $this->auth_user_id,
                 'export_history_id' => $this->export_history_id,
-                'message' => $e->getMessage(),
-                'archivo' => $e->getFile(),
-                'linea' => $e->getLine(),
+                'message'           => $e->getMessage(),
+                'archivo'           => $e->getFile(),
+                'linea'             => $e->getLine(),
             ]);
 
-            if ($export_history) {
-                ExportHistoryHelper::mark_failed($export_history, $e->getMessage());
-            }
+            // Punto único idempotente: marca 'failed' + notifica (una sola vez, aunque después corra failed()).
+            BackgroundJobFailureHandler::marcar_export_fallido(
+                $this->export_history_id,
+                $this->owner_user_id,
+                $this->auth_user_id,
+                'No se pudo generar el excel de clientes',
+                $e->getMessage()
+            );
 
-            $owner_user = User::find($this->owner_user_id);
-            if (!is_null($owner_user)) {
-                $functions_to_execute = [
-                    [
-                        'btn_text' => 'Entendido',
-                        'btn_variant' => 'primary',
-                    ],
-                ];
-
-                $owner_user->notify(new GlobalNotification([
-                    'message_text' => 'No se pudo generar el excel de clientes',
-                    'color_variant' => 'danger',
-                    'functions_to_execute' => $functions_to_execute,
-                    'info_to_show' => [],
-                    'owner_id' => $owner_user->id,
-                    'is_only_for_auth_user' => $this->auth_user_id,
-                ]));
-            }
+            // Re-lanzamos: deja traza en failed_jobs y evita que el job se marque como exitoso.
+            throw $e;
         }
+    }
+
+    /**
+     * Se ejecuta cuando el job falla en forma definitiva, INCLUIDO cuando el proceso murió sin llegar al
+     * catch del handle() (OOM, kill del LVE de CloudLinux, timeout de proceso, worker reiniciado →
+     * MaxAttemptsExceededException lanzada por el Worker). Corre en un proceso fresco: puede escribir en la
+     * BD y notificar aunque el proceso anterior haya muerto por falta de memoria.
+     *
+     * Idempotente vía BackgroundJobFailureHandler: si el catch del handle() ya lo marcó, esto es no-op.
+     *
+     * @param  \Throwable  $e
+     * @return void
+     */
+    public function failed($e)
+    {
+        $motivo = !is_null($e) ? $e->getMessage() : null;
+
+        BackgroundJobFailureHandler::marcar_export_fallido(
+            $this->export_history_id,
+            $this->owner_user_id,
+            $this->auth_user_id,
+            'No se pudo generar el excel de clientes',
+            $motivo
+        );
     }
 }

@@ -12,23 +12,16 @@ use Illuminate\Support\Facades\Log;
 
 class ArticleVariantHelper {
 
+    /**
+     * No-op: anteriormente asignaba todas las ArticlePropertyType a artículos nuevos.
+     * Cambio: ahora no asigna propiedades automáticamente. Las propiedades se deben crear
+     * explícitamente desde el frontend cuando el usuario lo requiera, evitando ruido
+     * de propiedades innecesarias en cada artículo.
+     *
+     * @param mixed $article Artículo para el cual ya no se crearán propiedades por defecto.
+     */
     static function set_default_properties($article) {
-        
-        if (UserHelper::hasExtencion('article_variants')) {
-
-            $article_property_types = ArticlePropertyType::all();
-
-            foreach ($article_property_types as $article_property_type) {
-                
-                $article_property = ArticleProperty::create([
-                    'article_id'                => $article->id,
-                    'article_property_type_id'  => $article_property_type->id
-                ]);
-
-                // $article_property->
-            }
-            // $article->
-        }
+        // No-op: las propiedades se crean bajo demanda desde el frontend, no automáticamente
     }
 
 }

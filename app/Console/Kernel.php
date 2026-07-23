@@ -23,9 +23,12 @@ class Kernel extends ConsoleKernel
         // Procesa la cola de jobs hasta vaciarla (reemplaza cron directo de queue:work).
         // Nota: no usar ['--stop-when-empty' => true]; Laravel lo serializa como --stop-when-empty="1"
         // y Symfony rechaza ese flag (no acepta valor), el worker falla sin procesar jobs.
+        // withoutOverlapping(75) previene que el scheduler arranque un segundo worker en paralelo
+        // mientras uno anterior todavía está procesando jobs pesados (timeout = 60 min = 3600 seg).
+        // El margen de 75 min asegura que el anterior haya terminado antes de que se permita uno nuevo.
         $schedule->command('queue:work --stop-when-empty')
             ->everyMinute()
-            ->withoutOverlapping(15);
+            ->withoutOverlapping(75);
 
         // Usuario dueño de la instancia (config app.USER_ID) con extensiones cargadas.
         $company_owner = $this->resolve_company_owner_for_schedule();
@@ -61,9 +64,34 @@ class Kernel extends ConsoleKernel
         // Registra los saldos actuales de credit_accounts para análisis histórico.
         $schedule->command('debt:snapshot')->dailyAt('23:59');
 
-        /* Watchdog de importaciones colgadas: desbloquea imports que murieron sin dejar traza. */
+        // Watchdog de importaciones colgadas: desbloquea imports que murieron sin dejar traza.
+        // withoutOverlapping(10) permite reintentos si el comando muere; por default (1440 min = 24 horas)
+        // el comando quedaría "trabado" un día entero sin poder correr de nuevo.
+        // Corre cada 5 min, 10 min de margen es suficiente sin dejarlo mudo por 24 horas.
         $schedule->command('imports:detectar-colgadas')
             ->everyFiveMinutes()
+            ->withoutOverlapping(10);
+
+        // Watchdog de historiales colgados: desbloquea exportaciones (y a futuro imports) que murieron sin traza.
+        // withoutOverlapping(10) permite reintentos si el comando muere; por default (1440 min = 24 horas)
+        // el comando quedaría "trabado" un día entero sin poder correr de nuevo.
+        // Corre cada 5 min, 10 min de margen es suficiente sin dejarlo mudo por 24 horas.
+        $schedule->command('historiales:detectar-colgados')
+            ->everyFiveMinutes()
+            ->withoutOverlapping(10);
+
+        // Renueva los access_token de Mercado Pago próximos a vencer (grupo 170, prompt 598).
+        // Corre para TODOS los comercios con mp_enabled=true (no depende de company_owner /
+        // extensiones), porque el vínculo OAuth es por online_configuration, no por instancia.
+        $schedule->command('mercadopago:refresh-tokens')
+            ->daily()
+            ->withoutOverlapping();
+
+        // Renueva los access_token de Zippin próximos a vencer (grupo 171, prompt 599).
+        // Corre para TODOS los comercios con zippin_enabled=true (no depende de company_owner /
+        // extensiones), porque el vínculo OAuth es por online_configuration, no por instancia.
+        $schedule->command('zippin:refresh-tokens')
+            ->daily()
             ->withoutOverlapping();
     }
 
@@ -91,6 +119,11 @@ class Kernel extends ConsoleKernel
      */
     protected function commands()
     {
+        // $this->load() escanea todas las clases Command dentro de app/Console/Commands
+        // y las registra automáticamente (no hace falta listarlas una por una acá).
+        // El comando `reconciliar_stock_variantes` (prompt 521, reconciliación defensiva
+        // de stock de variantes) queda disponible por este mismo mecanismo; a propósito
+        // no se le agrega entrada en $schedule() porque es de corrida manual, no periódica.
         $this->load(__DIR__.'/Commands');
 
         require base_path('routes/console.php');

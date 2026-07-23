@@ -576,6 +576,28 @@ class NewProviderOrderHelper {
 
     }
 
+    /**
+     * Determina la cantidad real a usar para stock y total de la compra: usa `received`
+     * (Cant Recibida) SOLO si fue completado manualmente -incluye 0 como dato real, "llegaron
+     * 0 unidades"-. Si vino vacío o null, usa `amount` (Cantidad pedida).
+     *
+     * IMPORTANTE: no filtrar por `> 0` (bug detectado 20/7/2026, ver refactor_empresa/compras.md
+     * en el repo de contexto) - eso ignoraba un 0 cargado a mano y caía a `amount`, sumando stock
+     * que en realidad no llegó.
+     *
+     * @param mixed $amount   Cantidad pedida (pivot->amount), siempre debería venir cargada.
+     * @param mixed $received Cantidad recibida (pivot->received): null, '' o un número (incluido 0).
+     * @return mixed la cantidad real a usar para stock/total.
+     */
+    function interpretar_cantidad_real($amount, $received) {
+
+        if (is_null($received) || $received === '') {
+            return $amount;
+        }
+
+        return $received;
+    }
+
     function get_total_article($article) {
 
         $cost = (float)($article->pivot->cost);
@@ -607,6 +629,7 @@ class NewProviderOrderHelper {
         }
 
         // Prompt 609 - Tarea 6: cantidad recibida si está completada (incluido 0), sino pedida.
+        // get_cantidad_efectiva() delega en interpretar_cantidad_real() (misma semantica que develop).
         $cantidad_efectiva = $this->get_cantidad_efectiva($article);
 
         $total_article = $cost * $cantidad_efectiva;
@@ -750,11 +773,12 @@ class NewProviderOrderHelper {
      */
     private function get_cantidad_efectiva($article) {
 
-        if (isset($article->pivot->received) && !is_null($article->pivot->received)) {
-            return (float)$article->pivot->received;
-        }
+        // Merge develop -> refractor: se delega en interpretar_cantidad_real() para que exista una
+        // sola fuente de verdad. Ademas de is_null, esa funcion trata '' como "no recibido"
+        // (caso que la version anterior de este metodo casteaba a 0).
+        $received = isset($article->pivot->received) ? $article->pivot->received : null;
 
-        return (float)$article->pivot->amount;
+        return (float)$this->interpretar_cantidad_real($article->pivot->amount, $received);
     }
 
     function set_current_acount() {
@@ -880,6 +904,15 @@ class NewProviderOrderHelper {
 
             foreach ($pivotKeys as $pivotKey) {
                 $value = GeneralHelper::getPivotValue($new_article, $pivotKey);
+
+                // 'received' vacío (string '') significa "no se completó el campo" (o se borró en una
+                // edición): siempre se graba como NULL explícito, nunca como 0 ni se deja el valor viejo
+                // sin tocar. Ver bug 20/7/2026, refactor_empresa/compras.md.
+                if ($pivotKey == 'received' && $value === '') {
+                    $pivotData[$pivotKey] = null;
+                    continue;
+                }
+
                 if (!is_null($value)) {
                     $pivotData[$pivotKey] = $value;
                 }
@@ -1069,9 +1102,11 @@ class NewProviderOrderHelper {
 
     function save_stock_movement($article, $new_article) {
 
-        $amount = (isset($new_article['pivot']['received']) && $new_article['pivot']['received'] > 0)
-            ? $new_article['pivot']['received']
-            : $new_article['pivot']['amount'];
+        // Cantidad real a mover en stock: `received` si fue completado manualmente (incluido 0),
+        // si no `amount` (Cantidad pedida). Ver interpretar_cantidad_real().
+        $received = isset($new_article['pivot']['received']) ? $new_article['pivot']['received'] : null;
+
+        $amount = $this->interpretar_cantidad_real($new_article['pivot']['amount'], $received);
 
         if ($amount != '' 
             && !is_null($amount)
@@ -1245,10 +1280,18 @@ class NewProviderOrderHelper {
         if ($this->ya_se_actualizo_stock) {
 
             foreach ($this->provider_order->articles as $article) {
-                
-                $this->ultimos_articulos_recividos[$article->id] = $article->pivot->amount;
+
+                // Este método corre en el constructor, ANTES de attach_articles(): acá el pivot
+                // todavía refleja el valor VIEJO (de un guardado anterior). Se usa el mismo
+                // criterio (received completado -incluido 0- manda, si no amount) para calcular
+                // correctamente la base del delta de stock en ediciones.
+                $received_previo = isset($article->pivot->received) ? $article->pivot->received : null;
+                $this->ultimos_articulos_recividos[$article->id] = $this->interpretar_cantidad_real(
+                    $article->pivot->amount,
+                    $received_previo
+                );
             }
         }
-        
+
     }
 }

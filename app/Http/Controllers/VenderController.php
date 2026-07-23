@@ -14,39 +14,51 @@ use Illuminate\Support\Facades\Log;
 class VenderController extends Controller
 {
     function search_bar_code($code) {
-        
+
         $inicio = microtime(true);
         Log::info('Incia search_bar_code con codigo: '.$code);
 
         $article = Article::where('user_id', $this->userId());
-        
-        $variant_id = null; 
-        $variant = null; 
 
-        if (UserHelper::hasExtencion('codigos_de_barra_basados_en_numero_interno')) {
+        // Id de la variante encontrada por codigo de barra (caso 1: codigo de variante)
+        $variant_id = null;
+        // Instancia de la variante encontrada por codigo de barra (caso 1: codigo de variante)
+        $variant = null;
 
-            if (substr($code, 0, 1) == '0') {
-                
-                // El codigo es el id de una variante
-                $variant = ArticleVariant::find(substr($code, 1));
+        if (UserHelper::hasExtencion('codigos_de_barra_basados_en_numero_interno') && substr($code, 0, 1) == '0') {
 
-                if (!is_null($variant)) {
-                    
-                    $variant_id = $variant->id; 
-                    $variant = $variant; 
+            // El codigo es el id de una variante ('0' + id, contrato del prompt 518/519)
+            $variant = ArticleVariant::find(substr($code, 1));
 
-                    $article_id = $variant->article_id;
-                }
+            if (!is_null($variant)) {
+
+                $variant_id = $variant->id;
+                $article_id = $variant->article_id;
+
                 $article = $article->where('id', $article_id);
-            } else {
-
-                $article = $article->where('num', $code);
             }
-        } else if (UserHelper::hasExtencion('codigo_proveedor_en_vender')) {
-            $article = $article->where('provider_code', $code);
         } else {
 
-            $article = $article->where('bar_code', $code);
+            // Caso 1 (alternativo): el codigo escaneado matchea directo el bar_code de una variante
+            // (contrato definido en el prompt 518/519: article_variants.bar_code). Se revisa
+            // independientemente de las extensiones de matcheo de articulo, porque el codigo de
+            // una variante siempre se identifica primero como variante.
+            $variant = ArticleVariant::where('bar_code', $code)->first();
+
+            if (!is_null($variant)) {
+
+                $variant_id = $variant->id;
+                $article = $article->where('id', $variant->article_id);
+            } else if (UserHelper::hasExtencion('codigos_de_barra_basados_en_numero_interno')) {
+
+                $article = $article->where('num', $code);
+            } else if (UserHelper::hasExtencion('codigo_proveedor_en_vender')) {
+
+                $article = $article->where('provider_code', $code);
+            } else {
+
+                $article = $article->where('bar_code', $code);
+            }
         }
 
         $article = $article->withAll()
@@ -55,7 +67,7 @@ class VenderController extends Controller
 
         if (
             !$article
-            && UserHelper::hasExtencion('balanza_bar_code') 
+            && UserHelper::hasExtencion('balanza_bar_code')
         ) {
             $res = $this->check_balanza($code);
 
@@ -68,7 +80,7 @@ class VenderController extends Controller
 
         if (
             !$article
-            && UserHelper::hasExtencion('plu_balanza_bar_code') 
+            && UserHelper::hasExtencion('plu_balanza_bar_code')
         ) {
             $res = $this->check_balanza_plu($code);
 
@@ -81,10 +93,55 @@ class VenderController extends Controller
 
         $this->fin($code, $inicio, $article);
 
-        // Capa 3 (Prompt 263, hotfix Prompt 313): `precios_por_metodo_pago` ahora es un accessor del
+        // Capa 3 (Prompt 263, hotfix Prompt 313): `precios_por_metodo_pago` es un accessor del
         // modelo Article, ya viene incluido en el JSON de $article sin necesidad de asignarlo aca.
 
-        return response()->json(['article' => $article, 'variant_id' => $variant_id, 'variant' => $variant], 200);
+        // Caso 1: se encontro una variante puntual por codigo de barra -> devolverla directo
+        // para que el front la agregue sin pasar por el selector de variantes.
+        if (!is_null($variant)) {
+            return response()->json(['article' => $article, 'variant_id' => $variant_id, 'variant' => $variant], 200);
+        }
+
+        // A partir de aca el codigo matcheo un articulo (no una variante puntual).
+        // Hay que distinguir si ese articulo tiene variantes disponibles (oculta = false) o no,
+        // porque el front necesita saber si debe abrir el selector de variantes (caso 3)
+        // o agregar el articulo directo (caso 2).
+        if ($article && UserHelper::hasExtencion('article_variants')) {
+
+            // Solo las variantes disponibles (no ocultas) se ofrecen para vender
+            $available_variants = ArticleVariant::where('article_id', $article->id)
+                                        ->where('oculta', false)
+                                        ->with('addresses')
+                                        ->get();
+
+            if ($available_variants->count() > 0) {
+
+                // Caso 3: articulo con variantes disponibles -> el front debe abrir el selector.
+                // Shapeamos cada variante igual que las filas "is_variant" de search_nombre.
+                $variants_shaped = collect();
+
+                foreach ($available_variants as $available_variant) {
+                    $variants_shaped->push((object)[
+                        'variant_id'            => $available_variant->id,
+                        'variant_description'   => $available_variant->variant_description,
+                        'final_price'           => VenderSearchHelper::get_variant_price($available_variant),
+                        'bar_code'              => $available_variant->bar_code,
+                        'images'                => VenderSearchHelper::get_variant_images($available_variant),
+                        'addresses'             => $available_variant->addresses,
+                        'oculta'                => $available_variant->oculta,
+                    ]);
+                }
+
+                return response()->json([
+                    'article'       => $article,
+                    'has_variants'  => true,
+                    'variants'      => array_values($variants_shaped->toArray()),
+                ], 200);
+            }
+        }
+
+        // Caso 2: articulo sin variantes disponibles -> agregar directo (comportamiento previo)
+        return response()->json(['article' => $article, 'has_variants' => false], 200);
     }
 
     function fin($code, $inicio, $article) {

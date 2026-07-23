@@ -115,9 +115,12 @@ class VenderSearchHelper
         // Palabras del criterio de busqueda, mismo criterio de separacion que search_nombre.
         $keywords = explode(' ', trim($query_value));
 
-        // Resultado final: arranca como la misma coleccion de articulos (search_nombre hace lo
-        // mismo: $results = $articles, ambas variables apuntan a la misma instancia de Collection).
-        $results = $articles;
+        // Fix duplicacion (prompt 520 de develop, portado en el merge develop -> refractor):
+        // antes $results arrancaba como $articles y despues se le pusheaban ADEMAS las filas
+        // is_variant de cada articulo con variantes -> el padre quedaba duplicado junto a sus
+        // variantes. Arranca vacio y cada articulo se agrega una sola vez, ya sea como fila normal
+        // (sin variantes disponibles) o como fila(s) is_variant.
+        $results = collect();
 
         foreach ($articles as $article) {
 
@@ -161,13 +164,19 @@ class VenderSearchHelper
             // Palabras restantes para buscar dentro de variant_description.
             $remaining_keywords = array_diff($keywords, $matched_keywords->toArray());
 
-            // Si el articulo tiene variantes.
-            if ($article->article_variants->count() > 0) {
+            // Solo las variantes disponibles (oculta = false) se ofrecen para vender.
+            // Portado del modulo de variantes de develop en el merge develop -> refractor.
+            $available_variants = $article->article_variants->filter(function ($variant) {
+                return !$variant->oculta;
+            });
+
+            // Si el articulo tiene variantes disponibles.
+            if ($available_variants->count() > 0) {
 
                 // Coincidencia exacta por barcode de variante: devolver solo esa variante.
                 if ($search_bar_code_en_vender && count($keywords) === 1) {
                     $keyword = $keywords[0];
-                    $matching_variants_by_bar_code = $article->article_variants->filter(function ($variant) use ($keyword) {
+                    $matching_variants_by_bar_code = $available_variants->filter(function ($variant) use ($keyword) {
                         return ($variant->bar_code ?? '') === $keyword;
                     });
 
@@ -198,7 +207,7 @@ class VenderSearchHelper
                 }
 
                 // Filtrar variantes que coincidan con todas las palabras restantes.
-                $matching_variants = $article->article_variants->filter(function ($variant) use ($remaining_keywords) {
+                $matching_variants = $available_variants->filter(function ($variant) use ($remaining_keywords) {
                     foreach ($remaining_keywords as $word) {
                         if (strpos(
                                 mb_strtolower($variant->variant_description ?? '', 'UTF-8'),
@@ -266,7 +275,7 @@ class VenderSearchHelper
      * @param \App\Models\ArticleVariant $variant
      * @return mixed
      */
-    private static function get_variant_images($variant)
+    public static function get_variant_images($variant)
     {
         $images = $variant->article->images;
         if (!is_null($variant->image_url)) {
@@ -286,7 +295,7 @@ class VenderSearchHelper
      * @param \App\Models\ArticleVariant $variant
      * @return float|int|null
      */
-    private static function get_variant_price($variant)
+    public static function get_variant_price($variant)
     {
         $final_price = $variant->article->final_price;
 
