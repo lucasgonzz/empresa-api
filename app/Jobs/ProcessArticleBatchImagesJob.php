@@ -135,6 +135,23 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
                 $quota_reached = true;
                 $skipped_by_quota++;
                 $skipped_by_quota_names[] = $this->get_article_display_name($article);
+
+                // Fila de diagnóstico: este artículo no llegó ni a armar las queries de búsqueda
+                // porque la cuota diaria ya estaba agotada (grupo 217, prompt 02).
+                $this->write_attempt(
+                    $batch_uuid,
+                    $article,
+                    'none',
+                    1,
+                    '',
+                    null,
+                    null,
+                    null,
+                    ArticleImageSearchAttempt::OUTCOME_QUOTA,
+                    'No se llegó a buscar: se había agotado la cuota diaria de búsquedas de Google.',
+                    null
+                );
+
                 Log::info('ProcessArticleBatchImagesJob: cuota agotada, deteniendo procesamiento.', [
                     'user_id' => $this->user_id,
                     'counter' => $counter->counter,
@@ -177,6 +194,10 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
             }
 
             $saved_url          = null;
+            // Modelo de ArticleImageSearchAttempt creado al asignar la imagen (outcome ASSIGNED),
+            // para poder actualizarlo más abajo con needs_review una vez calculado el veredicto
+            // de revisión manual (grupo 217, prompt 02).
+            $assigned_attempt   = null;
             $ratio_confidence   = null;
             $ai_confidence      = null;
             $ai_evaluated       = null;
@@ -418,7 +439,10 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
                 if ($resolved) {
                     $detail = sprintf('Se encontró y asignó una imagen buscando por %s.', $criterion_label);
 
-                    $this->write_attempt(
+                    // Se guarda la referencia al modelo creado: $saved_url ya está disponible acá,
+                    // pero needs_review todavía no (se calcula después, fuera de este foreach), así
+                    // que esta fila se actualiza más adelante (ver tarea 05 / grupo 217, prompt 02).
+                    $assigned_attempt = $this->write_attempt(
                         $batch_uuid,
                         $article,
                         $criterion,
@@ -429,7 +453,8 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
                         $api_error,
                         ArticleImageSearchAttempt::OUTCOME_ASSIGNED,
                         $detail,
-                        $candidates_log
+                        $candidates_log,
+                        $saved_url
                     );
                     $article_details[] = $detail;
                     break;
@@ -521,6 +546,14 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
                     'name'       => $this->get_article_display_name($article),
                     'image_url'  => $saved_url,
                 ];
+
+                // Update posterior (no valor del create()): el veredicto de revisión manual recién
+                // se conoce acá, después de cerrar el foreach de queries, así que la fila de
+                // diagnóstico ya creada con outcome ASSIGNED se actualiza ahora (grupo 217, prompt 02).
+                if ($assigned_attempt !== null) {
+                    $assigned_attempt->needs_review = true;
+                    $assigned_attempt->save();
+                }
             }
 
             Log::info('ProcessArticleBatchImagesJob: imagen asignada exitosamente.', [
@@ -543,9 +576,45 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
                     ->where('user_id', $this->user_id)
                     ->get();
 
+                // Tope de filas de diagnóstico para los artículos que ni se llegaron a tocar
+                // (grupo 217, prompt 02): escribir un attempt por artículo acá puede ser cientos
+                // de inserts en corridas grandes, así que se limita a los primeros 500. No es un
+                // bug: los contadores de abajo (skipped_by_quota / skipped_by_quota_names) se
+                // siguen sumando para TODOS los artículos restantes, el tope es solo para no
+                // saturar la tabla de diagnóstico con filas redundantes.
+                $diagnostic_rows_limit = 500;
+                $diagnostic_rows_written = 0;
+
                 foreach ($remaining_articles as $remaining_article) {
                     $skipped_by_quota++;
                     $skipped_by_quota_names[] = $this->get_article_display_name($remaining_article);
+
+                    if ($diagnostic_rows_written < $diagnostic_rows_limit) {
+                        $this->write_attempt(
+                            $batch_uuid,
+                            $remaining_article,
+                            'none',
+                            1,
+                            '',
+                            null,
+                            null,
+                            null,
+                            ArticleImageSearchAttempt::OUTCOME_QUOTA,
+                            'No se llegó a buscar: se había agotado la cuota diaria de búsquedas de Google.',
+                            null
+                        );
+                        $diagnostic_rows_written++;
+                    }
+                }
+
+                if ($remaining_articles->count() > $diagnostic_rows_limit) {
+                    Log::info('ProcessArticleBatchImagesJob: se alcanzó el tope de filas de diagnóstico para artículos sin tocar por cuota.', [
+                        'user_id'                  => $this->user_id,
+                        'batch_uuid'                => $batch_uuid,
+                        'remaining_total'           => $remaining_articles->count(),
+                        'diagnostic_rows_written'   => $diagnostic_rows_written,
+                        'diagnostic_rows_sin_fila'  => $remaining_articles->count() - $diagnostic_rows_written,
+                    ]);
                 }
             }
         }
@@ -566,13 +635,17 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
         ));
 
         Log::info('ProcessArticleBatchImagesJob: finalizado.', [
-            'user_id'          => $this->user_id,
-            'batch_uuid'       => $batch_uuid,
-            'processed'        => $processed,
-            'skipped'          => $skipped,
-            'skipped_by_quota' => $skipped_by_quota,
-            'quota_reached'    => $quota_reached,
-            'needs_review'     => $needs_review,
+            'user_id'             => $this->user_id,
+            'batch_uuid'          => $batch_uuid,
+            'processed'           => $processed,
+            'skipped'             => $skipped,
+            'skipped_by_quota'    => $skipped_by_quota,
+            'quota_reached'       => $quota_reached,
+            'needs_review'        => $needs_review,
+            // Cantidad real de filas de diagnóstico escritas para esta corrida: sirve para
+            // verificar de una que el diagnóstico quedó completo sin tener que abrir la base
+            // (grupo 217, prompt 02).
+            'attempts_registrados' => ArticleImageSearchAttempt::where('batch_uuid', $batch_uuid)->count(),
         ]);
     }
 
@@ -882,7 +955,9 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
      * @param string      $outcome               Uno de ArticleImageSearchAttempt::OUTCOME_*.
      * @param string      $outcome_detail        Frase en castellano lista para mostrar en pantalla.
      * @param array|null  $candidates            Detalle por candidata (ver build_candidate_entry).
-     * @return void
+     * @param string|null $assigned_image_url    URL de la imagen guardada en storage, solo cuando outcome es ASSIGNED (grupo 217, prompt 02).
+     * @param bool        $needs_review          Si la asignación quedó marcada para revisión manual (grupo 217, prompt 02; normalmente se actualiza después, ver tarea 05).
+     * @return ArticleImageSearchAttempt Modelo recién creado, para poder actualizarlo después (ej. marcar needs_review una vez calculado el veredicto).
      */
     private function write_attempt(
         string $batch_uuid,
@@ -895,9 +970,11 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
         ?string $api_error,
         string $outcome,
         string $outcome_detail,
-        ?array $candidates
-    ): void {
-        ArticleImageSearchAttempt::create([
+        ?array $candidates,
+        ?string $assigned_image_url = null,
+        bool $needs_review = false
+    ): ArticleImageSearchAttempt {
+        return ArticleImageSearchAttempt::create([
             'user_id'              => $this->user_id,
             'batch_uuid'           => $batch_uuid,
             'article_id'           => $article->id,
@@ -912,6 +989,8 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
             'outcome'              => $outcome,
             'outcome_detail'       => $outcome_detail,
             'candidates'           => $candidates,
+            'assigned_image_url'   => $assigned_image_url,
+            'needs_review'         => $needs_review,
         ]);
     }
 
