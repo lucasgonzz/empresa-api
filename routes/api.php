@@ -795,6 +795,13 @@ Route::get('integraciones/mercadopago/callback', 'MercadoPagoOAuthController@cal
 // `state` aleatorio que connect persistió y que este endpoint valida.
 Route::get('integraciones/zippin/callback', 'ZippinOAuthController@callback');
 
+// Grupo 211: export de articulos para flujos automatizados externos (n8n). Sin auth a proposito
+// (decision de Lucas): el consumidor solo pega una URL. El comercio se identifica por el
+// articles_export_key aleatorio del path, que ademas resuelve el user_id — nunca se acepta un
+// user_id por parametro. Throttle propio para que una corrida mal configurada no tumbe la base.
+Route::get('integraciones/articulos/{export_key}', 'Integraciones\ArticulosExportController@index')
+        ->middleware('throttle:120,1');
+
 
 // Plans
 Route::get('plan', 'PlanController@index');
