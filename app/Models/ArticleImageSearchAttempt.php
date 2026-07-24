@@ -17,6 +17,11 @@ use Illuminate\Support\Facades\DB;
  */
 class ArticleImageSearchAttempt extends Model
 {
+    // Cantidad de días de retención del historial: usada tanto por purge_old() como por el
+    // endpoint recent_batches() del controller, para que el frontend no tenga que adivinarla
+    // (grupo 217, prompt 03).
+    const RETENTION_DAYS = 30;
+
     // Outcomes válidos de la fila completa (criterio de búsqueda probado para el artículo).
     const OUTCOME_ASSIGNED = 'assigned';
     const OUTCOME_NO_QUERY = 'no_query';
@@ -84,7 +89,7 @@ class ArticleImageSearchAttempt extends Model
      * @param int $days Antigüedad en días a partir de la cual se considera "viejo". Default 30.
      * @return int Cantidad de filas borradas.
      */
-    static function purge_old(int $user_id, int $days = 30)
+    static function purge_old(int $user_id, int $days = self::RETENTION_DAYS)
     {
         return DB::table('article_image_search_attempts')
             ->where('user_id', $user_id)

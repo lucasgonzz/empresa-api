@@ -609,6 +609,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Diagnóstico de intentos de búsqueda de imagen automática (grupo 201): últimas corridas y detalle por corrida.
     Route::get('article-image-search-attempts/recent', 'ArticleImageSearchAttemptController@recent_batches');
+    // Resumen reconstruido de una corrida (grupo 217, prompt 03): mismo objeto que el payload de Pusher.
+    Route::get('article-image-search-attempts/summary/{batch_uuid}', 'ArticleImageSearchAttemptController@summary');
     Route::get('article-image-search-attempts/batch/{batch_uuid}', 'ArticleImageSearchAttemptController@by_batch');
 
     // Descripciones inteligentes: preview individual, guardado, batch masivo (job + Pusher) y revisión.
