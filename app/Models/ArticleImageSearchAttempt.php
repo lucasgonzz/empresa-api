@@ -11,6 +11,9 @@ use Illuminate\Support\Facades\DB;
  * nombre) dentro de una misma corrida (`batch_uuid`) del job de asignación masiva de
  * imágenes. Ver comentario completo del contrato de `candidates` y de los valores de
  * `outcome` en la migración `create_article_image_search_attempts_table`.
+ *
+ * `assigned_image_url` y `needs_review` (grupo 217, Prompt 01) solo se completan en la fila
+ * con `outcome = assigned`; en el resto quedan en null/false.
  */
 class ArticleImageSearchAttempt extends Model
 {
@@ -46,11 +49,15 @@ class ArticleImageSearchAttempt extends Model
         'outcome',
         'outcome_detail',
         'candidates',
+        'assigned_image_url',
+        'needs_review',
     ];
 
     // `candidates` se guarda como json en la base y se expone como array de PHP.
+    // `needs_review` se castea a boolean para que el frontend reciba true/false y no 0/1.
     protected $casts = [
         'candidates' => 'array',
+        'needs_review' => 'boolean',
     ];
 
     /**

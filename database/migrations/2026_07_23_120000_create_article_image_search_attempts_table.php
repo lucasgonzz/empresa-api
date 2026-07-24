@@ -49,6 +49,13 @@ use Illuminate\Support\Facades\Schema;
  *   "ai_type": "catalogo_o_lista_de_precios", // opcional, solo si aplica
  *   "ai_confidence": "high"      // opcional, solo si aplica
  * }
+ *
+ * Dos columnas adicionales, agregadas por la migración
+ * `2026_07_24_120000_add_assigned_image_to_article_image_search_attempts_table` (grupo 217,
+ * Prompt 01), no por esta migración:
+ * - `assigned_image_url`: URL final ya guardada en el storage del comercio de la imagen que
+ *   quedó asignada (distinta de la URL de Google que está dentro de `candidates`).
+ * - `needs_review`: si esa asignación quedó marcada para revisión manual del comercio.
  */
 class CreateArticleImageSearchAttemptsTable extends Migration
 {
