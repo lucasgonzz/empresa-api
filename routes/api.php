@@ -822,6 +822,9 @@ Route::middleware('admin.api.key')
         Route::post('support/tickets', 'AdminSync\\SupportTicketController@store');
         Route::put('support/tickets/{ticket_uuid}', 'AdminSync\\SupportTicketController@update');
         Route::get('employees', 'AdminSync\\EmployeesController@index');
+        // Branding real del comercio (logo, color, nombre) para que admin-api arme el favicon/logo
+        // del ecommerce sin depender de la tienda-api del cliente (ver grupo 208, prompt 01)
+        Route::get('branding/{user_id?}', 'AdminSync\\BrandingController@show');
         // Mensualidad: consulta y actualización desde admin (capa opcional de sincronización, ver prompt 326)
         Route::get('mensualidad-info/{user_id?}', 'AdminSync\\MensualidadController@show');
         Route::put('mensualidad-update/{user_id?}', 'AdminSync\\MensualidadController@update');
