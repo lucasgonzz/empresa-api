@@ -31,6 +31,14 @@ use Illuminate\Support\Facades\Log;
 class DemoSetupHelper
 {
     /**
+     * Key historica de Google Custom Search de demos. Queda como respaldo para
+     * cuando admin-api no manda 'google_custom_search_api_key' en el payload
+     * (llamada directa al endpoint, instalación vieja, o setting todavía sin cargar
+     * en admin-spa).
+     */
+    private const GOOGLE_API_KEY_FALLBACK = 'AIzaSyCgzE6haVi8uZnenfAvYJO5hn7m7Cl09Gw';
+
+    /**
      * Ejecuta el setup completo de una demo para los datos recibidos.
      *
      * @param array<string, mixed> $data Claves esperadas (las opcionales se asumen falsy):
@@ -179,8 +187,16 @@ class DemoSetupHelper
             'redondear_centenas_en_vender'  => 0,
             'siempre_omitir_en_cuenta_corriente' => 0,
             'base_de_datos'                 => 'empresa_prueba_1',
-            'google_custom_search_api_key'  => 'AIzaSyCgzE6haVi8uZnenfAvYJO5hn7m7Cl09Gw',
-            'google_cuota'                  => 100,
+            // API key de Google Custom Search: la manda admin-api (RunDemoSetupService, configurable
+            // desde admin-spa via AdminSetting); si no llega, se usa la key historica de demo.
+            'google_custom_search_api_key'  => (isset($data['google_custom_search_api_key']) && trim((string) $data['google_custom_search_api_key']) !== '')
+                ? trim((string) $data['google_custom_search_api_key'])
+                : self::GOOGLE_API_KEY_FALLBACK,
+            // Cuota de Google de la demo: la manda admin-api (RunDemoSetupService, configurable
+            // desde admin-spa via AdminSetting); si no llega (llamada directa, instalación vieja), 100.
+            'google_cuota'                  => (isset($data['google_cuota']) && is_numeric($data['google_cuota']))
+                ? (int) $data['google_cuota']
+                : 100,
             'listas_de_precio'              => !empty($data['use_price_lists']) ? 1 : 0,
         ]);
     }

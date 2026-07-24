@@ -32,6 +32,14 @@ use Illuminate\Support\Facades\Log;
 class UserSetupHelper
 {
     /**
+     * Key historica de Google Custom Search de clientes reales. Queda como respaldo
+     * para cuando admin-api no manda 'google_custom_search_api_key' en el payload
+     * (llamada directa al endpoint, instalación vieja, o setting todavía sin cargar
+     * en admin-spa).
+     */
+    private const GOOGLE_API_KEY_FALLBACK = 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4';
+
+    /**
      * Ejecuta el setup completo de un sistema de producción.
      *
      * @param array<string, mixed> $data Claves esperadas (las opcionales se asumen falsy):
@@ -161,7 +169,11 @@ class UserSetupHelper
             // Si trabaja con costos en dolares, define si el precio final de esos articulos queda cotizado a pesos (1) o en dolares (0).
             'cotizar_precios_en_dolares'    => !empty($data['cotizar_precios_en_dolares']) ? 1 : 0,
             'base_de_datos'                 => 'empresa_prueba_1',
-            'google_custom_search_api_key'  => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
+            // API key de Google Custom Search: la manda admin-api (RunUserSetupService, configurable
+            // desde admin-spa via AdminSetting); si no llega, se usa la key historica de clientes reales.
+            'google_custom_search_api_key'  => (isset($data['google_custom_search_api_key']) && trim((string) $data['google_custom_search_api_key']) !== '')
+                ? trim((string) $data['google_custom_search_api_key'])
+                : self::GOOGLE_API_KEY_FALLBACK,
             // Cuota de Google del usuario real: la manda admin-api (RunUserSetupService, configurable
             // desde admin-spa vía AdminSetting); si no llega (llamada directa, instalación vieja), 100.
             'google_cuota'                  => (isset($data['google_cuota']) && is_numeric($data['google_cuota']))
