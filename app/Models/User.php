@@ -18,6 +18,11 @@ class User extends Authenticatable
     protected $hidden = [
         'password',
         'remember_token',
+        // AuthController@get_user (UserHelper::getFullModel) y UserController@update
+        // devuelven el modelo User entero sin seleccionar columnas: sin ocultarla aca,
+        // la key publica del export de articulos (grupo 211) quedaria filtrada en
+        // cualquier respuesta de API que incluya al usuario.
+        'articles_export_key',
     ];
 
     protected $casts = [
