@@ -40,7 +40,7 @@ class ArticleSeederHelper {
         Image::create([
             'imageable_type'                            => 'article',
             'imageable_id'                              => $created_article->id,
-            env('IMAGE_URL_PROP_NAME', 'image_url')     => env('APP_IMAGES_URL').'/storage/'.$rubro.'/'.str_replace(' ', '_', $category_name).'.'.$formato,
+            'hosting_url'                                => env('APP_IMAGES_URL').'/storage/'.$rubro.'/'.str_replace(' ', '_', $category_name).'.'.$formato,
         ]);
     }
 
@@ -143,8 +143,8 @@ class ArticleSeederHelper {
                 Image::create([
                     'imageable_type'                            => 'article',
                     'imageable_id'                              => $created_article->id,
-                    env('IMAGE_URL_PROP_NAME', 'image_url')     => $image['url'],
-                    // env('IMAGE_URL_PROP_NAME', 'image_url')     => config('app.APP_URL').'/storage/'.$image['url'],
+                    'hosting_url'                                => $image['url'],
+                    // 'hosting_url'                                => config('app.APP_URL').'/storage/'.$image['url'],
                     'color_id'                                  => isset($image['color_id']) ? $image['color_id'] : null,
                 ]);
             }    

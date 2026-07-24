@@ -191,12 +191,12 @@ class PromocionVinotecaSeeder extends Seeder
             Image::create([
                 'imageable_type'                            => 'promocion_vinoteca',
                 'imageable_id'                              => $promo->id,
-                env('IMAGE_URL_PROP_NAME', 'image_url')     => $model['image'],
+                'hosting_url'                                => $model['image'],
             ]);
             Image::create([
                 'imageable_type'                            => 'promocion_vinoteca',
                 'imageable_id'                              => $promo->id,
-                env('IMAGE_URL_PROP_NAME', 'image_url')     => env('APP_IMAGES_URL').'storage/vinoteca/trumpeter.webp',
+                'hosting_url'                                => env('APP_IMAGES_URL').'storage/vinoteca/trumpeter.webp',
             ]);
         }
     }

@@ -487,9 +487,9 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
 
             /* Crear el registro de imagen asociado al artículo. */
             Image::create([
-                env('IMAGE_URL_PROP_NAME', 'image_url') => $saved_url,
-                'imageable_id'                          => $article->id,
-                'imageable_type'                        => 'article',
+                'hosting_url'     => $saved_url,
+                'imageable_id'    => $article->id,
+                'imageable_type'  => 'article',
             ]);
 
             /* Marcar artículo para sincronización con TiendaNube. */

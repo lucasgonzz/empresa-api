@@ -3102,9 +3102,9 @@ class HelperController extends Controller
 
             if (!is_null($oscar_article) && count($oscar_article->images) >= 1) {
                 $client_article_image = Image::create([
-                    env('IMAGE_URL_PROP_NAME', 'image_url')     => $oscar_article->images[0]->{env('IMAGE_URL_PROP_NAME', 'image_url')},
-                    'imageable_id'                              => $article_matias->id,
-                    'imageable_type'                            => 'article',
+                    'hosting_url'                                => $oscar_article->images[0]->hosting_url,
+                    'imageable_id'                                => $article_matias->id,
+                    'imageable_type'                              => 'article',
                 ]);
                 echo 'Se creo imagen para '.$article_matias->name.' </br>';
             }

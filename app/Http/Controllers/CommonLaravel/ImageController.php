@@ -53,10 +53,10 @@ class ImageController extends Controller
         $image = null;
         if ($prop_name == 'has_many') {
             $image = Image::create([
-                env('IMAGE_URL_PROP_NAME', 'image_url')     => $name,
-                'imageable_id'                              => !is_null($model) ? $request->model_id : null,
-                'imageable_type'                            => $request->model_name,
-                'temporal_id'                               => $this->getTemporalId($request),
+                'hosting_url'                                => $name,
+                'imageable_id'                                => !is_null($model) ? $request->model_id : null,
+                'imageable_type'                              => $request->model_name,
+                'temporal_id'                                 => $this->getTemporalId($request),
             ]);
 
             if ($request->model_name == 'article' && !is_null($model)) {
@@ -64,7 +64,7 @@ class ImageController extends Controller
                 $helper->check_created_image($model, $image);
 
                 $model->needs_sync_with_tn = true;
-                $model->timestamps = false;
+                /* No desactivar timestamps: el save() debe bumpear updated_at para que el sync incremental del front (sync_articles.js) vuelva a bajar el articulo con su imagen nueva. */
                 $model->save();
 
                 ProductService::add_article_to_sync($model);
@@ -127,7 +127,7 @@ class ImageController extends Controller
 
     function deleteImageModel($model_name, $model_id, $image_id) {
         $image = Image::find($image_id);
-        $image_name = $image->{env('IMAGE_URL_PROP_NAME', 'image_url')};
+        $image_name = $image->hosting_url;
         $array = explode('/', $image_name);
         $image_name = $array[count($array)-1];
 
@@ -146,6 +146,9 @@ class ImageController extends Controller
 
                 /* Encolar sync de respaldo: si el DELETE directo falló o el artículo tiene más cambios */
                 TiendaNubeSyncArticleService::add_article_to_sync($article);
+
+                /* Bumpear updated_at del articulo para que la baja de imagen tambien se propague al sync incremental del front (sync_articles.js) */
+                $article->save();
             } else {
                 Log::info('No se llamo a TiendaNubeProductImageService');
             }

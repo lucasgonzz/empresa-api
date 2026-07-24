@@ -755,8 +755,8 @@ class PdfColumnService
         }
 
         $first_image = $images->first();
-        $url_prop = env('IMAGE_URL_PROP_NAME', 'image_url');
-        $img_url = $first_image->{$url_prop} ?? null;
+        /* Nombre de columna fijo (dejo de ser configurable, ver Prompt 01/02 grupo 215) */
+        $img_url = $first_image->hosting_url ?? null;
 
         if (empty($img_url) && isset($first_image->hosting_url)) {
             $img_url = $first_image->hosting_url;
