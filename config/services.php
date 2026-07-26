@@ -30,6 +30,27 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
+    /**
+     * Certificados y clave privada de AFIP (grupo 220, prompt 01): antes vivían bajo public/afip/
+     * (document root de Laravel), lo que los hacía potencialmente descargables por HTTP. Ahora
+     * cuelgan de storage/app/afip, fuera del docroot, y estas rutas son configurables por .env para
+     * que cada servidor pueda apuntar al nombre real del archivo que copió a mano al provisionar.
+     * Ver docs/afip.md para el procedimiento de instalación.
+     */
+    'afip' => [
+        // Certificado de producción (.crt) — se copia a mano en cada servidor, nunca en el repo.
+        'cert_path'         => env('AFIP_CERT_PATH', storage_path('app/afip/production/cert.crt')),
+        // Clave privada de producción (.key) — nunca se commitea.
+        'key_path'          => env('AFIP_KEY_PATH', storage_path('app/afip/production/privada.key')),
+        // Certificado de testing/homologación.
+        'cert_path_testing' => env('AFIP_CERT_PATH_TESTING', storage_path('app/afip/testing/afip_cert.pem')),
+        // Clave privada de testing/homologación.
+        'key_path_testing'  => env('AFIP_KEY_PATH_TESTING', storage_path('app/afip/testing/afip_private.key')),
+        // Directorio de trabajo de WSAA (TRA/TA/CMS por ws_name): se crea solo al vuelo, no requiere
+        // provisión manual. TA.xml es una credencial viva (token+sign), por eso no puede vivir en public/.
+        'wsaa_path'         => env('AFIP_WSAA_PATH', storage_path('app/afip/wsaa')),
+    ],
+
     // Integración con admin-api central (sistema de releases/versiones).
     // - api_key: clave que admin-api envía hacia este cliente (debe coincidir con clients.api_key en admin-api).
     // - inbound_key: clave que este cliente envía hacia admin-api al reportar lecturas (debe coincidir con clients.inbound_api_key en admin-api).
