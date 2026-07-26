@@ -14,6 +14,7 @@ use App\Services\Filter\FilterHistoryService;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class SearchController extends Controller
 {
@@ -706,7 +707,18 @@ class SearchController extends Controller
         // Nombre de la tabla del modelo, para resolver tipo de columna vía el schema builder.
         $table = $model_instance->getTable();
 
-        $models = $model_name::where('user_id', $this->userId())->withAll();
+        // Query base: solo el filtro por usuario. El withAll() se aplica aparte (ver abajo), porque
+        // no todos los modelos lo definen.
+        $models = $model_name::where('user_id', $this->userId());
+
+        // withAll() solo si el modelo lo define. De los ~273 modelos en app/Models, solo ~197
+        // definen scopeWithAll; los ~76 restantes tiraban BadMethodCallException (500) apenas se
+        // llamaba a ->withAll() sobre ellos. Hasta ahora este endpoint se usaba a mano y nadie
+        // buscaba en esos modelos, pero el listado por defecto (prompt 03 de este grupo) dispara
+        // esta misma llamada solo con entrar a cualquier módulo, así que hay que blindarlo acá.
+        if (method_exists($model_instance, 'scopeWithAll')) {
+            $models = $models->withAll();
+        }
 
         // Exclusión de insumos (contexto Vender), aplicada ANTES del grupo de coincidencia de texto
         // para que quede AND'eada con el resto de la query, igual que search_nombre.
@@ -745,7 +757,25 @@ class SearchController extends Controller
             $per_page = 200;
         }
 
-        $models = $models->orderBy('created_at', 'DESC');
+        // Orden configurable por request, validado contra el schema real de la tabla (nunca contra
+        // una lista fija): este endpoint es genérico para ~150 modelos del sistema y mantener a
+        // mano una whitelist de columnas por modelo sería inviable. El valor de `order_by` SIEMPRE
+        // se valida con Schema::hasColumn ANTES de llegar a orderBy(); nunca se concatena en un
+        // string de SQL ni se pasa por orderByRaw, así se evite cualquier chance de inyección.
+        $order_direction = strtoupper(trim((string) $request->input('order_direction', 'DESC')));
+        if ($order_direction !== 'ASC' && $order_direction !== 'DESC') {
+            $order_direction = 'DESC';
+        }
+
+        $order_by = trim((string) $request->input('order_by', ''));
+        if ($order_by === '' || !Schema::hasColumn($table, $order_by)) {
+            // Sin valor, o columna que no existe en la tabla real: se cae al comportamiento de
+            // siempre (created_at) sin lanzar error, para que el buscador nunca rompa por una key
+            // rara mandada desde el front.
+            $order_by = 'created_at';
+        }
+
+        $models = $models->orderBy($order_by, $order_direction);
 
         if ($usar_contexto_vender) {
 
