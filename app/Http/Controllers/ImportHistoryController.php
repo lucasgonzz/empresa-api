@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Jobs\RollbackArticleImportHistory;
 use App\Models\Article;
 use App\Models\ArticleImportResult;
+use App\Models\ImportConflict;
 use App\Models\ImportHistory;
 use Illuminate\Http\Request;
 
@@ -120,5 +121,51 @@ class ImportHistoryController extends Controller
             ->get();
 
         return response()->json($articles, 200);
+    }
+
+    /**
+     * Devuelve los conflictos de una importacion (identificadores ambiguos, placeholders
+     * descartados y filas sin identificador), paginados y agrupados por tipo/campo para
+     * el encabezado del modal. Filtra por user_id para que un usuario no pueda leer los
+     * conflictos de otro (prompt 02, grupo 229; UI en prompt 05).
+     *
+     * @param int $import_history_id ID del historial de importacion.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function conflicts($import_history_id) {
+
+        /* Se filtra por el usuario autenticado para no exponer conflictos de otro owner/empleado. */
+        $import_history = ImportHistory::where('id', $import_history_id)
+                            ->where('user_id', $this->userId())
+                            ->first();
+
+        if (is_null($import_history)) {
+            return response()->json(['message' => 'No se encontro la importacion'], 404);
+        }
+
+        $conflicts = ImportConflict::where('import_history_id', $import_history_id)
+                        ->orderBy('fila')
+                        ->get();
+
+        /* Resumen por tipo y campo, para el encabezado del modal. */
+        $resumen = [];
+
+        foreach ($conflicts as $c) {
+            $clave = $c->tipo . '|' . (string) $c->campo;
+            if (!isset($resumen[$clave])) {
+                $resumen[$clave] = [
+                    'tipo'   => $c->tipo,
+                    'campo'  => $c->campo,
+                    'total'  => 0,
+                ];
+            }
+            $resumen[$clave]['total']++;
+        }
+
+        return response()->json([
+            'conflicts' => $conflicts,
+            'resumen'   => array_values($resumen),
+            'total'     => $conflicts->count(),
+        ]);
     }
 }

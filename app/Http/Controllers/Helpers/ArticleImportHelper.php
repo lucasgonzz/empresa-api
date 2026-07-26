@@ -52,13 +52,28 @@ class ArticleImportHelper {
             'articulos_creados_con_codigo_repetido' => (int) $import_history->created_with_repeated_code_count,
             /* ID del historial para que el frontend pueda pedir la lista expandible. */
             'import_history_id'                     => (int) $import_history->id,
+            /* Filas con conflicto (ambiguas, placeholder descartado o sin identificador). */
+            'conflicts_count'                       => (int) $import_history->conflicts_count,
         ];
 
         /* Opciones del paso 3 y rango de filas para el modal de resultado. */
         $import_options = Self::build_import_options_for_notification($import_history);
 
+        /*
+         * Si hubo conflictos (identificadores ambiguos, placeholders descartados o filas sin
+         * identificador), se agrega una línea al mensaje avisando que hay que revisar el Excel
+         * (prompt 02, grupo 229). Si conflicts_count es 0, el mensaje queda igual que antes.
+         */
+        $message_text = 'Importacion de Excel finalizada correctamente';
+
+        if ((int) $import_history->conflicts_count > 0) {
+            $message_text .= '. La importacion termino con ' . (int) $import_history->conflicts_count
+                . ' filas que no se pudieron procesar por codigos duplicados o incompletos en el Excel. '
+                . 'Revisalas desde Historial de importaciones para corregir el archivo.';
+        }
+
         $user->notify(new GlobalNotification([
-        	'message_text'				=> 'Importacion de Excel finalizada correctamente',
+        	'message_text'				=> $message_text,
         	'color_variant'				=> 'success',
         	'functions_to_execute'		=> $functions_to_execute,
         	'info_to_show'				=> $info_to_show,

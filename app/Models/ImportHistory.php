@@ -19,6 +19,17 @@ class ImportHistory extends Model
         return $this->hasMany(ArticleImportResult::class, 'import_history_id');
     }
 
+    /**
+     * Conflictos de importación (identificadores ambiguos, placeholders descartados,
+     * filas sin identificador) detectados en cualquiera de los chunks de este historial.
+     * Ver App\Models\ImportConflict y ArticleImportHelper\ActualizarBBDD::persistir_conflictos().
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\HasMany
+     */
+    function conflicts() {
+        return $this->hasMany(ImportConflict::class, 'import_history_id');
+    }
+
     function articulos_creados() {
         return $this->belongsToMany(Article::class, 'article_creados_import_history');
     }

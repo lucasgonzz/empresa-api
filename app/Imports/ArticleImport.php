@@ -325,7 +325,7 @@ class ArticleImport implements ToCollection
                 'articulos_actualizados'                        => $articulos_actualizados, 
                 'articles_match'                                => $articles_match,
                 'articles_repetidos'                            => $articles_repetidos,
-                /* Preparados para el prompt 02 (todavía sin columna en ArticleImportResult). */
+                /* Conteos informativos (el detalle real de cada conflicto se persiste en import_conflicts). */
                 'filas_ambiguas'                                => $filas_ambiguas,
                 'identificadores_descartados'                   => $identificadores_descartados,
                 'filas_procesadas'                              => $this->filas_procesadas,
@@ -389,7 +389,10 @@ class ArticleImport implements ToCollection
                 $this->permitir_provider_code_repetido,
                 $this->chunk_number,
                 $provider_buffer,
-                $this->import_history_id
+                $this->import_history_id,
+                /* process_row e import_result_id: para que persista los conflictos del chunk (prompt 02, grupo 229). */
+                $this->process_row,
+                $this->import_result_id
             );
             $observations = $actualizar_bbdd->get_observations();
 

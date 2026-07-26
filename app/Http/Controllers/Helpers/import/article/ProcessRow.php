@@ -41,11 +41,14 @@ class ProcessRow {
     /** Cantidad de identificadores (bar_code/sku/provider_code/id) descartados por ser placeholders (ej. "-", "S/N"). */
     protected $identificadores_descartados = 0;
 
-    /** Detalle de conflictos de ambigüedad detectados en este chunk, para el reporte del prompt 02. */
-    protected $conflictos_ambiguos_detalle = [];
-
-    /** Detalle de identificadores descartados por placeholder en este chunk, para el reporte del prompt 02. */
-    protected $placeholders_descartados_detalle = [];
+    /**
+     * Conflictos detectados en este chunk (ambiguos, placeholders descartados y filas sin
+     * identificador), unificados en un solo formato para persistirse en `import_conflicts`
+     * al cerrar el lote (ActualizarBBDD::persistir_conflictos(), prompt 02 del grupo 229).
+     * Cada entrada: ['fila' => int, 'tipo' => string, 'campo' => ?string, 'valor' => ?string,
+     * 'article_ids' => ?array, 'nombre_excel' => ?string].
+     */
+    protected $conflictos = [];
 
     /** Número de fila (relativo al chunk) que se está procesando; se incrementa en cada llamada a procesar(). */
     protected $fila_actual = 0;
@@ -348,10 +351,25 @@ class ProcessRow {
             // Si el valor original no era vacío pero la normalización lo convirtió en null,
             // significa que era un placeholder ("-", "S/N", etc): se registra para el reporte.
             if (!is_null($original) && trim((string) $original) !== '' && is_null($data[$campo_identificador])) {
-                $this->registrar_placeholder_descartado($this->fila_actual, $campo_identificador, $original);
+                $this->registrar_placeholder_descartado($this->fila_actual, $campo_identificador, $original, $data['name'] ?? null);
             }
         }
         $this->terminar('normalizar identificadores (IdentifierNormalizer)');
+
+        /*
+         * Si tras normalizar los 4 identificadores la fila quedó sin ninguno utilizable
+         * (id, bar_code, sku ni provider_code), se registra como conflicto 'sin_identificador'.
+         * Son las filas que hoy caen al fallback por nombre o generan artículos duplicados
+         * sin que el usuario se entere (prompt 02, grupo 229).
+         */
+        if (
+            empty($data['id'])
+            && empty($data['bar_code'])
+            && empty($data['sku'])
+            && empty($data['provider_code'])
+        ) {
+            $this->registrar_sin_identificador($this->fila_actual, $data['name'] ?? null);
+        }
 
 
         if (!ImportHelper::isIgnoredColumn('iva', $this->columns)) {
@@ -536,7 +554,7 @@ class ProcessRow {
          * No se crea ni se actualiza nada con esta fila.
          */
         if ($articulo_ya_creado instanceof AmbiguousMatch) {
-            $this->registrar_conflicto_ambiguo($this->fila_actual, $articulo_ya_creado);
+            $this->registrar_conflicto_ambiguo($this->fila_actual, $articulo_ya_creado, $data['name'] ?? null);
             $this->sumar_durations();
             return $this->observations;
         }
@@ -2150,21 +2168,27 @@ class ProcessRow {
     /**
      * Registra que un valor de identificador (bar_code/sku/provider_code/id) fue
      * descartado por ser un placeholder (ej. "-", "S/N") y no un código real.
-     * Por ahora solo acumula en memoria y loguea; el prompt 02 lo persiste en la
-     * tabla de conflictos de importación.
+     * Acumula en memoria (para el conteo del chunk) y agrega la entrada unificada
+     * a $conflictos, que ActualizarBBDD::persistir_conflictos() inserta en bloque
+     * en `import_conflicts` al cerrar el lote (prompt 02, grupo 229).
      *
-     * @param int    $fila     número de fila (relativo al chunk) donde se detectó.
-     * @param string $campo    campo identificador afectado (bar_code/sku/provider_code/id).
-     * @param mixed  $original valor original tal cual vino del Excel, antes de normalizar.
+     * @param int    $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param string $campo        campo identificador afectado (bar_code/sku/provider_code/id).
+     * @param mixed  $original     valor original tal cual vino del Excel, antes de normalizar.
+     * @param string|null $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
+     * @return void
      */
-    function registrar_placeholder_descartado($fila, $campo, $original): void
+    function registrar_placeholder_descartado($fila, $campo, $original, $nombre_excel = null): void
     {
         $this->identificadores_descartados++;
 
-        $this->placeholders_descartados_detalle[] = [
-            'fila'     => $fila,
-            'campo'    => $campo,
-            'original' => $original,
+        $this->conflictos[] = [
+            'fila'         => $fila,
+            'tipo'         => 'placeholder_descartado',
+            'campo'        => $campo,
+            'valor'        => (string) $original,
+            'article_ids'  => null,
+            'nombre_excel' => $nombre_excel,
         ];
 
         $this->log('Placeholder descartado en fila ' . $fila . ', campo ' . $campo . ': "' . $original . '"');
@@ -2173,24 +2197,56 @@ class ProcessRow {
     /**
      * Registra una fila salteada por matchear de forma ambigua (más de un artículo
      * candidato para el mismo bar_code/sku/provider_code, sin permitir repetidos).
-     * Por ahora solo acumula en memoria y loguea; el prompt 02 lo persiste en la
-     * tabla de conflictos de importación.
+     * Acumula en memoria (para el conteo del chunk) y agrega la entrada unificada
+     * a $conflictos, que ActualizarBBDD::persistir_conflictos() inserta en bloque
+     * en `import_conflicts` al cerrar el lote (prompt 02, grupo 229).
      *
-     * @param int             $fila   número de fila (relativo al chunk) donde se detectó.
-     * @param AmbiguousMatch  $ambiguo marcador devuelto por ArticleIndexCache::find_with_index().
+     * @param int             $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param AmbiguousMatch  $ambiguo      marcador devuelto por ArticleIndexCache::find_with_index().
+     * @param string|null     $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
+     * @return void
      */
-    function registrar_conflicto_ambiguo($fila, AmbiguousMatch $ambiguo): void
+    function registrar_conflicto_ambiguo($fila, AmbiguousMatch $ambiguo, $nombre_excel = null): void
     {
         $this->filas_ambiguas++;
 
-        $this->conflictos_ambiguos_detalle[] = [
-            'fila'        => $fila,
-            'campo'       => $ambiguo->campo,
-            'valor'       => $ambiguo->valor,
-            'article_ids' => $ambiguo->article_ids,
+        $this->conflictos[] = [
+            'fila'         => $fila,
+            'tipo'         => 'ambiguo',
+            'campo'        => $ambiguo->campo,
+            'valor'        => $ambiguo->valor,
+            'article_ids'  => $ambiguo->article_ids,
+            'nombre_excel' => $nombre_excel,
         ];
 
         $this->log('Fila ' . $fila . ' salteada por match ambiguo en ' . $ambiguo->campo . ' = "' . $ambiguo->valor . '" (' . count($ambiguo->article_ids) . ' articulos candidatos)');
+    }
+
+    /**
+     * Registra una fila que, tras normalizar los 4 identificadores (id, bar_code, sku,
+     * provider_code), quedó sin ninguno utilizable. Estas filas son las que hoy caen al
+     * fallback por nombre en ya_estaba_en_el_excel()/esta_repetido(), o terminan creando
+     * artículos duplicados, sin que nadie se entere (prompt 02, grupo 229).
+     *
+     * No cuenta para $filas_ambiguas ni $identificadores_descartados: es un tipo de
+     * conflicto distinto, solo se acumula en $conflictos.
+     *
+     * @param int         $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param string|null $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
+     * @return void
+     */
+    function registrar_sin_identificador($fila, $nombre_excel = null): void
+    {
+        $this->conflictos[] = [
+            'fila'         => $fila,
+            'tipo'         => 'sin_identificador',
+            'campo'        => null,
+            'valor'        => null,
+            'article_ids'  => null,
+            'nombre_excel' => $nombre_excel,
+        ];
+
+        $this->log('Fila ' . $fila . ' sin identificador utilizable (id/bar_code/sku/provider_code)');
     }
 
     /**
@@ -2205,6 +2261,18 @@ class ProcessRow {
      */
     function get_identificadores_descartados() {
         return $this->identificadores_descartados;
+    }
+
+    /**
+     * Detalle unificado de todos los conflictos detectados en este chunk (ambiguos,
+     * placeholders descartados y filas sin identificador), listo para que
+     * ActualizarBBDD::persistir_conflictos() lo inserte en bloque en `import_conflicts`.
+     *
+     * @return array
+     */
+    function get_conflictos(): array
+    {
+        return $this->conflictos;
     }
 
     public function buffer_provider_relation(int $article_id, int $provider_id, array $pivot_data): void

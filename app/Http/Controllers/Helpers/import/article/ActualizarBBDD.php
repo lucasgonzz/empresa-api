@@ -11,11 +11,14 @@ use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Jobs\ProcessSyncArticleToTiendaNube;
 use App\Models\Article;
+use App\Models\ArticleImportResult;
 use App\Models\ArticleProperty;
 use App\Models\ArticlePropertyType;
 use App\Models\ArticlePropertyValue;
 use App\Models\ArticleUbication;
 use App\Models\ArticleVariant;
+use App\Models\ImportConflict;
+use App\Models\ImportHistory;
 use App\Models\PriceType;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Carbon\Carbon;
@@ -34,9 +37,11 @@ class ActualizarBBDD {
      * @param string      $chunk_number
      * @param array       $provider_buffer
      * @param int|null    $import_history_id  ID del historial para trackear diffs de relaciones (rollback)
+     * @param ProcessRow|null $process_row     instancia de ProcessRow del chunk, para leer get_conflictos() (prompt 02, grupo 229)
+     * @param int|null    $article_import_result_id ID del chunk (ArticleImportResult), para asociar los conflictos persistidos
      */
-    function __construct($articulos_para_crear_CACHE, $articulos_para_actualizar_CACHE, $user, $auth_user_id, $codigos_proveedor_repetidos, $chunk_number, $provider_buffer, $import_history_id = null) {
-        
+    function __construct($articulos_para_crear_CACHE, $articulos_para_actualizar_CACHE, $user, $auth_user_id, $codigos_proveedor_repetidos, $chunk_number, $provider_buffer, $import_history_id = null, $process_row = null, $article_import_result_id = null) {
+
         $this->log('');
         $this->log('********* ActualizarBBDD ************');
         $this->log('');
@@ -67,6 +72,14 @@ class ActualizarBBDD {
          * Si es null, no se trackean relaciones (comportamiento silencioso).
          */
         $this->import_history_id                    = $import_history_id;
+
+        /*
+         * ProcessRow del chunk (para leer get_conflictos()) e id del chunk (ArticleImportResult),
+         * usados por persistir_conflictos() al cerrar el lote. Ambos pueden ser null si el
+         * caller no los provee (compatibilidad con instanciaciones previas al prompt 02).
+         */
+        $this->process_row                          = $process_row;
+        $this->article_import_result_id             = $article_import_result_id;
 
         $this->articulos_para_crear_CACHE           = $articulos_para_crear_CACHE;
         $this->articulos_para_actualizar_CACHE      = $articulos_para_actualizar_CACHE;
@@ -335,6 +348,9 @@ class ActualizarBBDD {
 
 
         $this->actualizar_cache();
+
+        // Persistir en bloque los conflictos (ambiguos/placeholders/sin identificador) del chunk.
+        $this->persistir_conflictos();
 
         $this->actualizar_tienda_nube();
 
@@ -2018,6 +2034,78 @@ class ActualizarBBDD {
         $this->log('');
 
         $this->terminar('Actualizar Cache');
+    }
+
+    /**
+     * Persiste en bloque (insert masivo, sin foreach de create()) los conflictos detectados
+     * por ProcessRow durante este chunk: identificadores ambiguos, placeholders descartados
+     * y filas sin identificador utilizable (prompt 02, grupo 229).
+     *
+     * También actualiza conflicts_count en ArticleImportResult (chunk) e ImportHistory
+     * (total del import) con increment(), no con lectura-escritura: los chunks de un mismo
+     * import pueden solaparse y una lectura-escritura pierde conteos.
+     *
+     * No hace nada si no se recibió un ProcessRow (compatibilidad con instanciaciones
+     * previas al prompt 02) o si el chunk no tuvo conflictos.
+     *
+     * @return void
+     */
+    protected function persistir_conflictos(): void
+    {
+        $this->iniciar();
+
+        if (is_null($this->process_row)) {
+            $this->terminar('persistir_conflictos (sin process_row, se omite)');
+            return;
+        }
+
+        // Detalle acumulado en memoria por ProcessRow durante el procesamiento del chunk.
+        $conflictos = $this->process_row->get_conflictos();
+
+        if (count($conflictos) === 0) {
+            $this->terminar('persistir_conflictos (sin conflictos)');
+            return;
+        }
+
+        $ahora = now();
+        $rows  = [];
+
+        foreach ($conflictos as $c) {
+            $rows[] = [
+                'import_history_id'        => $this->import_history_id,
+                'article_import_result_id' => $this->article_import_result_id,
+                'fila'                     => $c['fila'],
+                'tipo'                     => $c['tipo'],
+                'campo'                    => $c['campo'],
+                'valor'                    => $c['valor'],
+                'article_ids'              => is_null($c['article_ids'])
+                                                ? null
+                                                : json_encode($c['article_ids']),
+                'nombre_excel'             => $c['nombre_excel'],
+                'created_at'               => $ahora,
+                'updated_at'               => $ahora,
+            ];
+        }
+
+        /* Insert por bloques para no reventar el max_allowed_packet en excels con miles de conflictos. */
+        foreach (array_chunk($rows, 500) as $bloque) {
+            ImportConflict::insert($bloque);
+        }
+
+        /* Contadores atomicos (SET col = col + N): hay lotes concurrentes procesando el mismo import. */
+        if (!is_null($this->article_import_result_id)) {
+            ArticleImportResult::where('id', $this->article_import_result_id)
+                ->increment('conflicts_count', count($rows));
+        }
+
+        if (!is_null($this->import_history_id)) {
+            ImportHistory::where('id', $this->import_history_id)
+                ->increment('conflicts_count', count($rows));
+        }
+
+        $this->log('Se persistieron '.count($rows).' conflictos de importacion');
+
+        $this->terminar('Persistir conflictos de importacion');
     }
 
 

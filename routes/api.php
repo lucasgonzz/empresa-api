@@ -500,6 +500,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('/import-history/rollback/{import_history_id}', 'ImportHistoryController@rollback');
     /* Lista de artículos creados con código repetido para el modal de resultado de importación. */
     Route::get('/import-history/repeated-code-articles/{import_history_id}', 'ImportHistoryController@repeated_code_articles');
+    Route::get('/import-history/{import_history_id}/conflicts', 'ImportHistoryController@conflicts');
 
     /*
      * Importación asistida por Claude IA (artículos, clientes, proveedores).
