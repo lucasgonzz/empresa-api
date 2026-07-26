@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Events\ImportStatusUpdated;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Imports\ArticleImport;
 use App\Models\ArticleImportResult;
@@ -96,6 +97,19 @@ class ProcessArticleChunk implements ShouldQueue
             'pid' => getmypid(),
         ]);
         // Log::warning("INICIO Job Chunk #{$this->chunk_number} del lote {$this->batchId()}. PID: " . getmypid());
+
+        /*
+         * Descartar el indice de articulos memoizado en RAM de este proceso ANTES de
+         * instanciar ProcessRow (vía crear_article_import()/collection() mas abajo).
+         *
+         * Con varios workers en la misma cola, la RAM de este proceso puede haber
+         * quedado cargada desde un lote anterior (de este mismo chunk-worker) y no
+         * reflejar lo que agregaron otros workers en el cache compartido mientras
+         * tanto. Sin este reset, el lote actual buscaría articulos contra un indice
+         * desactualizado y terminaría creando duplicados (ver prompt 03, grupo 229 —
+         * caso Servian: mismo bar_code creado dos veces por dos workers distintos).
+         */
+        ArticleIndexCache::reset_runtime((int) $this->user_id);
 
         $inicio = microtime(true);
 

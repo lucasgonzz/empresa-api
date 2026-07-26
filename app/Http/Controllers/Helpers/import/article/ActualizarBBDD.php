@@ -201,6 +201,18 @@ class ActualizarBBDD {
                     $this->articulos_creados_con_codigo_repetido_ids[] = $found->id;
                 }
             }
+
+            /*
+             * Persistir el indice compartido de articulos INMEDIATAMENTE, apenas los
+             * articulos nuevos tienen su id real (recien seteado en set_articulos_creados_models()).
+             *
+             * Antes esto se hacia una sola vez al final del lote (actualizar_cache()). Si el
+             * lote fallaba mas adelante (price_types, stock, variantes, etc.), los articulos ya
+             * insertados en BD quedaban fuera del cache compartido, y el siguiente lote (en este
+             * u otro worker) los volvia a crear por no encontrarlos en el indice. Ver prompt 03,
+             * grupo 229.
+             */
+            $this->actualizar_cache_articulos_creados();
         }
 
         // Actualizar artículos existentes por lote con SQL crudo
@@ -1999,6 +2011,39 @@ class ActualizarBBDD {
     //     $this->terminar('Actualizar Cache');
     // }
 
+    /**
+     * Agrega al indice de importacion (RAM) los articulos RECIEN CREADOS de este lote
+     * y persiste ese avance al cache compartido de inmediato (merge, no pisa lo de otros
+     * workers — ver ArticleIndexCache::persist()).
+     *
+     * Se llama apenas set_articulos_creados_models() les asignó su id real, ANTES de seguir
+     * con el resto del lote (stock, price_types, discounts, variantes, etc.), para que un
+     * fallo mas adelante en el mismo lote no deje estos articulos fuera del indice compartido.
+     *
+     * Los articulos ACTUALIZADOS (no creados) se agregan aparte en actualizar_cache(), al
+     * cierre del lote — no hace falta adelantarlos porque ya existian en BD antes del lote,
+     * osea ya estaban en el indice compartido desde que se construyo.
+     *
+     * @return void
+     */
+    function actualizar_cache_articulos_creados() {
+        $this->iniciar();
+
+        $this->log('');
+        $this->log('');
+        $this->log('actualizar_cache_articulos_creados');
+        $this->log('');
+
+        foreach ($this->articulos_creados_models as $article) {
+            ArticleIndexCache::update($article, $this->codigos_proveedor_repetidos);
+        }
+
+        // Persistimos ya (merge con lo que haya en el cache compartido) para no perder estos ids si el lote falla después.
+        ArticleIndexCache::persist($this->user->id, 30);
+
+        $this->terminar('Actualizar Cache (articulos creados)');
+    }
+
     function actualizar_cache() {
         $this->iniciar();
 
@@ -2018,15 +2063,18 @@ class ActualizarBBDD {
         $this->log(count($index['names']).' names');
         $this->log('');
 
-        foreach ($this->articulos_creados_models as $article) {
-            ArticleIndexCache::update($article, $this->codigos_proveedor_repetidos);
-        }
-
+        /*
+         * Los articulos CREADOS ya se agregaron y persistieron al cache compartido en
+         * actualizar_cache_articulos_creados() (llamado desde guardar_articulos(), apenas
+         * tuvieron su id real). No se repite acá: ArticleIndexCache::update() no es
+         * idempotente para provider_codes (apendea sin dedupe), y llamarlo dos veces para
+         * el mismo articulo generaria ids duplicados en esa sección del indice.
+         */
         foreach ($this->articulos_actualizados_models as $article) {
             ArticleIndexCache::update($article, $this->codigos_proveedor_repetidos);
         }
 
-        // ✅ Persistimos UNA sola vez (en vez de miles de veces)
+        // ✅ Persistimos (merge con lo que haya en el cache compartido)
         ArticleIndexCache::persist($this->user->id, 30);
 
         $this->log('');

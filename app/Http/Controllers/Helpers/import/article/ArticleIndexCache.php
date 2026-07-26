@@ -1079,18 +1079,187 @@ class ArticleIndexCache
         self::$runtime_dirty_by_key[$key] = true;
     }
 
+    /**
+     * Persiste el indice al cache compartido, fusionando con lo que ya haya.
+     *
+     * No se puede hacer un Cache::put del indice local a secas: con varios
+     * workers, cada uno tiene una vista parcial y el ultimo en escribir
+     * borraria lo que agregaron los demas (last-write-wins). Por eso se lee
+     * el estado actual del cache compartido y se fusiona (merge_indexes) con
+     * la vista local antes de escribir.
+     *
+     * @param  int $user_id dueño del indice
+     * @param  int $ttl_minutes minutos de vida del cache tras persistir
+     * @return void
+     */
     public static function persist(int $user_id, int $ttl_minutes = 30): void
     {
+        // clave del cache compartido para este usuario
         $key = "article_index_user_{$user_id}";
 
+        // Si no hay indice cargado en RAM o no tiene cambios sin persistir, no hay nada que hacer.
         if (empty(self::$runtime_loaded_by_key[$key]) || empty(self::$runtime_dirty_by_key[$key])) {
             return;
         }
 
-        Cache::put($key, self::$runtime_index_by_key[$key], now()->addMinutes($ttl_minutes));
+        // vista local (RAM de este proceso/worker) con los cambios del lote actual
+        $local = self::$runtime_index_by_key[$key];
+
+        // estado actual del cache compartido, escrito potencialmente por otros workers
+        $remoto = Cache::get($key, []);
+
+        // fusion de ambos indices respetando la forma de cada sub-indice
+        $merged = self::merge_indexes($remoto, $local);
+
+        Cache::put($key, $merged, now()->addMinutes($ttl_minutes));
+
+        // La RAM local pasa a reflejar el indice fusionado (incluye lo que agregaron otros workers).
+        self::$runtime_index_by_key[$key] = $merged;
 
         // ya persistido
         self::$runtime_dirty_by_key[$key] = false;
+    }
+
+    /**
+     * Fusiona dos indices de importacion.
+     *
+     * - ids, names: mapas escalares. Gana el nuevo.
+     * - bar_codes, skus: listas de article ids (formato del prompt 01). Se unen.
+     * - provider_codes: mapa provider_id -> codigo -> lista de ids. Se unen.
+     *
+     * Los article ids "fake_*" NO se propagan: son locales al proceso que los creo
+     * y no tienen sentido en un cache compartido entre workers.
+     *
+     * @param  array $base indice existente en el cache compartido (u otro origen)
+     * @param  array $nuevo indice local a fusionar sobre el base
+     * @return array indice fusionado
+     */
+    protected static function merge_indexes(array $base, array $nuevo): array
+    {
+        // resultado acumulado, arranca como copia del indice base (remoto)
+        $out = $base;
+
+        /* ids y names: escalares. */
+        foreach (['ids', 'names'] as $seccion) {
+            if (!isset($nuevo[$seccion])) {
+                continue;
+            }
+            if (!isset($out[$seccion])) {
+                $out[$seccion] = [];
+            }
+            foreach ($nuevo[$seccion] as $k => $v) {
+                if (self::is_fake_id($v)) {
+                    continue;
+                }
+                $out[$seccion][$k] = $v;
+            }
+        }
+
+        /* bar_codes y skus: listas de ids. */
+        foreach (['bar_codes', 'skus'] as $seccion) {
+            if (!isset($nuevo[$seccion])) {
+                continue;
+            }
+            if (!isset($out[$seccion])) {
+                $out[$seccion] = [];
+            }
+            foreach ($nuevo[$seccion] as $codigo => $entry) {
+                $ids_nuevos = self::index_entry_to_ids($entry);
+                $ids_base   = isset($out[$seccion][$codigo])
+                                ? self::index_entry_to_ids($out[$seccion][$codigo])
+                                : [];
+
+                $union = array_merge($ids_base, $ids_nuevos);
+                $union = array_values(array_unique(array_filter($union, function ($id) {
+                    return !self::is_fake_id($id);
+                })));
+
+                if (count($union) > 0) {
+                    $out[$seccion][$codigo] = $union;
+                }
+            }
+        }
+
+        /* provider_codes: provider_id -> codigo -> lista. */
+        if (isset($nuevo['provider_codes'])) {
+            if (!isset($out['provider_codes'])) {
+                $out['provider_codes'] = [];
+            }
+            foreach ($nuevo['provider_codes'] as $prov_id => $codigos) {
+                if (!isset($out['provider_codes'][$prov_id])) {
+                    $out['provider_codes'][$prov_id] = [];
+                }
+                foreach ($codigos as $codigo => $ids) {
+                    $ids_nuevos = self::index_entry_to_ids($ids);
+                    $ids_base   = isset($out['provider_codes'][$prov_id][$codigo])
+                                    ? self::index_entry_to_ids($out['provider_codes'][$prov_id][$codigo])
+                                    : [];
+
+                    $union = array_merge($ids_base, $ids_nuevos);
+                    $union = array_values(array_unique(array_filter($union, function ($id) {
+                        return !self::is_fake_id($id);
+                    })));
+
+                    if (count($union) > 0) {
+                        $out['provider_codes'][$prov_id][$codigo] = $union;
+                    }
+                }
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Indica si un id de articulo corresponde a un "fake" (pendiente de insert en el
+     * proceso actual, sin fila real en la tabla articles todavia).
+     *
+     * @param  mixed $id
+     * @return bool
+     */
+    protected static function is_fake_id($id)
+    {
+        return is_string($id) && strncmp($id, 'fake_', 5) === 0;
+    }
+
+    /*
+     * NOTA DE INFRAESTRUCTURA
+     *
+     * Estos fixes hacen que el indice sea correcto con varios workers, pero la
+     * importacion sigue siendo mas rapida y mas segura con UN SOLO worker por
+     * subdominio: los lotes van en Bus::chain (secuenciales), asi que workers
+     * extra no aceleran nada y solo agregan riesgo de indice desincronizado.
+     *
+     * En supervisor: numprocs = 1 por cada api_<subdominio>_queue.
+     */
+
+    /**
+     * Descarta el indice memoizado en RAM, forzando que la proxima lectura
+     * vaya al cache compartido.
+     *
+     * Se llama al inicio de cada lote: con varios workers, la RAM de un proceso
+     * no refleja lo que hicieron los otros, y confiar en ella hace que se creen
+     * articulos duplicados.
+     *
+     * NO borra el cache compartido. Solo la copia local.
+     *
+     * @param  int $user_id
+     * @return void
+     */
+    public static function reset_runtime(int $user_id): void
+    {
+        // clave del cache compartido / RAM local para este usuario
+        $key = "article_index_user_{$user_id}";
+
+        /* Si hay cambios sin persistir, persistirlos antes de descartar. */
+        if (!empty(self::$runtime_dirty_by_key[$key])) {
+            self::persist($user_id, 30);
+        }
+
+        unset(self::$runtime_index_by_key[$key]);
+        unset(self::$runtime_loaded_by_key[$key]);
+        unset(self::$runtime_dirty_by_key[$key]);
+        unset(self::$runtime_fake_articles[$user_id]);
     }
 
     static function limpiar_cache($user_id) {
