@@ -1093,14 +1093,34 @@ class ProcessRow {
         // 🔎 Chequeamos si vino stock global y si cambió realmente
         $this->iniciar();
         if (isset($stock_data['stock_global'])) {
-            $excel_stock = (float)$this->normalize_scalar($stock_data['stock_global']);
-            $actual_stock = (float)$this->normalize_scalar($articulo_ya_creado->stock ?? 0);
 
-            if ($excel_stock !== $actual_stock) {
+            /*
+             * obtener_stock() devuelve el DELTA (excel_stock_parsed - stock actual),
+             * no el stock final del Excel. Antes se guardaba ese delta directamente
+             * en 'new' y se mostraba en el detalle del lote como si fuera el stock
+             * resultante ("2 → -1" en vez de "2 → 1 (-1)"). Ahora separamos las tres
+             * cifras (old, resultante y delta) para que el frontend pueda mostrar el
+             * resultado real (prompt 04, grupo 229).
+             */
+            $delta = (float)$this->normalize_scalar($stock_data['stock_global']);
+            $actual_stock = (float)$this->normalize_scalar($articulo_ya_creado->stock ?? 0);
+            $resultante = $actual_stock + $delta;
+
+            /*
+             * Comparamos el delta contra cero, NO el resultante contra el stock actual.
+             * La comparación vieja ($excel_stock !== $actual_stock) comparaba un delta
+             * contra un valor absoluto: si el Excel pedía exactamente el doble del
+             * stock actual (delta == stock actual), el cambio se descartaba en
+             * silencio y el stock nunca se actualizaba. Usamos != (no !==) porque
+             * normalize_scalar puede devolver 0 int o 0.0 float según el origen, y
+             * 0 !== 0.0 es true en PHP.
+             */
+            if ($delta != 0.0) {
                 $cambios['stock_global'] = [
                     '__diff__stock' => [
-                        'old' => $actual_stock,
-                        'new' => $excel_stock,
+                        'old'   => $actual_stock,
+                        'new'   => $resultante,
+                        'delta' => $delta,
                     ],
                 ];
             }

@@ -895,7 +895,32 @@ class ActualizarBBDD {
 
                 if (!empty($article_cache['stock_global'])) {
                     $this->log('Act stock global de '.$article->name);
-                    $this->guardar_stock_movement_global($article, $article_cache['stock_global']['__diff__stock']['new']);
+
+                    /*
+                     * Desde el prompt 04 (grupo 229), 'new' pasó a ser el stock
+                     * RESULTANTE (no el delta): guardar_stock_movement_global()
+                     * espera el delta (CheckGlobalStock hace $article->stock += $amount),
+                     * así que leemos 'delta' explícitamente.
+                     */
+                    $diff = $article_cache['stock_global']['__diff__stock'];
+                    $amount = isset($diff['delta']) ? $diff['delta'] : null;
+
+                    /*
+                     * Compatibilidad: diffs viejos (pre-prompt 229/04), por ejemplo
+                     * lotes ya encolados al momento del deploy, no tienen 'delta' y
+                     * guardaban el delta directamente en 'new'.
+                     */
+                    if (is_null($amount) && isset($diff['new'])) {
+                        $amount = $diff['new'];
+                    }
+
+                    // Objetivo (stock resultante esperado), para recalcular el
+                    // movimiento de forma idempotente dentro de guardar_stock_movement_global().
+                    $target_stock = isset($diff['new']) ? (float)$diff['new'] : null;
+
+                    if (!is_null($amount) && (float)$amount != 0.0) {
+                        $this->guardar_stock_movement_global($article, $amount, $target_stock);
+                    }
                 } else {
                     $this->log('Act stock por direcciones de '.$article->name);
                     $this->guardar_stock_movement_addresses($article, $article_cache['stock_addresses']);
@@ -921,7 +946,41 @@ class ActualizarBBDD {
         $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id);
     }
 
-    function guardar_stock_movement_global($article, $amount) {
+    /**
+     * Crea el movimiento de stock global de un artículo importado.
+     *
+     * @param Article    $article      artículo a mover
+     * @param float      $amount       delta a aplicar (puede ser recalculado si se pasa $target_stock)
+     * @param float|null $target_stock stock RESULTANTE esperado (solo se usa en el flujo de
+     *                                  actualización, viene de __diff__stock.new). Si viene, se
+     *                                  recalcula el delta contra el stock real del artículo en
+     *                                  este momento en vez de usar el delta calculado cuando se
+     *                                  procesó la fila del Excel, para que el movimiento sea
+     *                                  idempotente: si dos filas del mismo lote apuntan al mismo
+     *                                  artículo con el mismo objetivo, solo la primera genera
+     *                                  movimiento (prompt 04, grupo 229).
+     * @return void
+     */
+    function guardar_stock_movement_global($article, $amount, $target_stock = null) {
+
+        /*
+         * El delta se calculó cuando se procesó la fila; el movimiento se aplica
+         * al cerrar el lote. Si en el medio algo más tocó el stock, el delta viejo
+         * lo deja mal. Recalculamos contra el valor real del momento, pero SOLO
+         * cuando hay un objetivo explícito (flujo de artículos actualizados):
+         * no se llama fresh() en el flujo de creación para no pegarle a la BD
+         * por cada artículo nuevo del lote sin necesidad.
+         */
+        if (!is_null($target_stock)) {
+
+            $stock_actual = (float) $article->fresh()->stock;
+            $amount = $target_stock - $stock_actual;
+
+            if ($amount == 0.0) {
+                // Ya está en el valor pedido: no hay nada que registrar.
+                return;
+            }
+        }
 
         $this->log('guardar_stock_movement_global amount: '.$amount);
 
