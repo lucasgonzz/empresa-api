@@ -197,6 +197,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Concepto de movimientos de Caja
     Route::resource('concepto-movimiento-caja', 'ConceptoMovimientoCajaController');
 
+    // Override de liquidación/comisión por método de pago dentro de una caja (Grupo 223 · Prompt 01)
+    // 'index' y 'show' se excluyen del resource porque comparten el mismo patrón de URI
+    // (`{param}` único) y colisionarían entre sí; se define el listado filtrado por caja_id
+    // aparte, mismo criterio que 'movimiento-caja' un poco más arriba.
+    Route::get('caja-liquidacion-config/{caja_id}', 'CajaLiquidacionConfigController@index');
+    Route::resource('caja-liquidacion-config', 'CajaLiquidacionConfigController')->except('index', 'show');
+
     // Cajas por defecto
     Route::resource('default-payment-method-caja', 'DefaultPaymentMethodCajaController');
 
