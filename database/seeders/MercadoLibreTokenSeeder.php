@@ -34,6 +34,18 @@ class MercadoLibreTokenSeeder extends Seeder
             return;
         }
 
+        // Tokens de Mercado Libre para el conector de ejemplo: vienen de config/services.php
+        // (.env del servidor), nunca hardcodeados (grupo 220, prompt 02, repositorio publico).
+        $access_token  = config('services.mercado_libre.access_token');
+        $refresh_token = config('services.mercado_libre.refresh_token');
+
+        if (empty($access_token) || empty($refresh_token)) {
+            // No frena el seeder: solo avisa que estos datos quedaron sin configurar.
+            if ($this->command) {
+                $this->command->warn('MercadoLibreTokenSeeder: MERCADO_LIBRE_SEED_ACCESS_TOKEN / MERCADO_LIBRE_SEED_REFRESH_TOKEN no estan configurados, se sembraron como null.');
+            }
+        }
+
         PlatformConnector::query()->updateOrCreate(
             [
                 'user_id'     => config('app.USER_ID'),
@@ -42,8 +54,8 @@ class MercadoLibreTokenSeeder extends Seeder
             [
                 'status'            => PlatformConnector::STATUS_CONECTADO,
                 'platform_user_id'  => '163250661',
-                'access_token'      => 'APP_USR-6355072095226922-100808-bbbc8667dc3a7ad5b3f46d59dcb41840-163250661',
-                'refresh_token'     => 'TG-68e65bc4e8377c0001fbe915-163250661',
+                'access_token'      => empty($access_token) ? null : $access_token,
+                'refresh_token'     => empty($refresh_token) ? null : $refresh_token,
                 'expires_at'        => '2025-10-08 15:40:38',
             ]
         );

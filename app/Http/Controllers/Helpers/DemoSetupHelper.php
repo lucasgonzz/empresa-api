@@ -35,6 +35,11 @@ class DemoSetupHelper
      * cuando admin-api no manda 'google_custom_search_api_key' en el payload
      * (llamada directa al endpoint, instalación vieja, o setting todavía sin cargar
      * en admin-spa).
+     *
+     * TODO (grupo 220, prompt 02): este literal debería pasar a
+     * config('services.google_search.api_key') como el resto de los fallbacks de Google
+     * Custom Search, pero este archivo lo toca el grupo 218 — no se resuelve acá para no
+     * pisarse con esa otra tarea.
      */
     private const GOOGLE_API_KEY_FALLBACK = 'AIzaSyCgzE6haVi8uZnenfAvYJO5hn7m7Cl09Gw';
 

@@ -222,4 +222,50 @@ return [
         'guzzle_ca_bundle' => env('ZIPPIN_GUZZLE_CA_BUNDLE', ''),
     ],
 
+    /**
+     * Credenciales de AFIP SDK (app.afipsdk.com), usadas por AfipSdk::__construct() para pedir
+     * el token de autorizacion (TA) via WebService. Antes estaban escritas literalmente en
+     * AfipSdk.php (grupo 220, prompt 02); el repositorio es publico, asi que ahora se leen del
+     * .env del servidor. Prohibido volver a escribir el valor real como default aca.
+     */
+    'afip_sdk' => [
+        // Access token de la cuenta de app.afipsdk.com. Obtenido de https://app.afipsdk.com
+        'access_token' => env('AFIP_SDK_ACCESS_TOKEN', ''),
+        // CUIT asociado a esa cuenta de AFIP SDK.
+        'cuit'         => env('AFIP_SDK_CUIT', ''),
+    ],
+
+    /**
+     * Tokens de Mercado Libre usados solo por los seeders de desarrollo
+     * (MeliPlatformConnectorSeeder / MercadoLibreTokenSeeder) para crear un PlatformConnector de
+     * ejemplo ya conectado. Son tokens de una cuenta real de Mercado Libre: nunca deben quedar
+     * hardcodeados en el repositorio publico (grupo 220, prompt 02).
+     */
+    'mercado_libre' => [
+        // Access token de la cuenta de Mercado Libre usada para sembrar el conector de ejemplo.
+        'access_token'  => env('MERCADO_LIBRE_SEED_ACCESS_TOKEN', ''),
+        // Refresh token de esa misma cuenta.
+        'refresh_token' => env('MERCADO_LIBRE_SEED_REFRESH_TOKEN', ''),
+    ],
+
+    /**
+     * Access token de una cuenta de prueba de Mercado Pago, usado solo por PaymentMethodSeeder
+     * para sembrar el medio de pago de ejemplo. Credencial de entorno, no configuracion de
+     * negocio (grupo 220, prompt 02).
+     */
+    'mercado_pago' => [
+        'token' => env('MERCADO_PAGO_SEED_ACCESS_TOKEN', ''),
+    ],
+
+    /**
+     * API key de fallback global de Google Custom Search: se usa cuando un User no tiene su
+     * propia google_custom_search_api_key configurada (GoogleController,
+     * ArticleDescriptionAiController, UserSeeder, set_datos_for_demo). Antes estaba hardcodeada
+     * en varios archivos; el repositorio es publico, asi que ahora se lee del .env del servidor
+     * (grupo 220, prompt 02).
+     */
+    'google_search' => [
+        'api_key' => env('GOOGLE_SEARCH_API_KEY', ''),
+    ],
+
 ];
