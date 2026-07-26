@@ -299,6 +299,15 @@ class ArticleImport implements ToCollection
             $articles_match = $this->process_row->get_articles_match();
             $articles_repetidos = $this->process_row->get_articles_repetidos();
 
+            /*
+             * Contadores nuevos (grupo 229): filas salteadas por match ambiguo y
+             * cantidad de identificadores descartados por ser placeholders (ej. "-", "S/N").
+             * Por ahora solo viajan en el array de resultado del chunk; el prompt 02
+             * agrega la migración/columnas para persistirlos en ArticleImportResult.
+             */
+            $filas_ambiguas = $this->process_row->get_filas_ambiguas();
+            $identificadores_descartados = $this->process_row->get_identificadores_descartados();
+
 
             $this->log('Trabajo terminado en ArticleImport');
             $this->log('articulos_creados: '.count($articulos_creados));
@@ -314,9 +323,12 @@ class ArticleImport implements ToCollection
                 'import_result_id'                              => $this->import_result_id, 
                 'articulos_creados'                             => $articulos_creados, 
                 'articulos_actualizados'                        => $articulos_actualizados, 
-                'articles_match'                                => $articles_match, 
-                'articles_repetidos'                            => $articles_repetidos, 
-                'filas_procesadas'                              => $this->filas_procesadas, 
+                'articles_match'                                => $articles_match,
+                'articles_repetidos'                            => $articles_repetidos,
+                /* Preparados para el prompt 02 (todavía sin columna en ArticleImportResult). */
+                'filas_ambiguas'                                => $filas_ambiguas,
+                'identificadores_descartados'                   => $identificadores_descartados,
+                'filas_procesadas'                              => $this->filas_procesadas,
                 'provider_id'                                   => $this->provider_id,
                 'registrar_articulos_creados'                   => $this->registrar_articulos_creados,
                 'registrar_articulos_actualizados'              => $this->registrar_articulos_actualizados,

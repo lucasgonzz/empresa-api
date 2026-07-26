@@ -32,8 +32,23 @@ class ProcessRow {
     protected $provider_id;
     protected $articles_match = 0;
     protected $articulos_repetidos = 0;
-    
+
     protected $articles_repetidos = 0;
+
+    /** Cantidad de filas salteadas por matchear de forma ambigua (bar_code/sku/provider_code repetidos). */
+    protected $filas_ambiguas = 0;
+
+    /** Cantidad de identificadores (bar_code/sku/provider_code/id) descartados por ser placeholders (ej. "-", "S/N"). */
+    protected $identificadores_descartados = 0;
+
+    /** Detalle de conflictos de ambigüedad detectados en este chunk, para el reporte del prompt 02. */
+    protected $conflictos_ambiguos_detalle = [];
+
+    /** Detalle de identificadores descartados por placeholder en este chunk, para el reporte del prompt 02. */
+    protected $placeholders_descartados_detalle = [];
+
+    /** Número de fila (relativo al chunk) que se está procesando; se incrementa en cada llamada a procesar(). */
+    protected $fila_actual = 0;
     protected $articulosParaActualizar = [];
     protected $articulosParaCrear = [];
     protected $price_types = [];
@@ -209,6 +224,9 @@ class ProcessRow {
             'procesos'  => [],
         ];
 
+        // Número de fila relativo a este chunk; se usa para identificar conflictos (ambiguos/placeholders) en los reportes.
+        $this->fila_actual++;
+
         $this->nombres_proveedores = $nombres_proveedores;
 
         $props_to_add = [
@@ -306,6 +324,34 @@ class ProcessRow {
 
         }
         $this->terminar('set props_to_add');
+
+
+        /*
+         * Normalizar los identificadores que llegan del Excel (id, bar_code, sku, provider_code)
+         * ANTES de cualquier uso posterior (ya_estaba_en_el_excel, find_with_index, etc.).
+         * Los proveedores usan placeholders como "-" o "S/N" para indicar "sin código"; si se
+         * tratan como identificadores reales, todas esas filas matchean contra el mismo artículo
+         * y se sobreescriben entre sí. Solo se normalizan los 4 campos identificadores: el
+         * nombre, la descripción, el precio y el stock quedan intactos.
+         */
+        $this->iniciar();
+        foreach (['id', 'bar_code', 'sku', 'provider_code'] as $campo_identificador) {
+
+            if (!array_key_exists($campo_identificador, $data)) {
+                continue;
+            }
+
+            // Valor tal cual vino del Excel, para poder registrar el descarte si corresponde.
+            $original = $data[$campo_identificador];
+            $data[$campo_identificador] = IdentifierNormalizer::normalize($original);
+
+            // Si el valor original no era vacío pero la normalización lo convirtió en null,
+            // significa que era un placeholder ("-", "S/N", etc): se registra para el reporte.
+            if (!is_null($original) && trim((string) $original) !== '' && is_null($data[$campo_identificador])) {
+                $this->registrar_placeholder_descartado($this->fila_actual, $campo_identificador, $original);
+            }
+        }
+        $this->terminar('normalizar identificadores (IdentifierNormalizer)');
 
 
         if (!ImportHelper::isIgnoredColumn('iva', $this->columns)) {
@@ -478,6 +524,19 @@ class ProcessRow {
         if ($provider_code_bloqueado_en_otro_proveedor) {
             $this->log('No hubo mach (bloqueado por provider_code existente en otro proveedor)');
             $this->articles_repetidos++;
+            $this->sumar_durations();
+            return $this->observations;
+        }
+
+        /*
+         * ArticleIndexCache::find_with_index() devuelve un AmbiguousMatch cuando el
+         * identificador de la fila (bar_code/sku/provider_code) resuelve a más de un
+         * artículo y la configuración no permite repetidos. Es deliberado: se prefiere
+         * saltear la fila y reportarla a adivinar (->first()) y corromper un artículo.
+         * No se crea ni se actualiza nada con esta fila.
+         */
+        if ($articulo_ya_creado instanceof AmbiguousMatch) {
+            $this->registrar_conflicto_ambiguo($this->fila_actual, $articulo_ya_creado);
             $this->sumar_durations();
             return $this->observations;
         }
@@ -1081,13 +1140,27 @@ class ProcessRow {
     {
         $bar_code = $data['bar_code'];
 
-        // Intentar resolver el artículo desde el índice en RAM por bar_code
-        $article_id_in_index = $this->article_index['bar_codes'][$bar_code] ?? null;
+        /*
+         * $index['bar_codes'] guarda una LISTA de article_ids (no un escalar), para
+         * poder detectar bar_codes ambiguos en find_with_index(). Acá solo nos interesa
+         * encontrar el id "fake" (artículo nuevo de este mismo import) si está presente
+         * entre los ids que matchean este bar_code; ArticleIndexCache::index_entry_to_ids
+         * soporta tanto el formato viejo (escalar) como el nuevo (lista).
+         */
+        $ids_en_indice = ArticleIndexCache::index_entry_to_ids($this->article_index['bar_codes'][$bar_code] ?? null);
+
+        $fake_id_en_indice = null;
+        foreach ($ids_en_indice as $id_val) {
+            if (strncmp((string) $id_val, 'fake_', strlen('fake_')) === 0) {
+                $fake_id_en_indice = (string) $id_val;
+                break;
+            }
+        }
 
         // --- 1. Es un fake (artículo nuevo pendiente de INSERT en este import) ---
-        if ($article_id_in_index && strncmp((string) $article_id_in_index, 'fake_', strlen('fake_')) === 0) {
+        if (!is_null($fake_id_en_indice)) {
 
-            $fake_id = (string) $article_id_in_index;
+            $fake_id = $fake_id_en_indice;
             $fake_article = ArticleIndexCache::get_runtime_fake_article((int) $this->user->id, $fake_id);
 
             if ($fake_article instanceof \App\Models\Article) {
@@ -2074,6 +2147,66 @@ class ProcessRow {
         return $this->articles_repetidos;
     }
 
+    /**
+     * Registra que un valor de identificador (bar_code/sku/provider_code/id) fue
+     * descartado por ser un placeholder (ej. "-", "S/N") y no un código real.
+     * Por ahora solo acumula en memoria y loguea; el prompt 02 lo persiste en la
+     * tabla de conflictos de importación.
+     *
+     * @param int    $fila     número de fila (relativo al chunk) donde se detectó.
+     * @param string $campo    campo identificador afectado (bar_code/sku/provider_code/id).
+     * @param mixed  $original valor original tal cual vino del Excel, antes de normalizar.
+     */
+    function registrar_placeholder_descartado($fila, $campo, $original): void
+    {
+        $this->identificadores_descartados++;
+
+        $this->placeholders_descartados_detalle[] = [
+            'fila'     => $fila,
+            'campo'    => $campo,
+            'original' => $original,
+        ];
+
+        $this->log('Placeholder descartado en fila ' . $fila . ', campo ' . $campo . ': "' . $original . '"');
+    }
+
+    /**
+     * Registra una fila salteada por matchear de forma ambigua (más de un artículo
+     * candidato para el mismo bar_code/sku/provider_code, sin permitir repetidos).
+     * Por ahora solo acumula en memoria y loguea; el prompt 02 lo persiste en la
+     * tabla de conflictos de importación.
+     *
+     * @param int             $fila   número de fila (relativo al chunk) donde se detectó.
+     * @param AmbiguousMatch  $ambiguo marcador devuelto por ArticleIndexCache::find_with_index().
+     */
+    function registrar_conflicto_ambiguo($fila, AmbiguousMatch $ambiguo): void
+    {
+        $this->filas_ambiguas++;
+
+        $this->conflictos_ambiguos_detalle[] = [
+            'fila'        => $fila,
+            'campo'       => $ambiguo->campo,
+            'valor'       => $ambiguo->valor,
+            'article_ids' => $ambiguo->article_ids,
+        ];
+
+        $this->log('Fila ' . $fila . ' salteada por match ambiguo en ' . $ambiguo->campo . ' = "' . $ambiguo->valor . '" (' . count($ambiguo->article_ids) . ' articulos candidatos)');
+    }
+
+    /**
+     * Cantidad de filas salteadas por match ambiguo en este chunk.
+     */
+    function get_filas_ambiguas() {
+        return $this->filas_ambiguas;
+    }
+
+    /**
+     * Cantidad de identificadores descartados por ser placeholders en este chunk.
+     */
+    function get_identificadores_descartados() {
+        return $this->identificadores_descartados;
+    }
+
     public function buffer_provider_relation(int $article_id, int $provider_id, array $pivot_data): void
     {
         if (!isset($this->provider_relations_buffer[$article_id])) {
@@ -2664,11 +2797,18 @@ class ProcessRow {
      */
     protected function bar_code_or_provider_code_already_in_bd(array $data): bool
     {
-        /* Chequear bar_code contra el índice de bar_codes. */
+        /*
+         * Chequear bar_code contra el índice de bar_codes.
+         * La entrada es una LISTA de ids (formato nuevo) o un escalar (índice viejo
+         * cacheado); index_entry_to_ids soporta ambos. Alcanza con que UNO de los ids
+         * sea real (no fake) para considerar que el código ya existe en BD.
+         */
         if (!empty($data['bar_code'])) {
-            $idx = $this->article_index['bar_codes'][(string)$data['bar_code']] ?? null;
-            if (!is_null($idx) && strncmp((string)$idx, 'fake_', strlen('fake_')) !== 0) {
-                return true;
+            $ids_bc = ArticleIndexCache::index_entry_to_ids($this->article_index['bar_codes'][(string)$data['bar_code']] ?? null);
+            foreach ($ids_bc as $id_val) {
+                if (strncmp((string)$id_val, 'fake_', strlen('fake_')) !== 0) {
+                    return true;
+                }
             }
         }
 

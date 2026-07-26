@@ -110,6 +110,76 @@ class ArticleIndexCache
     }
 
     /**
+     * Devuelve siempre un array de article ids, sirva el indice viejo (escalar)
+     * o el nuevo (lista).
+     *
+     * Compatibilidad: hay índices ya cacheados en producción con el formato viejo
+     * (bar_codes/skus como escalar => un solo article_id). Este helper centraliza
+     * la lectura para que todo el archivo soporte ambos formatos sin duplicar lógica.
+     *
+     * Público (no solo protected) porque ProcessRow también lee directamente
+     * $index['bar_codes']/$index['skus'] como snapshot en RAM (merge_bar_code_duplicate,
+     * bar_code_or_provider_code_already_in_bd) y necesita el mismo soporte de formatos.
+     *
+     * @param  mixed $entry
+     * @return array
+     */
+    public static function index_entry_to_ids($entry)
+    {
+        if (is_null($entry)) {
+            return [];
+        }
+
+        if (is_array($entry)) {
+            return array_values(array_unique($entry));
+        }
+
+        return [$entry];
+    }
+
+    /**
+     * Resuelve una entrada del indice a un unico articulo.
+     *
+     * Se usa para bar_code, sku y provider_code: en vez de "adivinar" con el primer
+     * id de la lista cuando hay varios candidatos, se devuelve un status 'ambiguous'
+     * explícito para que quien llama registre el conflicto y no cree/actualice nada.
+     *
+     * Devuelve un array asociativo:
+     *   ['status' => 'no_match']                 -> no hay candidatos
+     *   ['status' => 'match',    'article' => M] -> un unico candidato
+     *   ['status' => 'ambiguous','ids' => [...]] -> varios candidatos
+     *
+     * @param  mixed $article_ids entrada cruda del indice (escalar o array)
+     * @param  array $relations relaciones eager para la consulta Eloquent
+     * @param  int   $user_id usuario dueño del índice
+     * @return array
+     */
+    protected static function resolve_unique($article_ids, $relations, $user_id)
+    {
+        $ids = self::index_entry_to_ids($article_ids);
+
+        if (count($ids) === 0) {
+            return ['status' => 'no_match'];
+        }
+
+        if (count($ids) > 1) {
+            return ['status' => 'ambiguous', 'ids' => $ids];
+        }
+
+        $resolved = self::collection_from_index_article_ids($ids, $relations, $user_id);
+
+        if ($resolved->count() === 0) {
+            return ['status' => 'no_match'];
+        }
+
+        if ($resolved->count() > 1) {
+            return ['status' => 'ambiguous', 'ids' => $ids];
+        }
+
+        return ['status' => 'match', 'article' => $resolved->first()];
+    }
+
+    /**
      * Elimina del índice runtime todas las entradas que apuntan a un fake_id concreto
      * (bar_code, sku, name, provider_codes, ids). Sirve antes de re-add tras merge de fila.
      *
@@ -128,17 +198,36 @@ class ArticleIndexCache
 
         unset($index['ids'][$fake_id]);
 
-        foreach ($index['bar_codes'] as $bc => $fid) {
+        // bar_codes: cada entrada puede ser escalar (formato viejo) o lista (formato nuevo).
+        // Se filtra solo el fake_id puntual; si no quedan ids se borra la entrada entera.
+        foreach ($index['bar_codes'] as $bc => $entry) {
 
-            if ((string) $fid === $fake_id) {
+            $ids_en_entry = self::index_entry_to_ids($entry);
+
+            $filtrados = array_values(array_filter($ids_en_entry, function ($id_val) use ($fake_id) {
+                return (string) $id_val !== $fake_id;
+            }));
+
+            if (count($filtrados) === 0) {
                 unset($index['bar_codes'][$bc]);
+            } else {
+                $index['bar_codes'][$bc] = $filtrados;
             }
         }
 
-        foreach ($index['skus'] as $sku => $fid) {
+        // skus: misma lógica que bar_codes.
+        foreach ($index['skus'] as $sku => $entry) {
 
-            if ((string) $fid === $fake_id) {
+            $ids_en_entry = self::index_entry_to_ids($entry);
+
+            $filtrados = array_values(array_filter($ids_en_entry, function ($id_val) use ($fake_id) {
+                return (string) $id_val !== $fake_id;
+            }));
+
+            if (count($filtrados) === 0) {
                 unset($index['skus'][$sku]);
+            } else {
+                $index['skus'][$sku] = $filtrados;
             }
         }
 
@@ -236,12 +325,26 @@ class ArticleIndexCache
 
                 $index['ids'][$article_id] = $article_id;
 
+                /*
+                 * bar_codes/skus como lista de ids (no escalar): si dos artículos
+                 * comparten bar_code o sku, ambos quedan registrados en vez de que
+                 * el último pise al anterior. find_with_index() decide con esa
+                 * lista si hay match único o ambigüedad.
+                 */
                 if (!empty($article->bar_code)) {
-                    $index['bar_codes'][(string) $article->bar_code] = $article_id;
+                    $bc = (string) $article->bar_code;
+                    if (!isset($index['bar_codes'][$bc])) {
+                        $index['bar_codes'][$bc] = [];
+                    }
+                    $index['bar_codes'][$bc][] = $article_id;
                 }
 
                 if (!empty($article->sku)) {
-                    $index['skus'][(string) $article->sku] = $article_id;
+                    $sku = (string) $article->sku;
+                    if (!isset($index['skus'][$sku])) {
+                        $index['skus'][$sku] = [];
+                    }
+                    $index['skus'][$sku][] = $article_id;
                 }
 
                 // Log::info('provider_code: '.$article->provider_code);
@@ -419,14 +522,48 @@ class ArticleIndexCache
 
         // 2) bar_code
         elseif (!empty($data['bar_code']) && isset($index['bar_codes'][(string)$data['bar_code']])) {
+
             Self::log('Buscando por bar_code '.$data['bar_code']);
-            $article_id = $index['bar_codes'][(string)$data['bar_code']];
+
+            $bar_code_resolved = self::resolve_unique(
+                $index['bar_codes'][(string)$data['bar_code']],
+                $relations,
+                $user_id
+            );
+
+            if ($bar_code_resolved['status'] === 'ambiguous') {
+                Self::log('bar_code ambiguo: '.$data['bar_code'].' matchea con '.count($bar_code_resolved['ids']).' articulos');
+                return new AmbiguousMatch('bar_code', (string) $data['bar_code'], $bar_code_resolved['ids']);
+            }
+
+            if ($bar_code_resolved['status'] === 'match') {
+                return $bar_code_resolved['article'];
+            }
+
+            // no_match: se deja $article_id sin asignar (queda null), igual que el comportamiento previo.
         }
 
         // 3) sku
         elseif (!empty($data['sku']) && isset($index['skus'][(string)$data['sku']])) {
+
             Self::log('Buscando por sku '.$data['sku']);
-            $article_id = $index['skus'][(string)$data['sku']];
+
+            $sku_resolved = self::resolve_unique(
+                $index['skus'][(string)$data['sku']],
+                $relations,
+                $user_id
+            );
+
+            if ($sku_resolved['status'] === 'ambiguous') {
+                Self::log('sku ambiguo: '.$data['sku'].' matchea con '.count($sku_resolved['ids']).' articulos');
+                return new AmbiguousMatch('sku', (string) $data['sku'], $sku_resolved['ids']);
+            }
+
+            if ($sku_resolved['status'] === 'match') {
+                return $sku_resolved['article'];
+            }
+
+            // no_match: se deja $article_id sin asignar (queda null), igual que el comportamiento previo.
         }
 
         // 4) provider_code
@@ -439,16 +576,17 @@ class ArticleIndexCache
             }
 
             Self::log('Buscando por provider_code '.$data['provider_code']);
-            /* 
-                Si se permiten repetidos, NO querés sincronizar por provider_code => modo crear, y permitir codigos repetidos en multi proveedores = true
-                Entonces, siempre que se busque por provider_code, se retorna siempre null, para que si o si cree el articulo 
+
+            /*
+                El usuario pidió explícitamente no identificar por código de proveedor.
+                Antes esta guarda dependía de un && de tres condiciones que casi nunca se
+                cumplían las tres a la vez, así que actualizar_por_provider_code = false
+                no tenía efecto real. Ahora es una condición independiente: si está en
+                false, el paso de provider_code queda deshabilitado, punto, sin importar
+                el valor de las otras banderas.
             */
-            if (
-                $permitir_provider_code_repetido 
-                && !$actualizar_por_provider_code
-                && $permitir_provider_code_repetido_en_multi_providers
-            ) {
-                Self::log('Retornando NULL porque: permitir_provider_code_repetido = true y actualizar_por_provider_code = false');
+            if (!$actualizar_por_provider_code) {
+                Self::log('Paso provider_code deshabilitado: actualizar_por_provider_code = false');
                 return null;
             }
 
@@ -562,9 +700,25 @@ class ArticleIndexCache
 
                 } else {
 
-                    Self::log('Retornando un unico article porque no se permtien provider_codes repetidos');
+                    /*
+                        No se permiten provider_codes repetidos: si hay más de un candidato,
+                        antes se elegía el primero en silencio (->first()). Ahora se trata
+                        como ambigüedad explícita: no se crea ni se actualiza nada, se
+                        reporta el conflicto (ver ProcessRow::registrar_conflicto_ambiguo).
+                    */
+                    if (count($article_ids) > 1) {
+                        Self::log('provider_code ambiguo (repetidos no permitidos): '.$provider_code.' matchea con '.count($article_ids).' articulos');
+                        return new AmbiguousMatch('provider_code', $provider_code, $article_ids);
+                    }
+
+                    Self::log('Retornando un unico article porque no se permiten provider_codes repetidos');
                     // Un solo resultado: primero intentamos resolver ids mixtos (BD + fake en RAM)
                     $resolved = self::collection_from_index_article_ids($article_ids, $relations, $user_id);
+
+                    if ($resolved->count() > 1) {
+                        Self::log('provider_code ambiguo tras resolver en BD: '.$provider_code);
+                        return new AmbiguousMatch('provider_code', $provider_code, $article_ids);
+                    }
 
                     return $resolved->first();
                 }
@@ -661,11 +815,18 @@ class ArticleIndexCache
 
             $index['ids'][(string)$article_id] = $article_id;
         }
+        // bar_codes/skus en formato lista: se acumula en vez de pisar.
         if (!empty($article->bar_code)) {
-            $index['bar_codes'][(string)$article->bar_code] = $article_id;
+            $bc = (string) $article->bar_code;
+            $ids_bc = self::index_entry_to_ids($index['bar_codes'][$bc] ?? null);
+            $ids_bc[] = $article_id;
+            $index['bar_codes'][$bc] = array_values(array_unique($ids_bc));
         }
         if (!empty($article->sku)) {
-            $index['skus'][(string)$article->sku] = $article_id;
+            $sku = (string) $article->sku;
+            $ids_sku = self::index_entry_to_ids($index['skus'][$sku] ?? null);
+            $ids_sku[] = $article_id;
+            $index['skus'][$sku] = array_values(array_unique($ids_sku));
         }
 
         if (!is_null($article->provider_code) && !is_null($article->provider_id)) {
@@ -715,39 +876,79 @@ class ArticleIndexCache
 
         $fake_eliminado = false;
 
-        // a) Si existe fake en bar_codes
+        // a) Si existe fake en bar_codes (entrada puede ser escalar viejo o lista nueva)
         if (!empty($article->bar_code)) {
 
-            if (isset($index['bar_codes'][$article->bar_code]) &&
-                strncmp((string) $index['bar_codes'][$article->bar_code], 'fake_', strlen('fake_')) === 0) {
+            $bc = (string) $article->bar_code;
 
-                $fake_id_bar = (string) $index['bar_codes'][$article->bar_code];
+            if (isset($index['bar_codes'][$bc])) {
 
-                self::forget_runtime_fake_article((int) $article->user_id, $fake_id_bar);
-                unset($index['ids'][$fake_id_bar]);
-                unset($index['bar_codes'][$article->bar_code]);
-                $fake_eliminado = true;
-                // Log::info('Se elimino del cache bar_code: '.$article->bar_code);
+                $ids_en_entry = self::index_entry_to_ids($index['bar_codes'][$bc]);
+
+                $fakes_en_entry = array_values(array_filter($ids_en_entry, function ($id_val) {
+                    return strncmp((string) $id_val, 'fake_', strlen('fake_')) === 0;
+                }));
+
+                if (count($fakes_en_entry) > 0) {
+
+                    foreach ($fakes_en_entry as $fid) {
+                        self::forget_runtime_fake_article((int) $article->user_id, (string) $fid);
+                        unset($index['ids'][$fid]);
+                    }
+
+                    $sin_fakes = array_values(array_filter($ids_en_entry, function ($id_val) {
+                        return strncmp((string) $id_val, 'fake_', strlen('fake_')) !== 0;
+                    }));
+
+                    if (count($sin_fakes) === 0) {
+                        unset($index['bar_codes'][$bc]);
+                    } else {
+                        $index['bar_codes'][$bc] = $sin_fakes;
+                    }
+
+                    $fake_eliminado = true;
+                    // Log::info('Se elimino del cache bar_code: '.$bc);
+                }
             }
-        } 
+        }
 
 
         if (!$fake_eliminado) {
 
             if (!empty($article->sku)) {
 
-                if (isset($index['skus'][$article->sku]) &&
-                    strncmp((string) $index['skus'][$article->sku], 'fake_', strlen('fake_')) === 0) {
+                $sku = (string) $article->sku;
 
-                    $fake_id_sku = (string) $index['skus'][$article->sku];
+                if (isset($index['skus'][$sku])) {
 
-                    self::forget_runtime_fake_article((int) $article->user_id, $fake_id_sku);
-                    unset($index['ids'][$fake_id_sku]);
-                    unset($index['skus'][$article->sku]);
-                    $fake_eliminado = true;
-                    // Log::info('Se elimino del cache sku: '.$article->sku);
+                    $ids_en_entry = self::index_entry_to_ids($index['skus'][$sku]);
+
+                    $fakes_en_entry = array_values(array_filter($ids_en_entry, function ($id_val) {
+                        return strncmp((string) $id_val, 'fake_', strlen('fake_')) === 0;
+                    }));
+
+                    if (count($fakes_en_entry) > 0) {
+
+                        foreach ($fakes_en_entry as $fid) {
+                            self::forget_runtime_fake_article((int) $article->user_id, (string) $fid);
+                            unset($index['ids'][$fid]);
+                        }
+
+                        $sin_fakes = array_values(array_filter($ids_en_entry, function ($id_val) {
+                            return strncmp((string) $id_val, 'fake_', strlen('fake_')) !== 0;
+                        }));
+
+                        if (count($sin_fakes) === 0) {
+                            unset($index['skus'][$sku]);
+                        } else {
+                            $index['skus'][$sku] = $sin_fakes;
+                        }
+
+                        $fake_eliminado = true;
+                        // Log::info('Se elimino del cache sku: '.$sku);
+                    }
                 }
-            } 
+            }
         }
 
 
@@ -835,7 +1036,11 @@ class ArticleIndexCache
         $index['ids'][$article->id] = $article->id;
 
         if (!empty($article->bar_code)) {
-            $index['bar_codes'][$article->bar_code] = $article->id;
+            // Formato lista: se acumula en vez de pisar (ver index_entry_to_ids/resolve_unique).
+            $bc = (string) $article->bar_code;
+            $ids_bc = self::index_entry_to_ids($index['bar_codes'][$bc] ?? null);
+            $ids_bc[] = $article->id;
+            $index['bar_codes'][$bc] = array_values(array_unique($ids_bc));
         }
 
         if (!empty($article->name)) {
