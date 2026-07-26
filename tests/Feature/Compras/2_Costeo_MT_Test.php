@@ -183,6 +183,15 @@ class Costeo_MT_Test extends ComprasTestCase
      * 0: un monotributista no recupera credito fiscal, asi que ese IVA es costo siempre. El
      * costo base (`articles.cost`) sigue en el neto (1000), separado del costo real.
      *
+     * IMPORTANTE (hallazgo real de este prompt, ver docblock de la clase): todas las tablas de
+     * `empresa_testing` son MyISAM, no InnoDB, asi que `DatabaseTransactions` NO revierte nada de
+     * verdad al terminar el test (BEGIN/ROLLBACK son no-ops en MyISAM). Este test apaga el
+     * `aplicar_iva` de un articulo del fixture a proposito — sin restaurarlo a mano, esa mutacion
+     * queda PERMANENTE en la base de testing y rompe silenciosamente los tests posteriores que
+     * asumen Pinza en aplicar_iva=1 (su valor default del seeder). Por eso el cambio de `aplicar_iva`
+     * y su restauracion van en un `try/finally`: pase o falle el test, el fixture tiene que volver
+     * a quedar exactamente como lo dejo el seeder.
+     *
      * @group compras
      * @test
      */
@@ -193,35 +202,51 @@ class Costeo_MT_Test extends ComprasTestCase
 
         // Se apaga aplicar_iva del articulo a proposito: para un MT no deberia importar.
         $pinza = $this->articulo('Pinza');
-        $pinza->aplicar_iva = 0;
-        $pinza->save();
 
-        $payload = $this->payload_compra([
-            'precios_incluyen_iva' => 0,
-            'articles' => [
-                $this->item('Pinza', 1210, 10),
-            ],
-        ]);
+        /** aplicar_iva original del fixture (1, ver TestingFerreteriaSeeder::catalogo), para restaurarlo siempre al final. */
+        $aplicar_iva_original = $pinza->aplicar_iva;
 
-        $response = $this->postJson('api/provider-order', $payload);
+        try {
 
-        $response->assertStatus(201);
+            $pinza->aplicar_iva = 0;
+            $pinza->save();
 
-        $pinza->refresh();
+            $payload = $this->payload_compra([
+                'precios_incluyen_iva' => 0,
+                'articles' => [
+                    $this->item('Pinza', 1210, 10),
+                ],
+            ]);
 
-        $this->assertEqualsWithDelta(
-            1000,
-            (float) $pinza->cost,
-            self::DELTA,
-            'costo base de Pinza (siempre neto, sin importar aplicar_iva)'
-        );
+            $response = $this->postJson('api/provider-order', $payload);
 
-        $this->assertEqualsWithDelta(
-            1210,
-            (float) $pinza->costo_real,
-            self::DELTA,
-            'costo real de Pinza en MT: incorpora el IVA (1000 + 21%) aunque aplicar_iva este en 0'
-        );
+            $response->assertStatus(201);
+
+            $pinza->refresh();
+
+            $this->assertEqualsWithDelta(
+                1000,
+                (float) $pinza->cost,
+                self::DELTA,
+                'costo base de Pinza (siempre neto, sin importar aplicar_iva)'
+            );
+
+            $this->assertEqualsWithDelta(
+                1210,
+                (float) $pinza->costo_real,
+                self::DELTA,
+                'costo real de Pinza en MT: incorpora el IVA (1000 + 21%) aunque aplicar_iva este en 0'
+            );
+
+        } finally {
+
+            // Restauracion manual OBLIGATORIA (ver docblock del test): DatabaseTransactions no
+            // revierte nada en esta base (todas las tablas son MyISAM), asi que sin este bloque
+            // Pinza quedaria permanentemente en aplicar_iva=0 y rompe la suite en la proxima corrida.
+            $pinza->aplicar_iva = $aplicar_iva_original;
+            $pinza->save();
+
+        }
     }
 
     /**
