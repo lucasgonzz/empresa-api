@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\caja;
 use App\Models\Caja;
 use App\Models\CurrentAcount;
 use App\Models\Expense;
+use App\Models\MovimientoCaja;
 use App\Models\Sale;
 use Illuminate\Database\Eloquent\Model;
 
@@ -92,9 +93,12 @@ class DeleteCajaCompensacionHelper
      * @param string $model_type Una de las constantes MODEL_TYPE_*.
      * @param string|null $from_model_name En pagos CC: `client` u otro (proveedor).
      * @param string $notas_base Texto libre para el campo `notas` del movimiento (contexto de eliminación).
+     * @param int|null $model_id Grupo 223 · Prompt 02: id de la venta o del pago de CC que se está
+     *        eliminando (`Sale::$id` / `CurrentAcount::$id`), para poder ubicar el movimiento de
+     *        caja original y revertir su gasto de comisión. Null para gastos (nunca tuvieron comisión).
      * @return void
      */
-    public function crear_movimientos_compensacion($payment_methods, $model_type, $from_model_name, $notas_base)
+    public function crear_movimientos_compensacion($payment_methods, $model_type, $from_model_name, $notas_base, $model_id = null)
     {
         /** Helper de persistencia de movimientos y saldos de caja. */
         $movimiento_helper = new MovimientoCajaHelper();
@@ -117,10 +121,14 @@ class DeleteCajaCompensacionHelper
                 'notas'                       => $notas_base,
             ];
 
+            /** Grupo 223 · Prompt 02: solo estos dos casos revierten un cobro real (venta o pago de cliente). */
+            $es_reversion_de_cobro = false;
+
             if ($model_type === self::MODEL_TYPE_SALE) {
                 $data['concepto_movimiento_caja_id'] = self::CONCEPTO_ELIMINACION_VENTA;
                 $data['ingreso']                   = null;
                 $data['egreso']                    = $monto;
+                $es_reversion_de_cobro = true;
             } elseif ($model_type === self::MODEL_TYPE_EXPENSE) {
                 $data['concepto_movimiento_caja_id'] = self::CONCEPTO_ELIMINACION_GASTO;
                 $data['ingreso']                   = $monto;
@@ -130,6 +138,7 @@ class DeleteCajaCompensacionHelper
                     $data['concepto_movimiento_caja_id'] = self::CONCEPTO_ELIMINACION_PAGO_CLIENTE;
                     $data['ingreso']                   = null;
                     $data['egreso']                    = $monto;
+                    $es_reversion_de_cobro = true;
                 } else {
                     $data['concepto_movimiento_caja_id'] = self::CONCEPTO_ELIMINACION_PAGO_PROVEEDOR;
                     $data['ingreso']                   = $monto;
@@ -139,8 +148,89 @@ class DeleteCajaCompensacionHelper
                 continue;
             }
 
-            $movimiento_helper->crear_movimiento($data);
+            $movimiento_compensatorio = $movimiento_helper->crear_movimiento($data);
+
+            if ($es_reversion_de_cobro && !is_null($model_id)) {
+                $this->revertir_comision_del_original($movimiento_compensatorio, $model_type, $model_id, (int) $caja_id, $monto);
+            }
         }
+    }
+
+    /**
+     * Busca el movimiento original que generó el cobro que se está revirtiendo y, si tuvo un gasto
+     * de comisión asociado, lo borra y copia su `monto_neto_estimado` al movimiento compensatorio.
+     *
+     * El movimiento compensatorio mantiene `egreso` en BRUTO (el saldo contable tiene que cerrar en
+     * cero), pero copiar el neto original permite que `saldo_disponible` también cierre en cero —
+     * de lo contrario, eliminar una venta comisionada dejaría el saldo disponible corrido para
+     * siempre por el valor de la comisión.
+     *
+     * @param \App\Models\MovimientoCaja $movimiento_compensatorio Movimiento recién creado (egreso/ingreso inverso).
+     * @param string $model_type MODEL_TYPE_SALE o MODEL_TYPE_CURRENT_ACOUNT.
+     * @param int $model_id Id de la venta o del pago de CC original.
+     * @param int $caja_id Caja donde impactó el movimiento original.
+     * @param float $monto Monto del pivote, usado solo en el fallback de búsqueda por CC.
+     * @return void
+     */
+    protected function revertir_comision_del_original($movimiento_compensatorio, $model_type, $model_id, $caja_id, $monto)
+    {
+        $movimiento_original = $this->buscar_movimiento_original($model_type, $model_id, $caja_id, $monto);
+
+        if (is_null($movimiento_original) || is_null($movimiento_original->comision_expense_id)) {
+            return;
+        }
+
+        // Borrar el gasto automático de comisión: la venta/cobro que lo generó se está revirtiendo,
+        // no puede quedar un gasto de comisión de algo que ya no existe.
+        Expense::where('id', $movimiento_original->comision_expense_id)->delete();
+
+        $movimiento_compensatorio->monto_neto_estimado = $movimiento_original->monto_neto_estimado;
+        $movimiento_compensatorio->save();
+    }
+
+    /**
+     * Ubica el movimiento de caja original de un cobro (venta o pago de cliente) que se está
+     * revirtiendo.
+     *
+     * Para ventas, se busca directo por `sale_id`. Para pagos de cuenta corriente, se prioriza
+     * `current_acount_id` si estuviera poblado; hoy `CurrentAcountCajaHelper::guardar_pago()` no lo
+     * completa (queda comentado), así que se cae a un fallback por caja + monto + concepto de cobro
+     * a cliente. Si ninguno matchea, se devuelve null sin romper: la reversión de caja sigue
+     * funcionando igual que antes de este prompt, solo sin poder revertir una comisión que no se
+     * pudo ubicar.
+     *
+     * @param string $model_type MODEL_TYPE_SALE o MODEL_TYPE_CURRENT_ACOUNT.
+     * @param int $model_id
+     * @param int $caja_id
+     * @param float $monto
+     * @return \App\Models\MovimientoCaja|null
+     */
+    protected function buscar_movimiento_original($model_type, $model_id, $caja_id, $monto)
+    {
+        if ($model_type === self::MODEL_TYPE_SALE) {
+
+            return MovimientoCaja::where('caja_id', $caja_id)
+                                    ->where('sale_id', $model_id)
+                                    ->first();
+        }
+
+        // MODEL_TYPE_CURRENT_ACOUNT (cobro a cliente): preferir current_acount_id si está poblado.
+        $movimiento = MovimientoCaja::where('caja_id', $caja_id)
+                                        ->where('current_acount_id', $model_id)
+                                        ->first();
+
+        if (!is_null($movimiento)) {
+            return $movimiento;
+        }
+
+        // Fallback: current_acount_id no se completa hoy al crear el pago. Se resuelve por caja +
+        // monto + concepto de cobro a cliente (concepto 3). Si hay varios matches, se toma el más
+        // reciente; si no hay ninguno, se devuelve null sin romper.
+        return MovimientoCaja::where('caja_id', $caja_id)
+                                ->where('concepto_movimiento_caja_id', 3)
+                                ->where('ingreso', $monto)
+                                ->orderBy('created_at', 'DESC')
+                                ->first();
     }
 
     /**

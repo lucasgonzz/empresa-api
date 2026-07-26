@@ -185,6 +185,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('abrir-caja/{caja_id}', 'CajaController@abrir_caja');
     Route::put('cerrar-caja/{caja_id}', 'CajaController@cerrar_caja');
 
+    // Línea de tiempo de liquidaciones pendientes de una caja (Grupo 223 · Prompt 02)
+    Route::get('caja/{id}/liquidaciones-pendientes', 'CajaController@liquidaciones_pendientes');
+
     // Apertura de cajas
     Route::get('apertura-caja/{caja_id}', 'AperturaCajaController@index');
     Route::get('apertura-caja/show/{id}', 'AperturaCajaController@show');

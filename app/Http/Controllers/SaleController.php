@@ -503,7 +503,8 @@ class SaleController extends Controller
                 $payment_methods_para_compensacion,
                 DeleteCajaCompensacionHelper::MODEL_TYPE_SALE,
                 null,
-                'Eliminación de venta N° '.$model->num
+                'Eliminación de venta N° '.$model->num,
+                $model->id
             );
         }
 

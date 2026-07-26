@@ -260,7 +260,8 @@ class CurrentAcountController extends Controller
                 $metodos_para_compensacion,
                 DeleteCajaCompensacionHelper::MODEL_TYPE_CURRENT_ACOUNT,
                 $model_name,
-                $notas_compensacion
+                $notas_compensacion,
+                $current_acount->id
             );
         }
         

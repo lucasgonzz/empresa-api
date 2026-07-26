@@ -2,11 +2,14 @@
 
 namespace App\Http\Controllers\Helpers\caja;
 
+use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\AperturaCaja;
 use App\Models\Caja;
+use App\Models\Expense;
 use App\Models\MovimientoCaja;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class MovimientoCajaHelper {
@@ -18,22 +21,83 @@ class MovimientoCajaHelper {
 		$apertura_caja_id = $this->get_apertura_caja_id($data);
 		$employee_id = UserHelper::userId(false);
 
-		$this->movimiento_caja = MovimientoCaja::create([
-            'concepto_movimiento_caja_id'	=> $data['concepto_movimiento_caja_id'],
+		/*
+		 * Grupo 223 · Prompt 02 — liquidación y comisión.
+		 * SOLO se calcula si el llamador manda el flag explícito `aplica_liquidacion` en true,
+		 * junto con el método de pago y un ingreso positivo. Está PROHIBIDO inferir esto de
+		 * 'ingreso > 0' o de cualquier otra cosa: crear_movimiento() la comparten 6 flujos
+		 * distintos y hay ingresos que no son cobros (reversión de gasto/pago a proveedor,
+		 * destino de una transferencia entre cajas) que no deben calcular comisión.
+		 */
+		$aplica_liquidacion = !empty($data['aplica_liquidacion'])
+			&& isset($data['current_acount_payment_method_id'])
+			&& !is_null($data['current_acount_payment_method_id'])
+			&& isset($data['ingreso'])
+			&& !is_null($data['ingreso'])
+			&& $data['ingreso'] > 0;
 
-            'ingreso'						=> $data['ingreso'],
-            'egreso'						=> $data['egreso'],
+		// Campos calculados de liquidación/comisión a persistir en el movimiento (null por default:
+		// un movimiento que no aplica liquidación queda exactamente como hoy).
+		$fecha_liquidacion_estimada = null;
+		$monto_neto_estimado = null;
+		$comision_calculada = null;
 
-            'notas'							=> $data['notas'],
-            
-            'employee_id'					=> $employee_id,
-            'apertura_caja_id'				=> $apertura_caja_id,
+		if ($aplica_liquidacion) {
 
-            'sale_id'						=> isset($data['sale_id']) ? $data['sale_id'] : null, 
-            'expense_id'					=> isset($data['expense_id']) ? $data['expense_id'] : null, 
+			$caja_liquidacion = Caja::find($data['caja_id']);
 
-            'caja_id'						=> $data['caja_id'],
-		]);
+			$calculo = CajaLiquidacionHelper::calcular(
+				$caja_liquidacion,
+				$data['current_acount_payment_method_id'],
+				$data['ingreso'],
+				Carbon::now()
+			);
+
+			$fecha_liquidacion_estimada = $calculo['fecha_liquidacion_estimada']->format('Y-m-d');
+			$monto_neto_estimado = $calculo['monto_neto_estimado'];
+			$comision_calculada = $calculo['comision_calculada'];
+		}
+
+		// El movimiento y el gasto automático de comisión (si corresponde) se crean en la misma
+		// transacción: si falla el gasto, se revierte todo (regla dura del prompt 02).
+		$this->movimiento_caja = DB::transaction(function () use (
+			$data,
+			$apertura_caja_id,
+			$employee_id,
+			$fecha_liquidacion_estimada,
+			$monto_neto_estimado,
+			$comision_calculada,
+			$aplica_liquidacion
+		) {
+
+			$movimiento_caja = MovimientoCaja::create([
+	            'concepto_movimiento_caja_id'	=> $data['concepto_movimiento_caja_id'],
+
+	            'ingreso'						=> $data['ingreso'],
+	            'egreso'						=> $data['egreso'],
+
+	            'notas'							=> $data['notas'],
+
+	            'employee_id'					=> $employee_id,
+	            'apertura_caja_id'				=> $apertura_caja_id,
+
+	            'sale_id'						=> isset($data['sale_id']) ? $data['sale_id'] : null,
+	            'expense_id'					=> isset($data['expense_id']) ? $data['expense_id'] : null,
+
+	            'caja_id'						=> $data['caja_id'],
+
+	            'fecha_liquidacion_estimada'	=> $fecha_liquidacion_estimada,
+	            'monto_neto_estimado'			=> $monto_neto_estimado,
+	            'comision_calculada'			=> $comision_calculada,
+			]);
+
+			if ($aplica_liquidacion && $comision_calculada > 0) {
+
+				Self::crear_gasto_comision($movimiento_caja, $data['caja_id'], $data['current_acount_payment_method_id'], $comision_calculada);
+			}
+
+			return $movimiento_caja;
+		});
 
 
 		$this->set_saldos();
@@ -42,6 +106,104 @@ class MovimientoCajaHelper {
 
 		return $this->movimiento_caja;
 
+	}
+
+	/**
+	 * Crea el gasto automático de comisión para un movimiento de ingreso liquidable, con IVA
+	 * discriminado según la configuración resuelta (cascada caja + override por método de pago).
+	 *
+	 * Reglas duras (Grupo 223 · Prompt 02):
+	 * - El `Expense` se crea directo con `Expense::create()`, NUNCA vía
+	 *   `ExpenseCajaHelper::guardar_movimiento_caja()`: ese helper genera OTRO movimiento de
+	 *   egreso en la caja, y la comisión ya está reflejada en `monto_neto_estimado` — contarla
+	 *   dos veces descuadraría el saldo contable.
+	 * - `caja_id` del gasto queda en null a propósito, por el mismo motivo de arriba.
+	 * - Idempotente: si el movimiento ya tiene `comision_expense_id`, no crea un segundo gasto.
+	 * - Si no hay `expense_concept_id` resuelto, no se crea el gasto pero se loguea un warning:
+	 *   la comisión calculada sigue siendo información válida aunque falte esa config.
+	 *
+	 * @param \App\Models\MovimientoCaja $movimiento_caja Movimiento recién creado (ya persistido).
+	 * @param int $caja_id Caja de la que sale la comisión (para resolver moneda y owner).
+	 * @param int $current_acount_payment_method_id Método de pago del cobro, para la cascada de config.
+	 * @param float $comision_calculada Comisión bruta ya calculada por `CajaLiquidacionHelper::calcular()`.
+	 * @return void
+	 */
+	static function crear_gasto_comision($movimiento_caja, $caja_id, $current_acount_payment_method_id, $comision_calculada) {
+
+		// Idempotencia: un retry sobre el mismo movimiento no puede duplicar el Expense.
+		if (!is_null($movimiento_caja->comision_expense_id)) {
+			return;
+		}
+
+		$caja = Caja::find($caja_id);
+
+		// Configuración efectiva (cascada caja + override) para saber concepto, alícuota e IVA incluido.
+		$config = CajaLiquidacionHelper::resolve_config($caja, $current_acount_payment_method_id);
+
+		if (is_null($config['expense_concept_id'])) {
+
+			Log::warning('CajaLiquidacionHelper: no se creó el gasto automático de comisión del movimiento de caja N° '.$movimiento_caja->id.' (caja '.$caja_id.') porque no hay expense_concept_id configurado.');
+			return;
+		}
+
+		$importe_iva = CajaLiquidacionHelper::calcular_iva_comision($comision_calculada, $config['comision_iva_alicuota'], $config['comision_iva_incluido']);
+
+		// Con IVA incluido, la comisión ya ES el total. Neta de IVA, el total a pagar es comisión + iva.
+		$amount = $comision_calculada;
+		if (!$config['comision_iva_incluido']) {
+			$amount = Numbers::redondear($comision_calculada + $importe_iva);
+		}
+
+		$num = Self::num_expense_owner($caja->user_id);
+
+		$expense = Expense::create([
+			'num'					=> $num,
+			'expense_concept_id'	=> $config['expense_concept_id'],
+			'amount'				=> $amount,
+			'importe_iva'			=> $importe_iva,
+			'moneda_id'				=> $caja->moneda_id,
+			'observations'			=> 'Comisión automática — movimiento de caja N° '.$movimiento_caja->id.' ('.$caja->name.')',
+			'user_id'				=> $caja->user_id,
+			'caja_id'				=> null,
+		]);
+
+		$movimiento_caja->comision_expense_id = $expense->id;
+		$movimiento_caja->save();
+	}
+
+	/**
+	 * Replica la lógica de `Controller::num()` para resolver el correlativo de `expenses` por
+	 * owner, sin instanciar el Controller desde un helper (regla del prompt 02).
+	 *
+	 * @param int $user_id Owner dueño del correlativo.
+	 * @return int Próximo número correlativo.
+	 */
+	static function num_expense_owner($user_id) {
+
+		$resolver = function () use ($user_id) {
+
+			// Lock sobre la fila de users para serializar lecturas concurrentes del máximo.
+			DB::table('users')->where('id', $user_id)->lockForUpdate()->first();
+
+			$last = DB::table('expenses')
+						->where('user_id', $user_id)
+						->orderBy('num', 'DESC')
+						->lockForUpdate()
+						->first();
+
+			if (is_null($last) || is_null($last->num)) {
+				return 1;
+			}
+
+			return $last->num + 1;
+		};
+
+		// Si ya hay una transacción abierta (crear_movimiento() la abre), no anidamos otra.
+		if (DB::transactionLevel() > 0) {
+			return $resolver();
+		}
+
+		return DB::transaction($resolver);
 	}
 
 	function get_apertura_caja_id($data) {
