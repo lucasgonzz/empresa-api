@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\AuthController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\UserProfileChangeDescriptionHelper;
@@ -128,10 +129,11 @@ class UserController extends Controller
 
         if ($request->default_version) {
             $api_url = str_replace('https://', 'https://api-', $request->default_version);
-            if (!config('app.VPS') && config('app.APP_ENV') == 'production') {
+            $api_url = rtrim(trim((string) $api_url), '/');
+            if (ApiUrlHelper::needs_public_segment() && substr($api_url, -7) !== '/public') {
                 $api_url .= '/public';
             }
-            $model->api_url  = $api_url;
+            $model->api_url = $api_url;
         }
 
         $model->text_omitir_cc                  = $request->text_omitir_cc;

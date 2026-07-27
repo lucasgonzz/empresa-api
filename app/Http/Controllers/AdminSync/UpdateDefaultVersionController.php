@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -30,9 +31,14 @@ class UpdateDefaultVersionController extends Controller
 
         if ($api_url === '') {
             $api_url = str_replace('https://', 'https://api-', $spa_url);
-            if (! config('app.VPS') && config('app.APP_ENV') === 'production') {
-                $api_url .= '/public';
-            }
+        }
+
+        // Normalizar siempre: limpiar espacios y barras finales
+        $api_url = rtrim(trim((string) $api_url), '/');
+
+        // Aplicar el guard de sufijo una sola vez (ambas ramas: derivada del spa_url o explícita por request)
+        if (ApiUrlHelper::needs_public_segment() && substr($api_url, -7) !== '/public') {
+            $api_url .= '/public';
         }
 
         try {
