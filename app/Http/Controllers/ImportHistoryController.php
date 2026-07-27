@@ -58,6 +58,19 @@ class ImportHistoryController extends Controller
                                 ->take(10)
                                 ->get();
 
+        /*
+         * matching_counts_json se guarda como texto plano (json_encode) en BD, igual que
+         * el resto de columnas JSON del repo (ver ArticleImportHelper). Se decodifica acá
+         * para que el frontend reciba un array ya parseado en vez de un string JSON
+         * anidado. filas_ambiguas e identificadores_descartados ya viajan tal cual porque
+         * son columnas enteras (grupo 232, prompt 03; la UI que los consuma es otro prompt).
+         */
+        $models->each(function ($model) {
+            $model->matching_counts_json = is_null($model->matching_counts_json)
+                ? null
+                : json_decode($model->matching_counts_json, true);
+        });
+
         return response()->json(['models' => $models], 200);
     }
 
