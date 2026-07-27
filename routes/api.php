@@ -511,6 +511,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // viejo de arriba (company-performance) hasta que se ejecute el grupo 227.
     Route::get('reportes/estado-resultados', 'EstadoResultadosController@index');
 
+    // Posición fiscal: IVA, IIBB y pagos a cuenta de Ganancias (Grupo 225 · Prompt 02). Aditivo,
+    // no reemplaza ningún reporte existente.
+    Route::get('reportes/posicion-fiscal', 'PosicionFiscalController@index');
+
     // Article Purchase
     Route::post('article-purchase', 'ArticlePurchaseController@index');
 
