@@ -80,6 +80,10 @@ class UserController extends Controller
         $current_redondear_de_a_50              = (int) $model->redondear_de_a_50;
         $current_redondear_precios_en_centavos  = (int) $model->redondear_precios_en_centavos;
         $current_aplicar_iva_al_costo           = (int) $model->aplicar_iva_al_costo;
+        // Condicion de IVA para precios (RRII/MT) previa al guardado, para detectar si cambio y disparar el recalculo masivo.
+        $current_condicion_iva_precios          = $model->condicion_iva_precios;
+        // Flag previo que indica si el costeo depende de la condicion fiscal de la cuenta, para el mismo chequeo de cambios.
+        $current_usar_condicion_fiscal_en_costeo = (int) $model->usar_condicion_fiscal_en_costeo;
 
         $current_default_version                = (int) $model->default_version;
 
@@ -170,6 +174,28 @@ class UserController extends Controller
         $model->aplicar_descuentos_de_venta_a_costos = $request->aplicar_descuentos_de_venta_a_costos;
 
         /**
+         * Condicion de IVA para precios (Grupo 231): define si la cuenta es Monotributista o
+         * Responsable Inscripto y de eso depende el calculo de costeo (via
+         * ArticlePricesHelper::iva_va_al_costo). Se valida acotado porque un valor corrupto en
+         * esta columna descalibra el costeo de toda la cuenta en silencio (misma validacion que
+         * antes vivia en UserConfigurationController, movida aca en el prompt 01). Si llega algo
+         * distinto de RRII/MT no se guarda nada y se corta el request con 422. Se chequea con
+         * `has()` (a diferencia del resto de los campos de este metodo) para no romper el guardado
+         * del formulario de propiedades mientras el prompt 06 (empresa-spa) todavia no manda este
+         * campo nuevo: sin el guard, cualquier request viejo sin `condicion_iva_precios` llegaria
+         * como null y tiraria 422 en TODO guardado de configuracion, no solo en el de esta feature.
+         */
+        if ($request->has('condicion_iva_precios')) {
+            if ($request->condicion_iva_precios !== User::CONDICION_RRII && $request->condicion_iva_precios !== User::CONDICION_MT) {
+                return response()->json(['error' => true, 'message' => 'condicion_iva_precios invalida'], 422);
+            }
+            $model->condicion_iva_precios = $request->condicion_iva_precios;
+        }
+
+        // Flag que activa la nueva dinamica de costeo dependiente de la condicion fiscal de la cuenta.
+        $model->usar_condicion_fiscal_en_costeo       = $request->usar_condicion_fiscal_en_costeo;
+
+        /**
          * Permite `provider_code` repetido en artículos.
          * Esta configuración se usa desde el front solo por el owner, por eso se persiste en el auth_user.
          */
@@ -214,7 +240,9 @@ class UserController extends Controller
                 $current_redondear_precios_en_decenas,
                 $current_redondear_de_a_50,
                 $current_redondear_precios_en_centavos,
-                $current_aplicar_iva_al_costo
+                $current_aplicar_iva_al_costo,
+                $current_condicion_iva_precios,
+                $current_usar_condicion_fiscal_en_costeo
             )
         ) {
             $notifications[] = [
@@ -497,6 +525,8 @@ class UserController extends Controller
      * @param int $current_redondear_precios_en_decenas Valor previo del flag redondear_precios_en_decenas.
      * @param int $current_redondear_de_a_50 Valor previo del flag redondear_de_a_50.
      * @param int $current_redondear_precios_en_centavos Valor previo del flag redondear_precios_en_centavos.
+     * @param mixed $current_condicion_iva_precios Valor previo de condicion_iva_precios (RRII/MT).
+     * @param int $current_usar_condicion_fiscal_en_costeo Valor previo del flag usar_condicion_fiscal_en_costeo.
      * @return bool true si se encoló un recálculo; false si no hubo cambios relevantes.
      */
     function check_actualizar_articulos(
@@ -508,7 +538,9 @@ class UserController extends Controller
         $current_redondear_precios_en_decenas,
         $current_redondear_de_a_50,
         $current_redondear_precios_en_centavos,
-        $current_aplicar_iva_al_costo
+        $current_aplicar_iva_al_costo,
+        $current_condicion_iva_precios,
+        $current_usar_condicion_fiscal_en_costeo
     ) {
 
         if (
@@ -520,6 +552,8 @@ class UserController extends Controller
             || (int) $model->redondear_de_a_50 !== (int) $current_redondear_de_a_50
             || (int) $model->redondear_precios_en_centavos !== (int) $current_redondear_precios_en_centavos
             || (int) $model->aplicar_iva_al_costo !== (int) $current_aplicar_iva_al_costo
+            || $model->condicion_iva_precios != $current_condicion_iva_precios
+            || (int) $model->usar_condicion_fiscal_en_costeo !== (int) $current_usar_condicion_fiscal_en_costeo
 
         ) {
             Log::info($model->dollar.' | '.$current_dolar);
@@ -530,6 +564,8 @@ class UserController extends Controller
             Log::info((int) $model->redondear_de_a_50.' | '.(int) $current_redondear_de_a_50);
             Log::info((int) $model->redondear_precios_en_centavos.' | '.(int) $current_redondear_precios_en_centavos);
             Log::info((int) $model->aplicar_iva_al_costo.' | '.(int) $current_aplicar_iva_al_costo);
+            Log::info($model->condicion_iva_precios.' | '.$current_condicion_iva_precios);
+            Log::info((int) $model->usar_condicion_fiscal_en_costeo.' | '.(int) $current_usar_condicion_fiscal_en_costeo);
             Log::info('Hubo cambios en propiedades de user');
 
             /** @var bool $from_dolar Indica si el recálculo se disparó por cambio de dólar (optimiza query en job). */
