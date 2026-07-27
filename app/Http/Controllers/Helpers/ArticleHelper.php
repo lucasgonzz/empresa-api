@@ -86,6 +86,17 @@ class ArticleHelper {
         }
     }
 
+    /**
+     * Calcula (y opcionalmente persiste) el costo real y el precio final de un articulo.
+     *
+     * @param $guardar_cambios bool Si es false, se pide una simulacion: no se debe escribir
+     *        en la base. OJO: esto NO convierte a la funcion en pura. Aguas abajo,
+     *        ArticlePricesHelper::aplicar_precios_segun_listas_de_precios() sigue haciendo
+     *        syncWithoutDetaching()/updateExistingPivot() sobre los pivots de tipos de precio
+     *        sin mirar esta bandera, asi que esos pivots se escriben igual aunque se pida
+     *        $guardar_cambios = false. Quien necesite una simulacion realmente sin efectos
+     *        secundarios debe envolver el llamado en una transaccion con rollback.
+     */
     static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null, $return_description = false) {
 
         // Log::info('setFinalPrice para '.$article->name.' ,id: '.$article->id.' con costo de '.$article->cost.' y precio de '.$article->price);
@@ -132,8 +143,16 @@ class ArticleHelper {
             $costo_real = $res['price'];
             $des        = $res['des'];
 
+            // La asignacion en memoria queda siempre afuera del if: los callers que piden
+            // simulacion ($guardar_cambios = false) necesitan el valor en el objeto en memoria,
+            // y ActualizarBBDD lo toma del array de retorno que se arma mas abajo con esta misma
+            // variable. Antes de este fix el save() era incondicional y pisaba en la base el
+            // costo real de cuentas que solo habian pedido una simulacion, sin que nada lo avisara.
             $article->costo_real = $costo_real;
-            $article->save();
+
+            if ($guardar_cambios) {
+                $article->save();
+            }
 
             $des[] = 'Costo Real queda en = '.Numbers::price($costo_real, true);
 
