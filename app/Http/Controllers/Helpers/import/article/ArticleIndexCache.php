@@ -138,6 +138,45 @@ class ArticleIndexCache
     }
 
     /**
+     * Normaliza un nombre para comparacion exacta en el escalon 5 de la cadena.
+     *
+     * Baja a minusculas con mb_strtolower (strtolower no baja acentos ni Ñ),
+     * saca espacios de los bordes y colapsa espacios internos. NADA MAS:
+     * no saca acentos, ni puntuacion, ni palabras.
+     *
+     * El colapso de espacios internos es necesario porque los Excel de proveedor
+     * vienen con nombres alineados a mano, del estilo
+     * "PARRILLA INFERIOR   IZQUIERDA PEUGEOT" vs "PARRILLA INFERIOR IZQUIERDA PEUGEOT".
+     *
+     * @param  string $name
+     * @return string
+     */
+    public static function normalize_name_for_match($name)
+    {
+        $lower = function_exists('mb_strtolower')
+            ? mb_strtolower((string) $name, 'UTF-8')
+            : strtolower((string) $name);
+
+        return trim(preg_replace('/\s+/u', ' ', $lower));
+    }
+
+    /**
+     * Clave de cache del indice de importacion.
+     *
+     * La version se bumpea cuando cambia el FORMATO del indice o la forma de calcular
+     * alguna de sus claves, para que los indices viejos que quedaron cacheados no se
+     * lean con las reglas nuevas. v2: names pasa a lista y su clave se calcula con
+     * normalize_name_for_match() (mb_strtolower + colapso de espacios internos).
+     *
+     * @param  int $user_id
+     * @return string
+     */
+    protected static function cache_key($user_id)
+    {
+        return 'article_index_v2_user_' . (int) $user_id;
+    }
+
+    /**
      * Resuelve una entrada del indice a un unico articulo.
      *
      * Se usa para bar_code, sku y provider_code: en vez de "adivinar" con el primer
@@ -188,7 +227,7 @@ class ArticleIndexCache
      */
     public static function remove_fake_from_runtime_index(int $user_id, string $fake_id): void
     {
-        $key = "article_index_user_{$user_id}";
+        $key = self::cache_key($user_id);
 
         if (empty(self::$runtime_loaded_by_key[$key]) || empty(self::$runtime_index_by_key[$key])) {
             return;
@@ -231,10 +270,21 @@ class ArticleIndexCache
             }
         }
 
-        foreach ($index['names'] as $name_key => $fid) {
+        // names: cada entrada puede ser escalar (formato viejo) o lista (formato nuevo,
+        // ver index_entry_to_ids). Se filtra solo el fake_id puntual; si no quedan ids
+        // se borra la entrada entera.
+        foreach ($index['names'] as $name_key => $entry) {
 
-            if ((string) $fid === $fake_id) {
+            $ids_en_entry = self::index_entry_to_ids($entry);
+
+            $filtrados = array_values(array_filter($ids_en_entry, function ($id_val) use ($fake_id) {
+                return (string) $id_val !== $fake_id;
+            }));
+
+            if (count($filtrados) === 0) {
                 unset($index['names'][$name_key]);
+            } else {
+                $index['names'][$name_key] = $filtrados;
             }
         }
 
@@ -286,7 +336,7 @@ class ArticleIndexCache
         $inicio = microtime(true);
 
         $user = User::find($user_id);
-        $key = "article_index_user_{$user_id}";
+        $key = self::cache_key($user_id);
 
         // $provider_codes_desde_pivot_table = false;
 
@@ -374,8 +424,18 @@ class ArticleIndexCache
                 // }
 
 
+                /*
+                 * names como lista de ids (no escalar): igual que bar_codes/skus, si dos
+                 * articulos comparten nombre normalizado ambos quedan registrados en vez
+                 * de que el ultimo pise al anterior. find_with_index() decide con esa
+                 * lista si hay match unico o ambiguedad (evita el incidente de Servian).
+                 */
                 if (!empty($article->name)) {
-                    $index['names'][strtolower(trim((string) $article->name))] = $article_id;
+                    $name_key = self::normalize_name_for_match($article->name);
+                    if (!isset($index['names'][$name_key])) {
+                        $index['names'][$name_key] = [];
+                    }
+                    $index['names'][$name_key][] = $article_id;
                 }
             }
         });
@@ -399,7 +459,7 @@ class ArticleIndexCache
     public static function get(int $user_id): array
     {
 
-        $key = "article_index_user_{$user_id}";
+        $key = self::cache_key($user_id);
 
         return Cache::get($key, []);
     }
@@ -407,7 +467,7 @@ class ArticleIndexCache
 
     public static function get_index(int $user_id, ?int $provider_id = null, $actualizar_otro_proveedor = null): array
     {
-        $key = "article_index_user_{$user_id}";
+        $key = self::cache_key($user_id);
 
         // ✅ runtime memoization (RAM) para este proceso/job
         if (!empty(self::$runtime_loaded_by_key[$key])) {
@@ -729,9 +789,23 @@ class ArticleIndexCache
 
         // 5) name
         elseif (!empty($data['name'])) {
-            $key_name = mb_strtolower(trim((string)$data['name']));
+
+            $key_name = self::normalize_name_for_match($data['name']);
+
             if (isset($index['names'][$key_name])) {
-                $article_id = $index['names'][$key_name];
+
+                $name_resolved = self::resolve_unique($index['names'][$key_name], $relations, $user_id);
+
+                if ($name_resolved['status'] === 'ambiguous') {
+                    Self::log('name ambiguo: '.$data['name'].' matchea con '.count($name_resolved['ids']).' articulos');
+                    return new AmbiguousMatch('name', (string) $data['name'], $name_resolved['ids']);
+                }
+
+                if ($name_resolved['status'] === 'match') {
+                    return $name_resolved['article'];
+                }
+
+                /* no_match: se deja $article_id sin asignar, igual que bar_code y sku. */
             }
         }
 
@@ -789,7 +863,7 @@ class ArticleIndexCache
 
     public static function add($article)
     {
-        $key = "article_index_user_{$article->user_id}";
+        $key = self::cache_key($article->user_id);
 
         // Usar índice en RAM (memoizado) para NO tocar cache en cada fila
         $index = self::get_index((int)$article->user_id);
@@ -847,8 +921,12 @@ class ArticleIndexCache
             $index['provider_codes'][$prov_id][$prov_code][] = $article_id;
         }
 
+        // names en formato lista: se acumula en vez de pisar (misma logica que bar_codes/skus).
         if (!empty($article->name)) {
-            $index['names'][strtolower(trim((string)$article->name))] = $article_id;
+            $name_key = self::normalize_name_for_match($article->name);
+            $ids_name = self::index_entry_to_ids($index['names'][$name_key] ?? null);
+            $ids_name[] = $article_id;
+            $index['names'][$name_key] = array_values(array_unique($ids_name));
         }
 
         // Guardamos en RAM y marcamos como "dirty" SOLO si querés persistir.
@@ -862,7 +940,7 @@ class ArticleIndexCache
 
     public static function update(Article $article, $codigos_proveedor_repetidos)
     {
-        $key = "article_index_user_{$article->user_id}";
+        $key = self::cache_key($article->user_id);
         $index = Cache::get($key);
 
         // if (!$index) {
@@ -1006,19 +1084,38 @@ class ArticleIndexCache
             }
         }
 
-        $name_key = strtolower(trim($article->name));
+        // clave normalizada del nombre (mb_strtolower + colapso de espacios internos)
+        $name_key = self::normalize_name_for_match($article->name);
         if (!$fake_eliminado) {
 
-            // c) Si existe fake en names
-            if (!empty($article->name)) {
-                if (isset($index['names'][$name_key]) &&
-                    strncmp((string) $index['names'][$name_key], 'fake_', strlen('fake_')) === 0) {
+            // c) Si existe fake en names (entrada puede ser escalar viejo o lista nueva):
+            // se filtran solo los ids fake_*, se conservan los reales.
+            if (!empty($article->name) && isset($index['names'][$name_key])) {
 
-                    $fake_id_name = (string) $index['names'][$name_key];
+                $ids_en_entry = self::index_entry_to_ids($index['names'][$name_key]);
 
-                    self::forget_runtime_fake_article((int) $article->user_id, $fake_id_name);
-                    unset($index['ids'][$fake_id_name]);
-                    unset($index['names'][$name_key]);
+                $fakes_en_entry = array_values(array_filter($ids_en_entry, function ($id_val) {
+                    return strncmp((string) $id_val, 'fake_', strlen('fake_')) === 0;
+                }));
+
+                if (count($fakes_en_entry) > 0) {
+
+                    foreach ($fakes_en_entry as $fid) {
+                        self::forget_runtime_fake_article((int) $article->user_id, (string) $fid);
+                        unset($index['ids'][$fid]);
+                    }
+
+                    $sin_fakes = array_values(array_filter($ids_en_entry, function ($id_val) {
+                        return strncmp((string) $id_val, 'fake_', strlen('fake_')) !== 0;
+                    }));
+
+                    if (count($sin_fakes) === 0) {
+                        unset($index['names'][$name_key]);
+                    } else {
+                        $index['names'][$name_key] = $sin_fakes;
+                    }
+
+                    $fake_eliminado = true;
                     // Log::info('Se elimino del cache name: '.$name_key);
                 }
             }
@@ -1044,7 +1141,10 @@ class ArticleIndexCache
         }
 
         if (!empty($article->name)) {
-            $index['names'][$name_key] = $article->id;
+            // Formato lista: se acumula en vez de pisar (misma logica que bar_codes/skus).
+            $ids_name = self::index_entry_to_ids($index['names'][$name_key] ?? null);
+            $ids_name[] = $article->id;
+            $index['names'][$name_key] = array_values(array_unique($ids_name));
         }
 
         // provider_code
@@ -1095,7 +1195,7 @@ class ArticleIndexCache
     public static function persist(int $user_id, int $ttl_minutes = 30): void
     {
         // clave del cache compartido para este usuario
-        $key = "article_index_user_{$user_id}";
+        $key = self::cache_key($user_id);
 
         // Si no hay indice cargado en RAM o no tiene cambios sin persistir, no hay nada que hacer.
         if (empty(self::$runtime_loaded_by_key[$key]) || empty(self::$runtime_dirty_by_key[$key])) {
@@ -1123,8 +1223,10 @@ class ArticleIndexCache
     /**
      * Fusiona dos indices de importacion.
      *
-     * - ids, names: mapas escalares. Gana el nuevo.
-     * - bar_codes, skus: listas de article ids (formato del prompt 01). Se unen.
+     * - ids: mapa escalar. Gana el nuevo.
+     * - bar_codes, skus, names: listas de article ids. Se unen (names desde el prompt 01
+     *   del grupo 232: antes era escalar y "ganaba el nuevo", ahora se acumula igual que
+     *   bar_codes/skus para no perder candidatos con nombre repetido).
      * - provider_codes: mapa provider_id -> codigo -> lista de ids. Se unen.
      *
      * Los article ids "fake_*" NO se propagan: son locales al proceso que los creo
@@ -1139,8 +1241,8 @@ class ArticleIndexCache
         // resultado acumulado, arranca como copia del indice base (remoto)
         $out = $base;
 
-        /* ids y names: escalares. */
-        foreach (['ids', 'names'] as $seccion) {
+        /* ids: escalar. */
+        foreach (['ids'] as $seccion) {
             if (!isset($nuevo[$seccion])) {
                 continue;
             }
@@ -1155,8 +1257,8 @@ class ArticleIndexCache
             }
         }
 
-        /* bar_codes y skus: listas de ids. */
-        foreach (['bar_codes', 'skus'] as $seccion) {
+        /* bar_codes, skus y names: listas de ids. */
+        foreach (['bar_codes', 'skus', 'names'] as $seccion) {
             if (!isset($nuevo[$seccion])) {
                 continue;
             }
@@ -1249,7 +1351,7 @@ class ArticleIndexCache
     public static function reset_runtime(int $user_id): void
     {
         // clave del cache compartido / RAM local para este usuario
-        $key = "article_index_user_{$user_id}";
+        $key = self::cache_key($user_id);
 
         /* Si hay cambios sin persistir, persistirlos antes de descartar. */
         if (!empty(self::$runtime_dirty_by_key[$key])) {
@@ -1264,7 +1366,7 @@ class ArticleIndexCache
 
     static function limpiar_cache($user_id) {
 
-        $cache_key = "article_index_user_{$user_id}";
+        $cache_key = self::cache_key($user_id);
         
         Cache::forget($cache_key);
 
