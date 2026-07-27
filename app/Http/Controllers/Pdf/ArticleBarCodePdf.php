@@ -1,9 +1,10 @@
 <?php
 
-namespace App\Http\Controllers\Pdf; 
+namespace App\Http\Controllers\Pdf;
 
 use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\StringHelper;
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Models\Article;
 use Milon\Barcode\DNS1D;
 use fpdf;
@@ -88,9 +89,10 @@ class ArticleBarCodePdf extends fpdf {
 		if (!is_null($article)) {
 
 			$code = $article->bar_code;
+			$base_url = ApiUrlHelper::base();
 			if (
-				config('app.APP_URL') == 'https://api-feitoamao-beta.comerciocity.com'
-				|| config('app.APP_URL') == 'https://api-feitoamao.comerciocity.com'
+				$base_url == 'https://api-feitoamao-beta.comerciocity.com'
+				|| $base_url == 'https://api-feitoamao.comerciocity.com'
 			) {
 
 				$code = ''.$article->num;

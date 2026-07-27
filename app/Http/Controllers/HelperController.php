@@ -7,6 +7,7 @@ use App\Http\Controllers\AfipWsController;
 use App\Http\Controllers\ArticlePerformanceController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
@@ -3929,7 +3930,7 @@ class HelperController extends Controller
             return null;
         }
         Storage::disk('public')->put($name, file_get_contents($url_cloudinary));
-        return config('app.APP_URL').'/storage/'.$name;
+        return ApiUrlHelper::storage($name);
     }
 
     function getPlural($model) {

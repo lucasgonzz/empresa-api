@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
@@ -144,7 +145,8 @@ class UserSetupHelper
 
         return User::create([
             'id'                            => $data['user_id'] ?? null,
-            'api_url'                       => config('app.APP_URL').'/public',
+            // El /public lo decide ApiUrlHelper según VPS; hardcodearlo dejaba a los clientes en VPS con la columna api_url apuntando a una ruta inexistente.
+            'api_url'                       => ApiUrlHelper::public_base(),
             'name'                          => $display_name,
             'use_archivos_de_intercambio'   => 0,
             'company_name'                  => $data['company_name'] ?? null,

@@ -38,7 +38,11 @@ return [
         'public' => [
             'driver' => 'local',
             'root' => storage_path('app/public'),
-            'url' => config('app.APP_URL').'/storage',
+            // La lógica de agregar /public se duplica acá a propósito: se evalúa durante bootstrap de configuración,
+            // antes de que ApiUrlHelper esté disponible. Si mañana la regla cambia, cambia en dos lugares.
+            'url' => rtrim((string) env('APP_URL'), '/')
+                     . ((env('APP_ENV', 'production') != 'local' && ! env('VPS', false)) ? '/public' : '')
+                     . '/storage',
             'visibility' => 'public',
         ],
 
