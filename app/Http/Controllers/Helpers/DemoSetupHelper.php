@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
+use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Models\Address;
 use App\Models\AfipInformation;
@@ -128,6 +129,16 @@ class DemoSetupHelper
 
         // Tienda online por defecto para que la demo tenga URL pública
         self::tienda();
+
+        // El token de ingreso lo emite admin-api y viaja en el payload. Se guarda aca, al final,
+        // porque el migrate:fresh del arranque de este metodo vacia la tabla.
+        if (!empty($data['demo_ingreso_token'])) {
+            DemoIngresoTokenHelper::guardar(
+                $data['demo_ingreso_token'],
+                $user->id,
+                isset($data['demo_ingreso_token_expira_at']) ? $data['demo_ingreso_token_expira_at'] : null
+            );
+        }
 
         return $user;
     }

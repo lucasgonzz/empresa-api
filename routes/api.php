@@ -821,6 +821,9 @@ Route::prefix('admin-sync')
         Route::post('user-setup', 'AdminSync\\UserSetupController@store');
     });
 
+// Ingreso a la demo con la sesion ya iniciada (token emitido por admin-api).
+Route::post('demo/ingreso', 'DemoIngresoController@store');
+
 Route::middleware('admin.api.key')
     ->prefix('admin-sync')
     ->group(function () {
