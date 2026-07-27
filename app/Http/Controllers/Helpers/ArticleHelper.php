@@ -349,7 +349,7 @@ class ArticleHelper {
         $final_price = $res['price'];
         $des   = $res['des'];
 
-        if (!$user->aplicar_iva_al_costo) {
+        if (!ArticlePricesHelper::iva_va_al_costo($user)) {
 
             $res = ArticlePricesHelper::aplicar_iva($article, $final_price, $user, $des);
             $final_price = $res['price'];
@@ -449,7 +449,7 @@ class ArticleHelper {
         // del proveedor ya no pisan el costo real "de catálogo" del artículo (Capa 1). Pasan a
         // pre-completar campos editables en la orden de compra (prompt 262), fuera de este cálculo.
 
-        if ($user->aplicar_iva_al_costo) {
+        if (ArticlePricesHelper::iva_va_al_costo($user)) {
 
             $res = ArticlePricesHelper::aplicar_iva($article, $price, $user, $des);
             $price = $res['price'];

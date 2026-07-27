@@ -9,6 +9,7 @@ use App\Models\Article;
 use App\Models\Iva;
 use App\Models\Provider;
 use App\Models\ProviderDiscount;
+use App\Models\User;
 use Database\Seeders\CAPaymentMethodTypeSeeder;
 use Database\Seeders\ConceptoStockMovementSeeder;
 use Database\Seeders\CurrentAcountPaymentMethodSeeder;
@@ -129,6 +130,13 @@ class TestingFerreteriaSeeder extends Seeder
         $this->call(ProviderOrderStatusSeeder::class);
         $this->call(ConceptoStockMovementSeeder::class);
         $this->call(UserSeeder::class);
+
+        // Prompt 231/02: el usuario de prueba se marca como cuenta ya migrada a la dinamica
+        // contable real (condicion fiscal manda por sobre la tilde legacy). El fixture de compras
+        // describe esa dinamica nueva (RRII vs. MT via ArticlePricesHelper::iva_va_al_costo()),
+        // no el comportamiento legacy que sigue leyendo aplicar_iva_al_costo directamente.
+        User::where('email', self::USER_EMAIL)->update(['usar_condicion_fiscal_en_costeo' => 1]);
+
         $this->call(PriceTypeSeeder::class);
         $this->call(DepositSeeder::class);
     }

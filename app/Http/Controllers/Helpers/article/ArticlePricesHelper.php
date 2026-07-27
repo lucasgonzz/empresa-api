@@ -215,7 +215,7 @@ class ArticlePricesHelper {
                     $res = ArticlePricesHelper::aplicar_sale_taxes($article, $final_price, $user, []);
                     $final_price = $res['price'];
 
-                    if (!$user->aplicar_iva_al_costo) {
+                    if (!Self::iva_va_al_costo($user)) {
 
                         $res = ArticlePricesHelper::aplicar_iva($article, $final_price, $user, []);
                         $final_price = $res['price'];
@@ -327,6 +327,40 @@ class ArticlePricesHelper {
         }
 
         return $user->condicion_iva_precios == User::CONDICION_MT;
+    }
+
+    /**
+     * Prompt 231/02 — Resolver unico de "el IVA entra al costo o despues del margen".
+     *
+     * Unico lugar del sistema que sabe de la existencia de la bandera de transicion
+     * `usar_condicion_fiscal_en_costeo`. Los cuatro call sites del pipeline de costeo/precios
+     * (ArticleHelper::aplicar_descuentos_e_iva, ArticleHelper:352, ArticlePricesHelper:218 y
+     * NewProviderOrderHelper:268) llaman a este metodo en vez de leer `aplicar_iva_al_costo`
+     * directo, para que el dia que todas las cuentas esten migradas alcance con borrar el `if` de
+     * transicion en un solo lugar.
+     *
+     * @param \App\Models\User|null $user Usuario cuya condicion fiscal se quiere resolver.
+     * @return bool true si el IVA debe sumarse al costo (antes del margen), false si se aplica
+     *              despues del margen (venta).
+     */
+    static function iva_va_al_costo($user) {
+
+        if (is_null($user)) {
+            // Sin usuario no se puede resolver la condicion fiscal real: lado seguro es no
+            // meter el IVA al costo (mismo comportamiento que ya tenia el pipeline sin este campo).
+            return false;
+        }
+
+        if (!$user->usar_condicion_fiscal_en_costeo) {
+            // Cuenta legacy (todavia no migrada): sigue mandando la tilde manual, comportamiento
+            // identico al historico.
+            return (bool) $user->aplicar_iva_al_costo;
+        }
+
+        // Cuenta migrada a la dinamica contable real: manda la condicion fiscal.
+        // Monotributista no recupera IVA, asi que el IVA es costo y entra antes del margen.
+        // Responsable Inscripto lo recupera como credito fiscal, asi que el IVA se suma al vender.
+        return Self::es_monotributista_para_costeo($user);
     }
 
     /**

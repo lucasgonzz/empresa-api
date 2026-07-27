@@ -249,23 +249,18 @@ class NewProviderOrderHelper {
             // Prompt 516: consistencia neto/bruto al costo (Capa 1), mismo criterio que el
             // back-out de costo del prompt 514. Si el costo extra vino FACTURADO con alícuota
             // propia (`iva_id`) y el usuario es Responsable Inscripto (IVA recuperable ->
-            // `aplicar_iva_al_costo` OFF), el IVA de ese costo extra es crédito fiscal, no costo:
+            // `iva_va_al_costo()` false), el IVA de ese costo extra es crédito fiscal, no costo:
             // se prorratea el NETO (se le saca el IVA con SU propia alícuota, no la de los
-            // artículos). Si es Monotributista (`aplicar_iva_al_costo` ON) o el costo extra no
+            // artículos). Si es Monotributista (`iva_va_al_costo()` true) o el costo extra no
             // está facturado, se prorratea el monto entero (comportamiento actual, sin cambios).
             //
-            // Nota (Prompt 610, Tarea 2 — decisión documentada): esta condición sigue usando el
-            // campo legacy `$this->user->aplicar_iva_al_costo` a propósito, NO
-            // `get_condicion_iva_precios()`. Ambos resuelven la misma pregunta (¿la cuenta es
-            // RRII o MT?) pero `condicion_iva_precios` todavía no existe como columna real
-            // (depende del Prompt 608, que no corrió) — `get_condicion_iva_precios()` hoy SIEMPRE
-            // cae a 'RRII' por el fallback seguro del Prompt 609. Cambiar esta condición ahora
-            // rompería en producción el costeo de cualquier cuenta MT que ya tiene
-            // `aplicar_iva_al_costo = true` cargado. Cuando el Prompt 608 aterrice la columna real
-            // y se migren los usuarios existentes, unificar este punto para que use
-            // `get_condicion_iva_precios()` igual que `update_cost()` y `catalogar_costo_proveedor()`
-            // — queda registrado como deuda técnica de prioridad media.
-            if ($extra_cost->facturado && (int)$extra_cost->iva_id > 0 && !$this->user->aplicar_iva_al_costo) {
+            // Prompt 231/02: esta condición ya resuelve por el resolver único
+            // `ArticlePricesHelper::iva_va_al_costo()`, igual que el resto del pipeline de
+            // costeo/precios. Antes usaba el campo legacy `aplicar_iva_al_costo` directo a
+            // propósito (ver historial), porque la columna real de condición fiscal
+            // (`usar_condicion_fiscal_en_costeo`) todavía no existía; ya aterrizó, así que este
+            // punto queda unificado con `update_cost()` y `catalogar_costo_proveedor()`.
+            if ($extra_cost->facturado && (int)$extra_cost->iva_id > 0 && !ArticlePricesHelper::iva_va_al_costo($this->user)) {
 
                 $iva_costo_extra = $this->get_iva($extra_cost->iva_id);
 
