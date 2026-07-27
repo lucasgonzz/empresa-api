@@ -316,11 +316,35 @@ class ProcessRow {
                 $excel_value = ImportHelper::getColumnValue($row, $prop_to_add['excel_column'], $this->columns);
 
                 if (isset($prop_to_add['is_number'])) {
-                    $excel_value = Self::get_number($excel_value);
+
+                    /*
+                     * get_number_for_field() (grupo 229, prompt 07) valida contra la
+                     * precision REAL de la columna destino (cost admite 6 decimales,
+                     * percentage_gain solo 8 digitos enteros, etc.) y nunca falla en
+                     * silencio: si el valor no es numerico o no entra en la columna,
+                     * se registra como conflicto y la fila no pisa el valor existente.
+                     */
+                    $resultado_numero = Self::get_number_for_field($excel_value, $prop_to_add['prop_key']);
+
+                    if (!$resultado_numero['ok']) {
+
+                        $this->registrar_conflicto_numerico(
+                            $this->fila_actual,
+                            $prop_to_add['prop_key'],
+                            $resultado_numero['original'],
+                            $resultado_numero['motivo'],
+                            $data['name'] ?? null
+                        );
+
+                        // No se pisa el valor existente con basura: se deja el campo sin tocar.
+                        continue;
+                    }
+
+                    $excel_value = $resultado_numero['value'];
                 }
 
                 $data[$prop_to_add['prop_key']] = $excel_value;
-            
+
             } else {
                 // $this->log('Columna ignorada '.$prop_to_add['excel_column']);
             }
@@ -1501,31 +1525,138 @@ class ProcessRow {
     }
 
     /**
-     * Normaliza un valor numérico del Excel usando el parser compartido de importaciones.
+     * Precision real de las columnas numericas de `articles` (grupo 229, prompt 07).
+     * Formato: campo => [digitos_enteros_maximos, decimales].
      *
-     * @param mixed $number Valor crudo de la celda.
-     * @param int $decimales Cantidad de decimales del resultado formateado.
-     * @return string|null Número formateado como string, o null si está vacío o no es válido.
+     * Los enteros maximos salen de (precision - scale) de la definicion DECIMAL real
+     * de cada columna, verificada en produccion. Si se toca una migracion que cambie
+     * estas columnas, hay que actualizar este mapa.
      */
-    static function get_number($number, $decimales = 2) {
+    protected static $numeric_precision = [
+        'cost'                   => [44, 6],   // decimal(50,6)
+        'costo_real'             => [44, 6],   // decimal(50,6)
+        'costo_mano_de_obra'     => [10, 6],   // decimal(16,6)
+        'price'                  => [10, 6],   // decimal(16,6)
+        'final_price'            => [44, 6],   // decimal(50,6)
+        'percentage_gain'        => [6,  2],   // decimal(8,2)
+        'percentage_gain_blanco' => [14, 2],   // decimal(16,2)
+        'final_price_blanco'     => [28, 2],   // decimal(30,2)
+        'stock'                  => [10, 2],   // decimal(12,2)
+        'medida'                 => [8,  4],   // decimal(12,4)
+        'stock_min'              => [10, 0],   // int
+        'unidades_individuales'  => [10, 0],   // int
+        'unidades_por_bulto'     => [10, 0],   // int
+    ];
+
+    /**
+     * Nucleo compartido del parseo numerico robusto: castea con parseNumericValue()
+     * (que ya resuelve la ambiguedad punto/coma), redondea a los decimales admitidos
+     * y valida el rango real de la columna. Nunca lanza excepcion y nunca devuelve
+     * null en silencio: el resultado siempre indica si fue ok o por que fallo.
+     *
+     * Usado tanto por get_number_for_field() (precision real por columna) como por
+     * get_number() (wrapper legacy, precision fija recibida por parametro).
+     *
+     * @param  mixed $number      Valor crudo de la celda.
+     * @param  int   $max_enteros Cantidad maxima de digitos enteros permitidos.
+     * @param  int   $decimales   Cantidad de decimales a los que se redondea.
+     * @return array ['ok' => bool, 'value' => ?string, 'motivo' => ?string, 'original' => ?string]
+     */
+    private static function parse_number_core($number, $max_enteros, $decimales) {
+
+        if (is_null($number) || (is_string($number) && trim($number) === '')) {
+            return ['ok' => true, 'value' => null];
+        }
+
         try {
             $parsed = ImportHelper::parseNumericValue($number);
         } catch (\InvalidArgumentException $exception) {
-            return null;
+            // Defecto (1) corregido: ya no se traga la excepcion en silencio.
+            return [
+                'ok'       => false,
+                'motivo'   => 'no_numerico',
+                'original' => (string) $number,
+            ];
         }
 
         if (is_null($parsed)) {
-            return null;
+            return ['ok' => true, 'value' => null];
         }
 
-        // Validar que la parte entera no tenga más de 10 dígitos.
-        $parts = explode('.', (string) $parsed);
-        $integer_part = ltrim($parts[0], '0');
-        if (strlen($integer_part) > 10) {
-            return null;
+        // Redondeo (no truncado) a los decimales que admite la columna real.
+        $redondeado = round((float) $parsed, $decimales);
+
+        /*
+         * Defecto (2) corregido: NO se usa (string) sobre el float para medir la
+         * parte entera (eso da notacion cientifica sobre floats grandes y hace que
+         * el control de rango mida mal). Se calcula la parte entera con aritmetica.
+         */
+        $entero_abs = abs($redondeado) - fmod(abs($redondeado), 1);
+        $digitos    = ($entero_abs < 1) ? 1 : ((int) floor(log10($entero_abs)) + 1);
+
+        // Defecto (3) corregido: el limite viene de la columna real, no de un fijo de 10.
+        if ($digitos > $max_enteros) {
+            return [
+                'ok'       => false,
+                'motivo'   => 'fuera_de_rango',
+                'original' => (string) $number,
+            ];
         }
 
-        return number_format((float) $parsed, $decimales, '.', '');
+        return [
+            'ok'    => true,
+            // Separador de miles vacio: MySQL rechaza "123,123.34".
+            'value' => number_format($redondeado, $decimales, '.', ''),
+        ];
+    }
+
+    /**
+     * Normaliza un valor numerico del Excel para una columna concreta de `articles`,
+     * usando la precision real de esa columna (self::$numeric_precision). Reemplaza
+     * el comportamiento legacy de get_number() de devolver null en silencio: quien
+     * llama decide si registra un conflicto o corta (grupo 229, prompt 07).
+     *
+     * @param  mixed  $number Valor crudo de la celda.
+     * @param  string $campo  Nombre de la columna destino (cost, price, medida, etc.).
+     * @return array ['ok' => bool, 'value' => ?string, 'motivo' => ?string, 'original' => ?string]
+     */
+    static function get_number_for_field($number, $campo) {
+
+        $config = isset(self::$numeric_precision[$campo])
+                    ? self::$numeric_precision[$campo]
+                    : [10, 2];
+
+        return self::parse_number_core($number, $config[0], $config[1]);
+    }
+
+    /**
+     * Normaliza un valor numérico del Excel usando el parser compartido de importaciones.
+     *
+     * @deprecated Usar get_number_for_field() pasando el campo real de la columna
+     * destino, para que la validacion de rango use la precision de esa columna en
+     * vez de un limite generico. Se mantiene como envoltorio de compatibilidad para
+     * los puntos que aun la llaman directamente sin un campo de `articles` asociado
+     * (obtener_stock, variantes, depositos, descuentos, price_types) — migrar uno
+     * por uno a get_number_for_field() cuando corresponda a una columna real.
+     *
+     * @param mixed $number Valor crudo de la celda.
+     * @param int $decimales Cantidad de decimales del resultado formateado.
+     * @return string|null Número formateado como string, o null si está vacío o no es válido
+     *                      (incluye el caso "no es un número": este wrapper legacy no
+     *                      expone el motivo del fallo, a diferencia de get_number_for_field()).
+     */
+    static function get_number($number, $decimales = 2) {
+
+        /*
+         * Limite generico de 15 digitos enteros (no ligado a ninguna columna real):
+         * evita la notacion cientifica/perdida de precision del bug original sin
+         * rechazar valores validos por el tope fijo de 10 que tenia antes. 15 es el
+         * limite de digitos significativos que un float de PHP representa de forma
+         * confiable.
+         */
+        $resultado = self::parse_number_core($number, 15, $decimales);
+
+        return $resultado['ok'] ? $resultado['value'] : null;
     }
 
     /**
@@ -2267,6 +2398,39 @@ class ProcessRow {
         ];
 
         $this->log('Fila ' . $fila . ' sin identificador utilizable (id/bar_code/sku/provider_code)');
+    }
+
+    /**
+     * Registra que un valor numerico de una columna (cost, price, percentage_gain,
+     * stock_min, unidades_individuales, medida, etc.) no se pudo procesar de forma
+     * segura: o no se pudo interpretar como numero, o se interpreto pero no entra
+     * en la columna destino. Reemplaza el comportamiento anterior de get_number(),
+     * que devolvia null en silencio y dejaba al usuario sin enterarse de que ese
+     * costo (por ejemplo) no se importo (grupo 229, prompt 07).
+     *
+     * Acumula la entrada unificada en $conflictos, que
+     * ActualizarBBDD::persistir_conflictos() inserta en bloque en
+     * `import_conflicts` al cerrar el lote.
+     *
+     * @param int         $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param string      $campo        campo numérico afectado (cost, price, medida, etc.).
+     * @param string      $original     valor original tal cual vino del Excel, sin parsear.
+     * @param string      $motivo       'no_numerico' | 'fuera_de_rango'.
+     * @param string|null $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
+     * @return void
+     */
+    function registrar_conflicto_numerico($fila, $campo, $original, $motivo, $nombre_excel = null): void
+    {
+        $this->conflictos[] = [
+            'fila'         => $fila,
+            'tipo'         => $motivo === 'fuera_de_rango' ? 'numero_fuera_de_rango' : 'numero_invalido',
+            'campo'        => $campo,
+            'valor'        => (string) $original,
+            'article_ids'  => null,
+            'nombre_excel' => $nombre_excel,
+        ];
+
+        $this->log('Conflicto numerico en fila ' . $fila . ', campo ' . $campo . ' (' . $motivo . '): "' . $original . '"');
     }
 
     /**

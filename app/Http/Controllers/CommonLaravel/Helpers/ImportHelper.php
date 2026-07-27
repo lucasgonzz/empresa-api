@@ -7,18 +7,126 @@ class ImportHelper {
 
 	static function getColumnValue($row, $key, $columns) {
 		if (
-			isset($columns[$key]) 
+			isset($columns[$key])
 			&& isset($row[$columns[$key]])
 			&& $row[$columns[$key]] !== ''
 			&& $row[$columns[$key]] !== -1
 		) {
-			$value = (string) $row[$columns[$key]];
-			$value = str_replace("\xEF\xBB\xBF", '', $value);
+			/*
+			 * Antes se hacia (string) $row[...] directo. Sobre un float entero
+			 * (ej: un SKU numerico leido por PhpSpreadsheet como 504346.0) eso
+			 * produce "504346.0", y sobre un float grande produce notacion
+			 * cientifica ("1.2345678901235E+15"). scalarToLiteralString()
+			 * castea sin alterar el contenido (grupo 229, prompt 07).
+			 */
+			$value = self::scalarToLiteralString($row[$columns[$key]]);
+			$value = str_replace("\xEF\xBB\xBF", '', (string) $value);
 			$value = trim($value);
 			$value = trim($value, '"');
 			return trim($value);
 		}
 		return null;
+	}
+
+	/**
+	 * Devuelve el contenido de una celda tal como se ve en el Excel, sin que
+	 * PhpSpreadsheet lo convierta a int o float.
+	 *
+	 * Necesario para codigos: un codigo de barras de 18 digitos leido como float
+	 * pierde precision antes de llegar a PHP y ya no hay forma de recuperarlo.
+	 *
+	 * TODO (grupo 229, prompt 07): esta funcion queda preparada para cuando se
+	 * lea la celda cruda de PhpSpreadsheet (objeto Cell), pero `ArticleImport`
+	 * implementa `ToCollection` de Maatwebsite: para cuando el valor llega hasta
+	 * aca ya fue casteado a escalar (int/float/string) por la libreria, nunca es
+	 * un objeto Cell. Conectar esto de verdad requiere un WithCustomValueBinder
+	 * (o `setReadDataOnly(false)` + lectura del valor formateado) en
+	 * `ArticleImport`, que se considero demasiado invasivo para el alcance de
+	 * este prompt. Hoy la capa que realmente protege los codigos es la A.2
+	 * (scalarToLiteralString), que cubre codigos de hasta 15 digitos (limite de
+	 * precision de un float en PHP). Un codigo de mas de 15 digitos formateado
+	 * como numero en el Excel seguira perdiendo precision hasta que se conecte
+	 * esta capa.
+	 *
+	 * @param  mixed $cell
+	 * @return string|null
+	 */
+	static function getRawCellValue($cell)
+	{
+		if (is_null($cell)) {
+			return null;
+		}
+
+		/* Si el lector ya nos dio un objeto Cell, pedimos el valor formateado. */
+		if (is_object($cell) && method_exists($cell, 'getFormattedValue')) {
+			return (string) $cell->getFormattedValue();
+		}
+
+		return self::scalarToLiteralString($cell);
+	}
+
+	/**
+	 * Convierte un valor escalar de celda a string SIN alterar su contenido.
+	 *
+	 * Reglas:
+	 *   int    -> string directo
+	 *   float  entero (504346.0)     -> "504346"       nunca "504346.0"
+	 *   float  con decimales (2.5)   -> "2.5"          nunca notacion cientifica
+	 *   bool   -> "1" / "0"
+	 *   string -> se devuelve tal cual, sin trim
+	 *
+	 * @param  mixed $value
+	 * @return string|null
+	 */
+	static function scalarToLiteralString($value)
+	{
+		if (is_null($value)) {
+			return null;
+		}
+
+		if (is_bool($value)) {
+			return $value ? '1' : '0';
+		}
+
+		if (is_string($value)) {
+			return $value;
+		}
+
+		if (is_int($value)) {
+			return (string) $value;
+		}
+
+		if (is_float($value)) {
+
+			/* NAN e INF no son codigos. */
+			if (!is_finite($value)) {
+				return null;
+			}
+
+			/*
+			 * Entero disfrazado de float: es el caso del 504346.0.
+			 * number_format con 0 decimales no usa notacion cientifica.
+			 */
+			if (floor($value) == $value && abs($value) < 1.0e+15) {
+				return number_format($value, 0, '.', '');
+			}
+
+			/*
+			 * Decimales reales: sprintf %F evita la notacion cientifica que
+			 * produciria (string) o strval().
+			 */
+			$formatted = sprintf('%.10F', $value);
+			$formatted = rtrim($formatted, '0');
+			$formatted = rtrim($formatted, '.');
+
+			return $formatted === '' ? '0' : $formatted;
+		}
+
+		if (is_array($value) || is_object($value)) {
+			return null;
+		}
+
+		return (string) $value;
 	}
 
 	/**

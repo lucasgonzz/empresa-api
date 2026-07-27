@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers\Helpers\import\article;
 
+use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
+
 /**
  * Normaliza los valores que llegan del Excel para los campos identificadores
  * (bar_code, sku, provider_code, id).
@@ -40,7 +42,14 @@ class IdentifierNormalizer
             return null;
         }
 
-        $clean = trim((string) $value);
+        /*
+         * Casteo literal, sin perdida (grupo 229, prompt 07): un identificador
+         * numerico (ej. SKU "504346" leido como float 504346.0 por el Excel) no
+         * puede pasar por un (string) directo, porque eso produce "504346.0" o
+         * notacion cientifica en codigos largos. scalarToLiteralString() es el
+         * unico camino de casteo que usa todo el flujo de importacion.
+         */
+        $clean = trim((string) ImportHelper::scalarToLiteralString($value));
 
         if ($clean === '') {
             return null;

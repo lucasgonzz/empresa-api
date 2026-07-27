@@ -44,10 +44,12 @@ class CreateImportConflictsTable extends Migration
              *   'ambiguo'                -> el identificador resolvio a mas de un articulo
              *   'placeholder_descartado' -> el valor era "-", "S/N", etc. y se ignoro
              *   'sin_identificador'      -> la fila quedo sin ningun identificador usable
+             *   'numero_invalido'        -> un valor numerico no se pudo interpretar (prompt 07)
+             *   'numero_fuera_de_rango'  -> se interpreto pero no entra en la columna (prompt 07)
              */
             $table->string('tipo', 40);
 
-            /* bar_code | sku | provider_code | id */
+            /* bar_code | sku | provider_code | id | cost | price | percentage_gain | etc. */
             $table->string('campo', 40)->nullable();
 
             /* Valor tal cual venia en el Excel. */
