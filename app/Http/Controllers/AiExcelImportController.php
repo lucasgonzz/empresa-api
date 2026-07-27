@@ -121,6 +121,15 @@ class AiExcelImportController extends Controller
                  */
                 /* Filas de muestra (máx. 5) para la tabla de preview del paso 2. */
                 'preview_rows'                 => $analysis['preview_rows'] ?? [],
+                /*
+                 * Prompt 06 (grupo 229 - matching-importacion-excel): valores placeholder
+                 * detectados en columnas identificadoras (ej. "-", "S/N") y la cadena de
+                 * identificación efectiva (con qué columna se va a identificar cada fila),
+                 * para mostrarle al usuario en el paso 3 antes de importar.
+                 */
+                'placeholders'                 => $analysis['placeholders'] ?? [],
+                'cadena_identificacion'        => $analysis['cadena_identificacion'] ?? null,
+                'nombres_duplicados'           => $analysis['nombres_duplicados'] ?? null,
             ], 200);
 
         } catch (\RuntimeException $e) {

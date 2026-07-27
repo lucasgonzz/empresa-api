@@ -205,6 +205,23 @@ class AiExcelAnalyzer
         );
 
         /*
+         * Paso 8.1: Análisis de la cadena de identificación efectiva (prompt 06, grupo 229).
+         * Detecta valores placeholder ("-", "S/N", etc.) en las columnas identificadoras y
+         * calcula, con el MISMO normalizador y el MISMO orden de prioridad que usa el
+         * matching real (ArticleIndexCache::find_with_index), cuántas filas van a caer en
+         * cada escalón (id -> bar_code -> sku -> provider_code -> name -> sin_identificador).
+         * Esto es lo que permite mostrarle al usuario, antes de importar, con qué columna se
+         * va a identificar cada fila (el problema real de Servian del 24/07 fue no saberlo).
+         */
+        $identification_chain_analysis = $this->analyze_identification_chain(
+            $excel_path,
+            $parsed['column_mapping']
+        );
+        $parsed['placeholders']          = $identification_chain_analysis['placeholders'];
+        $parsed['cadena_identificacion'] = $identification_chain_analysis['cadena_identificacion'];
+        $parsed['nombres_duplicados']    = $identification_chain_analysis['nombres_duplicados'];
+
+        /*
          * Nota: la recomendación de configuración (ask_claude_for_recomendation) ya no se genera
          * aquí porque en este punto el proveedor puede ser solo inferido por Claude y no el
          * confirmado por el usuario. La recomendación se genera en el endpoint
@@ -224,6 +241,244 @@ class AiExcelAnalyzer
         $parsed['assistant_notes'] = $parsed['assistant_notes'] ?? [];
 
         return $parsed;
+    }
+
+    /**
+     * Analiza los identificadores del Excel para el prompt 06 (grupo 229 —
+     * matching-importacion-excel): detecta valores "placeholder" (códigos que no son
+     * reales, ej. "-", "S/N") en las columnas identificadoras mapeadas, y calcula
+     * cuántas filas van a caer en cada escalón de la cadena de identificación real
+     * que usa el importador (ArticleIndexCache::find_with_index):
+     * id -> bar_code -> sku -> provider_code -> name -> sin_identificador.
+     *
+     * Usa IdentifierNormalizer::normalize()/is_placeholder() — el mismo normalizador
+     * que ProcessRow usa al importar — para que estos conteos coincidan exactamente
+     * con lo que va a pasar en la importación real. Si divergieran, la pantalla le
+     * mentiría al usuario sobre lo que va a pasar con su archivo.
+     *
+     * @param  string $excel_path      Ruta absoluta al Excel ya guardado en storage
+     * @param  array  $column_mapping  Mapeo de columnas enriquecido (con excel_column_index)
+     * @return array  ['placeholders' => [...], 'cadena_identificacion' => [...], 'nombres_duplicados' => [...]]
+     */
+    protected function analyze_identification_chain(string $excel_path, array $column_mapping): array
+    {
+        /* Resultado vacío por defecto: se retorna si no hay ninguna columna identificadora mapeada, o si falla la lectura. */
+        $empty_result = [
+            'placeholders' => [],
+            'cadena_identificacion' => [
+                'columnas_mapeadas' => [],
+                'escalones' => [
+                    ['campo' => 'id',                'filas' => 0],
+                    ['campo' => 'bar_code',           'filas' => 0],
+                    ['campo' => 'sku',                'filas' => 0],
+                    ['campo' => 'provider_code',      'filas' => 0],
+                    ['campo' => 'name',               'filas' => 0],
+                    ['campo' => 'sin_identificador',  'filas' => 0],
+                ],
+            ],
+            'nombres_duplicados' => [
+                'cantidad_distintos' => 0,
+                'filas_afectadas'    => 0,
+            ],
+        ];
+
+        /*
+         * Mapa campo interno -> system_property del mapeo, en el mismo orden de
+         * prioridad que usa el matching real (ArticleIndexCache::find_with_index).
+         */
+        $campo_a_property = [
+            'id'            => 'numero',
+            'bar_code'      => 'codigo_de_barras',
+            'sku'           => 'sku',
+            'provider_code' => 'codigo_de_proveedor',
+            'name'          => 'nombre',
+        ];
+
+        /* Índice 0-based de cada columna identificadora en el Excel, o null si no está mapeada. */
+        $indices = [];
+        foreach ($campo_a_property as $campo => $property) {
+            $indices[$campo] = null;
+            foreach ($column_mapping as $col) {
+                if (($col['system_property'] ?? null) === $property) {
+                    $indices[$campo] = $col['excel_column_index'] ?? null;
+                    break;
+                }
+            }
+        }
+
+        /* Lista de campos que efectivamente tienen columna mapeada en este Excel. */
+        $columnas_mapeadas = [];
+        foreach ($indices as $campo => $idx) {
+            if (!is_null($idx)) {
+                $columnas_mapeadas[] = $campo;
+            }
+        }
+
+        /* Sin ninguna columna identificadora mapeada, no tiene sentido leer el archivo completo. */
+        if (empty($columnas_mapeadas)) {
+            return $empty_result;
+        }
+
+        /* Acumulador de placeholders: campo -> valor original de la celda -> ['count' => N, 'filas' => [...]]. */
+        $placeholders_data = [];
+
+        /* Conteo de filas por escalón de la cadena de identificación. */
+        $escalon_counts = [
+            'id' => 0, 'bar_code' => 0, 'sku' => 0,
+            'provider_code' => 0, 'name' => 0, 'sin_identificador' => 0,
+        ];
+
+        /* Acumulador de nombres normalizados -> cantidad de filas, para detectar nombres repetidos. */
+        $nombres_data = [];
+
+        try {
+            /* Mismo lector XLSX de OpenSpout que el resto del análisis, leyendo el archivo completo. */
+            $reader = ReaderEntityFactory::createXLSXReader();
+            $reader->setShouldPreserveEmptyRows(false);
+            $reader->open($excel_path);
+
+            foreach ($reader->getSheetIterator() as $sheet) {
+                $header_skipped = false;
+                /* Contador de filas de datos (sin contar la cabecera). */
+                $data_row_index = 0;
+
+                foreach ($sheet->getRowIterator() as $row) {
+                    if (!$header_skipped) {
+                        $header_skipped = true;
+                        continue;
+                    }
+
+                    $data_row_index++;
+                    /* Número de fila real en el Excel (1-based, incluye cabecera): la fila 1 es cabecera. */
+                    $excel_row_number = $data_row_index + 1;
+
+                    /* Extraemos los valores de las celdas como strings simples. */
+                    $cells = [];
+                    foreach ($row->getCells() as $cell) {
+                        $value = $cell->getValue();
+
+                        if ($value instanceof \DateTime) {
+                            $value = $value->format('Y-m-d');
+                        }
+
+                        $cells[] = trim((string) ($value ?? ''));
+                    }
+
+                    /* Detectar placeholders en cada columna identificadora mapeada. */
+                    foreach ($indices as $campo => $idx) {
+                        if (is_null($idx) || !isset($cells[$idx])) {
+                            continue;
+                        }
+
+                        $raw_value = $cells[$idx];
+                        if ($raw_value === '') {
+                            continue;
+                        }
+
+                        if (IdentifierNormalizer::is_placeholder($raw_value)) {
+                            if (!isset($placeholders_data[$campo][$raw_value])) {
+                                $placeholders_data[$campo][$raw_value] = ['count' => 0, 'filas' => []];
+                            }
+                            $placeholders_data[$campo][$raw_value]['count']++;
+                            /* Limitamos a las primeras 10 filas por valor, igual que ExcelDuplicateStats. */
+                            if (count($placeholders_data[$campo][$raw_value]['filas']) < 10) {
+                                $placeholders_data[$campo][$raw_value]['filas'][] = $excel_row_number;
+                            }
+                        }
+                    }
+
+                    /*
+                     * Cadena de identificación efectiva: misma prioridad y mismo normalizador
+                     * que ArticleIndexCache::find_with_index (id -> bar_code -> sku -> provider_code -> name).
+                     */
+                    $id_val            = !is_null($indices['id'])            ? IdentifierNormalizer::normalize($cells[$indices['id']] ?? null)            : null;
+                    $bar_code_val      = !is_null($indices['bar_code'])      ? IdentifierNormalizer::normalize($cells[$indices['bar_code']] ?? null)      : null;
+                    $sku_val           = !is_null($indices['sku'])           ? IdentifierNormalizer::normalize($cells[$indices['sku']] ?? null)           : null;
+                    $provider_code_val = !is_null($indices['provider_code']) ? IdentifierNormalizer::normalize($cells[$indices['provider_code']] ?? null) : null;
+                    $name_val          = !is_null($indices['name'])          ? IdentifierNormalizer::normalize($cells[$indices['name']] ?? null)          : null;
+
+                    if (!is_null($id_val)) {
+                        $escalon_counts['id']++;
+                    } elseif (!is_null($bar_code_val)) {
+                        $escalon_counts['bar_code']++;
+                    } elseif (!is_null($sku_val)) {
+                        $escalon_counts['sku']++;
+                    } elseif (!is_null($provider_code_val)) {
+                        $escalon_counts['provider_code']++;
+                    } elseif (!is_null($name_val)) {
+                        $escalon_counts['name']++;
+                    } else {
+                        $escalon_counts['sin_identificador']++;
+                    }
+
+                    /*
+                     * Nombres repetidos: se cuenta sobre cualquier fila con nombre normalizado
+                     * (no solo las que caen en el escalón "name"), como aviso general del archivo.
+                     */
+                    if (!is_null($name_val)) {
+                        $name_key = mb_strtolower($name_val);
+                        if (!isset($nombres_data[$name_key])) {
+                            $nombres_data[$name_key] = 0;
+                        }
+                        $nombres_data[$name_key]++;
+                    }
+                }
+
+                /* Solo procesamos la primera hoja del libro. */
+                break;
+            }
+
+            $reader->close();
+
+        } catch (\Throwable $e) {
+            Log::error('AiExcelAnalyzer: error al analizar la cadena de identificación', [
+                'message' => $e->getMessage(),
+                'file'    => $excel_path,
+            ]);
+            return $empty_result;
+        }
+
+        /* Armamos el array final de placeholders detectados. */
+        $placeholders = [];
+        foreach ($placeholders_data as $campo => $valores) {
+            foreach ($valores as $valor => $data) {
+                $placeholders[] = [
+                    'campo'        => $campo,
+                    'valor'        => $valor,
+                    'repeticiones' => $data['count'],
+                    'filas'        => $data['filas'],
+                ];
+            }
+        }
+
+        /* Nombres duplicados: cuántos valores distintos se repiten y cuántas filas afecta en total. */
+        $nombres_distintos_repetidos = 0;
+        $nombres_filas_afectadas     = 0;
+        foreach ($nombres_data as $veces) {
+            if ($veces > 1) {
+                $nombres_distintos_repetidos++;
+                $nombres_filas_afectadas += $veces;
+            }
+        }
+
+        return [
+            'placeholders' => $placeholders,
+            'cadena_identificacion' => [
+                'columnas_mapeadas' => $columnas_mapeadas,
+                'escalones' => [
+                    ['campo' => 'id',                'filas' => $escalon_counts['id']],
+                    ['campo' => 'bar_code',           'filas' => $escalon_counts['bar_code']],
+                    ['campo' => 'sku',                'filas' => $escalon_counts['sku']],
+                    ['campo' => 'provider_code',      'filas' => $escalon_counts['provider_code']],
+                    ['campo' => 'name',               'filas' => $escalon_counts['name']],
+                    ['campo' => 'sin_identificador',  'filas' => $escalon_counts['sin_identificador']],
+                ],
+            ],
+            'nombres_duplicados' => [
+                'cantidad_distintos' => $nombres_distintos_repetidos,
+                'filas_afectadas'    => $nombres_filas_afectadas,
+            ],
+        ];
     }
 
     /**
