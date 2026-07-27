@@ -6,6 +6,7 @@ use App\Models\AfipTicket;
 use App\Models\CurrentAcount;
 use App\Models\Expense;
 use App\Models\ExpenseConcept;
+use App\Models\MovimientoCaja;
 use App\Models\ProviderOrderAfipTicket;
 use App\Models\Sale;
 use App\Models\SaleTax;
@@ -579,6 +580,19 @@ class ContabilidadRepository
      *
      * FUENTE ACTUAL: tabla `expenses`.
      *
+     * 🔴 Grupo 225 · Prompt 01, tarea 00(d): excluye los gastos que en realidad son comisiones de
+     * cobro (`movimiento_cajas.comision_expense_id`, ver `query_ids_expenses_comision()`). Esos
+     * gastos SÍ existen como fila real en `expenses` (el grupo 223 los crea con
+     * `Expense::create()`), pero en el Estado de Resultados van en la línea "Impuestos y costos
+     * financieros" (`comisiones_de_cobro()`), no en "Gastos operativos". Como
+     * `gastos_por_categoria()` y `gastos_por_categoria_detalle()` (y sus consumidores) salen los
+     * dos de este método, la exclusión les llega a los dos de una sola vez y los buckets quedan
+     * disjuntos: ni un gasto se cuenta dos veces, ni falta ninguno.
+     *
+     * No afecta a `gastos_pagados()` / `gastos_pagados_detalle()`: esos arman su propio builder
+     * (no pasan por acá) porque en el flujo de caja (grupo 226) la comisión sí tiene que seguir
+     * apareciendo dentro de gastos pagados.
+     *
      * @param  int $user_id
      * @param  \Carbon\Carbon $desde
      * @param  \Carbon\Carbon $hasta
@@ -592,11 +606,124 @@ class ContabilidadRepository
         $query = Expense::query()
             ->where('expenses.user_id', $user_id)
             ->whereDate('expenses.created_at', '>=', $desde)
-            ->whereDate('expenses.created_at', '<=', $hasta);
+            ->whereDate('expenses.created_at', '<=', $hasta)
+            ->whereNotIn('expenses.id', self::query_ids_expenses_comision());
 
         self::aplicar_filtro_moneda($query, $filtros, 'expenses.moneda_id');
 
         return $query;
+    }
+
+    // =========================================================================================
+    // COMISIONES DE COBRO (retenidas por el medio de cobro sobre cada cobro, grupo 223)
+    // =========================================================================================
+
+    /**
+     * Subquery de ids de `expenses` que en realidad son comisiones de cobro automáticas (grupo
+     * 223), identificadas por ser el `Expense` referenciado desde
+     * `movimiento_cajas.comision_expense_id`.
+     *
+     * 🔴 Único lugar del sistema donde vive este criterio (regla 08 de la clase): tanto
+     * `comisiones_de_cobro()`/`comisiones_de_cobro_detalle()` (que SUMAN estos ids) como
+     * `query_gastos()` (que los EXCLUYE) llaman a este mismo método, así que total, detalle y
+     * exclusión nunca pueden divergir entre sí.
+     *
+     * 🔴 Fuente prohibida: NO usar `current_acount_payment_method.discount_amount` /
+     * `sales.discount_amount` (eso es el recargo por medio de pago, Capa 3 del motor de precios, ya
+     * reflejado en `ventas_brutas()`), ni las clases `App\Http\Controllers\Helpers\comisiones\*`
+     * (comisiones de VENDEDORES, otra cosa), ni `caja_liquidacion_configs.comision_porcentaje`
+     * (configuración, no movimiento real).
+     *
+     * @return \Illuminate\Database\Query\Builder Subquery de `movimiento_cajas.comision_expense_id`.
+     */
+    private static function query_ids_expenses_comision()
+    {
+        return MovimientoCaja::query()
+            ->whereNotNull('comision_expense_id')
+            ->select('comision_expense_id');
+    }
+
+    /**
+     * Total de comisiones de cobro (Mercado Pago, tarjetas, etc.) retenidas en el período.
+     *
+     * FUENTE ACTUAL: `expenses.amount` de los gastos automáticos que el grupo 223 crea por cada
+     * cobro con comisión, identificados vía `query_ids_expenses_comision()`.
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @param  array $filtros `moneda_id`.
+     * @return float
+     */
+    public static function comisiones_de_cobro($user_id, $desde, $hasta, $filtros = [])
+    {
+        list($desde, $hasta) = self::rango($desde, $hasta);
+
+        $query = Expense::query()
+            ->where('expenses.user_id', $user_id)
+            ->whereDate('expenses.created_at', '>=', $desde)
+            ->whereDate('expenses.created_at', '<=', $hasta)
+            ->whereIn('expenses.id', self::query_ids_expenses_comision());
+
+        self::aplicar_filtro_moneda($query, $filtros, 'expenses.moneda_id');
+
+        return (float) $query->sum('expenses.amount');
+    }
+
+    /**
+     * Detalle paginado (en SQL) de las comisiones que componen `comisiones_de_cobro()`.
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @param  array $filtros
+     * @param  int $page
+     * @param  int $per_page
+     * @return array{registros: array, total: int, page: int, per_page: int}
+     */
+    public static function comisiones_de_cobro_detalle($user_id, $desde, $hasta, $filtros = [], $page = 1, $per_page = 50)
+    {
+        $base = function () use ($user_id, $desde, $hasta, $filtros) {
+            list($desde, $hasta) = self::rango($desde, $hasta);
+
+            $query = Expense::query()
+                ->where('expenses.user_id', $user_id)
+                ->whereDate('expenses.created_at', '>=', $desde)
+                ->whereDate('expenses.created_at', '<=', $hasta)
+                ->whereIn('expenses.id', self::query_ids_expenses_comision());
+
+            self::aplicar_filtro_moneda($query, $filtros, 'expenses.moneda_id');
+
+            return $query;
+        };
+
+        $total = $base()->count();
+
+        $rows = $base()
+            ->orderBy('expenses.created_at', 'ASC')
+            ->skip(($page - 1) * $per_page)
+            ->take($per_page)
+            ->get(['expenses.id', 'expenses.created_at', 'expenses.amount', 'expenses.observations']);
+
+        $registros = [];
+
+        foreach ($rows as $expense) {
+            $registros[] = [
+                'id'          => $expense->id,
+                'fecha'       => $expense->created_at,
+                'descripcion' => $expense->observations ?: ('Comisión de cobro #'.$expense->id),
+                'monto'       => (float) $expense->amount,
+                'link_tipo'   => 'expense',
+                'link_id'     => $expense->id,
+            ];
+        }
+
+        return [
+            'registros' => $registros,
+            'total'     => $total,
+            'page'      => (int) $page,
+            'per_page'  => (int) $per_page,
+        ];
     }
 
     /**

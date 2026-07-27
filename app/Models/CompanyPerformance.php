@@ -10,6 +10,17 @@ class CompanyPerformance extends Model
     protected $guarded = [];
 
     /**
+     * `estado_resultados_snapshot` (Grupo 225 · Prompt 01) se persiste como JSON; se castea a array
+     * para que el front lo reciba/consuma como objeto sin parsear un string a mano. Null en
+     * snapshots viejos (columna agregada después, ver migración correspondiente).
+     *
+     * @var array
+     */
+    protected $casts = [
+        'estado_resultados_snapshot' => 'array',
+    ];
+
+    /**
      * Atributos calculados que se añaden automáticamente a la serialización JSON.
      * snapshot_disponible indica si el segmento tiene datos históricos de deuda.
      *

@@ -507,6 +507,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Reportes
     Route::get('company-performance/{mes_inicio?}/{mes_fin?}', 'CompanyPerformanceController@index');
 
+    // Estado de Resultados devengado (Grupo 225 · Prompt 01): aditivo, no reemplaza el reporte
+    // viejo de arriba (company-performance) hasta que se ejecute el grupo 227.
+    Route::get('reportes/estado-resultados', 'EstadoResultadosController@index');
+
     // Article Purchase
     Route::post('article-purchase', 'ArticlePurchaseController@index');
 
