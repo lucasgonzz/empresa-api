@@ -18,11 +18,10 @@ use Database\Seeders\testing\TestingFerreteriaSeeder;
  * encima (ya esta "adentro" de lo que tipeo/pago). La factura automatica de un MT muestra solo
  * el total, sin desglose de IVA.
  *
- * IMPORTANTE (documentado en el prompt, no ocultar): la columna
- * `user_configurations.condicion_iva_precios` (Prompt 608) todavia NO existe en este entorno.
- * `ComprasTestCase::set_condicion_iva('MT')` hace `markTestSkipped()` en ese caso — todos los
- * tests de esta clase que necesitan forzar la condicion MT quedan SKIPPED hasta que el Prompt 608
- * aterrice esa columna. Es el comportamiento esperado, no un fallo.
+ * IMPORTANTE (grupo 231, prompt 01): la condicion fiscal vive en `users.condicion_iva_precios`
+ * (movida desde `user_configurations`). `ComprasTestCase::set_condicion_iva('MT')` sigue teniendo
+ * un guard por `Schema::hasColumn` que hace `markTestSkipped()` solo si esa columna no existe
+ * todavia en el entorno de test — red de seguridad, no el comportamiento esperado.
  *
  * Los numeros esperados de estos tests son la especificacion (definida en el prompt 615), no una
  * sugerencia. Esta prohibido ajustar el valor esperado para que coincida con lo que devuelve el
@@ -284,7 +283,7 @@ class Costeo_MT_Test extends ComprasTestCase
         $total_rrii         = (float) ProviderOrder::find($response_rrii->json('model.id'))->total;
 
         // Corrida 2: misma compra, ahora en MT. `set_condicion_iva('MT')` hace markTestSkipped()
-        // si la columna condicion_iva_precios todavia no existe (ver docblock de la clase).
+        // solo si la columna users.condicion_iva_precios todavia no existe (ver docblock de la clase).
         $this->set_condicion_iva('MT');
 
         $payload_mt = $this->payload_compra([

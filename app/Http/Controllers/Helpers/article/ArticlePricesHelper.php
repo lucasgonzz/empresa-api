@@ -312,21 +312,21 @@ class ArticlePricesHelper {
      * Prompt 609 — determina si, para efectos de costeo (compra a proveedor y costo real de
      * catálogo), el usuario dueño de la compra está en condición Monotributista.
      *
-     * Lee `condicion_iva_precios` de la configuración del usuario (columna agregada por el
-     * Prompt 608). Si no hay configuración cargada, o el valor no es exactamente `'MT'`, se asume
-     * Responsable Inscripto — mismo criterio conservador que el default `'RRII'` de la migración
-     * 608 (las cuentas existentes no cambian de comportamiento si el campo todavía no está seteado).
+     * Grupo 231, prompt 01: `condicion_iva_precios` se movió de `UserConfiguration` a `User`
+     * (misma fila que dispara el recálculo de precios en `UserController::update()`). Si no hay
+     * usuario, se asume Responsable Inscripto — mismo criterio conservador de siempre (las cuentas
+     * existentes no cambian de comportamiento si el campo todavía no está seteado).
      *
      * @param  \App\Models\User|null $user
      * @return bool
      */
     static function es_monotributista_para_costeo($user) {
 
-        if (is_null($user) || is_null($user->configuration)) {
+        if (is_null($user)) {
             return false;
         }
 
-        return $user->configuration->condicion_iva_precios == 'MT';
+        return $user->condicion_iva_precios == User::CONDICION_MT;
     }
 
     /**

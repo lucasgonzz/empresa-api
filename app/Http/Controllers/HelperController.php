@@ -2980,9 +2980,15 @@ class HelperController extends Controller
             'limit_items_in_sale_per_page'          => null,
             'can_make_afip_tickets'                 => 1,
             'user_id'                               => $user->id,
-            // Toda cuenta nueva nace como Responsable Inscripto (comportamiento actual del sistema).
-            'condicion_iva_precios'                 => UserConfiguration::CONDICION_RRII,
         ]);
+
+        // Grupo 231, prompt 01: condicion_iva_precios ya no vive en user_configurations, vive en
+        // users. Toda cuenta nueva nace como Responsable Inscripto y con la dinamica de costeo por
+        // condicion fiscal activada de una: el `0` que trae por default la migracion es solo para
+        // no mover el costeo de las cuentas viejas, no para las que se crean de aca en adelante.
+        $user->condicion_iva_precios = User::CONDICION_RRII;
+        $user->usar_condicion_fiscal_en_costeo = 1;
+        $user->save();
     }
 
     function set_cheques_user_id() {

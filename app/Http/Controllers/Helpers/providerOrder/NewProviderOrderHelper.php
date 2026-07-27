@@ -732,26 +732,27 @@ class NewProviderOrderHelper {
 
     /**
      * Prompt 609 — Tarea 2: resuelve la condición de IVA para costeo (`'RRII'` o `'MT'`) de la
-     * cuenta dueña de esta compra, leyendo `condicion_iva_precios` desde su configuración
-     * (`UserConfiguration`, columna agregada por el Prompt 608).
+     * cuenta dueña de esta compra, leyendo `condicion_iva_precios` desde el usuario.
      *
-     * Si no hay configuración cargada (o el valor no es exactamente `'MT'`), se asume `'RRII'` —
-     * comportamiento actual del sistema (costos netos, IVA sumado al final), opción conservadora.
+     * Grupo 231, prompt 01: `condicion_iva_precios` se movió de `UserConfiguration` a `User`.
+     * Si no hay usuario, se asume `'RRII'` — comportamiento actual del sistema (costos netos, IVA
+     * sumado al final), opción conservadora. Este método sigue usando el literal `'MT'` (no la
+     * constante `User::CONDICION_MT`), consistente con el resto del archivo.
      *
      * @return string 'RRII' o 'MT'.
      *
      * Nota (Prompt 610): pasa de `private` a `public` porque `ModoFacturacionHelper::calcular_iva()`
      * necesita la misma condición para decidir qué muestra la factura automática (neto+desglose de
      * IVA para RRII, solo total para MT) — se reusa este único punto de verdad en vez de duplicar
-     * la lectura de `configuration->condicion_iva_precios` en otra clase.
+     * la lectura de `condicion_iva_precios` en otra clase.
      */
     function get_condicion_iva_precios() {
 
-        if (is_null($this->user) || is_null($this->user->configuration)) {
+        if (is_null($this->user)) {
             return 'RRII';
         }
 
-        if ($this->user->configuration->condicion_iva_precios == 'MT') {
+        if ($this->user->condicion_iva_precios == 'MT') {
             return 'MT';
         }
 

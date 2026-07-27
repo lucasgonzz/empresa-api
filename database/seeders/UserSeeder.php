@@ -774,9 +774,14 @@ class UserSeeder extends Seeder
                     'limit_items_in_sale_per_page'          => null,
                     'can_make_afip_tickets'                 => 1,
                     'user_id'                               => config('app.USER_ID'),
-                    // Toda cuenta nueva nace como Responsable Inscripto (comportamiento actual del sistema).
-                    'condicion_iva_precios'                 => UserConfiguration::CONDICION_RRII,
                 ]);
+
+                // La condicion fiscal ya no vive en user_configurations: vive en users (grupo 231, prompt 01).
+                // Toda cuenta sembrada nace como Responsable Inscripto y con la dinamica contable real activada,
+                // igual que las cuentas que crea HelperController::store_user().
+                $user->condicion_iva_precios = User::CONDICION_RRII;
+                $user->usar_condicion_fiscal_en_costeo = 1;
+                $user->save();
 
 
                 if (
@@ -883,9 +888,14 @@ class UserSeeder extends Seeder
             'limit_items_in_sale_per_page'          => null,
             'can_make_afip_tickets'                 => 1,
             'user_id'                               => $commerce->id,
-            // Toda cuenta nueva nace como Responsable Inscripto (comportamiento actual del sistema).
-            'condicion_iva_precios'                 => UserConfiguration::CONDICION_RRII,
         ]);
+
+        // La condicion fiscal ya no vive en user_configurations: vive en users (grupo 231, prompt 01).
+        // Toda cuenta sembrada nace como Responsable Inscripto y con la dinamica contable real activada,
+        // igual que las cuentas que crea HelperController::store_user().
+        $commerce->condicion_iva_precios = User::CONDICION_RRII;
+        $commerce->usar_condicion_fiscal_en_costeo = 1;
+        $commerce->save();
 
         AfipInformation::create([
             'iva_condition_id'      => 1,
