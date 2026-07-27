@@ -33,13 +33,10 @@ class UpdateDefaultVersionController extends Controller
             $api_url = str_replace('https://', 'https://api-', $spa_url);
         }
 
-        // Normalizar siempre: limpiar espacios y barras finales
-        $api_url = rtrim(trim((string) $api_url), '/');
-
-        // Aplicar el guard de sufijo una sola vez (ambas ramas: derivada del spa_url o explícita por request)
-        if (ApiUrlHelper::needs_public_segment() && substr($api_url, -7) !== '/public') {
-            $api_url .= '/public';
-        }
+        // Normalizacion centralizada e idempotente en ApiUrlHelper (grupo 237, prompt 01): cubre
+        // las dos ramas de arriba (derivada del spa_url o explicita por request) y ademas corrige
+        // valores que ya vinieran con "/public" duplicado, en vez de solo evitar generar nuevos.
+        $api_url = ApiUrlHelper::canonical_public_url($api_url);
 
         try {
             $updated = User::query()->update([

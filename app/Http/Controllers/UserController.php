@@ -129,11 +129,9 @@ class UserController extends Controller
 
         if ($request->default_version) {
             $api_url = str_replace('https://', 'https://api-', $request->default_version);
-            $api_url = rtrim(trim((string) $api_url), '/');
-            if (ApiUrlHelper::needs_public_segment() && substr($api_url, -7) !== '/public') {
-                $api_url .= '/public';
-            }
-            $model->api_url = $api_url;
+            // Normalizacion centralizada e idempotente en ApiUrlHelper (grupo 237, prompt 01):
+            // evita que un valor ya duplicado ("/public/public") pase el guard y quede persistido.
+            $model->api_url = ApiUrlHelper::canonical_public_url($api_url);
         }
 
         $model->text_omitir_cc                  = $request->text_omitir_cc;
