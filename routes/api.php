@@ -515,6 +515,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // no reemplaza ningún reporte existente.
     Route::get('reportes/posicion-fiscal', 'PosicionFiscalController@index');
 
+    // Flujo de Caja percibido: ingresos/egresos por caja y método de pago + plata en tránsito
+    // (Grupo 226 · Prompt 01). Aditivo, no reemplaza ningún reporte existente.
+    Route::get('reportes/flujo-caja', 'FlujoCajaController@index');
+
     // Article Purchase
     Route::post('article-purchase', 'ArticlePurchaseController@index');
 

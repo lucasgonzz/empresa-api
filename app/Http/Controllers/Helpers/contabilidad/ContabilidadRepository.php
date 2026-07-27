@@ -1476,6 +1476,12 @@ class ContabilidadRepository
             $query->where('sales.price_type_id', $filtros['price_type_id']);
         }
 
+        // Filtro por caja (Grupo 226, Flujo de Caja): `sales.caja_id` existe en la tabla, a
+        // diferencia de `current_acounts` (ver deuda técnica documentada en los métodos de CC).
+        if (!empty($filtros['caja_id'])) {
+            $query->where('sales.caja_id', $filtros['caja_id']);
+        }
+
         return $query;
     }
 
@@ -1898,5 +1904,397 @@ class ContabilidadRepository
             'page'      => (int) $page,
             'per_page'  => (int) $per_page,
         ];
+    }
+
+    // =========================================================================================
+    // FLUJO DE CAJA PERCIBIDO (Grupo 226, Prompt 01) — cobranzas/pagos desglosados por caja y
+    // método de pago, y gastos pagados por categoría SIN excluir la comisión de cobro (a
+    // diferencia de gastos_por_categoria(), que la excluye para el Estado de Resultados).
+    // =========================================================================================
+
+    /**
+     * Combina una fila "legacy" (un solo método de pago) y una colección "multi" (varios métodos
+     * de pago vía pivot) en un único array indexado por `metodo-caja`, sumando los montos que
+     * caen en la misma combinación. Mismo criterio de mapeo que `gastos_pagados()` (regla 09 de
+     * ese método): un método null/0 se mapea a `3` (efectivo, convención legacy del sistema).
+     *
+     * @param  \Illuminate\Support\Collection $legacy Filas ya agrupadas por método+caja (con
+     *                                                  `current_acount_payment_method_id`, `caja_id`, `total`).
+     * @param  \Illuminate\Support\Collection $multi Modelos con relación `current_acount_payment_methods`
+     *                                                 cargada (pivot `amount`, `caja_id`).
+     * @return array<string, array{current_acount_payment_method_id: int, caja_id: int|null, total: float}>
+     */
+    private static function combinar_desglose_caja_metodo($legacy, $multi)
+    {
+        $resultado = [];
+
+        foreach ($legacy as $row) {
+            $key = $row->current_acount_payment_method_id.'-'.$row->caja_id;
+
+            if (!isset($resultado[$key])) {
+                $resultado[$key] = [
+                    'current_acount_payment_method_id' => (int) $row->current_acount_payment_method_id,
+                    'caja_id'                            => $row->caja_id,
+                    'total'                               => 0.0,
+                ];
+            }
+
+            $resultado[$key]['total'] += (float) $row->total;
+        }
+
+        foreach ($multi as $modelo) {
+            foreach ($modelo->current_acount_payment_methods as $payment_method) {
+
+                // Sin fallback (mismo criterio que gastos_pagados()): un monto <= 0 se saltea.
+                $monto = (float) $payment_method->pivot->amount;
+
+                if ($monto <= 0) {
+                    continue;
+                }
+
+                $caja_id = isset($payment_method->pivot->caja_id) ? $payment_method->pivot->caja_id : null;
+                $key = $payment_method->id.'-'.$caja_id;
+
+                if (!isset($resultado[$key])) {
+                    $resultado[$key] = [
+                        'current_acount_payment_method_id' => $payment_method->id,
+                        'caja_id'                            => $caja_id,
+                        'total'                               => 0.0,
+                    ];
+                }
+
+                $resultado[$key]['total'] += $monto;
+            }
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * Funde dos desgloses (arrays indexados por `metodo-caja`, forma de `combinar_desglose_caja_metodo()`)
+     * en uno solo, sumando los totales de las claves repetidas.
+     *
+     * @param  array $a
+     * @param  array $b
+     * @return array<int, array{current_acount_payment_method_id: int, caja_id: int|null, total: float}>
+     */
+    private static function fusionar_desgloses($a, $b)
+    {
+        foreach ($b as $key => $fila) {
+            if (!isset($a[$key])) {
+                $a[$key] = $fila;
+            } else {
+                $a[$key]['total'] += $fila['total'];
+            }
+        }
+
+        return array_values($a);
+    }
+
+    /**
+     * Total de ventas cobradas en el mostrador (misma fuente que `cobranzas()`, separada para que
+     * el Flujo de Caja pueda mostrarla como línea propia dentro de "Ingresos").
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @param  array $filtros
+     * @return float
+     */
+    public static function cobranzas_mostrador($user_id, $desde, $hasta, $filtros = [])
+    {
+        return (float) self::query_cobranzas_mostrador($user_id, $desde, $hasta, $filtros)->sum('sales.total');
+    }
+
+    /**
+     * Total de cobranzas de cuenta corriente (misma fuente que `cobranzas()`, separada para que
+     * el Flujo de Caja pueda mostrarla como línea propia dentro de "Ingresos").
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @param  array $filtros
+     * @return float
+     */
+    public static function cobranzas_cuenta_corriente($user_id, $desde, $hasta, $filtros = [])
+    {
+        return (float) self::query_cobranzas_cuenta_corriente($user_id, $desde, $hasta, $filtros)->sum('current_acounts.haber');
+    }
+
+    /**
+     * Desglose por caja y método de pago de las ventas cobradas en el mostrador.
+     *
+     * FUENTE: `sales` (legacy, un solo método vía `sales.current_acount_payment_method_id` +
+     * `sales.caja_id`) y pivot `current_acount_payment_method_sale` (multi-método, con su propio
+     * `amount` y `caja_id` por fila) cuando la venta se cobró con más de un método.
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @param  array $filtros
+     * @return array<int, array{current_acount_payment_method_id: int, caja_id: int|null, total: float}>
+     */
+    public static function cobranzas_mostrador_por_caja_metodo($user_id, $desde, $hasta, $filtros = [])
+    {
+        $base = function () use ($user_id, $desde, $hasta, $filtros) {
+            return self::query_cobranzas_mostrador($user_id, $desde, $hasta, $filtros);
+        };
+
+        // Ventas con más de un método de pago cargado: se procesan aparte (rama "multi").
+        $ids_multi = $base()->has('current_acount_payment_methods')->pluck('sales.id');
+
+        $legacy = $base()
+            ->whereNotIn('sales.id', $ids_multi)
+            ->selectRaw('
+                CASE
+                    WHEN sales.current_acount_payment_method_id IS NULL OR sales.current_acount_payment_method_id = 0 THEN 3
+                    ELSE sales.current_acount_payment_method_id
+                END as current_acount_payment_method_id,
+                sales.caja_id as caja_id,
+                SUM(sales.total) as total
+            ')
+            ->groupBy('current_acount_payment_method_id', 'sales.caja_id')
+            ->get();
+
+        $multi = $base()
+            ->whereIn('sales.id', $ids_multi)
+            ->with('current_acount_payment_methods')
+            ->get();
+
+        return array_values(self::combinar_desglose_caja_metodo($legacy, $multi));
+    }
+
+    /**
+     * Desglose por caja y método de pago de las cobranzas de cuenta corriente.
+     *
+     * FUENTE: `current_acounts` (legacy, un solo método vía `current_acount_payment_method_id`,
+     * sin caja asociada porque esa columna legacy no la registra) y pivot
+     * `current_acount_current_acount_payment_method` (multi-método, con su propio `amount` y
+     * `caja_id` por fila) cuando el cobro se hizo con más de un método.
+     *
+     * ⚠️ Deuda técnica BAJA: las cobranzas de CC con un solo método de pago "legacy" no tienen
+     * columna de caja en `current_acounts` (a diferencia de `sales`, que sí tiene `caja_id`
+     * propio) — esas filas quedan con `caja_id = null` en el desglose. Si esto se vuelve un
+     * problema real, habría que agregar esa columna a `current_acounts` igual que ya existe en
+     * `sales` y en el pivot multi-método.
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @param  array $filtros
+     * @return array<int, array{current_acount_payment_method_id: int, caja_id: int|null, total: float}>
+     */
+    public static function cobranzas_cuenta_corriente_por_caja_metodo($user_id, $desde, $hasta, $filtros = [])
+    {
+        $base = function () use ($user_id, $desde, $hasta, $filtros) {
+            return self::query_cobranzas_cuenta_corriente($user_id, $desde, $hasta, $filtros);
+        };
+
+        $ids_multi = $base()->has('current_acount_payment_methods')->pluck('current_acounts.id');
+
+        $legacy = $base()
+            ->whereNotIn('current_acounts.id', $ids_multi)
+            ->selectRaw('
+                CASE
+                    WHEN current_acounts.current_acount_payment_method_id IS NULL OR current_acounts.current_acount_payment_method_id = 0 THEN 3
+                    ELSE current_acounts.current_acount_payment_method_id
+                END as current_acount_payment_method_id,
+                SUM(current_acounts.haber) as total
+            ')
+            ->groupBy('current_acount_payment_method_id')
+            ->get()
+            // Sin columna de caja para la rama legacy (ver PHPDoc): se agrega null a mano para
+            // que combinar_desglose_caja_metodo() reciba la misma forma que el resto.
+            ->map(function ($row) {
+                $row->caja_id = null;
+                return $row;
+            });
+
+        $multi = $base()
+            ->whereIn('current_acounts.id', $ids_multi)
+            ->with('current_acount_payment_methods')
+            ->get();
+
+        return array_values(self::combinar_desglose_caja_metodo($legacy, $multi));
+    }
+
+    /**
+     * Desglose combinado de TODOS los ingresos percibidos del período (mostrador + cuenta
+     * corriente) por caja y método de pago, para el Flujo de Caja (Grupo 226).
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @param  array $filtros
+     * @return array<int, array{current_acount_payment_method_id: int, caja_id: int|null, total: float}>
+     */
+    public static function ingresos_por_caja_metodo($user_id, $desde, $hasta, $filtros = [])
+    {
+        $mostrador = self::indexar_desglose(self::cobranzas_mostrador_por_caja_metodo($user_id, $desde, $hasta, $filtros));
+        $cc = self::indexar_desglose(self::cobranzas_cuenta_corriente_por_caja_metodo($user_id, $desde, $hasta, $filtros));
+
+        return self::fusionar_desgloses($mostrador, $cc);
+    }
+
+    /**
+     * Re-indexa un desglose ya "aplanado" (array de filas) por su clave `metodo-caja`, para poder
+     * pasarlo a `fusionar_desgloses()` (que espera arrays indexados, misma forma que devuelve
+     * `combinar_desglose_caja_metodo()` antes de aplanar).
+     *
+     * @param  array $filas
+     * @return array<string, array{current_acount_payment_method_id: int, caja_id: int|null, total: float}>
+     */
+    private static function indexar_desglose($filas)
+    {
+        $indexado = [];
+
+        foreach ($filas as $fila) {
+            $key = $fila['current_acount_payment_method_id'].'-'.$fila['caja_id'];
+            $indexado[$key] = $fila;
+        }
+
+        return $indexado;
+    }
+
+    /**
+     * Desglose por caja y método de pago de los pagos a proveedores hechos vía cuenta corriente.
+     *
+     * FUENTE: `current_acounts` (`provider_id` no nulo), mismo criterio legacy/multi que
+     * `cobranzas_cuenta_corriente_por_caja_metodo()` (misma deuda técnica de caja ausente en la
+     * rama legacy, documentada ahí).
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @param  array $filtros
+     * @return array<int, array{current_acount_payment_method_id: int, caja_id: int|null, total: float}>
+     */
+    public static function pagos_a_proveedores_por_caja_metodo($user_id, $desde, $hasta, $filtros = [])
+    {
+        $base = function () use ($user_id, $desde, $hasta, $filtros) {
+            return self::query_pagos_a_proveedores_cc($user_id, $desde, $hasta, $filtros);
+        };
+
+        $ids_multi = $base()->has('current_acount_payment_methods')->pluck('current_acounts.id');
+
+        $legacy = $base()
+            ->whereNotIn('current_acounts.id', $ids_multi)
+            ->selectRaw('
+                CASE
+                    WHEN current_acounts.current_acount_payment_method_id IS NULL OR current_acounts.current_acount_payment_method_id = 0 THEN 3
+                    ELSE current_acounts.current_acount_payment_method_id
+                END as current_acount_payment_method_id,
+                SUM(current_acounts.haber) as total
+            ')
+            ->groupBy('current_acount_payment_method_id')
+            ->get()
+            ->map(function ($row) {
+                $row->caja_id = null;
+                return $row;
+            });
+
+        $multi = $base()
+            ->whereIn('current_acounts.id', $ids_multi)
+            ->with('current_acount_payment_methods')
+            ->get();
+
+        $desglose_cc = self::combinar_desglose_caja_metodo($legacy, $multi);
+
+        // Compras a proveedores sin cuenta corriente: `provider_orders` no tiene columna de caja
+        // ni de método de pago (se pagan "de una", fuera del circuito de caja/CC — mismo
+        // criterio de la deuda técnica BAJA ya documentada en query_pagos_a_proveedores_sin_cc()).
+        // Se agrupan bajo método 3 (efectivo, convención legacy) y caja_id null.
+        $sin_cc_total = (float) self::query_pagos_a_proveedores_sin_cc($user_id, $desde, $hasta, $filtros)->sum('total');
+
+        if ($sin_cc_total > 0) {
+            $key = '3-';
+            if (!isset($desglose_cc[$key])) {
+                $desglose_cc[$key] = [
+                    'current_acount_payment_method_id' => 3,
+                    'caja_id'                            => null,
+                    'total'                               => 0.0,
+                ];
+            }
+            $desglose_cc[$key]['total'] += $sin_cc_total;
+        }
+
+        return array_values($desglose_cc);
+    }
+
+    /**
+     * Desglose combinado de TODOS los egresos percibidos del período (pagos a proveedores +
+     * gastos pagados) por caja y método de pago, para el Flujo de Caja (Grupo 226).
+     *
+     * 🔴 Reusa `gastos_pagados()` tal cual (incluye la comisión de cobro, a diferencia de
+     * `gastos_por_categoria()`/`gastos_pagados_por_categoria()` — ver PHPDoc de esta última):
+     * acá la comisión SÍ tiene que aparecer, es la única línea de gasto donde debe hacerlo.
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @param  array $filtros
+     * @return array<int, array{current_acount_payment_method_id: int, caja_id: int|null, total: float}>
+     */
+    public static function egresos_por_caja_metodo($user_id, $desde, $hasta, $filtros = [])
+    {
+        $proveedores = self::indexar_desglose(self::pagos_a_proveedores_por_caja_metodo($user_id, $desde, $hasta, $filtros));
+        $gastos = self::indexar_desglose(self::gastos_pagados($user_id, $desde, $hasta, $filtros));
+
+        return self::fusionar_desgloses($proveedores, $gastos);
+    }
+
+    /**
+     * Gastos del período agrupados por concepto, SIN excluir la comisión de cobro automática
+     * (a diferencia de `gastos_por_categoria()`, pensado para el Estado de Resultados devengado).
+     *
+     * 🔴 Por qué existe esta variante (tarea 06 del prompt 226/01): en el Flujo de Caja la
+     * comisión de cobro es un egreso real de caja como cualquier otro gasto pagado — no tiene una
+     * línea propia separada como en el Estado de Resultados ("Impuestos y costos financieros").
+     * Excluirla acá la haría desaparecer del reporte (nunca se sumaría en ningún lado), así que
+     * esta variante usa el `Expense` query SIN el `whereNotIn` de `query_gastos()`.
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @param  array $filtros `moneda_id`.
+     * @return array<int, array{expense_concept_id: int|null, concepto: string, total: float}>
+     */
+    public static function gastos_pagados_por_categoria($user_id, $desde, $hasta, $filtros = [])
+    {
+        list($desde_carbon, $hasta_carbon) = self::rango($desde, $hasta);
+
+        $query = Expense::query()
+            ->where('expenses.user_id', $user_id)
+            ->whereDate('expenses.created_at', '>=', $desde_carbon)
+            ->whereDate('expenses.created_at', '<=', $hasta_carbon);
+
+        self::aplicar_filtro_moneda($query, $filtros, 'expenses.moneda_id');
+
+        // Filtro por caja (Grupo 226, Flujo de Caja): `expenses.caja_id` existe en la tabla.
+        if (!empty($filtros['caja_id'])) {
+            $query->where('expenses.caja_id', $filtros['caja_id']);
+        }
+
+        $rows = $query
+            ->selectRaw('expenses.expense_concept_id as expense_concept_id, SUM(expenses.amount) as total')
+            ->groupBy('expenses.expense_concept_id')
+            ->get();
+
+        $conceptos = self::get_expense_concepts_indexados($user_id);
+
+        $resultado = [];
+
+        foreach ($rows as $row) {
+            $concept_id = $row->expense_concept_id;
+            $nombre = isset($conceptos[$concept_id]) ? $conceptos[$concept_id] : 'Sin concepto';
+
+            $resultado[] = [
+                'expense_concept_id' => $concept_id,
+                'concepto'           => $nombre,
+                'total'              => (float) $row->total,
+            ];
+        }
+
+        return $resultado;
     }
 }
