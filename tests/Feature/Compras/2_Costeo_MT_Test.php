@@ -534,21 +534,35 @@ class Costeo_MT_Test extends ComprasTestCase
      * restaurarlo a mano, esa mutacion queda PERMANENTE en la base de testing y rompe silenciosamente
      * los tests de `Costeo_RRII_Test` (que asumen Pinza en 21%) en la proxima corrida. Por eso el
      * cambio de `iva_id` y su restauracion van en un `try/finally`: pase o falle el test, el
-     * fixture tiene que volver a quedar exactamente como lo dejo el seeder.
+     * fixture tiene que volver a quedar exactamente como lo dejo el seeder. La condicion fiscal de
+     * la cuenta (ver parrafo siguiente) se restaura por el mismo motivo.
+     *
+     * POR QUE ESTE ESCENARIO CORRE EN MT Y NO EN RRII (grupo 235, correctivo del fallo #40): estaba
+     * escrito en RRII, de cuando `aplicar_iva_al_costo` (default 1) pisaba la condicion fiscal real y
+     * hasta un Responsable Inscripto sumaba el IVA al costo — por eso ahi el costo real dependia de la
+     * alicuota del articulo. Desde el grupo 231 esa pregunta la responde
+     * `ArticlePricesHelper::iva_va_al_costo()` por condicion fiscal: en RRII el IVA es credito fiscal
+     * recuperable, NO entra al costo, y el costo real deja de depender de la alicuota. En RRII la
+     * deriva ya no existe y la asercion de abajo no tendria nada que observar. En MT si: el IVA es
+     * costo, entra antes del margen y la alicuota del articulo participa del costo real. Mover el
+     * escenario a MT no relaja la prueba — la lleva a la unica condicion donde el comportamiento que
+     * documenta puede ocurrir.
      *
      * @group compras
      * @test
      */
     public function deriva_por_alicuota_editada_es_comportamiento_documentado_no_bug()
     {
-        $this->set_condicion_iva('RRII');
+        $this->set_condicion_iva('MT');
         $this->quitar_bonificaciones_de_buenos_aires();
 
-        // Compra Pinza (21%), costo tipeado neto 1000, cantidad 10.
+        // Compra Pinza (21%), costo tipeado 1210, cantidad 10. Un MT trata el costo tipeado SIEMPRE
+        // como bruto e ignora precios_incluyen_iva (ver test 1), asi que el costo base queda neto en
+        // 1000 y el costo real en 1210 (1000 + 21%).
         $payload = $this->payload_compra([
             'precios_incluyen_iva' => 0,
             'articles' => [
-                $this->item('Pinza', 1000, 10),
+                $this->item('Pinza', 1210, 10),
             ],
         ]);
 
@@ -595,7 +609,12 @@ class Costeo_MT_Test extends ComprasTestCase
 
             // Restauracion manual OBLIGATORIA (ver docblock del test): DatabaseTransactions no
             // revierte nada en esta base (todas las tablas son MyISAM), asi que sin este bloque
-            // Pinza quedaria permanentemente en 10,5% y rompe la suite de RRII en la proxima corrida.
+            // Pinza quedaria permanentemente en 10,5% y la cuenta en MT, y rompe la suite de RRII en
+            // la proxima corrida. La condicion fiscal se restaura ANTES del recalculo para que el
+            // costo real que queda escrito en el fixture sea el de la condicion original (RRII, el
+            // default del seeder) y no el de MT.
+            $this->set_condicion_iva('RRII');
+
             $pinza->iva_id = $iva_id_original;
             $pinza->save();
 
