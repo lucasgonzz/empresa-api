@@ -245,7 +245,9 @@ return [
     'APP_ENV'                                   => env('APP_ENV', 'production'),
     'APP_URL'                                   => env('APP_URL'),
     'FOR_USER'                                  => env('FOR_USER'),
-    'API_URL'                                   => env('API_URL'),
+    /* API_URL esta deprecada: no cargarla en .env nuevos. Existe solo por compatibilidad con
+       instalaciones viejas que ya la tienen definida; si no esta, cae en APP_URL. */
+    'API_URL'                                   => env('API_URL', env('APP_URL')),
 
     /* Clave de API de Anthropic (Claude) para la importación de Excel asistida por IA. */
     'ANTHROPIC_API_KEY'                         => env('ANTHROPIC_API_KEY'),

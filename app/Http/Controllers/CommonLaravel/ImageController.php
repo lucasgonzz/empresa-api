@@ -4,6 +4,7 @@ namespace App\Http\Controllers\CommonLaravel;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Jobs\ProcessSyncArticleImageToTiendaNube;
 use App\Models\Article;
@@ -37,16 +38,9 @@ class ImageController extends Controller
 
         $model_name = GeneralHelper::getModelName($request->model_name);
         
-        if (config('app.APP_ENV') == 'local') {
-            $name = 'http://empresa.local:8000/storage/'.$name;
-        } else {
-
-            if (config('app.VPS')) {
-                $name = config('app.APP_URL').'/storage/'.$name;
-            } else {
-                $name = config('app.APP_URL').'/public/storage/'.$name;
-            }
-        }
+        // URL publica del archivo, centralizada en ApiUrlHelper (unico lugar que sabe si
+        // corresponde agregar "/public" segun VPS/APP_ENV; ver grupo 230, prompt 01).
+        $name = ApiUrlHelper::storage($name);
 
         $model = $model_name::find($request->model_id);
 

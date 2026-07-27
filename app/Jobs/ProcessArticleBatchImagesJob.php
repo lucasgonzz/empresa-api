@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Events\ArticleBatchImagesProcessed;
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Models\Article;
 use App\Models\ArticleImageSearchAttempt;
 use App\Models\GeocoderCounter;
@@ -828,15 +829,9 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
             return ['url' => null, 'failure' => 'format', 'http_status' => $http_status];
         }
 
-        if (config('app.APP_ENV') == 'local') {
-            return ['url' => 'http://empresa.local:8000/storage/'.$filename, 'failure' => null, 'http_status' => $http_status];
-        }
-
-        if (config('app.VPS')) {
-            return ['url' => config('app.APP_URL').'/storage/'.$filename, 'failure' => null, 'http_status' => $http_status];
-        }
-
-        return ['url' => config('app.APP_URL').'/public/storage/'.$filename, 'failure' => null, 'http_status' => $http_status];
+        // URL publica del archivo, centralizada en ApiUrlHelper (unico lugar que sabe si
+        // corresponde agregar "/public" segun VPS/APP_ENV; ver grupo 230, prompt 01).
+        return ['url' => ApiUrlHelper::storage($filename), 'failure' => null, 'http_status' => $http_status];
     }
 
     /**
