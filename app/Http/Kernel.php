@@ -43,6 +43,13 @@ class Kernel extends HttpKernel
             \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
             'throttle:custom-api',
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
+            /**
+             * Va al final del grupo (grupo 233, prompt 03): tiene que correr despues de
+             * que Sanctum haya establecido la sesion stateful, si no hasSession() puede
+             * dar false en requests que si son de demo. Tiene corte temprano propio para
+             * no afectar en nada a los requests de clientes reales.
+             */
+            \App\Http\Middleware\DemoSessionVigente::class,
         ],
     ];
 
@@ -67,5 +74,7 @@ class Kernel extends HttpKernel
         'admin.api.key' => \App\Http\Middleware\AdminApiKey::class,
         /* Verifica que el usuario tenga una extensión de empresa activa por su slug. */
         'check_extencion_empresa' => \App\Http\Middleware\CheckExtencionEmpresa::class,
+        /* Valida vigencia del token de ingreso demo en cada request (grupo 233, prompt 03). */
+        'demo.session.vigente' => \App\Http\Middleware\DemoSessionVigente::class,
     ];
 }
