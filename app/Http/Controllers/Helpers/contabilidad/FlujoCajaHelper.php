@@ -432,6 +432,41 @@ class FlujoCajaHelper
      */
     private static function liquidaciones_pendientes($user_id, $moneda_id, $filtros_extra)
     {
+        // Base sin agrupar, compartida con el total/detalle del drill-down (Grupo 226, Prompt 02):
+        // así el agregado por fecha de acá y las filas sueltas de `liquidaciones_pendientes_detalle()`
+        // nunca pueden divergir (regla 04 de ese prompt).
+        $rows = self::query_liquidaciones_pendientes($user_id, $moneda_id, $filtros_extra)
+            ->selectRaw('movimiento_cajas.fecha_liquidacion_estimada as fecha, SUM(movimiento_cajas.monto_neto_estimado) as total')
+            ->groupBy('movimiento_cajas.fecha_liquidacion_estimada')
+            ->orderBy('movimiento_cajas.fecha_liquidacion_estimada', 'ASC')
+            ->get();
+
+        $resultado = [];
+
+        foreach ($rows as $row) {
+            $resultado[] = [
+                'fecha' => (string) $row->fecha,
+                'total' => (float) $row->total,
+            ];
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * Query base (sin agrupar, sin seleccionar columnas) de los movimientos de caja con liquidación
+     * pendiente, factorizada para que `liquidaciones_pendientes()` (agregado por fecha, ya existente
+     * desde el prompt 01), `liquidaciones_pendientes_total()` y `liquidaciones_pendientes_detalle()`
+     * (ambos nuevos del prompt 02, drill-down) apliquen siempre el mismo filtro (regla 04/08: el
+     * total del detalle tiene que coincidir al centavo con la tarjeta).
+     *
+     * @param  int $user_id
+     * @param  int|null $moneda_id 1 = pesos, 2 = dólares, null = sin filtrar (todas).
+     * @param  array $filtros_extra `address_id`, `caja_id`.
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    private static function query_liquidaciones_pendientes($user_id, $moneda_id, $filtros_extra)
+    {
         $hoy = Carbon::today()->toDateString();
 
         $query = MovimientoCaja::query()
@@ -458,22 +493,72 @@ class FlujoCajaHelper
             $query->where('movimiento_cajas.caja_id', $filtros_extra['caja_id']);
         }
 
-        $rows = $query
-            ->selectRaw('movimiento_cajas.fecha_liquidacion_estimada as fecha, SUM(movimiento_cajas.monto_neto_estimado) as total')
-            ->groupBy('movimiento_cajas.fecha_liquidacion_estimada')
-            ->orderBy('movimiento_cajas.fecha_liquidacion_estimada', 'ASC')
-            ->get();
+        return $query;
+    }
 
-        $resultado = [];
+    /**
+     * Total monetario de liquidaciones pendientes, para la tarjeta del drill-down
+     * (Grupo 226, Prompt 02 — `concepto=liquidaciones_pendientes`). Misma query base que
+     * `liquidaciones_pendientes_detalle()` (regla 04 del prompt).
+     *
+     * @param  int $user_id
+     * @param  int|null $moneda_id
+     * @param  array $filtros_extra
+     * @return float
+     */
+    public static function liquidaciones_pendientes_total($user_id, $moneda_id, $filtros_extra = [])
+    {
+        return (float) self::query_liquidaciones_pendientes($user_id, $moneda_id, $filtros_extra)
+            ->sum('movimiento_cajas.monto_neto_estimado');
+    }
+
+    /**
+     * Detalle paginado (fila por fila, SIN agrupar por fecha a diferencia de
+     * `liquidaciones_pendientes()`) de los movimientos de caja con liquidación pendiente, para el
+     * drill-down (Grupo 226, Prompt 02). `desde`/`hasta` no aplican acá (mismo criterio que el resto
+     * de la sección "plata en tránsito": solo importa la fecha de liquidación ESTIMADA futura, no un
+     * rango de período histórico).
+     *
+     * @param  int $user_id
+     * @param  int|null $moneda_id
+     * @param  array $filtros_extra
+     * @param  int $page
+     * @param  int $per_page
+     * @return array{registros: array, total: int, page: int, per_page: int}
+     */
+    public static function liquidaciones_pendientes_detalle($user_id, $moneda_id, $filtros_extra = [], $page = 1, $per_page = 50)
+    {
+        $base = function () use ($user_id, $moneda_id, $filtros_extra) {
+            return self::query_liquidaciones_pendientes($user_id, $moneda_id, $filtros_extra);
+        };
+
+        $total = $base()->count();
+
+        $rows = $base()
+            ->orderBy('movimiento_cajas.fecha_liquidacion_estimada', 'ASC')
+            ->skip(($page - 1) * $per_page)
+            ->take($per_page)
+            ->get(['movimiento_cajas.id', 'movimiento_cajas.fecha_liquidacion_estimada', 'movimiento_cajas.monto_neto_estimado']);
+
+        $registros = [];
 
         foreach ($rows as $row) {
-            $resultado[] = [
-                'fecha' => (string) $row->fecha,
-                'total' => (float) $row->total,
+            $registros[] = [
+                'id'          => $row->id,
+                'fecha'       => (string) $row->fecha_liquidacion_estimada,
+                'descripcion' => 'Liquidación pendiente #'.$row->id,
+                'monto'       => (float) $row->monto_neto_estimado,
+                'link_tipo'   => 'movimiento_caja',
+                'link_id'     => $row->id,
             ];
         }
 
-        return $resultado;
+        return [
+            'registros' => $registros,
+            'total'     => $total,
+            'page'      => (int) $page,
+            'per_page'  => (int) $per_page,
+        ];
     }
 
     /**
@@ -495,16 +580,10 @@ class FlujoCajaHelper
      */
     private static function cheques_diferidos($user_id)
     {
-        $hoy = Carbon::today()->toDateString();
-
-        $rows = Cheque::query()
-            ->where('user_id', $user_id)
-            ->where('tipo', 'recibido')
-            ->whereNull('endosado_a_provider_id')
-            ->where(function ($sub) {
-                $sub->whereNull('estado_manual')->orWhereNotIn('estado_manual', ['cobrado', 'rechazado']);
-            })
-            ->whereDate('fecha_pago', '>', $hoy)
+        // Base sin agrupar, compartida con el total/detalle del drill-down (Grupo 226, Prompt 02):
+        // así el agregado por fecha de acá y las filas sueltas de `cheques_diferidos_detalle()`
+        // nunca pueden divergir (regla 04 de ese prompt).
+        $rows = self::query_cheques_diferidos($user_id)
             ->selectRaw('fecha_pago as fecha, SUM(amount) as total')
             ->groupBy('fecha_pago')
             ->orderBy('fecha_pago', 'ASC')
@@ -520,5 +599,90 @@ class FlujoCajaHelper
         }
 
         return $resultado;
+    }
+
+    /**
+     * Query base (sin agrupar, sin seleccionar columnas) de los cheques diferidos en cartera,
+     * factorizada para que `cheques_diferidos()` (agregado por fecha, ya existente desde el
+     * prompt 01), `cheques_diferidos_total()` y `cheques_diferidos_detalle()` (ambos nuevos del
+     * prompt 02, drill-down) apliquen siempre el mismo filtro (regla 04/08: el total del detalle
+     * tiene que coincidir al centavo con la tarjeta). Mismos estados exactos que
+     * `ChequeController::index()` (ver PHPDoc de `cheques_diferidos()` más arriba, no se repite acá).
+     *
+     * @param  int $user_id
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    private static function query_cheques_diferidos($user_id)
+    {
+        $hoy = Carbon::today()->toDateString();
+
+        return Cheque::query()
+            ->where('user_id', $user_id)
+            ->where('tipo', 'recibido')
+            ->whereNull('endosado_a_provider_id')
+            ->where(function ($sub) {
+                $sub->whereNull('estado_manual')->orWhereNotIn('estado_manual', ['cobrado', 'rechazado']);
+            })
+            ->whereDate('fecha_pago', '>', $hoy);
+    }
+
+    /**
+     * Total monetario de cheques diferidos en cartera, para la tarjeta del drill-down
+     * (Grupo 226, Prompt 02 — `concepto=cheques_en_cartera`). Misma query base que
+     * `cheques_diferidos_detalle()` (regla 04 del prompt).
+     *
+     * @param  int $user_id
+     * @return float
+     */
+    public static function cheques_diferidos_total($user_id)
+    {
+        return (float) self::query_cheques_diferidos($user_id)->sum('amount');
+    }
+
+    /**
+     * Detalle paginado (fila por fila, SIN agrupar por fecha a diferencia de
+     * `cheques_diferidos()`) de los cheques diferidos en cartera, para el drill-down
+     * (Grupo 226, Prompt 02). Sin dimensión de moneda propia (ver PHPDoc de `cheques_diferidos()`):
+     * el caller (`ReporteDetalleController`) es responsable de no invocar este método en modo
+     * dólares — acá no se filtra por moneda porque el modelo no tiene esa columna.
+     *
+     * @param  int $user_id
+     * @param  int $page
+     * @param  int $per_page
+     * @return array{registros: array, total: int, page: int, per_page: int}
+     */
+    public static function cheques_diferidos_detalle($user_id, $page = 1, $per_page = 50)
+    {
+        $base = function () use ($user_id) {
+            return self::query_cheques_diferidos($user_id);
+        };
+
+        $total = $base()->count();
+
+        $rows = $base()
+            ->orderBy('fecha_pago', 'ASC')
+            ->skip(($page - 1) * $per_page)
+            ->take($per_page)
+            ->get(['id', 'numero', 'banco', 'fecha_pago', 'amount']);
+
+        $registros = [];
+
+        foreach ($rows as $row) {
+            $registros[] = [
+                'id'          => $row->id,
+                'fecha'       => Carbon::parse($row->fecha_pago)->toDateString(),
+                'descripcion' => 'Cheque N° '.($row->numero ?: $row->id).($row->banco ? ' — '.$row->banco : ''),
+                'monto'       => (float) $row->amount,
+                'link_tipo'   => 'cheque',
+                'link_id'     => $row->id,
+            ];
+        }
+
+        return [
+            'registros' => $registros,
+            'total'     => $total,
+            'page'      => (int) $page,
+            'per_page'  => (int) $per_page,
+        ];
     }
 }

@@ -611,6 +611,15 @@ class ContabilidadRepository
 
         self::aplicar_filtro_moneda($query, $filtros, 'expenses.moneda_id');
 
+        // Filtro opcional por categoría (Grupo 226, Prompt 02 — drill-down genérico
+        // `concepto=gastos&categoria=<expense_concept_id>`): reusado tanto por gastos_por_categoria()
+        // (total) como por gastos_por_categoria_detalle() (detalle), para que nunca puedan divergir
+        // (regla 04/08 de la clase). Sin este filtro en $filtros, el comportamiento es idéntico al
+        // de siempre (todas las categorías).
+        if (!empty($filtros['expense_concept_id'])) {
+            $query->where('expenses.expense_concept_id', $filtros['expense_concept_id']);
+        }
+
         return $query;
     }
 
@@ -1134,6 +1143,117 @@ class ContabilidadRepository
             // si alguna factura aporta 2 registros; se calcula sobre el array ya materializado de esta
             // página más las páginas restantes estimadas no aplica acá — se deja el count() de filas
             // de la tabla origen como aproximación, documentado como deuda baja (ver reporte final).
+            'total'     => $total,
+            'page'      => (int) $page,
+            'per_page'  => (int) $per_page,
+        ];
+    }
+
+    /**
+     * Detalle paginado de las percepciones de IVA sufridas que componen
+     * `percepciones_sufridas()['iva']` (Grupo 226, Prompt 02 — drill-down `concepto=percepciones_iva`).
+     *
+     * 🔴 A diferencia de `percepciones_sufridas_detalle()` (que mezcla filas de IVA e IIBB en el
+     * mismo listado, pensado para una vista humana que muestra ambas), acá el filtro
+     * `percepcion_iva > 0` se aplica en SQL antes de paginar, para que el drill-down de la tarjeta
+     * de IVA nunca traiga una fila de IIBB (regla 04 del prompt: el total tiene que cerrar exacto).
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @param  int $page
+     * @param  int $per_page
+     * @return array{registros: array, total: int, page: int, per_page: int}
+     */
+    public static function percepciones_iva_detalle($user_id, $desde, $hasta, $page = 1, $per_page = 50)
+    {
+        list($desde, $hasta) = self::rango($desde, $hasta);
+
+        $base = function () use ($user_id, $desde, $hasta) {
+            return ProviderOrderAfipTicket::query()
+                ->where('user_id', $user_id)
+                ->whereDate('issued_at', '>=', $desde)
+                ->whereDate('issued_at', '<=', $hasta)
+                ->where('percepcion_iva', '>', 0);
+        };
+
+        $total = $base()->count();
+
+        $rows = $base()
+            ->orderBy('issued_at', 'ASC')
+            ->skip(($page - 1) * $per_page)
+            ->take($per_page)
+            ->get(['id', 'issued_at', 'code', 'percepcion_iva', 'provider_order_id']);
+
+        $registros = [];
+
+        foreach ($rows as $row) {
+            $registros[] = [
+                'id'          => $row->id,
+                'fecha'       => $row->issued_at,
+                'descripcion' => 'Percepción IVA — Comprobante '.$row->code,
+                'monto'       => (float) $row->percepcion_iva,
+                'link_tipo'   => 'provider_order',
+                'link_id'     => $row->provider_order_id,
+            ];
+        }
+
+        return [
+            'registros' => $registros,
+            'total'     => $total,
+            'page'      => (int) $page,
+            'per_page'  => (int) $per_page,
+        ];
+    }
+
+    /**
+     * Detalle paginado de las percepciones de IIBB sufridas que componen
+     * `percepciones_sufridas()['iibb']` (Grupo 226, Prompt 02 — drill-down `concepto=percepciones_iibb`).
+     * Mismo criterio que `percepciones_iva_detalle()`: filtra `percepcion_iibb > 0` en SQL antes de
+     * paginar, para no mezclar filas de IVA.
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @param  int $page
+     * @param  int $per_page
+     * @return array{registros: array, total: int, page: int, per_page: int}
+     */
+    public static function percepciones_iibb_detalle($user_id, $desde, $hasta, $page = 1, $per_page = 50)
+    {
+        list($desde, $hasta) = self::rango($desde, $hasta);
+
+        $base = function () use ($user_id, $desde, $hasta) {
+            return ProviderOrderAfipTicket::query()
+                ->where('user_id', $user_id)
+                ->whereDate('issued_at', '>=', $desde)
+                ->whereDate('issued_at', '<=', $hasta)
+                ->where('percepcion_iibb', '>', 0);
+        };
+
+        $total = $base()->count();
+
+        $rows = $base()
+            ->orderBy('issued_at', 'ASC')
+            ->skip(($page - 1) * $per_page)
+            ->take($per_page)
+            ->get(['id', 'issued_at', 'code', 'percepcion_iibb', 'provider_order_id']);
+
+        $registros = [];
+
+        foreach ($rows as $row) {
+            $registros[] = [
+                'id'          => $row->id,
+                'fecha'       => $row->issued_at,
+                'descripcion' => 'Percepción IIBB — Comprobante '.$row->code,
+                'monto'       => (float) $row->percepcion_iibb,
+                'link_tipo'   => 'provider_order',
+                'link_id'     => $row->provider_order_id,
+            ];
+        }
+
+        return [
+            'registros' => $registros,
             'total'     => $total,
             'page'      => (int) $page,
             'per_page'  => (int) $per_page,

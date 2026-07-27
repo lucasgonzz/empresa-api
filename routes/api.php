@@ -519,6 +519,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // (Grupo 226 · Prompt 01). Aditivo, no reemplaza ningún reporte existente.
     Route::get('reportes/flujo-caja', 'FlujoCajaController@index');
 
+    // Drill-down genérico de cualquier tarjeta de los reportes de arriba (Estado de Resultados,
+    // Posición Fiscal, Flujo de Caja) — Grupo 226 · Prompt 02. Un solo endpoint parametrizado por
+    // `concepto` en vez de veinte endpoints específicos.
+    Route::get('reportes/detalle', 'ReporteDetalleController@index');
+
     // Article Purchase
     Route::post('article-purchase', 'ArticlePurchaseController@index');
 
