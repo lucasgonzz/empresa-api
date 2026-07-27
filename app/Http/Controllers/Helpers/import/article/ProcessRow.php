@@ -52,6 +52,47 @@ class ProcessRow {
 
     /** Número de fila (relativo al chunk) que se está procesando; se incrementa en cada llamada a procesar(). */
     protected $fila_actual = 0;
+
+    /**
+     * Conteo por resultado de la fila. Cada fila procesada incrementa EXACTAMENTE UN
+     * bucket: la suma de todos tiene que dar el total de filas procesadas del chunk.
+     *
+     * Los primeros cinco son los escalones de la cadena de identificacion (la fila
+     * matcheo contra un articulo existente por esa via).
+     */
+    protected $conteo_matching = [
+        'id'                       => 0,
+        'bar_code'                 => 0,
+        'sku'                      => 0,
+        'provider_code'            => 0,
+        'name'                     => 0,
+
+        /* No matcheo por ninguna via: se encola para crear. */
+        'creado_nuevo'             => 0,
+        /* No matcheo y create_and_edit = false: no se crea ni se actualiza nada. */
+        'sin_match_no_creado'      => 0,
+
+        /* Salidas tempranas por repeticion DENTRO del mismo Excel (no llegan a find_with_index). */
+        'variante_de_fila_previa'  => 0,
+        'merge_bar_code_repetido'  => 0,
+        'fila_repetida_en_excel'   => 0,
+
+        /* Salteadas a proposito. */
+        'bloqueado_otro_proveedor' => 0,
+        'ambiguo'                  => 0,
+
+        /* Red de seguridad: fila que salio por un camino no contemplado. Tiene que dar 0. */
+        'sin_clasificar'           => 0,
+    ];
+
+    /** @var string|null Bucket ya asignado a la fila que se esta procesando. */
+    protected $bucket_fila_actual = null;
+
+    /** @var int Filas que entraron a procesar() en este chunk. */
+    protected $filas_contadas = 0;
+
+    /** @var bool Hay una fila abierta pendiente de cerrar. */
+    protected $fila_abierta = false;
     protected $articulosParaActualizar = [];
     protected $articulosParaCrear = [];
     protected $price_types = [];
@@ -229,6 +270,10 @@ class ProcessRow {
 
         // Número de fila relativo a este chunk; se usa para identificar conflictos (ambiguos/placeholders) en los reportes.
         $this->fila_actual++;
+
+        // Abre el conteo de esta fila (cierra la anterior si quedo sin clasificar) y
+        // suma al total de filas contadas del chunk (ver get_conteo_matching()/get_filas_contadas()).
+        $this->abrir_conteo_fila();
 
         $this->nombres_proveedores = $nombres_proveedores;
 
@@ -512,6 +557,8 @@ class ProcessRow {
 
             if (!is_null($variant_payload)) {
 
+                // Fila repetida dentro del mismo Excel, tratada como variante del articulo base.
+                $this->contar_fila('variante_de_fila_previa');
                 $this->attach_variant_to_existing_article($data, $variant_payload);
                 // $this->log('Fila repetida tratada como VARIANTE del artículo base');
                 return;
@@ -519,11 +566,15 @@ class ProcessRow {
             // Si la coincidencia fue por bar_code, la última fila gana:
             // actualizar el artículo ya encolado con los datos de esta fila.
             if (!empty($data['bar_code'])) {
+                // Fila repetida por bar_code: se hace merge sobre la fila anterior en cola.
+                $this->contar_fila('merge_bar_code_repetido');
                 $this->merge_bar_code_duplicate($data, $row);
                 $this->sumar_durations();
                 return $this->observations;
             }
 
+            // Fila repetida sin propiedades de variante ni bar_code: se descarta sin mas.
+            $this->contar_fila('fila_repetida_en_excel');
             $this->articles_repetidos++;
             $this->log('SE OMITIO EN PROCES ROW (fila repetida sin propiedades de variante)');
             return;
@@ -549,6 +600,13 @@ class ProcessRow {
             $this->actualizar_por_provider_code,
             $this->actualizar_proveedor,
         );
+        /*
+         * Escalon de la cadena que produjo el match (o null si no hubo match/hubo
+         * ambiguedad). Se lee INMEDIATAMENTE despues de find_with_index(), antes de
+         * cualquier otra llamada que pueda volver a tocar ArticleIndexCache (ver
+         * ArticleIndexCache::ultimo_escalon()).
+         */
+        $escalon_de_match = ArticleIndexCache::ultimo_escalon();
         $this->terminar('find en cache');
 
         $this->log('articulo encontrado:');
@@ -564,6 +622,7 @@ class ProcessRow {
         );
 
         if ($provider_code_bloqueado_en_otro_proveedor) {
+            $this->contar_fila('bloqueado_otro_proveedor');
             $this->log('No hubo mach (bloqueado por provider_code existente en otro proveedor)');
             $this->articles_repetidos++;
             $this->sumar_durations();
@@ -578,6 +637,7 @@ class ProcessRow {
          * No se crea ni se actualiza nada con esta fila.
          */
         if ($articulo_ya_creado instanceof AmbiguousMatch) {
+            $this->contar_fila('ambiguo');
             $this->registrar_conflicto_ambiguo($this->fila_actual, $articulo_ya_creado, $data['name'] ?? null);
             $this->sumar_durations();
             return $this->observations;
@@ -615,6 +675,10 @@ class ProcessRow {
         //     $this->log('Es instancia de Artlce');
         // }
 
+        // Marca si esta fila ya quedo resuelta (match, fake pendiente o creacion encolada);
+        // si llega al final sin pasar por ninguna de esas ramas, cuenta 'sin_match_no_creado'.
+        $fila_resuelta = false;
+
         if (
             (!is_null($articulo_ya_creado) && $articulo_ya_creado instanceof \App\Models\Article)
             || $this->son_varios_articulos($articulo_ya_creado)
@@ -630,6 +694,11 @@ class ProcessRow {
                 && $this->is_pending_create_fake_article($articulo_ya_creado)
             ) {
 
+                // Hubo match (contra un articulo fake pendiente de crear); se cuenta por el
+                // escalon que produjo ese match, leido inmediatamente tras find_with_index().
+                $fila_resuelta = true;
+                $this->contar_fila($escalon_de_match);
+
                 $this->add_article_match();
 
                 $this->iniciar();
@@ -640,6 +709,11 @@ class ProcessRow {
 
                 return $this->observations;
             }
+
+            // Hubo match real (articulo existente o coleccion de articulos): se cuenta una
+            // sola vez para esta fila, por el escalon que produjo el match.
+            $fila_resuelta = true;
+            $this->contar_fila($escalon_de_match);
 
             $this->log('Articulo ya creado');
 
@@ -693,6 +767,10 @@ class ProcessRow {
 
 
         } else if ($this->create_and_edit) {
+
+            // No hubo match por ningun escalon: la fila se encola para crear un articulo nuevo.
+            $fila_resuelta = true;
+            $this->contar_fila('creado_nuevo');
 
             $this->log('El articulo NO existia');
             // Si no existe, lo agregamos a los artículos para crear
@@ -786,6 +864,11 @@ class ProcessRow {
                 $this->actualizar_articulos_de_otro_proveedor
             );
             $this->terminar('crear: add cache');
+        }
+
+        // No hubo match y create_and_edit = false: no se crea ni se actualiza nada con esta fila.
+        if (!$fila_resuelta) {
+            $this->contar_fila('sin_match_no_creado');
         }
 
         $this->sumar_durations();
@@ -2445,6 +2528,86 @@ class ProcessRow {
      */
     function get_identificadores_descartados() {
         return $this->identificadores_descartados;
+    }
+
+    /**
+     * Asigna el resultado de la fila actual. El primer llamado gana: si por algun camino
+     * se llama dos veces para la misma fila, el segundo se ignora en vez de duplicar.
+     *
+     * @param  string $bucket
+     * @return void
+     */
+    protected function contar_fila($bucket)
+    {
+        if (!is_null($this->bucket_fila_actual)) {
+            return;
+        }
+
+        if (!array_key_exists($bucket, $this->conteo_matching)) {
+            $bucket = 'sin_clasificar';
+        }
+
+        $this->bucket_fila_actual = $bucket;
+        $this->conteo_matching[$bucket]++;
+    }
+
+    /**
+     * Cierra la fila anterior y abre la nueva. Si la fila anterior salio por un camino
+     * que no llama a contar_fila(), cae en sin_clasificar en vez de desbalancear el total.
+     *
+     * @return void
+     */
+    protected function abrir_conteo_fila()
+    {
+        $this->cerrar_conteo_fila();
+
+        $this->bucket_fila_actual = null;
+        $this->filas_contadas++;
+        $this->fila_abierta = true;
+    }
+
+    /**
+     * Cierra la fila en curso, si hay alguna abierta sin clasificar. Es idempotente:
+     * se puede llamar tanto al abrir la fila siguiente como al leer los contadores.
+     *
+     * @return void
+     */
+    protected function cerrar_conteo_fila()
+    {
+        if (!$this->fila_abierta) {
+            return;
+        }
+
+        if (is_null($this->bucket_fila_actual)) {
+            $this->conteo_matching['sin_clasificar']++;
+            $this->bucket_fila_actual = 'sin_clasificar';
+        }
+
+        $this->fila_abierta = false;
+    }
+
+    /**
+     * Conteo por resultado de fila de este chunk. Cierra la ultima fila antes de devolver,
+     * para que el invariante valga tambien para la fila final del chunk.
+     *
+     * @return array
+     */
+    function get_conteo_matching()
+    {
+        $this->cerrar_conteo_fila();
+
+        return $this->conteo_matching;
+    }
+
+    /**
+     * Filas que entraron a procesar() en este chunk. Es el total contra el que tiene que
+     * cerrar la suma de get_conteo_matching().
+     *
+     * @return int
+     */
+    function get_filas_contadas()
+    {
+        return $this->filas_contadas;
     }
 
     /**

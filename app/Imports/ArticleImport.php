@@ -308,6 +308,14 @@ class ArticleImport implements ToCollection
             $filas_ambiguas = $this->process_row->get_filas_ambiguas();
             $identificadores_descartados = $this->process_row->get_identificadores_descartados();
 
+            /*
+             * Conteo por escalon de matching de este chunk (grupo 232, prompt 02).
+             * Invariante: la suma de get_conteo_matching() tiene que dar exactamente
+             * get_filas_contadas(). Por ahora solo viaja en el array de resultado del
+             * chunk y se loguea; la persistencia en BD la agrega el prompt 03 de este
+             * grupo (migracion/columnas todavia no existen).
+             */
+            $conteo_matching = $this->process_row->get_conteo_matching();
 
             $this->log('Trabajo terminado en ArticleImport');
             $this->log('articulos_creados: '.count($articulos_creados));
@@ -315,19 +323,23 @@ class ArticleImport implements ToCollection
             $this->log('articles_match: '.$articles_match);
             $this->log('articles_repetidos: '.$articles_repetidos);
             $this->log('filas_procesadas: '.$this->filas_procesadas);
+            $this->log('conteo_matching: '.json_encode($conteo_matching));
+            $this->log('suma conteo_matching: '.array_sum($conteo_matching).' / filas contadas: '.$this->process_row->get_filas_contadas());
 
 
 
             $this->iniciar();
             ArticleImportHelper::update_article_import_result([
-                'import_result_id'                              => $this->import_result_id, 
-                'articulos_creados'                             => $articulos_creados, 
-                'articulos_actualizados'                        => $articulos_actualizados, 
+                'import_result_id'                              => $this->import_result_id,
+                'articulos_creados'                             => $articulos_creados,
+                'articulos_actualizados'                        => $articulos_actualizados,
                 'articles_match'                                => $articles_match,
                 'articles_repetidos'                            => $articles_repetidos,
                 /* Conteos informativos (el detalle real de cada conflicto se persiste en import_conflicts). */
                 'filas_ambiguas'                                => $filas_ambiguas,
                 'identificadores_descartados'                   => $identificadores_descartados,
+                /* Conteo por escalon de matching del chunk (solo viaja en el array por ahora, ver arriba). */
+                'conteo_matching'                               => $conteo_matching,
                 'filas_procesadas'                              => $this->filas_procesadas,
                 'provider_id'                                   => $this->provider_id,
                 'registrar_articulos_creados'                   => $this->registrar_articulos_creados,

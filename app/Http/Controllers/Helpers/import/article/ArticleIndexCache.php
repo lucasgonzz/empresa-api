@@ -25,6 +25,15 @@ class ArticleIndexCache
     protected static $log_activado = false;
 
     /**
+     * Escalon de la cadena de identificacion que produjo el ultimo match de
+     * find_with_index() ('id'|'bar_code'|'sku'|'provider_code'|'name'|null).
+     * Se lee inmediatamente despues de find_with_index() (ver ultimo_escalon()).
+     *
+     * @var string|null
+     */
+    protected static $ultimo_escalon = null;
+
+    /**
      * Registro en RAM de modelos Article "fake" pendientes de persistir (por user_id y fake_id).
      * Permite que find_with_index devuelva el mismo artículo aún sin fila en BD (whereIn(id) vacío).
      *
@@ -540,6 +549,36 @@ class ArticleIndexCache
         }
     }
 
+    /**
+     * Devuelve el escalon de la cadena que produjo el ultimo match de find_with_index().
+     * Valores posibles: id | bar_code | sku | provider_code | name | null.
+     *
+     * Solo tiene sentido leerlo INMEDIATAMENTE despues de find_with_index() y solo
+     * cuando esa llamada devolvio un Article o una Collection: si devolvio null o un
+     * AmbiguousMatch, vale null.
+     *
+     * @return string|null
+     */
+    public static function ultimo_escalon()
+    {
+        return self::$ultimo_escalon;
+    }
+
+    /**
+     * Deja registrado el escalon y devuelve el resultado, para que find_with_index()
+     * no tenga ningun return que se olvide de setearlo.
+     *
+     * @param  string|null $escalon
+     * @param  mixed       $resultado
+     * @return mixed
+     */
+    protected static function con_escalon($escalon, $resultado)
+    {
+        self::$ultimo_escalon = $escalon;
+
+        return $resultado;
+    }
+
     public static function find_with_index(
         array $data,
         array $index,
@@ -568,6 +607,16 @@ class ArticleIndexCache
 
         $article_id = null;
 
+        /*
+         * Escalon que asigno $article_id y cayo al final del metodo (cierre), para que
+         * ultimo_escalon() informe correctamente incluso en los returns de cierre.
+         * En la practica solo el escalon 1 (id) asigna $article_id y cae al final: los
+         * demas escalones (bar_code/sku/provider_code/name) retornan directo desde su
+         * propia rama (match, ambiguo o bloqueo), asi que quedan cubiertos por con_escalon()
+         * en el punto exacto de cada return.
+         */
+        $escalon = null;
+
         // if (!empty($data['provider_code']) && isset($index['provider_codes'][$provider_id][$data['provider_code']])) {
             
         //     Self::log('provider_code del provider_id: '.$provider_id);
@@ -578,6 +627,8 @@ class ArticleIndexCache
         if (!empty($data['id']) && isset($index['ids'][(string)$data['id']])) {
             Self::log('Buscando por id '.$data['id']);
             $article_id = $index['ids'][(string)$data['id']];
+            // Unico escalon que asigna $article_id y cae al cierre: se deja registrado aca.
+            $escalon = 'id';
         }
 
         // 2) bar_code
@@ -593,11 +644,11 @@ class ArticleIndexCache
 
             if ($bar_code_resolved['status'] === 'ambiguous') {
                 Self::log('bar_code ambiguo: '.$data['bar_code'].' matchea con '.count($bar_code_resolved['ids']).' articulos');
-                return new AmbiguousMatch('bar_code', (string) $data['bar_code'], $bar_code_resolved['ids']);
+                return self::con_escalon(null, new AmbiguousMatch('bar_code', (string) $data['bar_code'], $bar_code_resolved['ids']));
             }
 
             if ($bar_code_resolved['status'] === 'match') {
-                return $bar_code_resolved['article'];
+                return self::con_escalon('bar_code', $bar_code_resolved['article']);
             }
 
             // no_match: se deja $article_id sin asignar (queda null), igual que el comportamiento previo.
@@ -616,11 +667,11 @@ class ArticleIndexCache
 
             if ($sku_resolved['status'] === 'ambiguous') {
                 Self::log('sku ambiguo: '.$data['sku'].' matchea con '.count($sku_resolved['ids']).' articulos');
-                return new AmbiguousMatch('sku', (string) $data['sku'], $sku_resolved['ids']);
+                return self::con_escalon(null, new AmbiguousMatch('sku', (string) $data['sku'], $sku_resolved['ids']));
             }
 
             if ($sku_resolved['status'] === 'match') {
-                return $sku_resolved['article'];
+                return self::con_escalon('sku', $sku_resolved['article']);
             }
 
             // no_match: se deja $article_id sin asignar (queda null), igual que el comportamiento previo.
@@ -632,7 +683,7 @@ class ArticleIndexCache
 
             $provider_code = trim((string)$data['provider_code']);
             if ($provider_code === '') {
-                return null;
+                return self::con_escalon(null, null);
             }
 
             Self::log('Buscando por provider_code '.$data['provider_code']);
@@ -647,7 +698,7 @@ class ArticleIndexCache
             */
             if (!$actualizar_por_provider_code) {
                 Self::log('Paso provider_code deshabilitado: actualizar_por_provider_code = false');
-                return null;
+                return self::con_escalon(null, null);
             }
 
             /**
@@ -715,12 +766,12 @@ class ArticleIndexCache
             ) {
                 Self::log('Bloqueado por provider_code existente en otro proveedor');
 
-                return [
+                return self::con_escalon(null, [
                     '__provider_code_blocked_by_other_provider' => true,
                     'provider_code' => $provider_code,
                     'provider_id' => $provider_id,
                     'matched_other_provider_ids' => $article_ids_other_providers,
-                ];
+                ]);
             }
 
             $article_ids = $article_ids_same_provider;
@@ -752,11 +803,11 @@ class ArticleIndexCache
 
                     if (empty($real_ids)) {
                         Self::log('Todos los IDs son fakes (primera importación) - retornando null para crear artículo nuevo');
-                        return null;
+                        return self::con_escalon(null, null);
                     }
 
                     Self::log('Hay IDs reales en BD - retornando colección para actualizar');
-                    return self::collection_from_index_article_ids($real_ids, $relations, $user_id);
+                    return self::con_escalon('provider_code', self::collection_from_index_article_ids($real_ids, $relations, $user_id));
 
                 } else {
 
@@ -768,7 +819,7 @@ class ArticleIndexCache
                     */
                     if (count($article_ids) > 1) {
                         Self::log('provider_code ambiguo (repetidos no permitidos): '.$provider_code.' matchea con '.count($article_ids).' articulos');
-                        return new AmbiguousMatch('provider_code', $provider_code, $article_ids);
+                        return self::con_escalon(null, new AmbiguousMatch('provider_code', $provider_code, $article_ids));
                     }
 
                     Self::log('Retornando un unico article porque no se permiten provider_codes repetidos');
@@ -777,14 +828,14 @@ class ArticleIndexCache
 
                     if ($resolved->count() > 1) {
                         Self::log('provider_code ambiguo tras resolver en BD: '.$provider_code);
-                        return new AmbiguousMatch('provider_code', $provider_code, $article_ids);
+                        return self::con_escalon(null, new AmbiguousMatch('provider_code', $provider_code, $article_ids));
                     }
 
-                    return $resolved->first();
+                    return self::con_escalon('provider_code', $resolved->first());
                 }
             }
 
-            return null;
+            return self::con_escalon(null, null);
         }
 
         // 5) name
@@ -798,11 +849,11 @@ class ArticleIndexCache
 
                 if ($name_resolved['status'] === 'ambiguous') {
                     Self::log('name ambiguo: '.$data['name'].' matchea con '.count($name_resolved['ids']).' articulos');
-                    return new AmbiguousMatch('name', (string) $data['name'], $name_resolved['ids']);
+                    return self::con_escalon(null, new AmbiguousMatch('name', (string) $data['name'], $name_resolved['ids']));
                 }
 
                 if ($name_resolved['status'] === 'match') {
-                    return $name_resolved['article'];
+                    return self::con_escalon('name', $name_resolved['article']);
                 }
 
                 /* no_match: se deja $article_id sin asignar, igual que bar_code y sku. */
@@ -811,7 +862,7 @@ class ArticleIndexCache
 
         // Si no encontramos nada por ID/bar_code/sku/name => crear
         if (!$article_id) {
-            return null;
+            return self::con_escalon(null, null);
         }
 
         // REGLA actualizar_proveedor:
@@ -833,10 +884,20 @@ class ArticleIndexCache
 
             $from_ram = self::get_runtime_fake_article($user_id, (string) $article_id);
 
-            return $from_ram;
+            /*
+             * Si el fake no aparece en RAM (caso raro, id inconsistente entre indice y
+             * registro fake), no hubo match real: el escalon queda en null, no en el
+             * escalon que asigno $article_id.
+             */
+            return self::con_escalon(is_null($from_ram) ? null : $escalon, $from_ram);
         }
 
-        return Article::with($relations)->find($article_id);
+        // $article_id apuntaba a un id de BD, pero el articulo pudo haber sido borrado
+        // entre el build del indice y esta fila: en ese caso Eloquent devuelve null y
+        // el escalon tiene que quedar en null, no en el escalon que asigno $article_id.
+        $article_encontrado = Article::with($relations)->find($article_id);
+
+        return self::con_escalon(is_null($article_encontrado) ? null : $escalon, $article_encontrado);
     }
     
 
