@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use OpenSpout\Reader\Common\Creator\ReaderEntityFactory;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
+use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
 
 /**
  * Helper que analiza un archivo Excel utilizando la API de Claude (Anthropic).
@@ -47,6 +48,24 @@ class AiExcelAnalyzer
      * @var int
      */
     protected const MAX_TOKENS = 4000;
+
+    /**
+     * Columnas numéricas que se analizan para la alerta de números con punto
+     * ambiguos (grupo 239, prompt 02): las mismas que ProcessRow marca con
+     * is_number en $props_to_add, más las de stock. Los valores son los
+     * system_property tal como viajan en column_mapping.
+     *
+     * @var array
+     */
+    protected const NUMERIC_COLUMNS_FOR_FORMAT_STATS = [
+        'costo',
+        'precio',
+        'margen_de_ganancia',
+        'stock_actual',
+        'stock_minimo',
+        'medida',
+        'u_individuales',
+    ];
 
     /**
      * Lista de propiedades del sistema importables que Claude puede identificar.
@@ -222,6 +241,21 @@ class AiExcelAnalyzer
         $parsed['nombres_duplicados']    = $identification_chain_analysis['nombres_duplicados'];
 
         /*
+         * Paso 8.2 (grupo 239, prompt 02): detección de números con punto ambiguos en las
+         * columnas numéricas del mapeo (costo, precio, margen de ganancia, stock, medida y
+         * unidades individuales). Esto es lo que alimenta la alerta de "números con punto"
+         * del paso 3 del modal, al lado de duplicate_stats y placeholders. Usa el mapeo
+         * enriquecido con el proveedor todavía inferido por Claude; se recalcula más tarde
+         * en /get-recomendacion con el column_mapping confirmado por el usuario.
+         */
+        $numeric_columns_map = $this->build_numeric_columns_map($parsed['column_mapping']);
+        $parsed['formatos_numericos'] = ExcelNumericFormatStats::analyze(
+            $excel_path,
+            $numeric_columns_map['indices'],
+            $numeric_columns_map['nombres']
+        );
+
+        /*
          * Nota: la recomendación de configuración (ask_claude_for_recomendation) ya no se genera
          * aquí porque en este punto el proveedor puede ser solo inferido por Claude y no el
          * confirmado por el usuario. La recomendación se genera en el endpoint
@@ -241,6 +275,51 @@ class AiExcelAnalyzer
         $parsed['assistant_notes'] = $parsed['assistant_notes'] ?? [];
 
         return $parsed;
+    }
+
+    /**
+     * Recorre el column_mapping enriquecido y arma los dos arrays que necesita
+     * ExcelNumericFormatStats::analyze(): índices 0-based por columna numérica y
+     * nombres visibles del Excel por columna, filtrando solo las siete columnas
+     * numéricas de NUMERIC_COLUMNS_FOR_FORMAT_STATS y salteando las que no tengan
+     * excel_column_index.
+     *
+     * Público porque lo reusa AiExcelImportController::getRecomendacion() para
+     * recalcular con el column_mapping confirmado por el usuario, en vez de
+     * duplicar la lógica de derivar índices en el controller (grupo 239, prompt 02).
+     *
+     * @param  array $column_mapping  Mapeo de columnas enriquecido (con excel_column_index)
+     * @return array  ['indices' => [system_property => excel_column_index], 'nombres' => [system_property => nombre visible]]
+     */
+    public function build_numeric_columns_map(array $column_mapping): array
+    {
+        /* Índices 0-based de columna en el Excel, por system_property numérico. */
+        $indices = [];
+        /* Nombre visible de la columna en el Excel (excel_column), por system_property numérico. */
+        $nombres = [];
+
+        foreach ($column_mapping as $col) {
+            $prop = $col['system_property'] ?? null;
+
+            /* Solo nos interesan las siete columnas numéricas relevantes para esta alerta. */
+            if (is_null($prop) || !in_array($prop, self::NUMERIC_COLUMNS_FOR_FORMAT_STATS, true)) {
+                continue;
+            }
+
+            /* Sin índice de columna en el Excel no hay nada que leer para esta propiedad. */
+            if (!isset($col['excel_column_index'])) {
+                continue;
+            }
+
+            $indices[$prop] = (int) $col['excel_column_index'];
+            /* Nombre visible de la columna; si no vino, ExcelNumericFormatStats cae al campo. */
+            $nombres[$prop] = isset($col['excel_column']) ? (string) $col['excel_column'] : $prop;
+        }
+
+        return [
+            'indices' => $indices,
+            'nombres' => $nombres,
+        ];
     }
 
     /**
@@ -1458,11 +1537,13 @@ PROMPT;
      * Si la llamada falla, el parseo lanza error o el JSON no es válido, aplica un fallback
      * heurístico respetando las columnas disponibles.
      *
-     * @param  array $stats          Resultado de ExcelDuplicateStats::analyze()
-     * @param  array $column_mapping Mapeo enriquecido de columnas (para derivar columnas disponibles)
+     * @param  array $stats               Resultado de ExcelDuplicateStats::analyze()
+     * @param  array $column_mapping      Mapeo enriquecido de columnas (para derivar columnas disponibles)
+     * @param  array $formatos_numericos  Resultado de ExcelNumericFormatStats::analyze() (grupo 239, prompt 02);
+     *                                    default [] para no romper llamadores existentes que no lo pasen
      * @return array                 ['clave_identidad' => string, 'politica_colision' => string, 'explicacion' => string]
      */
-    public function ask_claude_for_recomendation(array $stats, array $column_mapping = []): array
+    public function ask_claude_for_recomendation(array $stats, array $column_mapping = [], array $formatos_numericos = []): array
     {
         /*
          * Valores aceptados para cada campo de la recomendación.
@@ -1498,6 +1579,39 @@ PROMPT;
         $sku_disponible           = $tiene_sku           ? 'Sí' : 'No';
         $provider_code_disponible = $tiene_provider_code ? 'Sí' : 'No';
         $nombre_disponible        = $tiene_nombre        ? 'Sí' : 'No';
+
+        /*
+         * Sección opcional de formatos numéricos ambiguos (grupo 239, prompt 02).
+         * Solo se agrega al prompt cuando alguna columna numérica tiene
+         * nivel_de_riesgo = 'alto' (mezcla de números interpretados como miles y
+         * como decimales dentro de la misma columna). Si no hay riesgo alto, no se
+         * agrega nada: la recomendación ya es larga y cada bloque extra le compite
+         * atención a lo importante (punto (05) del prompt).
+         */
+        $numeric_format_section = '';
+        $hay_columna_riesgo_alto = false;
+        foreach (($formatos_numericos['columnas'] ?? []) as $columna_numerica) {
+            if (($columna_numerica['nivel_de_riesgo'] ?? null) === 'alto') {
+                $hay_columna_riesgo_alto = true;
+                break;
+            }
+        }
+
+        if ($hay_columna_riesgo_alto) {
+            $numeric_format_section = <<<NUMFMT
+
+Advertencia adicional - formatos numéricos ambiguos:
+Se detectaron columnas numéricas donde algunos valores tienen un punto que se interpretó como
+separador de miles (ej. "2.500" -> dos mil quinientos) y otros valores, en la misma columna, tienen
+un punto que se interpretó como separador decimal (ej. "3330.95" -> tres mil trescientos treinta con
+noventa y cinco). Si mencionás este tema en la explicación, usá la regla concreta que aplica el
+sistema: un punto se interpreta como separador de miles SOLO cuando separa grupos de exactamente 3
+dígitos (ej. "2.500", "12.750"); en cualquier otro caso (ej. "3330.95", "12.5") se interpreta como
+separador decimal. No des una advertencia genérica sobre "formatos de número": explicá esta regla
+puntual para que el usuario entienda por qué algunos valores se leyeron distinto que otros.
+
+NUMFMT;
+        }
 
         /*
          * Arma el prompt con los conteos del preanálisis e informa a Claude
@@ -1550,7 +1664,7 @@ Para el campo "explicacion":
 - NUNCA uses términos técnicos internos: nada de "provider_code", "bar_code", "actualizar_todos", "actualizar_uno", "crear_nuevo", "clave_identidad", "politica_colision", "intra_archivo", ni ninguna clave del sistema.
 - Hablá como si le explicaras a un comerciante qué va a pasar con sus artículos.
 - Máximo 3 oraciones claras y directas.
-
+{$numeric_format_section}
 Respondé SOLO con un JSON válido, sin markdown ni texto adicional:
 {
   "clave_identidad": "numero" | "bar_code" | "sku" | "provider_code" | "name",

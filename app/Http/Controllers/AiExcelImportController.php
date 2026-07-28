@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
+use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
 use App\Http\Controllers\Helpers\import\article\InitExcelImport;
 use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
 use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
@@ -130,6 +131,12 @@ class AiExcelImportController extends Controller
                 'placeholders'                 => $analysis['placeholders'] ?? [],
                 'cadena_identificacion'        => $analysis['cadena_identificacion'] ?? null,
                 'nombres_duplicados'           => $analysis['nombres_duplicados'] ?? null,
+                /*
+                 * Grupo 239: numeros con punto detectados en las columnas numericas y
+                 * como los va a interpretar el sistema (miles vs decimal). Alimenta la
+                 * alerta del paso 3, al lado de duplicate_stats y placeholders.
+                 */
+                'formatos_numericos'           => $analysis['formatos_numericos'] ?? null,
             ], 200);
 
         } catch (\RuntimeException $e) {
@@ -505,15 +512,32 @@ class AiExcelImportController extends Controller
                 $this->userId()
             );
 
+            $analyzer = new AiExcelAnalyzer($this->userId());
+
+            /*
+             * Recalcular formatos_numericos con el column_mapping confirmado por el usuario
+             * (grupo 239, prompt 02). En /analyze el mapeo es el sugerido por Claude; el
+             * usuario todavía puede corregirlo en el paso 2, así que hay que recalcular acá
+             * igual que se hace con duplicate_stats — si no, la alerta podría estar mirando
+             * la columna equivocada. Reusa build_numeric_columns_map() para no duplicar la
+             * lógica de derivar índices entre el analyzer y este controller.
+             */
+            $numeric_columns_map = $analyzer->build_numeric_columns_map($column_mapping);
+            $formatos_numericos  = ExcelNumericFormatStats::analyze(
+                $excel_full_path,
+                $numeric_columns_map['indices'],
+                $numeric_columns_map['nombres']
+            );
+
             /* Generar recomendación con los stats recalculados para el proveedor confirmado */
-            $analyzer        = new AiExcelAnalyzer($this->userId());
-            $recomendacion   = $analyzer->ask_claude_for_recomendation($stats, $column_mapping);
+            $recomendacion = $analyzer->ask_claude_for_recomendation($stats, $column_mapping, $formatos_numericos);
 
             return response()->json([
                 'recomendacion_configuracion'                  => $recomendacion,
                 /* Stats actualizados para que el frontend pueda refrescar los chips de decisión */
                 'provider_codes_existentes_mismo_proveedor'    => $stats['provider_codes_existentes_mismo_proveedor'] ?? 0,
                 'provider_codes_existentes_otros_proveedores'  => $stats['provider_codes_existentes_otros_proveedores'] ?? 0,
+                'formatos_numericos' => $formatos_numericos,
             ], 200);
 
         } catch (\RuntimeException $e) {
