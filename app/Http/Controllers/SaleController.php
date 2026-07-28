@@ -438,7 +438,14 @@ class SaleController extends Controller
     }
 
     public function destroy(Request $request, $id) {
+        // Obtiene la venta por ID
         $model = Sale::find($id);
+
+        // Verifica que la venta existe antes de continuar
+        if (is_null($model)) {
+            Log::info('destroy sale: no existe la venta id '.$id.'. Se responde 404 sin tocar nada.');
+            return response()->json(['message' => 'La venta no existe o ya fue eliminada.'], 404);
+        }
 
         /** Si el cliente pidió compensar caja, se valida que todas las cajas involucradas estén abiertas antes de tocar la venta. */
         $compensar_caja = $request->boolean('compensar_caja');
@@ -484,14 +491,18 @@ class SaleController extends Controller
 
             if (is_null($model->client->deleted_at)) {
 
+                // Busca la cuenta de crédito del cliente para la moneda de la venta
                 $credit_account = CreditAccount::where('model_name', 'client')
                                                     ->where('model_id', $model->client_id)
                                                     ->where('moneda_id', $model->moneda_id)
                                                     ->first();
-                
-                // $model->client->pagos_checkeados = 0;
-                // $model->client->save();
-                CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
+
+                // Verifica que la cuenta de crédito existe antes de validar saldos
+                if (!is_null($credit_account)) {
+                    CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
+                } else {
+                    Log::info('destroy sale '.$model->id.': el cliente '.$model->client_id.' no tiene credit account para la moneda '.$model->moneda_id.'. Se saltea el chequeo de saldos.');
+                }
                 $this->sendAddModelNotification('client', $model->client_id, false);
             }
         }
