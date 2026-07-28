@@ -3,46 +3,47 @@
 namespace Tests\Feature\Compras;
 
 use App\Models\Address;
-use App\Models\Article;
-use App\Models\Provider;
 use App\Models\ProviderDiscount;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
-use Illuminate\Foundation\Testing\DatabaseTransactions;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Tests\TestCase;
+use Tests\EmpresaTestCase;
 
 /**
  * Clase base de los tests de compras (modulo Provider Order), Grupo 184 - Prompt 613.
  *
- * Usa `DatabaseTransactions` (NO `RefreshDatabase`): cada test corre dentro de una transaccion que
- * en teoria se revierte al terminar, para que una compra confirmada en un test no contamine el
- * siguiente, sin pagar el costo de reconstruir 600+ migraciones por test.
+ * Se queda solo con lo que es especifico de compras (neutralizar bonificaciones de Buenos Aires,
+ * setear condicion de IVA, armar el payload de `POST api/provider-order`). Los guards de entorno
+ * (base de testing, motor InnoDB, fixture sembrado) y los helpers genericos de fixture
+ * (`articulo`, `proveedor`, `snapshot_articulo`, `restaurar_articulo`) se movieron a
+ * `Tests\EmpresaTestCase` (Grupo 242, Prompt 01), reusable por las suites nuevas de tesoreria,
+ * reportes e IVA por condicion sin copiar y pegar nada.
+ *
+ * Usa `DatabaseTransactions` (heredado de `EmpresaTestCase`, NO `RefreshDatabase`): cada test
+ * corre dentro de una transaccion que en teoria se revierte al terminar, para que una compra
+ * confirmada en un test no contamine el siguiente, sin pagar el costo de reconstruir 600+
+ * migraciones por test.
  *
  * ⚠️ DEUDA TECNICA ALTA (hallazgo real, Prompt 615): en este entorno `DatabaseTransactions` NO
- * revierte nada de verdad. Las ~360 tablas de `empresa_testing` son motor MyISAM (no InnoDB), que
- * no soporta transacciones — `BEGIN`/`ROLLBACK` se ejecutan sin error pero son no-ops para esas
- * tablas, asi que cualquier cambio que un test haga (compras confirmadas, articulos editados,
- * cuentas corrientes) queda PERMANENTE en la base de testing entre corridas. Los tests de costeo
- * (614/615) no lo notan porque siempre pisan los mismos valores absolutos (cost, total) en cada
- * corrida — el resultado es idempotente aunque no haya rollback real. Pero cualquier test que dependa
- * de un valor RELATIVO al estado previo (stock acumulado, saldo de cuenta corriente, o un campo que
- * se edita a un valor DISTINTO del que trae el seeder, como `iva_id`) puede corromper el fixture
- * para las corridas siguientes en silencio. Si un test necesita mutar un campo del fixture a un
- * valor distinto del original, tiene que restaurarlo el mismo (ver `try/finally` en
+ * revierte nada de verdad si las tablas de `empresa_testing` son motor MyISAM (no soporta
+ * transacciones — `BEGIN`/`ROLLBACK` se ejecutan sin error pero son no-ops). El guard
+ * `verificar_motor_innodb()` de `EmpresaTestCase` (Prompt 01, Grupo 242) ahora aborta la suite
+ * temprano si detecta ese estado, en vez de dejar que los tests fallen en silencio por motivos
+ * falsos. Los tests de costeo (614/615) sobrevivian a esto porque siempre pisan los mismos
+ * valores absolutos (cost, total) en cada corrida — el resultado es idempotente aunque no haya
+ * rollback real. Pero cualquier test que dependa de un valor RELATIVO al estado previo (stock
+ * acumulado, saldo de cuenta corriente, o un campo que se edita a un valor DISTINTO del que trae
+ * el seeder, como `iva_id`) puede corromper el fixture para las corridas siguientes en silencio.
+ * Si un test necesita mutar un campo del fixture a un valor distinto del original, tiene que
+ * restaurarlo el mismo (ver `try/finally` en
  * `Costeo_MT_Test::deriva_por_alicuota_editada_es_comportamiento_documentado_no_bug`, Prompt 615).
- * Arreglar esto de raiz (migrar el motor de las tablas a InnoDB, o cambiar a `RefreshDatabase`) es
- * un cambio grande fuera del alcance de este prompt — queda registrado para que Lucas decida.
  *
  * Los tests concretos (prompts 614/615/616) extienden esta clase y usan sus helpers protegidos
  * (`articulo`, `proveedor`, `set_condicion_iva`, `payload_compra`, `item`) para resolver todo por
  * nombre desde el fixture de `TestingFerreteriaSeeder` — nunca por ID hardcodeado.
  */
-abstract class ComprasTestCase extends TestCase
+abstract class ComprasTestCase extends EmpresaTestCase
 {
-    use DatabaseTransactions;
-
     /**
      * Copia (arrays, no instancias) de las bonificaciones de Buenos Aires que
      * `quitar_bonificaciones_de_buenos_aires()` haya borrado en el test en curso, para que
@@ -54,83 +55,15 @@ abstract class ComprasTestCase extends TestCase
     protected $bonificaciones_bsas_borradas = null;
 
     /**
-     * setUp de cada test: corre los dos seguros de entorno (base de testing real, fixture
-     * sembrado) y autentica al usuario de prueba antes de que arranque el test concreto.
+     * setUp de cada test: delega en `EmpresaTestCase::setUp()` (guards de entorno + autenticacion
+     * del usuario de prueba). No agrega nada propio: compras no necesita ningun setup extra antes
+     * del test.
      *
      * @return void
      */
     protected function setUp(): void
     {
         parent::setUp();
-
-        $this->verificar_base_de_testing();
-
-        $this->verificar_fixture_sembrado();
-
-        $user = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
-
-        $this->actingAs($user, 'web');
-    }
-
-    /**
-     * Seguro (tarea 1): aborta la suite si la conexion activa no apunta a una base cuyo nombre
-     * contenga "testing". Es la proteccion contra correr esta suite apuntando a la base de
-     * desarrollo por un `.env.testing` mal configurado (o inexistente, cayendo al `.env` normal).
-     *
-     * @return void
-     */
-    protected function verificar_base_de_testing()
-    {
-        /** Nombre de la base realmente conectada (no lo que dice el .env, sino la conexion activa). */
-        $database_name = (string) DB::connection()->getDatabaseName();
-
-        if (strpos($database_name, 'testing') === false) {
-            $this->fail(
-                'SEGURO: la conexion activa apunta a la base "'.$database_name.'", que no contiene '.
-                '"testing" en su nombre. Se aborta la suite de compras para evitar correr tests sobre '.
-                'una base que podria ser la de desarrollo. Revisa que exista .env.testing (copia de '.
-                '.env.testing.example) con DB_DATABASE conteniendo "testing" (ej. empresa_testing).'
-            );
-        }
-    }
-
-    /**
-     * Seguro (tarea 3): aborta si el fixture de `TestingFerreteriaSeeder` no fue sembrado en la
-     * base de testing conectada, con un mensaje que indica el comando exacto para sembrarlo.
-     *
-     * @return void
-     */
-    protected function verificar_fixture_sembrado()
-    {
-        if (is_null($this->articulo(TestingFerreteriaSeeder::ARTICULO_CENTINELA))) {
-            $this->fail(
-                'Falta el fixture de testing: no se encontro el articulo "'.
-                TestingFerreteriaSeeder::ARTICULO_CENTINELA.'". Sembra la base de testing con: '.
-                'php artisan migrate:fresh && php artisan db:seed --class="Database\\Seeders\\testing\\TestingFerreteriaSeeder"'
-            );
-        }
-    }
-
-    /**
-     * Devuelve el Article del fixture por nombre (nunca resolver por id hardcodeado en un test).
-     *
-     * @param string $nombre
-     * @return \App\Models\Article|null
-     */
-    protected function articulo($nombre)
-    {
-        return Article::where('name', $nombre)->first();
-    }
-
-    /**
-     * Devuelve el Provider del fixture por nombre.
-     *
-     * @param string $nombre
-     * @return \App\Models\Provider|null
-     */
-    protected function proveedor($nombre)
-    {
-        return Provider::where('name', $nombre)->first();
     }
 
     /**
@@ -180,6 +113,8 @@ abstract class ComprasTestCase extends TestCase
      * tearDown de cada test: si `quitar_bonificaciones_de_buenos_aires()` borro bonificaciones
      * durante este test, las recrea acá (mismos datos, sin el `id` original) para dejar el
      * fixture intacto de cara al resto de la suite — ver la correccion documentada arriba.
+     * Llama a `parent::tearDown()` para no perder ningun tearDown que agregue `EmpresaTestCase`
+     * (hoy no tiene, pero mantiene la cadena correcta hacia `Tests\TestCase`).
      *
      * @return void
      */
@@ -305,79 +240,5 @@ abstract class ComprasTestCase extends TestCase
             'provider_code' => $articulo->provider_code,
             'pivot'         => $pivot,
         ];
-    }
-
-    /**
-     * Guarda una "foto" de los campos de un Article que los tests de compras pueden mutar
-     * (costo, stock, proveedor, costo_real, precio) antes de confirmar una compra sobre él.
-     *
-     * Agregado (Grupo 184, Prompt 616): los tests de descuentos/costos-extra/cantidad-recibida
-     * confirman compras reales contra articulos del fixture compartido, y por la deuda de MyISAM
-     * documentada arriba (DatabaseTransactions no revierte nada de verdad) esas mutaciones quedan
-     * PERMANENTES. `stock` en particular es ACUMULATIVO (cada compra con `update_stock=1` suma la
-     * cantidad recibida/pedida, no la pisa), asi que un test que dependa de un stock inicial
-     * conocido (ver `Cantidad_Recibida_Test::el_stock_sigue_a_la_cantidad_recibida`) tiene que
-     * fijar un punto de partida controlado y restaurar el original al terminar, sin importar si
-     * el assert de en medio falla (por eso siempre en un try/finally, ver
-     * `restaurar_articulo()`).
-     *
-     * @param \App\Models\Article $articulo
-     * @return array<string,mixed>
-     */
-    protected function snapshot_articulo($articulo)
-    {
-        $articulo->refresh();
-
-        // Hallazgo (Prompt 616): para un articulo con depositos asignados (`addresses()`,
-        // belongsToMany con pivot `amount`), `articles.stock` es un valor DERIVADO — lo
-        // recalcula `ArticleHelper::setArticleStockFromAddresses()` sumando el `amount` de cada
-        // deposito — no la fuente de verdad. Forzar solo `articles.stock` a mano (sin tocar el
-        // pivot del deposito) queda pisado apenas corre el siguiente movimiento de stock. Por eso
-        // acá se guarda tambien el `amount` de cada deposito vigente, para poder restaurarlo.
-        $articulo->load('addresses');
-
-        $address_amounts = [];
-        foreach ($articulo->addresses as $address) {
-            $address_amounts[$address->id] = $address->pivot->amount;
-        }
-
-        return [
-            'cost'             => $articulo->cost,
-            'stock'            => $articulo->stock,
-            'provider_id'      => $articulo->provider_id,
-            'costo_real'       => $articulo->costo_real,
-            'price'            => $articulo->price,
-            'address_amounts'  => $address_amounts,
-        ];
-    }
-
-    /**
-     * Restaura en un Article los campos guardados por `snapshot_articulo()`. Escribe directo
-     * (sin pasar por StockMovementController ni ArticleHelper::setFinalPrice) porque el objetivo
-     * es dejar la fila EXACTAMENTE como estaba antes del test, no re-derivar nada. `timestamps`
-     * en false para no ensuciar el `updated_at` del fixture en cada corrida (mismo criterio que
-     * `NewProviderOrderHelper::update_article_provider()`).
-     *
-     * @param \App\Models\Article $articulo
-     * @param array<string,mixed> $snapshot Valor devuelto por `snapshot_articulo()`.
-     * @return void
-     */
-    protected function restaurar_articulo($articulo, $snapshot)
-    {
-        $articulo->refresh();
-
-        $articulo->cost        = $snapshot['cost'];
-        $articulo->stock       = $snapshot['stock'];
-        $articulo->provider_id = $snapshot['provider_id'];
-        $articulo->costo_real  = $snapshot['costo_real'];
-        $articulo->price       = $snapshot['price'];
-        $articulo->timestamps  = false;
-        $articulo->save();
-
-        // Restaura el `amount` de cada deposito (ver nota en snapshot_articulo): si el articulo
-        // tiene depositos asignados, es la fuente de verdad real del stock, no la columna.
-        foreach ($snapshot['address_amounts'] as $address_id => $amount) {
-            $articulo->addresses()->updateExistingPivot($address_id, ['amount' => $amount]);
-        }
     }
 }
