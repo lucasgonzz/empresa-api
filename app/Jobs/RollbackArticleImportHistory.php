@@ -28,7 +28,10 @@ class RollbackArticleImportHistory implements ShouldQueue
     protected $import_history_id;
 
     /**
-     * Usuario dueño del historial para validación de seguridad.
+     * Id del usuario autenticado que disparo el rollback (no necesariamente
+     * el user_id del historial), usado para revalidar ownership dentro del
+     * job comparandolo contra un valor de origen distinto (grupo 240,
+     * prompt 01).
      *
      * @var int
      */
@@ -52,7 +55,7 @@ class RollbackArticleImportHistory implements ShouldQueue
      * Crea una nueva instancia del job.
      *
      * @param int $import_history_id
-     * @param int $owner_user_id
+     * @param int $owner_user_id Id del usuario autenticado que dispara el rollback.
      */
     public function __construct(int $import_history_id, int $owner_user_id)
     {
@@ -84,8 +87,12 @@ class RollbackArticleImportHistory implements ShouldQueue
         }
 
         /**
-         * Revalidamos ownership dentro del Job para cubrir ejecuciones tardías
-         * o llamadas forzadas fuera del flujo del controlador.
+         * Revalidamos ownership dentro del Job comparando el user_id real del
+         * historial contra el id del usuario autenticado que disparo el
+         * rollback (owner_user_id ya NO sale del propio historial, sino del
+         * controller vía $this->userId()). Esto cubre ejecuciones tardías o
+         * llamadas forzadas fuera del flujo del controlador, evitando la
+         * comparacion tautologica que existia antes (grupo 240, prompt 01).
          */
         if ((int) $import_history->user_id !== (int) $this->owner_user_id) {
             Log::warning('RollbackArticleImportHistory: owner invalido', [

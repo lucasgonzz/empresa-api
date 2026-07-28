@@ -23,7 +23,7 @@ class ImportHistoryController extends Controller
          * que un usuario pueda revertir importaciones ajenas.
          */
         $import_history = ImportHistory::where('id', $import_history_id)
-                                        // ->where('user_id', $this->userId())
+                                        ->where('user_id', $this->userId())
                                         ->first();
 
         if (is_null($import_history)) {
@@ -42,7 +42,12 @@ class ImportHistoryController extends Controller
             ], 409);
         }
 
-        RollbackArticleImportHistory::dispatch($import_history->id, $import_history->user_id);
+        /**
+         * Pasamos el id del usuario autenticado (no el user_id del propio
+         * historial) para que el guard del job compare dos valores de
+         * origen distinto y no sea una comparacion tautologica.
+         */
+        RollbackArticleImportHistory::dispatch($import_history->id, $this->userId());
 
         return response()->json([
             'queued' => true,
@@ -74,7 +79,25 @@ class ImportHistoryController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
+    /**
+     * Devuelve los chunks (ArticleImportResult) de un historial de importacion.
+     * Verifica que el historial pertenezca al usuario autenticado antes de
+     * listar sus chunks, para no exponer datos de importaciones ajenas
+     * (grupo 240, prompt 01).
+     *
+     * @param int $import_history_id ID del historial de importacion.
+     * @return \Illuminate\Http\JsonResponse
+     */
     function chunks($import_history_id) {
+        /* Confirmamos que el historial exista y sea del usuario autenticado. */
+        $import_history = ImportHistory::where('id', $import_history_id)
+                            ->where('user_id', $this->userId())
+                            ->first();
+
+        if (is_null($import_history)) {
+            return response()->json(['message' => 'No se encontro la importacion'], 404);
+        }
+
         $models = ArticleImportResult::where('import_history_id', $import_history_id)
                                     ->with('article_import_result_observations')
                                     ->get();
@@ -82,18 +105,52 @@ class ImportHistoryController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
+    /**
+     * Devuelve los articulos actualizados de un chunk (ArticleImportResult).
+     * Filtra por el historial padre para garantizar que el chunk pertenezca
+     * a una importacion del usuario autenticado (grupo 240, prompt 01).
+     *
+     * @param int $import_result_id ID del ArticleImportResult (chunk).
+     * @return \Illuminate\Http\JsonResponse
+     */
     function updated_models($import_result_id) {
+        /*
+         * Filtramos por import_history_id perteneciente al usuario autenticado
+         * mediante subconsulta, sin necesidad de definir una relacion nueva.
+         */
         $model = ArticleImportResult::where('id', $import_result_id)
+                            ->whereIn('import_history_id', function ($query) {
+                                $query->select('id')
+                                    ->from('import_histories')
+                                    ->where('user_id', $this->userId());
+                            })
                             ->with('articulos_actualizados')
                             ->first();
         return response()->json(['model' => $model], 200);
     }
 
+    /**
+     * Devuelve los articulos creados de un chunk (ArticleImportResult).
+     * Filtra por el historial padre para garantizar que el chunk pertenezca
+     * a una importacion del usuario autenticado (grupo 240, prompt 01).
+     *
+     * @param int $import_result_id ID del ArticleImportResult (chunk).
+     * @return \Illuminate\Http\JsonResponse
+     */
     function created_models($import_result_id) {
+        /*
+         * Filtramos por import_history_id perteneciente al usuario autenticado
+         * mediante subconsulta, sin necesidad de definir una relacion nueva.
+         */
         $model = ArticleImportResult::where('id', $import_result_id)
+                            ->whereIn('import_history_id', function ($query) {
+                                $query->select('id')
+                                    ->from('import_histories')
+                                    ->where('user_id', $this->userId());
+                            })
                             ->with('articulos_creados')
                             ->first();
-                            
+
         return response()->json(['model' => $model], 200);
     }
 
@@ -106,6 +163,19 @@ class ImportHistoryController extends Controller
      * @return \Illuminate\Http\JsonResponse Array de artículos con id, name, bar_code, provider_code.
      */
     function repeated_code_articles($import_history_id) {
+        /*
+         * Confirmamos que el historial exista y sea del usuario autenticado
+         * antes de recolectar articulos, para no exponer datos de
+         * importaciones ajenas (grupo 240, prompt 01).
+         */
+        $import_history = ImportHistory::where('id', $import_history_id)
+                            ->where('user_id', $this->userId())
+                            ->first();
+
+        if (is_null($import_history)) {
+            return response()->json(['message' => 'No se encontro la importacion'], 404);
+        }
+
         /* Recolectar todos los IDs de artículos con código repetido de los chunks. */
         $all_ids = [];
 
