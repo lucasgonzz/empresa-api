@@ -275,10 +275,17 @@ class UserSetupHelper
             'ProductionBatchMovementTypeSeeder',
             'RecipeRouteTypeSeeder',
 
-            
+            /*
+                Orden obligatorio: PdfColumnOptionSeeder sincroniza el catalogo global de
+                columnas (tabla pdf_column_options, sin user_id) y los tres seeders
+                de perfiles que siguen lo necesitan poblado. PdfColumnProfileSeeder crea los perfiles de
+                venta (Remito, Factura comun) y PdfColumnProfileArticleSeeder el de listado de
+                articulos. No reordenar.
+            */
             'SheetTypeSeeder',
             'PdfColumnOptionSeeder',
             'PdfColumnProfileSeeder',
+            'PdfColumnProfileArticleSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
         ];
