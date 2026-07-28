@@ -845,6 +845,10 @@ Route::middleware('admin.api.key')
         Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
         // Canal "sistema:" de WhatsApp: consulta de datos del owner (stock, ventas, facturas, clientes).
         Route::post('sistema-query', 'AdminSync\\SistemaQueryController@query_data');
+        // Reemision/revocacion del token de ingreso a la demo (grupo 233, prompt 05). Va dentro
+        // de este grupo con admin.api.key para que quede protegida sola el dia que Lucas prenda
+        // el flag services.admin_api.require_api_key (hoy sigue apagado).
+        Route::post('demo-token', 'AdminSync\\DemoTokenController@store');
     });
 
 // Reporte de errores del SPA (sin auth — puede ocurrir antes del login)
