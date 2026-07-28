@@ -12,6 +12,7 @@ use App\Models\Description;
 use App\Models\Image;
 use App\Models\PriceType;
 use App\Models\SubCategory;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
@@ -20,9 +21,22 @@ class ArticleSeederHelper {
 
     public $addresses;
 
+    /**
+     * Nota de orden (28/7/2026): $this->price_types se calcula una sola vez aca, en el
+     * constructor. Si un seeder crea tipos de precio nuevos DESPUES de instanciar este helper
+     * y antes de sembrar mas articulos, esos price_types nuevos no se van a aplicar a esos
+     * articulos (quedan con los price_types vigentes al momento de instanciar el helper). Hoy
+     * no es un problema porque el orden real de los seeders siempre crea los price_types del
+     * usuario antes de instanciar ArticleSeederHelper.
+     */
     function __construct() {
         $this->addresses = Address::all();
-        $this->price_types = PriceType::all();
+        // Usuario que se esta sembrando (owner o empleado segun config('app.USER_ID')), usado por setFinalPrice() y crear_price_type_monedas().
+        $this->user = User::find(config('app.USER_ID'));
+        // Tipos de precio del usuario que se esta sembrando (filtrados por user_id, no todos los del sistema), ordenados por posicion.
+        $this->price_types = PriceType::where('user_id', config('app.USER_ID'))
+                                        ->orderBy('position', 'ASC')
+                                        ->get();
     }
 	   
     function set_provider($created_article, $article) {
@@ -156,11 +170,23 @@ class ArticleSeederHelper {
                                     ]);
         }
 
-        if (isset($article['price_types'])) {
+        // Si el seeder puntual no trajo price_types explicitos, armarlos con los del usuario (add_price_types()) para que el articulo no quede sin relacion.
+        if (!isset($article['price_types'])) {
+            $article = $this->add_price_types($article);
+        }
+
+        if (isset($article['price_types']) && count($article['price_types']) >= 1) {
+
+            // Attach manual: se preserva para permitir override puntual de 'percentage' por seeder/articulo (attach() no calcula final_price por si solo).
             foreach ($article['price_types'] as $price_type) {
                 $created_article->price_types()->attach($price_type['id'], [
                     'percentage'    => $price_type['percentage'],
                 ]);
+            }
+
+            // Calcula y persiste final_price real para cada price_type recien attacheado (IVA, recargos, sale_taxes, etc.), usando el mismo pipeline que set_articles_prices.
+            if (!is_null($this->user)) {
+                ArticleHelper::setFinalPrice($created_article, config('app.USER_ID'), $this->user, null, true, $this->price_types);
             }
         }
 
