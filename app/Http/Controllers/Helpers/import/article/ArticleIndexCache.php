@@ -1425,6 +1425,35 @@ class ArticleIndexCache
         unset(self::$runtime_fake_articles[$user_id]);
     }
 
+    /**
+     * Descarta TODO el estado de runtime de la clase: indice memoizado, banderas de carga,
+     * banderas de cambios sin persistir, articulos fake pendientes y ultimo escalon.
+     *
+     * Uso EXCLUSIVO de los tests. En produccion no hace falta: cada job arranca con
+     * un proceso limpio y la memoizacion dura lo que dura la importacion, que es
+     * justamente lo que se busca para no releer el indice en cada fila.
+     *
+     * PHPUnit, en cambio, reutiliza el mismo proceso PHP para todos los tests, asi
+     * que sin este reset el test N ve el indice que armo el test N-1. Un Cache::flush()
+     * NO alcanza: get_index() corta al principio si $runtime_loaded_by_key ya esta
+     * seteado y devuelve el indice memoizado sin volver a mirar la cache.
+     *
+     * NO confundir con reset_runtime(int $user_id), que es codigo de produccion y hace
+     * otra cosa: descarta solo la clave de UN usuario, persiste antes de descartar si
+     * hay cambios sin guardar, y no toca $ultimo_escalon. Para un test eso es al reves
+     * de lo que se necesita: hay que tirar todo y no escribir nada.
+     *
+     * @return void
+     */
+    public static function reset_runtime_de_tests()
+    {
+        self::$runtime_index_by_key  = [];
+        self::$runtime_loaded_by_key = [];
+        self::$runtime_dirty_by_key  = [];
+        self::$runtime_fake_articles = [];
+        self::$ultimo_escalon        = null;
+    }
+
     static function limpiar_cache($user_id) {
 
         $cache_key = self::cache_key($user_id);
