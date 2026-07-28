@@ -8,8 +8,10 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Services\Filter\FilterHistoryService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class SearchController extends Controller
 {
@@ -532,33 +534,81 @@ class SearchController extends Controller
         return $models->orderBy($key, $direction);
     }
 
+    /**
+     * Crea un modelo "al vuelo" desde el buscador, cuando el usuario escribe un valor
+     * que todavia no existe (ej: escribe una localidad nueva en el buscador de localidades).
+     *
+     * @param Request $request Trae user_id implicito, depends_on_key/depends_on_value opcional
+     *                         (para completar la dependencia, ej: category_id de una sub categoria)
+     *                         y properties_to_set (pares key/value adicionales que arma el front).
+     * @param string $_model_name Nombre del modelo en singular (ej: 'combo', 'location').
+     * @param string $property Propiedad que se esta buscando/creando (ej: 'name').
+     * @param string $query Valor tipeado por el usuario que no matcheo ningun resultado existente.
+     * @return \Illuminate\Http\JsonResponse 201 con el modelo creado, o 422 si faltan datos obligatorios.
+     */
     function saveIfNotExist(Request $request, $_model_name, $property, $query) {
         $model_name = GeneralHelper::getModelName($_model_name);
         $data = [];
+        // Calculo de nombre de tabla en plural (regla existente: termina en 'y' -> 'ies', si no + 's').
         if (substr($_model_name, strlen($_model_name)-1) == 'y') {
             $model_name_plural = substr($_model_name, 0, strlen($_model_name)-1).'ies';
         } else {
             $model_name_plural = $_model_name.'s';
         }
-        // $data['num'] = $this->num($model_name_plural);
+
         $data['user_id'] = $this->userId();
         $data[$property] = $query;
-        foreach ($request->properties_to_set as $property_to_set) {
-            $data[$property_to_set['key']] = $property_to_set['value'];     
+
+        /** num solo si la tabla realmente tiene la columna: saveIfNotExist es generico y hay modelos sin num. */
+        if (Schema::hasColumn($model_name_plural, 'num')) {
+            $data['num'] = $this->num($model_name_plural);
         }
 
-        // $data[$property] = $query;
-        $model = $model_name::create($data);
+        /** La dependencia del buscador (ej: category_id al crear una sub categoria) llega en el mismo par que ya usa searchFromModal. */
+        if ($request->filled('depends_on_key') && $request->filled('depends_on_value')) {
+            $data[$request->depends_on_key] = $request->depends_on_value;
+        }
+
+        // Propiedades adicionales que arma el front (por modelo). Se saltean las que no traen
+        // 'key' o cuyo 'value' viene vacio, para no pisar defaults de columnas numericas con ''.
+        $properties_to_set = $request->input('properties_to_set', []);
+        if (is_array($properties_to_set)) {
+            foreach ($properties_to_set as $property_to_set) {
+                if (!is_array($property_to_set) || !isset($property_to_set['key'])) {
+                    continue;
+                }
+                if (!isset($property_to_set['value']) || $property_to_set['value'] === '') {
+                    continue;
+                }
+                $data[$property_to_set['key']] = $property_to_set['value'];
+            }
+        }
+
+        try {
+
+            // Intento de creacion real. Si la base rechaza el insert (ej: columna NOT NULL sin valor),
+            // se captura abajo en vez de dejar que explote como 500 mudo.
+            $model = $model_name::create($data);
+
+        } catch (QueryException $e) {
+
+            // Log con el payload completo para poder diagnosticar el proximo caso sin adivinar.
+            Log::info('saveIfNotExist fallo para '.$_model_name.'. Data: '.json_encode($data).'. Error: '.$e->getMessage());
+
+            return response()->json([
+                'message' => 'No se pudo crear '.$_model_name.' porque faltan datos obligatorios. Cargalo desde su formulario completo.',
+            ], 422);
+        }
 
         if (
             $_model_name == 'client'
             || $_model_name == 'provider'
         ) {
-            
+
             CreditAccountHelper::crear_credit_accounts($_model_name, $model->id);
 
         }
-        
+
         return response()->json(['model' => $this->fullModel($_model_name, $model->id)], 201);
     }
 
