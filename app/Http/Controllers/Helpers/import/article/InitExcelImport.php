@@ -49,6 +49,13 @@ class InitExcelImport
         $this->actualizar_por_provider_code                         = $data['actualizar_por_provider_code'];
         $this->actualizar_proveedor                                 = $data['actualizar_proveedor'];
 
+        /*
+         * Modo elegido por el usuario para interpretar el punto en columnas numéricas
+         * ambiguas (grupo 239, prompt 04). El controller ya lo normalizó, pero se
+         * vuelve a resolver el default acá por si algún llamador viejo no manda la clave.
+         */
+        $this->interpretacion_punto                                 = $data['interpretacion_punto'] ?? 'auto';
+
         $this->chunkSize    = config('app.ARTICLE_EXCEL_CHUNK_SIZE');
         $this->start        = $this->start_row;
         $this->jobs         = [];
@@ -391,7 +398,8 @@ class InitExcelImport
                 $this->actualizar_proveedor,
                 $this->permitir_provider_code_repetido,
                 $this->permitir_provider_code_repetido_en_multi_providers,
-                $this->actualizar_por_provider_code
+                $this->actualizar_por_provider_code,
+                $this->interpretacion_punto
             );
 
             $this->chunk_number++;
@@ -473,6 +481,14 @@ class InitExcelImport
             [
                 'name'  => 'Actualizar proveedor',
                 'value' => $this->actualizar_proveedor ? 'Si' : 'No',
+            ],
+            [
+                /*
+                 * Deja registrado con qué modo se importó (grupo 239, prompt 04), para poder
+                 * responder si un cliente reclama por un costo raro dentro de unos meses.
+                 */
+                'name'  => 'Interpretacion del punto',
+                'value' => $this->interpretacion_punto,
             ],
         ];
     }

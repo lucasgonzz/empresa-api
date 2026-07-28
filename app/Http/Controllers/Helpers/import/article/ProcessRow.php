@@ -30,6 +30,13 @@ class ProcessRow {
     protected $user;
     protected $ct;
     protected $provider_id;
+
+    /**
+     * Modo elegido por el usuario para interpretar el punto en columnas numéricas
+     * ambiguas (grupo 239, prompt 04): 'auto' | 'siempre_miles' | 'siempre_decimal'.
+     * Solo afecta al caso "solo punto, sin coma" dentro de ImportHelper::parseNumericValue().
+     */
+    protected $interpretacion_punto = 'auto';
     protected $articles_match = 0;
     protected $articulos_repetidos = 0;
 
@@ -130,6 +137,13 @@ class ProcessRow {
         $this->permitir_provider_code_repetido                      = $data['permitir_provider_code_repetido'];
         $this->permitir_provider_code_repetido_en_multi_providers   = $data['permitir_provider_code_repetido_en_multi_providers'];
         $this->actualizar_por_provider_code                         = $data['actualizar_por_provider_code'];
+
+        /*
+         * Modo elegido por el usuario para interpretar el punto en columnas numéricas
+         * ambiguas (grupo 239, prompt 04). Default 'auto' si no llega, para no romper
+         * llamadores viejos (no debería pasar, ArticleImport ya lo manda siempre).
+         */
+        $this->interpretacion_punto = $data['interpretacion_punto'] ?? 'auto';
 
         $this->import_history_id = $data['import_history_id'] ?? null;
         $this->import_uuid = $data['import_uuid'] ?? null;
@@ -369,7 +383,7 @@ class ProcessRow {
                      * silencio: si el valor no es numerico o no entra en la columna,
                      * se registra como conflicto y la fila no pisa el valor existente.
                      */
-                    $resultado_numero = Self::get_number_for_field($excel_value, $prop_to_add['prop_key']);
+                    $resultado_numero = Self::get_number_for_field($excel_value, $prop_to_add['prop_key'], $this->interpretacion_punto);
 
                     if (!$resultado_numero['ok']) {
 
@@ -1640,19 +1654,22 @@ class ProcessRow {
      * Usado tanto por get_number_for_field() (precision real por columna) como por
      * get_number() (wrapper legacy, precision fija recibida por parametro).
      *
-     * @param  mixed $number      Valor crudo de la celda.
-     * @param  int   $max_enteros Cantidad maxima de digitos enteros permitidos.
-     * @param  int   $decimales   Cantidad de decimales a los que se redondea.
+     * @param  mixed  $number               Valor crudo de la celda.
+     * @param  int    $max_enteros          Cantidad maxima de digitos enteros permitidos.
+     * @param  int    $decimales            Cantidad de decimales a los que se redondea.
+     * @param  string $interpretacion_punto Modo de interpretacion del punto ambiguo
+     *   (grupo 239, prompt 04): 'auto' | 'siempre_miles' | 'siempre_decimal'. Se
+     *   propaga tal cual a ImportHelper::parseNumericValue().
      * @return array ['ok' => bool, 'value' => ?string, 'motivo' => ?string, 'original' => ?string]
      */
-    private static function parse_number_core($number, $max_enteros, $decimales) {
+    private static function parse_number_core($number, $max_enteros, $decimales, $interpretacion_punto = 'auto') {
 
         if (is_null($number) || (is_string($number) && trim($number) === '')) {
             return ['ok' => true, 'value' => null];
         }
 
         try {
-            $parsed = ImportHelper::parseNumericValue($number);
+            $parsed = ImportHelper::parseNumericValue($number, null, null, $interpretacion_punto);
         } catch (\InvalidArgumentException $exception) {
             // Defecto (1) corregido: ya no se traga la excepcion en silencio.
             return [
@@ -1699,17 +1716,19 @@ class ProcessRow {
      * el comportamiento legacy de get_number() de devolver null en silencio: quien
      * llama decide si registra un conflicto o corta (grupo 229, prompt 07).
      *
-     * @param  mixed  $number Valor crudo de la celda.
-     * @param  string $campo  Nombre de la columna destino (cost, price, medida, etc.).
+     * @param  mixed  $number               Valor crudo de la celda.
+     * @param  string $campo                Nombre de la columna destino (cost, price, medida, etc.).
+     * @param  string $interpretacion_punto Modo de interpretacion del punto ambiguo
+     *   (grupo 239, prompt 04): 'auto' | 'siempre_miles' | 'siempre_decimal'.
      * @return array ['ok' => bool, 'value' => ?string, 'motivo' => ?string, 'original' => ?string]
      */
-    static function get_number_for_field($number, $campo) {
+    static function get_number_for_field($number, $campo, $interpretacion_punto = 'auto') {
 
         $config = isset(self::$numeric_precision[$campo])
                     ? self::$numeric_precision[$campo]
                     : [10, 2];
 
-        return self::parse_number_core($number, $config[0], $config[1]);
+        return self::parse_number_core($number, $config[0], $config[1], $interpretacion_punto);
     }
 
     /**
@@ -1722,13 +1741,15 @@ class ProcessRow {
      * (obtener_stock, variantes, depositos, descuentos, price_types) — migrar uno
      * por uno a get_number_for_field() cuando corresponda a una columna real.
      *
-     * @param mixed $number Valor crudo de la celda.
-     * @param int $decimales Cantidad de decimales del resultado formateado.
+     * @param mixed  $number               Valor crudo de la celda.
+     * @param int    $decimales            Cantidad de decimales del resultado formateado.
+     * @param string $interpretacion_punto Modo de interpretacion del punto ambiguo
+     *   (grupo 239, prompt 04): 'auto' | 'siempre_miles' | 'siempre_decimal'.
      * @return string|null Número formateado como string, o null si está vacío o no es válido
      *                      (incluye el caso "no es un número": este wrapper legacy no
      *                      expone el motivo del fallo, a diferencia de get_number_for_field()).
      */
-    static function get_number($number, $decimales = 2) {
+    static function get_number($number, $decimales = 2, $interpretacion_punto = 'auto') {
 
         /*
          * Limite generico de 15 digitos enteros (no ligado a ninguna columna real):
@@ -1737,7 +1758,7 @@ class ProcessRow {
          * limite de digitos significativos que un float de PHP representa de forma
          * confiable.
          */
-        $resultado = self::parse_number_core($number, 15, $decimales);
+        $resultado = self::parse_number_core($number, 15, $decimales, $interpretacion_punto);
 
         return $resultado['ok'] ? $resultado['value'] : null;
     }
@@ -1747,12 +1768,14 @@ class ProcessRow {
      * (ej: "12,5" dentro de "12,5_20,3"). Nunca lanza excepción: si el chunk no es un
      * número válido devuelve 0.0, igual que hacía antes floatval()/(float) sobre el string.
      *
-     * @param mixed $chunk Chunk individual ya separado por "_".
+     * @param mixed  $chunk                Chunk individual ya separado por "_".
+     * @param string $interpretacion_punto Modo de interpretacion del punto ambiguo
+     *   (grupo 239, prompt 04): 'auto' | 'siempre_miles' | 'siempre_decimal'.
      * @return float
      */
-    static function get_number_forgiving($chunk) {
+    static function get_number_forgiving($chunk, $interpretacion_punto = 'auto') {
         try {
-            $parsed = ImportHelper::parseNumericValue($chunk);
+            $parsed = ImportHelper::parseNumericValue($chunk, null, null, $interpretacion_punto);
         } catch (\InvalidArgumentException $exception) {
             return 0.0;
         }
@@ -1765,7 +1788,7 @@ class ProcessRow {
 
         $excel_stock = ImportHelper::getColumnValue($row, 'stock_actual', $this->columns);
         // Normaliza stock tolerando separadores locales (ej: "1.000" → 1000).
-        $excel_stock_parsed = self::get_number($excel_stock, 0);
+        $excel_stock_parsed = self::get_number($excel_stock, 0, $this->interpretacion_punto);
 
         $stock_global = null;
         $stock_addresses = [];
@@ -1868,9 +1891,9 @@ class ProcessRow {
                 $this->log('Hay info en la columna '.$address->street);
 
                 // Normaliza cantidades y límites de stock por sucursal.
-                $min_excel_parsed = self::get_number($min_excel, 0);
-                $max_excel_parsed = self::get_number($max_excel, 0);
-                $amount_excel_parsed = self::get_number($amount_excel, 0);
+                $min_excel_parsed = self::get_number($min_excel, 0, $this->interpretacion_punto);
+                $max_excel_parsed = self::get_number($max_excel, 0, $this->interpretacion_punto);
+                $amount_excel_parsed = self::get_number($amount_excel, 0, $this->interpretacion_punto);
 
                 $address_article = [
                     'address_id'    => $address->id,
@@ -2082,10 +2105,10 @@ class ProcessRow {
                 }
             
                 $row_percentage_name = $this->get_price_type_row_name('%_', $price_type);
-                $percentage = self::get_number(ImportHelper::getColumnValue($row, $row_percentage_name, $this->columns));
-            
+                $percentage = self::get_number(ImportHelper::getColumnValue($row, $row_percentage_name, $this->columns), 2, $this->interpretacion_punto);
+
                 $row_final_price_name = $this->get_price_type_row_name('$_final_', $price_type);
-                $final_price = self::get_number(ImportHelper::getColumnValue($row, $row_final_price_name, $this->columns));
+                $final_price = self::get_number(ImportHelper::getColumnValue($row, $row_final_price_name, $this->columns), 2, $this->interpretacion_punto);
 
                 $this->log('setear: '.$setear);
                 $this->log('percentage: '.$percentage);
@@ -2691,8 +2714,8 @@ class ProcessRow {
 
         // Campos de variante opcionales si vienen en la fila
 
-        $variant_price = self::get_number(ImportHelper::getColumnValue($row, 'precio', $this->columns));
-        $variant_stock_parsed = self::get_number(ImportHelper::getColumnValue($row, 'stock_actual', $this->columns), 0);
+        $variant_price = self::get_number(ImportHelper::getColumnValue($row, 'precio', $this->columns), 2, $this->interpretacion_punto);
+        $variant_stock_parsed = self::get_number(ImportHelper::getColumnValue($row, 'stock_actual', $this->columns), 0, $this->interpretacion_punto);
         $image_url     = ImportHelper::getColumnValue($row, 'imagen', $this->columns); // si mapeás una columna 'imagen'
         $sku           = ImportHelper::getColumnValue($row, 'sku', $this->columns);
         
@@ -2754,7 +2777,7 @@ class ProcessRow {
             if (!is_null($address_excel)) {
 
                 // Normalizamos cantidad a entero >= 0 tolerando formatos locales y símbolos de moneda.
-                $amount_parsed = self::get_number($address_excel, 0);
+                $amount_parsed = self::get_number($address_excel, 0, $this->interpretacion_punto);
                 $amount = is_null($amount_parsed) ? 0 : (int) round((float) $amount_parsed);
                 if ($amount < 0) $amount = 0;
 
@@ -3003,12 +3026,12 @@ class ProcessRow {
         // Parsear las cadenas del Excel
         $new_percents = [];
         if ($discounts_percent_str) {
-            $new_percents = array_filter(array_map(fn($chunk) => self::get_number_forgiving($chunk), explode('_', $discounts_percent_str)));
+            $new_percents = array_filter(array_map(fn($chunk) => self::get_number_forgiving($chunk, $this->interpretacion_punto), explode('_', $discounts_percent_str)));
         }
 
         $new_amounts = [];
         if ($discounts_amount_str) {
-            $new_amounts = array_filter(array_map(fn($chunk) => self::get_number_forgiving($chunk), explode('_', $discounts_amount_str)));
+            $new_amounts = array_filter(array_map(fn($chunk) => self::get_number_forgiving($chunk, $this->interpretacion_punto), explode('_', $discounts_amount_str)));
         }
 
         // Obtener los valores actuales desde BD
@@ -3096,7 +3119,7 @@ class ProcessRow {
                     $chunk = substr($chunk, 0, -1);
                 }
 
-                $value = self::get_number_forgiving($chunk);
+                $value = self::get_number_forgiving($chunk, $this->interpretacion_punto);
                 $new_percents[] = [
                     'value' => $value,
                     'final' => $final_flag,
@@ -3119,7 +3142,7 @@ class ProcessRow {
                     $chunk = substr($chunk, 0, -1);
                 }
 
-                $value = self::get_number_forgiving($chunk);
+                $value = self::get_number_forgiving($chunk, $this->interpretacion_punto);
                 $new_amounts[] = [
                     'value' => $value,
                     'final' => $final_flag,

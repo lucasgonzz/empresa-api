@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
@@ -316,6 +317,13 @@ class AiExcelImportController extends Controller
             'actualizar_articulos_de_otro_proveedor'             => $request->input('actualizar_articulos_de_otro_proveedor', false),
             'actualizar_por_provider_code'                       => $request->input('actualizar_por_provider_code', true),
             'actualizar_proveedor'                               => $request->input('actualizar_proveedor', false),
+
+            /*
+             * Modo elegido por el usuario para interpretar el punto en columnas numéricas
+             * ambiguas (grupo 239, prompt 04). Mismo punto de entrada y normalización que
+             * ArticleController@import: se resuelve acá, no se confía en el valor crudo.
+             */
+            'interpretacion_punto'                               => ImportHelper::normalizarInterpretacionPunto($request->input('interpretacion_punto')),
         ]);
 
         if ($result['hubo_un_error']) {

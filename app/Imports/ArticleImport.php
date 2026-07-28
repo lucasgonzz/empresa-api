@@ -51,11 +51,18 @@ class ArticleImport implements ToCollection
         $import_result_id, 
         $import_history_id,
 
-        $actualizar_articulos_de_otro_proveedor, 
-        $actualizar_proveedor, 
-        $permitir_provider_code_repetido, 
+        $actualizar_articulos_de_otro_proveedor,
+        $actualizar_proveedor,
+        $permitir_provider_code_repetido,
         $permitir_provider_code_repetido_en_multi_providers,
-        $actualizar_por_provider_code
+        $actualizar_por_provider_code,
+
+        /*
+         * Modo elegido por el usuario para interpretar el punto en columnas numéricas
+         * ambiguas (grupo 239, prompt 04): 'auto' | 'siempre_miles' | 'siempre_decimal'.
+         * Default 'auto' para no romper otros llamadores que aún no lo mandan.
+         */
+        $interpretacion_punto = 'auto'
     ) {
 
         $this->log_activado = false;
@@ -78,6 +85,7 @@ class ArticleImport implements ToCollection
         $this->permitir_provider_code_repetido                      = $permitir_provider_code_repetido;
         $this->permitir_provider_code_repetido_en_multi_providers   = $permitir_provider_code_repetido_en_multi_providers;
         $this->actualizar_por_provider_code                         = $actualizar_por_provider_code;
+        $this->interpretacion_punto                                 = $interpretacion_punto;
 
 
         $this->columns = $columns;
@@ -115,6 +123,7 @@ class ArticleImport implements ToCollection
             'permitir_provider_code_repetido'                       => $this->permitir_provider_code_repetido,
             'permitir_provider_code_repetido_en_multi_providers'    => $this->permitir_provider_code_repetido_en_multi_providers,
             'actualizar_por_provider_code'                          => $this->actualizar_por_provider_code,
+            'interpretacion_punto'                                  => $this->interpretacion_punto,
         ]);
 
         $this->nombres_proveedores = [];

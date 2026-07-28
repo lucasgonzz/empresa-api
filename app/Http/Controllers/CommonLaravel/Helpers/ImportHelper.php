@@ -5,6 +5,26 @@ use Illuminate\Support\Facades\Log;
 
 class ImportHelper {
 
+	/**
+	 * Normaliza el modo de interpretación del punto elegido por el usuario en el punto
+	 * de entrada (controller), antes de que viaje por toda la cadena de importación.
+	 * No hay que confiar en que el frontend mande siempre un valor válido: si no llega,
+	 * llega vacío, o llega algo que no es uno de los tres valores reconocidos, se cae a
+	 * 'auto' (el comportamiento de siempre, no cambia nada).
+	 *
+	 * @param mixed $valor Valor crudo recibido del request (puede ser null, string vacío, etc).
+	 * @return string 'auto' | 'siempre_miles' | 'siempre_decimal'
+	 */
+	static function normalizarInterpretacionPunto($valor) {
+		$valores_validos = ['auto', 'siempre_miles', 'siempre_decimal'];
+
+		if (is_string($valor) && in_array($valor, $valores_validos, true)) {
+			return $valor;
+		}
+
+		return 'auto';
+	}
+
 	static function getColumnValue($row, $key, $columns) {
 		if (
 			isset($columns[$key])
@@ -178,10 +198,20 @@ class ImportHelper {
 	 * @param mixed $value Valor crudo de la celda.
 	 * @param string|null $field_label Etiqueta del campo para mensajes de error (ej: "costo").
 	 * @param int|null $row_number Número de fila del Excel para contextualizar errores.
+	 * @param string $interpretacion_punto Cómo interpretar el punto cuando la celda tiene
+	 *   SOLO punto (sin coma) — es el único caso ambiguo, ver más abajo. Valores válidos:
+	 *   - 'auto' (default): comportamiento actual, decide con la regex de grupos de 3 dígitos
+	 *     (ej: "1.234" -> 1234, pero "3330.95" -> 3330.95).
+	 *   - 'siempre_miles': el punto SIEMPRE se interpreta como separador de miles, sin evaluar
+	 *     la regex (ej: "3330.95" -> 333095).
+	 *   - 'siempre_decimal': el punto SIEMPRE se interpreta como separador decimal, sin evaluar
+	 *     la regex (ej: "2.500" -> 2.5).
+	 *   Cualquier otro valor se trata como 'auto'. Este parámetro NO afecta las ramas de
+	 *   "coma y punto juntos" ni "solo coma": ahí no hay ambigüedad y quedan intactas.
 	 * @return float|int|null Número parseado, o null si la celda estaba vacía.
 	 * @throws \InvalidArgumentException Si hay valor pero no se puede interpretar como número.
 	 */
-	static function parseNumericValue($value, $field_label = null, $row_number = null) {
+	static function parseNumericValue($value, $field_label = null, $row_number = null, $interpretacion_punto = 'auto') {
 		if (is_null($value) || (is_string($value) && trim($value) === '')) {
 			return null;
 		}
@@ -197,7 +227,8 @@ class ImportHelper {
 		$normalized = preg_replace('/^(USD|U\$S|\$)\s*/iu', '', $original);
 		$normalized = trim($normalized);
 
-		// Caso con coma y punto: detectar cuál es el separador decimal.
+		// Caso con coma y punto: detectar cuál es el separador decimal. No se toca por
+		// $interpretacion_punto: acá no hay ambigüedad, el de más a la derecha manda.
 		if (strpos($normalized, ',') !== false && strpos($normalized, '.') !== false) {
 			if (strrpos($normalized, ',') > strrpos($normalized, '.')) {
 				$normalized = str_replace('.', '', $normalized);
@@ -206,8 +237,18 @@ class ImportHelper {
 				$normalized = str_replace(',', '', $normalized);
 			}
 		} elseif (strpos($normalized, ',') !== false) {
+			// Caso con solo coma: tampoco es ambiguo, la coma siempre es decimal.
 			$normalized = str_replace(',', '.', $normalized);
+		} elseif ($interpretacion_punto === 'siempre_miles') {
+			// El usuario ya sabe que su proveedor usa el punto como separador de miles:
+			// se sacan todos los puntos sin evaluar la regex de "auto".
+			$normalized = str_replace('.', '', $normalized);
+		} elseif ($interpretacion_punto === 'siempre_decimal') {
+			// El usuario ya sabe que su proveedor usa el punto como separador decimal:
+			// se deja el valor tal cual, el punto queda como decimal.
+			// (no se hace nada, $normalized ya tiene el punto como está)
 		} elseif (preg_match('/^-?\d{1,3}(\.\d{3})+$/', $normalized) === 1) {
+			// 'auto' (o cualquier valor no reconocido): comportamiento actual.
 			// Solo se interpreta el punto como separador de miles cuando TODO el valor
 			// son grupos de exactamente 3 dígitos (ej: "1.234" o "12.345.678").
 			// Cualquier otro caso se interpreta como decimal (ej: "3330.95", "2.5").

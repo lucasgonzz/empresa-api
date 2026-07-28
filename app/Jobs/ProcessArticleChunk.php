@@ -35,6 +35,12 @@ class ProcessArticleChunk implements ShouldQueue
     protected $csv_path, $columns, $create_and_edit, $start_row, $finish_row,
               $provider_id, $user_id, $auth_user_id, $import_status_id, $import_history_id, $chunk_number, $observations, $start_offset, $inicio_chunk, $actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $permitir_provider_code_repetido, $permitir_provider_code_repetido_en_multi_providers, $actualizar_por_provider_code, $user;
 
+    /**
+     * Modo elegido por el usuario para interpretar el punto en columnas numéricas
+     * ambiguas (grupo 239, prompt 04): 'auto' | 'siempre_miles' | 'siempre_decimal'.
+     */
+    protected $interpretacion_punto;
+
     // public $timeout = 5; // 30 minutos por chunk, ajustable
     public $timeout = 1800; // 30 minutos por chunk, ajustable
     public $tries = 1;
@@ -53,11 +59,13 @@ class ProcessArticleChunk implements ShouldQueue
             $chunk_number, 
             $start_offset, 
             
-            $actualizar_articulos_de_otro_proveedor, 
-            $actualizar_proveedor, 
-            $permitir_provider_code_repetido, 
+            $actualizar_articulos_de_otro_proveedor,
+            $actualizar_proveedor,
+            $permitir_provider_code_repetido,
             $permitir_provider_code_repetido_en_multi_providers,
-            $actualizar_por_provider_code
+            $actualizar_por_provider_code,
+
+            $interpretacion_punto = 'auto'
     ) {
 
         $this->csv_path                                     = $csv_path;
@@ -78,6 +86,8 @@ class ProcessArticleChunk implements ShouldQueue
         $this->permitir_provider_code_repetido                      = $permitir_provider_code_repetido;
         $this->permitir_provider_code_repetido_en_multi_providers   = $permitir_provider_code_repetido_en_multi_providers;
         $this->actualizar_por_provider_code                         = $actualizar_por_provider_code;
+
+        $this->interpretacion_punto                                 = $interpretacion_punto;
 
         $this->observations = '';
 
@@ -394,10 +404,12 @@ class ProcessArticleChunk implements ShouldQueue
                 $this->permitir_provider_code_repetido,
                 $this->permitir_provider_code_repetido_en_multi_providers,
                 $this->actualizar_por_provider_code,
+
+                $this->interpretacion_punto,
             );
 
         } catch (\Throwable $e) {
-            
+
             Log::error('Error al importar, desde ProcessArticleChunk crear_article_import');
 
             throw $e;
