@@ -223,7 +223,7 @@ class AfipConstanciaInscripcionController extends Controller
 
         $afip_wsaa = new AfipWSAAHelper($testing, 'ws_sr_constancia_inscripcion');
         $afip_wsaa->checkWsaa();
-        
+
         // $afip_wsaa = new AfipWSAAHelper($testing, 'wsci');
         // $afip_wsaa->checkWsaa('ws_sr_constancia_inscripcion');
 
@@ -233,7 +233,7 @@ class AfipConstanciaInscripcionController extends Controller
         $ws->setXmlTa(file_get_contents(TA_file));
 
         // 30718519531 Cuit Ferreteria Colman
-        
+
         $response = $ws->getPersona_v2(['idPersona' => $cuit]);
 
         if (!$response['hubo_un_error']) {
@@ -242,30 +242,68 @@ class AfipConstanciaInscripcionController extends Controller
 
             Log::info($response);
 
-            $data = [];
-
-            if (isset($result->personaReturn->datosGenerales->nombre)) {
-                $data['nombre'] = $result->personaReturn->datosGenerales->nombre;
-            } else if (isset($result->personaReturn->datosGenerales->razonSocial)) {
-                $data['nombre'] = $result->personaReturn->datosGenerales->razonSocial;
+            // Guard contra respuesta incompleta: validar que existan los nodos requeridos
+            if (
+                !isset($result->personaReturn)
+                || !isset($result->personaReturn->datosGenerales)
+            ) {
+                Log::info('AFIP constancia: respuesta sin datosGenerales para el CUIT '.$cuit);
+                return [
+                    'hubo_un_error' => true,
+                    'error'         => 'ARCA no devolvio datos para el CUIT '.$cuit.'. Verifique que el numero sea correcto y que el contribuyente este activo.',
+                ];
             }
 
-            if (isset($result->personaReturn->datosGenerales->apellido)) {
-                $data['apellido'] = $result->personaReturn->datosGenerales->apellido;
+            // Extraer datos generales a variable local para evitar accesos encadenados sin validación
+            $datos_generales = $result->personaReturn->datosGenerales;
+
+            // Extraer domicilio fiscal de forma segura
+            $domicilio_fiscal = null;
+            if (property_exists($datos_generales, 'domicilioFiscal')) {
+                $domicilio_fiscal = $datos_generales->domicilioFiscal;
+            }
+
+            $data = [];
+
+            // Nombre: priorizar nombre personal, luego razón social
+            if (isset($datos_generales->nombre)) {
+                $data['nombre'] = $datos_generales->nombre;
+            } else if (isset($datos_generales->razonSocial)) {
+                $data['nombre'] = $datos_generales->razonSocial;
+            }
+
+            // Apellido
+            if (isset($datos_generales->apellido)) {
+                $data['apellido'] = $datos_generales->apellido;
             } else {
                 $data['apellido'] = '';
             }
 
-            if (isset($result->personaReturn->datosGenerales->razonSocial)) {
-                $data['razon_social'] = $result->personaReturn->datosGenerales->razonSocial;
+            // Razón social (si aplica)
+            if (isset($datos_generales->razonSocial)) {
+                $data['razon_social'] = $datos_generales->razonSocial;
             }
 
-            $data['cuit']          = $result->personaReturn->datosGenerales->idPersona;
+            // CUIT: usar idPersona de datosGenerales si está disponible, sino usar el CUIT consultado
+            $data['cuit'] = isset($datos_generales->idPersona) ? $datos_generales->idPersona : $cuit;
 
-            $data['localidad']     =  property_exists($result->personaReturn->datosGenerales, 'domicilioFiscal') && property_exists($result->personaReturn->datosGenerales->domicilioFiscal, 'localidad') ? $result->personaReturn->datosGenerales->domicilioFiscal->localidad : 'Sin asignar';
-			$data['provincia']     = property_exists($result->personaReturn->datosGenerales->domicilioFiscal, 'descripcionProvincia') ? $result->personaReturn->datosGenerales->domicilioFiscal->descripcionProvincia : 'Sin asignar';
+            // Inicializar campos de domicilio con valores por defecto
+            $data['localidad'] = 'Sin asignar';
+            $data['provincia'] = 'Sin asignar';
+            $data['direccion'] = null;
 
-            $data['direccion']     = property_exists($result->personaReturn->datosGenerales->domicilioFiscal, 'direccion') ? $result->personaReturn->datosGenerales->domicilioFiscal->direccion : null;
+            // Si tenemos domicilio fiscal, extraer los datos disponibles
+            if (!is_null($domicilio_fiscal)) {
+                if (property_exists($domicilio_fiscal, 'localidad')) {
+                    $data['localidad'] = $domicilio_fiscal->localidad;
+                }
+                if (property_exists($domicilio_fiscal, 'descripcionProvincia')) {
+                    $data['provincia'] = $domicilio_fiscal->descripcionProvincia;
+                }
+                if (property_exists($domicilio_fiscal, 'direccion')) {
+                    $data['direccion'] = $domicilio_fiscal->direccion;
+                }
+            }
 
             $data['condicion_iva'] = $this->obtener_condicion_iva($result->personaReturn);
 
@@ -281,10 +319,17 @@ class AfipConstanciaInscripcionController extends Controller
                 'error'             => $response['error'],
             ];
         }
-        
+
 
     }
 
+    /**
+     * Determina la condición de IVA del contribuyente según el nodo de respuesta de AFIP.
+     * Valida la existencia de cada campo antes de acceder para evitar errores con respuestas incompletas.
+     *
+     * @param mixed $persona_return Objeto de respuesta con datosMonotributo o datosRegimenGeneral.
+     * @return string Condición IVA (MONOTRIBUTO, RESPONSABLE INSCRIPTO o NO DETERMINADO).
+     */
     private function obtener_condicion_iva($persona_return)
     {
         if (isset($persona_return->datosMonotributo)) {
@@ -296,7 +341,8 @@ class AfipConstanciaInscripcionController extends Controller
             is_array($persona_return->datosRegimenGeneral->impuesto)
         ) {
             foreach ($persona_return->datosRegimenGeneral->impuesto as $imp) {
-                if ($imp->descripcionImpuesto === 'IVA') {
+                // Validar que el campo descripcionImpuesto existe antes de acceder
+                if (isset($imp->descripcionImpuesto) && $imp->descripcionImpuesto === 'IVA') {
                     return 'RESPONSABLE INSCRIPTO';
                 }
             }
