@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Http\Controllers\Helpers\SupportSyncHelper;
 use App\Models\SupportMessage;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Schema;
 
 class SupportRetryPendingSyncs extends Command
 {
@@ -27,6 +28,12 @@ class SupportRetryPendingSyncs extends Command
      */
     public function handle()
     {
+        // Cliente sin el modulo de WhatsApp (grupo 137): la tabla no existe y no hay nada que sincronizar.
+        if (!Schema::hasTable('support_messages')) {
+            $this->info('support:retry-pending-syncs: la tabla support_messages no existe en este cliente. Se omite.');
+            return 0;
+        }
+
         // Mensajes que aún no pudieron sincronizarse al admin-api central.
         $pending_messages = SupportMessage::whereNull('synced_to_admin_at')->orderBy('id')->get();
         // Contador de mensajes sincronizados exitosamente en esta corrida.

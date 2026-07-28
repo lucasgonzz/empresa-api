@@ -26,6 +26,16 @@ class GitHubErrorReporterService
     const THROTTLE_SECONDS = 21600;
 
     /**
+     * Excepciones que no se reportan a GitHub: no son defectos del sistema sino datos
+     * de origen externo que el sistema maneja bien. Se siguen logueando localmente.
+     *
+     * @var array
+     */
+    const DONT_UPLOAD = [
+        'Intervention\Image\Exception\NotReadableException',
+    ];
+
+    /**
      * Reportar excepción de PHP (origen: api).
      *
      * @param Throwable $e Excepción capturada por el handler global.
@@ -45,6 +55,13 @@ class GitHubErrorReporterService
             // Solo reportar en producción
             if (config('app.env') !== 'production') {
                 return;
+            }
+
+            // Filtrar excepciones que no son defectos del sistema sino errores manejados correctamente.
+            foreach (self::DONT_UPLOAD as $dont_upload_class) {
+                if ($e instanceof $dont_upload_class) {
+                    return;
+                }
             }
 
             // Archivo relativo a la raíz del proyecto: se calcula ANTES del hash (a diferencia de
