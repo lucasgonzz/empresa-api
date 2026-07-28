@@ -6,9 +6,15 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\Seeders\ArticleSeederHelper;
 use App\Models\Address;
 use App\Models\Article;
+use App\Models\Caja;
+use App\Models\Client;
+use App\Models\CurrentAcountPaymentMethod;
+use App\Models\ExpenseConcept;
 use App\Models\Iva;
+use App\Models\IvaCondition;
 use App\Models\Provider;
 use App\Models\ProviderDiscount;
+use App\Models\SaleTax;
 use App\Models\User;
 use Database\Seeders\CAPaymentMethodTypeSeeder;
 use Database\Seeders\ConceptoStockMovementSeeder;
@@ -66,6 +72,78 @@ class TestingFerreteriaSeeder extends Seeder
     const ARTICULO_CENTINELA = 'Martillo acero';
 
     /**
+     * Cliente con cuenta corriente habilitada (Grupo 242 · Prompt 02). Lo usan los tests de
+     * saldo anterior / saldo actual y el de reversion de cobros. No existe una columna dedicada
+     * "cuenta corriente habilitada" en `clients`: el habilitado es un hecho de negocio (los tests
+     * de tesoreria le crean sus propios `current_acounts`/`credit_accounts`), no un dato que este
+     * fixture deba precargar.
+     */
+    const CLIENTE_CC = 'Cliente Cuenta Corriente';
+
+    /**
+     * Cliente de contado, sin cuenta corriente. Sirve de contraste con CLIENTE_CC.
+     */
+    const CLIENTE_CONTADO = 'Cliente Contado';
+
+    /**
+     * Cliente con condicion de IVA distinta a Responsable Inscripto (se le asigna "Exento"), para
+     * los tests de facturacion por condicion del grupo 244.
+     */
+    const CLIENTE_EXENTO = 'Cliente Exento';
+
+    /**
+     * Metodo de pago de cuenta corriente "efectivo", tal cual lo crea `CurrentAcountPaymentMethodSeeder`.
+     */
+    const PAGO_EFECTIVO = 'Efectivo';
+
+    /**
+     * Metodo de pago de cuenta corriente de tarjeta de credito. `CurrentAcountPaymentMethodSeeder`
+     * lo crea con el nombre "Credito" (no "Tarjeta de Credito"): se respeta el nombre real que deja
+     * el seeder de produccion en vez de inventar uno nuevo.
+     */
+    const PAGO_TARJETA_CREDITO = 'Credito';
+
+    /**
+     * Concepto de gasto usado por las cajas comisionadas para el gasto automatico de comision.
+     * Sin este concepto configurado en la caja (expense_concept_id null), el gasto no se genera
+     * (ver Grupo 223 · Prompt 02).
+     */
+    const CONCEPTO_GASTO_COMISION = 'Comisiones bancarias';
+
+    /**
+     * Concepto de gasto operativo generico, para que el Estado de Resultados del grupo 245 tenga
+     * algun gasto por fuera de las comisiones.
+     */
+    const CONCEPTO_GASTO_OPERATIVO = 'Alquiler';
+
+    /**
+     * Caja sin ninguna configuracion de liquidacion/comision (todas las columnas nuevas en null):
+     * se comporta exactamente como una caja de siempre. Es la mas importante de las tres cajas de
+     * este fixture porque prueba que los clientes en produccion (que nunca configuraron tesoreria)
+     * no notan ningun cambio de comportamiento.
+     */
+    const CAJA_EFECTIVO = 'Caja Efectivo';
+
+    /**
+     * Caja con liquidacion diferida (14 dias) y comision de Mercado Pago (6.29% + IVA incluido),
+     * con concepto de gasto de comision configurado.
+     */
+    const CAJA_MP = 'Caja Mercado Pago';
+
+    /**
+     * Caja con la misma configuracion de liquidacion/comision que CAJA_MP pero sin concepto de
+     * gasto asociado (expense_concept_id null), para probar que una config de tesoreria incompleta
+     * no revienta una venta (criterio de exito del Grupo 223).
+     */
+    const CAJA_SIN_CONCEPTO = 'Caja Sin Concepto';
+
+    /**
+     * Impuesto de ejemplo sobre ventas (IIBB), para que Posicion Fiscal (grupo 245) tenga un
+     * renglon que mostrar en vez del estado vacio.
+     */
+    const IMPUESTO_IIBB = 'IIBB';
+
+    /**
      * Ejecuta el seeder completo.
      *
      * Idempotencia (tarea 2f): si el fixture ya esta completo (los 10 articulos existen), no hace
@@ -78,6 +156,13 @@ class TestingFerreteriaSeeder extends Seeder
      */
     public function run()
     {
+        // Grupo 242 · Prompt 02: lo nuevo (clientes/cajas/gastos/impuesto de ventas) se siembra
+        // SIEMPRE, este completo o no el fixture viejo, porque es 100% firstOrCreate (no duplica).
+        // Va antes del chequeo de completitud a proposito: es lo que permite que una base con el
+        // fixture viejo ya sembrado (10 articulos, sin CAJA_MP) quede "completa" de nuevo sin volver
+        // a pasar por seed_base_data() (que NO es idempotente y duplicaria usuarios/ivas/proveedores).
+        $this->seed_ventas_y_tesoreria();
+
         if ($this->fixture_completo()) {
             return;
         }
@@ -94,7 +179,9 @@ class TestingFerreteriaSeeder extends Seeder
     }
 
     /**
-     * Chequea si los 10 articulos del catalogo del fixture ya existen (fixture completo).
+     * Chequea si el fixture ya esta completo: los 10 articulos del catalogo original (Prompt 613)
+     * Y `CAJA_MP` (Grupo 242 · Prompt 02). Se agrega CAJA_MP a la condicion para que una base
+     * sembrada con el fixture viejo (solo articulos) se re-sembrada y reciba lo nuevo una vez.
      *
      * @return bool
      */
@@ -102,7 +189,11 @@ class TestingFerreteriaSeeder extends Seeder
     {
         $nombres = array_column($this->catalogo(), 'name');
 
-        return Article::whereIn('name', $nombres)->count() === count($nombres);
+        $articulos_completos = Article::whereIn('name', $nombres)->count() === count($nombres);
+
+        $caja_mp_existe = Caja::where('name', self::CAJA_MP)->exists();
+
+        return $articulos_completos && $caja_mp_existe;
     }
 
     /**
@@ -123,10 +214,23 @@ class TestingFerreteriaSeeder extends Seeder
      */
     protected function seed_base_data()
     {
-        $this->call(CAPaymentMethodTypeSeeder::class);
-        $this->call(CurrentAcountPaymentMethodSeeder::class);
+        // Grupo 242 · Prompt 02: `seed_ventas_y_tesoreria()` corre siempre, antes de este metodo
+        // (ver run()), y en una base 100% fresca necesita condiciones de IVA y metodos de pago de
+        // cuenta corriente que todavia no existen, asi que los crea ella misma (firstOrCreate). Si
+        // eso ya paso, `CAPaymentMethodTypeSeeder`/`CurrentAcountPaymentMethodSeeder`/`IvaConditionSeeder`
+        // (que usan create(), no firstOrCreate) duplicarian esos datos si se llaman de nuevo aca.
+        // Por eso se guardan detras de un chequeo de existencia, sin tocar los seeders compartidos.
+        if (!CurrentAcountPaymentMethod::exists()) {
+            $this->call(CAPaymentMethodTypeSeeder::class);
+            $this->call(CurrentAcountPaymentMethodSeeder::class);
+        }
+
         $this->call(IvaSeeder::class);
-        $this->call(IvaConditionSeeder::class);
+
+        if (!IvaCondition::exists()) {
+            $this->call(IvaConditionSeeder::class);
+        }
+
         $this->call(ProviderOrderStatusSeeder::class);
         $this->call(ConceptoStockMovementSeeder::class);
         $this->call(UserSeeder::class);
@@ -139,6 +243,205 @@ class TestingFerreteriaSeeder extends Seeder
 
         $this->call(PriceTypeSeeder::class);
         $this->call(DepositSeeder::class);
+    }
+
+    /**
+     * Siembra el lado de ventas y tesoreria del fixture (Grupo 242 · Prompt 02): clientes, metodos
+     * de pago de cuenta corriente, conceptos de gasto, cajas y el impuesto de IIBB. Todo con
+     * `firstOrCreate` para poder llamarse siempre (ver comentario en run()), sin depender de si
+     * `seed_base_data()` ya corrio en esta ejecucion.
+     *
+     * @return void
+     */
+    protected function seed_ventas_y_tesoreria()
+    {
+        // Condiciones de IVA y metodos de pago de cuenta corriente son dependencias duras de
+        // clientes/cajas. En una base 100% fresca todavia no existen (este metodo corre antes de
+        // `seed_base_data()`), asi que se garantizan aca de forma idempotente. Si ya existen (fixture
+        // viejo, o una ejecucion posterior de este mismo seeder) no se tocan.
+        if (!IvaCondition::exists()) {
+            $this->call(IvaConditionSeeder::class);
+        }
+
+        if (!CurrentAcountPaymentMethod::exists()) {
+            $this->call(CAPaymentMethodTypeSeeder::class);
+            $this->call(CurrentAcountPaymentMethodSeeder::class);
+        }
+
+        $this->seed_clientes();
+
+        $this->seed_metodos_pago_cta_cte();
+
+        $conceptos = $this->seed_conceptos_gasto();
+
+        $this->seed_cajas_tesoreria($conceptos);
+
+        $this->seed_impuesto_iibb();
+    }
+
+    /**
+     * Crea los 3 clientes del fixture (tarea 01), con `iva_condition_id` resuelto por nombre.
+     * `CLIENTE_EXENTO` usa la condicion "Exento" (distinta a Responsable Inscripto) para los tests
+     * de facturacion por condicion del grupo 244. `CLIENTE_CC`/`CLIENTE_CONTADO` usan "Responsable
+     * inscripto" por default: la condicion no es lo relevante para esos dos, lo relevante es el
+     * nombre (ver constante) que van a usar los tests de tesoreria/cuenta corriente.
+     *
+     * @return void
+     */
+    protected function seed_clientes()
+    {
+        $user_id = config('app.USER_ID');
+
+        $iva_responsable_inscripto = IvaCondition::where('name', 'Responsable inscripto')->first();
+        $iva_exento = IvaCondition::where('name', 'Exento')->first();
+
+        $clientes = [
+            self::CLIENTE_CC       => $iva_responsable_inscripto,
+            self::CLIENTE_CONTADO  => $iva_responsable_inscripto,
+            self::CLIENTE_EXENTO   => $iva_exento,
+        ];
+
+        foreach ($clientes as $nombre => $iva_condition) {
+            Client::firstOrCreate(
+                ['name' => $nombre, 'user_id' => $user_id],
+                ['iva_condition_id' => is_null($iva_condition) ? null : $iva_condition->id]
+            );
+        }
+    }
+
+    /**
+     * Garantiza que existan los 2 metodos de pago de cuenta corriente que necesitan los tests
+     * (tarea 02), resolviendolos por el nombre real que deja `CurrentAcountPaymentMethodSeeder`
+     * ("Efectivo" y "Credito"). Si por algun motivo no existieran con ese nombre, se crean aca con
+     * `firstOrCreate` (nunca modificando el seeder de produccion).
+     *
+     * @return void
+     */
+    protected function seed_metodos_pago_cta_cte()
+    {
+        CurrentAcountPaymentMethod::firstOrCreate([
+            'name' => self::PAGO_EFECTIVO,
+        ]);
+
+        CurrentAcountPaymentMethod::firstOrCreate([
+            'name' => self::PAGO_TARJETA_CREDITO,
+        ]);
+    }
+
+    /**
+     * Crea los 2 conceptos de gasto del fixture (tarea 03): el de comisiones bancarias (que usan
+     * las cajas comisionadas para el gasto automatico) y uno operativo generico.
+     *
+     * @return array<string,\App\Models\ExpenseConcept> ExpenseConcept indexado por nombre.
+     */
+    protected function seed_conceptos_gasto()
+    {
+        $user_id = config('app.USER_ID');
+
+        $nombres = [self::CONCEPTO_GASTO_COMISION, self::CONCEPTO_GASTO_OPERATIVO];
+
+        $conceptos = [];
+
+        foreach ($nombres as $nombre) {
+            $conceptos[$nombre] = ExpenseConcept::firstOrCreate(
+                ['name' => $nombre, 'user_id' => $user_id],
+                ['num' => $this->siguiente_num(ExpenseConcept::class, $user_id)]
+            );
+        }
+
+        return $conceptos;
+    }
+
+    /**
+     * Crea las 3 cajas de tesoreria del fixture (tarea 04). `CAJA_EFECTIVO` queda sin ninguna
+     * columna de liquidacion/comision seteada (todo null), igual que una caja de siempre.
+     * `CAJA_MP` y `CAJA_SIN_CONCEPTO` comparten la misma config de liquidacion/comision de Mercado
+     * Pago; la unica diferencia es que `CAJA_SIN_CONCEPTO` no tiene `expense_concept_id`.
+     *
+     * @param array<string,\App\Models\ExpenseConcept> $conceptos Conceptos de gasto (ver seed_conceptos_gasto).
+     * @return void
+     */
+    protected function seed_cajas_tesoreria($conceptos)
+    {
+        $user_id = config('app.USER_ID');
+
+        $concepto_comision_id = $conceptos[self::CONCEPTO_GASTO_COMISION]->id;
+
+        Caja::firstOrCreate(
+            ['name' => self::CAJA_EFECTIVO, 'user_id' => $user_id],
+            [
+                'num'                   => $this->siguiente_num(Caja::class, $user_id),
+                'dias_liquidacion'      => null,
+                'comision_porcentaje'   => null,
+                'expense_concept_id'    => null,
+                'comision_iva_alicuota' => null,
+                'comision_iva_incluido' => 0,
+            ]
+        );
+
+        Caja::firstOrCreate(
+            ['name' => self::CAJA_MP, 'user_id' => $user_id],
+            [
+                'num'                   => $this->siguiente_num(Caja::class, $user_id),
+                'dias_liquidacion'      => 14,
+                'comision_porcentaje'   => 6.29,
+                'expense_concept_id'    => $concepto_comision_id,
+                'comision_iva_alicuota' => 21,
+                'comision_iva_incluido' => 1,
+            ]
+        );
+
+        Caja::firstOrCreate(
+            ['name' => self::CAJA_SIN_CONCEPTO, 'user_id' => $user_id],
+            [
+                'num'                   => $this->siguiente_num(Caja::class, $user_id),
+                'dias_liquidacion'      => 14,
+                'comision_porcentaje'   => 6.29,
+                'expense_concept_id'    => null,
+                'comision_iva_alicuota' => 21,
+                'comision_iva_incluido' => 1,
+            ]
+        );
+
+        // No se siembra ningun caja_liquidacion_configs (tarea 04): los overrides por metodo de
+        // pago los crea cada test que los necesita, porque cada uno prueba una combinacion distinta
+        // de la cascada de liquidacion.
+    }
+
+    /**
+     * Crea el impuesto de IIBB de ejemplo (tarea 05), un unico `SaleTax` que aplica a todos los
+     * articulos.
+     *
+     * @return void
+     */
+    protected function seed_impuesto_iibb()
+    {
+        $user_id = config('app.USER_ID');
+
+        SaleTax::firstOrCreate(
+            ['name' => self::IMPUESTO_IIBB, 'user_id' => $user_id],
+            [
+                'percentage'    => 3.5,
+                'apply_to_all'  => true,
+                'activo'        => true,
+            ]
+        );
+    }
+
+    /**
+     * Calcula el proximo correlativo `num` para un modelo con esa columna, acotado por `user_id`.
+     * Equivalente minimo (sin el lock transaccional del `Controller::num()` de produccion, que
+     * necesita un `Request`) para usar en un seeder.
+     *
+     * @param string $modelo Clase del modelo Eloquent (ej. Caja::class).
+     * @param int $user_id Owner al que se le calcula el correlativo.
+     * @return int
+     */
+    protected function siguiente_num($modelo, $user_id)
+    {
+        $ultimo = $modelo::where('user_id', $user_id)->max('num');
+
+        return is_null($ultimo) ? 1 : $ultimo + 1;
     }
 
     /**
