@@ -31,6 +31,8 @@ class SaleAfipTicketPdf extends fpdf {
 		$this->SetAutoPageBreak(true, 1);
 		$this->afip_ticket = $afip_ticket;
 		$this->sale = $afip_ticket->sale;
+		/* Precarga marca/categoria/subcategoria/proveedor para las columnas de relacion del perfil. */
+		PdfColumnService::eager_load_sale_article_relations($this->sale);
 		$this->client = $this->sale->client;
 		$this->borders = 'B';
         $this->printing_duplicate = false;

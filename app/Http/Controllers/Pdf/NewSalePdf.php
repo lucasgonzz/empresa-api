@@ -49,6 +49,8 @@ class NewSalePdf extends fpdf
         $this->line_height = 5;
         $this->table_header_line_height = 7;
         $this->sale = $sale;
+        /* Precarga marca/categoria/subcategoria/proveedor para las columnas de relacion del perfil. */
+        PdfColumnService::eager_load_sale_article_relations($this->sale);
         $this->user = $user;
         $this->total_sale = 0;
 
