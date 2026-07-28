@@ -148,8 +148,9 @@ class CajaLiquidacionHelper {
      * (ya liquidado) y a liquidar (en tránsito).
      *
      * Regla de compatibilidad: un movimiento con `fecha_liquidacion_estimada = null` (histórico o
-     * de liquidación inmediata) cuenta como ya disponible. Así una caja de efectivo sin configurar
-     * muestra los tres saldos iguales y no cambia nada para los clientes que no usan esto.
+     * de liquidación inmediata) cuenta como ya disponible. Así, en una caja de efectivo sin
+     * configurar, `saldo_disponible` da igual que `saldo_contable` y `saldo_a_liquidar` da 0 (no hay
+     * nada en tránsito), que es exactamente lo que veía el cliente antes de este cambio.
      *
      * El COALESCE aplica igual a ingresos y a egresos: `monto_neto_estimado`, cuando existe, es el
      * monto que impacta liquidez sin importar el signo del movimiento (así cierra en cero la

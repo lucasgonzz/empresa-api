@@ -14,6 +14,7 @@ use App\Models\Iva;
 use App\Models\IvaCondition;
 use App\Models\Provider;
 use App\Models\ProviderDiscount;
+use App\Models\SaleChannel;
 use App\Models\SaleTax;
 use App\Models\User;
 use Database\Seeders\CAPaymentMethodTypeSeeder;
@@ -25,6 +26,7 @@ use Database\Seeders\IvaSeeder;
 use Database\Seeders\PriceTypeSeeder;
 use Database\Seeders\ProviderOrderStatusSeeder;
 use Database\Seeders\ProviderSeeder;
+use Database\Seeders\SaleChannelSeeder;
 use Database\Seeders\UserSeeder;
 use Illuminate\Database\Seeder;
 
@@ -266,6 +268,14 @@ class TestingFerreteriaSeeder extends Seeder
         if (!CurrentAcountPaymentMethod::exists()) {
             $this->call(CAPaymentMethodTypeSeeder::class);
             $this->call(CurrentAcountPaymentMethodSeeder::class);
+        }
+
+        // `ArticlePurchaseHelper::get_sale_channel_id()` hace SaleChannel::where('slug', ...)->first()->id
+        // sin chequear null: sin canales sembrados, cualquier POST a api/sale muere con 500. El seeder
+        // de produccion usa create() (no es idempotente), por eso va detras del chequeo de existencia,
+        // mismo criterio que IvaConditionSeeder/CAPaymentMethodTypeSeeder aca arriba.
+        if (!SaleChannel::exists()) {
+            $this->call(SaleChannelSeeder::class);
         }
 
         $this->seed_clientes();
