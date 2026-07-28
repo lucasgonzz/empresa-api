@@ -115,11 +115,13 @@ abstract class EmpresaTestCase extends TestCase
                 'SEGURO: '.$no_innodb.' tabla(s) de la base "'.$base.'" no usan el motor InnoDB. '.
                 'En ese estado, `DatabaseTransactions` NO aisla nada entre tests (BEGIN/ROLLBACK '.
                 'son no-ops sobre MyISAM), y las suites acumulativas (saldos, estado de resultados, '.
-                'flujo de caja) van a fallar por motivos falsos. Fix: poner '.
-                '`default-storage-engine=InnoDB` en el my.ini de WAMP, reiniciar el servicio de '.
-                'MySQL, y volver a correr `php artisan migrate:fresh --env=testing` + el seeder de '.
-                'testing (un `ALTER TABLE ... ENGINE=InnoDB` sobre las tablas existentes no alcanza: '.
-                'el proximo `migrate:fresh` las vuelve a crear con el motor por defecto del servidor).'
+                'flujo de caja) van a fallar por motivos falsos. Fix: agregar DB_ENGINE=InnoDB al '.
+                '.env.testing (ver .env.testing.example), correr `php artisan config:clear` y '.
+                'volver a crear la base con `php artisan migrate:fresh --env=testing` + el seeder '.
+                'de testing. No hace falta tocar el my.ini de WAMP ni reiniciar MySQL: la clave '.
+                '`engine` de config/database.php le agrega ENGINE=InnoDB a cada CREATE TABLE. Un '.
+                '`ALTER TABLE ... ENGINE=InnoDB` sobre las tablas existentes tampoco hace falta, '.
+                'porque migrate:fresh las vuelve a crear.'
             );
         }
 

@@ -57,7 +57,13 @@ return [
             'prefix' => '',
             'prefix_indexes' => true,
             'strict' => true,
-            'engine' => null,
+            // Motor de tabla que se le agrega a cada CREATE TABLE (MySqlGrammar::compileCreate).
+            // En produccion queda en null: sin la variable en el .env, el CREATE TABLE sale igual
+            // que siempre y manda el default del servidor. En testing se setea DB_ENGINE=InnoDB
+            // para que `migrate:fresh --env=testing` cree todo en InnoDB aunque el default del
+            // MySQL local sea MyISAM: sin InnoDB, DatabaseTransactions no revierte nada (BEGIN y
+            // ROLLBACK son no-ops sobre MyISAM) y los tests se contaminan entre si.
+            'engine' => env('DB_ENGINE', null),
             'options' => extension_loaded('pdo_mysql') ? array_filter([
                 PDO::MYSQL_ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
             ]) : [],
