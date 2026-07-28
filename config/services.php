@@ -268,4 +268,14 @@ return [
         'api_key' => env('GOOGLE_SEARCH_API_KEY', ''),
     ],
 
+    /**
+     * Token de GitHub usado por GitHubErrorReporterService para subir reportes automáticos de
+     * error al repo claude-comerciocity/errores/ (grupo 253, prompt 01). Antes se leía con
+     * env() directo dentro del servicio: con config:cache corrido en producción eso devuelve
+     * null y el reporter se apaga entero, sin avisar. Ahora se lee siempre de config().
+     */
+    'github_error_reporter' => [
+        'token' => env('GITHUB_ERROR_REPORTER_TOKEN'),
+    ],
+
 ];
