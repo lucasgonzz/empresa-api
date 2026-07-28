@@ -101,9 +101,29 @@ class CheckVariants {
     }
 
 
+    /**
+     * Devuelve el monto a aplicar sobre el deposito de origen, para variantes de articulo.
+     *
+     * Copia separada del metodo homonimo de CheckFromAddress: aplica el mismo criterio de
+     * inversion de signo para los movimientos entre depositos.
+     *
+     * @param  \App\Models\StockMovement  $stock_movement  Movimiento de stock recien guardado.
+     * @return float
+     */
     static function get_amount_for_from_address($stock_movement) {
 
+        // Relacion con el concepto del movimiento. Puede venir null cuando el concepto no se
+        // pudo resolver por nombre (ver SetConcepto).
         $concepto = $stock_movement->concepto_movement;
+
+        if (is_null($concepto)) {
+
+            // Decision conservadora: sin concepto se devuelve el monto SIN invertir, igual que
+            // en CheckFromAddress. Los movimientos entre depositos son casos puntuales; ventas,
+            // compras e importaciones son las que no necesitan la inversion.
+            Log::warning('CheckVariants: stock_movement sin concepto, se usa el amount sin invertir. stock_movement_id: '.$stock_movement->id.' concepto_stock_movement_id: '.$stock_movement->concepto_stock_movement_id);
+            return $stock_movement->amount;
+        }
 
         if (
             $concepto->name == 'Mov entre depositos'
