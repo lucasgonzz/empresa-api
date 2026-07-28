@@ -235,7 +235,12 @@ class TestingFerreteriaSeeder extends Seeder
 
         $this->call(ProviderOrderStatusSeeder::class);
         $this->call(ConceptoStockMovementSeeder::class);
-        $this->call(UserSeeder::class);
+
+        // Guardado por el mismo motivo: `seed_ventas_y_tesoreria()` corre antes que este
+        // metodo y ya pudo haberlo sembrado. `UserSeeder` usa create() con id explicito.
+        if (is_null(User::find(config('app.USER_ID')))) {
+            $this->call(UserSeeder::class);
+        }
 
         // Prompt 231/02: el usuario de prueba se marca como cuenta ya migrada a la dinamica
         // contable real (condicion fiscal manda por sobre la tilde legacy). El fixture de compras
@@ -276,6 +281,16 @@ class TestingFerreteriaSeeder extends Seeder
         // mismo criterio que IvaConditionSeeder/CAPaymentMethodTypeSeeder aca arriba.
         if (!SaleChannel::exists()) {
             $this->call(SaleChannelSeeder::class);
+        }
+
+        // `clients.user_id` es FK a `users`: sin el usuario del fixture, la primera
+        // insercion de cliente viola la constraint. En una base 100% fresca ese usuario
+        // todavia no existe, porque `UserSeeder` corre en `seed_base_data()`, DESPUES de
+        // este metodo (ver run()). Mismo criterio que las tres dependencias de arriba, con
+        // una razon extra para el chequeo de existencia: `UserSeeder` usa create() con id
+        // explicito, correrlo dos veces revienta por clave duplicada.
+        if (is_null(User::find(config('app.USER_ID')))) {
+            $this->call(UserSeeder::class);
         }
 
         $this->seed_clientes();
