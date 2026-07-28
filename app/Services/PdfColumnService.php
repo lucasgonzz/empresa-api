@@ -289,6 +289,13 @@ class PdfColumnService
                     'allow_wrap_content' => false,
                 ],
                 [
+                    'name' => 'Subcategoria',
+                    'label' => 'Subcategoria',
+                    'value_resolver' => 'article_sub_category_name',
+                    'default_width' => 35,
+                    'allow_wrap_content' => false,
+                ],
+                [
                     'name' => 'Marca',
                     'label' => 'Marca',
                     'value_resolver' => 'article_brand_name',
@@ -660,6 +667,8 @@ class PdfColumnService
                 return $article->stock ?? '';
             case 'article_category_name':
                 return $article->category ? $article->category->name : '';
+            case 'article_sub_category_name':
+                return $article->sub_category ? $article->sub_category->name : '';
             case 'article_brand_name':
                 return $article->brand ? $article->brand->name : '';
             case 'article_provider_name':

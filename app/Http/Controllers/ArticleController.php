@@ -820,6 +820,7 @@ class ArticleController extends Controller
 
         $article_with = [
             'category',
+            'sub_category',
             'brand',
             'provider',
             'iva',
