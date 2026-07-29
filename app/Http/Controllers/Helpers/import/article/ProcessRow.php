@@ -1458,6 +1458,33 @@ class ProcessRow {
         }
     }
 
+    /**
+     * Decide si dos filas del MISMO Excel representan al mismo producto.
+     *
+     * Cadena de escalones, igual en espiritu a la de referencia del lado de la base
+     * (ArticleIndexCache::find_with_index()): cada escalon, si el campo tiene valor
+     * en $data, decide y devuelve sin caer al siguiente.
+     *
+     *   1) id            -> compara. return.
+     *   2) bar_code      -> compara. return.
+     *   3) sku           -> compara. return.
+     *   4) provider_code -> compara, solo si !permitir_provider_code_repetido. return.
+     *   5) name          -> logica propia (contraste con provider_code cuando los
+     *                        repetidos estan habilitados).
+     *
+     * El codigo de proveedor es el UNICO escalon con bandera de configuracion
+     * (permitir_provider_code_repetido) porque es la unica de estas columnas que
+     * puede repetirse legitimamente entre productos distintos (ej. varios articulos
+     * de un mismo proveedor bajo el mismo codigo de catalogo). id, bar_code y sku
+     * identifican al producto por si solos: si la fila ya trae valor en alguno de
+     * esos tres, ese valor la identifica y un provider_code repetido es irrelevante
+     * (no llega a evaluarse el escalon 4). La pregunta "¿permito repetidos de
+     * provider_code?" solo tiene sentido cuando el provider_code es lo unico que
+     * identifica a la fila.
+     *
+     * Comparacion con === (no ==): los codigos vienen como string desde el Excel y
+     * un == haria que '0012' y '12' matcheen.
+     */
     function esta_repetido($data, $art) {
 
         $repetido = false;
@@ -1485,7 +1512,17 @@ class ProcessRow {
             return false;
         }
 
-        // 3) Coincidencia por provider_code (solo si NO se permiten repetidos)
+        // 3) Coincidencia por sku
+        if (!empty($data['sku'])) {
+
+            if (isset($art['sku']) && $art['sku'] === $data['sku']) {
+                // $this->log('Ya esta para crear, sku: '.$art['sku'].' = '.$data['sku']);
+                return true;
+            }
+            return false;
+        }
+
+        // 4) Coincidencia por provider_code (solo si NO se permiten repetidos)
         if (!empty($data['provider_code']) && !$codigos_repetidos) {
 
             if (!empty($art['provider_code']) && $art['provider_code'] === $data['provider_code']) {
@@ -1495,7 +1532,7 @@ class ProcessRow {
             return false;
         }
 
-        // 4) Coincidencia por name
+        // 5) Coincidencia por name
         if (!empty($data['name'])) {
 
             if (!empty($art['name']) && $art['name'] === $data['name']) {
