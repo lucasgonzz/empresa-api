@@ -168,8 +168,63 @@ class ActualizarBBDD {
                 ])->toArray();
             }, $this->articulos_para_crear_CACHE);
 
+            /*
+             * Article::insert() arma la lista de columnas con la PRIMERA tupla y bindea el resto
+             * contra esa lista: si una tupla tiene una clave de menos, MySQL responde 1136 y se
+             * cae el lote entero, no la fila. Pasa de verdad cuando ProcessRow descarta un valor
+             * numerico invalido (hace `continue` y la clave nunca entra en $data), que para un
+             * UPDATE significa "no pisar" pero para un INSERT deja la tupla corta.
+             * Se completan con null las claves ausentes: para un articulo nuevo, "sin valor" ES null.
+             */
+            if (!empty($sql)) {
+
+                // Union de todas las claves presentes en cualquier tupla del batch.
+                $columnas = [];
+                foreach ($sql as $tupla) {
+                    foreach ($tupla as $columna => $valor) {
+                        $columnas[$columna] = true;
+                    }
+                }
+
+                // Plantilla con todas las columnas en null, para completar las tuplas cortas.
+                $plantilla = array_fill_keys(array_keys($columnas), null);
+
+                // Cuenta de columnas faltantes detectadas, para el log de abajo (no lanza excepcion).
+                $columnas_faltantes_detectadas = [];
+
+                foreach ($sql as $i => $tupla) {
+
+                    // Claves que le faltan a esta tupla respecto de la union completa.
+                    $faltantes = array_diff(array_keys($plantilla), array_keys($tupla));
+
+                    if (!empty($faltantes)) {
+                        foreach ($faltantes as $columna_faltante) {
+                            $columnas_faltantes_detectadas[$columna_faltante] = true;
+                        }
+                    }
+
+                    /*
+                     * IMPORTANTE: la plantilla va PRIMERO en el array_merge. Así los valores reales
+                     * de $tupla pisan los null de la plantilla, y ademas todas las tuplas quedan con
+                     * el MISMO orden de claves (el de $plantilla). Si se invirtiera el orden
+                     * ($tupla + $plantilla, union de arrays de PHP), el conteo de columnas daria
+                     * igual mismo pero cada tupla quedaria con su propio orden de claves: mismo
+                     * numero de columnas, pero cada tupla les asigna sus valores a columnas
+                     * distintas. Corrupcion de datos silenciosa, no error.
+                     */
+                    $sql[$i] = array_merge($plantilla, $tupla);
+                }
+
+                if (count($columnas_faltantes_detectadas) > 0) {
+                    Log::warning('guardar_articulos: se completaron con null columnas ausentes en el batch de creacion', [
+                        'columnas_faltantes' => array_keys($columnas_faltantes_detectadas),
+                        'cantidad_tuplas'    => count($sql),
+                    ]);
+                }
+            }
+
             // $this->log($sql);
-            
+
             Article::insert($sql);
 
             $this->terminar(count($this->articulos_para_crear_CACHE).' Articulos insertados en bbdd');
