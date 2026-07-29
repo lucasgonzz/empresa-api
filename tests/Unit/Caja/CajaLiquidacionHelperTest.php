@@ -31,7 +31,27 @@ use Tests\TestCase;
  * demás tests que sí instancian ese modelo (`tests/Concerns/EscenariosDePlata.php`) lo hacen
  * dentro de métodos que no corren cuando se filtra `--group tesoreria-unit`.
  *
+ * FIX (29/7/2026, fallo real contra el grupo 245): el supuesto de arriba ("no fue autoloadeada
+ * todavía en este proceso") sólo es cierto si esta clase corre SOLA o filtrada. Corriendo la
+ * suite completa, `Mockery::mock('alias:...')` reemplaza `App\Models\CajaLiquidacionConfig` en el
+ * autoloader de TODO el proceso PHP, y `Mockery::close()` (que corre en el `tearDown` de todos los
+ * tests) NO lo revierte — una clase ya declarada no se puede desdeclarar en PHP. Cualquier test que
+ * corra DESPUÉS en el mismo proceso y haga un eager-load de `liquidacion_configs` (la relación de
+ * `Caja`, ver `App\Models\Caja::liquidacion_configs()`) termina instanciando el mock en vez del
+ * modelo real, llamando métodos no stubeados, y el `BadMethodCallException` resultante lo
+ * enmascara Laravel como `RelationNotFoundException: Call to undefined relationship
+ * [liquidacion_configs] on model [App\Models\Caja]` — un mensaje que no menciona Mockery para nada
+ * y hace pensar que la relación no existe, cuando sí existe. Le costó 9 tests en rojo al grupo 245
+ * (`tests/Feature/Reportes/`), que no tenían nada que ver: sus 15 tests pasan 15/15 corriendo
+ * solos, y sólo fallan si esta clase corrió antes en el mismo proceso.
+ *
+ * `@runTestsInSeparateProcesses` + `@preserveGlobalState disabled` es la solución estándar para
+ * alias/overload mocks de Mockery: aísla esta clase a su propio proceso PHP, así el alias mock
+ * muere con ese proceso y nunca contamina al resto de la suite.
+ *
  * @group tesoreria-unit
+ * @runTestsInSeparateProcesses
+ * @preserveGlobalState disabled
  */
 class CajaLiquidacionHelperTest extends TestCase
 {
