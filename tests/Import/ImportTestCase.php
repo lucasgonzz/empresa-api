@@ -238,7 +238,7 @@ abstract class ImportTestCase extends TestCase
         );
 
         $this->assertSame(
-            (int) $import->filas,
+            (int) $import->filas_procesadas,
             array_sum(array_map('intval', $conteo)),
             'La suma de los buckets de conteo_matching no da el total de filas procesadas.'
         );
