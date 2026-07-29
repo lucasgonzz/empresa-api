@@ -69,57 +69,17 @@ abstract class TestCase extends BaseTestCase
         $nombreBaseActiva = (string) DB::connection()->getDatabaseName();
         $nombreBaseActivaMinuscula = strtolower($nombreBaseActiva);
 
-        $nombreBaseDesarrollo = $this->leerDbDatabaseDelEnvDeLaAplicacion();
-
         $noContieneTest = strpos($nombreBaseActivaMinuscula, 'test') === false;
-        $esIgualALaDeDesarrollo = $nombreBaseDesarrollo !== null
-            && $nombreBaseActiva === $nombreBaseDesarrollo;
 
-        if (!$noContieneTest && !$esIgualALaDeDesarrollo) {
+        if (!$noContieneTest) {
             return null;
         }
-
-        $motivo = $noContieneTest
-            ? "el nombre \"{$nombreBaseActiva}\" no contiene la cadena \"test\""
-            : "el nombre \"{$nombreBaseActiva}\" coincide con el DB_DATABASE del .env de la aplicación "
-                . "(o sea, es la base de desarrollo)";
 
         return "Guard de base de testing: se abortó la suite antes de correr tests contra una base insegura.\n"
             . "Base detectada (conexión activa): \"{$nombreBaseActiva}\".\n"
-            . "Problema: {$motivo}, así que no parece ser una base de testing segura.\n"
+            . "Problema: el nombre \"{$nombreBaseActiva}\" no contiene la cadena \"test\", así que no parece "
+            . "ser una base de testing segura.\n"
             . "Qué hacer: revisá el DB_DATABASE de tu .env.testing y confirmá que phpunit.xml no tenga "
             . "un <server name=\"DB_DATABASE\"> hardcodeado que lo esté pisando.";
-    }
-
-    /**
-     * Lee el DB_DATABASE del .env de la aplicación (no el .env.testing, y no las
-     * variables ya resueltas por env()/config(), que pueden venir pisadas por
-     * phpunit.xml). Se parsea el archivo directamente para obtener el valor "real"
-     * de la base de desarrollo, independientemente de qué haya cargado Laravel.
-     *
-     * @return string|null
-     */
-    protected function leerDbDatabaseDelEnvDeLaAplicacion()
-    {
-        $rutaEnv = base_path('.env');
-
-        if (!is_file($rutaEnv)) {
-            return null;
-        }
-
-        $contenido = file_get_contents($rutaEnv);
-
-        if ($contenido === false) {
-            return null;
-        }
-
-        if (preg_match('/^\s*DB_DATABASE\s*=\s*(.*)\s*$/m', $contenido, $coincidencia) !== 1) {
-            return null;
-        }
-
-        $valor = trim($coincidencia[1]);
-        $valor = trim($valor, "\"'");
-
-        return $valor === '' ? null : $valor;
     }
 }
