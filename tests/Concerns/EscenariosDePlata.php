@@ -51,6 +51,17 @@ trait EscenariosDePlata
     protected $segundos_desplazados_escenarios = 0;
 
     /**
+     * Grupo 260 · Prompt 01 — último instante que el propio trait dejó en Carbon::setTestNow()
+     * (vía avanzar_reloj_de_ventas() o fijar_reloj_en()). Sirve para distinguir "el reloj se movió
+     * porque este trait lo movió" de "el reloj se movió porque alguien más (fijar_reloj_en() u otro
+     * setTestNow() directo del test) lo cambió por fuera": si el reloj vigente no coincide con este
+     * valor, avanzar_reloj_de_ventas() sabe que tiene que re-basear en vez de pisarlo.
+     *
+     * @var \Carbon\Carbon|null
+     */
+    protected $ultimo_reloj_aplicado = null;
+
+    /**
      * Ids de las Sale creadas por crear_venta_cobrada(), para limpiar_escenarios().
      *
      * @var array<int,int>
@@ -424,6 +435,38 @@ trait EscenariosDePlata
     }
 
     /**
+     * Grupo 260 · Prompt 01 — ubica el escenario en una fecha/hora concreta, elegida por el test.
+     *
+     * Existe para que un test pueda controlar en qué mes/día caen las ventas/gastos/cobros que
+     * genere a partir de acá (necesario para reportes por rango de fechas, donde cada test necesita
+     * un rango exclusivo de verdad, no ventas separadas por segundos). Deja el reloj "propio" del
+     * trait (reloj_base_escenarios) re-baseado en este instante, para que la próxima llamada a
+     * avanzar_reloj_de_ventas() arranque a contar los 10 segundos de guard anti-duplicado desde acá
+     * y no desde donde había quedado antes.
+     *
+     * @param string|\Carbon\Carbon $momento Fecha/hora a fijar. String aceptado por Carbon::parse()
+     *                                        (ej. '2026-01-05' o '2026-01-05 10:00:00') o instancia
+     *                                        de Carbon ya construida.
+     * @return void
+     */
+    public function fijar_reloj_en($momento)
+    {
+        // Normaliza el parámetro a Carbon, acepte string o instancia ya armada.
+        $instante = $momento instanceof Carbon ? $momento->copy() : Carbon::parse($momento);
+
+        Carbon::setTestNow($instante);
+
+        // Re-basea el reloj propio del trait en este instante: la próxima venta que se cree va a
+        // contar sus 10 segundos de guard anti-duplicado a partir de acá, no del reloj anterior.
+        $this->reloj_base_escenarios = $instante->copy();
+        $this->segundos_desplazados_escenarios = 0;
+
+        // Registra que este instante fue aplicado por el propio trait, para que
+        // avanzar_reloj_de_ventas() no lo confunda con un setTestNow() externo en la próxima llamada.
+        $this->ultimo_reloj_aplicado = $instante->copy();
+    }
+
+    /**
      * Corre el reloj de la aplicacion 10 segundos hacia adelante antes de cada venta.
      *
      * Motivo: SaleController::venta_ya_cread() descarta una venta identica (mismo cliente,
@@ -434,19 +477,41 @@ trait EscenariosDePlata
      * Se mueve el reloj en vez de tocar el guard: el guard es comportamiento de produccion
      * y tiene que seguir corriendo tal cual durante el test.
      *
+     * Grupo 260 · Prompt 01 — antes este método pisaba ciegamente cualquier setTestNow() hecho
+     * por fuera (ej. fijar_reloj_en()) una vez que reloj_base_escenarios quedaba fijado en la
+     * primera venta del test. Ahora, si el reloj vigente no coincide con el último que este mismo
+     * método (o fijar_reloj_en()) dejó aplicado, entiende que alguien lo movió por fuera y
+     * re-basea en vez de pisar.
+     *
      * @return void
      */
     protected function avanzar_reloj_de_ventas()
     {
-        if (is_null($this->reloj_base_escenarios)) {
+        // Reloj vigente al momento de llamar: puede venir null si nadie llamó setTestNow() todavía.
+        $reloj_vigente = Carbon::getTestNow();
+
+        // Se re-basea cuando: (a) es la primera vez que se llama en este test, o (b) el reloj
+        // vigente no coincide con el último que este trait aplicó — señal de que fijar_reloj_en()
+        // u otro setTestNow() directo del test lo movió por fuera.
+        $hay_que_rebasear = is_null($this->reloj_base_escenarios)
+            || is_null($this->ultimo_reloj_aplicado)
+            || is_null($reloj_vigente)
+            || !$reloj_vigente->eq($this->ultimo_reloj_aplicado);
+
+        if ($hay_que_rebasear) {
+            // Carbon::now() respeta el setTestNow() vigente (o devuelve la hora real si no hay
+            // ninguno), así que esto toma exactamente el instante que el test dejó puesto.
             $this->reloj_base_escenarios = Carbon::now();
+            $this->segundos_desplazados_escenarios = 0;
         }
 
         $this->segundos_desplazados_escenarios += 10;
 
-        Carbon::setTestNow(
-            $this->reloj_base_escenarios->copy()->addSeconds($this->segundos_desplazados_escenarios)
-        );
+        $nuevo_instante = $this->reloj_base_escenarios->copy()->addSeconds($this->segundos_desplazados_escenarios);
+
+        Carbon::setTestNow($nuevo_instante);
+
+        $this->ultimo_reloj_aplicado = $nuevo_instante->copy();
     }
 
     /**
@@ -717,6 +782,10 @@ trait EscenariosDePlata
         Carbon::setTestNow(null);
 
         $this->reloj_base_escenarios = null;
+        // Grupo 260 · Prompt 01 — sin este reset, un ultimo_reloj_aplicado viejo podría hacer que
+        // avanzar_reloj_de_ventas() del próximo test crea (por coincidencia de timestamp) que el
+        // reloj vigente todavía es "suyo" y no re-basee cuando debería.
+        $this->ultimo_reloj_aplicado = null;
         $this->segundos_desplazados_escenarios = 0;
         $this->ventas_creadas_por_escenarios = [];
         $this->gastos_creados_por_escenarios = [];
