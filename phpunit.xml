@@ -26,8 +26,16 @@
         <server name="CACHE_DRIVER" value="array"/>
         <!-- <server name="DB_CONNECTION" value="sqlite"/> -->
         <!-- <server name="DB_DATABASE" value=":memory:"/> -->
-        <server name="DB_CONNECTION" value="mysql"/>
-        <server name="DB_DATABASE" value="empresa_test"/>
+        <!--
+            NO reponer DB_CONNECTION/DB_DATABASE acá. Un <server> en este archivo pisa el
+            .env.testing de cada worktree, y el sistema paralelo depende de que cada slot
+            corra contra su propia base (empresa_testing_sN): una base fija acá anula ese
+            aislamiento y hace que varios slots corriendo a la vez se contaminen entre sí en
+            silencio. La protección contra correr sobre una base insegura vive ahora en el
+            guard de Tests\TestCase (grupo 269, prompt 01), no en un valor hardcodeado acá.
+        -->
+        <!-- <server name="DB_CONNECTION" value="mysql"/> -->
+        <!-- <server name="DB_DATABASE" value="empresa_test"/> -->
         <server name="DB_ENGINE" value="InnoDB"/>
         <server name="MAIL_MAILER" value="array"/>
         <server name="QUEUE_CONNECTION" value="sync"/>
