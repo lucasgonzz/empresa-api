@@ -158,4 +158,117 @@ escribir('05_rollback.xlsx', [
     [null, null, 'PC-RB-2', 'Otro creado en rollback',      555.0,  666.0,  55.0, '21'],
 ], $cabecera);
 
+/* --------------------------------------------------------------------------
+ * 06 - Regresion del incidente de Servian (24/07/2026).
+ *
+ * 50 filas de datos. El test lo importa con ARTICLE_EXCEL_CHUNK_SIZE = 10,
+ * asi que quedan 5 lotes de 10 filas. Eso es lo que importa: el bug original
+ * solo aparece cuando el mismo codigo cae en LOTES DISTINTOS.
+ *
+ * Distribucion deliberada (fila del Excel = indice + 2 por la cabecera):
+ *
+ *   lote 1  filas  2-11   PC-GUION (fila 3), PC-SN (fila 6), THOMPSON (fila 9)
+ *   lote 2  filas 12-21   PC-GUION (fila 14)
+ *   lote 3  filas 22-31   PC-GUION (fila 24), PC-SN (fila 28)
+ *   lote 4  filas 32-41   PC-GUION (fila 35), FILTRO-A (fila 38)
+ *   lote 5  filas 42-51   PC-GUION (fila 44), THOMPSON (fila 47),
+ *                         FILTRO-B (fila 48), NOMBRE-DUP x2 (filas 50 y 51)
+ *
+ * Los codigos de barras numericos y los costos con muchos decimales van
+ * repartidos para que el parseo tambien se ejercite en varios lotes.
+ *
+ * IMPORTANTE: los tipos PHP definen el tipo de celda.
+ *   'ABC123'  string -> celda de TEXTO
+ *   504346    int    -> celda NUMERICA
+ *   1234.56   float  -> celda NUMERICA
+ *   null             -> celda VACIA
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Fila de relleno: producto sano, con los tres codigos propios y distintos.
+ *
+ * @param  int $n
+ * @return array
+ */
+function fila_sana($n)
+{
+    return [
+        'BC-SANO-' . $n,          // codigo_de_barras (texto)
+        'SKU-SANO-' . $n,         // sku (texto)
+        'PC-SANO-' . $n,          // codigo_de_proveedor (texto)
+        'PRODUCTO SANO ' . $n,    // nombre
+        1000.0 + $n,              // costo (numerico)
+        2000.0 + $n,              // precio (numerico)
+        10,                       // stock_actual (numerico)
+        21.0,                     // iva
+    ];
+}
+
+$filas_servian = [];
+
+for ($i = 1; $i <= 50; $i++) {
+    $filas_servian[$i] = fila_sana($i);
+}
+
+/*
+ * PC-GUION: cinco filas con el placeholder "-" como codigo de proveedor y SIN
+ * codigo de barras. Es el caso de las 120 filas del archivo real.
+ * Cada una cae en un lote distinto, con stock distinto: si el sistema las
+ * fusiona, un mismo articulo recibe 5 movimientos de stock.
+ */
+$filas_servian[2]  = [null, 'SKU-G-01', '-', 'CORREA POLY V 5PK698 (HUTCHINSON)', 10244.36, 20488.72, 1,  21.0];
+$filas_servian[13] = [null, 'SKU-G-02', '-', 'CORREA POLY V 6PK1550 (SKF)',       11500.00, 23000.00, 3,  21.0];
+$filas_servian[23] = [null, 'SKU-G-03', '-', 'CORREA POLY V CONTINENTAL 4PK775',   9800.00, 19600.00, 5,  21.0];
+$filas_servian[34] = [null, 'SKU-G-04', '-', 'CORREA POLY V DAYCO 5PK1065',       12300.00, 24600.00, 2,  21.0];
+$filas_servian[43] = [null, 'SKU-G-05', '-', 'CORREA 7PK-1535 HUTCHINSON',        13750.00, 27500.00, 7,  21.0];
+
+/*
+ * PC-SN: dos filas con "S/N", tambien sin codigo de barras, en lotes distintos.
+ * Es el caso de las 56 filas del archivo real.
+ */
+$filas_servian[5]  = [null, 'SKU-SN-01', 'S/N', 'KIT EMBRAGUE RENAULT MECANICA', 45000.00, 90000.00, 4, 21.0];
+$filas_servian[27] = [null, 'SKU-SN-02', 'S/N', 'KIT EMBRAGUE FIAT MECANICA',    47500.00, 95000.00, 6, 21.0];
+
+/*
+ * THOMPSON: dos productos DISTINTOS (variantes I y W) que comparten codigo de
+ * barras Y codigo de proveedor, en el lote 1 y en el lote 5.
+ * En el incidente real esto creo DOS articulos con el mismo bar_code.
+ */
+$filas_servian[8]  = ['THOMPSON 6221', '3520G80I', '3520G8', 'PARRILLA INFERIOR IZQUIERDA PEUGEOT 206-207', 33000.00, 66000.00, 7, 21.0];
+$filas_servian[46] = ['THOMPSON 6221', '3520G80W', '3520G8', 'PARRILLA INFERIOR IZQUIERDA PEUGEOT 206-207 (TRW)', 34000.00, 68000.00, 2, 21.0];
+
+/*
+ * FILTRO: dos productos distintos que comparten SOLO el codigo de proveedor,
+ * con codigos de barras y skus propios, en lotes distintos.
+ */
+$filas_servian[37] = ['FAP 3288',      '04C129620D-E', '04C129620D', 'FILTRO AIRE VW UP 2014',        11290.28, 22580.56, 1, 21.0];
+$filas_servian[47] = ['4047026011999', '0986B02533',   '04C129620D', 'FILTRO AIRE VOLKSWAGEN (BOSCH)', 19566.87, 39133.74, 2, 21.0];
+
+/*
+ * NOMBRE-DUP: dos productos con el nombre EXACTAMENTE igual y sin ningun
+ * codigo. Tienen que llegar al escalon 5 y ser ambiguos entre si.
+ */
+$filas_servian[49] = [null, null, null, 'AMORTIGUADOR DELANTERO RENAULT (SACHS)', 28000.00, 56000.00, 3, 21.0];
+$filas_servian[50] = [null, null, null, 'AMORTIGUADOR DELANTERO RENAULT (SACHS)', 28500.00, 57000.00, 4, 21.0];
+
+/*
+ * Codigos NUMERICOS: la celda es int, no string. Sin el casteo literal del
+ * grupo 229 prompt 07, el sku queda guardado como "504346.0".
+ */
+$filas_servian[11] = [7790001234567, 504346, 'PC-NUM-01', 'BUJIA NGK BKR6E', 3500.0, 7000.0, 12, 21.0];
+$filas_servian[31] = ['BC-NUM-02', 12345678901234, 'PC-NUM-02', 'BUJIA BOSCH FR7DC', 3800.0, 7600.0, 8, 21.0];
+
+/*
+ * Costos con muchos decimales: el mismo valor como TEXTO y como NUMERO.
+ * Los dos tienen que dar exactamente lo mismo.
+ */
+$filas_servian[17] = ['BC-DEC-01', 'SKU-DEC-01', 'PC-DEC-01', 'ACEITE 10W40 4L', '123123.34324', 250000.0, 5, 21.0];
+$filas_servian[39] = ['BC-DEC-02', 'SKU-DEC-02', 'PC-DEC-02', 'ACEITE 15W40 4L',  123123.34324,  250000.0, 5, 21.0];
+
+/* Separador de miles y simbolo de moneda, como texto. */
+$filas_servian[21] = ['BC-DEC-03', 'SKU-DEC-03', 'PC-DEC-03', 'LIQUIDO FRENOS DOT4', '1.234', 5000.0, 9, 21.0];
+$filas_servian[29] = ['BC-DEC-04', 'SKU-DEC-04', 'PC-DEC-04', 'REFRIGERANTE VERDE', '$ 37468,24', 80000.0, 6, 21.0];
+
+escribir('06_incidente_servian.xlsx', array_values($filas_servian), $cabecera);
+
 echo "\nListo.\n";
