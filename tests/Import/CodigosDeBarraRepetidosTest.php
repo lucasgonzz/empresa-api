@@ -38,11 +38,98 @@ class CodigosDeBarraRepetidosTest extends ImportTestCase
         ]);
 
         $this->assertBuckets($import, [
-            'creado_nuevo'             => 1,  // F2
-            'merge_bar_code_repetido'  => 3,  // F3, F4 (sobre el nuevo) y F6 (sobre A1)
-            'bar_code'                 => 1,  // F5
-            'ambiguo'                  => 2,  // F7, F8
+            'creado_nuevo'         => 1,  // F2
+            'merge_fila_repetida'  => 3,  // F3, F4 (sobre el nuevo) y F6 (sobre A1)
+            'bar_code'             => 1,  // F5
+            'ambiguo'              => 2,  // F7, F8
         ]);
+    }
+
+    /**
+     * F5 y F6 comparten un bar_code que YA EXISTE en base (A1): la sobrescritura
+     * tiene que quedar reportada en import_conflicts como 'fila_sobrescrita', y
+     * conflicts_count del historial NO la tiene que contar (no es un error, es una
+     * fila que se resolvió bien).
+     *
+     * @return void
+     */
+    public function test_bar_code_existente_repetido_reporta_sobrescritura()
+    {
+        $import = $this->importar(self::ARCHIVO, [
+            'provider_id' => $this->providers['A']->id,
+        ]);
+
+        $sobrescrituras = \App\Models\ImportConflict::where('import_history_id', $import->id)
+            ->where('tipo', 'fila_sobrescrita')
+            ->where('campo', 'bar_code')
+            ->where('valor', '7790001')
+            ->get();
+
+        $this->assertCount(1, $sobrescrituras, 'F5->F6 (bar_code 7790001) tiene que quedar reportada como sobrescritura.');
+
+        $conflicto = $sobrescrituras->first();
+
+        $this->assertSame(4, (int) $conflicto->fila, 'La fila perdedora tiene que ser F5.');
+        $this->assertSame(5, (int) $conflicto->fila_ganadora, 'La fila ganadora tiene que ser F6.');
+
+        /*
+         * conflicts_count SÍ incluye los 2 conflictos 'ambiguo' de F7/F8 (esos son
+         * errores reales). Lo que se verifica acá es que las 'fila_sobrescrita'
+         * (F3->F4 y F5->F6) NO se sumen encima de esos 2.
+         */
+        $this->assertSame(
+            2,
+            (int) $import->conflicts_count,
+            'fila_sobrescrita no tiene que sumar a conflicts_count: no es un error, es una fila resuelta.'
+        );
+    }
+
+    /**
+     * Tres filas repiten el bar_code de un artículo YA EXISTENTE en base (A1).
+     * Cada repetición tiene que reportar el conflicto contra la fila
+     * INMEDIATAMENTE anterior, no siempre contra la primera: 1→2 y 2→3, no
+     * 1→2 y 1→3.
+     *
+     * Este es el caso puntual que reprodujo el bug del intento anterior: al
+     * recargar el Article real y delegar en procesar_articulo_ya_creado(), la
+     * entrada se appendeaba a articulosParaActualizar en vez de actualizarse
+     * in-place, y buscar_fila_origen_repetida() devolvía la PRIMERA entrada que
+     * matcheaba en la cola en vez de la ÚLTIMA.
+     *
+     * @return void
+     */
+    public function test_cadena_de_conflictos_sobre_articulo_existente()
+    {
+        $import = $this->importar('07_cadena_sobre_articulo_existente.xlsx', [
+            'provider_id' => $this->providers['A']->id,
+        ]);
+
+        $sobrescrituras = \App\Models\ImportConflict::where('import_history_id', $import->id)
+            ->where('tipo', 'fila_sobrescrita')
+            ->where('campo', 'bar_code')
+            ->where('valor', '7790001')
+            ->orderBy('fila')
+            ->get();
+
+        $this->assertCount(2, $sobrescrituras, 'Tres filas repitiendo el mismo bar_code tienen que dejar 2 conflictos encadenados.');
+
+        $this->assertSame(1, (int) $sobrescrituras[0]->fila, 'El primer conflicto tiene que ser fila 1.');
+        $this->assertSame(2, (int) $sobrescrituras[0]->fila_ganadora, 'El primer conflicto tiene que ganarlo la fila 2.');
+
+        $this->assertSame(2, (int) $sobrescrituras[1]->fila, 'El segundo conflicto tiene que ser fila 2 (no la fila 1 de nuevo).');
+        $this->assertSame(3, (int) $sobrescrituras[1]->fila_ganadora, 'El segundo conflicto tiene que ganarlo la fila 3.');
+
+        /* El artículo real queda con los valores de la ÚLTIMA fila (fila 3, "v3"). */
+        $a1 = $this->recargar('A1');
+        $this->assertSame('Cadena existente v3', $a1->name);
+        $this->assertDecimal(130, $a1->cost);
+        $this->assertDecimal(13, $a1->stock);
+
+        /* Ningún artículo nuevo se creó: las tres filas actualizaron el mismo A1. */
+        $con_ese_codigo = Article::where('user_id', $this->tenant->id)
+                                    ->where('bar_code', '7790001')
+                                    ->get();
+        $this->assertCount(1, $con_ese_codigo, 'No se tiene que crear un segundo artículo con 7790001');
     }
 
     /**

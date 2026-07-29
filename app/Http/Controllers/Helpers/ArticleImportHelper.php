@@ -28,9 +28,18 @@ class ArticleImportHelper {
     const MATCHING_COUNT_BUCKETS = [
         'id', 'bar_code', 'sku', 'provider_code', 'name',
         'creado_nuevo', 'sin_match_no_creado',
-        'variante_de_fila_previa', 'merge_bar_code_repetido', 'fila_repetida_en_excel',
+        'variante_de_fila_previa', 'merge_fila_repetida', 'fila_repetida_en_excel',
         'bloqueado_otro_proveedor', 'ambiguo',
         'sin_clasificar',
+
+        /*
+         * Bucket legado (grupo 265, prompt 03): antes de generalizar "última fila
+         * gana" a sku/provider_code, este bucket se llamaba 'merge_bar_code_repetido'
+         * y solo cubria bar_code. Se deja en la lista SOLO para que los
+         * matching_counts_json ya guardados en producción (imports viejos) sigan
+         * sumando bien en el histórico agregado. Código nuevo ya no escribe acá.
+         */
+        'merge_bar_code_repetido',
     ];
 
 	static function enviar_notificacion($user, $import_history) {

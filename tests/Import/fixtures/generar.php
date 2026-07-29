@@ -271,4 +271,25 @@ $filas_servian[29] = ['BC-DEC-04', 'SKU-DEC-04', 'PC-DEC-04', 'REFRIGERANTE VERD
 
 escribir('06_incidente_servian.xlsx', array_values($filas_servian), $cabecera);
 
+/* --------------------------------------------------------------------------
+ * 07 - Cadena de conflictos sobre un articulo YA EXISTENTE (grupo 265, prompt 03).
+ *
+ * Tres filas repiten el bar_code de A1 (7790001), que YA existe en base. Cada
+ * repeticion tiene que reportar un conflicto 'fila_sobrescrita' encadenado
+ * contra la fila INMEDIATAMENTE anterior, no siempre contra la primera:
+ *
+ *   fila 1 (F2) procesa A1 por primera vez (match real, sin conflicto)
+ *   fila 2 (F3) pisa a la fila 1  -> conflicto fila=1, fila_ganadora=2
+ *   fila 3 (F4) pisa a la fila 2  -> conflicto fila=2, fila_ganadora=3
+ *
+ * Antes del fix esto daba fila=1,fila_ganadora=2 y fila=1,fila_ganadora=3 (la
+ * fila 2 nunca aparecia como perdedora): buscar_fila_origen_repetida() volvia
+ * la PRIMERA entrada que matcheaba en la cola, no la ULTIMA.
+ * -------------------------------------------------------------------------- */
+escribir('07_cadena_sobre_articulo_existente.xlsx', [
+    ['7790001', null, null, 'Cadena existente v1', 110.0, 220.0, 11.0, '21'],
+    ['7790001', null, null, 'Cadena existente v2', 120.0, 240.0, 12.0, '21'],
+    ['7790001', null, null, 'Cadena existente v3', 130.0, 260.0, 13.0, '21'],
+], $cabecera);
+
 echo "\nListo.\n";

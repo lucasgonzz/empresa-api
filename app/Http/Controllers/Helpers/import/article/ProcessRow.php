@@ -61,6 +61,18 @@ class ProcessRow {
     protected $fila_actual = 0;
 
     /**
+     * Escalon de la cadena de identificacion (esta_repetido()) que detecto que esta
+     * fila ya estaba en el Excel: 'id'|'bar_code'|'sku'|'provider_code'|'name'|null.
+     * Lo setea esta_repetido() inmediatamente antes de cada `return true`, y queda
+     * disponible para el llamador de ya_estaba_en_el_excel(). Se resetea a null al
+     * inicio de cada fila (ver procesar()) para que una fila sin repeticion no
+     * arrastre el valor de la fila anterior (prompt 03, grupo 265).
+     *
+     * @var string|null
+     */
+    protected $escalon_repeticion = null;
+
+    /**
      * Conteo por resultado de la fila. Cada fila procesada incrementa EXACTAMENTE UN
      * bucket: la suma de todos tiene que dar el total de filas procesadas del chunk.
      *
@@ -81,7 +93,7 @@ class ProcessRow {
 
         /* Salidas tempranas por repeticion DENTRO del mismo Excel (no llegan a find_with_index). */
         'variante_de_fila_previa'  => 0,
-        'merge_bar_code_repetido'  => 0,
+        'merge_fila_repetida'      => 0,
         'fila_repetida_en_excel'   => 0,
 
         /* Salteadas a proposito. */
@@ -284,6 +296,9 @@ class ProcessRow {
 
         // Número de fila relativo a este chunk; se usa para identificar conflictos (ambiguos/placeholders) en los reportes.
         $this->fila_actual++;
+
+        // Reset por fila: si esta fila no repite nada, no puede quedar el escalon de la anterior.
+        $this->escalon_repeticion = null;
 
         // Abre el conteo de esta fila (cierra la anterior si quedo sin clasificar) y
         // suma al total de filas contadas del chunk (ver get_conteo_matching()/get_filas_contadas()).
@@ -577,17 +592,35 @@ class ProcessRow {
                 // $this->log('Fila repetida tratada como VARIANTE del artículo base');
                 return;
             }
-            // Si la coincidencia fue por bar_code, la última fila gana:
-            // actualizar el artículo ya encolado con los datos de esta fila.
-            if (!empty($data['bar_code'])) {
-                // Fila repetida por bar_code: se hace merge sobre la fila anterior en cola.
-                $this->contar_fila('merge_bar_code_repetido');
-                $this->merge_bar_code_duplicate($data, $row);
+
+            /*
+             * "La última fila gana" siempre, sea cual sea el identificador que detectó
+             * la repetición (bar_code, sku, provider_code, id o name), y cada
+             * sobrescritura se reporta con las dos filas involucradas (decision de
+             * Lucas, 29/7/2026, prompt 03 grupo 265).
+             *
+             * $campo es el escalon que esta_repetido() dejo asentado en
+             * escalon_repeticion durante ya_estaba_en_el_excel(). fila_origen_anterior
+             * es la fila que HASTA AHORA figuraba como "ganadora" en la cola (la que
+             * esta fila va a pisar); se busca ANTES de mergear porque el merge
+             * actualiza esa marca a la fila actual.
+             */
+            $campo = $this->escalon_repeticion;
+            $valor = (!is_null($campo) && isset($data[$campo])) ? $data[$campo] : null;
+
+            $fila_origen_anterior = $this->buscar_fila_origen_repetida($campo, $valor, $data);
+
+            $this->registrar_fila_sobrescrita($fila_origen_anterior, $this->fila_actual, $campo, $valor, $data['name'] ?? null);
+
+            if (in_array($campo, ['bar_code', 'sku', 'provider_code'], true)) {
+                // Fila repetida por bar_code/sku/provider_code: se hace merge sobre la fila anterior en cola.
+                $this->contar_fila('merge_fila_repetida');
+                $this->merge_fila_duplicada($data, $row, $campo);
                 $this->sumar_durations();
                 return $this->observations;
             }
 
-            // Fila repetida sin propiedades de variante ni bar_code: se descarta sin mas.
+            // Fila repetida por id o name (o sin escalon detectado): se descarta sin mas, pero ya quedo reportada arriba.
             $this->contar_fila('fila_repetida_en_excel');
             $this->articles_repetidos++;
             $this->log('SE OMITIO EN PROCES ROW (fila repetida sin propiedades de variante)');
@@ -849,6 +882,15 @@ class ProcessRow {
              */
             $data['has_repeated_code_in_db'] = $this->bar_code_or_provider_code_already_in_bd($data);
 
+            /*
+             * Numero de fila que genero esta entrada (prompt 03, grupo 265): la usa
+             * buscar_fila_origen_repetida() para reportar contra que fila hay que
+             * encadenar la PROXIMA repeticion de este mismo identificador. Se
+             * actualiza tambien en merge_fila_en_articulo_para_crear_pendiente()
+             * cuando una fila posterior mergea sobre esta entrada.
+             */
+            $data['__fila_origen'] = $this->fila_actual;
+
             $this->articulosParaCrear[] = $data;
 
             $this->iniciar();
@@ -1059,6 +1101,14 @@ class ProcessRow {
         if (!isset($merged['variants_data']) || !is_array($merged['variants_data'])) {
             $merged['variants_data'] = [];
         }
+
+        /*
+         * Esta fila pasa a ser la nueva "ganadora" de esta entrada (prompt 03,
+         * grupo 265): si el mismo identificador vuelve a aparecer mas adelante en
+         * el Excel, tiene que reportarse contra ESTA fila, no contra la que
+         * originalmente encolo la entrada.
+         */
+        $merged['__fila_origen'] = $this->fila_actual;
 
         $this->articulosParaCrear[$idx_en_cola] = $merged;
 
@@ -1273,6 +1323,39 @@ class ProcessRow {
                 $cambios['__bar_code'] = $data['bar_code'];
             }
 
+            /*
+             * Marcador generico de "por que campo se identifico esta fila" (prompt 03,
+             * grupo 265): a diferencia de __bar_code (solo bar_code), __match_key cubre
+             * tambien sku y provider_code, para que una repeticion posterior del mismo
+             * identificador en el Excel (merge_fila_duplicada) encuentre esta entrada
+             * sin importar cual de los tres escalones la identifico. Misma prioridad
+             * que esta_repetido(): bar_code, despues sku, despues provider_code.
+             */
+            $match_field = null;
+            $match_value = null;
+
+            if (!empty($data['bar_code'])) {
+                $match_field = 'bar_code';
+                $match_value = $data['bar_code'];
+            } elseif (!empty($data['sku'])) {
+                $match_field = 'sku';
+                $match_value = $data['sku'];
+            } elseif (!empty($data['provider_code'])) {
+                $match_field = 'provider_code';
+                $match_value = $data['provider_code'];
+            }
+
+            if (!is_null($match_field)) {
+                $cambios['__match_key'] = $match_field . '|' . $match_value;
+            }
+
+            /*
+             * Numero de fila que dejo esta entrada en la cola vigente para este
+             * articulo (prompt 03, grupo 265): la usa buscar_fila_origen_repetida()
+             * para saber contra que fila reportar la PROXIMA repeticion.
+             */
+            $cambios['__fila_origen'] = $this->fila_actual;
+
             // $cambios['variants_data'] = []; // 👈
 
             $this->articulosParaActualizar[] = $cambios;
@@ -1289,24 +1372,93 @@ class ProcessRow {
     }
 
     /**
-     * Cuando el bar_code de la fila actual ya fue procesado en una fila anterior del mismo Excel,
-     * actualiza el artículo ya encolado con los datos de esta fila (última fila gana).
+     * Busca la fila que HASTA AHORA figura como "ganadora" para el identificador
+     * ($campo, $valor) de esta repetición, para poder reportar contra ella el
+     * conflicto de sobrescritura (prompt 03, grupo 265).
+     *
+     * Recorre articulosParaCrear y articulosParaActualizar con la MISMA regla de
+     * igualdad que esta_repetido() (no una comparación distinta), y se queda con el
+     * __fila_origen de la ÚLTIMA entrada que matchea, no la primera: si esta es ya
+     * la tercera-o-más repetición del mismo identificador, la entrada vigente en la
+     * cola es la que dejó la repetición anterior, no la fila original del Excel.
+     *
+     * @param  string|null $campo escalon detectado por esta_repetido() ('id'|'bar_code'|'sku'|'provider_code'|'name'|null)
+     * @param  mixed        $valor valor de ese campo en la fila actual
+     * @param  array        $data  datos completos de la fila actual (para esta_repetido())
+     * @return int|null
+     */
+    protected function buscar_fila_origen_repetida($campo, $valor, array $data)
+    {
+        $fila_origen = null;
+
+        foreach ($this->articulosParaCrear as $art) {
+            if ($this->esta_repetido($data, $art) && isset($art['__fila_origen'])) {
+                $fila_origen = $art['__fila_origen'];
+            }
+        }
+
+        if (!is_null($fila_origen)) {
+            return $fila_origen;
+        }
+
+        foreach ($this->articulosParaActualizar as $art) {
+            if ($this->esta_repetido($data, $art) && isset($art['__fila_origen'])) {
+                $fila_origen = $art['__fila_origen'];
+            }
+        }
+
+        return $fila_origen;
+    }
+
+    /**
+     * Cuando el identificador (bar_code, sku o provider_code) de la fila actual ya fue
+     * procesado en una fila anterior del mismo Excel, actualiza el artículo ya encolado
+     * con los datos de esta fila (última fila gana, generalizado a los tres escalones
+     * que soportan merge — prompt 03, grupo 265; antes solo bar_code).
      *
      * Si el artículo es nuevo (pendiente de INSERT), reutiliza merge_fila_en_articulo_para_crear_pendiente.
-     * Si el artículo ya existía en BD (pendiente de UPDATE), hace un merge directo en articulosParaActualizar.
+     * Si el artículo ya existía en BD, recarga el Article REAL desde la base y delega en
+     * procesar_articulo_ya_creado() (no un merge superficial de arrays): así no se pierde
+     * el cálculo de diffs de stock/price_types que ese método ya hace.
+     *
+     * @param  array  $data  datos de la fila actual
+     * @param  mixed  $row   fila cruda del Excel
+     * @param  string $campo 'bar_code'|'sku'|'provider_code'
+     * @return void
      */
-    protected function merge_bar_code_duplicate(array $data, $row): void
+    protected function merge_fila_duplicada(array $data, $row, string $campo): void
     {
-        $bar_code = $data['bar_code'];
+        $valor = isset($data[$campo]) ? $data[$campo] : null;
+
+        if (empty($valor)) {
+            $this->log('merge_fila_duplicada: valor vacio para campo ' . $campo . ', se omite');
+            return;
+        }
 
         /*
-         * $index['bar_codes'] guarda una LISTA de article_ids (no un escalar), para
-         * poder detectar bar_codes ambiguos en find_with_index(). Acá solo nos interesa
-         * encontrar el id "fake" (artículo nuevo de este mismo import) si está presente
-         * entre los ids que matchean este bar_code; ArticleIndexCache::index_entry_to_ids
-         * soporta tanto el formato viejo (escalar) como el nuevo (lista).
+         * $index['bar_codes']/['skus']/['provider_codes'] guardan una LISTA de
+         * article_ids (no un escalar) para poder detectar duplicados ambiguos en
+         * find_with_index(). Acá solo nos interesa encontrar el id "fake" (artículo
+         * nuevo de este mismo import) si está presente entre los ids que matchean;
+         * ArticleIndexCache::index_entry_to_ids soporta tanto el formato viejo
+         * (escalar) como el nuevo (lista). provider_codes está anidado por
+         * provider_id (ver ArticleIndexCache::purgar_fake_del_indice()).
          */
-        $ids_en_indice = ArticleIndexCache::index_entry_to_ids($this->article_index['bar_codes'][$bar_code] ?? null);
+        $ids_en_indice = [];
+
+        if ($campo === 'bar_code') {
+            $ids_en_indice = ArticleIndexCache::index_entry_to_ids($this->article_index['bar_codes'][$valor] ?? null);
+        } elseif ($campo === 'sku') {
+            $ids_en_indice = ArticleIndexCache::index_entry_to_ids($this->article_index['skus'][$valor] ?? null);
+        } elseif ($campo === 'provider_code') {
+            $provider_id_idx = !is_null($data['provider_id'] ?? null)
+                ? (int) $data['provider_id']
+                : (!is_null($this->provider_id) ? (int) $this->provider_id : null);
+
+            $ids_en_indice = ArticleIndexCache::index_entry_to_ids(
+                $this->article_index['provider_codes'][$provider_id_idx][$valor] ?? null
+            );
+        }
 
         $fake_id_en_indice = null;
         foreach ($ids_en_indice as $id_val) {
@@ -1319,39 +1471,89 @@ class ProcessRow {
         // --- 1. Es un fake (artículo nuevo pendiente de INSERT en este import) ---
         if (!is_null($fake_id_en_indice)) {
 
-            $fake_id = $fake_id_en_indice;
-            $fake_article = ArticleIndexCache::get_runtime_fake_article((int) $this->user->id, $fake_id);
+            $fake_article = ArticleIndexCache::get_runtime_fake_article((int) $this->user->id, $fake_id_en_indice);
 
             if ($fake_article instanceof \App\Models\Article) {
                 $this->merge_fila_en_articulo_para_crear_pendiente($fake_article, $data, $row);
-                $this->log('merge_bar_code_duplicate: bar_code=' . $bar_code . ' actualizado via merge_fila_en_articulo_para_crear_pendiente (fake_id=' . $fake_id . ')');
+                $this->log('merge_fila_duplicada: ' . $campo . '=' . $valor . ' actualizado via merge_fila_en_articulo_para_crear_pendiente (fake_id=' . $fake_id_en_indice . ')');
                 return;
             }
 
-            $this->log('merge_bar_code_duplicate: WARNING — fake_id=' . $fake_id . ' no encontrado en runtime para bar_code=' . $bar_code);
+            $this->log('merge_fila_duplicada: WARNING — fake_id=' . $fake_id_en_indice . ' no encontrado en runtime para ' . $campo . '=' . $valor);
             return;
         }
 
-        // --- 2. Es un artículo real de BD (en articulosParaActualizar, guardado con __bar_code) ---
+        // --- 2. Es un artículo real de BD, ya encolado en articulosParaActualizar ---
+        $match_key_buscado = $campo . '|' . $valor;
+        $idx_encontrado = null;
+
         foreach ($this->articulosParaActualizar as $idx => $art) {
 
-            if (!isset($art['__bar_code']) || $art['__bar_code'] !== $bar_code) {
-                continue;
+            $coincide = false;
+
+            if ($campo === 'bar_code' && isset($art['__bar_code']) && $art['__bar_code'] === $valor) {
+                $coincide = true;
+            } elseif (isset($art['__match_key']) && $art['__match_key'] === $match_key_buscado) {
+                $coincide = true;
             }
 
-            $article_id = $art['id'];
+            if ($coincide) {
+                // Sin break: se queda con la ÚLTIMA entrada que matchea, no la primera
+                // (mismo motivo que buscar_fila_origen_repetida()).
+                $idx_encontrado = $idx;
+            }
+        }
 
-            $merged = array_merge($art, $data);
-            $merged['id'] = $article_id;
-            $merged['__bar_code'] = $bar_code;
-
-            $this->articulosParaActualizar[$idx] = $merged;
-
-            $this->log('merge_bar_code_duplicate: bar_code=' . $bar_code . ' actualizado en articulosParaActualizar[' . $idx . '] (id=' . $article_id . ')');
+        if (is_null($idx_encontrado)) {
+            $this->log('merge_fila_duplicada: WARNING — ' . $campo . '=' . $valor . ' no encontrado en ninguna cola');
             return;
         }
 
-        $this->log('merge_bar_code_duplicate: WARNING — bar_code=' . $bar_code . ' no encontrado en ninguna cola');
+        $article_id = $this->articulosParaActualizar[$idx_encontrado]['id'];
+
+        /*
+         * Recargar el Article REAL desde BD (no un array_merge superficial) para no
+         * perder el calculo de diffs de stock/price_types de procesar_articulo_ya_creado().
+         * Ese método hace un push() de una entrada NUEVA a articulosParaActualizar (no
+         * pisa la entrada anterior in-place): es intencional, ActualizarBBDD::
+         * merge_articulos_para_actualizar_ultima_fila_gana() ya fusiona por id con
+         * "última fila gana" antes de armar el UPDATE. Lo que hay que garantizar acá
+         * es que la entrada vigente para este id quede marcada con __match_key y
+         * __fila_origen correctos, para que buscar_fila_origen_repetida() encadene
+         * bien la PRÓXIMA repetición (ver bloque de abajo).
+         */
+        $articulo_real = \App\Models\Article::find($article_id);
+
+        if (is_null($articulo_real)) {
+            $this->log('merge_fila_duplicada: WARNING — articulo id=' . $article_id . ' no encontrado en BD para ' . $campo . '=' . $valor);
+            return;
+        }
+
+        $this->procesar_articulo_ya_creado($articulo_real, $data, $row);
+
+        /*
+         * FIX (prompt 03, grupo 265, corrección de checker): procesar_articulo_ya_creado()
+         * ya deja __match_key/__fila_origen en la entrada que appendea SI hubo cambios
+         * (get_modified_fields no vacío). Si no hubo cambios, no se appendeó nada nuevo
+         * y la entrada vigente sigue siendo la anterior con su __fila_origen viejo: se
+         * re-marca acá explícitamente para que la fila actual quede como origen vigente
+         * de todas formas (esta fila "ganó" la repetición aunque no haya cambiado ningún
+         * valor concreto).
+         */
+        $idx_final = null;
+        foreach ($this->articulosParaActualizar as $idx => $art) {
+            if ((int) ($art['id'] ?? 0) === (int) $article_id) {
+                // Última entrada con este id: la recién appendeada, o la única si no hubo cambios.
+                $idx_final = $idx;
+            }
+        }
+
+        if (!is_null($idx_final)) {
+            $this->articulosParaActualizar[$idx_final]['__match_key'] = $match_key_buscado;
+            $this->articulosParaActualizar[$idx_final]['__fila_origen'] = $this->fila_actual;
+        }
+
+        $this->log('merge_fila_duplicada: ' . $campo . '=' . $valor . ' reprocesado via procesar_articulo_ya_creado (id=' . $article_id . ')');
     }
 
     /**
@@ -1497,6 +1699,7 @@ class ProcessRow {
 
             if (isset($art['id']) && $art['id'] === $data['id']) {
                 // $this->log('Ya esta para crear, id: '.$art['id'].' = '.$data['id']);
+                $this->escalon_repeticion = 'id';
                 return true;
             }
             return false;
@@ -1505,8 +1708,20 @@ class ProcessRow {
         // 2) Coincidencia por bar_code
         if (!empty($data['bar_code'])) {
 
-            if (isset($art['bar_code']) && $art['bar_code'] === $data['bar_code']) {
-                // $this->log('Ya esta para crear, bar_code: '.$art['bar_code'].' = '.$data['bar_code']);
+            /*
+             * $art['bar_code'] no siempre está presente: get_modified_fields() salta
+             * bar_code de $cambios cuando no hay columna 'numero' (id) en el Excel
+             * (es la regla de "bar_code solo se edita si vino un id explícito"), así
+             * que un artículo YA EXISTENTE encolado para actualizar puede no tener esa
+             * clave aunque su bar_code no haya cambiado. __match_key es el marcador
+             * genérico que procesar_articulo_ya_creado() deja SIEMPRE (prompt 03,
+             * grupo 265) y no depende de si el campo se considera "modificado".
+             */
+            $match_via_key = isset($art['__match_key']) && $art['__match_key'] === ('bar_code|' . $data['bar_code']);
+
+            if ($match_via_key || (isset($art['bar_code']) && $art['bar_code'] === $data['bar_code'])) {
+                // $this->log('Ya esta para crear, bar_code: '.$data['bar_code']);
+                $this->escalon_repeticion = 'bar_code';
                 return true;
             }
             return false;
@@ -1515,8 +1730,12 @@ class ProcessRow {
         // 3) Coincidencia por sku
         if (!empty($data['sku'])) {
 
-            if (isset($art['sku']) && $art['sku'] === $data['sku']) {
-                // $this->log('Ya esta para crear, sku: '.$art['sku'].' = '.$data['sku']);
+            // Ver comentario del escalón bar_code: mismo motivo para __match_key.
+            $match_via_key = isset($art['__match_key']) && $art['__match_key'] === ('sku|' . $data['sku']);
+
+            if ($match_via_key || (isset($art['sku']) && $art['sku'] === $data['sku'])) {
+                // $this->log('Ya esta para crear, sku: '.$data['sku']);
+                $this->escalon_repeticion = 'sku';
                 return true;
             }
             return false;
@@ -1525,8 +1744,12 @@ class ProcessRow {
         // 4) Coincidencia por provider_code (solo si NO se permiten repetidos)
         if (!empty($data['provider_code']) && !$codigos_repetidos) {
 
-            if (!empty($art['provider_code']) && $art['provider_code'] === $data['provider_code']) {
-                // $this->log('Ya esta para crear, provider_code: '.$art['provider_code'].' = '.$data['provider_code']);
+            // Ver comentario del escalón bar_code: mismo motivo para __match_key.
+            $match_via_key = isset($art['__match_key']) && $art['__match_key'] === ('provider_code|' . $data['provider_code']);
+
+            if ($match_via_key || (!empty($art['provider_code']) && $art['provider_code'] === $data['provider_code'])) {
+                // $this->log('Ya esta para crear, provider_code: '.$data['provider_code']);
+                $this->escalon_repeticion = 'provider_code';
                 return true;
             }
             return false;
@@ -1545,6 +1768,7 @@ class ProcessRow {
                     // Si ambos tienen provider_code y SON IGUALES => repetido = true
                     if (!empty($data['provider_code']) && !empty($art['provider_code'])) {
                         if ($art['provider_code'] === $data['provider_code']) {
+                            $this->escalon_repeticion = 'name';
                             $this->log('Ya esta para crear, name+provider_code: '.$art['name'].' / '.$art['provider_code'].' = '.$data['name'].' / '.$data['provider_code']);
                             return true;
                         } else {
@@ -1557,11 +1781,13 @@ class ProcessRow {
                     // Si falta alguno de los provider_code, no podemos garantizar que no esté repetido.
                     // Por seguridad, consideramos repetido (conservador).
                     $this->log('Name coincide pero falta provider_code para contrastar con repetidos habilitados. Se marca como repetido por seguridad: '.$art['name'].' = '.$data['name']);
+                    $this->escalon_repeticion = 'name';
                     return true;
 
                 } else {
                     // Si NO se permiten repetidos de provider_code, con que coincida el nombre basta.
                     $this->log('Ya esta para crear, name: '.$art['name'].' = '.$data['name']);
+                    $this->escalon_repeticion = 'name';
                     return true;
                 }
             }
@@ -2477,12 +2703,13 @@ class ProcessRow {
         $this->identificadores_descartados++;
 
         $this->conflictos[] = [
-            'fila'         => $fila,
-            'tipo'         => 'placeholder_descartado',
-            'campo'        => $campo,
-            'valor'        => (string) $original,
-            'article_ids'  => null,
-            'nombre_excel' => $nombre_excel,
+            'fila'          => $fila,
+            'fila_ganadora' => null,
+            'tipo'          => 'placeholder_descartado',
+            'campo'         => $campo,
+            'valor'         => (string) $original,
+            'article_ids'   => null,
+            'nombre_excel'  => $nombre_excel,
         ];
 
         $this->log('Placeholder descartado en fila ' . $fila . ', campo ' . $campo . ': "' . $original . '"');
@@ -2505,12 +2732,13 @@ class ProcessRow {
         $this->filas_ambiguas++;
 
         $this->conflictos[] = [
-            'fila'         => $fila,
-            'tipo'         => 'ambiguo',
-            'campo'        => $ambiguo->campo,
-            'valor'        => $ambiguo->valor,
-            'article_ids'  => $ambiguo->article_ids,
-            'nombre_excel' => $nombre_excel,
+            'fila'          => $fila,
+            'fila_ganadora' => null,
+            'tipo'          => 'ambiguo',
+            'campo'         => $ambiguo->campo,
+            'valor'         => $ambiguo->valor,
+            'article_ids'   => $ambiguo->article_ids,
+            'nombre_excel'  => $nombre_excel,
         ];
 
         $this->log('Fila ' . $fila . ' salteada por match ambiguo en ' . $ambiguo->campo . ' = "' . $ambiguo->valor . '" (' . count($ambiguo->article_ids) . ' articulos candidatos)');
@@ -2532,12 +2760,13 @@ class ProcessRow {
     function registrar_sin_identificador($fila, $nombre_excel = null): void
     {
         $this->conflictos[] = [
-            'fila'         => $fila,
-            'tipo'         => 'sin_identificador',
-            'campo'        => null,
-            'valor'        => null,
-            'article_ids'  => null,
-            'nombre_excel' => $nombre_excel,
+            'fila'          => $fila,
+            'fila_ganadora' => null,
+            'tipo'          => 'sin_identificador',
+            'campo'         => null,
+            'valor'         => null,
+            'article_ids'   => null,
+            'nombre_excel'  => $nombre_excel,
         ];
 
         $this->log('Fila ' . $fila . ' sin identificador utilizable (id/bar_code/sku/provider_code)');
@@ -2565,15 +2794,51 @@ class ProcessRow {
     function registrar_conflicto_numerico($fila, $campo, $original, $motivo, $nombre_excel = null): void
     {
         $this->conflictos[] = [
-            'fila'         => $fila,
-            'tipo'         => $motivo === 'fuera_de_rango' ? 'numero_fuera_de_rango' : 'numero_invalido',
-            'campo'        => $campo,
-            'valor'        => (string) $original,
-            'article_ids'  => null,
-            'nombre_excel' => $nombre_excel,
+            'fila'          => $fila,
+            'fila_ganadora' => null,
+            'tipo'          => $motivo === 'fuera_de_rango' ? 'numero_fuera_de_rango' : 'numero_invalido',
+            'campo'         => $campo,
+            'valor'         => (string) $original,
+            'article_ids'   => null,
+            'nombre_excel'  => $nombre_excel,
         ];
 
         $this->log('Conflicto numerico en fila ' . $fila . ', campo ' . $campo . ' (' . $motivo . '): "' . $original . '"');
+    }
+
+    /**
+     * Registra que una fila de este Excel fue sobrescrita por otra posterior con el
+     * mismo identificador ("última fila gana" — decisión de Lucas, 29/7/2026, prompt
+     * 03 grupo 265). A diferencia de los demás tipos de conflicto, ESTE no representa
+     * una fila que no se pudo procesar: se resolvió bien (la fila ganadora prevalece).
+     * Por eso NO suma a conflicts_count (ver ActualizarBBDD::persistir_conflictos()).
+     *
+     * IMPORTANTE sobre los nombres: $fila es la fila que PIERDE (la que ya estaba
+     * encolada), $fila_ganadora es la fila que se está procesando AHORA mismo
+     * ($this->fila_actual en el llamador). Suena al revés pero no lo es: en el
+     * momento en que se detecta la sobrescritura, la fila ganadora es la actual y
+     * la perdedora es la que ya estaba en la cola de antes.
+     *
+     * @param  int|null    $fila          número de fila (relativo al chunk) que PIERDE.
+     * @param  int         $fila_ganadora número de fila que GANA (la que se está procesando).
+     * @param  string|null $campo         escalón que detectó la repetición ('bar_code'|'sku'|'provider_code'|'id'|'name').
+     * @param  mixed       $valor         valor del identificador que se repitió.
+     * @param  string|null $nombre_excel  nombre del producto en la fila ganadora, para ubicarla en el Excel.
+     * @return void
+     */
+    function registrar_fila_sobrescrita($fila, $fila_ganadora, $campo, $valor, $nombre_excel = null): void
+    {
+        $this->conflictos[] = [
+            'fila'          => $fila,
+            'fila_ganadora' => $fila_ganadora,
+            'tipo'          => 'fila_sobrescrita',
+            'campo'         => $campo,
+            'valor'         => is_null($valor) ? null : (string) $valor,
+            'article_ids'   => null,
+            'nombre_excel'  => $nombre_excel,
+        ];
+
+        $this->log('Fila ' . $fila . ' sobrescrita por fila ' . $fila_ganadora . ' (campo ' . $campo . ' = "' . $valor . '")');
     }
 
     /**

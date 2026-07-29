@@ -161,6 +161,17 @@ class ActualizarBBDD {
                     'fake_id',
                     /* Flag en memoria de ProcessRow; no es columna de articles. */
                     'has_repeated_code_in_db',
+                    /*
+                     * Marcadores en memoria de ProcessRow (prompt 03, grupo 265), no
+                     * columnas de articles: __match_key identifica por qué campo se
+                     * encoló la entrada (para que una repetición posterior la
+                     * encuentre) y __fila_origen guarda qué fila del Excel la generó
+                     * (para reportar conflictos de sobrescritura encadenados). Si
+                     * cualquiera de las dos llega al INSERT, revienta con
+                     * "Unknown column" en TODAS las importaciones que crean artículos.
+                     */
+                    '__match_key',
+                    '__fila_origen',
                 ])->merge([
                     'created_at' => $this->now,
                     'updated_at' => $this->now,
@@ -2232,11 +2243,28 @@ class ActualizarBBDD {
         $ahora = now();
         $rows  = [];
 
+        /*
+         * 'fila_sobrescrita' (prompt 03, grupo 265) NO es una fila que no se pudo
+         * procesar: es una fila que SE RESOLVIO bien (última fila gana). El modal de
+         * resultado usa conflicts_count para decidir si avisa "hay filas que no se
+         * pudieron procesar" (ArticleImportHelper::enviar_notificacion()); si este
+         * tipo sumara ahí, cualquier Excel con un código repetido mostraría un aviso
+         * de error que no corresponde. Se cuenta aparte y se excluye del incremento.
+         * NO "arreglar" esto sumándolo de nuevo: es a propósito.
+         */
+        $conflictos_que_cuentan_para_el_historial = 0;
+
         foreach ($conflictos as $c) {
+
+            if ($c['tipo'] !== 'fila_sobrescrita') {
+                $conflictos_que_cuentan_para_el_historial++;
+            }
+
             $rows[] = [
                 'import_history_id'        => $this->import_history_id,
                 'article_import_result_id' => $this->article_import_result_id,
                 'fila'                     => $c['fila'],
+                'fila_ganadora'            => isset($c['fila_ganadora']) ? $c['fila_ganadora'] : null,
                 'tipo'                     => $c['tipo'],
                 'campo'                    => $c['campo'],
                 'valor'                    => $c['valor'],
@@ -2255,14 +2283,14 @@ class ActualizarBBDD {
         }
 
         /* Contadores atomicos (SET col = col + N): hay lotes concurrentes procesando el mismo import. */
-        if (!is_null($this->article_import_result_id)) {
+        if (!is_null($this->article_import_result_id) && $conflictos_que_cuentan_para_el_historial > 0) {
             ArticleImportResult::where('id', $this->article_import_result_id)
-                ->increment('conflicts_count', count($rows));
+                ->increment('conflicts_count', $conflictos_que_cuentan_para_el_historial);
         }
 
-        if (!is_null($this->import_history_id)) {
+        if (!is_null($this->import_history_id) && $conflictos_que_cuentan_para_el_historial > 0) {
             ImportHistory::where('id', $this->import_history_id)
-                ->increment('conflicts_count', count($rows));
+                ->increment('conflicts_count', $conflictos_que_cuentan_para_el_historial);
         }
 
         $this->log('Se persistieron '.count($rows).' conflictos de importacion');
