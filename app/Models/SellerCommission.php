@@ -10,7 +10,9 @@ class SellerCommission extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        $q->with('sale', 'moneda');
+        // payment_methods: el modal del prompt 04 muestra los metodos de pago usados en cada
+        // fila de pago al vendedor - sin eager load, esa relacion no viaja en el JSON.
+        $q->with('sale', 'moneda', 'payment_methods');
     }
 
     function sale() {
