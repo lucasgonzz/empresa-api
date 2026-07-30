@@ -1270,17 +1270,28 @@ class ProcessRow {
         // $this->log($articulo_ya_creado->toArray());
     }
 
+    /**
+     * Indica si el resultado de find_with_index() representa MÁS DE UN artículo.
+     *
+     * Depende de un invariante duro de ArticleIndexCache::find_with_index() (grupo 285,
+     * prompt 01): ese método devuelve Collection ÚNICAMENTE cuando hay dos o más artículos.
+     * Un match único siempre llega como Article suelto, nunca como Collection de un elemento.
+     * Por eso alcanza con `> 1` y no con `>= 1`: si alguna vez esta función empieza a devolver
+     * true para una Collection de un solo elemento, es señal de que ese invariante se rompió
+     * en el origen, no de que haya que tocar acá. "Arreglarlo" acá (por ejemplo volviendo a
+     * `>= 1`) hace que la fila caiga en la anulación de la línea ~795
+     * (!instanceof Article) y cree un artículo duplicado — ver el prompt 01 de este grupo.
+     *
+     * @param  mixed $articulo_ya_creado
+     * @return bool
+     */
     function son_varios_articulos($articulo_ya_creado) {
-        // $this->log('son_varios_articulos: '.$articulo_ya_creado instanceof Collection);
         if ($articulo_ya_creado instanceof Collection) {
-            // $this->log('hay '.count($articulo_ya_creado));
-            if (count($articulo_ya_creado) >= 1) {
+            if (count($articulo_ya_creado) > 1) {
                 return true;
             }
         }
-        // $this->log('No son varios articulos');
         return false;
-        // return $articulo_ya_creado instanceof Collection;
     }
 
 
