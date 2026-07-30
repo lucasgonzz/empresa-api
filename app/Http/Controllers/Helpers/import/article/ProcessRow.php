@@ -2061,11 +2061,11 @@ class ProcessRow {
      * estas columnas, hay que actualizar este mapa.
      */
     protected static $numeric_precision = [
-        'cost'                   => [44, 6],   // decimal(50,6)
-        'costo_real'             => [44, 6],   // decimal(50,6)
-        'costo_mano_de_obra'     => [10, 6],   // decimal(16,6)
-        'price'                  => [10, 6],   // decimal(16,6)
-        'final_price'            => [44, 6],   // decimal(50,6)
+        'cost'                   => [16, 6],   // decimal(22,6)
+        'costo_real'             => [16, 6],   // decimal(22,6)
+        'costo_mano_de_obra'     => [16, 6],   // decimal(22,6)
+        'price'                  => [20, 2],   // decimal(22,2)
+        'final_price'            => [20, 2],   // decimal(22,2)
         'percentage_gain'        => [6,  2],   // decimal(8,2)
         'percentage_gain_blanco' => [14, 2],   // decimal(16,2)
         'final_price_blanco'     => [28, 2],   // decimal(30,2)
