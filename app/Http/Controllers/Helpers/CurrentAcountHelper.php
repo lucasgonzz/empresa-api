@@ -314,7 +314,7 @@ class CurrentAcountHelper {
                                                             'price'           => $item['price_vender'],
                                                             'cost'            => $cost,
                                                             'discount'        => $item['discount'],
-                                                            'iva_percentage'  => $iva_percentage_nc,
+                                                            'iva_percentage'  => SaleHelper::normalize_iva_percentage_for_pivot($iva_percentage_nc),
                                                         ]);
                     }
                 }

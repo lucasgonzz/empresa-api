@@ -852,7 +852,38 @@ class SaleHelper extends Controller {
             }
         }
 
-        return $iva_percentage;
+        return Self::normalize_iva_percentage_for_pivot($iva_percentage);
+    }
+
+    /**
+     * Normaliza el valor de IVA que se va a persistir en las columnas iva_percentage de los pivots
+     * (article_sale y article_current_acount).
+     *
+     * POR QUE ESAS COLUMNAS SON DE TEXTO Y NO DECIMALES (grupo 275, 30/7/2026):
+     * ivas.percentage es una columna string que guarda tanto alicuotas numericas ('21', '10.5')
+     * como etiquetas fiscales ('Exento', 'No Gravado'). Los pivots nacieron decimal(8,2) y cualquier
+     * venta con un articulo exento se caia entera con un error de MySQL. No se puede colapsar
+     * 'Exento' y 'No Gravado' a 0: ante ARCA son alicuotas distintas de 0%, y el desglose de IVA del
+     * comprobante deja de cerrar. Por eso la columna espeja el tipo de su fuente. Si alguna vez se
+     * quiere volver a un tipo numerico, primero hay que separar la etiqueta fiscal del porcentaje en
+     * la tabla ivas, no antes.
+     *
+     * @param mixed $value Valor resuelto desde ivas.percentage o el default.
+     * @return string|null Texto a persistir, o null si no hay valor utilizable.
+     */
+    static function normalize_iva_percentage_for_pivot($value)
+    {
+        if (is_null($value)) {
+            return null;
+        }
+
+        $value = trim((string) $value);
+
+        if ($value === '') {
+            return null;
+        }
+
+        return $value;
     }
 
     /**
