@@ -219,6 +219,13 @@ class SearchController extends Controller
      *                   'stock_option' (con_stock / hayan_tenido_stock / sin_stock / con_o_sin_stock).
      *                   Cualquier otro operador, o una key que no sea columna de la tabla, se ignora
      *                   en silencio.
+     * - filters         (array)  Filtros de columna del listado (los de la lupa de cada header),
+     *                   misma forma exacta que recibe `search`. Delegado en
+     *                   `ColumnFiltersHelper::apply`, el mismo helper que usa `search` — nunca
+     *                   reimplementar un pedazo de esa traducción acá. Se AND'ean con el grupo de
+     *                   coincidencia de texto y con `extra_filters`. Si alguno de estos filtros trae
+     *                   `ordenar_de`, ese orden tiene PRIORIDAD sobre `order_by`/`order_direction`
+     *                   (ver más abajo).
      * - per_page        (int)    Tamaño de página (clamp 1..200, default 50). Página vía ?page=.
      * - contexto        (string|null) (Prompt 04, grupo 179) Flag opcional que declara que la
      *                   llamada viene de un módulo con lógica propia de búsqueda. Únicamente
@@ -260,6 +267,11 @@ class SearchController extends Controller
         $props = $request->input('props', []);
         $relation_props = $request->input('relation_props', []);
         $extra_filters = $request->input('extra_filters', []);
+
+        // Filtros de columna del listado (los de la lupa de cada header). Misma forma exacta que los
+        // que recibe `search`: los traduce a SQL ColumnFiltersHelper, que es el mismo helper que usa
+        // aquel endpoint — nunca reimplementar un pedazo de esa traduccion aca.
+        $column_filters = $request->input('filters', []);
 
         // Conector entre el grupo estricto ('todas') y el grupo distribuido ('alguna') de props y
         // relaciones. Default 'or': alcanza con que se cumpla uno de los dos grupos.
@@ -317,6 +329,19 @@ class SearchController extends Controller
         // ejecuta SQL arbitrario con la key/valor que venga del request).
         $models = ExtraFiltersHelper::apply($models, $table, $extra_filters);
 
+        // Filtros de columna del listado, delegados en ColumnFiltersHelper (mismo helper que usa
+        // `search`). Se aplican DESPUES de ExtraFiltersHelper::apply (AND real, no dentro del
+        // closure del grupo OR de texto) y ANTES del orderBy de mas abajo: si alguno de estos
+        // filtros trae `ordenar_de`, el helper ya le agrega su propio orderBy acá, y el orderBy de
+        // `order_by`/`order_direction` queda como criterio secundario. Es lo que corresponde: si el
+        // usuario toco explicitamente la flecha de una columna, ese orden manda sobre el default
+        // (created_at DESC). Aplicarlo despues invertiria la prioridad, y el sintoma seria "toco la
+        // flecha y no pasa nada" — dificil de rastrear justamente porque no falla, solo ordena por
+        // otra cosa.
+        $column_filters_result = ColumnFiltersHelper::apply($models, $column_filters, $model_name_param, $model_name);
+        $models = $column_filters_result['models'];
+        $used_column_filters = $column_filters_result['used_filters'];
+
         if ($model_name_param == 'article') {
             $models = $models->where('status', 'active');
         }
@@ -370,6 +395,25 @@ class SearchController extends Controller
         } else {
 
             $models = $models->paginate($per_page);
+        }
+
+        // Historial de filtrados (Grupo 273, Prompt 02): `search()` ya lo registraba para article,
+        // pero si el listado pasa a filtrar por `globalSearch`, ese historial dejaba de registrarse
+        // sin que nadie lo note. Solo si HUBO filtros de columna usados: `globalSearch` tambien lo
+        // dispara el listado por defecto de cada modulo, que corre solo con entrar — registrar eso
+        // incondicionalmente (como hace `search()`) llenaria el historial de entradas vacias, una
+        // por cada vez que alguien abre el listado.
+        if ($model_name_param == 'article' && count($used_column_filters)) {
+
+            FilterHistoryService::log_action([
+                'user_id'             => $this->userId(true),
+                'auth_user_id'        => $this->userId(false),
+                'action'              => 'busqueda',
+                'model_name'          => 'article',
+                'filtrados_count'     => $models->total(),
+                'afectados_count'     => 0,
+                'used_filters'        => $used_column_filters,
+            ]);
         }
 
         return response()->json(['models' => $models], 200);
