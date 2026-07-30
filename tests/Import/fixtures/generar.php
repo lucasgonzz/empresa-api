@@ -360,4 +360,85 @@ escribir('08_match_unico_provider_code.xlsx', [
     [null, 'SKU-MATCH-MULTIPLE', 'PC-DUP', 'Match multiple via provider code', 222.0, 333.0, 22.0, '21'],
 ], $cabecera);
 
+/* --------------------------------------------------------------------------
+ * 09 - Cascada con herencia de identificadores + guarda intra-chunk (grupo 287,
+ * prompt 01). Testea el lado de la regla del 30/7 (cascada de find_with_index(),
+ * grupo 265 prompt 08 + fix del grupo 285) que quedo sin cubrir: "codigo de
+ * barras nuevo que hereda via sku/provider_code", no solo "sku nuevo que
+ * hereda via provider_code" (ese ya lo cubre 01_codigos_de_proveedor.xlsx via
+ * RepetidosEnElArchivoTest). Contra el escenario sembrado por ImportTestSeeder
+ * (A1 bar 7790001/SKU-001/PC-100 prov A; A2 bar 7790002/SKU-002 prov B; A3/A4
+ * PC-DUP prov A con SKU-003/SKU-004; A7 bar 7790007/SKU-007/PC-700 prov A).
+ *
+ *   F2  bar_code NUEVO (7799201) + sku EXISTENTE (SKU-001, matchea A1 en el
+ *       escalon sku). Es la mitad de la regla del 30/7 que quedo sin test: el
+ *       bar_code pendiente de la fila tiene que heredarse a A1 en silencio.
+ *   F3  bar_code NUEVO (7799202) + sku NUEVO (SKU-N-300) + provider_code
+ *       PC-T-UNICO. PC-T-UNICO matchea un articulo que el test crea ANTES de
+ *       importar, sin sku ni bar_code propios (para que la herencia doble no
+ *       pise ningun identificador preexistente): tanto el bar_code como el sku
+ *       pendientes tienen que heredarse via el escalon provider_code.
+ *   F4  bar_code NUEVO (7799203), sin sku, provider_code PC-DUP (match
+ *       MULTIPLE: A3 y A4). Complementa el conflicto identificador_sin_asignar
+ *       que 08_match_unico_provider_code.xlsx ya prueba con el campo sku: este
+ *       fixture lo repite con el campo bar_code.
+ *   F5  bar_code NUEVO (7799204) + sku EXISTENTE (SKU-003, matchea A3).
+ *   F6  bar_code 7799204 -- EL MISMO que F5, a proposito -- + sku EXISTENTE
+ *       (SKU-004, matchea A4). F5 y F6 ejercitan
+ *       identificadores_asignados_en_chunk: dos filas del MISMO chunk quieren
+ *       heredar el mismo bar_code nuevo a DOS articulos distintos. La primera
+ *       (F5) lo hereda; la segunda (F6) tiene que dejar conflicto (la guarda
+ *       intra-chunk existe para no asignar un identificador unico dos veces
+ *       dentro del mismo lote, antes de que ninguna de las dos filas llegue a
+ *       la base).
+ *   F7  bar_code EXISTENTE (7790002, matchea A2 DIRECTO en el escalon
+ *       bar_code) + sku NUEVO (SKU-N-777). No es cascada: A2 matchea de
+ *       entrada por bar_code, y el sku nuevo entra por el update normal de
+ *       campos (no por herencia de identificador pendiente).
+ * -------------------------------------------------------------------------- */
+escribir('09_cascada_herencia.xlsx', [
+    ['7799201', 'SKU-001',   null,        'Cascada hereda bar via sku',              111.0, 222.0, 11.0, '21'],
+    ['7799202', 'SKU-N-300', 'PC-T-UNICO','Cascada hereda ambos via pc',             222.0, 444.0, 22.0, '21'],
+    ['7799203', null,        'PC-DUP',    'Cascada bar pendiente sobre pc repetido', 333.0, 666.0, 33.0, '21'],
+    ['7799204', 'SKU-003',   null,        'Guard chunk primera asignacion',          444.0, 888.0, 44.0, '21'],
+    ['7799204', 'SKU-004',   null,        'Guard chunk segunda asignacion',          555.0, 1110.0, 55.0, '21'],
+    ['7790002', 'SKU-N-777', null,        'Match directo por bar code',              666.0, 1332.0, 66.0, '21'],
+], $cabecera);
+
+/* --------------------------------------------------------------------------
+ * 10 - Escalon name como punto de llegada de la cascada (grupo 287, prompt 01).
+ * Contra A9 ('Art solo por nombre', sin ningun codigo), A10/A11 ('Art nombre
+ * repetido', ambiguo) y un articulo T-NORM ('Art normalizacion test', sin
+ * codigos) que el test crea antes de importar.
+ *
+ *   F2  Sin ningun codigo, nombre 'Art solo por nombre' -> matchea A9 UNICO
+ *       por el escalon 5 (name) de find_with_index().
+ *   F3  Sin ningun codigo, nombre 'Art nombre repetido' -> A10 y A11 lo
+ *       comparten: el escalon name tiene que dar AmbiguousMatch, igual que
+ *       bar_code/sku/provider_code repetidos.
+ *   F4  bar_code NUEVO (7799301) + nombre 'Art solo por nombre' (matchea A9
+ *       SOLO por nombre, ningun escalon anterior matchea nada). La cascada
+ *       llega hasta el escalon 5 con el bar_code todavia pendiente, y tiene
+ *       que heredarselo a A9 igual que en los escalones bar_code/sku/
+ *       provider_code.
+ *   F5  provider_code NUEVO (PC-N-999, no matchea nada) + nombre 'Art solo por
+ *       nombre'. EL CORTE DE CADENA: una fila que trae provider_code y ese
+ *       provider_code no matchea NO baja al escalon name -- es el `return`
+ *       de cierre del escalon 4 en ArticleIndexCache::find_with_index() (linea
+ *       930, antes de llegar al bloque `// 5) name`). Tiene que crear un
+ *       articulo NUEVO aunque el nombre exista tal cual en A9. Comportamiento
+ *       a FIJAR con este test, no a corregir.
+ *   F6  Sin ningun codigo, nombre '  ART NORMALIZACION TEST  ' (mayusculas y
+ *       espacios de sobra, a proposito) -> tiene que matchear T-NORM ('Art
+ *       normalizacion test') via normalize_name_for_match() (mb_strtolower +
+ *       trim + colapso de espacios internos).
+ * -------------------------------------------------------------------------- */
+escribir('10_escalon_nombre.xlsx', [
+    [null,      null, null,        'Art solo por nombre',                911.0, 1822.0, 91.1, '21'],
+    [null,      null, null,        'Art nombre repetido',                912.0, 1824.0, 91.2, '21'],
+    ['7799301', null, null,        'Art solo por nombre',                913.0, 1826.0, 91.3, '21'],
+    [null,      null, 'PC-N-999',  'Art solo por nombre',                914.0, 1828.0, 91.4, '21'],
+    [null,      null, null,        '  ART NORMALIZACION TEST  ',         915.0, 1830.0, 91.5, '21'],
+], $cabecera);
+
 echo "\nListo.\n";
