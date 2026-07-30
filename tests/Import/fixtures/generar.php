@@ -77,15 +77,31 @@ function escribir($nombre_archivo, array $filas, array $cabecera)
  *   PC-NUEVO no existe
  *   PC-1500  existe solo en C
  *   "S/N" y "-" son placeholders que IdentifierNormalizer descarta
+ *
+ * F2 (PC-100) y F3 (PC-DUP) llevan ademas un sku NUEVO (que no matchea a
+ * ningun articulo por si mismo) desde el grupo 265, prompt 10: son las unicas
+ * dos filas del escenario sembrado con un match limpio (F2, un solo articulo)
+ * y un match multiple (F3, dos articulos) por provider_code dentro del mismo
+ * proveedor, que es exactamente lo que CodigosDeProveedorTest.php::escalon
+ * -provider_code- venia cubriendo. RepetidosEnElArchivoTest.php reusa estas
+ * dos filas para probar la herencia de sku de la cascada (prompt 08) contra
+ * la base real, en vez de sumar un fixture nuevo por tres tests. Verificado
+ * que el sku nuevo no cambia ningun bucket ni conflicto de los ya asertados
+ * en CodigosDeProveedorTest.php (ver commit): al no matchear nada por si
+ * mismo, la cascada sigue de largo hasta provider_code exactamente igual que
+ * antes; lo unico que cambia es que, en el match unico (F2), el sku pendiente
+ * se hereda en silencio (sin conflicto), y en el match multiple (F3) con
+ * permitir_provider_code_repetido, se registra un conflicto
+ * 'identificador_sin_asignar' que ningun test de ese archivo asertaba antes.
  * -------------------------------------------------------------------------- */
 escribir('01_codigos_de_proveedor.xlsx', [
-    [null, null, 'PC-100',   'Art unico prov A EDITADO',  111.0,  222.0, 11.0, '21'],
-    [null, null, 'PC-DUP',   'Art PC repetido EDITADO',   333.0,  444.0, 33.0, '21'],
-    [null, null, 'PC-CROSS', 'Art PC cruzado EDITADO',    555.0,  666.0, 55.0, '21'],
-    [null, null, 'PC-NUEVO', 'Articulo nuevo por PC',     777.0,  888.0, 77.0, '21'],
-    [null, null, 'PC-1500',  'Art solo prov C EDITADO',   999.0, 1110.0, 99.0, '21'],
-    [null, null, 'S/N',      'Placeholder SN sin codigo', 100.0,  200.0,  5.0, '21'],
-    [null, null, '-',        'Placeholder guion sin cod', 120.0,  240.0,  6.0, '21'],
+    [null, 'SKU-NUEVO-UNICO', 'PC-100',   'Art unico prov A EDITADO',  111.0,  222.0, 11.0, '21'],
+    [null, 'SKU-NUEVO-DUP',   'PC-DUP',   'Art PC repetido EDITADO',   333.0,  444.0, 33.0, '21'],
+    [null, null,              'PC-CROSS', 'Art PC cruzado EDITADO',    555.0,  666.0, 55.0, '21'],
+    [null, null,              'PC-NUEVO', 'Articulo nuevo por PC',     777.0,  888.0, 77.0, '21'],
+    [null, null,              'PC-1500',  'Art solo prov C EDITADO',   999.0, 1110.0, 99.0, '21'],
+    [null, null,              'S/N',      'Placeholder SN sin codigo', 100.0,  200.0,  5.0, '21'],
+    [null, null,              '-',        'Placeholder guion sin cod', 120.0,  240.0,  6.0, '21'],
 ], $cabecera);
 
 /* --------------------------------------------------------------------------
