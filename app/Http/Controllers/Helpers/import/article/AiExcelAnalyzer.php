@@ -346,6 +346,9 @@ class AiExcelAnalyzer
             'placeholders' => [],
             'cadena_identificacion' => [
                 'columnas_mapeadas' => [],
+                'disponible' => false,
+                'motivo' => null,
+                'total_filas' => 0,
                 'escalones' => [
                     ['campo' => 'id',                'filas' => 0],
                     ['campo' => 'bar_code',           'filas' => 0],
@@ -395,6 +398,24 @@ class AiExcelAnalyzer
 
         /* Sin ninguna columna identificadora mapeada, no tiene sentido leer el archivo completo. */
         if (empty($columnas_mapeadas)) {
+            $empty_result['cadena_identificacion']['motivo'] = 'sin_columnas_identificadoras';
+
+            /* Propiedades del sistema que sí llegaron en el column_mapping: permite ver de un
+             * vistazo si el mapeo vino vacío, si vino con otros nombres de propiedad, o si el
+             * problema es otro. */
+            $system_properties_presentes = [];
+            foreach ($column_mapping as $col) {
+                $prop = $col['system_property'] ?? null;
+                if (!is_null($prop)) {
+                    $system_properties_presentes[] = $prop;
+                }
+            }
+
+            Log::warning('AiExcelAnalyzer: cadena de identificación no disponible, sin columnas identificadoras mapeadas', [
+                'excel_path'        => $excel_path,
+                'system_properties' => $system_properties_presentes,
+            ]);
+
             return $empty_result;
         }
 
@@ -409,6 +430,10 @@ class AiExcelAnalyzer
 
         /* Acumulador de nombres normalizados -> cantidad de filas, para detectar nombres repetidos. */
         $nombres_data = [];
+
+        /* Cantidad de filas de datos efectivamente recorridas (excluye cabecera). Se hoistea acá
+         * porque el try/catch de abajo la necesita en el return final, fuera del scope del foreach. */
+        $data_row_index = 0;
 
         try {
             /* Mismo lector XLSX de OpenSpout que el resto del análisis, leyendo el archivo completo. */
@@ -514,6 +539,7 @@ class AiExcelAnalyzer
                 'message' => $e->getMessage(),
                 'file'    => $excel_path,
             ]);
+            $empty_result['cadena_identificacion']['motivo'] = 'error_de_lectura';
             return $empty_result;
         }
 
@@ -544,6 +570,9 @@ class AiExcelAnalyzer
             'placeholders' => $placeholders,
             'cadena_identificacion' => [
                 'columnas_mapeadas' => $columnas_mapeadas,
+                'disponible' => true,
+                'motivo' => null,
+                'total_filas' => $data_row_index,
                 'escalones' => [
                     ['campo' => 'id',                'filas' => $escalon_counts['id']],
                     ['campo' => 'bar_code',           'filas' => $escalon_counts['bar_code']],
