@@ -18,6 +18,13 @@ namespace Tests\Import;
  *   F7  "S/N"    -> placeholder, se descarta el identificador
  *   F8  "-"      -> placeholder, se descarta el identificador
  *
+ * F2 y F3 llevan ademas un sku NUEVO (que no matchea nada por si mismo) desde
+ * el grupo 265, prompt 10: no cambia ningun bucket ni conflicto de esta clase
+ * (la cascada de sku sigue de largo hasta provider_code igual que antes), lo
+ * agrega RepetidosEnElArchivoTest.php para probar la herencia de sku de la
+ * cascada (prompt 08) contra un match unico (F2) y un match multiple (F3),
+ * en vez de sumar un fixture nuevo.
+ *
  * IMPORTANTE (PHP 7.4): no usar match, str_contains, nullsafe, argumentos
  * nombrados, union types, promoción de constructor, readonly, enum ni #[...].
  */
