@@ -538,8 +538,18 @@ class AiExcelImportController extends Controller
                 $numeric_columns_map['nombres']
             );
 
+            /*
+             * Nombres de las filas con código de proveedor repetido (grupo 284, prompt 03): es la
+             * evidencia que le permite a Claude recomendar politica_intra_archivo.
+             */
+            $duplicados_con_nombres = $analyzer->build_duplicados_con_nombres(
+                $excel_full_path,
+                $stats['detalle_provider_codes_duplicados'] ?? [],
+                $column_mapping
+            );
+
             /* Generar recomendación con los stats recalculados para el proveedor confirmado */
-            $recomendacion = $analyzer->ask_claude_for_recomendation($stats, $column_mapping, $formatos_numericos);
+            $recomendacion = $analyzer->ask_claude_for_recomendation($stats, $column_mapping, $formatos_numericos, $duplicados_con_nombres);
 
             return response()->json([
                 'recomendacion_configuracion'                  => $recomendacion,
