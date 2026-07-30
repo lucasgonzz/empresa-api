@@ -317,6 +317,7 @@ class AiExcelImportController extends Controller
             'actualizar_articulos_de_otro_proveedor'             => $request->input('actualizar_articulos_de_otro_proveedor', false),
             'actualizar_por_provider_code'                       => $request->input('actualizar_por_provider_code', true),
             'actualizar_proveedor'                               => $request->input('actualizar_proveedor', false),
+            'filas_repetidas_del_archivo'                        => $request->input('filas_repetidas_del_archivo'),
 
             /*
              * Modo elegido por el usuario para interpretar el punto en columnas numéricas

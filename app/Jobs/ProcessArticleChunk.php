@@ -41,6 +41,12 @@ class ProcessArticleChunk implements ShouldQueue
      */
     protected $interpretacion_punto;
 
+    /**
+     * Decisión del usuario para filas repetidas DENTRO del propio archivo (prompt 04,
+     * grupo 265): 'ultima_gana' | 'productos_distintos'.
+     */
+    protected $filas_repetidas_del_archivo;
+
     // public $timeout = 5; // 30 minutos por chunk, ajustable
     public $timeout = 1800; // 30 minutos por chunk, ajustable
     public $tries = 1;
@@ -65,7 +71,8 @@ class ProcessArticleChunk implements ShouldQueue
             $permitir_provider_code_repetido_en_multi_providers,
             $actualizar_por_provider_code,
 
-            $interpretacion_punto = 'auto'
+            $interpretacion_punto = 'auto',
+            $filas_repetidas_del_archivo = 'ultima_gana'
     ) {
 
         $this->csv_path                                     = $csv_path;
@@ -88,6 +95,7 @@ class ProcessArticleChunk implements ShouldQueue
         $this->actualizar_por_provider_code                         = $actualizar_por_provider_code;
 
         $this->interpretacion_punto                                 = $interpretacion_punto;
+        $this->filas_repetidas_del_archivo                          = $filas_repetidas_del_archivo;
 
         $this->observations = '';
 
@@ -406,6 +414,7 @@ class ProcessArticleChunk implements ShouldQueue
                 $this->actualizar_por_provider_code,
 
                 $this->interpretacion_punto,
+                $this->filas_repetidas_del_archivo,
             );
 
         } catch (\Throwable $e) {

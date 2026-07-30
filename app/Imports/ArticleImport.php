@@ -62,7 +62,14 @@ class ArticleImport implements ToCollection
          * ambiguas (grupo 239, prompt 04): 'auto' | 'siempre_miles' | 'siempre_decimal'.
          * Default 'auto' para no romper otros llamadores que aún no lo mandan.
          */
-        $interpretacion_punto = 'auto'
+        $interpretacion_punto = 'auto',
+
+        /*
+         * Decisión del usuario para filas repetidas DENTRO del propio archivo (prompt
+         * 04, grupo 265): 'ultima_gana' | 'productos_distintos'. Default 'ultima_gana'
+         * para no romper llamadores viejos que todavía no lo mandan (cambio aditivo).
+         */
+        $filas_repetidas_del_archivo = 'ultima_gana'
     ) {
 
         $this->log_activado = false;
@@ -86,6 +93,7 @@ class ArticleImport implements ToCollection
         $this->permitir_provider_code_repetido_en_multi_providers   = $permitir_provider_code_repetido_en_multi_providers;
         $this->actualizar_por_provider_code                         = $actualizar_por_provider_code;
         $this->interpretacion_punto                                 = $interpretacion_punto;
+        $this->filas_repetidas_del_archivo                          = $filas_repetidas_del_archivo;
 
 
         $this->columns = $columns;
@@ -124,6 +132,7 @@ class ArticleImport implements ToCollection
             'permitir_provider_code_repetido_en_multi_providers'    => $this->permitir_provider_code_repetido_en_multi_providers,
             'actualizar_por_provider_code'                          => $this->actualizar_por_provider_code,
             'interpretacion_punto'                                  => $this->interpretacion_punto,
+            'filas_repetidas_del_archivo'                           => $this->filas_repetidas_del_archivo,
         ]);
 
         $this->nombres_proveedores = [];

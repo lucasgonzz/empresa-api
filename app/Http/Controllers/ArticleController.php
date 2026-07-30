@@ -548,6 +548,7 @@ class ArticleController extends Controller
             'actualizar_articulos_de_otro_proveedor'                => $request->actualizar_articulos_de_otro_proveedor,
             'actualizar_por_provider_code'                          => $request->actualizar_por_provider_code,
             'actualizar_proveedor'                                  => $request->actualizar_proveedor,
+            'filas_repetidas_del_archivo'                           => $request->filas_repetidas_del_archivo,
 
             /*
              * Modo elegido por el usuario para interpretar el punto en columnas numéricas

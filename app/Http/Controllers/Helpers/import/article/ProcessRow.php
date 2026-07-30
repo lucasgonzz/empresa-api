@@ -73,6 +73,21 @@ class ProcessRow {
     protected $escalon_repeticion = null;
 
     /**
+     * Decisión del usuario para filas repetidas DENTRO del propio archivo (prompt 04,
+     * grupo 265): 'ultima_gana' (default, comportamiento histórico: la última fila
+     * prevalece y se reporta la sobrescritura) | 'productos_distintos' (cada fila
+     * repetida se procesa por su cuenta, como si no hubiera repetición).
+     *
+     * Solo tiene efecto cuando el escalón que detectó la repetición
+     * ($escalon_repeticion) es 'provider_code': id/bar_code/sku no pueden repetirse
+     * legítimamente dentro de un mismo Excel (regla de jerarquía del prompt 02) y
+     * siempre se resuelven con 'ultima_gana', sin importar este valor.
+     *
+     * @var string
+     */
+    protected $filas_repetidas_del_archivo = 'ultima_gana';
+
+    /**
      * Conteo por resultado de la fila. Cada fila procesada incrementa EXACTAMENTE UN
      * bucket: la suma de todos tiene que dar el total de filas procesadas del chunk.
      *
@@ -156,6 +171,18 @@ class ProcessRow {
          * llamadores viejos (no debería pasar, ArticleImport ya lo manda siempre).
          */
         $this->interpretacion_punto = $data['interpretacion_punto'] ?? 'auto';
+
+        /*
+         * Decisión para filas repetidas dentro del propio archivo (prompt 04, grupo
+         * 265). Default 'ultima_gana' si no llega o llega un valor no reconocido: la
+         * validación "fuerte" contra los dos valores permitidos ya la hizo
+         * InitExcelImport antes de llegar acá, pero se vuelve a defender el default
+         * por si algún llamador (tests, futuros callers) instancia ProcessRow directo.
+         */
+        $this->filas_repetidas_del_archivo = (
+            isset($data['filas_repetidas_del_archivo'])
+            && $data['filas_repetidas_del_archivo'] === 'productos_distintos'
+        ) ? 'productos_distintos' : 'ultima_gana';
 
         $this->import_history_id = $data['import_history_id'] ?? null;
         $this->import_uuid = $data['import_uuid'] ?? null;
@@ -579,7 +606,25 @@ class ProcessRow {
         $this->iniciar();
         $ya_estaba_en_excel = $this->ya_estaba_en_el_excel($data);
 
-        if ($ya_estaba_en_excel) {
+        /*
+         * 'productos_distintos' (prompt 04, grupo 265): el usuario pidió tratar las
+         * filas repetidas del propio archivo, cuando la repetición la detectó el
+         * escalón provider_code, como productos separados. En ese caso el bloque de
+         * merge/descarte de más abajo NO aplica: la fila sigue el flujo normal como
+         * si esta_repetido() hubiera devuelto false (find_with_index, etc.), y no se
+         * registra ningún conflicto de sobrescritura (no hubo ninguna).
+         *
+         * Para id/bar_code/sku (y para 'ultima_gana') el comportamiento es exactamente
+         * el del prompt 03: esos tres identificadores no pueden repetirse legítimamente
+         * dentro de un mismo Excel (regla de jerarquía del prompt 02).
+         */
+        $tratar_repeticion_como_producto_distinto = (
+            $ya_estaba_en_excel
+            && $this->escalon_repeticion === 'provider_code'
+            && $this->filas_repetidas_del_archivo === 'productos_distintos'
+        );
+
+        if ($ya_estaba_en_excel && !$tratar_repeticion_como_producto_distinto) {
 
             // 👇 Nuevo: si esta fila forma parte del mismo producto y tiene propiedades -> agregar como variante
             $variant_payload = $this->build_variant_payload($row);
@@ -627,6 +672,7 @@ class ProcessRow {
             return;
         } else {
             // $this->log('No esta aun en el excel');
+            // (o 'productos_distintos' pidió tratarla como si no lo estuviera: ver arriba)
         }
         $this->terminar('Chequear si estaba repetida la fila');
 
