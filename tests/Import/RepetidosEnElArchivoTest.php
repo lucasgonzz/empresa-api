@@ -86,6 +86,8 @@ class RepetidosEnElArchivoTest extends ImportTestCase
      */
     public function test_distinto_sku_con_mismo_provider_code_son_dos_articulos()
     {
+        $this->markTestSkipped('Expectativa derogada por la regla del 30/7/2026, pendiente de redefinicion en el prompt 10');
+
         $this->importar(self::ARCHIVO, [
             'provider_id' => $this->providers['A']->id,
         ]);

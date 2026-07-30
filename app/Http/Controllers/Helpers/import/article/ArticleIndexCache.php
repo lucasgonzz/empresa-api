@@ -613,7 +613,18 @@ class ArticleIndexCache
         bool $permitir_provider_code_repetido_en_multi_providers = true,
         bool $actualizar_articulos_de_otro_proveedor = false,
         bool $actualizar_por_provider_code = true,
-        bool $actualizar_proveedor = true
+        bool $actualizar_proveedor = true,
+
+        /*
+         * 'filas_repetidas_del_archivo' === 'productos_distintos' (prompt 04, grupo 265):
+         * los matches del escalon provider_code contra articulos FAKE (encolados para crear
+         * en este mismo chunk, via ArticleIndexCache::add(), todavia sin INSERT) no cuentan
+         * -- el usuario dijo explicitamente que las repeticiones del propio archivo son
+         * productos distintos. Los matches contra articulos REALES de la base siguen
+         * contando igual: el flag habla del archivo, no de la base (prompt 09, grupo 265).
+         * Default false preserva el comportamiento de siempre para cualquier otro llamador.
+         */
+        bool $descartar_matches_fake_del_archivo = false
     ) {
         if (!is_array($index) || empty($index)) {
             $index = self::get_index($user_id, $provider_id);
@@ -784,6 +795,21 @@ class ArticleIndexCache
                     array_merge($article_ids_same_provider, $article_ids_other_providers)
                 ));
                 $article_ids_other_providers = [];
+            }
+
+            /*
+             * 'productos_distintos' (prompt 09, grupo 265): descartar los matches contra
+             * articulos FAKE (de este mismo chunk, todavia sin INSERT) ANTES de la regla de
+             * bloqueo y de decidir match/ambiguo -- para esta fila, esos articulos no
+             * cuentan como si ya existieran. Los matches contra articulos reales de la base
+             * (ids numericos) no se tocan.
+             */
+            if ($descartar_matches_fake_del_archivo) {
+                $es_id_real = function ($id) {
+                    return strncmp((string) $id, 'fake_', strlen('fake_')) !== 0;
+                };
+                $article_ids_same_provider   = array_values(array_filter($article_ids_same_provider, $es_id_real));
+                $article_ids_other_providers = array_values(array_filter($article_ids_other_providers, $es_id_real));
             }
 
             /**

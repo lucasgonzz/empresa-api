@@ -710,6 +710,12 @@ class ProcessRow {
             $this->actualizar_articulos_de_otro_proveedor,
             $this->actualizar_por_provider_code,
             $this->actualizar_proveedor,
+            /*
+             * 'productos_distintos' (prompt 09, grupo 265): los matches contra articulos
+             * fake de este mismo chunk no cuentan para el escalon provider_code -- el
+             * archivo habla de si mismo, no de la base.
+             */
+            $this->filas_repetidas_del_archivo === 'productos_distintos',
         );
         /*
          * Escalon de la cadena que produjo el match (o null si no hubo match/hubo
