@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ColumnFiltersHelper;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\ExtraFiltersHelper;
+use App\Http\Controllers\Helpers\GlobalSearchMatchesHelper;
 use App\Http\Controllers\Helpers\GlobalSearchQueryHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\VenderSearchHelper;
@@ -246,8 +247,12 @@ class SearchController extends Controller
      *
      * @param Request $request
      * @param string $model_name_param Nombre del modelo en snake_case (ej: 'article').
-     * @return \Illuminate\Http\JsonResponse Misma forma que `search` (paginador con data/last_page/total),
-     *         o un JSON de error controlado (400) si el modelo/prop/relación pedida no existe.
+     * @return \Illuminate\Http\JsonResponse `{ models: <paginador>, matches: <desglose>|null }`.
+     *         `models` tiene la misma forma que `search` (paginador con data/last_page/total).
+     *         `matches` (grupo 274, ver `GlobalSearchMatchesHelper`) es el desglose de que
+     *         propiedad aporto a cada resultado de esta página: `null` sin criterio de texto, con
+     *         contexto Vender, o si no hay ninguna propiedad tildada por la que desglosar.
+     *         O un JSON de error controlado (400) si el modelo/prop/relación pedida no existe.
      */
     function globalSearch(Request $request, $model_name_param) {
 
@@ -416,7 +421,24 @@ class SearchController extends Controller
             ]);
         }
 
-        return response()->json(['models' => $models], 200);
+        // Desglose de coincidencias (grupo 274): por que propiedad aparecio cada resultado de esta
+        // pagina. Se calcula en PHP sobre las filas ya traidas -- ninguna consulta nueva salvo el
+        // loadMissing de relaciones que no hubiera traido withAll(). Devuelve null cuando no hay
+        // criterio de texto (listado por defecto) o cuando no hay nada que desglosar.
+        $matches = null;
+
+        if (!$usar_contexto_vender) {
+            $matches = GlobalSearchMatchesHelper::build(
+                $models->getCollection(),
+                $query_value,
+                $props,
+                $relation_props,
+                $table,
+                $model_instance
+            );
+        }
+
+        return response()->json(['models' => $models, 'matches' => $matches], 200);
     }
 
     /**
