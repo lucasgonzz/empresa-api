@@ -424,7 +424,10 @@ class CurrentAcountHelper {
             $current_acount->status = 'pagado';
             $current_acount->save();
             Self::savePagadoPor($current_acount, $pago, $haber);
-            SellerCommissionHelper::checkCommissionStatus($current_acount);
+            // Grupo 268 · Prompt 02, bug F: faltaba el segundo argumento ($pago, ya disponible
+            // como parametro de esta funcion) -> ArgumentCountError fatal si este camino corria
+            // (checkCommissionStatus($current_acount, $pago) pide dos, sin default).
+            SellerCommissionHelper::checkCommissionStatus($current_acount, $pago);
             $haber -= $current_acount->debe;
         } else { 
             $previus_pagandose = $current_acount->pagandose;
@@ -616,9 +619,14 @@ class CurrentAcountHelper {
             $pago_helper->init();
         }
 
+        // Grupo 268 · Prompt 02, bug D: los debitos ya quedaron con su estado definitivo (los dos
+        // loops de arriba ya corrieron), asi que se revierten las comisiones que se habian dado
+        // por liquidadas de una venta que dejo de estar saldada (ej. se borro el pago que la saldaba).
+        SellerCommissionHelper::revertirComisionesNoSaldadas($credit_account_id);
+
         // $model->pagos_checkeados = 1;
         // $model->save();
-        
+
     }
 
     static function checkSaldoInicial($client_id) {

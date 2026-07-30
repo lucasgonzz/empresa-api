@@ -537,7 +537,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('chart/from-date/{from_date}/{until_date?}', 'CajaViejaController@charts');
 
     Route::resource('commission', 'CommissionController');
-    Route::get('seller-commission/{model_id}/{from_date}/{until_date}', 'SellerCommissionController@index');
+    // Grupo 268 · Prompt 03: el alias viejo (3 segmentos, sin moneda_id) TIENE que quedar
+    // registrado ANTES que la ruta nueva (4 segmentos, con {until_date?} opcional) - si no, una
+    // URL de 3 segmentos podria matchear la ruta nueva primero (el ultimo segmento opcional la
+    // deja aceptar 3 o 4) e interpretar mal los parametros (moneda_id recibiendo la fecha).
+    Route::get('seller-commission/{model_id}/{from_date}/{until_date}', 'SellerCommissionController@indexLegacy');
+    Route::get('seller-commission/{model_id}/{moneda_id}/{from_date}/{until_date?}', 'SellerCommissionController@index');
     Route::post('seller-commission/saldo-inicial', 'SellerCommissionController@saldoInicial');
     Route::post('seller-commission/pago', 'SellerCommissionController@pago');
     Route::delete('seller-commission/{id}', 'SellerCommissionController@destroy');

@@ -1021,8 +1021,24 @@ class SaleHelper extends Controller {
     static function deleteSellerCommissionsFromSale($sale) {
         $seller_commissions = SellerCommission::where('sale_id', $sale->id)
                                             ->whereNull('haber')
-                                            ->pluck('id');
-        SellerCommission::destroy($seller_commissions);
+                                            ->get(['id', 'seller_id', 'moneda_id']);
+
+        // Grupo 268 · Prompt 02, bug E: antes se borraba sin recalcular los saldos posteriores.
+        // Se guardan los pares seller_id + moneda_id afectados ANTES de destruir las filas.
+        $pares = [];
+        foreach ($seller_commissions as $seller_commission) {
+            $moneda_id = !is_null($seller_commission->moneda_id) ? $seller_commission->moneda_id : 1;
+            $pares[$seller_commission->seller_id.'-'.$moneda_id] = [
+                'seller_id' => $seller_commission->seller_id,
+                'moneda_id' => $moneda_id,
+            ];
+        }
+
+        SellerCommission::destroy($seller_commissions->pluck('id'));
+
+        foreach ($pares as $par) {
+            ComisionesHelper::recalcular_saldos($par['seller_id'], $par['moneda_id']);
+        }
     }
 
     static function getDiscount($item) {
