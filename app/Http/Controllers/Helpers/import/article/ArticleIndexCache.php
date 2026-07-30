@@ -33,6 +33,9 @@ class ArticleIndexCache
      */
     protected static $ultimo_escalon = null;
 
+    /** @var array Ver ultimos_identificadores_pendientes(). */
+    protected static $ultimo_identificadores_pendientes = [];
+
     /**
      * Registro en RAM de modelos Article "fake" pendientes de persistir (por user_id y fake_id).
      * Permite que find_with_index devuelva el mismo artículo aún sin fila en BD (whereIn(id) vacío).
@@ -565,6 +568,27 @@ class ArticleIndexCache
     }
 
     /**
+     * Identificadores (bar_code y/o sku) que la fila traia, que NO matchearon ningun
+     * articulo en su propio escalon, y que por eso la cascada de find_with_index()
+     * siguio de largo hasta encontrar match en un escalon mas abajo (sku, provider_code
+     * o name). Regla de Lucas, 30/7/2026, prompt 08 grupo 265: esos identificadores
+     * "pendientes" se le tienen que asignar al articulo que matcheo, EXCEPTO cuando el
+     * match fue de mas de un articulo (ver ProcessRow::procesar_articulo_ya_creado()).
+     *
+     * ['bar_code' => '7799100', 'sku' => 'SKU-1'] , en el orden de la jerarquia (los que
+     * la fila trajo y no matchearon). Vacio si no quedo ninguno pendiente.
+     *
+     * Solo tiene sentido leerlo INMEDIATAMENTE despues de find_with_index(), igual que
+     * ultimo_escalon().
+     *
+     * @return array
+     */
+    public static function ultimos_identificadores_pendientes()
+    {
+        return self::$ultimo_identificadores_pendientes;
+    }
+
+    /**
      * Deja registrado el escalon y devuelve el resultado, para que find_with_index()
      * no tenga ningun return que se olvide de setearlo.
      *
@@ -594,6 +618,10 @@ class ArticleIndexCache
         if (!is_array($index) || empty($index)) {
             $index = self::get_index($user_id, $provider_id);
         }
+
+        // Se resetea en cada llamada: si no se pisa mas abajo, ultimos_identificadores_pendientes()
+        // tiene que devolver [] y no arrastrar el valor de la fila anterior.
+        self::$ultimo_identificadores_pendientes = [];
 
         Self::log('find_with_index');
 
@@ -631,54 +659,64 @@ class ArticleIndexCache
             $escalon = 'id';
         }
 
-        // 2) bar_code
-        elseif (!empty($data['bar_code']) && isset($index['bar_codes'][(string)$data['bar_code']])) {
+        /*
+         * 2) bar_code y 3) sku -- cascada de escalones (regla de Lucas, 30/7/2026,
+         * prompt 08 grupo 265; reemplaza la version del 29/7 que cortaba la busqueda
+         * en el primer escalon con valor). Se evalua cada uno EN ORDEN, solo si la
+         * fila lo trae: si uno no matchea nada (no esta en el indice, o resolve_unique
+         * da no_match), NO corta la busqueda -- se guarda como "identificador
+         * pendiente" (self::$ultimo_identificadores_pendientes) y se sigue con el
+         * escalon siguiente que la fila traiga (no necesariamente el inmediato: si no
+         * hay sku, de bar_code se pasa directo a provider_code). Si un escalon
+         * matchea un UNICO articulo, se le asignan los identificadores pendientes de
+         * mas arriba -- ver ProcessRow::procesar_articulo_ya_creado(). Ambiguo sigue
+         * cortando la busqueda de inmediato, igual que siempre: no se toco esa parte.
+         */
+        if (is_null($article_id)) {
 
-            Self::log('Buscando por bar_code '.$data['bar_code']);
+            $identificadores_pendientes = [];
 
-            $bar_code_resolved = self::resolve_unique(
-                $index['bar_codes'][(string)$data['bar_code']],
-                $relations,
-                $user_id
-            );
+            foreach ([['bar_code', 'bar_codes'], ['sku', 'skus']] as $par) {
 
-            if ($bar_code_resolved['status'] === 'ambiguous') {
-                Self::log('bar_code ambiguo: '.$data['bar_code'].' matchea con '.count($bar_code_resolved['ids']).' articulos');
-                return self::con_escalon(null, new AmbiguousMatch('bar_code', (string) $data['bar_code'], $bar_code_resolved['ids']));
+                list($campo, $indice_key) = $par;
+
+                if (empty($data[$campo])) {
+                    continue;
+                }
+
+                $valor = (string) $data[$campo];
+
+                if (isset($index[$indice_key][$valor])) {
+
+                    Self::log('Buscando por '.$campo.' '.$valor);
+
+                    $resuelto = self::resolve_unique($index[$indice_key][$valor], $relations, $user_id);
+
+                    if ($resuelto['status'] === 'ambiguous') {
+                        Self::log($campo.' ambiguo: '.$valor.' matchea con '.count($resuelto['ids']).' articulos');
+                        return self::con_escalon(null, new AmbiguousMatch($campo, $valor, $resuelto['ids']));
+                    }
+
+                    if ($resuelto['status'] === 'match') {
+                        self::$ultimo_identificadores_pendientes = $identificadores_pendientes;
+                        return self::con_escalon($campo, $resuelto['article']);
+                    }
+
+                    // no_match: mismo tratamiento que "no esta en el indice", sigue de largo.
+                }
+
+                $identificadores_pendientes[$campo] = $data[$campo];
             }
 
-            if ($bar_code_resolved['status'] === 'match') {
-                return self::con_escalon('bar_code', $bar_code_resolved['article']);
-            }
-
-            // no_match: se deja $article_id sin asignar (queda null), igual que el comportamiento previo.
+            self::$ultimo_identificadores_pendientes = $identificadores_pendientes;
         }
 
-        // 3) sku
-        elseif (!empty($data['sku']) && isset($index['skus'][(string)$data['sku']])) {
-
-            Self::log('Buscando por sku '.$data['sku']);
-
-            $sku_resolved = self::resolve_unique(
-                $index['skus'][(string)$data['sku']],
-                $relations,
-                $user_id
-            );
-
-            if ($sku_resolved['status'] === 'ambiguous') {
-                Self::log('sku ambiguo: '.$data['sku'].' matchea con '.count($sku_resolved['ids']).' articulos');
-                return self::con_escalon(null, new AmbiguousMatch('sku', (string) $data['sku'], $sku_resolved['ids']));
-            }
-
-            if ($sku_resolved['status'] === 'match') {
-                return self::con_escalon('sku', $sku_resolved['article']);
-            }
-
-            // no_match: se deja $article_id sin asignar (queda null), igual que el comportamiento previo.
-        }
-
-        // 4) provider_code
-        elseif (!empty($data['provider_code'])) {
+        // 4) provider_code -- semantica sin cambios (sus flags deciden todo, ver mas
+        // abajo). Antes era "elseif" de bar_code/sku; ahora es "if" guardado con
+        // is_null($article_id) porque el bloque de arriba ya no es mutuamente
+        // excluyente con este por construccion de if/elseif -- el guard cumple el
+        // mismo rol: solo se llega aca si nada matcheo (ni fue ambiguo) todavia.
+        if (is_null($article_id) && !empty($data['provider_code'])) {
 
 
             $provider_code = trim((string)$data['provider_code']);
@@ -838,8 +876,8 @@ class ArticleIndexCache
             return self::con_escalon(null, null);
         }
 
-        // 5) name
-        elseif (!empty($data['name'])) {
+        // 5) name -- semantica sin cambios, mismo guard que provider_code.
+        if (is_null($article_id) && !empty($data['name'])) {
 
             $key_name = self::normalize_name_for_match($data['name']);
 

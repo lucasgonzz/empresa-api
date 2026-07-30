@@ -148,6 +148,24 @@ class ProcessRow {
 
     protected $provider_relations_buffer = []; // [article_id][provider_id] => pivot_data
 
+    /**
+     * Identificadores unicos (bar_code/sku) asignados por herencia de escalones
+     * superiores durante este chunk (regla de Lucas, 30/7/2026, prompt 08 grupo 265;
+     * ver procesar_articulo_ya_creado()). ['bar_code' => ['7799100' => 41], ...] --
+     * valor normalizado => id (o fake_id) del articulo al que se le asigno.
+     *
+     * Red de seguridad extra sobre el invariante de unicidad, no la unica defensa:
+     * dos filas que traen el MISMO bar_code/sku *literal* ya se detectan y mergean
+     * antes de llegar aca (esta_repetido(), prompt 02/03). Esto cubre el hueco que
+     * esa comparacion por igualdad estricta (===) deja: dos valores que DIFIEREN en
+     * su forma cruda pero normalizan igual (espacios, "0123" vs 123 numerico, etc.)
+     * -- normalize_value_for_comparison() los compara donde esta_repetido() no lo
+     * haria. ArticleIndexCache tampoco lo ve: son UPDATEs, no ArticleIndexCache::add().
+     *
+     * @var array
+     */
+    protected $identificadores_asignados_en_chunk = ['bar_code' => [], 'sku' => []];
+
 
     /**
      * Constructor: recibe los datos necesarios para procesar las filas
@@ -700,6 +718,16 @@ class ProcessRow {
          * ArticleIndexCache::ultimo_escalon()).
          */
         $escalon_de_match = ArticleIndexCache::ultimo_escalon();
+
+        /*
+         * Identificadores (bar_code y/o sku) que la fila traia y que la cascada de
+         * find_with_index() salto porque no matchearon nada, antes de encontrar match
+         * en un escalon mas abajo (regla de Lucas, 30/7/2026, prompt 08 grupo 265).
+         * Se leen aca por el mismo motivo que $escalon_de_match: solo valen
+         * inmediatamente despues de find_with_index().
+         */
+        $identificadores_pendientes = ArticleIndexCache::ultimos_identificadores_pendientes();
+
         $this->terminar('find en cache');
 
         $this->log('articulo encontrado:');
@@ -817,6 +845,33 @@ class ProcessRow {
 
             if ($this->son_varios_articulos($articulo_ya_creado)) {
 
+                /*
+                 * Invariante duro (regla de Lucas, 30/7/2026, prompt 08 grupo 265): la
+                 * importacion NUNCA puede asignar un identificador UNICO (bar_code o
+                 * sku) a mas de un articulo. Si la fila trae alguno pendiente -- llego
+                 * hasta un match multiple (provider_code repetido permitido) porque su
+                 * propio escalon no matcheo nada -- no se le puede aplicar a ninguno de
+                 * los articulos de la coleccion: se descarta antes de procesar cada uno
+                 * y se deja un import_conflict en su lugar, para que el usuario lo
+                 * resuelva a mano.
+                 */
+                if (!empty($identificadores_pendientes)) {
+
+                    $article_ids_matcheados = $articulo_ya_creado->pluck('id')->filter()->values()->all();
+
+                    foreach ($identificadores_pendientes as $campo_pendiente => $valor_pendiente) {
+                        $this->registrar_identificador_sin_asignar(
+                            $this->fila_actual,
+                            $campo_pendiente,
+                            $valor_pendiente,
+                            $article_ids_matcheados,
+                            $data['name'] ?? null
+                        );
+                    }
+
+                    $data = array_diff_key($data, $identificadores_pendientes);
+                }
+
                 foreach ($articulo_ya_creado as $_articulo_ya_creado) {
 
                     if ($this->is_pending_create_fake_article($_articulo_ya_creado)) {
@@ -837,7 +892,7 @@ class ProcessRow {
                     if (!$this->omitir_por_pertencer_a_otro_proveedor($_articulo_ya_creado, $provider_id)) {
 
                         $this->iniciar();
-                        
+
                         $this->procesar_articulo_ya_creado($_articulo_ya_creado, $data, $row);
 
                         $this->terminar('procesar_articulo_ya_creado con provider_code repetido');
@@ -852,8 +907,8 @@ class ProcessRow {
 
                     $this->iniciar();
 
-                    $this->procesar_articulo_ya_creado($articulo_ya_creado, $data, $row);
-                    
+                    $this->procesar_articulo_ya_creado($articulo_ya_creado, $data, $row, $identificadores_pendientes);
+
                     $this->terminar('procesar_articulo_ya_creado');
                 }
             }
@@ -1263,7 +1318,7 @@ class ProcessRow {
 
     
 
-    function procesar_articulo_ya_creado($articulo_ya_creado, $data, $row) {
+    function procesar_articulo_ya_creado($articulo_ya_creado, $data, $row, $identificadores_pendientes = []) {
         $this->iniciar();
         $articulo_ya_creado->loadMissing(['price_types', 'addresses']);
         $this->terminar('precargar price_types y addresses para procesar articulo ya creado');
@@ -1272,6 +1327,67 @@ class ProcessRow {
         $this->iniciar();
         $cambios = $this->get_modified_fields($articulo_ya_creado, $data);
         $this->terminar('get_modified_fields');
+
+        /*
+         * Identificadores (bar_code y/o sku) que la fila traia, no matchearon su propio
+         * escalon, y matchearon un UNICO articulo mas abajo en la cascada (regla de
+         * Lucas, 30/7/2026, prompt 08 grupo 265): "codigo de barras nuevo + SKU
+         * existente -> actualiza el del SKU y le asigna el codigo de barras". sku ya
+         * pasa por get_modified_fields() sin guardas especiales, asi que normalmente ya
+         * quedo en $cambios; esto solo hace falta para bar_code, que get_modified_fields()
+         * ignora si no vino un id explicito en la fila (bar_code_identity guard, ver ahi).
+         * Fuera de esta asignacion diferida esa guarda sigue aplicando igual que siempre.
+         *
+         * Invariante duro antes de asignar: este valor no puede pertenecer YA a otro
+         * articulo. find_with_index() ya lo garantiza contra la BD/indice en el momento
+         * en que corrio (si hubiera matcheado, no seria "pendiente"), pero no contra
+         * OTRA fila de este mismo chunk que tambien quiera heredarle el mismo valor
+         * nuevo a un articulo distinto -- ArticleIndexCache no se entera de estas
+         * asignaciones porque son UPDATEs, no ArticleIndexCache::add(). Por eso se
+         * valida tambien contra $identificadores_asignados_en_chunk.
+         */
+        $this->iniciar();
+
+        $id_articulo_actual = $articulo_ya_creado->id ?? $articulo_ya_creado->fake_id ?? null;
+
+        foreach ($identificadores_pendientes as $campo_pendiente => $valor_pendiente) {
+
+            if (array_key_exists($campo_pendiente, $cambios)) {
+                continue;
+            }
+
+            $nuevo = $this->normalize_value_for_comparison($valor_pendiente);
+            $actual = $this->normalize_value_for_comparison($articulo_ya_creado->{$campo_pendiente} ?? null);
+
+            if (is_null($nuevo) || $actual == $nuevo) {
+                continue;
+            }
+
+            $clave_valor = (string) $nuevo;
+            $id_ya_asignado = $this->identificadores_asignados_en_chunk[$campo_pendiente][$clave_valor] ?? null;
+
+            if (!is_null($id_ya_asignado) && $id_ya_asignado !== $id_articulo_actual) {
+
+                $this->registrar_identificador_sin_asignar(
+                    $this->fila_actual,
+                    $campo_pendiente,
+                    $valor_pendiente,
+                    array_filter([$id_ya_asignado, $id_articulo_actual]),
+                    $data['name'] ?? null
+                );
+
+                continue;
+            }
+
+            $this->identificadores_asignados_en_chunk[$campo_pendiente][$clave_valor] = $id_articulo_actual;
+
+            $cambios[$campo_pendiente] = $nuevo;
+            $cambios['__diff__' . $campo_pendiente] = [
+                'old' => $articulo_ya_creado->{$campo_pendiente} ?? null,
+                'new' => $valor_pendiente,
+            ];
+        }
+        $this->terminar('asignar identificadores pendientes de la cascada');
 
 
         $this->iniciar();
@@ -2788,6 +2904,37 @@ class ProcessRow {
         ];
 
         $this->log('Fila ' . $fila . ' salteada por match ambiguo en ' . $ambiguo->campo . ' = "' . $ambiguo->valor . '" (' . count($ambiguo->article_ids) . ' articulos candidatos)');
+    }
+
+    /**
+     * Registra que un identificador único (bar_code o sku) que la fila traía no se
+     * pudo asignar a ningún artículo porque el escalón que sí matcheó (más abajo en
+     * la cascada, típicamente provider_code con repetidos permitidos) devolvió MÁS DE
+     * UN artículo. Asignarle un identificador único a varios artículos violaría el
+     * invariante de unicidad, así que se descarta de la fila y se deja este conflicto
+     * para que el usuario lo resuelva a mano (regla de Lucas, 30/7/2026, prompt 08
+     * grupo 265).
+     *
+     * @param int         $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param string      $campo        identificador que no se pudo asignar ('bar_code'|'sku').
+     * @param mixed       $valor        valor de ese identificador tal cual vino del Excel.
+     * @param array       $article_ids  ids de los artículos con los que matcheó el escalón inferior.
+     * @param string|null $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
+     * @return void
+     */
+    function registrar_identificador_sin_asignar($fila, $campo, $valor, array $article_ids, $nombre_excel = null): void
+    {
+        $this->conflictos[] = [
+            'fila'          => $fila,
+            'fila_ganadora' => null,
+            'tipo'          => 'identificador_sin_asignar',
+            'campo'         => $campo,
+            'valor'         => (string) $valor,
+            'article_ids'   => $article_ids,
+            'nombre_excel'  => $nombre_excel,
+        ];
+
+        $this->log('Fila ' . $fila . ': ' . $campo . ' = "' . $valor . '" no se pudo asignar, matcheo con ' . count($article_ids) . ' articulos (provider_code repetido permitido)');
     }
 
     /**
