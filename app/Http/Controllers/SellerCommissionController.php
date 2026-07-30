@@ -57,7 +57,11 @@ class SellerCommissionController extends Controller
     function destroy($id) {
         $model = SellerCommission::find($id);
         $model->delete();
-        SellerCommissionHelper::checkSaldos($model);
+        // Grupo 268 · Prompt 02, bug B: SellerCommissionHelper::checkSaldos() se elimino (dos
+        // funciones de saldo con criterios de orden distintos). $model sigue teniendo sus
+        // atributos en memoria despues de delete(), asi que alcanza para recalcular.
+        $moneda_id = !is_null($model->moneda_id) ? $model->moneda_id : 1;
+        ComisionesHelper::recalcular_saldos($model->seller_id, $moneda_id);
         return response(null, 200);
     }
 }
