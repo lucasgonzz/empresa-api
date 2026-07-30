@@ -300,6 +300,29 @@ abstract class ImportTestCase extends TestCase
     }
 
     /**
+     * Conflictos de tipo 'fila_sobrescrita' de una importación, como pares
+     * fila => fila_ganadora, ordenados por fila.
+     *
+     * @param  \App\Models\ImportHistory $import
+     * @return array  [2 => 4, 4 => 7, ...]
+     */
+    protected function sobrescrituras($import)
+    {
+        $conflictos = ImportConflict::where('import_history_id', $import->id)
+                                        ->where('tipo', 'fila_sobrescrita')
+                                        ->orderBy('fila')
+                                        ->get();
+
+        $pares = [];
+
+        foreach ($conflictos as $conflicto) {
+            $pares[(int) $conflicto->fila] = (int) $conflicto->fila_ganadora;
+        }
+
+        return $pares;
+    }
+
+    /**
      * Recarga un artículo del escenario desde la base.
      *
      * @param  string $clave  A1..A15

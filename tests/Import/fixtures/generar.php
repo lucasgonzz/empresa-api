@@ -292,4 +292,33 @@ escribir('07_cadena_sobre_articulo_existente.xlsx', [
     ['7790001', null, null, 'Cadena existente v3', 130.0, 260.0, 13.0, '21'],
 ], $cabecera);
 
+/* --------------------------------------------------------------------------
+ * 07_repetidos_en_el_archivo - Repetidos DENTRO del archivo, ejercitando la
+ * jerarquia SKU (grupo 265, prompt 05). Comparte el numero "07" con
+ * 07_cadena_sobre_articulo_existente.xlsx (prompt 03) a proposito: asi lo pide
+ * el prompt, y el nombre completo del archivo es lo que lo distingue. Ninguno
+ * de estos codigos existe en el escenario sembrado: este
+ * fixture prueba la deduplicacion dentro del propio Excel, no el matching
+ * contra la base.
+ *
+ *   F2, F3      mismo bar_code, distinto provider_code -> 1 solo articulo (gana F3)
+ *   F4, F5      mismo sku, distinto provider_code       -> 1 solo articulo (gana F5)
+ *                 ESTE ES EL CASO QUE HOY CREA DOS ARTICULOS CON EL MISMO SKU.
+ *   F6, F7      mismo provider_code, DISTINTO sku       -> 2 articulos distintos
+ *                 ESTE ES EL CASO QUE HOY SE FUSIONA MAL.
+ *   F8, F9, F10 mismo provider_code, sin bar_code ni sku -> 1 solo articulo con
+ *                 'ultima_gana' (gana F10) o 3 con 'productos_distintos'.
+ * -------------------------------------------------------------------------- */
+escribir('07_repetidos_en_el_archivo.xlsx', [
+    ['7799100', null,        'PC-R-A', 'Rep bar code v1',    100.0, 150.0, 10.0, '21'],
+    ['7799100', null,        'PC-R-B', 'Rep bar code v2',    200.0, 250.0, 20.0, '21'],
+    [null,      'SKU-R-1',   'PC-R-C', 'Rep sku v1',         300.0, 350.0, 30.0, '21'],
+    [null,      'SKU-R-1',   'PC-R-D', 'Rep sku v2',         400.0, 450.0, 40.0, '21'],
+    [null,      'SKU-R-9',   'PC-R-X', 'Distinto por sku 1', 500.0, 550.0, 50.0, '21'],
+    [null,      'SKU-R-8',   'PC-R-X', 'Distinto por sku 2', 600.0, 650.0, 60.0, '21'],
+    [null,      null,        'PC-R-Z', 'Solo pc v1',         700.0, 750.0, 70.0, '21'],
+    [null,      null,        'PC-R-Z', 'Solo pc v2',         800.0, 850.0, 80.0, '21'],
+    [null,      null,        'PC-R-Z', 'Solo pc v3',         900.0, 950.0, 90.0, '21'],
+], $cabecera);
+
 echo "\nListo.\n";
