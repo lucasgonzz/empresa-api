@@ -871,7 +871,35 @@ class ArticleIndexCache
                     }
 
                     Self::log('Hay IDs reales en BD - retornando colección para actualizar');
-                    return self::con_escalon('provider_code', self::collection_from_index_article_ids($real_ids, $relations, $user_id));
+
+                    /*
+                     * INVARIANTE (grupo 285, prompt 01): a partir de acá, este es el ÚNICO punto de
+                     * find_with_index() que puede devolver una Collection, y tiene que devolverla
+                     * SOLO cuando hay dos o más artículos. ProcessRow::son_varios_articulos() (y
+                     * sus seis llamadores) tratan cualquier Collection como "son varios artículos" --
+                     * antes de este fix, un provider_code que matcheaba un ÚNICO artículo llegaba acá
+                     * como Collection de un elemento, son_varios_articulos() la trataba igual que una
+                     * ambigüedad real, y el SKU/bar_code de la fila se descartaba con un
+                     * import_conflict FALSO de identificador_sin_asignar (coincidía uno, no varios).
+                     * No "arreglar" esto devolviendo false desde son_varios_articulos(): sin
+                     * normalizar acá el origen, esa fila se trataría como "sin match" y crearía un
+                     * artículo duplicado (ver línea ~795, la anulación por !instanceof Article).
+                     */
+                    $resuelto_provider_code_repetido = self::collection_from_index_article_ids($real_ids, $relations, $user_id);
+
+                    if ($resuelto_provider_code_repetido->count() === 1) {
+                        return self::con_escalon('provider_code', $resuelto_provider_code_repetido->first());
+                    }
+
+                    if ($resuelto_provider_code_repetido->count() === 0) {
+                        // No puede pasar hoy (real_ids ya se validó no vacío más arriba), pero si el
+                        // índice quedara desalineado contra la BD, nunca devolver una Collection
+                        // vacía: son_varios_articulos() la trataría como "no son varios" y caería en
+                        // la misma anulación-a-duplicado que el caso de arriba.
+                        return self::con_escalon('provider_code', null);
+                    }
+
+                    return self::con_escalon('provider_code', $resuelto_provider_code_repetido);
 
                 } else {
 

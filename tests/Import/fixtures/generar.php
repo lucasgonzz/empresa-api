@@ -337,4 +337,27 @@ escribir('07_repetidos_en_el_archivo.xlsx', [
     [null,      null,        'PC-R-Z', 'Solo pc v3',         900.0, 950.0, 90.0, '21'],
 ], $cabecera);
 
+/* --------------------------------------------------------------------------
+ * 08 - Match unico de provider_code tratado como multiple (grupo 285, prompt 01).
+ *
+ * Contra el escenario sembrado por ImportTestSeeder, con permitir_provider_code_repetido = true:
+ *
+ *   F2  PC-100 -> existe 1 SOLA vez en el proveedor A (A1). Antes del fix,
+ *       ArticleIndexCache::find_with_index() devolvia igual una Collection (de un elemento)
+ *       en esta rama, y ProcessRow::son_varios_articulos() la trataba como "son varios":
+ *       el sku de la fila se DESCARTABA con un import_conflict identificador_sin_asignar
+ *       falso, en vez de asignarse a A1.
+ *   F3  PC-DUP -> existe 2 veces en el proveedor A (A3 y A4). Es el caso real de "son
+ *       varios": el sku SI tiene que descartarse y SI tiene que quedar el conflicto. Este
+ *       fixture no prueba solo el fix, prueba tambien que el invariante de Lucas (prompt 08,
+ *       grupo 265: nunca asignar un identificador unico a mas de un articulo) sigue de pie.
+ *
+ * Fixture propio (no reusa 01_codigos_de_proveedor.xlsx) para que este test no dependa de
+ * que nadie mas edite ese archivo por otro motivo.
+ * -------------------------------------------------------------------------- */
+escribir('08_match_unico_provider_code.xlsx', [
+    [null, 'SKU-MATCH-UNICO',    'PC-100', 'Match unico via provider code',    111.0, 222.0, 11.0, '21'],
+    [null, 'SKU-MATCH-MULTIPLE', 'PC-DUP', 'Match multiple via provider code', 222.0, 333.0, 22.0, '21'],
+], $cabecera);
+
 echo "\nListo.\n";
