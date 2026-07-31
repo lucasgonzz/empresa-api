@@ -1600,9 +1600,6 @@ class ProcessRow {
             } elseif (!empty($data['provider_code']) && !in_array('provider_code', $campos_pendientes, true)) {
                 $match_field = 'provider_code';
                 $match_value = $data['provider_code'];
-            } elseif (!empty($data['name'])) {
-                $match_field = 'name';
-                $match_value = $data['name'];
             }
 
             if (!is_null($match_field)) {
@@ -2046,16 +2043,7 @@ class ProcessRow {
         // 5) Coincidencia por name
         if (!empty($data['name'])) {
 
-            /*
-             * Grupo 294, prompt 03 (incidente Servian): mismo motivo que el comentario
-             * de __match_key en procesar_articulo_ya_creado() -- una fila que ACTUALIZA
-             * (no crea) un articulo cuyo name no cambio no deja 'name' en la entrada
-             * encolada (get_modified_fields() solo guarda lo que difiere), asi que la
-             * comparacion literal de abajo no alcanza para detectar la repeticion.
-             */
-            $match_via_key = isset($art['__match_key']) && $art['__match_key'] === ('name|' . $data['name']);
-
-            if ($match_via_key || (!empty($art['name']) && $art['name'] === $data['name'])) {
+            if (!empty($art['name']) && $art['name'] === $data['name']) {
 
                 // --- REGLA NUEVA ---
                 // Si se permiten codigos de proveedor repetidos, SOLO marcamos repetido
