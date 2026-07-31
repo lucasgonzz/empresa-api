@@ -1545,11 +1545,27 @@ class ProcessRow {
 
             /*
              * Marcador generico de "por que campo se identifico esta fila" (prompt 03,
-             * grupo 265): a diferencia de __bar_code (solo bar_code), __match_key cubre
-             * tambien sku y provider_code, para que una repeticion posterior del mismo
-             * identificador en el Excel (merge_fila_duplicada) encuentre esta entrada
-             * sin importar cual de los tres escalones la identifico. Misma prioridad
-             * que esta_repetido(): bar_code, despues sku, despues provider_code.
+             * grupo 265; escalon 'name' agregado en grupo 294, prompt 03, incidente
+             * Servian): a diferencia de __bar_code (solo bar_code), __match_key cubre
+             * tambien sku, provider_code y name, para que una repeticion posterior del
+             * mismo identificador en el Excel (merge_fila_duplicada, o la guarda de
+             * esta_repetido() para no reprocesar la fila) encuentre esta entrada sin
+             * importar cual de los cuatro escalones la identifico. Misma prioridad que
+             * esta_repetido(): bar_code, despues sku, despues provider_code, despues name.
+             *
+             * Por que hacia falta el escalon 'name': get_modified_fields() SOLO incluye
+             * un campo en $cambios cuando CAMBIA respecto del valor ya guardado (linea
+             * ~2064 de este archivo). Si dos filas del Excel actualizan el MISMO articulo
+             * (no lo crean) y comparten un name que YA es el que tiene el articulo en
+             * base, 'name' nunca entra a $cambios -- $art['name'] queda ausente en la
+             * entrada encolada, y la comparacion literal de esta_repetido() (linea
+             * ~1981, "!empty($art['name']) && $art['name'] === $data['name']") no tiene
+             * con que comparar. La segunda fila no se detecta como repetida, procesa de
+             * nuevo contra el MISMO articulo por su cuenta, y puede dejar un
+             * StockMovement fantasma si su delta de stock no calza justo con 0 en ese
+             * instante (bug real: reimportar dos veces el mismo Excel con un par de
+             * nombres identicos en el mismo chunk generaba un movimiento de stock que no
+             * correspondia a ningun cambio real).
              */
             $match_field = null;
             $match_value = null;
@@ -1563,6 +1579,9 @@ class ProcessRow {
             } elseif (!empty($data['provider_code'])) {
                 $match_field = 'provider_code';
                 $match_value = $data['provider_code'];
+            } elseif (!empty($data['name'])) {
+                $match_field = 'name';
+                $match_value = $data['name'];
             }
 
             if (!is_null($match_field)) {
@@ -1978,7 +1997,16 @@ class ProcessRow {
         // 5) Coincidencia por name
         if (!empty($data['name'])) {
 
-            if (!empty($art['name']) && $art['name'] === $data['name']) {
+            /*
+             * Grupo 294, prompt 03 (incidente Servian): mismo motivo que el comentario
+             * de __match_key en procesar_articulo_ya_creado() -- una fila que ACTUALIZA
+             * (no crea) un articulo cuyo name no cambio no deja 'name' en la entrada
+             * encolada (get_modified_fields() solo guarda lo que difiere), asi que la
+             * comparacion literal de abajo no alcanza para detectar la repeticion.
+             */
+            $match_via_key = isset($art['__match_key']) && $art['__match_key'] === ('name|' . $data['name']);
+
+            if ($match_via_key || (!empty($art['name']) && $art['name'] === $data['name'])) {
 
                 // --- REGLA NUEVA ---
                 // Si se permiten codigos de proveedor repetidos, SOLO marcamos repetido

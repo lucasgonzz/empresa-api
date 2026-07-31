@@ -63,7 +63,26 @@ class ActualizarBBDD {
         $this->user                                 = $user;
         $this->auth_user_id                         = $auth_user_id;
         $this->codigos_proveedor_repetidos          = $codigos_proveedor_repetidos;
-        $this->chunk_number                         = $chunk_number.'-'.time(); 
+
+        /*
+         * BUG real (grupo 294, incidente Servian, hallado investigando el prompt 03):
+         * el sufijo era time() -- resolucion de UN SEGUNDO. InitExcelImport reinicia
+         * $chunk_number en 1 en CADA importacion (no es global al tenant), asi que dos
+         * importaciones del mismo usuario que caen dentro del MISMO segundo (dos
+         * imports seguidos, o incluso dos chunks de la misma corrida bajo carga)
+         * terminaban con el MISMO chunk_number compuesto (ej. "1-1785529529").
+         * set_articulos_creados_models() (linea ~1577) filtra articulos SOLO por
+         * user_id + chunk_number, sin import_history_id -- con la colision, esa query
+         * devuelve tambien articulos de la importacion VIEJA, y
+         * get_article_model_from_cache() les asigna precio/stock de una fila que no
+         * les corresponde. Reproducido de forma no determinista corriendo la misma
+         * reimportacion varias veces seguidas: aparecian StockMovement en articulos
+         * sin ninguna relacion con la fila que los origino. $import_history_id ya es
+         * unico por importacion (clave primaria de la tabla), asi que sirve de sufijo
+         * real; time() queda solo de fallback para el llamador (ninguno hoy) que no lo
+         * provea.
+         */
+        $this->chunk_number                         = $chunk_number . '-' . (!is_null($import_history_id) ? $import_history_id : time());
 
         $this->provider_buffer                      = $provider_buffer;
 
