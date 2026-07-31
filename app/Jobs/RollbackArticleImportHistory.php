@@ -100,10 +100,26 @@ class RollbackArticleImportHistory implements ShouldQueue
         /**
          * Cargamos todas las relaciones necesarias en una sola consulta para
          * evitar lecturas parciales durante el procesamiento del rollback.
+         *
+         * BUG encontrado al implementar este prompt (grupo 295, prompt 03): acá se
+         * cargaba `articulos_creados` de `ImportHistory` (pivot
+         * `article_creados_import_history`), pero NADA en el flujo activo de
+         * importación escribe esa pivot -- su único invocador,
+         * `ArticleImportHistoryHelper::attach_articulos_creados()` desde
+         * `ArticleImportHelper::create_import_history()`, está comentado, y esa
+         * función solo la llama el import legacy (`ArticleImportViejo`), no
+         * `ArticleImport`. Resultado: `$import_history->articulos_creados` viene
+         * SIEMPRE vacío y el rollback nunca borraba nada, sin reportar ningún error
+         * (ver `ArticleImportHelper::update_article_import_result()`, que sí
+         * adjunta a `ArticleImportResult::articulos_creados()` -- pivot
+         * `article_creados_article_import_result`, a nivel de CHUNK -- cuando
+         * `registrar_art_cre` está activo). Los artículos actualizados YA se leían
+         * correctamente a nivel de chunk (`chunks.articulos_actualizados`); los
+         * creados tienen que leerse de la misma forma, no del historial completo.
          */
         $import_history = ImportHistory::with([
             'chunks.articulos_actualizados',
-            'articulos_creados',
+            'chunks.articulos_creados',
         ])->find($this->import_history_id);
 
         if (is_null($import_history)) {
@@ -295,9 +311,14 @@ class RollbackArticleImportHistory implements ShouldQueue
 
         /**
          * IDs de artículos creados por importación para eliminarlos luego de
-         * restaurar actualizados, todo dentro de una transacción atómica.
+         * restaurar actualizados, todo dentro de una transacción atómica. Se leen
+         * de los chunks (ver el comentario sobre el eager-load más arriba), no del
+         * import_history directamente.
          */
-        $created_article_ids = $import_history->articulos_creados
+        $created_article_ids = $import_history->chunks
+                                            ->flatMap(function ($chunk) {
+                                                return $chunk->articulos_creados;
+                                            })
                                             ->pluck('id')
                                             ->unique()
                                             ->values()
