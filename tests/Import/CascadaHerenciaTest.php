@@ -85,13 +85,14 @@ class CascadaHerenciaTest extends ImportTestCase
         $articulo->bar_code      = null;
         $articulo->name          = 'Art target unico';
         $articulo->cost          = 500;
-        $articulo->final_price   = 1000;
         $articulo->stock         = 0;
         $articulo->iva_id        = 2;
         $articulo->status        = 'active';
         $articulo->online        = 1;
 
         $articulo->save();
+
+        ImportTestSeeder::derivar_precio($articulo, $this->tenant->id);
 
         $this->pc_t_unico = $articulo;
     }

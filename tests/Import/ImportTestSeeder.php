@@ -4,6 +4,7 @@ namespace Tests\Import;
 
 use App\Models\Article;
 use App\Models\Provider;
+use App\Http\Controllers\Helpers\ArticleHelper;
 
 /**
  * Siembra el escenario de artículos y proveedores que usan todos los tests de
@@ -101,7 +102,6 @@ class ImportTestSeeder
                 'provider_code' => $definicion['provider_code'],
                 'provider_id'   => $provider_id,
                 'cost'          => $definicion['cost'],
-                'final_price'   => $definicion['cost'] * 2,
                 'stock'         => $definicion['stock'],
                 'iva_id'        => 2,
                 'status'        => 'active',
@@ -151,7 +151,39 @@ class ImportTestSeeder
 
         $article->save();
 
+        self::derivar_precio($article, $props['user_id']);
+
         return $article;
+    }
+
+    /**
+     * Deriva final_price, costo_real y price de un artículo ya guardado por la
+     * misma vía que usa la importación real (ActualizarBBDD::set_precios_finales()
+     * llama a este mismo helper). El baseline de los fixtures tiene que ser un
+     * estado que el sistema pueda haber producido -- no un valor arbitrario -- para
+     * que el rollback (que restaura la propiedad tocada y deja que las derivadas se
+     * recalculen) tenga algo consistente contra qué compararse.
+     *
+     * Recarga el artículo desde la base ANTES de derivar (bug encontrado al
+     * implementar el prompt 02 de este grupo): `articles.aplicar_iva` tiene
+     * default(1) a nivel de esquema, y acá nunca se asigna esa propiedad
+     * explícitamente, así que el objeto en memoria la tiene en null hasta que se
+     * recarga -- aunque la fila ya insertada en la base tenga 1 real. Sin este
+     * refresh, `setFinalPrice()` deriva contra `aplicar_iva` falso (sin IVA),
+     * mientras que CUALQUIER recálculo posterior que recargue el modelo fresco
+     * (el propio rollback del prompt 02) lo deriva con IVA real: dos derivaciones
+     * de la MISMA fila divergen 21%, no porque el rollback esté mal, sino porque
+     * este baseline se calculó contra un estado que la base ya no tenía.
+     *
+     * @param  \App\Models\Article $article
+     * @param  int                 $user_id
+     * @return \App\Models\Article
+     */
+    public static function derivar_precio($article, $user_id)
+    {
+        $article->refresh();
+
+        return ArticleHelper::setFinalPrice($article, $user_id);
     }
 
     /**

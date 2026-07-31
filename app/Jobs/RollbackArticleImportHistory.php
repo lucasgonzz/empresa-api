@@ -2,9 +2,11 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Models\Article;
 use App\Models\ArticleVariant;
 use App\Models\ImportHistory;
+use App\Models\PriceType;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
 use Illuminate\Bus\Queueable;
@@ -52,6 +54,31 @@ class RollbackArticleImportHistory implements ShouldQueue
     public $tries = 1;
 
     /**
+     * Campos DERIVADOS del precio: no se restauran desde el diff, son el resultado
+     * de aplicar `ArticleHelper::setFinalPrice()` sobre los insumos ya restaurados
+     * (ver recalcular_precios_derivados()). Reponer acá un valor "congelado" del
+     * diff es exactamente el snapshot ciego que la semántica del rollback definida
+     * por Lucas (31/7/2026) prohíbe: si el margen cambió entre la importación y el
+     * rollback, el `final_price` viejo ya no corresponde a la configuración actual.
+     *
+     * `price` DELIBERADAMENTE NO está en esta lista: es un insumo (el precio fijo
+     * manual cuando el artículo no se maneja por margen de ganancia) y se restaura
+     * desde el diff igual que `cost` o `percentage_gain`. `setFinalPrice()` lo va a
+     * volver a poner en null si el artículo tiene margen configurado -- mismo
+     * criterio que aplica siempre, no algo especial de acá. El juez de que esta
+     * decisión sea correcta es `ArticleSnapshot` (compara `price` y `final_price`
+     * campo por campo).
+     *
+     * @var string[]
+     */
+    protected const DERIVED_PRICE_FIELDS = [
+        'final_price',
+        'costo_real',
+        'previus_final_price',
+        'final_price_updated_at',
+    ];
+
+    /**
      * Crea una nueva instancia del job.
      *
      * @param int $import_history_id
@@ -73,10 +100,26 @@ class RollbackArticleImportHistory implements ShouldQueue
         /**
          * Cargamos todas las relaciones necesarias en una sola consulta para
          * evitar lecturas parciales durante el procesamiento del rollback.
+         *
+         * BUG encontrado al implementar este prompt (grupo 295, prompt 03): acá se
+         * cargaba `articulos_creados` de `ImportHistory` (pivot
+         * `article_creados_import_history`), pero NADA en el flujo activo de
+         * importación escribe esa pivot -- su único invocador,
+         * `ArticleImportHistoryHelper::attach_articulos_creados()` desde
+         * `ArticleImportHelper::create_import_history()`, está comentado, y esa
+         * función solo la llama el import legacy (`ArticleImportViejo`), no
+         * `ArticleImport`. Resultado: `$import_history->articulos_creados` viene
+         * SIEMPRE vacío y el rollback nunca borraba nada, sin reportar ningún error
+         * (ver `ArticleImportHelper::update_article_import_result()`, que sí
+         * adjunta a `ArticleImportResult::articulos_creados()` -- pivot
+         * `article_creados_article_import_result`, a nivel de CHUNK -- cuando
+         * `registrar_art_cre` está activo). Los artículos actualizados YA se leían
+         * correctamente a nivel de chunk (`chunks.articulos_actualizados`); los
+         * creados tienen que leerse de la misma forma, no del historial completo.
          */
         $import_history = ImportHistory::with([
             'chunks.articulos_actualizados',
-            'articulos_creados',
+            'chunks.articulos_creados',
         ])->find($this->import_history_id);
 
         if (is_null($import_history)) {
@@ -168,6 +211,27 @@ class RollbackArticleImportHistory implements ShouldQueue
                 }
 
                 foreach ($updated_props as $key => $value) {
+                    /*
+                     * BUG encontrado al implementar este prompt (grupo 295, prompt 02): el
+                     * diff de stock global no vive en el primer nivel de updated_props como
+                     * el resto de las columnas (__diff__cost, __diff__bar_code, etc.), sino
+                     * anidado un nivel más abajo bajo la clave 'stock_global' (ver
+                     * ProcessRow::procesar_articulo_ya_creado(), ~línea 1470). El scan de
+                     * abajo solo mira claves de primer nivel que empiezan con "__diff__", así
+                     * que sin este desanidado 'stock' nunca entraba a restore_map y el
+                     * rollback jamás lo tocaba. Se desanida acá, en la copia local de
+                     * $key/$value de esta iteración (no muta el array original).
+                     */
+                    if (
+                        $key === 'stock_global'
+                        && is_array($value)
+                        && isset($value['__diff__stock'])
+                        && is_array($value['__diff__stock'])
+                    ) {
+                        $key   = '__diff__stock';
+                        $value = $value['__diff__stock'];
+                    }
+
                     /**
                      * Solo usamos entradas __diff__* porque contienen old/new
                      * y permiten reconstruir el estado anterior real.
@@ -215,6 +279,15 @@ class RollbackArticleImportHistory implements ShouldQueue
                         continue;
                     }
 
+                    /*
+                     * Los campos derivados del precio no se restauran desde el diff: se
+                     * recalculan después de restaurar insumos y relaciones (ver
+                     * recalcular_precios_derivados() y DERIVED_PRICE_FIELDS arriba).
+                     */
+                    if (in_array($field_name, self::DERIVED_PRICE_FIELDS, true)) {
+                        continue;
+                    }
+
                     $old_value = $value['old'];
 
                     if (is_array($old_value) || is_object($old_value)) {
@@ -238,9 +311,14 @@ class RollbackArticleImportHistory implements ShouldQueue
 
         /**
          * IDs de artículos creados por importación para eliminarlos luego de
-         * restaurar actualizados, todo dentro de una transacción atómica.
+         * restaurar actualizados, todo dentro de una transacción atómica. Se leen
+         * de los chunks (ver el comentario sobre el eager-load más arriba), no del
+         * import_history directamente.
          */
-        $created_article_ids = $import_history->articulos_creados
+        $created_article_ids = $import_history->chunks
+                                            ->flatMap(function ($chunk) {
+                                                return $chunk->articulos_creados;
+                                            })
                                             ->pluck('id')
                                             ->unique()
                                             ->values()
@@ -264,6 +342,24 @@ class RollbackArticleImportHistory implements ShouldQueue
              */
             foreach ($relations_restore_map as $article_id => $relation_diffs) {
                 $this->revert_relations($article_id, $relation_diffs);
+            }
+
+            /**
+             * Recalculamos los campos derivados del precio (final_price, costo_real,
+             * etc.) de los artículos restaurados, DESPUÉS de restaurar insumos y
+             * relaciones: los descuentos y recargos entran en el cálculo, así que el
+             * orden no es negociable. No incluye a los artículos CREADOS por la
+             * importación: se eliminan a continuación, recalcularles el precio sería
+             * trabajo tirado. Tampoco toca artículos ajenos a la importación: solo
+             * recorre los ids que aparecen en restore_map o relations_restore_map.
+             */
+            $articulos_a_recalcular = array_unique(array_merge(
+                array_keys($restore_map),
+                array_keys($relations_restore_map)
+            ));
+
+            if (!empty($articulos_a_recalcular)) {
+                $this->recalcular_precios_derivados($articulos_a_recalcular, (int) $import_history->user_id);
             }
 
             /**
@@ -340,6 +436,37 @@ class RollbackArticleImportHistory implements ShouldQueue
             'relations_reverted_articles'  => count($relations_restore_map),
             'deleted_created_articles'     => count($created_article_ids),
         ]);
+    }
+
+    /**
+     * Recalcula final_price, costo_real, previus_final_price y final_price_updated_at
+     * de los artículos restaurados, por la misma vía que usa la importación real
+     * (`ArticleHelper::setFinalPrice()`, la misma que llama
+     * `ActualizarBBDD::set_precios_finales()`). No se escribe una derivación nueva:
+     * se recargan los modelos frescos -- los pasos anteriores restauraron columnas y
+     * relaciones con query builder (`Article::where()->update()`, `DB::table()`),
+     * que no pasan por Eloquent, así que cualquier modelo en memoria quedó viejo --
+     * y se les vuelve a aplicar el cálculo normal.
+     *
+     * @param  int[] $article_ids
+     * @param  int   $user_id
+     * @return void
+     */
+    protected function recalcular_precios_derivados(array $article_ids, int $user_id): void
+    {
+        $user = User::find($user_id);
+
+        if (is_null($user)) {
+            return;
+        }
+
+        $price_types = PriceType::where('user_id', $user->id)
+                                    ->orderBy('position', 'ASC')
+                                    ->get();
+
+        Article::whereIn('id', $article_ids)->get()->each(function (Article $article) use ($user, $price_types) {
+            ArticleHelper::setFinalPrice($article, $user->id, $user, $this->owner_user_id, true, $price_types);
+        });
     }
 
     /**
