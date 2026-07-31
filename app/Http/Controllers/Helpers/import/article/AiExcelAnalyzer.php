@@ -225,13 +225,28 @@ class AiExcelAnalyzer
          * Calcula conteos intra-archivo y cruza contra BD para detectar colisiones.
          * Nunca lanza excepción hacia el caller; en caso de error retorna conteos en 0.
          */
-        $parsed['duplicate_stats'] = ExcelDuplicateStats::analyze(
+        $duplicate_stats = ExcelDuplicateStats::analyze(
             $excel_path,
             $bar_code_idx,
             $provider_code_idx,
             $parsed['provider_id'] ?? null,
             $this->user_id
         );
+
+        /*
+         * (grupo 291, prompt 03) ExcelDuplicateStats::analyze() ahora también devuelve
+         * 'provider_codes_distintos': la lista completa de provider_codes distintos del
+         * archivo. RunExcelAnalysisJob la necesita para persistirla en
+         * excel_analysis_runs.codigos_proveedor (así refreshProviderStats() no tiene que
+         * releer el archivo), pero puede tener decenas de miles de strings y NO debe viajar
+         * en $parsed['duplicate_stats']: ese array se copia tal cual dentro de
+         * RunExcelAnalysisJob::handle() a "resultado", que a su vez se devuelve tal cual por
+         * GET /ai-excel-import/analysis/{uuid}. Por eso se saca acá y se guarda aparte, en una
+         * clave de nivel superior que el job sí lee pero que el resultado no reexpone.
+         */
+        $parsed['provider_codes_distintos'] = $duplicate_stats['provider_codes_distintos'] ?? [];
+        unset($duplicate_stats['provider_codes_distintos']);
+        $parsed['duplicate_stats'] = $duplicate_stats;
 
         /*
          * Paso 8.1: Análisis de la cadena de identificación efectiva (prompt 06, grupo 229).

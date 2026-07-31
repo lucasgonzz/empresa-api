@@ -3,6 +3,8 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
+use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
+use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
 use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
 use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
 use App\Models\ExcelAnalysisRun;
@@ -14,8 +16,8 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Job que ejecuta en segundo plano el análisis de un Excel de importación
- * (grupo 291, prompt 02).
+ * Job que ejecuta en segundo plano el análisis (y, desde el prompt 03, también la
+ * recomendación de configuración) de un Excel de importación (grupo 291).
  *
  * Antes de este job, AiExcelImportController::analyze() corría todo el análisis
  * (cuatro recorridos completos del archivo — count_data_rows, ExcelDuplicateStats,
@@ -27,6 +29,12 @@ use Illuminate\Support\Facades\Log;
  * helpers de análisis) a un worker, y persiste progreso/resultado en la tabla
  * excel_analysis_runs para que el frontend haga polling con GET
  * /ai-excel-import/analysis/{uuid}.
+ *
+ * (Grupo 291, prompt 03) `getRecomendacion()` tenía el mismo problema — tres
+ * recorridos del archivo más otra llamada a Claude — así que ahora también pasa
+ * por este job, ramificando por `$run->tipo` ('analisis' vs 'recomendacion').
+ * Dentro del job no hay usuario autenticado: todo lo que antes usaba
+ * `$this->userId()` en el controller ahora usa `$run->user_id`.
  *
  * Riesgo conocido y aceptado: este job se despacha a la cola por defecto de la
  * conexión activa — la misma cola que usan los chunks de ProcessArticleImport /
@@ -80,7 +88,8 @@ class RunExcelAnalysisJob implements ShouldQueue
     }
 
     /**
-     * Ejecuta el análisis del Excel y persiste el resultado en la corrida.
+     * Ejecuta la corrida (análisis o recomendación, según `tipo`) y persiste el
+     * resultado.
      *
      * @return void
      */
@@ -124,6 +133,31 @@ class RunExcelAnalysisJob implements ShouldQueue
             return;
         }
 
+        /*
+         * (grupo 291, prompt 03) Ramificamos por tipo: 'recomendacion' mueve el
+         * cuerpo que antes vivía en AiExcelImportController::getRecomendacion();
+         * cualquier otro valor (por ahora solo 'analisis') sigue el camino
+         * original de este job, sin cambios de comportamiento.
+         */
+        if ($run->tipo === 'recomendacion') {
+            $this->handle_recomendacion($run, $excel_full_path);
+            return;
+        }
+
+        $this->handle_analisis($run, $excel_full_path);
+    }
+
+    /**
+     * Ejecuta el análisis inicial del Excel (tipo = 'analisis') y persiste el
+     * resultado en la corrida. Es la lógica original de este job (prompt 02),
+     * con el agregado de persistir `codigos_proveedor` (prompt 03).
+     *
+     * @param  \App\Models\ExcelAnalysisRun  $run              Corrida en curso, ya en estado "procesando"
+     * @param  string                        $excel_full_path  Ruta absoluta al archivo Excel
+     * @return void
+     */
+    protected function handle_analisis(ExcelAnalysisRun $run, string $excel_full_path)
+    {
         /* Parámetros con los que el controller creó esta corrida (ver analyze()). */
         $payload           = $run->payload ?? [];
         $model             = (string) ($payload['model'] ?? 'article');
@@ -175,17 +209,23 @@ class RunExcelAnalysisJob implements ShouldQueue
             ];
 
             /*
-             * codigos_proveedor queda en null en este prompt: extraer la lista de
-             * códigos distintos del archivo desde acá exigiría un quinto recorrido
-             * (ExcelDuplicateStats no los expone en su resultado hoy). El prompt 03
-             * se encarga de eso desde ExcelDuplicateStats y ya tiene fallback para
-             * cuando este campo viene null.
+             * (grupo 291, prompt 03) Persistimos la lista de provider_codes distintos
+             * del archivo en codigos_proveedor: AiExcelAnalyzer::analyze() la extrajo
+             * de duplicate_stats y la devuelve en $analysis['provider_codes_distintos']
+             * (ver ese archivo para el porqué de sacarla de ahí). Con esto,
+             * refreshProviderStats() puede recalcular sin releer el archivo.
+             * Para model=client/provider este campo no viene (esos analyzers no usan
+             * ExcelDuplicateStats), así que queda null igual que antes de este prompt;
+             * refreshProviderStats() ya tiene fallback para ese caso.
              */
+            $codigos_proveedor = $analysis['provider_codes_distintos'] ?? null;
+
             $run->update([
-                'estado'    => 'listo',
-                'progreso'  => 100,
-                'paso'      => null,
-                'resultado' => $resultado,
+                'estado'            => 'listo',
+                'progreso'          => 100,
+                'paso'              => null,
+                'resultado'         => $resultado,
+                'codigos_proveedor' => $codigos_proveedor,
             ]);
 
         } catch (\RuntimeException $e) {
@@ -210,6 +250,153 @@ class RunExcelAnalysisJob implements ShouldQueue
             $run->update([
                 'estado' => 'error',
                 'error'  => 'Ocurrió un error inesperado al analizar el archivo: ' . $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Ejecuta el cálculo de la recomendación de configuración (tipo = 'recomendacion')
+     * y persiste el resultado en la corrida (grupo 291, prompt 03).
+     *
+     * Es el mismo cuerpo que antes vivía, síncrono, en
+     * AiExcelImportController::getRecomendacion(): recalcula duplicate_stats con el
+     * proveedor confirmado por el usuario, formatos_numericos y duplicados_con_nombres,
+     * y le pide a Claude la recomendación final.
+     *
+     * IMPORTANTE: dentro del job no hay usuario autenticado. Todo lo que en el
+     * controller original resolvía con $this->userId() acá se resuelve con
+     * $run->user_id (el id del usuario que disparó /get-recomendacion, guardado al
+     * crear la corrida). Si esto se pierde y se cuela un Auth::user() implícito en
+     * algún helper, la recomendación terminaría calculándose contra el catálogo de
+     * otro cliente o contra ninguno.
+     *
+     * @param  \App\Models\ExcelAnalysisRun  $run              Corrida en curso, ya en estado "procesando"
+     * @param  string                        $excel_full_path  Ruta absoluta al archivo Excel
+     * @return void
+     */
+    protected function handle_recomendacion(ExcelAnalysisRun $run, string $excel_full_path)
+    {
+        /* Parámetros con los que el controller creó esta corrida (ver getRecomendacion()). */
+        $payload = $run->payload ?? [];
+
+        /* Proveedor confirmado por el usuario (puede ser null si no aplica). */
+        $provider_id = $payload['provider_id'] ?? null;
+
+        /* Índice 0-based de la columna provider_code en el Excel. */
+        $provider_code_column_index = $payload['provider_code_column_index'] ?? null;
+
+        /* Mapeo de columnas confirmado por el usuario en el paso 2 del modal. */
+        $column_mapping = $payload['column_mapping'] ?? [];
+
+        /*
+         * Derivar el índice 0-based de la columna bar_code desde el column_mapping.
+         * Igual que en el controller original: sin este índice, cuando no hay
+         * provider_code, ExcelDuplicateStats retorna todo en 0.
+         */
+        $bar_code_column_index = null;
+        foreach ($column_mapping as $col) {
+            if (($col['system_property'] ?? null) === 'codigo_de_barras') {
+                $bar_code_column_index = isset($col['excel_column_index'])
+                    ? (int) $col['excel_column_index']
+                    : null;
+                break;
+            }
+        }
+
+        try {
+            /* Hito de progreso: por entrar a la parte más pesada del recorrido del archivo. */
+            $run->update([
+                'progreso' => 30,
+                'paso'     => 'Calculando estadísticas…',
+            ]);
+
+            /*
+             * Recalcular duplicate_stats con el proveedor real confirmado por el usuario,
+             * igual que hacía el endpoint síncrono. $run->user_id reemplaza a
+             * $this->userId(): no hay usuario autenticado dentro del job.
+             */
+            $stats = ExcelDuplicateStats::analyze(
+                $excel_full_path,
+                $bar_code_column_index,
+                $provider_code_column_index,
+                $provider_id,
+                $run->user_id
+            );
+
+            $analyzer = new AiExcelAnalyzer($run->user_id);
+
+            /*
+             * Recalcular formatos_numericos con el column_mapping confirmado por el
+             * usuario (grupo 239, prompt 02), igual que hacía el endpoint síncrono.
+             */
+            $numeric_columns_map = $analyzer->build_numeric_columns_map($column_mapping);
+            $formatos_numericos  = ExcelNumericFormatStats::analyze(
+                $excel_full_path,
+                $numeric_columns_map['indices'],
+                $numeric_columns_map['nombres']
+            );
+
+            /*
+             * Nombres de las filas con código de proveedor repetido (grupo 284, prompt 03):
+             * evidencia que le permite a Claude recomendar politica_intra_archivo.
+             */
+            $duplicados_con_nombres = $analyzer->build_duplicados_con_nombres(
+                $excel_full_path,
+                $stats['detalle_provider_codes_duplicados'] ?? [],
+                $column_mapping
+            );
+
+            /* Hito de progreso: por entrar a la llamada a Claude. */
+            $run->update([
+                'progreso' => 80,
+                'paso'     => 'Generando recomendación con IA…',
+            ]);
+
+            /* Generar recomendación con los stats recalculados para el proveedor confirmado. */
+            $recomendacion = $analyzer->ask_claude_for_recomendation($stats, $column_mapping, $formatos_numericos, $duplicados_con_nombres);
+
+            /*
+             * Mismo array que devolvía el endpoint síncrono en su respuesta 200
+             * (ver AiExcelImportController::getRecomendacion() previo a este prompt).
+             * No incluye 'provider_codes_distintos': $stats la trae ahora (prompt 03),
+             * pero acá se listan explícitamente solo las claves que el frontend espera.
+             */
+            $resultado = [
+                'recomendacion_configuracion'                 => $recomendacion,
+                'provider_codes_existentes_mismo_proveedor'   => $stats['provider_codes_existentes_mismo_proveedor'] ?? 0,
+                'provider_codes_existentes_otros_proveedores' => $stats['provider_codes_existentes_otros_proveedores'] ?? 0,
+                'formatos_numericos'                          => $formatos_numericos,
+            ];
+
+            $run->update([
+                'estado'    => 'listo',
+                'progreso'  => 100,
+                'paso'      => null,
+                'resultado' => $resultado,
+            ]);
+
+        } catch (\RuntimeException $e) {
+            /* Mismo caso que antes devolvía 422 con el mensaje propio del analyzer. */
+            Log::warning('RunExcelAnalysisJob: error de recomendación', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+            ]);
+
+            $run->update([
+                'estado' => 'error',
+                'error'  => $e->getMessage(),
+            ]);
+
+        } catch (\Throwable $e) {
+            Log::error('RunExcelAnalysisJob: error inesperado al generar la recomendación', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+                'trace'                  => $e->getTraceAsString(),
+            ]);
+
+            $run->update([
+                'estado' => 'error',
+                'error'  => 'Error inesperado al generar la recomendación: ' . $e->getMessage(),
             ]);
         }
     }

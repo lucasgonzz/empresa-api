@@ -505,10 +505,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     /*
      * Importación asistida por Claude IA (artículos, clientes, proveedores).
      *  - POST /ai-excel-import/analyze              : encola el análisis del Excel (grupo 291, prompt 02) y devuelve el uuid de la corrida
-     *  - GET  /ai-excel-import/analysis/{uuid}      : consulta estado/resultado de la corrida de análisis encolada por /analyze
+     *  - GET  /ai-excel-import/analysis/{uuid}      : consulta estado/resultado de la corrida encolada por /analyze o /get-recomendacion
      *  - POST /ai-excel-import/import               : lanza la importación con el mapeo confirmado por el usuario
-     *  - POST /ai-excel-import/refresh-provider-stats : recalcula conteos de códigos existentes al cambiar proveedor
-     *  - POST /ai-excel-import/get-recomendacion    : genera la recomendación de configuración con el proveedor real confirmado
+     *  - POST /ai-excel-import/refresh-provider-stats : recalcula conteos de códigos existentes al cambiar proveedor (sin releer el Excel si ya hay un análisis previo, grupo 291 prompt 03)
+     *  - POST /ai-excel-import/get-recomendacion    : encola la recomendación de configuración con el proveedor real confirmado (grupo 291, prompt 03) y devuelve el uuid de la corrida
      */
     Route::post('/ai-excel-import/analyze', 'AiExcelImportController@analyze');
     Route::get('/ai-excel-import/analysis/{uuid}', 'AiExcelImportController@analysisStatus');
