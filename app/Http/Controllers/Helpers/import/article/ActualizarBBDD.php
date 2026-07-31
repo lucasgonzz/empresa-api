@@ -1067,6 +1067,19 @@ class ActualizarBBDD {
             }
         }
 
+        /*
+         * Grupo 301, prompt 02: guarda dura, incondicional, para las dos rutas (creación y
+         * actualización) -- un delta cero NUNCA puede producir un StockMovement. La rama de
+         * arriba ya cubre la ruta de actualización (recalcula contra fresh() y corta si da
+         * cero); esto es defensa en profundidad para la ruta de creación, que no pasa por
+         * ahí (no llama fresh() por costo, ver comentario del docblock), y para cualquier
+         * llamador futuro que le pase un $amount ya cero sin pasar $target_stock. Un
+         * movimiento que no mueve stock es un asiento falso en el historial del cliente.
+         */
+        if ((float) $amount == 0.0) {
+            return;
+        }
+
         $this->log('guardar_stock_movement_global amount: '.$amount);
 
         $data = [];

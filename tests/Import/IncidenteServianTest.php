@@ -345,10 +345,25 @@ class IncidenteServianTest extends ImportTestCase
     {
         $antes = StockMovement::where('user_id', $this->tenant->id)->count();
 
+        /*
+         * Grupo 301, prompt 02: filtrar "los movimientos de la segunda importacion" por
+         * created_at >= $segunda->created_at (como era antes) es un artefacto de medicion,
+         * no un chequeo real. stock_movements.created_at es un TIMESTAMP de Laravel
+         * ($table->timestamps()), resolucion de UN SEGUNDO sin fraccion. Si la primera
+         * importacion termina de escribir sus movimientos de creacion en el MISMO segundo
+         * de reloj en que arranca la segunda, la comparacion >= (inclusiva) cuenta esos
+         * movimientos de la PRIMERA corrida como si fueran nuevos -- no es un bug de
+         * calculo de stock, es puro azar de en que segundo cae cada corrida (ver
+         * diagnostico.md del grupo 301). Un id autoincremental no tiene ese problema:
+         * se captura el ultimo id ANTES de la segunda importacion y se filtra estrictamente
+         * por encima de ese watermark.
+         */
+        $ultimo_id_antes = (int) (StockMovement::where('user_id', $this->tenant->id)->max('id') ?? 0);
+
         $segunda = $this->importar(self::FIXTURE);
 
         $nuevos = StockMovement::where('user_id', $this->tenant->id)
-                    ->where('created_at', '>=', $segunda->created_at)
+                    ->where('id', '>', $ultimo_id_antes)
                     ->count();
 
         $this->assertSame(
