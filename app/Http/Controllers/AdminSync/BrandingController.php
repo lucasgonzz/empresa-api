@@ -59,6 +59,12 @@ class BrandingController extends Controller
                     : null,
                 // Nombre del comercio (mismo campo que ya se usa para mostrarlo, ver MensualidadController)
                 'company_name'  => !empty($user->company_name) ? $user->company_name : null,
+                // Descripción para vista previa al compartir el link (og:description / twitter:description).
+                // Grupo 270 · prompt 01. Mismo criterio que el resto de las claves: string con
+                // valor real o null (nunca string vacío, admin-api distingue por eso).
+                'meta_description' => (!empty($online_configuration) && !empty($online_configuration->meta_description))
+                    ? $online_configuration->meta_description
+                    : null,
             ],
         ], 200);
     }
