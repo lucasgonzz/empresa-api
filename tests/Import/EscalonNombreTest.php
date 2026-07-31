@@ -75,13 +75,14 @@ class EscalonNombreTest extends ImportTestCase
         $articulo->bar_code      = null;
         $articulo->name          = 'Art normalizacion test';
         $articulo->cost          = 100;
-        $articulo->final_price   = 200;
         $articulo->stock         = 0;
         $articulo->iva_id        = 2;
         $articulo->status        = 'active';
         $articulo->online        = 1;
 
         $articulo->save();
+
+        ImportTestSeeder::derivar_precio($articulo, $this->tenant->id);
 
         $this->t_norm = $articulo;
     }
