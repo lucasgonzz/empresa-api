@@ -718,8 +718,8 @@ class ProcessRow {
             $this->filas_repetidas_del_archivo === 'productos_distintos',
         );
         /*
-         * Escalon de la cadena que produjo el match (o null si no hubo match/hubo
-         * ambiguedad). Se lee INMEDIATAMENTE despues de find_with_index(), antes de
+         * Escalon de la cadena que produjo la coincidencia (o null si no hubo
+         * coincidencia / hubo ambiguedad). Se lee INMEDIATAMENTE despues de find_with_index(), antes de
          * cualquier otra llamada que pueda volver a tocar ArticleIndexCache (ver
          * ArticleIndexCache::ultimo_escalon()).
          */
@@ -821,8 +821,8 @@ class ProcessRow {
                 && $this->is_pending_create_fake_article($articulo_ya_creado)
             ) {
 
-                // Hubo match (contra un articulo fake pendiente de crear); se cuenta por el
-                // escalon que produjo ese match, leido inmediatamente tras find_with_index().
+                // Hubo coincidencia (contra un articulo fake pendiente de crear); se cuenta por el
+                // escalon que produjo esa coincidencia, leido inmediatamente tras find_with_index().
                 $fila_resuelta = true;
                 $this->contar_fila($escalon_de_match);
 
@@ -1496,9 +1496,30 @@ class ProcessRow {
 
             $cambios['id'] = $articulo_ya_creado->id;
 
+            /*
+             * BUG encontrado al implementar este prompt (grupo 296, prompt 01): tanto
+             * __bar_code como __match_key se armaban mirando que campo estuviera
+             * PRESENTE en $data, sin descartar los que son identificadores PENDIENTES
+             * (heredados via la cascada, ver el bloque de mas arriba) -- que la fila
+             * "traiga" un bar_code no significa que ese bar_code haya identificado a
+             * este articulo; puede ser exactamente lo opuesto (el articulo se
+             * identifico por sku/provider_code, y el bar_code se le esta ASIGNANDO).
+             * Si dos filas del mismo lote comparten el MISMO bar_code pendiente para
+             * DOS articulos distintos (F5 -> A3 via sku, F6 -> A4 via sku, ambas con
+             * bar_code pendiente '7799204'), la entrada de F5 quedaba marcada
+             * __match_key='bar_code|7799204' aunque su verdadero escalon fue sku. F6
+             * entonces "encontraba" esa entrada en esta_repetido() (coincidencia de
+             * bar_code) y se fusionaba con ella via merge_fila_duplicada() -- sin pasar
+             * nunca por find_with_index() ni por la guarda
+             * identificadores_asignados_en_chunk, aplicandole los datos de F6 a A3 en
+             * vez de a A4. Excluir los campos pendientes de estas dos marcas hace que
+             * reflejen el escalon que REALMENTE identifico la fila.
+             */
+            $campos_pendientes = array_keys($identificadores_pendientes);
+
             // Guardar bar_code para identificar este artículo si el mismo bar_code
             // vuelve a aparecer en el Excel (última fila gana).
-            if (!empty($data['bar_code'])) {
+            if (!empty($data['bar_code']) && !in_array('bar_code', $campos_pendientes, true)) {
                 $cambios['__bar_code'] = $data['bar_code'];
             }
 
@@ -1513,13 +1534,13 @@ class ProcessRow {
             $match_field = null;
             $match_value = null;
 
-            if (!empty($data['bar_code'])) {
+            if (!empty($data['bar_code']) && !in_array('bar_code', $campos_pendientes, true)) {
                 $match_field = 'bar_code';
                 $match_value = $data['bar_code'];
-            } elseif (!empty($data['sku'])) {
+            } elseif (!empty($data['sku']) && !in_array('sku', $campos_pendientes, true)) {
                 $match_field = 'sku';
                 $match_value = $data['sku'];
-            } elseif (!empty($data['provider_code'])) {
+            } elseif (!empty($data['provider_code']) && !in_array('provider_code', $campos_pendientes, true)) {
                 $match_field = 'provider_code';
                 $match_value = $data['provider_code'];
             }
@@ -1895,10 +1916,26 @@ class ProcessRow {
              * clave aunque su bar_code no haya cambiado. __match_key es el marcador
              * genérico que procesar_articulo_ya_creado() deja SIEMPRE (prompt 03,
              * grupo 265) y no depende de si el campo se considera "modificado".
+             *
+             * BUG encontrado al implementar el prompt 01 del grupo 296: el fallback
+             * de abajo (comparar contra $art['bar_code'] crudo) se usaba SIEMPRE, aun
+             * cuando $art SÍ tenía __match_key con un valor DISTINTO. Eso hacía que un
+             * bar_code asignado a otro artículo por herencia de la cascada (pendiente,
+             * no la identidad real de esa fila -- ver procesar_articulo_ya_creado())
+             * disparara un falso "repetido" contra una fila que en realidad matcheaba
+             * por sku a un artículo distinto. Ahora, si __match_key está presente, es
+             * la única fuente de verdad: el fallback crudo queda reservado para
+             * cuando __match_key ni siquiera existe.
              */
-            $match_via_key = isset($art['__match_key']) && $art['__match_key'] === ('bar_code|' . $data['bar_code']);
+            if (isset($art['__match_key'])) {
+                if ($art['__match_key'] === ('bar_code|' . $data['bar_code'])) {
+                    $this->escalon_repeticion = 'bar_code';
+                    return true;
+                }
+                return false;
+            }
 
-            if ($match_via_key || (isset($art['bar_code']) && $art['bar_code'] === $data['bar_code'])) {
+            if (isset($art['bar_code']) && $art['bar_code'] === $data['bar_code']) {
                 // $this->log('Ya esta para crear, bar_code: '.$data['bar_code']);
                 $this->escalon_repeticion = 'bar_code';
                 return true;
@@ -1909,10 +1946,16 @@ class ProcessRow {
         // 3) Coincidencia por sku
         if (!empty($data['sku'])) {
 
-            // Ver comentario del escalón bar_code: mismo motivo para __match_key.
-            $match_via_key = isset($art['__match_key']) && $art['__match_key'] === ('sku|' . $data['sku']);
+            // Ver comentario del escalón bar_code: mismo motivo y misma prioridad de __match_key.
+            if (isset($art['__match_key'])) {
+                if ($art['__match_key'] === ('sku|' . $data['sku'])) {
+                    $this->escalon_repeticion = 'sku';
+                    return true;
+                }
+                return false;
+            }
 
-            if ($match_via_key || (isset($art['sku']) && $art['sku'] === $data['sku'])) {
+            if (isset($art['sku']) && $art['sku'] === $data['sku']) {
                 // $this->log('Ya esta para crear, sku: '.$data['sku']);
                 $this->escalon_repeticion = 'sku';
                 return true;
@@ -1923,10 +1966,16 @@ class ProcessRow {
         // 4) Coincidencia por provider_code (solo si NO se permiten repetidos)
         if (!empty($data['provider_code']) && !$codigos_repetidos) {
 
-            // Ver comentario del escalón bar_code: mismo motivo para __match_key.
-            $match_via_key = isset($art['__match_key']) && $art['__match_key'] === ('provider_code|' . $data['provider_code']);
+            // Ver comentario del escalón bar_code: mismo motivo y misma prioridad de __match_key.
+            if (isset($art['__match_key'])) {
+                if ($art['__match_key'] === ('provider_code|' . $data['provider_code'])) {
+                    $this->escalon_repeticion = 'provider_code';
+                    return true;
+                }
+                return false;
+            }
 
-            if ($match_via_key || (!empty($art['provider_code']) && $art['provider_code'] === $data['provider_code'])) {
+            if (!empty($art['provider_code']) && $art['provider_code'] === $data['provider_code']) {
                 // $this->log('Ya esta para crear, provider_code: '.$data['provider_code']);
                 $this->escalon_repeticion = 'provider_code';
                 return true;
