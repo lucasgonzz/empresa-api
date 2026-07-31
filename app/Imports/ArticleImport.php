@@ -120,11 +120,28 @@ class ArticleImport implements ToCollection
 
 
         $this->process_row = new ProcessRow([
-            'ct'                                            => $this->ct, 
+            'ct'                                            => $this->ct,
             'columns'                                       => $this->columns,
             'user'                                          => $this->user,
             'provider_id'                                   => $this->provider_id,
             'create_and_edit'                               => $this->create_and_edit,
+            /*
+             * Faltaba (grupo 294, incidente Servian): sin esto, ProcessRow::$import_history_id
+             * quedaba SIEMPRE null (el constructor solo lee $data['import_history_id']), asi que
+             * find_with_index() nunca podia distinguir un articulo creado por esta misma
+             * importacion de uno preexistente -- la cascada de deduplicacion entre lotes no
+             * tenia forma de activarse nunca.
+             */
+            'import_history_id'                            => $this->import_history_id,
+            /*
+             * Faltaba tambien (grupo 294, incidente Servian): sin esto, ProcessRow::$fila_actual
+             * arrancaba en 0 en CADA chunk (una instancia de ProcessRow nueva por chunk), asi que
+             * los conflictos de un chunk que no fuera el primero quedaban numerados relativos al
+             * chunk (ej. "fila 6") en vez del indice de fila de datos real (ej. "fila 46") -- el
+             * usuario no podia ubicar la fila real en su archivo. $this->start_row ya es la fila
+             * de Excel absoluta donde arranca ESTE chunk (ver InitExcelImport::iniciar_procesamiento()).
+             */
+            'fila_inicial'                                  => $this->start_row,
 
             'actualizar_articulos_de_otro_proveedor'                => $this->actualizar_articulos_de_otro_proveedor,
             'actualizar_proveedor'                                  => $this->actualizar_proveedor,

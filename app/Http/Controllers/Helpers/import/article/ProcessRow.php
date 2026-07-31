@@ -57,7 +57,20 @@ class ProcessRow {
      */
     protected $conflictos = [];
 
-    /** Número de fila (relativo al chunk) que se está procesando; se incrementa en cada llamada a procesar(). */
+    /**
+     * Índice de fila DE DATOS (absoluto sobre todo el archivo, no relativo al
+     * chunk), 1-based y sin contar el encabezado -- fila de datos 1 = fila 2
+     * de Excel. Se incrementa en cada llamada a procesar().
+     *
+     * Antes de esto (grupo 294, incidente Servian) arrancaba siempre en 0 y
+     * quedaba relativo AL CHUNK: cada ProcessRow es una instancia nueva por
+     * chunk (ver ArticleImport::__construct()), asi que la primera fila de
+     * CUALQUIER chunk se reportaba como "fila 1" en los conflictos, sin
+     * importar que en realidad fuera, por ejemplo, la fila de datos 41 del
+     * archivo. El usuario tiene que poder ubicar la fila real en su archivo
+     * (es el proposito completo de ImportConflict), asi que el constructor lo
+     * inicializa segun donde arranca este chunk (ver 'fila_inicial' abajo).
+     */
     protected $fila_actual = 0;
 
     /**
@@ -205,6 +218,28 @@ class ProcessRow {
         $this->import_history_id = $data['import_history_id'] ?? null;
         $this->import_uuid = $data['import_uuid'] ?? null;
 
+        /*
+         * 'fila_inicial' (grupo 294, incidente Servian): numero de fila ABSOLUTO del
+         * Excel donde arranca el chunk que va a procesar esta instancia (ver
+         * ArticleImport::$start_row, que ya lo calcula bien por chunk -- ver
+         * InitExcelImport::iniciar_procesamiento()).
+         *
+         * OJO: la convencion de "fila" en todo tests/Import (ver p.ej.
+         * RepetidosEnElArchivoTest::test_se_reporta_que_fila_sobrescribio_a_cual, "indice
+         * de fila de datos") NO es el numero de fila de Excel -- es el indice 1-based de
+         * la fila DE DATOS, sin contar el encabezado (fila de datos 1 = fila 2 de Excel).
+         * Primer intento de este fix uso el numero de fila de Excel tal cual y regresiono
+         * tres tests de un solo chunk (CodigosDeBarraRepetidosTest,
+         * RepetidosEnElArchivoTest): con $start_row=2 daba fila_actual inicial=1 y la
+         * primera fila del archivo quedaba en "2" en vez de "1". La resta de 2 (no de 1)
+         * es la que hace que, para el caso de un solo chunk (start_row=2), fila_actual
+         * arranque en 0 -- exactamente el default de siempre, así que el comportamiento
+         * ya probado de un solo chunk no cambia un bit. Default 2 preserva ese mismo 0
+         * para cualquier llamador que no pase 'fila_inicial' (ninguno hoy fuera de
+         * ArticleImport).
+         */
+        $this->fila_actual = (int) ($data['fila_inicial'] ?? 2) - 2;
+
         $this->set_price_types();
         $this->set_addresses();
         $this->set_property_types();
@@ -339,7 +374,7 @@ class ProcessRow {
             'procesos'  => [],
         ];
 
-        // Número de fila relativo a este chunk; se usa para identificar conflictos (ambiguos/placeholders) en los reportes.
+        // Índice de fila de datos, absoluto sobre todo el archivo (ver constructor); se usa para identificar conflictos (ambiguos/placeholders) en los reportes.
         $this->fila_actual++;
 
         // Reset por fila: si esta fila no repite nada, no puede quedar el escalon de la anterior.
@@ -716,6 +751,12 @@ class ProcessRow {
              * archivo habla de si mismo, no de la base.
              */
             $this->filas_repetidas_del_archivo === 'productos_distintos',
+            /*
+             * Incidente Servian (grupo 294): para que la cascada pueda distinguir un
+             * match contra un articulo que YA EXISTIA antes de esta importacion de uno
+             * que esta misma importacion creo hace unos chunks.
+             */
+            $this->import_history_id,
         );
         /*
          * Escalon de la cadena que produjo el match (o null si no hubo match/hubo

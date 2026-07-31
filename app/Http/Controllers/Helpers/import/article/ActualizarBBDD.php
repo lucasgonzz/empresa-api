@@ -2160,7 +2160,15 @@ class ActualizarBBDD {
         $this->log('');
 
         foreach ($this->articulos_creados_models as $article) {
-            ArticleIndexCache::update($article, $this->codigos_proveedor_repetidos);
+            /*
+             * Se pasa import_history_id (grupo 294, incidente Servian) SOLO aca: estos
+             * son articulos que ESTA importacion acaba de crear, y es lo que permite a
+             * un chunk posterior distinguirlos de un articulo que ya existia antes de
+             * arrancar (ver ArticleIndexCache::matched_article_created_by_this_import()).
+             * actualizar_cache(), mas abajo, es para articulos YA EXISTENTES: a
+             * proposito no le pasa este dato.
+             */
+            ArticleIndexCache::update($article, $this->codigos_proveedor_repetidos, $this->import_history_id);
         }
 
         // Persistimos ya (merge con lo que haya en el cache compartido) para no perder estos ids si el lote falla después.
