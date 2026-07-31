@@ -179,11 +179,7 @@ class IncidenteServianTest extends ImportTestCase
      */
     public function test_el_bar_code_repetido_entre_lotes_se_reporta()
     {
-        $conflictos = $this->conflictos($this->import, 'ambiguo');
-
-        $filas = array_map(function ($c) {
-            return (int) $c->fila;
-        }, $conflictos);
+        $filas = $this->filas_de_conflictos($this->import, 'ambiguo');
 
         $this->assertContains(46, $filas, 'La fila 46 (THOMPSON, lote 5) tenia que reportarse como ambigua.');
     }

@@ -300,6 +300,26 @@ abstract class ImportTestCase extends TestCase
     }
 
     /**
+     * Filas de los conflictos de un tipo dado, ordenadas ascendente.
+     *
+     * @param  \App\Models\ImportHistory $import
+     * @param  string                    $tipo  ambiguo | placeholder_descartado | sin_identificador | conflicto_numerico
+     * @return array  [int, int, ...]
+     */
+    protected function filas_de_conflictos($import, $tipo)
+    {
+        return ImportConflict::where('import_history_id', $import->id)
+                                ->where('tipo', $tipo)
+                                ->orderBy('fila')
+                                ->pluck('fila')
+                                ->map(function ($fila) {
+                                    return (int) $fila;
+                                })
+                                ->values()
+                                ->all();
+    }
+
+    /**
      * Conflictos de tipo 'fila_sobrescrita' de una importación, como pares
      * fila => fila_ganadora, ordenados por fila.
      *

@@ -369,6 +369,13 @@ class ArticleIndexCache
             'skus' => [],
             'provider_codes' => [], // provider_id -> provider_code -> article_id (o array si repetidos)
             'names' => [],
+            /*
+             * article_id (real) => import_history_id que lo creo (incidente Servian,
+             * grupo 294). Solo lo llenan articulos creados DURANTE una importacion (ver
+             * update()); los que ya existian antes de que arrancara nunca entran aca, y
+             * build() siempre parte de cero porque lee la tabla articles sin este dato.
+             */
+            'created_by_import' => [],
         ];
 
         // 1) Index liviano desde articles (SIN with(providers), SIN get() gigante)
@@ -650,6 +657,44 @@ class ArticleIndexCache
         return $resultado;
     }
 
+    /**
+     * Indica si el articulo que acaba de resolver un escalon de la cascada fue
+     * creado por ESTA MISMA importacion, en un chunk anterior (incidente Servian,
+     * grupo 294).
+     *
+     * Por que importa: un match unico contra un articulo que ya existia ANTES de
+     * arrancar la importacion es confiable (es la razon de ser de este indice). Pero
+     * un match unico contra un articulo que la propia importacion creo hace unos
+     * chunks es la version entre-lotes del mismo problema que ya_estaba_en_el_excel()
+     * resuelve DENTRO de un chunk: puede ser el mismo producto repetido en el Excel
+     * (legitimo), o dos productos distintos que coinciden por error de carga en un
+     * solo identificador (bar_code/sku/name) mientras difieren en los demas -- y para
+     * ese segundo caso, fusionar en silencio corrompe el articulo original.
+     *
+     * @param  array      $index
+     * @param  int|string $article_id
+     * @param  int|null   $import_history_id_actual
+     * @return bool
+     */
+    protected static function matched_article_created_by_this_import(array $index, $article_id, ?int $import_history_id_actual): bool
+    {
+        if (is_null($import_history_id_actual)) {
+            return false;
+        }
+
+        if (is_string($article_id) && strncmp($article_id, 'fake_', strlen('fake_')) === 0) {
+            // Un fake es siempre de ESTE mismo chunk/import, pero ese caso ya lo
+            // resuelve ya_estaba_en_el_excel() antes de llegar a la cascada.
+            return false;
+        }
+
+        if (!isset($index['created_by_import'][(int) $article_id])) {
+            return false;
+        }
+
+        return (int) $index['created_by_import'][(int) $article_id] === $import_history_id_actual;
+    }
+
     public static function find_with_index(
         array $data,
         array $index,
@@ -671,7 +716,17 @@ class ArticleIndexCache
          * contando igual: el flag habla del archivo, no de la base (prompt 09, grupo 265).
          * Default false preserva el comportamiento de siempre para cualquier otro llamador.
          */
-        bool $descartar_matches_fake_del_archivo = false
+        bool $descartar_matches_fake_del_archivo = false,
+
+        /*
+         * import_history_id de la importacion QUE ESTA CORRIENDO ahora mismo (grupo
+         * 294, incidente Servian entre lotes). Se usa solo para comparar contra
+         * $index['created_by_import'] y detectar un match unico contra un articulo
+         * que esta MISMA importacion creo en un chunk anterior -- ver
+         * matched_article_created_by_this_import(). Default null preserva el
+         * comportamiento de siempre para cualquier llamador que no lo pase.
+         */
+        ?int $import_history_id_actual = null
     ) {
         if (!is_array($index) || empty($index)) {
             $index = self::get_index($user_id, $provider_id);
@@ -756,6 +811,20 @@ class ArticleIndexCache
                     }
 
                     if ($resuelto['status'] === 'match') {
+
+                        /*
+                         * Incidente Servian (grupo 294): el UNICO articulo que matchea
+                         * lo creo esta misma importacion en un chunk anterior. No es un
+                         * match confiable como el de un articulo pre-existente -- puede
+                         * ser el mismo producto repetido (legitimo) o dos productos
+                         * distintos que coinciden en este campo por error de carga. Se
+                         * reporta ambiguo en vez de fusionar en silencio.
+                         */
+                        if (self::matched_article_created_by_this_import($index, $resuelto['article']->id, $import_history_id_actual)) {
+                            Self::log($campo.' matchea un articulo creado por esta misma importacion en un chunk anterior: se reporta ambiguo, no se fusiona.');
+                            return self::con_escalon(null, new AmbiguousMatch($campo, $valor, [$resuelto['article']->id]));
+                        }
+
                         self::$ultimo_identificadores_pendientes = $identificadores_pendientes;
                         return self::con_escalon($campo, $resuelto['article']);
                     }
@@ -858,6 +927,23 @@ class ArticleIndexCache
                 $article_ids_same_provider   = array_values(array_filter($article_ids_same_provider, $es_id_real));
                 $article_ids_other_providers = array_values(array_filter($article_ids_other_providers, $es_id_real));
             }
+
+            /*
+             * Incidente Servian (grupo 294): a diferencia de bar_code/sku/name,
+             * provider_code SI puede repetirse legitimamente entre productos
+             * distintos (es la razon de ser de permitir_provider_code_repetido), asi
+             * que un match unico contra un articulo que ya creo ESTA MISMA
+             * importacion en un chunk anterior no se reporta como ambiguo -- se
+             * descarta, como si el escalon no hubiera encontrado nada, y la fila
+             * sigue de largo (a name, o a "crear nuevo"). A diferencia del filtro de
+             * $descartar_matches_fake_del_archivo (que depende de 'productos_distintos'),
+             * este se aplica siempre.
+             */
+            $no_creado_por_esta_importacion = function ($id) use ($index, $import_history_id_actual) {
+                return !self::matched_article_created_by_this_import($index, $id, $import_history_id_actual);
+            };
+            $article_ids_same_provider   = array_values(array_filter($article_ids_same_provider, $no_creado_por_esta_importacion));
+            $article_ids_other_providers = array_values(array_filter($article_ids_other_providers, $no_creado_por_esta_importacion));
 
             /**
              * Regla de bloqueo:
@@ -992,6 +1078,13 @@ class ArticleIndexCache
                 }
 
                 if ($name_resolved['status'] === 'match') {
+
+                    // Incidente Servian (grupo 294): mismo criterio que bar_code/sku arriba.
+                    if (self::matched_article_created_by_this_import($index, $name_resolved['article']->id, $import_history_id_actual)) {
+                        Self::log('name matchea un articulo creado por esta misma importacion en un chunk anterior: se reporta ambiguo, no se fusiona.');
+                        return self::con_escalon(null, new AmbiguousMatch('name', (string) $data['name'], [$name_resolved['article']->id]));
+                    }
+
                     return self::con_escalon('name', $name_resolved['article']);
                 }
 
@@ -1138,15 +1231,26 @@ class ArticleIndexCache
     }
 
 
-    public static function update(Article $article, $codigos_proveedor_repetidos)
+    public static function update(Article $article, $codigos_proveedor_repetidos, ?int $import_history_id = null)
     {
         $key = self::cache_key($article->user_id);
-        $index = Cache::get($key);
 
-        // if (!$index) {
-        //     self::build($article->user_id, null, false);
-        //     $index = Cache::get($key);
-        // }
+        /*
+         * BUG incidente Servian (grupo 294): leer Cache::get() directo, en vez del
+         * indice memoizado en RAM que add() ya usa via get_index(), hacia que cada
+         * llamada a update() DENTRO DEL MISMO foreach (ver
+         * ActualizarBBDD::actualizar_cache_articulos_creados()/actualizar_cache())
+         * arrancara de nuevo desde el cache compartido -- que recien se escribe una
+         * vez, en persist(), despues de terminar el foreach. Resultado: cada llamada
+         * pisaba en RAM lo que habia agregado la llamada anterior del mismo lote, y
+         * solo el ULTIMO articulo de ese foreach sobrevivia hasta persist(). Un
+         * articulo creado a mitad de un chunk (no el ultimo) quedaba indexado en la
+         * practica como si nunca se hubiera agregado, y un chunk posterior no lo
+         * encontraba -> duplicado. self::get_index() es la MISMA vista en RAM que
+         * add() usa, asi que las llamadas de este foreach se acumulan en vez de
+         * pisarse.
+         */
+        $index = self::get_index((int) $article->user_id);
 
         /** ------------------------------------------------------------------
          *  1) ELIMINAR SOLO EL fake QUE COINCIDE CON EL ARTÍCULO REAL
@@ -1332,12 +1436,34 @@ class ArticleIndexCache
 
         $index['ids'][$article->id] = $article->id;
 
+        /*
+         * Marca de "quien lo creo" (incidente Servian, grupo 294): solo se etiqueta
+         * cuando el llamador pasa un import_history_id explicito -- hoy, unicamente
+         * ActualizarBBDD::actualizar_cache_articulos_creados(), justo para los
+         * articulos que esta MISMA importacion acaba de insertar. Los articulos que
+         * ya existian antes (actualizar_cache(), sin este argumento) nunca se tocan
+         * aca, asi que jamas quedan marcados como "creados por" una importacion.
+         */
+        if (!is_null($import_history_id)) {
+            $index['created_by_import'][(int) $article->id] = $import_history_id;
+        }
+
         if (!empty($article->bar_code)) {
             // Formato lista: se acumula en vez de pisar (ver index_entry_to_ids/resolve_unique).
             $bc = (string) $article->bar_code;
             $ids_bc = self::index_entry_to_ids($index['bar_codes'][$bc] ?? null);
             $ids_bc[] = $article->id;
             $index['bar_codes'][$bc] = array_values(array_unique($ids_bc));
+        }
+
+        if (!empty($article->sku)) {
+            // Rama que faltaba (mismo patron que bar_code arriba, grupo 294): sin
+            // ella el sku de un articulo recien creado nunca quedaba indexado por
+            // update(), asi que un chunk posterior no podia encontrarlo por sku.
+            $sku = (string) $article->sku;
+            $ids_sku = self::index_entry_to_ids($index['skus'][$sku] ?? null);
+            $ids_sku[] = $article->id;
+            $index['skus'][$sku] = array_values(array_unique($ids_sku));
         }
 
         if (!empty($article->name)) {
@@ -1480,6 +1606,21 @@ class ArticleIndexCache
                     continue;
                 }
                 $out[$seccion][$k] = $v;
+            }
+        }
+
+        /*
+         * created_by_import (grupo 294, incidente Servian): mapa escalar igual que
+         * ids (article_id real => import_history_id), gana el nuevo. Las claves
+         * siempre son ids reales (update() solo las escribe con $article->id, nunca
+         * con un fake_id), asi que no hace falta filtrar fakes aca.
+         */
+        if (isset($nuevo['created_by_import'])) {
+            if (!isset($out['created_by_import'])) {
+                $out['created_by_import'] = [];
+            }
+            foreach ($nuevo['created_by_import'] as $k => $v) {
+                $out['created_by_import'][$k] = $v;
             }
         }
 
