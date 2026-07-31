@@ -38,6 +38,7 @@ class RecomendacionIaTest extends TestCase
     {
         return array_merge([
             'total_filas_datos'                          => 0,
+            'bar_codes_duplicados_intra_archivo'          => 0,
             'provider_codes_duplicados_intra_archivo'     => 0,
             'provider_codes_existentes_mismo_proveedor'   => 0,
             'provider_codes_existentes_otros_proveedores' => 0,

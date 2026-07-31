@@ -212,10 +212,20 @@ class EscalonNombreTest extends ImportTestCase
     {
         $this->importar_escalon_nombre();
 
+        /*
+         * articulos_creados() cuenta cualquier articulo del tenant que no este en
+         * $this->seed -- y T-NORM, creado en setUp() antes de importar, no esta ahi
+         * (mismo detalle que PC-T-UNICO en CascadaHerenciaTest). El numero real es 2
+         * (T-NORM + el de F5), no 1: por eso se busca puntualmente por provider_code
+         * en vez de asumir que el unico elemento de la coleccion es el de F5.
+         */
         $creados = $this->articulos_creados();
 
-        $this->assertCount(1, $creados, 'F5 tiene que crear exactamente un articulo nuevo: el provider_code corta la cadena antes de consultar el nombre.');
-        $this->assertSame('PC-N-999', $creados->first()->provider_code, 'El articulo creado tiene que llevar el provider_code de F5.');
+        $this->assertCount(2, $creados, 'Tienen que existir T-NORM (de setUp) y el articulo nuevo de F5, ninguno mas.');
+
+        $creado_f5 = $creados->firstWhere('provider_code', 'PC-N-999');
+
+        $this->assertNotNull($creado_f5, 'F5 tiene que crear un articulo nuevo: el provider_code corta la cadena antes de consultar el nombre.');
 
         $a9 = $this->recargar('A9');
 
@@ -243,14 +253,22 @@ class EscalonNombreTest extends ImportTestCase
 
         $this->assertDecimal(915, $t_norm->cost, 'T-NORM se tiene que actualizar con los datos de F6.');
 
+        /*
+         * articulos_creados() incluye a T-NORM (creado en setUp(), no esta en
+         * $this->seed) ademas del articulo nuevo de F5 -- ver el mismo comentario en
+         * test_provider_code_sin_match_corta_la_cadena_antes_del_nombre(). El punto de
+         * este test es que F6 NO agrega un tercero: sigue habiendo exactamente 2.
+         */
         $creados = $this->articulos_creados();
 
-        $this->assertCount(1, $creados, 'Solo F5 crea un articulo nuevo en este fixture; F6 matchea a T-NORM y no crea otro.');
-        $this->assertSame(
-            'PC-N-999',
-            $creados->first()->provider_code,
-            'El unico articulo creado tiene que ser el de F5 (via provider_code), no uno nuevo con el nombre de F6.'
-        );
+        $this->assertCount(2, $creados, 'T-NORM (de setUp) + el articulo de F5 -- F6 matchea a T-NORM y no crea un tercero.');
+
+        $creado_con_nombre_de_f6 = $creados->first(function ($articulo) {
+            return $articulo->id !== $this->t_norm->id
+                && stripos($articulo->name, 'normalizacion') !== false;
+        });
+
+        $this->assertNull($creado_con_nombre_de_f6, 'No tiene que existir ningun articulo nuevo con el nombre de F6: tiene que haber matcheado a T-NORM.');
     }
 
     /* ------------------------------------------------------------------
