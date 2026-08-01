@@ -29,6 +29,14 @@ class UserSeeder extends Seeder
 
         $this->for_user = config('app.FOR_USER');
 
+        // API key de fallback global de Google Custom Search para los usuarios de seed: viene de
+        // config/services.php (.env del servidor), nunca hardcodeada (grupo 220, prompt 02,
+        // repositorio publico). Si no esta configurada, se siembra null y solo se avisa.
+        $google_search_api_key = config('services.google_search.api_key');
+        if (empty($google_search_api_key) && $this->command) {
+            $this->command->warn('UserSeeder: GOOGLE_SEARCH_API_KEY no esta configurado, se sembro google_custom_search_api_key=null.');
+        }
+        $google_search_api_key = empty($google_search_api_key) ? null : $google_search_api_key;
 
         $ct = new Controller();
         $models = [
@@ -77,10 +85,10 @@ class UserSeeder extends Seeder
                 'base_de_datos'                     => 'empresa_prueba_1',
 
                 // San blas
-                'google_custom_search_api_key'      => 'AIzaSyCgzE6haVi8uZnenfAvYJO5hn7m7Cl09Gw',
+                'google_custom_search_api_key'      => $google_search_api_key,
                 
-                // Comun para todos
-                // 'google_custom_search_api_key'      => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
+                // Comun para todos (grupo 220, prompt 02: se saco el literal muerto que quedaba
+                // acá comentado, era una key real de Google hardcodeada sin uso).
                 'info_afip_del_primer_punto_de_venta'   => 0,
                 'comision_funcion' => 'distri_creo',
                 'google_cuota' => 100,
@@ -543,7 +551,7 @@ class UserSeeder extends Seeder
 
             $models[0]['comision_funcion'] = 'truvari';
             $models[0]['venta_terminada_comision_funcion'] = 'truvari';
-            $models[0]['google_custom_search_api_key'] = 'AIzaSyDSOX6FoW1AWN1w7ArrV_OYrrlDxMGIhuE';
+            $models[0]['google_custom_search_api_key'] = $google_search_api_key;
             
             $models[0]['default_article_iva_id'] = 6;
 

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -30,10 +31,12 @@ class UpdateDefaultVersionController extends Controller
 
         if ($api_url === '') {
             $api_url = str_replace('https://', 'https://api-', $spa_url);
-            if (! config('app.VPS') && config('app.APP_ENV') === 'production') {
-                $api_url .= '/public';
-            }
         }
+
+        // Normalizacion centralizada e idempotente en ApiUrlHelper (grupo 237, prompt 01): cubre
+        // las dos ramas de arriba (derivada del spa_url o explicita por request) y ademas corrige
+        // valores que ya vinieran con "/public" duplicado, en vez de solo evitar generar nuevos.
+        $api_url = ApiUrlHelper::canonical_public_url($api_url);
 
         try {
             $updated = User::query()->update([

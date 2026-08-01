@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Exports\ArticleClientsExport;
 use App\Exports\ArticleExport;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
@@ -546,7 +547,15 @@ class ArticleController extends Controller
             'permitir_provider_code_repetido_en_multi_providers'    => $request->permitir_provider_code_repetido_en_multi_providers,
             'actualizar_articulos_de_otro_proveedor'                => $request->actualizar_articulos_de_otro_proveedor,
             'actualizar_por_provider_code'                          => $request->actualizar_por_provider_code,
-            'actualizar_proveedor'                                  => $request->actualizar_proveedor, 
+            'actualizar_proveedor'                                  => $request->actualizar_proveedor,
+            'filas_repetidas_del_archivo'                           => $request->filas_repetidas_del_archivo,
+
+            /*
+             * Modo elegido por el usuario para interpretar el punto en columnas numéricas
+             * ambiguas (grupo 239, prompt 04). Se normaliza acá, único punto de entrada:
+             * no confiamos en que el frontend siempre mande un valor válido.
+             */
+            'interpretacion_punto'                                  => ImportHelper::normalizarInterpretacionPunto($request->interpretacion_punto),
 
         ]);
         
@@ -812,6 +821,7 @@ class ArticleController extends Controller
 
         $article_with = [
             'category',
+            'sub_category',
             'brand',
             'provider',
             'iva',

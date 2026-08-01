@@ -47,8 +47,26 @@ class OnlineConfigurationController extends Controller
         $model->show_articles_without_stock     = $request->show_articles_without_stock;
         $model->stock_null_equal_0              = $request->stock_null_equal_0;
 
-        $model->online_description              = $request->online_description;                     
-        $model->has_delivery                    = $request->has_delivery;                     
+        $model->online_description              = $request->online_description;
+
+        // Descripción para vista previa al compartir el link de la tienda (og:description /
+        // twitter:description). Grupo 270 · prompt 01. Distinta de online_description (columna
+        // vieja no expuesta en la UI, no reutilizada a propósito, ver prompt).
+        // Recorte defensivo a 300 caracteres (coincide con el largo de la columna): un texto
+        // pegado desde otro lado que exceda el límite no debe tirar un error de base de datos.
+        // String vacío o solo espacios se normaliza a null (no queremos "" persistido).
+        $meta_description = $request->meta_description;
+        if (!is_null($meta_description)) {
+            $meta_description = trim($meta_description);
+            if ($meta_description === '') {
+                $meta_description = null;
+            } elseif (mb_strlen($meta_description) > 300) {
+                $meta_description = mb_substr($meta_description, 0, 300);
+            }
+        }
+        $model->meta_description = $meta_description;
+
+        $model->has_delivery                    = $request->has_delivery;
         $model->order_description               = $request->order_description;                     
         $model->online_template_id               = $request->online_template_id;                     
         $model->cantidad_tarjetas_en_telefono               = $request->cantidad_tarjetas_en_telefono;                     

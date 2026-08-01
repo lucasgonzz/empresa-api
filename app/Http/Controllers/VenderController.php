@@ -481,7 +481,7 @@ class VenderController extends Controller
         if (!is_null($variant->image_url)) {
             $images = [
                 [
-                    env('IMAGE_URL_PROP_NAME', 'image_url') => $variant->image_url,
+                    'hosting_url' => $variant->image_url,
                 ]
             ];
         }

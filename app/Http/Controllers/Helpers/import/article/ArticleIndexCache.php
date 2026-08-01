@@ -25,6 +25,18 @@ class ArticleIndexCache
     protected static $log_activado = false;
 
     /**
+     * Escalon de la cadena de identificacion que produjo el ultimo match de
+     * find_with_index() ('id'|'bar_code'|'sku'|'provider_code'|'name'|null).
+     * Se lee inmediatamente despues de find_with_index() (ver ultimo_escalon()).
+     *
+     * @var string|null
+     */
+    protected static $ultimo_escalon = null;
+
+    /** @var array Ver ultimos_identificadores_pendientes(). */
+    protected static $ultimo_identificadores_pendientes = [];
+
+    /**
      * Registro en RAM de modelos Article "fake" pendientes de persistir (por user_id y fake_id).
      * Permite que find_with_index devuelva el mismo artículo aún sin fila en BD (whereIn(id) vacío).
      *
@@ -110,6 +122,115 @@ class ArticleIndexCache
     }
 
     /**
+     * Devuelve siempre un array de article ids, sirva el indice viejo (escalar)
+     * o el nuevo (lista).
+     *
+     * Compatibilidad: hay índices ya cacheados en producción con el formato viejo
+     * (bar_codes/skus como escalar => un solo article_id). Este helper centraliza
+     * la lectura para que todo el archivo soporte ambos formatos sin duplicar lógica.
+     *
+     * Público (no solo protected) porque ProcessRow también lee directamente
+     * $index['bar_codes']/$index['skus'] como snapshot en RAM (merge_bar_code_duplicate,
+     * bar_code_or_provider_code_already_in_bd) y necesita el mismo soporte de formatos.
+     *
+     * @param  mixed $entry
+     * @return array
+     */
+    public static function index_entry_to_ids($entry)
+    {
+        if (is_null($entry)) {
+            return [];
+        }
+
+        if (is_array($entry)) {
+            return array_values(array_unique($entry));
+        }
+
+        return [$entry];
+    }
+
+    /**
+     * Normaliza un nombre para comparacion exacta en el escalon 5 de la cadena.
+     *
+     * Baja a minusculas con mb_strtolower (strtolower no baja acentos ni Ñ),
+     * saca espacios de los bordes y colapsa espacios internos. NADA MAS:
+     * no saca acentos, ni puntuacion, ni palabras.
+     *
+     * El colapso de espacios internos es necesario porque los Excel de proveedor
+     * vienen con nombres alineados a mano, del estilo
+     * "PARRILLA INFERIOR   IZQUIERDA PEUGEOT" vs "PARRILLA INFERIOR IZQUIERDA PEUGEOT".
+     *
+     * @param  string $name
+     * @return string
+     */
+    public static function normalize_name_for_match($name)
+    {
+        $lower = function_exists('mb_strtolower')
+            ? mb_strtolower((string) $name, 'UTF-8')
+            : strtolower((string) $name);
+
+        return trim(preg_replace('/\s+/u', ' ', $lower));
+    }
+
+    /**
+     * Clave de cache del indice de importacion.
+     *
+     * La version se bumpea cuando cambia el FORMATO del indice o la forma de calcular
+     * alguna de sus claves, para que los indices viejos que quedaron cacheados no se
+     * lean con las reglas nuevas. v2: names pasa a lista y su clave se calcula con
+     * normalize_name_for_match() (mb_strtolower + colapso de espacios internos).
+     *
+     * @param  int $user_id
+     * @return string
+     */
+    protected static function cache_key($user_id)
+    {
+        return 'article_index_v2_user_' . (int) $user_id;
+    }
+
+    /**
+     * Resuelve una entrada del indice a un unico articulo.
+     *
+     * Se usa para bar_code, sku y provider_code: en vez de "adivinar" con el primer
+     * id de la lista cuando hay varios candidatos, se devuelve un status 'ambiguous'
+     * explícito para que quien llama registre el conflicto y no cree/actualice nada.
+     *
+     * Devuelve un array asociativo:
+     *   ['status' => 'no_match']                 -> no hay candidatos
+     *   ['status' => 'match',    'article' => M] -> un unico candidato
+     *   ['status' => 'ambiguous','ids' => [...]] -> varios candidatos
+     *
+     * @param  mixed $article_ids entrada cruda del indice (escalar o array)
+     * @param  array $relations relaciones eager para la consulta Eloquent
+     * @param  int   $user_id usuario dueño del índice
+     * @return array
+     */
+    protected static function resolve_unique($article_ids, $relations, $user_id)
+    {
+        $ids = self::index_entry_to_ids($article_ids);
+
+        if (count($ids) === 0) {
+            return ['status' => 'no_match'];
+        }
+
+        if (count($ids) > 1) {
+            return ['status' => 'ambiguous', 'ids' => $ids];
+        }
+
+        $resolved = self::collection_from_index_article_ids($ids, $relations, $user_id);
+
+        if ($resolved->count() === 0) {
+            return ['status' => 'no_match'];
+        }
+
+        if ($resolved->count() > 1) {
+            return ['status' => 'ambiguous', 'ids' => $ids];
+        }
+
+        return ['status' => 'match', 'article' => $resolved->first()];
+    }
+
+    /**
      * Elimina del índice runtime todas las entradas que apuntan a un fake_id concreto
      * (bar_code, sku, name, provider_codes, ids). Sirve antes de re-add tras merge de fila.
      *
@@ -118,7 +239,7 @@ class ArticleIndexCache
      */
     public static function remove_fake_from_runtime_index(int $user_id, string $fake_id): void
     {
-        $key = "article_index_user_{$user_id}";
+        $key = self::cache_key($user_id);
 
         if (empty(self::$runtime_loaded_by_key[$key]) || empty(self::$runtime_index_by_key[$key])) {
             return;
@@ -128,24 +249,54 @@ class ArticleIndexCache
 
         unset($index['ids'][$fake_id]);
 
-        foreach ($index['bar_codes'] as $bc => $fid) {
+        // bar_codes: cada entrada puede ser escalar (formato viejo) o lista (formato nuevo).
+        // Se filtra solo el fake_id puntual; si no quedan ids se borra la entrada entera.
+        foreach ($index['bar_codes'] as $bc => $entry) {
 
-            if ((string) $fid === $fake_id) {
+            $ids_en_entry = self::index_entry_to_ids($entry);
+
+            $filtrados = array_values(array_filter($ids_en_entry, function ($id_val) use ($fake_id) {
+                return (string) $id_val !== $fake_id;
+            }));
+
+            if (count($filtrados) === 0) {
                 unset($index['bar_codes'][$bc]);
+            } else {
+                $index['bar_codes'][$bc] = $filtrados;
             }
         }
 
-        foreach ($index['skus'] as $sku => $fid) {
+        // skus: misma lógica que bar_codes.
+        foreach ($index['skus'] as $sku => $entry) {
 
-            if ((string) $fid === $fake_id) {
+            $ids_en_entry = self::index_entry_to_ids($entry);
+
+            $filtrados = array_values(array_filter($ids_en_entry, function ($id_val) use ($fake_id) {
+                return (string) $id_val !== $fake_id;
+            }));
+
+            if (count($filtrados) === 0) {
                 unset($index['skus'][$sku]);
+            } else {
+                $index['skus'][$sku] = $filtrados;
             }
         }
 
-        foreach ($index['names'] as $name_key => $fid) {
+        // names: cada entrada puede ser escalar (formato viejo) o lista (formato nuevo,
+        // ver index_entry_to_ids). Se filtra solo el fake_id puntual; si no quedan ids
+        // se borra la entrada entera.
+        foreach ($index['names'] as $name_key => $entry) {
 
-            if ((string) $fid === $fake_id) {
+            $ids_en_entry = self::index_entry_to_ids($entry);
+
+            $filtrados = array_values(array_filter($ids_en_entry, function ($id_val) use ($fake_id) {
+                return (string) $id_val !== $fake_id;
+            }));
+
+            if (count($filtrados) === 0) {
                 unset($index['names'][$name_key]);
+            } else {
+                $index['names'][$name_key] = $filtrados;
             }
         }
 
@@ -197,7 +348,7 @@ class ArticleIndexCache
         $inicio = microtime(true);
 
         $user = User::find($user_id);
-        $key = "article_index_user_{$user_id}";
+        $key = self::cache_key($user_id);
 
         // $provider_codes_desde_pivot_table = false;
 
@@ -218,6 +369,13 @@ class ArticleIndexCache
             'skus' => [],
             'provider_codes' => [], // provider_id -> provider_code -> article_id (o array si repetidos)
             'names' => [],
+            /*
+             * article_id (real) => import_history_id que lo creo (incidente Servian,
+             * grupo 294). Solo lo llenan articulos creados DURANTE una importacion (ver
+             * update()); los que ya existian antes de que arrancara nunca entran aca, y
+             * build() siempre parte de cero porque lee la tabla articles sin este dato.
+             */
+            'created_by_import' => [],
         ];
 
         // 1) Index liviano desde articles (SIN with(providers), SIN get() gigante)
@@ -236,12 +394,26 @@ class ArticleIndexCache
 
                 $index['ids'][$article_id] = $article_id;
 
+                /*
+                 * bar_codes/skus como lista de ids (no escalar): si dos artículos
+                 * comparten bar_code o sku, ambos quedan registrados en vez de que
+                 * el último pise al anterior. find_with_index() decide con esa
+                 * lista si hay match único o ambigüedad.
+                 */
                 if (!empty($article->bar_code)) {
-                    $index['bar_codes'][(string) $article->bar_code] = $article_id;
+                    $bc = (string) $article->bar_code;
+                    if (!isset($index['bar_codes'][$bc])) {
+                        $index['bar_codes'][$bc] = [];
+                    }
+                    $index['bar_codes'][$bc][] = $article_id;
                 }
 
                 if (!empty($article->sku)) {
-                    $index['skus'][(string) $article->sku] = $article_id;
+                    $sku = (string) $article->sku;
+                    if (!isset($index['skus'][$sku])) {
+                        $index['skus'][$sku] = [];
+                    }
+                    $index['skus'][$sku][] = $article_id;
                 }
 
                 // Log::info('provider_code: '.$article->provider_code);
@@ -271,13 +443,56 @@ class ArticleIndexCache
                 // }
 
 
+                /*
+                 * names como lista de ids (no escalar): igual que bar_codes/skus, si dos
+                 * articulos comparten nombre normalizado ambos quedan registrados en vez
+                 * de que el ultimo pise al anterior. find_with_index() decide con esa
+                 * lista si hay match unico o ambiguedad (evita el incidente de Servian).
+                 */
                 if (!empty($article->name)) {
-                    $index['names'][strtolower(trim((string) $article->name))] = $article_id;
+                    $name_key = self::normalize_name_for_match($article->name);
+                    if (!isset($index['names'][$name_key])) {
+                        $index['names'][$name_key] = [];
+                    }
+                    $index['names'][$name_key][] = $article_id;
                 }
             }
         });
 
         Cache::put($key, $index, now()->addMinutes(60));
+
+        /*
+         * Grupo 291, prompt 07: verificamos que el Cache::put de arriba haya
+         * guardado realmente el índice. Con memcached, un ítem de más de 1MB se
+         * descarta AL ESCRIBIRLO, sin devolver error -- Cache::put() vuelve como
+         * si hubiera funcionado, y el próximo Cache::get() da vacío. A partir de
+         * ahí la importación degrada en silencio a una consulta por fila, sin
+         * ninguna excepción ni log que lo delate: una importación de 10.000 filas
+         * que tarda horas y nadie sabe por qué. Cache::has() es la verificación
+         * correcta y barata acá -- a diferencia de Cache::get(), no vuelve a
+         * traer decenas de MB a memoria solo para comprobarlos.
+         */
+        if (!Cache::has($key)) {
+            $counts = [
+                'ids'            => count($index['ids']),
+                'provider_codes' => count($index['provider_codes']),
+                'bar_codes'      => count($index['bar_codes']),
+                'skus'           => count($index['skus']),
+                'names'          => count($index['names']),
+            ];
+
+            Log::critical('ArticleIndexCache::build: el Cache::put no guardo el indice', [
+                'user_id' => $user_id,
+                'driver'  => config('cache.default'),
+                'counts'  => $counts,
+            ]);
+
+            throw new \RuntimeException(
+                'No se pudo guardar el índice de artículos en el cache (driver: ' . config('cache.default') . '). '
+                . 'La importación se detiene porque sin ese índice cada fila haría una consulta a la base y '
+                . 'tardaría horas. Revisar el driver de cache del cliente.'
+            );
+        }
 
         $duracion = microtime(true) - $inicio;
 
@@ -285,6 +500,20 @@ class ArticleIndexCache
         // Log::info('$index->provider_codes: ');
         // Log::info($index['provider_codes']);
         // Log::info('Duración total cachear los articulos ' . $duracion . ' seg');
+
+        /*
+         * Aviso temprano (grupo 291, prompt 07): si el catálogo del comercio es
+         * grande, avisamos ANTES de que un cliente importe un archivo grande y
+         * descubra el problema en medio de la importación. No truncamos el
+         * índice: eso causaría matcheos incorrectos, mucho peor que fallar.
+         */
+        if (count($index['ids']) > 200000) {
+            Log::warning('ArticleIndexCache::build: catalogo grande, el driver de cache tiene que soportarlo', [
+                'user_id' => $user_id,
+                'driver'  => config('cache.default'),
+                'ids'     => count($index['ids']),
+            ]);
+        }
 
         return $duracion;
     }
@@ -296,7 +525,7 @@ class ArticleIndexCache
     public static function get(int $user_id): array
     {
 
-        $key = "article_index_user_{$user_id}";
+        $key = self::cache_key($user_id);
 
         return Cache::get($key, []);
     }
@@ -304,7 +533,7 @@ class ArticleIndexCache
 
     public static function get_index(int $user_id, ?int $provider_id = null, $actualizar_otro_proveedor = null): array
     {
-        $key = "article_index_user_{$user_id}";
+        $key = self::cache_key($user_id);
 
         // ✅ runtime memoization (RAM) para este proceso/job
         if (!empty(self::$runtime_loaded_by_key[$key])) {
@@ -377,6 +606,95 @@ class ArticleIndexCache
         }
     }
 
+    /**
+     * Devuelve el escalon de la cadena que produjo el ultimo match de find_with_index().
+     * Valores posibles: id | bar_code | sku | provider_code | name | null.
+     *
+     * Solo tiene sentido leerlo INMEDIATAMENTE despues de find_with_index() y solo
+     * cuando esa llamada devolvio un Article o una Collection: si devolvio null o un
+     * AmbiguousMatch, vale null.
+     *
+     * @return string|null
+     */
+    public static function ultimo_escalon()
+    {
+        return self::$ultimo_escalon;
+    }
+
+    /**
+     * Identificadores (bar_code y/o sku) que la fila traia, que NO matchearon ningun
+     * articulo en su propio escalon, y que por eso la cascada de find_with_index()
+     * siguio de largo hasta encontrar match en un escalon mas abajo (sku, provider_code
+     * o name). Regla de Lucas, 30/7/2026, prompt 08 grupo 265: esos identificadores
+     * "pendientes" se le tienen que asignar al articulo que matcheo, EXCEPTO cuando el
+     * match fue de mas de un articulo (ver ProcessRow::procesar_articulo_ya_creado()).
+     *
+     * ['bar_code' => '7799100', 'sku' => 'SKU-1'] , en el orden de la jerarquia (los que
+     * la fila trajo y no matchearon). Vacio si no quedo ninguno pendiente.
+     *
+     * Solo tiene sentido leerlo INMEDIATAMENTE despues de find_with_index(), igual que
+     * ultimo_escalon().
+     *
+     * @return array
+     */
+    public static function ultimos_identificadores_pendientes()
+    {
+        return self::$ultimo_identificadores_pendientes;
+    }
+
+    /**
+     * Deja registrado el escalon y devuelve el resultado, para que find_with_index()
+     * no tenga ningun return que se olvide de setearlo.
+     *
+     * @param  string|null $escalon
+     * @param  mixed       $resultado
+     * @return mixed
+     */
+    protected static function con_escalon($escalon, $resultado)
+    {
+        self::$ultimo_escalon = $escalon;
+
+        return $resultado;
+    }
+
+    /**
+     * Indica si el articulo que acaba de resolver un escalon de la cascada fue
+     * creado por ESTA MISMA importacion, en un chunk anterior (incidente Servian,
+     * grupo 294).
+     *
+     * Por que importa: un match unico contra un articulo que ya existia ANTES de
+     * arrancar la importacion es confiable (es la razon de ser de este indice). Pero
+     * un match unico contra un articulo que la propia importacion creo hace unos
+     * chunks es la version entre-lotes del mismo problema que ya_estaba_en_el_excel()
+     * resuelve DENTRO de un chunk: puede ser el mismo producto repetido en el Excel
+     * (legitimo), o dos productos distintos que coinciden por error de carga en un
+     * solo identificador (bar_code/sku/name) mientras difieren en los demas -- y para
+     * ese segundo caso, fusionar en silencio corrompe el articulo original.
+     *
+     * @param  array      $index
+     * @param  int|string $article_id
+     * @param  int|null   $import_history_id_actual
+     * @return bool
+     */
+    protected static function matched_article_created_by_this_import(array $index, $article_id, ?int $import_history_id_actual): bool
+    {
+        if (is_null($import_history_id_actual)) {
+            return false;
+        }
+
+        if (is_string($article_id) && strncmp($article_id, 'fake_', strlen('fake_')) === 0) {
+            // Un fake es siempre de ESTE mismo chunk/import, pero ese caso ya lo
+            // resuelve ya_estaba_en_el_excel() antes de llegar a la cascada.
+            return false;
+        }
+
+        if (!isset($index['created_by_import'][(int) $article_id])) {
+            return false;
+        }
+
+        return (int) $index['created_by_import'][(int) $article_id] === $import_history_id_actual;
+    }
+
     public static function find_with_index(
         array $data,
         array $index,
@@ -387,11 +705,36 @@ class ArticleIndexCache
         bool $permitir_provider_code_repetido_en_multi_providers = true,
         bool $actualizar_articulos_de_otro_proveedor = false,
         bool $actualizar_por_provider_code = true,
-        bool $actualizar_proveedor = true
+        bool $actualizar_proveedor = true,
+
+        /*
+         * 'filas_repetidas_del_archivo' === 'productos_distintos' (prompt 04, grupo 265):
+         * los matches del escalon provider_code contra articulos FAKE (encolados para crear
+         * en este mismo chunk, via ArticleIndexCache::add(), todavia sin INSERT) no cuentan
+         * -- el usuario dijo explicitamente que las repeticiones del propio archivo son
+         * productos distintos. Los matches contra articulos REALES de la base siguen
+         * contando igual: el flag habla del archivo, no de la base (prompt 09, grupo 265).
+         * Default false preserva el comportamiento de siempre para cualquier otro llamador.
+         */
+        bool $descartar_matches_fake_del_archivo = false,
+
+        /*
+         * import_history_id de la importacion QUE ESTA CORRIENDO ahora mismo (grupo
+         * 294, incidente Servian entre lotes). Se usa solo para comparar contra
+         * $index['created_by_import'] y detectar un match unico contra un articulo
+         * que esta MISMA importacion creo en un chunk anterior -- ver
+         * matched_article_created_by_this_import(). Default null preserva el
+         * comportamiento de siempre para cualquier llamador que no lo pase.
+         */
+        ?int $import_history_id_actual = null
     ) {
         if (!is_array($index) || empty($index)) {
             $index = self::get_index($user_id, $provider_id);
         }
+
+        // Se resetea en cada llamada: si no se pisa mas abajo, ultimos_identificadores_pendientes()
+        // tiene que devolver [] y no arrastrar el valor de la fila anterior.
+        self::$ultimo_identificadores_pendientes = [];
 
         Self::log('find_with_index');
 
@@ -405,6 +748,16 @@ class ArticleIndexCache
 
         $article_id = null;
 
+        /*
+         * Escalon que asigno $article_id y cayo al final del metodo (cierre), para que
+         * ultimo_escalon() informe correctamente incluso en los returns de cierre.
+         * En la practica solo el escalon 1 (id) asigna $article_id y cae al final: los
+         * demas escalones (bar_code/sku/provider_code/name) retornan directo desde su
+         * propia rama (match, ambiguo o bloqueo), asi que quedan cubiertos por con_escalon()
+         * en el punto exacto de cada return.
+         */
+        $escalon = null;
+
         // if (!empty($data['provider_code']) && isset($index['provider_codes'][$provider_id][$data['provider_code']])) {
             
         //     Self::log('provider_code del provider_id: '.$provider_id);
@@ -415,41 +768,102 @@ class ArticleIndexCache
         if (!empty($data['id']) && isset($index['ids'][(string)$data['id']])) {
             Self::log('Buscando por id '.$data['id']);
             $article_id = $index['ids'][(string)$data['id']];
+            // Unico escalon que asigna $article_id y cae al cierre: se deja registrado aca.
+            $escalon = 'id';
         }
 
-        // 2) bar_code
-        elseif (!empty($data['bar_code']) && isset($index['bar_codes'][(string)$data['bar_code']])) {
-            Self::log('Buscando por bar_code '.$data['bar_code']);
-            $article_id = $index['bar_codes'][(string)$data['bar_code']];
+        /*
+         * 2) bar_code y 3) sku -- cascada de escalones (regla de Lucas, 30/7/2026,
+         * prompt 08 grupo 265; reemplaza la version del 29/7 que cortaba la busqueda
+         * en el primer escalon con valor). Se evalua cada uno EN ORDEN, solo si la
+         * fila lo trae: si uno no matchea nada (no esta en el indice, o resolve_unique
+         * da no_match), NO corta la busqueda -- se guarda como "identificador
+         * pendiente" (self::$ultimo_identificadores_pendientes) y se sigue con el
+         * escalon siguiente que la fila traiga (no necesariamente el inmediato: si no
+         * hay sku, de bar_code se pasa directo a provider_code). Si un escalon
+         * matchea un UNICO articulo, se le asignan los identificadores pendientes de
+         * mas arriba -- ver ProcessRow::procesar_articulo_ya_creado(). Ambiguo sigue
+         * cortando la busqueda de inmediato, igual que siempre: no se toco esa parte.
+         */
+        if (is_null($article_id)) {
+
+            $identificadores_pendientes = [];
+
+            foreach ([['bar_code', 'bar_codes'], ['sku', 'skus']] as $par) {
+
+                list($campo, $indice_key) = $par;
+
+                if (empty($data[$campo])) {
+                    continue;
+                }
+
+                $valor = (string) $data[$campo];
+
+                if (isset($index[$indice_key][$valor])) {
+
+                    Self::log('Buscando por '.$campo.' '.$valor);
+
+                    $resuelto = self::resolve_unique($index[$indice_key][$valor], $relations, $user_id);
+
+                    if ($resuelto['status'] === 'ambiguous') {
+                        Self::log($campo.' ambiguo: '.$valor.' matchea con '.count($resuelto['ids']).' articulos');
+                        return self::con_escalon(null, new AmbiguousMatch($campo, $valor, $resuelto['ids']));
+                    }
+
+                    if ($resuelto['status'] === 'match') {
+
+                        /*
+                         * Incidente Servian (grupo 294): el UNICO articulo que matchea
+                         * lo creo esta misma importacion en un chunk anterior. No es un
+                         * match confiable como el de un articulo pre-existente -- puede
+                         * ser el mismo producto repetido (legitimo) o dos productos
+                         * distintos que coinciden en este campo por error de carga. Se
+                         * reporta ambiguo en vez de fusionar en silencio.
+                         */
+                        if (self::matched_article_created_by_this_import($index, $resuelto['article']->id, $import_history_id_actual)) {
+                            Self::log($campo.' matchea un articulo creado por esta misma importacion en un chunk anterior: se reporta ambiguo, no se fusiona.');
+                            return self::con_escalon(null, new AmbiguousMatch($campo, $valor, [$resuelto['article']->id]));
+                        }
+
+                        self::$ultimo_identificadores_pendientes = $identificadores_pendientes;
+                        return self::con_escalon($campo, $resuelto['article']);
+                    }
+
+                    // no_match: mismo tratamiento que "no esta en el indice", sigue de largo.
+                }
+
+                $identificadores_pendientes[$campo] = $data[$campo];
+            }
+
+            self::$ultimo_identificadores_pendientes = $identificadores_pendientes;
         }
 
-        // 3) sku
-        elseif (!empty($data['sku']) && isset($index['skus'][(string)$data['sku']])) {
-            Self::log('Buscando por sku '.$data['sku']);
-            $article_id = $index['skus'][(string)$data['sku']];
-        }
-
-        // 4) provider_code
-        elseif (!empty($data['provider_code'])) {
+        // 4) provider_code -- semantica sin cambios (sus flags deciden todo, ver mas
+        // abajo). Antes era "elseif" de bar_code/sku; ahora es "if" guardado con
+        // is_null($article_id) porque el bloque de arriba ya no es mutuamente
+        // excluyente con este por construccion de if/elseif -- el guard cumple el
+        // mismo rol: solo se llega aca si nada matcheo (ni fue ambiguo) todavia.
+        if (is_null($article_id) && !empty($data['provider_code'])) {
 
 
             $provider_code = trim((string)$data['provider_code']);
             if ($provider_code === '') {
-                return null;
+                return self::con_escalon(null, null);
             }
 
             Self::log('Buscando por provider_code '.$data['provider_code']);
-            /* 
-                Si se permiten repetidos, NO querés sincronizar por provider_code => modo crear, y permitir codigos repetidos en multi proveedores = true
-                Entonces, siempre que se busque por provider_code, se retorna siempre null, para que si o si cree el articulo 
+
+            /*
+                El usuario pidió explícitamente no identificar por código de proveedor.
+                Antes esta guarda dependía de un && de tres condiciones que casi nunca se
+                cumplían las tres a la vez, así que actualizar_por_provider_code = false
+                no tenía efecto real. Ahora es una condición independiente: si está en
+                false, el paso de provider_code queda deshabilitado, punto, sin importar
+                el valor de las otras banderas.
             */
-            if (
-                $permitir_provider_code_repetido 
-                && !$actualizar_por_provider_code
-                && $permitir_provider_code_repetido_en_multi_providers
-            ) {
-                Self::log('Retornando NULL porque: permitir_provider_code_repetido = true y actualizar_por_provider_code = false');
-                return null;
+            if (!$actualizar_por_provider_code) {
+                Self::log('Paso provider_code deshabilitado: actualizar_por_provider_code = false');
+                return self::con_escalon(null, null);
             }
 
             /**
@@ -499,6 +913,38 @@ class ArticleIndexCache
                 $article_ids_other_providers = [];
             }
 
+            /*
+             * 'productos_distintos' (prompt 09, grupo 265): descartar los matches contra
+             * articulos FAKE (de este mismo chunk, todavia sin INSERT) ANTES de la regla de
+             * bloqueo y de decidir match/ambiguo -- para esta fila, esos articulos no
+             * cuentan como si ya existieran. Los matches contra articulos reales de la base
+             * (ids numericos) no se tocan.
+             */
+            if ($descartar_matches_fake_del_archivo) {
+                $es_id_real = function ($id) {
+                    return strncmp((string) $id, 'fake_', strlen('fake_')) !== 0;
+                };
+                $article_ids_same_provider   = array_values(array_filter($article_ids_same_provider, $es_id_real));
+                $article_ids_other_providers = array_values(array_filter($article_ids_other_providers, $es_id_real));
+            }
+
+            /*
+             * Incidente Servian (grupo 294): a diferencia de bar_code/sku/name,
+             * provider_code SI puede repetirse legitimamente entre productos
+             * distintos (es la razon de ser de permitir_provider_code_repetido), asi
+             * que un match unico contra un articulo que ya creo ESTA MISMA
+             * importacion en un chunk anterior no se reporta como ambiguo -- se
+             * descarta, como si el escalon no hubiera encontrado nada, y la fila
+             * sigue de largo (a name, o a "crear nuevo"). A diferencia del filtro de
+             * $descartar_matches_fake_del_archivo (que depende de 'productos_distintos'),
+             * este se aplica siempre.
+             */
+            $no_creado_por_esta_importacion = function ($id) use ($index, $import_history_id_actual) {
+                return !self::matched_article_created_by_this_import($index, $id, $import_history_id_actual);
+            };
+            $article_ids_same_provider   = array_values(array_filter($article_ids_same_provider, $no_creado_por_esta_importacion));
+            $article_ids_other_providers = array_values(array_filter($article_ids_other_providers, $no_creado_por_esta_importacion));
+
             /**
              * Regla de bloqueo:
              * - Si no hay match en provider actual
@@ -517,12 +963,12 @@ class ArticleIndexCache
             ) {
                 Self::log('Bloqueado por provider_code existente en otro proveedor');
 
-                return [
+                return self::con_escalon(null, [
                     '__provider_code_blocked_by_other_provider' => true,
                     'provider_code' => $provider_code,
                     'provider_id' => $provider_id,
                     'matched_other_provider_ids' => $article_ids_other_providers,
-                ];
+                ]);
             }
 
             $article_ids = $article_ids_same_provider;
@@ -554,36 +1000,101 @@ class ArticleIndexCache
 
                     if (empty($real_ids)) {
                         Self::log('Todos los IDs son fakes (primera importación) - retornando null para crear artículo nuevo');
-                        return null;
+                        return self::con_escalon(null, null);
                     }
 
                     Self::log('Hay IDs reales en BD - retornando colección para actualizar');
-                    return self::collection_from_index_article_ids($real_ids, $relations, $user_id);
+
+                    /*
+                     * INVARIANTE (grupo 285, prompt 01): a partir de acá, este es el ÚNICO punto de
+                     * find_with_index() que puede devolver una Collection, y tiene que devolverla
+                     * SOLO cuando hay dos o más artículos. ProcessRow::son_varios_articulos() (y
+                     * sus seis llamadores) tratan cualquier Collection como "son varios artículos" --
+                     * antes de este fix, un provider_code que matcheaba un ÚNICO artículo llegaba acá
+                     * como Collection de un elemento, son_varios_articulos() la trataba igual que una
+                     * ambigüedad real, y el SKU/bar_code de la fila se descartaba con un
+                     * import_conflict FALSO de identificador_sin_asignar (coincidía uno, no varios).
+                     * No "arreglar" esto devolviendo false desde son_varios_articulos(): sin
+                     * normalizar acá el origen, esa fila se trataría como "sin match" y crearía un
+                     * artículo duplicado (ver línea ~795, la anulación por !instanceof Article).
+                     */
+                    $resuelto_provider_code_repetido = self::collection_from_index_article_ids($real_ids, $relations, $user_id);
+
+                    if ($resuelto_provider_code_repetido->count() === 1) {
+                        return self::con_escalon('provider_code', $resuelto_provider_code_repetido->first());
+                    }
+
+                    if ($resuelto_provider_code_repetido->count() === 0) {
+                        // No puede pasar hoy (real_ids ya se validó no vacío más arriba), pero si el
+                        // índice quedara desalineado contra la BD, nunca devolver una Collection
+                        // vacía: son_varios_articulos() la trataría como "no son varios" y caería en
+                        // la misma anulación-a-duplicado que el caso de arriba.
+                        return self::con_escalon('provider_code', null);
+                    }
+
+                    return self::con_escalon('provider_code', $resuelto_provider_code_repetido);
 
                 } else {
 
-                    Self::log('Retornando un unico article porque no se permtien provider_codes repetidos');
+                    /*
+                        No se permiten provider_codes repetidos: si hay más de un candidato,
+                        antes se elegía el primero en silencio (->first()). Ahora se trata
+                        como ambigüedad explícita: no se crea ni se actualiza nada, se
+                        reporta el conflicto (ver ProcessRow::registrar_conflicto_ambiguo).
+                    */
+                    if (count($article_ids) > 1) {
+                        Self::log('provider_code ambiguo (repetidos no permitidos): '.$provider_code.' matchea con '.count($article_ids).' articulos');
+                        return self::con_escalon(null, new AmbiguousMatch('provider_code', $provider_code, $article_ids));
+                    }
+
+                    Self::log('Retornando un unico article porque no se permiten provider_codes repetidos');
                     // Un solo resultado: primero intentamos resolver ids mixtos (BD + fake en RAM)
                     $resolved = self::collection_from_index_article_ids($article_ids, $relations, $user_id);
 
-                    return $resolved->first();
+                    if ($resolved->count() > 1) {
+                        Self::log('provider_code ambiguo tras resolver en BD: '.$provider_code);
+                        return self::con_escalon(null, new AmbiguousMatch('provider_code', $provider_code, $article_ids));
+                    }
+
+                    return self::con_escalon('provider_code', $resolved->first());
                 }
             }
 
-            return null;
+            return self::con_escalon(null, null);
         }
 
-        // 5) name
-        elseif (!empty($data['name'])) {
-            $key_name = mb_strtolower(trim((string)$data['name']));
+        // 5) name -- semantica sin cambios, mismo guard que provider_code.
+        if (is_null($article_id) && !empty($data['name'])) {
+
+            $key_name = self::normalize_name_for_match($data['name']);
+
             if (isset($index['names'][$key_name])) {
-                $article_id = $index['names'][$key_name];
+
+                $name_resolved = self::resolve_unique($index['names'][$key_name], $relations, $user_id);
+
+                if ($name_resolved['status'] === 'ambiguous') {
+                    Self::log('name ambiguo: '.$data['name'].' matchea con '.count($name_resolved['ids']).' articulos');
+                    return self::con_escalon(null, new AmbiguousMatch('name', (string) $data['name'], $name_resolved['ids']));
+                }
+
+                if ($name_resolved['status'] === 'match') {
+
+                    // Incidente Servian (grupo 294): mismo criterio que bar_code/sku arriba.
+                    if (self::matched_article_created_by_this_import($index, $name_resolved['article']->id, $import_history_id_actual)) {
+                        Self::log('name matchea un articulo creado por esta misma importacion en un chunk anterior: se reporta ambiguo, no se fusiona.');
+                        return self::con_escalon(null, new AmbiguousMatch('name', (string) $data['name'], [$name_resolved['article']->id]));
+                    }
+
+                    return self::con_escalon('name', $name_resolved['article']);
+                }
+
+                /* no_match: se deja $article_id sin asignar, igual que bar_code y sku. */
             }
         }
 
         // Si no encontramos nada por ID/bar_code/sku/name => crear
         if (!$article_id) {
-            return null;
+            return self::con_escalon(null, null);
         }
 
         // REGLA actualizar_proveedor:
@@ -605,10 +1116,20 @@ class ArticleIndexCache
 
             $from_ram = self::get_runtime_fake_article($user_id, (string) $article_id);
 
-            return $from_ram;
+            /*
+             * Si el fake no aparece en RAM (caso raro, id inconsistente entre indice y
+             * registro fake), no hubo match real: el escalon queda en null, no en el
+             * escalon que asigno $article_id.
+             */
+            return self::con_escalon(is_null($from_ram) ? null : $escalon, $from_ram);
         }
 
-        return Article::with($relations)->find($article_id);
+        // $article_id apuntaba a un id de BD, pero el articulo pudo haber sido borrado
+        // entre el build del indice y esta fila: en ese caso Eloquent devuelve null y
+        // el escalon tiene que quedar en null, no en el escalon que asigno $article_id.
+        $article_encontrado = Article::with($relations)->find($article_id);
+
+        return self::con_escalon(is_null($article_encontrado) ? null : $escalon, $article_encontrado);
     }
     
 
@@ -635,7 +1156,7 @@ class ArticleIndexCache
 
     public static function add($article)
     {
-        $key = "article_index_user_{$article->user_id}";
+        $key = self::cache_key($article->user_id);
 
         // Usar índice en RAM (memoizado) para NO tocar cache en cada fila
         $index = self::get_index((int)$article->user_id);
@@ -661,11 +1182,18 @@ class ArticleIndexCache
 
             $index['ids'][(string)$article_id] = $article_id;
         }
+        // bar_codes/skus en formato lista: se acumula en vez de pisar.
         if (!empty($article->bar_code)) {
-            $index['bar_codes'][(string)$article->bar_code] = $article_id;
+            $bc = (string) $article->bar_code;
+            $ids_bc = self::index_entry_to_ids($index['bar_codes'][$bc] ?? null);
+            $ids_bc[] = $article_id;
+            $index['bar_codes'][$bc] = array_values(array_unique($ids_bc));
         }
         if (!empty($article->sku)) {
-            $index['skus'][(string)$article->sku] = $article_id;
+            $sku = (string) $article->sku;
+            $ids_sku = self::index_entry_to_ids($index['skus'][$sku] ?? null);
+            $ids_sku[] = $article_id;
+            $index['skus'][$sku] = array_values(array_unique($ids_sku));
         }
 
         if (!is_null($article->provider_code) && !is_null($article->provider_id)) {
@@ -686,8 +1214,12 @@ class ArticleIndexCache
             $index['provider_codes'][$prov_id][$prov_code][] = $article_id;
         }
 
+        // names en formato lista: se acumula en vez de pisar (misma logica que bar_codes/skus).
         if (!empty($article->name)) {
-            $index['names'][strtolower(trim((string)$article->name))] = $article_id;
+            $name_key = self::normalize_name_for_match($article->name);
+            $ids_name = self::index_entry_to_ids($index['names'][$name_key] ?? null);
+            $ids_name[] = $article_id;
+            $index['names'][$name_key] = array_values(array_unique($ids_name));
         }
 
         // Guardamos en RAM y marcamos como "dirty" SOLO si querés persistir.
@@ -699,15 +1231,26 @@ class ArticleIndexCache
     }
 
 
-    public static function update(Article $article, $codigos_proveedor_repetidos)
+    public static function update(Article $article, $codigos_proveedor_repetidos, ?int $import_history_id = null)
     {
-        $key = "article_index_user_{$article->user_id}";
-        $index = Cache::get($key);
+        $key = self::cache_key($article->user_id);
 
-        // if (!$index) {
-        //     self::build($article->user_id, null, false);
-        //     $index = Cache::get($key);
-        // }
+        /*
+         * BUG incidente Servian (grupo 294): leer Cache::get() directo, en vez del
+         * indice memoizado en RAM que add() ya usa via get_index(), hacia que cada
+         * llamada a update() DENTRO DEL MISMO foreach (ver
+         * ActualizarBBDD::actualizar_cache_articulos_creados()/actualizar_cache())
+         * arrancara de nuevo desde el cache compartido -- que recien se escribe una
+         * vez, en persist(), despues de terminar el foreach. Resultado: cada llamada
+         * pisaba en RAM lo que habia agregado la llamada anterior del mismo lote, y
+         * solo el ULTIMO articulo de ese foreach sobrevivia hasta persist(). Un
+         * articulo creado a mitad de un chunk (no el ultimo) quedaba indexado en la
+         * practica como si nunca se hubiera agregado, y un chunk posterior no lo
+         * encontraba -> duplicado. self::get_index() es la MISMA vista en RAM que
+         * add() usa, asi que las llamadas de este foreach se acumulan en vez de
+         * pisarse.
+         */
+        $index = self::get_index((int) $article->user_id);
 
         /** ------------------------------------------------------------------
          *  1) ELIMINAR SOLO EL fake QUE COINCIDE CON EL ARTÍCULO REAL
@@ -715,39 +1258,79 @@ class ArticleIndexCache
 
         $fake_eliminado = false;
 
-        // a) Si existe fake en bar_codes
+        // a) Si existe fake en bar_codes (entrada puede ser escalar viejo o lista nueva)
         if (!empty($article->bar_code)) {
 
-            if (isset($index['bar_codes'][$article->bar_code]) &&
-                strncmp((string) $index['bar_codes'][$article->bar_code], 'fake_', strlen('fake_')) === 0) {
+            $bc = (string) $article->bar_code;
 
-                $fake_id_bar = (string) $index['bar_codes'][$article->bar_code];
+            if (isset($index['bar_codes'][$bc])) {
 
-                self::forget_runtime_fake_article((int) $article->user_id, $fake_id_bar);
-                unset($index['ids'][$fake_id_bar]);
-                unset($index['bar_codes'][$article->bar_code]);
-                $fake_eliminado = true;
-                // Log::info('Se elimino del cache bar_code: '.$article->bar_code);
+                $ids_en_entry = self::index_entry_to_ids($index['bar_codes'][$bc]);
+
+                $fakes_en_entry = array_values(array_filter($ids_en_entry, function ($id_val) {
+                    return strncmp((string) $id_val, 'fake_', strlen('fake_')) === 0;
+                }));
+
+                if (count($fakes_en_entry) > 0) {
+
+                    foreach ($fakes_en_entry as $fid) {
+                        self::forget_runtime_fake_article((int) $article->user_id, (string) $fid);
+                        unset($index['ids'][$fid]);
+                    }
+
+                    $sin_fakes = array_values(array_filter($ids_en_entry, function ($id_val) {
+                        return strncmp((string) $id_val, 'fake_', strlen('fake_')) !== 0;
+                    }));
+
+                    if (count($sin_fakes) === 0) {
+                        unset($index['bar_codes'][$bc]);
+                    } else {
+                        $index['bar_codes'][$bc] = $sin_fakes;
+                    }
+
+                    $fake_eliminado = true;
+                    // Log::info('Se elimino del cache bar_code: '.$bc);
+                }
             }
-        } 
+        }
 
 
         if (!$fake_eliminado) {
 
             if (!empty($article->sku)) {
 
-                if (isset($index['skus'][$article->sku]) &&
-                    strncmp((string) $index['skus'][$article->sku], 'fake_', strlen('fake_')) === 0) {
+                $sku = (string) $article->sku;
 
-                    $fake_id_sku = (string) $index['skus'][$article->sku];
+                if (isset($index['skus'][$sku])) {
 
-                    self::forget_runtime_fake_article((int) $article->user_id, $fake_id_sku);
-                    unset($index['ids'][$fake_id_sku]);
-                    unset($index['skus'][$article->sku]);
-                    $fake_eliminado = true;
-                    // Log::info('Se elimino del cache sku: '.$article->sku);
+                    $ids_en_entry = self::index_entry_to_ids($index['skus'][$sku]);
+
+                    $fakes_en_entry = array_values(array_filter($ids_en_entry, function ($id_val) {
+                        return strncmp((string) $id_val, 'fake_', strlen('fake_')) === 0;
+                    }));
+
+                    if (count($fakes_en_entry) > 0) {
+
+                        foreach ($fakes_en_entry as $fid) {
+                            self::forget_runtime_fake_article((int) $article->user_id, (string) $fid);
+                            unset($index['ids'][$fid]);
+                        }
+
+                        $sin_fakes = array_values(array_filter($ids_en_entry, function ($id_val) {
+                            return strncmp((string) $id_val, 'fake_', strlen('fake_')) !== 0;
+                        }));
+
+                        if (count($sin_fakes) === 0) {
+                            unset($index['skus'][$sku]);
+                        } else {
+                            $index['skus'][$sku] = $sin_fakes;
+                        }
+
+                        $fake_eliminado = true;
+                        // Log::info('Se elimino del cache sku: '.$sku);
+                    }
                 }
-            } 
+            }
         }
 
 
@@ -805,19 +1388,38 @@ class ArticleIndexCache
             }
         }
 
-        $name_key = strtolower(trim($article->name));
+        // clave normalizada del nombre (mb_strtolower + colapso de espacios internos)
+        $name_key = self::normalize_name_for_match($article->name);
         if (!$fake_eliminado) {
 
-            // c) Si existe fake en names
-            if (!empty($article->name)) {
-                if (isset($index['names'][$name_key]) &&
-                    strncmp((string) $index['names'][$name_key], 'fake_', strlen('fake_')) === 0) {
+            // c) Si existe fake en names (entrada puede ser escalar viejo o lista nueva):
+            // se filtran solo los ids fake_*, se conservan los reales.
+            if (!empty($article->name) && isset($index['names'][$name_key])) {
 
-                    $fake_id_name = (string) $index['names'][$name_key];
+                $ids_en_entry = self::index_entry_to_ids($index['names'][$name_key]);
 
-                    self::forget_runtime_fake_article((int) $article->user_id, $fake_id_name);
-                    unset($index['ids'][$fake_id_name]);
-                    unset($index['names'][$name_key]);
+                $fakes_en_entry = array_values(array_filter($ids_en_entry, function ($id_val) {
+                    return strncmp((string) $id_val, 'fake_', strlen('fake_')) === 0;
+                }));
+
+                if (count($fakes_en_entry) > 0) {
+
+                    foreach ($fakes_en_entry as $fid) {
+                        self::forget_runtime_fake_article((int) $article->user_id, (string) $fid);
+                        unset($index['ids'][$fid]);
+                    }
+
+                    $sin_fakes = array_values(array_filter($ids_en_entry, function ($id_val) {
+                        return strncmp((string) $id_val, 'fake_', strlen('fake_')) !== 0;
+                    }));
+
+                    if (count($sin_fakes) === 0) {
+                        unset($index['names'][$name_key]);
+                    } else {
+                        $index['names'][$name_key] = $sin_fakes;
+                    }
+
+                    $fake_eliminado = true;
                     // Log::info('Se elimino del cache name: '.$name_key);
                 }
             }
@@ -834,12 +1436,41 @@ class ArticleIndexCache
 
         $index['ids'][$article->id] = $article->id;
 
+        /*
+         * Marca de "quien lo creo" (incidente Servian, grupo 294): solo se etiqueta
+         * cuando el llamador pasa un import_history_id explicito -- hoy, unicamente
+         * ActualizarBBDD::actualizar_cache_articulos_creados(), justo para los
+         * articulos que esta MISMA importacion acaba de insertar. Los articulos que
+         * ya existian antes (actualizar_cache(), sin este argumento) nunca se tocan
+         * aca, asi que jamas quedan marcados como "creados por" una importacion.
+         */
+        if (!is_null($import_history_id)) {
+            $index['created_by_import'][(int) $article->id] = $import_history_id;
+        }
+
         if (!empty($article->bar_code)) {
-            $index['bar_codes'][$article->bar_code] = $article->id;
+            // Formato lista: se acumula en vez de pisar (ver index_entry_to_ids/resolve_unique).
+            $bc = (string) $article->bar_code;
+            $ids_bc = self::index_entry_to_ids($index['bar_codes'][$bc] ?? null);
+            $ids_bc[] = $article->id;
+            $index['bar_codes'][$bc] = array_values(array_unique($ids_bc));
+        }
+
+        if (!empty($article->sku)) {
+            // Rama que faltaba (mismo patron que bar_code arriba, grupo 294): sin
+            // ella el sku de un articulo recien creado nunca quedaba indexado por
+            // update(), asi que un chunk posterior no podia encontrarlo por sku.
+            $sku = (string) $article->sku;
+            $ids_sku = self::index_entry_to_ids($index['skus'][$sku] ?? null);
+            $ids_sku[] = $article->id;
+            $index['skus'][$sku] = array_values(array_unique($ids_sku));
         }
 
         if (!empty($article->name)) {
-            $index['names'][$name_key] = $article->id;
+            // Formato lista: se acumula en vez de pisar (misma logica que bar_codes/skus).
+            $ids_name = self::index_entry_to_ids($index['names'][$name_key] ?? null);
+            $ids_name[] = $article->id;
+            $index['names'][$name_key] = array_values(array_unique($ids_name));
         }
 
         // provider_code
@@ -874,23 +1505,264 @@ class ArticleIndexCache
         self::$runtime_dirty_by_key[$key] = true;
     }
 
+    /**
+     * Persiste el indice al cache compartido, fusionando con lo que ya haya.
+     *
+     * No se puede hacer un Cache::put del indice local a secas: con varios
+     * workers, cada uno tiene una vista parcial y el ultimo en escribir
+     * borraria lo que agregaron los demas (last-write-wins). Por eso se lee
+     * el estado actual del cache compartido y se fusiona (merge_indexes) con
+     * la vista local antes de escribir.
+     *
+     * @param  int $user_id dueño del indice
+     * @param  int $ttl_minutes minutos de vida del cache tras persistir
+     * @return void
+     */
     public static function persist(int $user_id, int $ttl_minutes = 30): void
     {
-        $key = "article_index_user_{$user_id}";
+        // clave del cache compartido para este usuario
+        $key = self::cache_key($user_id);
 
+        // Si no hay indice cargado en RAM o no tiene cambios sin persistir, no hay nada que hacer.
         if (empty(self::$runtime_loaded_by_key[$key]) || empty(self::$runtime_dirty_by_key[$key])) {
             return;
         }
 
-        Cache::put($key, self::$runtime_index_by_key[$key], now()->addMinutes($ttl_minutes));
+        // vista local (RAM de este proceso/worker) con los cambios del lote actual
+        $local = self::$runtime_index_by_key[$key];
+
+        // estado actual del cache compartido, escrito potencialmente por otros workers
+        $remoto = Cache::get($key, []);
+
+        // fusion de ambos indices respetando la forma de cada sub-indice
+        $merged = self::merge_indexes($remoto, $local);
+
+        Cache::put($key, $merged, now()->addMinutes($ttl_minutes));
+
+        /*
+         * Grupo 291, prompt 07: misma verificación que build() -- ver el
+         * comentario ahí para el porqué. Acá el índice fusionado puede ser
+         * incluso más grande que el de un solo worker, así que el riesgo de
+         * exceder el límite de memcached es igual o mayor.
+         */
+        if (!Cache::has($key)) {
+            Log::critical('ArticleIndexCache::persist: el Cache::put no guardo el indice fusionado', [
+                'user_id' => $user_id,
+                'driver'  => config('cache.default'),
+                'counts'  => [
+                    'ids'            => count($merged['ids'] ?? []),
+                    'provider_codes' => count($merged['provider_codes'] ?? []),
+                    'bar_codes'      => count($merged['bar_codes'] ?? []),
+                    'skus'           => count($merged['skus'] ?? []),
+                    'names'          => count($merged['names'] ?? []),
+                ],
+            ]);
+
+            throw new \RuntimeException(
+                'No se pudo guardar el índice de artículos en el cache (driver: ' . config('cache.default') . '). '
+                . 'La importación se detiene porque sin ese índice cada fila haría una consulta a la base y '
+                . 'tardaría horas. Revisar el driver de cache del cliente.'
+            );
+        }
+
+        // La RAM local pasa a reflejar el indice fusionado (incluye lo que agregaron otros workers).
+        self::$runtime_index_by_key[$key] = $merged;
 
         // ya persistido
         self::$runtime_dirty_by_key[$key] = false;
     }
 
+    /**
+     * Fusiona dos indices de importacion.
+     *
+     * - ids: mapa escalar. Gana el nuevo.
+     * - bar_codes, skus, names: listas de article ids. Se unen (names desde el prompt 01
+     *   del grupo 232: antes era escalar y "ganaba el nuevo", ahora se acumula igual que
+     *   bar_codes/skus para no perder candidatos con nombre repetido).
+     * - provider_codes: mapa provider_id -> codigo -> lista de ids. Se unen.
+     *
+     * Los article ids "fake_*" NO se propagan: son locales al proceso que los creo
+     * y no tienen sentido en un cache compartido entre workers.
+     *
+     * @param  array $base indice existente en el cache compartido (u otro origen)
+     * @param  array $nuevo indice local a fusionar sobre el base
+     * @return array indice fusionado
+     */
+    protected static function merge_indexes(array $base, array $nuevo): array
+    {
+        // resultado acumulado, arranca como copia del indice base (remoto)
+        $out = $base;
+
+        /* ids: escalar. */
+        foreach (['ids'] as $seccion) {
+            if (!isset($nuevo[$seccion])) {
+                continue;
+            }
+            if (!isset($out[$seccion])) {
+                $out[$seccion] = [];
+            }
+            foreach ($nuevo[$seccion] as $k => $v) {
+                if (self::is_fake_id($v)) {
+                    continue;
+                }
+                $out[$seccion][$k] = $v;
+            }
+        }
+
+        /*
+         * created_by_import (grupo 294, incidente Servian): mapa escalar igual que
+         * ids (article_id real => import_history_id), gana el nuevo. Las claves
+         * siempre son ids reales (update() solo las escribe con $article->id, nunca
+         * con un fake_id), asi que no hace falta filtrar fakes aca.
+         */
+        if (isset($nuevo['created_by_import'])) {
+            if (!isset($out['created_by_import'])) {
+                $out['created_by_import'] = [];
+            }
+            foreach ($nuevo['created_by_import'] as $k => $v) {
+                $out['created_by_import'][$k] = $v;
+            }
+        }
+
+        /* bar_codes, skus y names: listas de ids. */
+        foreach (['bar_codes', 'skus', 'names'] as $seccion) {
+            if (!isset($nuevo[$seccion])) {
+                continue;
+            }
+            if (!isset($out[$seccion])) {
+                $out[$seccion] = [];
+            }
+            foreach ($nuevo[$seccion] as $codigo => $entry) {
+                $ids_nuevos = self::index_entry_to_ids($entry);
+                $ids_base   = isset($out[$seccion][$codigo])
+                                ? self::index_entry_to_ids($out[$seccion][$codigo])
+                                : [];
+
+                $union = array_merge($ids_base, $ids_nuevos);
+                $union = array_values(array_unique(array_filter($union, function ($id) {
+                    return !self::is_fake_id($id);
+                })));
+
+                if (count($union) > 0) {
+                    $out[$seccion][$codigo] = $union;
+                }
+            }
+        }
+
+        /* provider_codes: provider_id -> codigo -> lista. */
+        if (isset($nuevo['provider_codes'])) {
+            if (!isset($out['provider_codes'])) {
+                $out['provider_codes'] = [];
+            }
+            foreach ($nuevo['provider_codes'] as $prov_id => $codigos) {
+                if (!isset($out['provider_codes'][$prov_id])) {
+                    $out['provider_codes'][$prov_id] = [];
+                }
+                foreach ($codigos as $codigo => $ids) {
+                    $ids_nuevos = self::index_entry_to_ids($ids);
+                    $ids_base   = isset($out['provider_codes'][$prov_id][$codigo])
+                                    ? self::index_entry_to_ids($out['provider_codes'][$prov_id][$codigo])
+                                    : [];
+
+                    $union = array_merge($ids_base, $ids_nuevos);
+                    $union = array_values(array_unique(array_filter($union, function ($id) {
+                        return !self::is_fake_id($id);
+                    })));
+
+                    if (count($union) > 0) {
+                        $out['provider_codes'][$prov_id][$codigo] = $union;
+                    }
+                }
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Indica si un id de articulo corresponde a un "fake" (pendiente de insert en el
+     * proceso actual, sin fila real en la tabla articles todavia).
+     *
+     * @param  mixed $id
+     * @return bool
+     */
+    protected static function is_fake_id($id)
+    {
+        return is_string($id) && strncmp($id, 'fake_', 5) === 0;
+    }
+
+    /*
+     * NOTA DE INFRAESTRUCTURA
+     *
+     * Estos fixes hacen que el indice sea correcto con varios workers, pero la
+     * importacion sigue siendo mas rapida y mas segura con UN SOLO worker por
+     * subdominio: los lotes van en Bus::chain (secuenciales), asi que workers
+     * extra no aceleran nada y solo agregan riesgo de indice desincronizado.
+     *
+     * En supervisor: numprocs = 1 por cada api_<subdominio>_queue.
+     */
+
+    /**
+     * Descarta el indice memoizado en RAM, forzando que la proxima lectura
+     * vaya al cache compartido.
+     *
+     * Se llama al inicio de cada lote: con varios workers, la RAM de un proceso
+     * no refleja lo que hicieron los otros, y confiar en ella hace que se creen
+     * articulos duplicados.
+     *
+     * NO borra el cache compartido. Solo la copia local.
+     *
+     * @param  int $user_id
+     * @return void
+     */
+    public static function reset_runtime(int $user_id): void
+    {
+        // clave del cache compartido / RAM local para este usuario
+        $key = self::cache_key($user_id);
+
+        /* Si hay cambios sin persistir, persistirlos antes de descartar. */
+        if (!empty(self::$runtime_dirty_by_key[$key])) {
+            self::persist($user_id, 30);
+        }
+
+        unset(self::$runtime_index_by_key[$key]);
+        unset(self::$runtime_loaded_by_key[$key]);
+        unset(self::$runtime_dirty_by_key[$key]);
+        unset(self::$runtime_fake_articles[$user_id]);
+    }
+
+    /**
+     * Descarta TODO el estado de runtime de la clase: indice memoizado, banderas de carga,
+     * banderas de cambios sin persistir, articulos fake pendientes y ultimo escalon.
+     *
+     * Uso EXCLUSIVO de los tests. En produccion no hace falta: cada job arranca con
+     * un proceso limpio y la memoizacion dura lo que dura la importacion, que es
+     * justamente lo que se busca para no releer el indice en cada fila.
+     *
+     * PHPUnit, en cambio, reutiliza el mismo proceso PHP para todos los tests, asi
+     * que sin este reset el test N ve el indice que armo el test N-1. Un Cache::flush()
+     * NO alcanza: get_index() corta al principio si $runtime_loaded_by_key ya esta
+     * seteado y devuelve el indice memoizado sin volver a mirar la cache.
+     *
+     * NO confundir con reset_runtime(int $user_id), que es codigo de produccion y hace
+     * otra cosa: descarta solo la clave de UN usuario, persiste antes de descartar si
+     * hay cambios sin guardar, y no toca $ultimo_escalon. Para un test eso es al reves
+     * de lo que se necesita: hay que tirar todo y no escribir nada.
+     *
+     * @return void
+     */
+    public static function reset_runtime_de_tests()
+    {
+        self::$runtime_index_by_key  = [];
+        self::$runtime_loaded_by_key = [];
+        self::$runtime_dirty_by_key  = [];
+        self::$runtime_fake_articles = [];
+        self::$ultimo_escalon        = null;
+    }
+
     static function limpiar_cache($user_id) {
 
-        $cache_key = "article_index_user_{$user_id}";
+        $cache_key = self::cache_key($user_id);
         
         Cache::forget($cache_key);
 

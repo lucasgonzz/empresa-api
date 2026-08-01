@@ -268,7 +268,15 @@ class set_datos_for_demo extends Command
         $this->user->default_version = null;
         $this->user->estable_version = null;
         $this->user->google_cuota = 100;
-        $this->user->google_custom_search_api_key = 'AIzaSyCgzE6haVi8uZnenfAvYJO5hn7m7Cl09Gw';
+
+        // API key de fallback global de Google Custom Search: viene de config/services.php
+        // (.env del servidor), nunca hardcodeada (grupo 220, prompt 02, repositorio publico).
+        // Si no esta configurada, se deja null y solo se avisa por consola (no frena el comando).
+        $google_search_api_key = config('services.google_search.api_key');
+        if (empty($google_search_api_key)) {
+            $this->warn('set_datos_for_demo: GOOGLE_SEARCH_API_KEY no esta configurado, se dejo google_custom_search_api_key=null.');
+        }
+        $this->user->google_custom_search_api_key = empty($google_search_api_key) ? null : $google_search_api_key;
 
         $this->user->save();
     }

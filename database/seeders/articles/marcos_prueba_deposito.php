@@ -15,7 +15,7 @@ for ($num=30; $num >= 1 ; $num--) {
         'provider_id'       => 1,
         'images'            => [
             [
-                'url'       => config('app.APP_URL').'/storage/pinza.jpeg',
+                'url'       => \App\Http\Controllers\Helpers\ApiUrlHelper::storage('pinza.jpeg'),
             ],
         ],
     ];

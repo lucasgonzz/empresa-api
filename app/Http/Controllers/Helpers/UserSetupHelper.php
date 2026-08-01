@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
@@ -31,6 +32,19 @@ use Illuminate\Support\Facades\Log;
  */
 class UserSetupHelper
 {
+    /**
+     * Key historica de Google Custom Search de clientes reales. Queda como respaldo
+     * para cuando admin-api no manda 'google_custom_search_api_key' en el payload
+     * (llamada directa al endpoint, instalación vieja, o setting todavía sin cargar
+     * en admin-spa).
+     *
+     * TODO (grupo 220, prompt 02): este literal debería pasar a
+     * config('services.google_search.api_key') como el resto de los fallbacks de Google
+     * Custom Search, pero este archivo lo toca el grupo 218 — no se resuelve acá para no
+     * pisarse con esa otra tarea.
+     */
+    private const GOOGLE_API_KEY_FALLBACK = 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4';
+
     /**
      * Ejecuta el setup completo de un sistema de producción.
      *
@@ -131,7 +145,8 @@ class UserSetupHelper
 
         return User::create([
             'id'                            => $data['user_id'] ?? null,
-            'api_url'                       => config('app.APP_URL').'/public',
+            // El /public lo decide ApiUrlHelper según VPS; hardcodearlo dejaba a los clientes en VPS con la columna api_url apuntando a una ruta inexistente.
+            'api_url'                       => ApiUrlHelper::public_base(),
             'name'                          => $display_name,
             'use_archivos_de_intercambio'   => 0,
             'company_name'                  => $data['company_name'] ?? null,
@@ -161,7 +176,11 @@ class UserSetupHelper
             // Si trabaja con costos en dolares, define si el precio final de esos articulos queda cotizado a pesos (1) o en dolares (0).
             'cotizar_precios_en_dolares'    => !empty($data['cotizar_precios_en_dolares']) ? 1 : 0,
             'base_de_datos'                 => 'empresa_prueba_1',
-            'google_custom_search_api_key'  => 'AIzaSyB8e-DlJMtkGxCK29tAo17lxBKStXtzeD4',
+            // API key de Google Custom Search: la manda admin-api (RunUserSetupService, configurable
+            // desde admin-spa via AdminSetting); si no llega, se usa la key historica de clientes reales.
+            'google_custom_search_api_key'  => (isset($data['google_custom_search_api_key']) && trim((string) $data['google_custom_search_api_key']) !== '')
+                ? trim((string) $data['google_custom_search_api_key'])
+                : self::GOOGLE_API_KEY_FALLBACK,
             // Cuota de Google del usuario real: la manda admin-api (RunUserSetupService, configurable
             // desde admin-spa vía AdminSetting); si no llega (llamada directa, instalación vieja), 100.
             'google_cuota'                  => (isset($data['google_cuota']) && is_numeric($data['google_cuota']))
@@ -256,10 +275,17 @@ class UserSetupHelper
             'ProductionBatchMovementTypeSeeder',
             'RecipeRouteTypeSeeder',
 
-            
+            /*
+                Orden obligatorio: PdfColumnOptionSeeder sincroniza el catalogo global de
+                columnas (tabla pdf_column_options, sin user_id) y los tres seeders
+                de perfiles que siguen lo necesitan poblado. PdfColumnProfileSeeder crea los perfiles de
+                venta (Remito, Factura comun) y PdfColumnProfileArticleSeeder el de listado de
+                articulos. No reordenar.
+            */
             'SheetTypeSeeder',
             'PdfColumnOptionSeeder',
             'PdfColumnProfileSeeder',
+            'PdfColumnProfileArticleSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
         ];

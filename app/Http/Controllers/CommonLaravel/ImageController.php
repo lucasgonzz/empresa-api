@@ -4,6 +4,7 @@ namespace App\Http\Controllers\CommonLaravel;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Jobs\ProcessSyncArticleImageToTiendaNube;
 use App\Models\Article;
@@ -12,6 +13,7 @@ use App\Services\MercadoLibre\ProductService;
 use App\Services\TiendaNube\TiendaNubeCategoryImageService;
 use App\Services\TiendaNube\TiendaNubeProductImageService;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
+use App\Services\Traits\GoogleSearchHelpers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -19,12 +21,112 @@ use Intervention\Image\ImageManager;
 
 class ImageController extends Controller
 {
+    use GoogleSearchHelpers;
+
+    /**
+     * Obtiene el contenido de la imagen de origen para pasarselo a Intervention.
+     *
+     * Intervention, cuando recibe una URL, la baja con file_get_contents: sin User-Agent, sin
+     * Referer y sin timeout. Muchos sitios le responden 403 a un pedido asi aunque la imagen se vea
+     * perfecto en el navegador del usuario. Por eso la bajamos nosotros, con el mismo criterio que
+     * ProcessArticleBatchImagesJob::download_crop_and_save(), y a Intervention le pasamos los bytes.
+     *
+     * Los data URI (subida de archivo desde el navegador) y los paths locales no se descargan: van
+     * derecho a Intervention como hasta ahora.
+     *
+     * @param string $image_url URL http(s), data URI base64, o path local.
+     * @return array Con claves 'data' (string|null), 'failure' ('http'|null) y 'http_status' (int|null).
+     */
+    private function get_image_source($image_url)
+    {
+        $value = (string) $image_url;
+
+        /* Todo lo que no sea http(s) va directo: data URI, path local, contenido binario. */
+        if (strpos($value, 'http://') !== 0 && strpos($value, 'https://') !== 0) {
+            return ['data' => $value, 'failure' => null, 'http_status' => null];
+        }
+
+        $http_status = null;
+
+        try {
+            $response = $this->google_http()
+                ->timeout(12)
+                ->withHeaders([
+                    'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept'     => 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                ])
+                ->get($value);
+
+            $http_status = $response->status();
+
+            if ($response->successful()) {
+                $body = $response->body();
+                if (!is_null($body) && $body !== '') {
+                    return ['data' => $body, 'failure' => null, 'http_status' => $http_status];
+                }
+            }
+        } catch (\Exception $e) {
+            Log::info('setImage: fallo la descarga de '.$value.' -- '.$e->getMessage());
+        }
+
+        return ['data' => null, 'failure' => 'http', 'http_status' => $http_status];
+    }
+
+    /**
+     * Respuesta de error cuando la imagen de origen no se pudo obtener o no se pudo procesar.
+     *
+     * Se devuelve 422 y no 500 a proposito: no es un bug del sistema, es una condicion normal del
+     * mundo real (un sitio ajeno que no nos deja bajar su imagen). El 'message' esta escrito para
+     * mostrarse tal cual al usuario, sin que el SPA tenga que interpretarlo.
+     *
+     * Sin la clave 'errors' a proposito: el interceptor de empresa-spa trata cualquier 422 CON
+     * 'errors' como error de validacion de Laravel y le arma otro toast por su cuenta.
+     *
+     * @param string   $failure     'http' si fallo la descarga, cualquier otra cosa si fallo el formato.
+     * @param int|null $http_status Status HTTP de la descarga, si se llego a tener respuesta.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    private function image_source_error_response($failure, $http_status)
+    {
+        if ($failure === 'http') {
+            $code    = 'download_failed';
+            $message = 'No se pudo descargar la imagen desde el sitio de origen. Ese sitio no permite que la bajemos, aunque en pantalla se vea bien. Elegí otra imagen de los resultados.';
+        } else {
+            $code    = 'invalid_image';
+            $message = 'El archivo que devolvió el sitio de origen no es una imagen que podamos procesar. Elegí otra imagen de los resultados.';
+        }
+
+        return response()->json([
+            'message'     => $message,
+            'image_error' => $code,
+            'http_status' => $http_status,
+        ], 422);
+    }
 
     function setImage(Request $request, $prop_name) {
-        $manager = new ImageManager();
-        $croppedImage = $manager->make($request->image_url); 
-        // Log::info('height: '.$croppedImage->height());
-        // Log::info('width: '.$croppedImage->width());
+        if (is_null($request->image_url) || $request->image_url === '') {
+            return response()->json([
+                'message'     => 'No se recibió ninguna imagen para guardar.',
+                'image_error' => 'empty_source',
+            ], 422);
+        }
+
+        $source = $this->get_image_source($request->image_url);
+
+        if (!is_null($source['failure'])) {
+            Log::info('setImage: no se pudo descargar la imagen. status: '.var_export($source['http_status'], true).' url: '.$request->image_url);
+
+            return $this->image_source_error_response($source['failure'], $source['http_status']);
+        }
+
+        try {
+            $manager      = new ImageManager();
+            $croppedImage = $manager->make($source['data']);
+        } catch (\Exception $e) {
+            Log::info('setImage: Intervention no pudo procesar la imagen -- '.$e->getMessage());
+
+            return $this->image_source_error_response('format', $source['http_status']);
+        }
         if (isset($request->top)) {
             $croppedImage->crop($request->width, $request->height, $request->left, $request->top);
         }           
@@ -33,30 +135,32 @@ class ImageController extends Controller
         } else {
             $name = time().rand(1, 100000).'.webp';
         }
-        $croppedImage->save(storage_path().'/app/public/'.$name);
+        try {
+            $croppedImage->save(storage_path().'/app/public/'.$name);
+        } catch (\Exception $e) {
+            Log::info('setImage: no se pudo guardar la imagen en disco -- '.$e->getMessage());
+
+            return response()->json([
+                'message'     => 'La imagen se descargó bien pero no se pudo guardar en el servidor. Volvé a intentar en un momento.',
+                'image_error' => 'storage_failed',
+            ], 422);
+        }
 
         $model_name = GeneralHelper::getModelName($request->model_name);
         
-        if (config('app.APP_ENV') == 'local') {
-            $name = 'http://empresa.local:8000/storage/'.$name;
-        } else {
-
-            if (config('app.VPS')) {
-                $name = config('app.APP_URL').'/storage/'.$name;
-            } else {
-                $name = config('app.APP_URL').'/public/storage/'.$name;
-            }
-        }
+        // URL publica del archivo, centralizada en ApiUrlHelper (unico lugar que sabe si
+        // corresponde agregar "/public" segun VPS/APP_ENV; ver grupo 230, prompt 01).
+        $name = ApiUrlHelper::storage($name);
 
         $model = $model_name::find($request->model_id);
 
         $image = null;
         if ($prop_name == 'has_many') {
             $image = Image::create([
-                env('IMAGE_URL_PROP_NAME', 'image_url')     => $name,
-                'imageable_id'                              => !is_null($model) ? $request->model_id : null,
-                'imageable_type'                            => $request->model_name,
-                'temporal_id'                               => $this->getTemporalId($request),
+                'hosting_url'                                => $name,
+                'imageable_id'                                => !is_null($model) ? $request->model_id : null,
+                'imageable_type'                              => $request->model_name,
+                'temporal_id'                                 => $this->getTemporalId($request),
             ]);
 
             if ($request->model_name == 'article' && !is_null($model)) {
@@ -64,7 +168,7 @@ class ImageController extends Controller
                 $helper->check_created_image($model, $image);
 
                 $model->needs_sync_with_tn = true;
-                $model->timestamps = false;
+                /* No desactivar timestamps: el save() debe bumpear updated_at para que el sync incremental del front (sync_articles.js) vuelva a bajar el articulo con su imagen nueva. */
                 $model->save();
 
                 ProductService::add_article_to_sync($model);
@@ -127,7 +231,7 @@ class ImageController extends Controller
 
     function deleteImageModel($model_name, $model_id, $image_id) {
         $image = Image::find($image_id);
-        $image_name = $image->{env('IMAGE_URL_PROP_NAME', 'image_url')};
+        $image_name = $image->hosting_url;
         $array = explode('/', $image_name);
         $image_name = $array[count($array)-1];
 
@@ -146,6 +250,9 @@ class ImageController extends Controller
 
                 /* Encolar sync de respaldo: si el DELETE directo falló o el artículo tiene más cambios */
                 TiendaNubeSyncArticleService::add_article_to_sync($article);
+
+                /* Bumpear updated_at del articulo para que la baja de imagen tambien se propague al sync incremental del front (sync_articles.js) */
+                $article->save();
             } else {
                 Log::info('No se llamo a TiendaNubeProductImageService');
             }

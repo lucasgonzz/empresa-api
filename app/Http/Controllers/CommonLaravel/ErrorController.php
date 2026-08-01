@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\CommonLaravel;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use Illuminate\Support\Facades\Mail;
 use App\Mail\SimpleMail;
 use App\Models\Error;
@@ -18,7 +19,7 @@ class ErrorController extends Controller
                 'file'      => isset($request->file) ? $request->file : null,
                 'line'      => isset($request->line) ? $request->line : null,
                 'user_id'   => $this->userId(),
-                'api_url'   => env('API_URL'),
+                'api_url'   => ApiUrlHelper::base(),
             ]);
 
             $mensajes = [];

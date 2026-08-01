@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Events\ImportStatusUpdated;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Imports\ArticleImport;
 use App\Models\ArticleImportResult;
@@ -34,6 +35,18 @@ class ProcessArticleChunk implements ShouldQueue
     protected $csv_path, $columns, $create_and_edit, $start_row, $finish_row,
               $provider_id, $user_id, $auth_user_id, $import_status_id, $import_history_id, $chunk_number, $observations, $start_offset, $inicio_chunk, $actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $permitir_provider_code_repetido, $permitir_provider_code_repetido_en_multi_providers, $actualizar_por_provider_code, $user;
 
+    /**
+     * Modo elegido por el usuario para interpretar el punto en columnas numéricas
+     * ambiguas (grupo 239, prompt 04): 'auto' | 'siempre_miles' | 'siempre_decimal'.
+     */
+    protected $interpretacion_punto;
+
+    /**
+     * Decisión del usuario para filas repetidas DENTRO del propio archivo (prompt 04,
+     * grupo 265): 'ultima_gana' | 'productos_distintos'.
+     */
+    protected $filas_repetidas_del_archivo;
+
     // public $timeout = 5; // 30 minutos por chunk, ajustable
     public $timeout = 1800; // 30 minutos por chunk, ajustable
     public $tries = 1;
@@ -52,11 +65,14 @@ class ProcessArticleChunk implements ShouldQueue
             $chunk_number, 
             $start_offset, 
             
-            $actualizar_articulos_de_otro_proveedor, 
-            $actualizar_proveedor, 
-            $permitir_provider_code_repetido, 
+            $actualizar_articulos_de_otro_proveedor,
+            $actualizar_proveedor,
+            $permitir_provider_code_repetido,
             $permitir_provider_code_repetido_en_multi_providers,
-            $actualizar_por_provider_code
+            $actualizar_por_provider_code,
+
+            $interpretacion_punto = 'auto',
+            $filas_repetidas_del_archivo = 'ultima_gana'
     ) {
 
         $this->csv_path                                     = $csv_path;
@@ -78,6 +94,9 @@ class ProcessArticleChunk implements ShouldQueue
         $this->permitir_provider_code_repetido_en_multi_providers   = $permitir_provider_code_repetido_en_multi_providers;
         $this->actualizar_por_provider_code                         = $actualizar_por_provider_code;
 
+        $this->interpretacion_punto                                 = $interpretacion_punto;
+        $this->filas_repetidas_del_archivo                          = $filas_repetidas_del_archivo;
+
         $this->observations = '';
 
         $this->user = User::find($this->user_id);
@@ -96,6 +115,19 @@ class ProcessArticleChunk implements ShouldQueue
             'pid' => getmypid(),
         ]);
         // Log::warning("INICIO Job Chunk #{$this->chunk_number} del lote {$this->batchId()}. PID: " . getmypid());
+
+        /*
+         * Descartar el indice de articulos memoizado en RAM de este proceso ANTES de
+         * instanciar ProcessRow (vía crear_article_import()/collection() mas abajo).
+         *
+         * Con varios workers en la misma cola, la RAM de este proceso puede haber
+         * quedado cargada desde un lote anterior (de este mismo chunk-worker) y no
+         * reflejar lo que agregaron otros workers en el cache compartido mientras
+         * tanto. Sin este reset, el lote actual buscaría articulos contra un indice
+         * desactualizado y terminaría creando duplicados (ver prompt 03, grupo 229 —
+         * caso Servian: mismo bar_code creado dos veces por dos workers distintos).
+         */
+        ArticleIndexCache::reset_runtime((int) $this->user_id);
 
         $inicio = microtime(true);
 
@@ -380,10 +412,13 @@ class ProcessArticleChunk implements ShouldQueue
                 $this->permitir_provider_code_repetido,
                 $this->permitir_provider_code_repetido_en_multi_providers,
                 $this->actualizar_por_provider_code,
+
+                $this->interpretacion_punto,
+                $this->filas_repetidas_del_archivo,
             );
 
         } catch (\Throwable $e) {
-            
+
             Log::error('Error al importar, desde ProcessArticleChunk crear_article_import');
 
             throw $e;

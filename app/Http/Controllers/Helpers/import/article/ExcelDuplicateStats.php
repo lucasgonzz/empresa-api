@@ -63,6 +63,11 @@ class ExcelDuplicateStats
      *                      'ejemplos_provider_codes_duplicados'         => string[],
      *                      'detalle_bar_codes_duplicados'               => [['codigo','veces','filas'],...]
      *                      'detalle_provider_codes_duplicados'          => [['codigo','veces','filas'],...]
+     *                      'provider_codes_distintos'                   => string[] (grupo 291, prompt 03:
+     *                          todos los provider_codes distintos del archivo, no solo los duplicados;
+     *                          se usa para persistir en excel_analysis_runs.codigos_proveedor y así
+     *                          evitar releer el archivo en refreshProviderStats(). NUNCA debe llegar
+     *                          tal cual a una respuesta HTTP: puede tener decenas de miles de strings.)
      *                  ]
      */
     public static function analyze(
@@ -84,6 +89,8 @@ class ExcelDuplicateStats
             /* Detalle enriquecido: código, cantidad de repeticiones y filas donde aparece. */
             'detalle_bar_codes_duplicados'                => [],
             'detalle_provider_codes_duplicados'           => [],
+            /* Grupo 291, prompt 03: sin columna definida no hay códigos que listar. */
+            'provider_codes_distintos'                    => [],
         ];
 
         /* Si no hay ningún índice definido, no tiene sentido leer el archivo. */
@@ -248,61 +255,22 @@ class ExcelDuplicateStats
         /*
          * Cruzamos los provider_codes únicos extraídos del Excel contra la tabla articles en BD.
          * Solo si la columna provider_code existe y tiene datos para cruzar.
-         * Procesamos en chunks para no saturar la consulta con archivos de miles de filas.
+         *
+         * (grupo 291, prompt 03) El cruce en sí se extrajo a crossCheckProviderCodes() para que
+         * refreshProviderStats() pueda reusarlo sin releer el archivo, pasando directamente la
+         * lista de códigos ya persistida en excel_analysis_runs.codigos_proveedor.
          */
-        $provider_codes_mismo_proveedor   = 0;
-        $provider_codes_otros_proveedores = 0;
-
         if (!is_null($provider_code_column_index_0based) && !empty($provider_code_data)) {
-            /* Lista de provider_codes únicos del Excel. */
-            $all_provider_codes = array_keys($provider_code_data);
-
-            /* Partimos en lotes de DB_CHUNK_SIZE para no reventar la consulta. */
-            $db_chunks = array_chunk($all_provider_codes, self::DB_CHUNK_SIZE);
-
-            foreach ($db_chunks as $chunk) {
-                /*
-                 * Buscamos artículos del mismo usuario con cualquiera de esos provider_codes.
-                 * Solo traemos las columnas necesarias para el cruce.
-                 */
-                $matches = Article::where('user_id', $user_id)
-                    ->whereIn('provider_code', $chunk)
-                    ->get(['provider_code', 'provider_id']);
-
-                /*
-                 * Agrupar por provider_code para contar códigos distintos, no artículos individuales.
-                 * Para cada código, determinamos si existe en el mismo proveedor, en otro proveedor, o en ambos.
-                 * Un código que tiene artículos en ambos (mismo y otro proveedor) cuenta en AMBOS contadores.
-                 */
-                $codes_grouped = [];
-                foreach ($matches as $article) {
-                    $code = (string) $article->provider_code;
-                    if (!isset($codes_grouped[$code])) {
-                        $codes_grouped[$code] = ['mismo' => false, 'otro' => false];
-                    }
-
-                    $is_same_provider = (
-                        !is_null($provider_id)
-                        && (int) $provider_id > 0
-                        && (int) $article->provider_id === (int) $provider_id
-                    );
-
-                    if ($is_same_provider) {
-                        $codes_grouped[$code]['mismo'] = true;
-                    } else {
-                        $codes_grouped[$code]['otro'] = true;
-                    }
-                }
-
-                foreach ($codes_grouped as $flags) {
-                    if ($flags['mismo']) {
-                        $provider_codes_mismo_proveedor++;
-                    }
-                    if ($flags['otro']) {
-                        $provider_codes_otros_proveedores++;
-                    }
-                }
-            }
+            $cross_check = self::crossCheckProviderCodes(
+                array_keys($provider_code_data),
+                $provider_id,
+                $user_id
+            );
+            $provider_codes_mismo_proveedor   = $cross_check['provider_codes_existentes_mismo_proveedor'];
+            $provider_codes_otros_proveedores = $cross_check['provider_codes_existentes_otros_proveedores'];
+        } else {
+            $provider_codes_mismo_proveedor   = 0;
+            $provider_codes_otros_proveedores = 0;
         }
 
         Log::info('ExcelDuplicateStats: análisis completado', [
@@ -324,6 +292,100 @@ class ExcelDuplicateStats
             /* Detalle enriquecido: vacío si la columna respectiva no estaba mapeada. */
             'detalle_bar_codes_duplicados'                => !is_null($bar_code_column_index_0based) ? $detalle_bar_codes : [],
             'detalle_provider_codes_duplicados'           => !is_null($provider_code_column_index_0based) ? $detalle_provider_codes : [],
+            /*
+             * Grupo 291, prompt 03: todos los provider_codes distintos del archivo (no solo los
+             * duplicados). El acumulador $provider_code_data ya los tenía en memoria; antes se
+             * descartaban al retornar. El caller (AiExcelAnalyzer::analyze()) es responsable de
+             * sacar esta clave antes de exponer duplicate_stats por HTTP.
+             */
+            'provider_codes_distintos'                    => !is_null($provider_code_column_index_0based) ? array_keys($provider_code_data) : [],
+        ];
+    }
+
+    /**
+     * Cruza una lista de provider_codes ya extraída contra la tabla articles en BD,
+     * sin necesidad de leer el archivo Excel (grupo 291, prompt 03).
+     *
+     * Extraído de analyze() para que pueda reusarse desde refreshProviderStats()
+     * cuando ya existe un análisis previo con los códigos persistidos en
+     * excel_analysis_runs.codigos_proveedor: en ese caso alcanza con este cruce
+     * (una consulta) y no hace falta releer el archivo completo.
+     *
+     * Mismo criterio que el cruce original: un provider_code que tiene artículos
+     * tanto en el proveedor seleccionado como en otro proveedor distinto cuenta en
+     * AMBOS contadores.
+     *
+     * @param  string[]  $provider_codes  Lista de provider_codes distintos a cruzar contra la BD
+     * @param  int|null  $provider_id     ID del proveedor seleccionado (null o 0 si no se pudo inferir)
+     * @param  int       $user_id         ID del usuario propietario para filtrar artículos en BD
+     * @return array     [
+     *                       'provider_codes_existentes_mismo_proveedor'   => int,
+     *                       'provider_codes_existentes_otros_proveedores' => int,
+     *                   ]
+     */
+    public static function crossCheckProviderCodes(array $provider_codes, ?int $provider_id, int $user_id): array
+    {
+        /* Contadores de códigos distintos (no de artículos) que matchean en BD. */
+        $provider_codes_mismo_proveedor   = 0;
+        $provider_codes_otros_proveedores = 0;
+
+        /* Sin códigos que cruzar, no hay nada que consultar. */
+        if (empty($provider_codes)) {
+            return [
+                'provider_codes_existentes_mismo_proveedor'   => $provider_codes_mismo_proveedor,
+                'provider_codes_existentes_otros_proveedores' => $provider_codes_otros_proveedores,
+            ];
+        }
+
+        /* Partimos en lotes de DB_CHUNK_SIZE para no reventar la consulta whereIn. */
+        $db_chunks = array_chunk($provider_codes, self::DB_CHUNK_SIZE);
+
+        foreach ($db_chunks as $chunk) {
+            /*
+             * Buscamos artículos del mismo usuario con cualquiera de esos provider_codes.
+             * Solo traemos las columnas necesarias para el cruce.
+             */
+            $matches = Article::where('user_id', $user_id)
+                ->whereIn('provider_code', $chunk)
+                ->get(['provider_code', 'provider_id']);
+
+            /*
+             * Agrupar por provider_code para contar códigos distintos, no artículos individuales.
+             * Para cada código, determinamos si existe en el mismo proveedor, en otro proveedor, o en ambos.
+             */
+            $codes_grouped = [];
+            foreach ($matches as $article) {
+                $code = (string) $article->provider_code;
+                if (!isset($codes_grouped[$code])) {
+                    $codes_grouped[$code] = ['mismo' => false, 'otro' => false];
+                }
+
+                $is_same_provider = (
+                    !is_null($provider_id)
+                    && (int) $provider_id > 0
+                    && (int) $article->provider_id === (int) $provider_id
+                );
+
+                if ($is_same_provider) {
+                    $codes_grouped[$code]['mismo'] = true;
+                } else {
+                    $codes_grouped[$code]['otro'] = true;
+                }
+            }
+
+            foreach ($codes_grouped as $flags) {
+                if ($flags['mismo']) {
+                    $provider_codes_mismo_proveedor++;
+                }
+                if ($flags['otro']) {
+                    $provider_codes_otros_proveedores++;
+                }
+            }
+        }
+
+        return [
+            'provider_codes_existentes_mismo_proveedor'   => $provider_codes_mismo_proveedor,
+            'provider_codes_existentes_otros_proveedores' => $provider_codes_otros_proveedores,
         ];
     }
 }

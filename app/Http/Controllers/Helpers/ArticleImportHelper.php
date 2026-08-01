@@ -18,6 +18,30 @@ use Illuminate\Support\Facades\Log;
 
 class ArticleImportHelper {
 
+    /**
+     * Buckets reconocidos del conteo por escalón de matching (ver
+     * ProcessRow::$conteo_matching, grupo 232 prompt 02). Se usa para inicializar en 0 el
+     * agregado de import_histories y para ignorar claves que no reconocemos (un chunk de
+     * una versión anterior o futura no rompe la suma). Si ProcessRow agrega o renombra un
+     * bucket, hay que reflejarlo acá también.
+     */
+    const MATCHING_COUNT_BUCKETS = [
+        'id', 'bar_code', 'sku', 'provider_code', 'name',
+        'creado_nuevo', 'sin_match_no_creado',
+        'variante_de_fila_previa', 'merge_fila_repetida', 'fila_repetida_en_excel',
+        'bloqueado_otro_proveedor', 'ambiguo',
+        'sin_clasificar',
+
+        /*
+         * Bucket legado (grupo 265, prompt 03): antes de generalizar "última fila
+         * gana" a sku/provider_code, este bucket se llamaba 'merge_bar_code_repetido'
+         * y solo cubria bar_code. Se deja en la lista SOLO para que los
+         * matching_counts_json ya guardados en producción (imports viejos) sigan
+         * sumando bien en el histórico agregado. Código nuevo ya no escribe acá.
+         */
+        'merge_bar_code_repetido',
+    ];
+
 	static function enviar_notificacion($user, $import_history) {
 
 	    $functions_to_execute = [];
@@ -52,13 +76,28 @@ class ArticleImportHelper {
             'articulos_creados_con_codigo_repetido' => (int) $import_history->created_with_repeated_code_count,
             /* ID del historial para que el frontend pueda pedir la lista expandible. */
             'import_history_id'                     => (int) $import_history->id,
+            /* Filas con conflicto (ambiguas, placeholder descartado o sin identificador). */
+            'conflicts_count'                       => (int) $import_history->conflicts_count,
         ];
 
         /* Opciones del paso 3 y rango de filas para el modal de resultado. */
         $import_options = Self::build_import_options_for_notification($import_history);
 
+        /*
+         * Si hubo conflictos (identificadores ambiguos, placeholders descartados o filas sin
+         * identificador), se agrega una línea al mensaje avisando que hay que revisar el Excel
+         * (prompt 02, grupo 229). Si conflicts_count es 0, el mensaje queda igual que antes.
+         */
+        $message_text = 'Importacion de Excel finalizada correctamente';
+
+        if ((int) $import_history->conflicts_count > 0) {
+            $message_text .= '. La importacion termino con ' . (int) $import_history->conflicts_count
+                . ' filas que no se pudieron procesar por codigos duplicados o incompletos en el Excel. '
+                . 'Revisalas desde Historial de importaciones para corregir el archivo.';
+        }
+
         $user->notify(new GlobalNotification([
-        	'message_text'				=> 'Importacion de Excel finalizada correctamente',
+        	'message_text'				=> $message_text,
         	'color_variant'				=> 'success',
         	'functions_to_execute'		=> $functions_to_execute,
         	'info_to_show'				=> $info_to_show,
@@ -288,6 +327,14 @@ class ArticleImportHelper {
         /* IDs de artículos creados con código repetido en BD (array, puede estar vacío). */
         $repeated_ids = $data['articulos_creados_con_codigo_repetido_ids'] ?? [];
 
+        /*
+         * Contadores del chunk (grupo 232, prompt 03). Los isset() no son decorativos:
+         * este método se llama desde más de un lugar y no todos los llamadores mandan
+         * estas claves; sin la guarda, un llamador viejo tira "Undefined index".
+         */
+        $filas_ambiguas_chunk = isset($data['filas_ambiguas']) ? (int) $data['filas_ambiguas'] : 0;
+        $identificadores_descartados_chunk = isset($data['identificadores_descartados']) ? (int) $data['identificadores_descartados'] : 0;
+
         $import_result->update([
 		    'created_count'  		                => count($data['articulos_creados']),
 		    'updated_count'  		                => count($data['articulos_actualizados']),
@@ -298,7 +345,37 @@ class ArticleImportHelper {
             /* Contador e IDs de artículos creados con código repetido. */
             'created_with_repeated_code_count'  => count($repeated_ids),
             'created_with_repeated_code_ids'    => count($repeated_ids) > 0 ? json_encode($repeated_ids) : null,
+            /* Filas salteadas por match ambiguo e identificadores descartados por placeholder. */
+            'filas_ambiguas'                     => $filas_ambiguas_chunk,
+            'identificadores_descartados'        => $identificadores_descartados_chunk,
+            /* Conteo por escalón de matching de este chunk, serializado como JSON en texto. */
+            'matching_counts_json'               => isset($data['conteo_matching']) && count($data['conteo_matching']) > 0
+                                                        ? json_encode($data['conteo_matching'])
+                                                        : null,
         ]);
+
+        /*
+         * Acumula filas_ambiguas / identificadores_descartados en el ImportHistory total
+         * con increment() (nunca lectura-escritura): los chunks de un mismo import se
+         * procesan en paralelo y una lectura-escritura pierde conteos entre workers
+         * (mismo riesgo que conflicts_count, ver
+         * ActualizarBBDD::persistir_conflictos(), grupo 229 prompt 03).
+         * matching_counts_json NO se acumula acá: se calcula una sola vez al cerrar la
+         * importación (ArticleImportHelper::calcular_matching_counts_total(), llamado
+         * desde FinalizeArticleImport) para evitar que un JSON se pise entre workers.
+         */
+        if (!is_null($import_result->import_history_id)) {
+
+            if ($filas_ambiguas_chunk > 0) {
+                ImportHistory::where('id', $import_result->import_history_id)
+                    ->increment('filas_ambiguas', $filas_ambiguas_chunk);
+            }
+
+            if ($identificadores_descartados_chunk > 0) {
+                ImportHistory::where('id', $import_result->import_history_id)
+                    ->increment('identificadores_descartados', $identificadores_descartados_chunk);
+            }
+        }
 
 
 		// 2) Adjuntar articulos_creados (IDs únicos)
@@ -349,6 +426,52 @@ class ArticleImportHelper {
         // Log::info('articulos_actualizados:');
         // Log::info($articulos_actualizados);
     	
+    }
+
+    /**
+     * Calcula el agregado de matching_counts_json de un ImportHistory sumando los
+     * matching_counts_json de todos sus chunks (article_import_results). Se llama una
+     * sola vez, al cerrar la importación (FinalizeArticleImport), cuando ya no hay chunks
+     * corriendo en paralelo: si se calculara por chunk (como conflicts_count) el JSON de
+     * un worker se pisaría con el de otro, porque no es un valor que se pueda acumular
+     * con increment() (grupo 232, prompt 03).
+     *
+     * Solo setea el atributo en memoria del modelo recibido: quien llama es responsable
+     * de hacer save().
+     *
+     * @param  ImportHistory  $import_history
+     * @return void
+     */
+    static function calcular_matching_counts_total($import_history) {
+
+        /*
+         * Arranca en 0 para todos los buckets reconocidos, así una importación sin
+         * chunks (o con chunks de una versión anterior sin este campo) no rompe la suma
+         * y siempre queda un JSON con todos los buckets presentes.
+         */
+        $total = array_fill_keys(self::MATCHING_COUNT_BUCKETS, 0);
+
+        $matching_counts_por_chunk = ArticleImportResult::where('import_history_id', $import_history->id)
+                                        ->whereNotNull('matching_counts_json')
+                                        ->pluck('matching_counts_json');
+
+        foreach ($matching_counts_por_chunk as $matching_counts_json) {
+
+            $conteo_chunk = json_decode($matching_counts_json, true);
+
+            if (!is_array($conteo_chunk)) {
+                continue;
+            }
+
+            foreach ($conteo_chunk as $bucket => $cantidad) {
+                /* Ignora claves que no reconocemos (chunk de una versión anterior o futura). */
+                if (array_key_exists($bucket, $total)) {
+                    $total[$bucket] += (int) $cantidad;
+                }
+            }
+        }
+
+        $import_history->matching_counts_json = json_encode($total);
     }
 
     static function create_import_history($user, $auth_user_id, $provider_id, $columns, $archivo_excel_path, $error_message = null, $articulos_creados, $articulos_actualizados) {

@@ -852,7 +852,38 @@ class SaleHelper extends Controller {
             }
         }
 
-        return $iva_percentage;
+        return Self::normalize_iva_percentage_for_pivot($iva_percentage);
+    }
+
+    /**
+     * Normaliza el valor de IVA que se va a persistir en las columnas iva_percentage de los pivots
+     * (article_sale y article_current_acount).
+     *
+     * POR QUE ESAS COLUMNAS SON DE TEXTO Y NO DECIMALES (grupo 275, 30/7/2026):
+     * ivas.percentage es una columna string que guarda tanto alicuotas numericas ('21', '10.5')
+     * como etiquetas fiscales ('Exento', 'No Gravado'). Los pivots nacieron decimal(8,2) y cualquier
+     * venta con un articulo exento se caia entera con un error de MySQL. No se puede colapsar
+     * 'Exento' y 'No Gravado' a 0: ante ARCA son alicuotas distintas de 0%, y el desglose de IVA del
+     * comprobante deja de cerrar. Por eso la columna espeja el tipo de su fuente. Si alguna vez se
+     * quiere volver a un tipo numerico, primero hay que separar la etiqueta fiscal del porcentaje en
+     * la tabla ivas, no antes.
+     *
+     * @param mixed $value Valor resuelto desde ivas.percentage o el default.
+     * @return string|null Texto a persistir, o null si no hay valor utilizable.
+     */
+    static function normalize_iva_percentage_for_pivot($value)
+    {
+        if (is_null($value)) {
+            return null;
+        }
+
+        $value = trim((string) $value);
+
+        if ($value === '') {
+            return null;
+        }
+
+        return $value;
     }
 
     /**
@@ -1021,8 +1052,24 @@ class SaleHelper extends Controller {
     static function deleteSellerCommissionsFromSale($sale) {
         $seller_commissions = SellerCommission::where('sale_id', $sale->id)
                                             ->whereNull('haber')
-                                            ->pluck('id');
-        SellerCommission::destroy($seller_commissions);
+                                            ->get(['id', 'seller_id', 'moneda_id']);
+
+        // Grupo 268 · Prompt 02, bug E: antes se borraba sin recalcular los saldos posteriores.
+        // Se guardan los pares seller_id + moneda_id afectados ANTES de destruir las filas.
+        $pares = [];
+        foreach ($seller_commissions as $seller_commission) {
+            $moneda_id = !is_null($seller_commission->moneda_id) ? $seller_commission->moneda_id : 1;
+            $pares[$seller_commission->seller_id.'-'.$moneda_id] = [
+                'seller_id' => $seller_commission->seller_id,
+                'moneda_id' => $moneda_id,
+            ];
+        }
+
+        SellerCommission::destroy($seller_commissions->pluck('id'));
+
+        foreach ($pares as $par) {
+            ComisionesHelper::recalcular_saldos($par['seller_id'], $par['moneda_id']);
+        }
     }
 
     static function getDiscount($item) {

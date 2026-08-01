@@ -31,10 +31,17 @@ class SetConcepto  {
             if ($concepto) {
                 Log::info('se encontro');
                 $concepto_id = $concepto->id;
+            } else {
+
+                // La busqueda por nombre no encontro nada: el movimiento va a quedar sin
+                // concepto. No se pone un id de fallback a proposito, porque etiquetar el
+                // movimiento con un concepto ajeno corrompe el dato en silencio. Se deja
+                // registrado en el log para poder detectarlo.
+                Log::warning('SetConcepto::get_concepto: no se encontro el concepto de nombre "'.$data['concepto_stock_movement_name'].'". El stock movement va a quedar SIN concepto (concepto_stock_movement_id null).');
             }
 
         } else {
-            
+
             $concepto_id = 1;
         }
 
@@ -67,10 +74,15 @@ class SetConcepto  {
             if ($concepto) {
                 Log::info('se encontro');
                 $concepto_id = $concepto->id;
+            } else {
+
+                // Mismo criterio que en get_concepto(): sin fallback de id, solo se deja
+                // constancia en el log de que la busqueda por nombre fallo.
+                Log::warning('SetConcepto::set_concepto: no se encontro el concepto de nombre "'.$data['concepto_stock_movement_name'].'". El stock movement va a quedar SIN concepto (concepto_stock_movement_id null).');
             }
 
         } else {
-            
+
             $concepto_id = 1;
         }
 

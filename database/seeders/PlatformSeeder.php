@@ -22,12 +22,24 @@ class PlatformSeeder extends Seeder
      */
     public function run()
     {
+        // client_id / client_secret de la app de ComercioCity en Mercado Libre: se leen de las
+        // mismas MERCADO_LIBRE_CLIENT_ID / MERCADO_LIBRE_CLIENT_SECRET que ya se usan mas abajo
+        // como fallback de Tienda Nube. Antes estaban hardcodeados aca (grupo 220, prompt 02);
+        // el repositorio es publico, prohibido volver a escribir el valor real como default.
+        $ml_client_id     = env('MERCADO_LIBRE_CLIENT_ID');
+        $ml_client_secret = env('MERCADO_LIBRE_CLIENT_SECRET');
+
+        if ((empty($ml_client_id) || empty($ml_client_secret)) && $this->command) {
+            // No frena el seeder: solo avisa que estos datos quedaron sin configurar.
+            $this->command->warn('PlatformSeeder: MERCADO_LIBRE_CLIENT_ID / MERCADO_LIBRE_CLIENT_SECRET no estan configurados, se sembraron como null.');
+        }
+
         Platform::query()->updateOrCreate(
             ['slug' => Platform::SLUG_MERCADO_LIBRE],
             [
                 'name'          => 'Mercado Libre',
-                'client_id'     => '4899702990695294',
-                'client_secret' => 'gVeYJHqnwrr3BPz7cQTLmygxzURmgLjw',
+                'client_id'     => empty($ml_client_id) ? null : $ml_client_id,
+                'client_secret' => empty($ml_client_secret) ? null : $ml_client_secret,
                 'extra_config'  => null,
             ]
         );

@@ -51,11 +51,25 @@ class ArticleImport implements ToCollection
         $import_result_id, 
         $import_history_id,
 
-        $actualizar_articulos_de_otro_proveedor, 
-        $actualizar_proveedor, 
-        $permitir_provider_code_repetido, 
+        $actualizar_articulos_de_otro_proveedor,
+        $actualizar_proveedor,
+        $permitir_provider_code_repetido,
         $permitir_provider_code_repetido_en_multi_providers,
-        $actualizar_por_provider_code
+        $actualizar_por_provider_code,
+
+        /*
+         * Modo elegido por el usuario para interpretar el punto en columnas numéricas
+         * ambiguas (grupo 239, prompt 04): 'auto' | 'siempre_miles' | 'siempre_decimal'.
+         * Default 'auto' para no romper otros llamadores que aún no lo mandan.
+         */
+        $interpretacion_punto = 'auto',
+
+        /*
+         * Decisión del usuario para filas repetidas DENTRO del propio archivo (prompt
+         * 04, grupo 265): 'ultima_gana' | 'productos_distintos'. Default 'ultima_gana'
+         * para no romper llamadores viejos que todavía no lo mandan (cambio aditivo).
+         */
+        $filas_repetidas_del_archivo = 'ultima_gana'
     ) {
 
         $this->log_activado = false;
@@ -78,6 +92,8 @@ class ArticleImport implements ToCollection
         $this->permitir_provider_code_repetido                      = $permitir_provider_code_repetido;
         $this->permitir_provider_code_repetido_en_multi_providers   = $permitir_provider_code_repetido_en_multi_providers;
         $this->actualizar_por_provider_code                         = $actualizar_por_provider_code;
+        $this->interpretacion_punto                                 = $interpretacion_punto;
+        $this->filas_repetidas_del_archivo                          = $filas_repetidas_del_archivo;
 
 
         $this->columns = $columns;
@@ -104,17 +120,36 @@ class ArticleImport implements ToCollection
 
 
         $this->process_row = new ProcessRow([
-            'ct'                                            => $this->ct, 
+            'ct'                                            => $this->ct,
             'columns'                                       => $this->columns,
             'user'                                          => $this->user,
             'provider_id'                                   => $this->provider_id,
             'create_and_edit'                               => $this->create_and_edit,
+            /*
+             * Faltaba (grupo 294, incidente Servian): sin esto, ProcessRow::$import_history_id
+             * quedaba SIEMPRE null (el constructor solo lee $data['import_history_id']), asi que
+             * find_with_index() nunca podia distinguir un articulo creado por esta misma
+             * importacion de uno preexistente -- la cascada de deduplicacion entre lotes no
+             * tenia forma de activarse nunca.
+             */
+            'import_history_id'                            => $this->import_history_id,
+            /*
+             * Faltaba tambien (grupo 294, incidente Servian): sin esto, ProcessRow::$fila_actual
+             * arrancaba en 0 en CADA chunk (una instancia de ProcessRow nueva por chunk), asi que
+             * los conflictos de un chunk que no fuera el primero quedaban numerados relativos al
+             * chunk (ej. "fila 6") en vez del indice de fila de datos real (ej. "fila 46") -- el
+             * usuario no podia ubicar la fila real en su archivo. $this->start_row ya es la fila
+             * de Excel absoluta donde arranca ESTE chunk (ver InitExcelImport::iniciar_procesamiento()).
+             */
+            'fila_inicial'                                  => $this->start_row,
 
             'actualizar_articulos_de_otro_proveedor'                => $this->actualizar_articulos_de_otro_proveedor,
             'actualizar_proveedor'                                  => $this->actualizar_proveedor,
             'permitir_provider_code_repetido'                       => $this->permitir_provider_code_repetido,
             'permitir_provider_code_repetido_en_multi_providers'    => $this->permitir_provider_code_repetido_en_multi_providers,
             'actualizar_por_provider_code'                          => $this->actualizar_por_provider_code,
+            'interpretacion_punto'                                  => $this->interpretacion_punto,
+            'filas_repetidas_del_archivo'                           => $this->filas_repetidas_del_archivo,
         ]);
 
         $this->nombres_proveedores = [];
@@ -299,6 +334,23 @@ class ArticleImport implements ToCollection
             $articles_match = $this->process_row->get_articles_match();
             $articles_repetidos = $this->process_row->get_articles_repetidos();
 
+            /*
+             * Contadores nuevos (grupo 229): filas salteadas por match ambiguo y
+             * cantidad de identificadores descartados por ser placeholders (ej. "-", "S/N").
+             * Por ahora solo viajan en el array de resultado del chunk; el prompt 02
+             * agrega la migración/columnas para persistirlos en ArticleImportResult.
+             */
+            $filas_ambiguas = $this->process_row->get_filas_ambiguas();
+            $identificadores_descartados = $this->process_row->get_identificadores_descartados();
+
+            /*
+             * Conteo por escalon de matching de este chunk (grupo 232, prompt 02).
+             * Invariante: la suma de get_conteo_matching() tiene que dar exactamente
+             * get_filas_contadas(). Por ahora solo viaja en el array de resultado del
+             * chunk y se loguea; la persistencia en BD la agrega el prompt 03 de este
+             * grupo (migracion/columnas todavia no existen).
+             */
+            $conteo_matching = $this->process_row->get_conteo_matching();
 
             $this->log('Trabajo terminado en ArticleImport');
             $this->log('articulos_creados: '.count($articulos_creados));
@@ -306,17 +358,24 @@ class ArticleImport implements ToCollection
             $this->log('articles_match: '.$articles_match);
             $this->log('articles_repetidos: '.$articles_repetidos);
             $this->log('filas_procesadas: '.$this->filas_procesadas);
+            $this->log('conteo_matching: '.json_encode($conteo_matching));
+            $this->log('suma conteo_matching: '.array_sum($conteo_matching).' / filas contadas: '.$this->process_row->get_filas_contadas());
 
 
 
             $this->iniciar();
             ArticleImportHelper::update_article_import_result([
-                'import_result_id'                              => $this->import_result_id, 
-                'articulos_creados'                             => $articulos_creados, 
-                'articulos_actualizados'                        => $articulos_actualizados, 
-                'articles_match'                                => $articles_match, 
-                'articles_repetidos'                            => $articles_repetidos, 
-                'filas_procesadas'                              => $this->filas_procesadas, 
+                'import_result_id'                              => $this->import_result_id,
+                'articulos_creados'                             => $articulos_creados,
+                'articulos_actualizados'                        => $articulos_actualizados,
+                'articles_match'                                => $articles_match,
+                'articles_repetidos'                            => $articles_repetidos,
+                /* Conteos informativos (el detalle real de cada conflicto se persiste en import_conflicts). */
+                'filas_ambiguas'                                => $filas_ambiguas,
+                'identificadores_descartados'                   => $identificadores_descartados,
+                /* Conteo por escalon de matching del chunk (solo viaja en el array por ahora, ver arriba). */
+                'conteo_matching'                               => $conteo_matching,
+                'filas_procesadas'                              => $this->filas_procesadas,
                 'provider_id'                                   => $this->provider_id,
                 'registrar_articulos_creados'                   => $this->registrar_articulos_creados,
                 'registrar_articulos_actualizados'              => $this->registrar_articulos_actualizados,
@@ -377,7 +436,10 @@ class ArticleImport implements ToCollection
                 $this->permitir_provider_code_repetido,
                 $this->chunk_number,
                 $provider_buffer,
-                $this->import_history_id
+                $this->import_history_id,
+                /* process_row e import_result_id: para que persista los conflictos del chunk (prompt 02, grupo 229). */
+                $this->process_row,
+                $this->import_result_id
             );
             $observations = $actualizar_bbdd->get_observations();
 

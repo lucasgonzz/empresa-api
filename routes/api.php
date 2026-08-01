@@ -500,15 +500,18 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('/import-history/rollback/{import_history_id}', 'ImportHistoryController@rollback');
     /* Lista de artículos creados con código repetido para el modal de resultado de importación. */
     Route::get('/import-history/repeated-code-articles/{import_history_id}', 'ImportHistoryController@repeated_code_articles');
+    Route::get('/import-history/{import_history_id}/conflicts', 'ImportHistoryController@conflicts');
 
     /*
      * Importación asistida por Claude IA (artículos, clientes, proveedores).
-     *  - POST /ai-excel-import/analyze              : analiza el Excel y devuelve el mapeo de columnas sugerido
+     *  - POST /ai-excel-import/analyze              : encola el análisis del Excel (grupo 291, prompt 02) y devuelve el uuid de la corrida
+     *  - GET  /ai-excel-import/analysis/{uuid}      : consulta estado/resultado de la corrida encolada por /analyze o /get-recomendacion
      *  - POST /ai-excel-import/import               : lanza la importación con el mapeo confirmado por el usuario
-     *  - POST /ai-excel-import/refresh-provider-stats : recalcula conteos de códigos existentes al cambiar proveedor
-     *  - POST /ai-excel-import/get-recomendacion    : genera la recomendación de configuración con el proveedor real confirmado
+     *  - POST /ai-excel-import/refresh-provider-stats : recalcula conteos de códigos existentes al cambiar proveedor (sin releer el Excel si ya hay un análisis previo, grupo 291 prompt 03)
+     *  - POST /ai-excel-import/get-recomendacion    : encola la recomendación de configuración con el proveedor real confirmado (grupo 291, prompt 03) y devuelve el uuid de la corrida
      */
     Route::post('/ai-excel-import/analyze', 'AiExcelImportController@analyze');
+    Route::get('/ai-excel-import/analysis/{uuid}', 'AiExcelImportController@analysisStatus');
     Route::post('/ai-excel-import/import',  'AiExcelImportController@import');
     Route::post('/ai-excel-import/refresh-provider-stats', 'AiExcelImportController@refreshProviderStats');
     Route::post('/ai-excel-import/get-recomendacion', 'AiExcelImportController@getRecomendacion');
@@ -536,7 +539,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('chart/from-date/{from_date}/{until_date?}', 'CajaViejaController@charts');
 
     Route::resource('commission', 'CommissionController');
-    Route::get('seller-commission/{model_id}/{from_date}/{until_date}', 'SellerCommissionController@index');
+    // Grupo 268 · Prompt 03: el alias viejo (3 segmentos, sin moneda_id) TIENE que quedar
+    // registrado ANTES que la ruta nueva (4 segmentos, con {until_date?} opcional) - si no, una
+    // URL de 3 segmentos podria matchear la ruta nueva primero (el ultimo segmento opcional la
+    // deja aceptar 3 o 4) e interpretar mal los parametros (moneda_id recibiendo la fecha).
+    Route::get('seller-commission/{model_id}/{from_date}/{until_date}', 'SellerCommissionController@indexLegacy');
+    Route::get('seller-commission/{model_id}/{moneda_id}/{from_date}/{until_date?}', 'SellerCommissionController@index');
     Route::post('seller-commission/saldo-inicial', 'SellerCommissionController@saldoInicial');
     Route::post('seller-commission/pago', 'SellerCommissionController@pago');
     Route::delete('seller-commission/{id}', 'SellerCommissionController@destroy');
@@ -609,6 +617,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Diagnóstico de intentos de búsqueda de imagen automática (grupo 201): últimas corridas y detalle por corrida.
     Route::get('article-image-search-attempts/recent', 'ArticleImageSearchAttemptController@recent_batches');
+    // Resumen reconstruido de una corrida (grupo 217, prompt 03): mismo objeto que el payload de Pusher.
+    Route::get('article-image-search-attempts/summary/{batch_uuid}', 'ArticleImageSearchAttemptController@summary');
     Route::get('article-image-search-attempts/batch/{batch_uuid}', 'ArticleImageSearchAttemptController@by_batch');
 
     // Descripciones inteligentes: preview individual, guardado, batch masivo (job + Pusher) y revisión.
@@ -795,6 +805,13 @@ Route::get('integraciones/mercadopago/callback', 'MercadoPagoOAuthController@cal
 // `state` aleatorio que connect persistió y que este endpoint valida.
 Route::get('integraciones/zippin/callback', 'ZippinOAuthController@callback');
 
+// Grupo 211: export de articulos para flujos automatizados externos (n8n). Sin auth a proposito
+// (decision de Lucas): el consumidor solo pega una URL. El comercio se identifica por el
+// articles_export_key aleatorio del path, que ademas resuelve el user_id — nunca se acepta un
+// user_id por parametro. Throttle propio para que una corrida mal configurada no tumbe la base.
+Route::get('integraciones/articulos/{export_key}', 'Integraciones\ArticulosExportController@index')
+        ->middleware('throttle:120,1');
+
 
 // Plans
 Route::get('plan', 'PlanController@index');
@@ -811,6 +828,9 @@ Route::prefix('admin-sync')
         Route::post('user-setup', 'AdminSync\\UserSetupController@store');
     });
 
+// Ingreso a la demo con la sesion ya iniciada (token emitido por admin-api).
+Route::post('demo/ingreso', 'DemoIngresoController@store');
+
 Route::middleware('admin.api.key')
     ->prefix('admin-sync')
     ->group(function () {
@@ -822,6 +842,9 @@ Route::middleware('admin.api.key')
         Route::post('support/tickets', 'AdminSync\\SupportTicketController@store');
         Route::put('support/tickets/{ticket_uuid}', 'AdminSync\\SupportTicketController@update');
         Route::get('employees', 'AdminSync\\EmployeesController@index');
+        // Branding real del comercio (logo, color, nombre) para que admin-api arme el favicon/logo
+        // del ecommerce sin depender de la tienda-api del cliente (ver grupo 208, prompt 01)
+        Route::get('branding/{user_id?}', 'AdminSync\\BrandingController@show');
         // Mensualidad: consulta y actualización desde admin (capa opcional de sincronización, ver prompt 326)
         Route::get('mensualidad-info/{user_id?}', 'AdminSync\\MensualidadController@show');
         Route::put('mensualidad-update/{user_id?}', 'AdminSync\\MensualidadController@update');
@@ -829,6 +852,10 @@ Route::middleware('admin.api.key')
         Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
         // Canal "sistema:" de WhatsApp: consulta de datos del owner (stock, ventas, facturas, clientes).
         Route::post('sistema-query', 'AdminSync\\SistemaQueryController@query_data');
+        // Reemision/revocacion del token de ingreso a la demo (grupo 233, prompt 05). Va dentro
+        // de este grupo con admin.api.key para que quede protegida sola el dia que Lucas prenda
+        // el flag services.admin_api.require_api_key (hoy sigue apagado).
+        Route::post('demo-token', 'AdminSync\\DemoTokenController@store');
     });
 
 // Reporte de errores del SPA (sin auth — puede ocurrir antes del login)

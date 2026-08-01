@@ -8,9 +8,35 @@ use Illuminate\Support\Facades\Log;
 
 class SetStockResultante  {
 
+    /**
+     * Calcula y persiste el stock_resultante de un movimiento de stock.
+     *
+     * @param  \App\Models\StockMovement  $stock_movement  Movimiento de stock recien guardado.
+     * @param  \App\Models\Article        $article         Articulo afectado por el movimiento.
+     * @return void
+     */
     static function set_stock_resultante($stock_movement, $article) {
 
-        $concepto = $stock_movement->concepto_movement->name;
+        // Relacion con el concepto del movimiento. Puede venir null cuando el concepto no se
+        // pudo resolver por nombre (ver SetConcepto).
+        $concepto_movement = $stock_movement->concepto_movement;
+
+        // Nombre del concepto. Queda en null cuando la relacion no existe, y en ese caso el
+        // bloque de los 4 casos especiales de mas abajo no se ejecuta.
+        $concepto = null;
+
+        if (is_null($concepto_movement)) {
+
+            // Decision conservadora: sin concepto se trata el movimiento como uno comun y se
+            // cae al calculo general (stock_resultante a partir del movimiento anterior), en
+            // vez de asumir que es uno de los casos especiales que reinicia el stock_resultante
+            // contra el stock actual del articulo.
+            Log::warning('SetStockResultante: stock_movement sin concepto, se calcula el stock_resultante como movimiento comun. stock_movement_id: '.$stock_movement->id.' concepto_stock_movement_id: '.$stock_movement->concepto_stock_movement_id);
+
+        } else {
+
+            $concepto = $concepto_movement->name;
+        }
 
         $article->fresh();
 

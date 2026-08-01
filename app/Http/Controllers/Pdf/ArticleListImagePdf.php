@@ -152,7 +152,7 @@ class ArticleListImagePdf extends fpdf
         if (config('app.APP_ENV') == 'local') {
             $img_url = 'https://api-colman-prueba.comerciocity.com/public/storage/171699179550596.webp';
         } else {
-            $img_url = $article->images[0]->{env('IMAGE_URL_PROP_NAME', 'image_url')};
+            $img_url = $article->images[0]->hosting_url;
         }
 
         if (!is_null($img_url)) {

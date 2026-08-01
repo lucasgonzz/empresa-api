@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
+use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Models\Address;
 use App\Models\AfipInformation;
@@ -30,6 +32,19 @@ use Illuminate\Support\Facades\Log;
  */
 class DemoSetupHelper
 {
+    /**
+     * Key historica de Google Custom Search de demos. Queda como respaldo para
+     * cuando admin-api no manda 'google_custom_search_api_key' en el payload
+     * (llamada directa al endpoint, instalación vieja, o setting todavía sin cargar
+     * en admin-spa).
+     *
+     * TODO (grupo 220, prompt 02): este literal debería pasar a
+     * config('services.google_search.api_key') como el resto de los fallbacks de Google
+     * Custom Search, pero este archivo lo toca el grupo 218 — no se resuelve acá para no
+     * pisarse con esa otra tarea.
+     */
+    private const GOOGLE_API_KEY_FALLBACK = 'AIzaSyCgzE6haVi8uZnenfAvYJO5hn7m7Cl09Gw';
+
     /**
      * Ejecuta el setup completo de una demo para los datos recibidos.
      *
@@ -115,6 +130,16 @@ class DemoSetupHelper
         // Tienda online por defecto para que la demo tenga URL pública
         self::tienda();
 
+        // El token de ingreso lo emite admin-api y viaja en el payload. Se guarda aca, al final,
+        // porque el migrate:fresh del arranque de este metodo vacia la tabla.
+        if (!empty($data['demo_ingreso_token'])) {
+            DemoIngresoTokenHelper::guardar(
+                $data['demo_ingreso_token'],
+                $user->id,
+                isset($data['demo_ingreso_token_expira_at']) ? $data['demo_ingreso_token_expira_at'] : null
+            );
+        }
+
         return $user;
     }
 
@@ -152,7 +177,8 @@ class DemoSetupHelper
         return User::create([
             'id'                            => config('app.USER_ID'),
             'img_auto_timeout'              => 2,
-            'api_url'                       => config('app.APP_URL').'/public',
+            // El /public lo decide ApiUrlHelper según VPS; hardcodearlo dejaba a los clientes en VPS con la columna api_url apuntando a una ruta inexistente.
+            'api_url'                       => ApiUrlHelper::public_base(),
             'name'                          => $data['name'] ?? 'Demo',
             'use_archivos_de_intercambio'   => 0,
             'company_name'                  => $data['company_name'] ?? null,
@@ -179,8 +205,16 @@ class DemoSetupHelper
             'redondear_centenas_en_vender'  => 0,
             'siempre_omitir_en_cuenta_corriente' => 0,
             'base_de_datos'                 => 'empresa_prueba_1',
-            'google_custom_search_api_key'  => 'AIzaSyCgzE6haVi8uZnenfAvYJO5hn7m7Cl09Gw',
-            'google_cuota'                  => 100,
+            // API key de Google Custom Search: la manda admin-api (RunDemoSetupService, configurable
+            // desde admin-spa via AdminSetting); si no llega, se usa la key historica de demo.
+            'google_custom_search_api_key'  => (isset($data['google_custom_search_api_key']) && trim((string) $data['google_custom_search_api_key']) !== '')
+                ? trim((string) $data['google_custom_search_api_key'])
+                : self::GOOGLE_API_KEY_FALLBACK,
+            // Cuota de Google de la demo: la manda admin-api (RunDemoSetupService, configurable
+            // desde admin-spa via AdminSetting); si no llega (llamada directa, instalación vieja), 100.
+            'google_cuota'                  => (isset($data['google_cuota']) && is_numeric($data['google_cuota']))
+                ? (int) $data['google_cuota']
+                : 100,
             'listas_de_precio'              => !empty($data['use_price_lists']) ? 1 : 0,
         ]);
     }

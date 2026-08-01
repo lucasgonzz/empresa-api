@@ -7,6 +7,7 @@ use App\Http\Controllers\AfipWsController;
 use App\Http\Controllers\ArticlePerformanceController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
@@ -3102,9 +3103,9 @@ class HelperController extends Controller
 
             if (!is_null($oscar_article) && count($oscar_article->images) >= 1) {
                 $client_article_image = Image::create([
-                    env('IMAGE_URL_PROP_NAME', 'image_url')     => $oscar_article->images[0]->{env('IMAGE_URL_PROP_NAME', 'image_url')},
-                    'imageable_id'                              => $article_matias->id,
-                    'imageable_type'                            => 'article',
+                    'hosting_url'                                => $oscar_article->images[0]->hosting_url,
+                    'imageable_id'                                => $article_matias->id,
+                    'imageable_type'                              => 'article',
                 ]);
                 echo 'Se creo imagen para '.$article_matias->name.' </br>';
             }
@@ -3929,7 +3930,7 @@ class HelperController extends Controller
             return null;
         }
         Storage::disk('public')->put($name, file_get_contents($url_cloudinary));
-        return config('app.APP_URL').'/storage/'.$name;
+        return ApiUrlHelper::storage($name);
     }
 
     function getPlural($model) {

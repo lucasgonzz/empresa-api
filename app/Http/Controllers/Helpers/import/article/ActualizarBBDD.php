@@ -11,11 +11,14 @@ use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Jobs\ProcessSyncArticleToTiendaNube;
 use App\Models\Article;
+use App\Models\ArticleImportResult;
 use App\Models\ArticleProperty;
 use App\Models\ArticlePropertyType;
 use App\Models\ArticlePropertyValue;
 use App\Models\ArticleUbication;
 use App\Models\ArticleVariant;
+use App\Models\ImportConflict;
+use App\Models\ImportHistory;
 use App\Models\PriceType;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Carbon\Carbon;
@@ -34,9 +37,11 @@ class ActualizarBBDD {
      * @param string      $chunk_number
      * @param array       $provider_buffer
      * @param int|null    $import_history_id  ID del historial para trackear diffs de relaciones (rollback)
+     * @param ProcessRow|null $process_row     instancia de ProcessRow del chunk, para leer get_conflictos() (prompt 02, grupo 229)
+     * @param int|null    $article_import_result_id ID del chunk (ArticleImportResult), para asociar los conflictos persistidos
      */
-    function __construct($articulos_para_crear_CACHE, $articulos_para_actualizar_CACHE, $user, $auth_user_id, $codigos_proveedor_repetidos, $chunk_number, $provider_buffer, $import_history_id = null) {
-        
+    function __construct($articulos_para_crear_CACHE, $articulos_para_actualizar_CACHE, $user, $auth_user_id, $codigos_proveedor_repetidos, $chunk_number, $provider_buffer, $import_history_id = null, $process_row = null, $article_import_result_id = null) {
+
         $this->log('');
         $this->log('********* ActualizarBBDD ************');
         $this->log('');
@@ -58,7 +63,26 @@ class ActualizarBBDD {
         $this->user                                 = $user;
         $this->auth_user_id                         = $auth_user_id;
         $this->codigos_proveedor_repetidos          = $codigos_proveedor_repetidos;
-        $this->chunk_number                         = $chunk_number.'-'.time(); 
+
+        /*
+         * BUG real (grupo 294, incidente Servian, hallado investigando el prompt 03):
+         * el sufijo era time() -- resolucion de UN SEGUNDO. InitExcelImport reinicia
+         * $chunk_number en 1 en CADA importacion (no es global al tenant), asi que dos
+         * importaciones del mismo usuario que caen dentro del MISMO segundo (dos
+         * imports seguidos, o incluso dos chunks de la misma corrida bajo carga)
+         * terminaban con el MISMO chunk_number compuesto (ej. "1-1785529529").
+         * set_articulos_creados_models() (linea ~1577) filtra articulos SOLO por
+         * user_id + chunk_number, sin import_history_id -- con la colision, esa query
+         * devuelve tambien articulos de la importacion VIEJA, y
+         * get_article_model_from_cache() les asigna precio/stock de una fila que no
+         * les corresponde. Reproducido de forma no determinista corriendo la misma
+         * reimportacion varias veces seguidas: aparecian StockMovement en articulos
+         * sin ninguna relacion con la fila que los origino. $import_history_id ya es
+         * unico por importacion (clave primaria de la tabla), asi que sirve de sufijo
+         * real; time() queda solo de fallback para el llamador (ninguno hoy) que no lo
+         * provea.
+         */
+        $this->chunk_number                         = $chunk_number . '-' . (!is_null($import_history_id) ? $import_history_id : time());
 
         $this->provider_buffer                      = $provider_buffer;
 
@@ -67,6 +91,14 @@ class ActualizarBBDD {
          * Si es null, no se trackean relaciones (comportamiento silencioso).
          */
         $this->import_history_id                    = $import_history_id;
+
+        /*
+         * ProcessRow del chunk (para leer get_conflictos()) e id del chunk (ArticleImportResult),
+         * usados por persistir_conflictos() al cerrar el lote. Ambos pueden ser null si el
+         * caller no los provee (compatibilidad con instanciaciones previas al prompt 02).
+         */
+        $this->process_row                          = $process_row;
+        $this->article_import_result_id             = $article_import_result_id;
 
         $this->articulos_para_crear_CACHE           = $articulos_para_crear_CACHE;
         $this->articulos_para_actualizar_CACHE      = $articulos_para_actualizar_CACHE;
@@ -148,6 +180,17 @@ class ActualizarBBDD {
                     'fake_id',
                     /* Flag en memoria de ProcessRow; no es columna de articles. */
                     'has_repeated_code_in_db',
+                    /*
+                     * Marcadores en memoria de ProcessRow (prompt 03, grupo 265), no
+                     * columnas de articles: __match_key identifica por qué campo se
+                     * encoló la entrada (para que una repetición posterior la
+                     * encuentre) y __fila_origen guarda qué fila del Excel la generó
+                     * (para reportar conflictos de sobrescritura encadenados). Si
+                     * cualquiera de las dos llega al INSERT, revienta con
+                     * "Unknown column" en TODAS las importaciones que crean artículos.
+                     */
+                    '__match_key',
+                    '__fila_origen',
                 ])->merge([
                     'created_at' => $this->now,
                     'updated_at' => $this->now,
@@ -155,8 +198,63 @@ class ActualizarBBDD {
                 ])->toArray();
             }, $this->articulos_para_crear_CACHE);
 
+            /*
+             * Article::insert() arma la lista de columnas con la PRIMERA tupla y bindea el resto
+             * contra esa lista: si una tupla tiene una clave de menos, MySQL responde 1136 y se
+             * cae el lote entero, no la fila. Pasa de verdad cuando ProcessRow descarta un valor
+             * numerico invalido (hace `continue` y la clave nunca entra en $data), que para un
+             * UPDATE significa "no pisar" pero para un INSERT deja la tupla corta.
+             * Se completan con null las claves ausentes: para un articulo nuevo, "sin valor" ES null.
+             */
+            if (!empty($sql)) {
+
+                // Union de todas las claves presentes en cualquier tupla del batch.
+                $columnas = [];
+                foreach ($sql as $tupla) {
+                    foreach ($tupla as $columna => $valor) {
+                        $columnas[$columna] = true;
+                    }
+                }
+
+                // Plantilla con todas las columnas en null, para completar las tuplas cortas.
+                $plantilla = array_fill_keys(array_keys($columnas), null);
+
+                // Cuenta de columnas faltantes detectadas, para el log de abajo (no lanza excepcion).
+                $columnas_faltantes_detectadas = [];
+
+                foreach ($sql as $i => $tupla) {
+
+                    // Claves que le faltan a esta tupla respecto de la union completa.
+                    $faltantes = array_diff(array_keys($plantilla), array_keys($tupla));
+
+                    if (!empty($faltantes)) {
+                        foreach ($faltantes as $columna_faltante) {
+                            $columnas_faltantes_detectadas[$columna_faltante] = true;
+                        }
+                    }
+
+                    /*
+                     * IMPORTANTE: la plantilla va PRIMERO en el array_merge. Así los valores reales
+                     * de $tupla pisan los null de la plantilla, y ademas todas las tuplas quedan con
+                     * el MISMO orden de claves (el de $plantilla). Si se invirtiera el orden
+                     * ($tupla + $plantilla, union de arrays de PHP), el conteo de columnas daria
+                     * igual mismo pero cada tupla quedaria con su propio orden de claves: mismo
+                     * numero de columnas, pero cada tupla les asigna sus valores a columnas
+                     * distintas. Corrupcion de datos silenciosa, no error.
+                     */
+                    $sql[$i] = array_merge($plantilla, $tupla);
+                }
+
+                if (count($columnas_faltantes_detectadas) > 0) {
+                    Log::warning('guardar_articulos: se completaron con null columnas ausentes en el batch de creacion', [
+                        'columnas_faltantes' => array_keys($columnas_faltantes_detectadas),
+                        'cantidad_tuplas'    => count($sql),
+                    ]);
+                }
+            }
+
             // $this->log($sql);
-            
+
             Article::insert($sql);
 
             $this->terminar(count($this->articulos_para_crear_CACHE).' Articulos insertados en bbdd');
@@ -188,6 +286,18 @@ class ActualizarBBDD {
                     $this->articulos_creados_con_codigo_repetido_ids[] = $found->id;
                 }
             }
+
+            /*
+             * Persistir el indice compartido de articulos INMEDIATAMENTE, apenas los
+             * articulos nuevos tienen su id real (recien seteado en set_articulos_creados_models()).
+             *
+             * Antes esto se hacia una sola vez al final del lote (actualizar_cache()). Si el
+             * lote fallaba mas adelante (price_types, stock, variantes, etc.), los articulos ya
+             * insertados en BD quedaban fuera del cache compartido, y el siguiente lote (en este
+             * u otro worker) los volvia a crear por no encontrarlos en el indice. Ver prompt 03,
+             * grupo 229.
+             */
+            $this->actualizar_cache_articulos_creados();
         }
 
         // Actualizar artículos existentes por lote con SQL crudo
@@ -335,6 +445,9 @@ class ActualizarBBDD {
 
 
         $this->actualizar_cache();
+
+        // Persistir en bloque los conflictos (ambiguos/placeholders/sin identificador) del chunk.
+        $this->persistir_conflictos();
 
         $this->actualizar_tienda_nube();
 
@@ -867,7 +980,32 @@ class ActualizarBBDD {
 
                 if (!empty($article_cache['stock_global'])) {
                     $this->log('Act stock global de '.$article->name);
-                    $this->guardar_stock_movement_global($article, $article_cache['stock_global']['__diff__stock']['new']);
+
+                    /*
+                     * Desde el prompt 04 (grupo 229), 'new' pasó a ser el stock
+                     * RESULTANTE (no el delta): guardar_stock_movement_global()
+                     * espera el delta (CheckGlobalStock hace $article->stock += $amount),
+                     * así que leemos 'delta' explícitamente.
+                     */
+                    $diff = $article_cache['stock_global']['__diff__stock'];
+                    $amount = isset($diff['delta']) ? $diff['delta'] : null;
+
+                    /*
+                     * Compatibilidad: diffs viejos (pre-prompt 229/04), por ejemplo
+                     * lotes ya encolados al momento del deploy, no tienen 'delta' y
+                     * guardaban el delta directamente en 'new'.
+                     */
+                    if (is_null($amount) && isset($diff['new'])) {
+                        $amount = $diff['new'];
+                    }
+
+                    // Objetivo (stock resultante esperado), para recalcular el
+                    // movimiento de forma idempotente dentro de guardar_stock_movement_global().
+                    $target_stock = isset($diff['new']) ? (float)$diff['new'] : null;
+
+                    if (!is_null($amount) && (float)$amount != 0.0) {
+                        $this->guardar_stock_movement_global($article, $amount, $target_stock);
+                    }
                 } else {
                     $this->log('Act stock por direcciones de '.$article->name);
                     $this->guardar_stock_movement_addresses($article, $article_cache['stock_addresses']);
@@ -893,7 +1031,54 @@ class ActualizarBBDD {
         $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id);
     }
 
-    function guardar_stock_movement_global($article, $amount) {
+    /**
+     * Crea el movimiento de stock global de un artículo importado.
+     *
+     * @param Article    $article      artículo a mover
+     * @param float      $amount       delta a aplicar (puede ser recalculado si se pasa $target_stock)
+     * @param float|null $target_stock stock RESULTANTE esperado (solo se usa en el flujo de
+     *                                  actualización, viene de __diff__stock.new). Si viene, se
+     *                                  recalcula el delta contra el stock real del artículo en
+     *                                  este momento en vez de usar el delta calculado cuando se
+     *                                  procesó la fila del Excel, para que el movimiento sea
+     *                                  idempotente: si dos filas del mismo lote apuntan al mismo
+     *                                  artículo con el mismo objetivo, solo la primera genera
+     *                                  movimiento (prompt 04, grupo 229).
+     * @return void
+     */
+    function guardar_stock_movement_global($article, $amount, $target_stock = null) {
+
+        /*
+         * El delta se calculó cuando se procesó la fila; el movimiento se aplica
+         * al cerrar el lote. Si en el medio algo más tocó el stock, el delta viejo
+         * lo deja mal. Recalculamos contra el valor real del momento, pero SOLO
+         * cuando hay un objetivo explícito (flujo de artículos actualizados):
+         * no se llama fresh() en el flujo de creación para no pegarle a la BD
+         * por cada artículo nuevo del lote sin necesidad.
+         */
+        if (!is_null($target_stock)) {
+
+            $stock_actual = (float) $article->fresh()->stock;
+            $amount = $target_stock - $stock_actual;
+
+            if ($amount == 0.0) {
+                // Ya está en el valor pedido: no hay nada que registrar.
+                return;
+            }
+        }
+
+        /*
+         * Grupo 301, prompt 02: guarda dura, incondicional, para las dos rutas (creación y
+         * actualización) -- un delta cero NUNCA puede producir un StockMovement. La rama de
+         * arriba ya cubre la ruta de actualización (recalcula contra fresh() y corta si da
+         * cero); esto es defensa en profundidad para la ruta de creación, que no pasa por
+         * ahí (no llama fresh() por costo, ver comentario del docblock), y para cualquier
+         * llamador futuro que le pase un $amount ya cero sin pasar $target_stock. Un
+         * movimiento que no mueve stock es un asiento falso en el historial del cliente.
+         */
+        if ((float) $amount == 0.0) {
+            return;
+        }
 
         $this->log('guardar_stock_movement_global amount: '.$amount);
 
@@ -1983,6 +2168,47 @@ class ActualizarBBDD {
     //     $this->terminar('Actualizar Cache');
     // }
 
+    /**
+     * Agrega al indice de importacion (RAM) los articulos RECIEN CREADOS de este lote
+     * y persiste ese avance al cache compartido de inmediato (merge, no pisa lo de otros
+     * workers — ver ArticleIndexCache::persist()).
+     *
+     * Se llama apenas set_articulos_creados_models() les asignó su id real, ANTES de seguir
+     * con el resto del lote (stock, price_types, discounts, variantes, etc.), para que un
+     * fallo mas adelante en el mismo lote no deje estos articulos fuera del indice compartido.
+     *
+     * Los articulos ACTUALIZADOS (no creados) se agregan aparte en actualizar_cache(), al
+     * cierre del lote — no hace falta adelantarlos porque ya existian en BD antes del lote,
+     * osea ya estaban en el indice compartido desde que se construyo.
+     *
+     * @return void
+     */
+    function actualizar_cache_articulos_creados() {
+        $this->iniciar();
+
+        $this->log('');
+        $this->log('');
+        $this->log('actualizar_cache_articulos_creados');
+        $this->log('');
+
+        foreach ($this->articulos_creados_models as $article) {
+            /*
+             * Se pasa import_history_id (grupo 294, incidente Servian) SOLO aca: estos
+             * son articulos que ESTA importacion acaba de crear, y es lo que permite a
+             * un chunk posterior distinguirlos de un articulo que ya existia antes de
+             * arrancar (ver ArticleIndexCache::matched_article_created_by_this_import()).
+             * actualizar_cache(), mas abajo, es para articulos YA EXISTENTES: a
+             * proposito no le pasa este dato.
+             */
+            ArticleIndexCache::update($article, $this->codigos_proveedor_repetidos, $this->import_history_id);
+        }
+
+        // Persistimos ya (merge con lo que haya en el cache compartido) para no perder estos ids si el lote falla después.
+        ArticleIndexCache::persist($this->user->id, 30);
+
+        $this->terminar('Actualizar Cache (articulos creados)');
+    }
+
     function actualizar_cache() {
         $this->iniciar();
 
@@ -2002,15 +2228,18 @@ class ActualizarBBDD {
         $this->log(count($index['names']).' names');
         $this->log('');
 
-        foreach ($this->articulos_creados_models as $article) {
-            ArticleIndexCache::update($article, $this->codigos_proveedor_repetidos);
-        }
-
+        /*
+         * Los articulos CREADOS ya se agregaron y persistieron al cache compartido en
+         * actualizar_cache_articulos_creados() (llamado desde guardar_articulos(), apenas
+         * tuvieron su id real). No se repite acá: ArticleIndexCache::update() no es
+         * idempotente para provider_codes (apendea sin dedupe), y llamarlo dos veces para
+         * el mismo articulo generaria ids duplicados en esa sección del indice.
+         */
         foreach ($this->articulos_actualizados_models as $article) {
             ArticleIndexCache::update($article, $this->codigos_proveedor_repetidos);
         }
 
-        // ✅ Persistimos UNA sola vez (en vez de miles de veces)
+        // ✅ Persistimos (merge con lo que haya en el cache compartido)
         ArticleIndexCache::persist($this->user->id, 30);
 
         $this->log('');
@@ -2018,6 +2247,95 @@ class ActualizarBBDD {
         $this->log('');
 
         $this->terminar('Actualizar Cache');
+    }
+
+    /**
+     * Persiste en bloque (insert masivo, sin foreach de create()) los conflictos detectados
+     * por ProcessRow durante este chunk: identificadores ambiguos, placeholders descartados
+     * y filas sin identificador utilizable (prompt 02, grupo 229).
+     *
+     * También actualiza conflicts_count en ArticleImportResult (chunk) e ImportHistory
+     * (total del import) con increment(), no con lectura-escritura: los chunks de un mismo
+     * import pueden solaparse y una lectura-escritura pierde conteos.
+     *
+     * No hace nada si no se recibió un ProcessRow (compatibilidad con instanciaciones
+     * previas al prompt 02) o si el chunk no tuvo conflictos.
+     *
+     * @return void
+     */
+    protected function persistir_conflictos(): void
+    {
+        $this->iniciar();
+
+        if (is_null($this->process_row)) {
+            $this->terminar('persistir_conflictos (sin process_row, se omite)');
+            return;
+        }
+
+        // Detalle acumulado en memoria por ProcessRow durante el procesamiento del chunk.
+        $conflictos = $this->process_row->get_conflictos();
+
+        if (count($conflictos) === 0) {
+            $this->terminar('persistir_conflictos (sin conflictos)');
+            return;
+        }
+
+        $ahora = now();
+        $rows  = [];
+
+        /*
+         * 'fila_sobrescrita' (prompt 03, grupo 265) NO es una fila que no se pudo
+         * procesar: es una fila que SE RESOLVIO bien (última fila gana). El modal de
+         * resultado usa conflicts_count para decidir si avisa "hay filas que no se
+         * pudieron procesar" (ArticleImportHelper::enviar_notificacion()); si este
+         * tipo sumara ahí, cualquier Excel con un código repetido mostraría un aviso
+         * de error que no corresponde. Se cuenta aparte y se excluye del incremento.
+         * NO "arreglar" esto sumándolo de nuevo: es a propósito.
+         */
+        $conflictos_que_cuentan_para_el_historial = 0;
+
+        foreach ($conflictos as $c) {
+
+            if ($c['tipo'] !== 'fila_sobrescrita') {
+                $conflictos_que_cuentan_para_el_historial++;
+            }
+
+            $rows[] = [
+                'import_history_id'        => $this->import_history_id,
+                'article_import_result_id' => $this->article_import_result_id,
+                'fila'                     => $c['fila'],
+                'fila_ganadora'            => isset($c['fila_ganadora']) ? $c['fila_ganadora'] : null,
+                'tipo'                     => $c['tipo'],
+                'campo'                    => $c['campo'],
+                'valor'                    => $c['valor'],
+                'article_ids'              => is_null($c['article_ids'])
+                                                ? null
+                                                : json_encode($c['article_ids']),
+                'nombre_excel'             => $c['nombre_excel'],
+                'created_at'               => $ahora,
+                'updated_at'               => $ahora,
+            ];
+        }
+
+        /* Insert por bloques para no reventar el max_allowed_packet en excels con miles de conflictos. */
+        foreach (array_chunk($rows, 500) as $bloque) {
+            ImportConflict::insert($bloque);
+        }
+
+        /* Contadores atomicos (SET col = col + N): hay lotes concurrentes procesando el mismo import. */
+        if (!is_null($this->article_import_result_id) && $conflictos_que_cuentan_para_el_historial > 0) {
+            ArticleImportResult::where('id', $this->article_import_result_id)
+                ->increment('conflicts_count', $conflictos_que_cuentan_para_el_historial);
+        }
+
+        if (!is_null($this->import_history_id) && $conflictos_que_cuentan_para_el_historial > 0) {
+            ImportHistory::where('id', $this->import_history_id)
+                ->increment('conflicts_count', $conflictos_que_cuentan_para_el_historial);
+        }
+
+        $this->log('Se persistieron '.count($rows).' conflictos de importacion');
+
+        $this->terminar('Persistir conflictos de importacion');
     }
 
 

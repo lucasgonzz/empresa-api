@@ -5,6 +5,10 @@
 /vendor
 .env
 .env.backup
+# Cualquier variante de .env (.env.testing, .env.local, .env.staging...).
+# .env.testing tenia credenciales reales y estaba fuera del ignore.
+.env.*
+!.env.example
 .phpunit.result.cache
 docker-compose.override.yml
 Homestead.json
@@ -15,3 +19,17 @@ yarn-error.log
 /.vscode
 asd.zip
 .claude/
+
+# Certificados, claves privadas y material de firma de AFIP: NUNCA se commitean.
+/public/afip/production
+/public/afip/testing
+/public/afip/wsaa
+/public/afip/ws
+/public/afip/*.key
+/public/afip/*.pem
+/public/afip/*.csr
+/storage/app/afip
+*.key
+*.pem
+*.p12
+*.pfx
