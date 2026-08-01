@@ -461,12 +461,59 @@ class ArticleIndexCache
 
         Cache::put($key, $index, now()->addMinutes(60));
 
+        /*
+         * Grupo 291, prompt 07: verificamos que el Cache::put de arriba haya
+         * guardado realmente el índice. Con memcached, un ítem de más de 1MB se
+         * descarta AL ESCRIBIRLO, sin devolver error -- Cache::put() vuelve como
+         * si hubiera funcionado, y el próximo Cache::get() da vacío. A partir de
+         * ahí la importación degrada en silencio a una consulta por fila, sin
+         * ninguna excepción ni log que lo delate: una importación de 10.000 filas
+         * que tarda horas y nadie sabe por qué. Cache::has() es la verificación
+         * correcta y barata acá -- a diferencia de Cache::get(), no vuelve a
+         * traer decenas de MB a memoria solo para comprobarlos.
+         */
+        if (!Cache::has($key)) {
+            $counts = [
+                'ids'            => count($index['ids']),
+                'provider_codes' => count($index['provider_codes']),
+                'bar_codes'      => count($index['bar_codes']),
+                'skus'           => count($index['skus']),
+                'names'          => count($index['names']),
+            ];
+
+            Log::critical('ArticleIndexCache::build: el Cache::put no guardo el indice', [
+                'user_id' => $user_id,
+                'driver'  => config('cache.default'),
+                'counts'  => $counts,
+            ]);
+
+            throw new \RuntimeException(
+                'No se pudo guardar el índice de artículos en el cache (driver: ' . config('cache.default') . '). '
+                . 'La importación se detiene porque sin ese índice cada fila haría una consulta a la base y '
+                . 'tardaría horas. Revisar el driver de cache del cliente.'
+            );
+        }
+
         $duracion = microtime(true) - $inicio;
 
         Log::info("ArticleIndexCache::build -> ids: " . count($index['ids']) . " provider_codes: ". count($index['provider_codes']) . " bar_codes: " . count($index['bar_codes']) . " skus: " . count($index['skus']) . " names: " . count($index['names']));
         // Log::info('$index->provider_codes: ');
         // Log::info($index['provider_codes']);
         // Log::info('Duración total cachear los articulos ' . $duracion . ' seg');
+
+        /*
+         * Aviso temprano (grupo 291, prompt 07): si el catálogo del comercio es
+         * grande, avisamos ANTES de que un cliente importe un archivo grande y
+         * descubra el problema en medio de la importación. No truncamos el
+         * índice: eso causaría matcheos incorrectos, mucho peor que fallar.
+         */
+        if (count($index['ids']) > 200000) {
+            Log::warning('ArticleIndexCache::build: catalogo grande, el driver de cache tiene que soportarlo', [
+                'user_id' => $user_id,
+                'driver'  => config('cache.default'),
+                'ids'     => count($index['ids']),
+            ]);
+        }
 
         return $duracion;
     }
@@ -1491,6 +1538,32 @@ class ArticleIndexCache
         $merged = self::merge_indexes($remoto, $local);
 
         Cache::put($key, $merged, now()->addMinutes($ttl_minutes));
+
+        /*
+         * Grupo 291, prompt 07: misma verificación que build() -- ver el
+         * comentario ahí para el porqué. Acá el índice fusionado puede ser
+         * incluso más grande que el de un solo worker, así que el riesgo de
+         * exceder el límite de memcached es igual o mayor.
+         */
+        if (!Cache::has($key)) {
+            Log::critical('ArticleIndexCache::persist: el Cache::put no guardo el indice fusionado', [
+                'user_id' => $user_id,
+                'driver'  => config('cache.default'),
+                'counts'  => [
+                    'ids'            => count($merged['ids'] ?? []),
+                    'provider_codes' => count($merged['provider_codes'] ?? []),
+                    'bar_codes'      => count($merged['bar_codes'] ?? []),
+                    'skus'           => count($merged['skus'] ?? []),
+                    'names'          => count($merged['names'] ?? []),
+                ],
+            ]);
+
+            throw new \RuntimeException(
+                'No se pudo guardar el índice de artículos en el cache (driver: ' . config('cache.default') . '). '
+                . 'La importación se detiene porque sin ese índice cada fila haría una consulta a la base y '
+                . 'tardaría horas. Revisar el driver de cache del cliente.'
+            );
+        }
 
         // La RAM local pasa a reflejar el indice fusionado (incluye lo que agregaron otros workers).
         self::$runtime_index_by_key[$key] = $merged;

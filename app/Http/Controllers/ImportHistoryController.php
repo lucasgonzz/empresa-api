@@ -159,10 +159,16 @@ class ImportHistoryController extends Controller
      * Recorre todos los chunks del historial y recolecta los IDs almacenados en cada
      * ArticleImportResult.created_with_repeated_code_ids, luego trae los artículos de la BD.
      *
-     * @param int $import_history_id ID del historial de importación.
-     * @return \Illuminate\Http\JsonResponse Array de artículos con id, name, bar_code, provider_code.
+     * Acotada con limit/offset (grupo 291, prompt 05): antes traía TODOS los ids sin
+     * límite. La recolección de ids en sí no se toca (el ->get() de ArticleImportResult
+     * es chico: como mucho unos pocos chunks por historial), lo que se acota es el
+     * whereIn final contra articles, que era lo que podía crecer sin techo.
+     *
+     * @param int                       $import_history_id ID del historial de importación.
+     * @param \Illuminate\Http\Request  $request            query: limit (default 50, tope 200), offset (default 0).
+     * @return \Illuminate\Http\JsonResponse { articles: [...], total: N }
      */
-    function repeated_code_articles($import_history_id) {
+    function repeated_code_articles($import_history_id, Request $request) {
         /*
          * Confirmamos que el historial exista y sea del usuario autenticado
          * antes de recolectar articulos, para no exponer datos de
@@ -174,6 +180,19 @@ class ImportHistoryController extends Controller
 
         if (is_null($import_history)) {
             return response()->json(['message' => 'No se encontro la importacion'], 404);
+        }
+
+        $limit = (int) $request->query('limit', 50);
+        if ($limit <= 0) {
+            $limit = 50;
+        }
+        if ($limit > 200) {
+            $limit = 200;
+        }
+
+        $offset = (int) $request->query('offset', 0);
+        if ($offset < 0) {
+            $offset = 0;
         }
 
         /* Recolectar todos los IDs de artículos con código repetido de los chunks. */
@@ -194,16 +213,23 @@ class ImportHistoryController extends Controller
             });
 
         if (empty($all_ids)) {
-            return response()->json([], 200);
+            return response()->json(['articles' => [], 'total' => 0], 200);
         }
 
-        /* Traer los artículos con los datos mínimos para mostrar en la lista. */
-        $articles = Article::whereIn('id', array_unique($all_ids))
+        $unique_ids = array_unique($all_ids);
+
+        /* Traer los artículos con los datos mínimos para mostrar en la lista, acotados. */
+        $articles = Article::whereIn('id', $unique_ids)
             ->select('id', 'name', 'bar_code', 'provider_code')
             ->orderBy('id', 'ASC')
+            ->offset($offset)
+            ->limit($limit)
             ->get();
 
-        return response()->json($articles, 200);
+        return response()->json([
+            'articles' => $articles,
+            'total'    => count($unique_ids),
+        ], 200);
     }
 
     /**
@@ -212,10 +238,17 @@ class ImportHistoryController extends Controller
      * el encabezado del modal. Filtra por user_id para que un usuario no pueda leer los
      * conflictos de otro (prompt 02, grupo 229; UI en prompt 05).
      *
-     * @param int $import_history_id ID del historial de importacion.
+     * Acotada con tipo/limit/offset (grupo 291, prompt 05): antes traía TODOS los
+     * conflictos del historial sin límite y armaba el resumen iterando la colección
+     * entera en PHP. Con Excel grandes y códigos repetidos, `fila_sobrescrita` se
+     * registra una vez por cada fila pisada — pueden ser miles de filas para pintar 5
+     * en el modal. Ahora el resumen y el total se calculan con agregados SQL.
+     *
+     * @param int                       $import_history_id ID del historial de importacion.
+     * @param \Illuminate\Http\Request  $request            query: tipo, limit (default 50, tope 200), offset (default 0).
      * @return \Illuminate\Http\JsonResponse
      */
-    function conflicts($import_history_id) {
+    function conflicts($import_history_id, Request $request) {
 
         /* Se filtra por el usuario autenticado para no exponer conflictos de otro owner/empleado. */
         $import_history = ImportHistory::where('id', $import_history_id)
@@ -226,29 +259,53 @@ class ImportHistoryController extends Controller
             return response()->json(['message' => 'No se encontro la importacion'], 404);
         }
 
-        $conflicts = ImportConflict::where('import_history_id', $import_history_id)
+        $tipo = $request->query('tipo');
+
+        $limit = (int) $request->query('limit', 50);
+        if ($limit <= 0) {
+            $limit = 50;
+        }
+        if ($limit > 200) {
+            $limit = 200;
+        }
+
+        $offset = (int) $request->query('offset', 0);
+        if ($offset < 0) {
+            $offset = 0;
+        }
+
+        $query = ImportConflict::where('import_history_id', $import_history_id);
+
+        if (!empty($tipo)) {
+            $query->where('tipo', $tipo);
+        }
+
+        /* Total DEL FILTRO APLICADO (con el tipo, si vino) -- no del historial completo. */
+        $total = (clone $query)->count();
+
+        $conflicts = (clone $query)
                         ->orderBy('fila')
+                        ->offset($offset)
+                        ->limit($limit)
                         ->get();
 
-        /* Resumen por tipo y campo, para el encabezado del modal. */
-        $resumen = [];
-
-        foreach ($conflicts as $c) {
-            $clave = $c->tipo . '|' . (string) $c->campo;
-            if (!isset($resumen[$clave])) {
-                $resumen[$clave] = [
-                    'tipo'   => $c->tipo,
-                    'campo'  => $c->campo,
-                    'total'  => 0,
-                ];
-            }
-            $resumen[$clave]['total']++;
-        }
+        /*
+         * Resumen por tipo y campo para el encabezado del modal: sobre el TOTAL del
+         * historial, no sobre el filtro de $tipo -- si no, filtrar a un tipo dejaría
+         * de mostrar el desglose por los demás tipos. Con agregados SQL, no iterando
+         * la colección ya traída (que es justo el bug que este prompt arregla).
+         */
+        $resumen = ImportConflict::where('import_history_id', $import_history_id)
+                        ->selectRaw('tipo, campo, COUNT(*) as total')
+                        ->groupBy('tipo', 'campo')
+                        ->get();
 
         return response()->json([
             'conflicts' => $conflicts,
-            'resumen'   => array_values($resumen),
-            'total'     => $conflicts->count(),
+            'resumen'   => $resumen,
+            'total'     => $total,
+            'limit'     => $limit,
+            'offset'    => $offset,
         ]);
     }
 }
