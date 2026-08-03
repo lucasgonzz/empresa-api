@@ -36,6 +36,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('user/last-activity', 'CommonLaravel\UserController@setLastActivity');
     Route::put('user/set_eliminar_articulos_offline/{user_id}/{value}', 'UserController@set_eliminar_articulos_offline');
     Route::put('user/set-img-auto-timeout/{value}', 'UserController@set_img_auto_timeout');
+    Route::put('user/set-dark-mode/{value}', 'UserController@set_dark_mode');
 
 
 
