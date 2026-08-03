@@ -42,6 +42,50 @@ class ImportHistoryController extends Controller
             ], 409);
         }
 
+        /*
+         * Mensajes especificos segun el caso, para que el usuario entienda que
+         * paso (no un 409 pelado). El bloqueo real que cierra la carrera es el
+         * UPDATE condicional de abajo -- esto es solo para dar un mensaje mejor
+         * en el caso comun de un solo click de mas (grupo 305, prompt 02).
+         */
+        if ($import_history->rollback_status == 'encolado') {
+            return response()->json([
+                'message' => 'Ya hay una reversion en curso para esta importacion',
+            ], 409);
+        }
+
+        if ($import_history->rollback_status == 'revertida' || !is_null($import_history->rolled_back_at)) {
+            return response()->json([
+                'message' => 'Esta importacion ya fue revertida',
+            ], 409);
+        }
+
+        /*
+         * Compare-and-swap: la condicion del where es parte del UPDATE, asi que dos
+         * requests simultaneos no pueden encolar dos jobs. El primero deja la fila en
+         * 'encolado' y el segundo actualiza 0 filas. Un if() antes del update no
+         * alcanza: entre el if y el dispatch hay una ventana real (grupo 305, prompt 02).
+         */
+        $marcados = ImportHistory::where('id', $import_history->id)
+                        ->where('user_id', $this->userId())
+                        ->whereNull('rolled_back_at')
+                        ->where(function ($query) {
+                            $query->whereNull('rollback_status')
+                                  ->orWhere('rollback_status', 'fallido');
+                        })
+                        ->update([
+                            'rollback_status'       => 'encolado',
+                            'rollback_requested_at' => now(),
+                            'rollback_employee_id'  => $this->userId(false),
+                            'rollback_error'        => null,
+                        ]);
+
+        if ($marcados === 0) {
+            return response()->json([
+                'message' => 'Esta importacion ya fue revertida o tiene una reversion en curso',
+            ], 409);
+        }
+
         /**
          * Pasamos el id del usuario autenticado (no el user_id del propio
          * historial) para que el guard del job compare dos valores de
@@ -74,6 +118,9 @@ class ImportHistoryController extends Controller
             $model->matching_counts_json = is_null($model->matching_counts_json)
                 ? null
                 : json_decode($model->matching_counts_json, true);
+
+            /* Mismo criterio y mismo lugar que MasiveUpdateController::index() (grupo 305, prompt 02). */
+            $model->can_revert = $model->puede_revertirse();
         });
 
         return response()->json(['models' => $models], 200);

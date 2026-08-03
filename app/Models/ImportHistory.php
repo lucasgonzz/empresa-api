@@ -42,4 +42,31 @@ class ImportHistory extends Model
                     ->using(ArticleActualizadosImportHistory::class)
                     ->withPivot('updated_props');
     }
+
+    /**
+     * Única definición del criterio de "se puede revertir esta importación": el
+     * controller, el index() y los tests la usan a ella, nadie repite las
+     * condiciones a mano (grupo 305, prompt 02).
+     *
+     * `rollback_status === 'fallido'` SÍ puede reintentarse -- un rollback que
+     * falló tiene que darle al usuario una salida, si no la fila queda colgada
+     * para siempre sin que nadie pueda reintentar ni saber qué pasó.
+     *
+     * @return bool
+     */
+    function puede_revertirse() {
+        if (in_array($this->status, ['en_preparacion', 'en_proceso'])) {
+            return false;
+        }
+
+        if ($this->rollback_status == 'encolado') {
+            return false;
+        }
+
+        if ($this->rollback_status == 'revertida' || !is_null($this->rolled_back_at)) {
+            return false;
+        }
+
+        return true;
+    }
 }
