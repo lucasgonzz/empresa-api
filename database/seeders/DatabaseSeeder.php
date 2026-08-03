@@ -225,7 +225,8 @@ class DatabaseSeeder extends Seeder
 
             $this->call(DeliveryDaySeeder::class);
 
-            $this->call(ReportesMesSeeder::class);
+            // ReportesMesSeeder queda desenganchado (grupo 321, prompt 05): lo reemplaza
+            // `php artisan semilla:datos`. Ver el comentario en la cabecera de ese archivo.
 
             if ($for_user == 'truvari') {
                 if (env('APP_ENV') == 'local') {
