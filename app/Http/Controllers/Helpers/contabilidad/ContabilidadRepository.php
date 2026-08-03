@@ -2230,8 +2230,19 @@ class ContabilidadRepository
                 return $row;
             });
 
+        // 🔴 `select('current_acounts.*')` explícito acá, NO en `query_cobranzas_cuenta_corriente()`:
+        // esa query base hace `leftJoin` a `credit_accounts`, que también tiene columna `id` -- sin
+        // un select calificado, Eloquent hidrata cada modelo con el `id` de `credit_accounts` (la
+        // última columna `id` que trae el resultset), no el de `current_acounts`. El `with()` de
+        // abajo hace el eager-load buscando por esos ids ya corrompidos, así que la cobranza de
+        // cuenta corriente desaparece del desglose aunque sí entra al total (`cobranzas_cuenta_corriente()`
+        // usa `sum()`, que no hidrata modelos y por eso no se nota ahí). Va acá y no en la query
+        // compartida porque la rama "legacy" de arriba usa `selectRaw()` + `groupBy()` sobre la
+        // misma query base, y un `select('current_acounts.*')` ahí rompería el agrupamiento SQL
+        // (columnas fuera del GROUP BY). Hallazgo grupo 321 · prompt 06, 3/8/2026.
         $multi = $base()
             ->whereIn('current_acounts.id', $ids_multi)
+            ->select('current_acounts.*')
             ->with('current_acount_payment_methods')
             ->get();
 
@@ -2313,8 +2324,15 @@ class ContabilidadRepository
                 return $row;
             });
 
+        // 🔴 `select('current_acounts.*')` explícito acá: mismo hallazgo que
+        // `cobranzas_cuenta_corriente_por_caja_metodo()` (grupo 321 · prompt 06, 3/8/2026) --
+        // `query_pagos_a_proveedores_cc()` hace `leftJoin` a `credit_accounts` (con su propia
+        // columna `id`), y sin este select el `with()` de abajo hidrata cada modelo con el `id`
+        // equivocado, así que el pago a proveedor desaparece del desglose por caja/método aunque
+        // sí entra al total.
         $multi = $base()
             ->whereIn('current_acounts.id', $ids_multi)
+            ->select('current_acounts.*')
             ->with('current_acount_payment_methods')
             ->get();
 

@@ -257,18 +257,42 @@ class SembrarDatosDePrueba extends Command
     }
 
     /**
+     * Grupo 321 · Prompt 06 — arma el estado interno mínimo que `handle()` prepara antes del loop
+     * de meses (usuario, catálogo, generador aleatorio determinista y el motor `SemillaHelper`),
+     * SIN la guarda de entorno, sin `--reset` y sin loguear nada por consola. Único punto de
+     * entrada pensado para que un test de aceptación pueda invocar `sembrar_mes()` sobre un solo
+     * mes, sin correr el comando `semilla:datos` completo (que sembraría varios meses y chocaría
+     * con los rangos de fecha de otros tests de la suite).
+     *
+     * @return void
+     */
+    public function preparar_para_test()
+    {
+        $this->user_id = config('semilla.user_id');
+
+        $this->cargar_catalogo();
+
+        mt_srand((int) config('semilla.semilla_aleatoria'));
+
+        $this->semilla = new SemillaHelper();
+    }
+
+    /**
      * Siembra un mes completo: ventas de mostrador (repartidas por sucursal y por método de
      * pago), ventas a cuenta corriente, cobranzas, compras a proveedores, pagos a proveedores,
      * gastos, devoluciones y el comprobante de venta/compra correspondiente a cada operación
      * cobrada. Devuelve el renglón de control de ESTE mes, calculado desde estos mismos números
      * -- nunca consultando la base después.
      *
+     * Público desde el grupo 321 · Prompt 06, para que un test de aceptación pueda invocarlo
+     * directamente sobre un solo mes (ver `preparar_para_test()`).
+     *
      * @param int $meses_atras 0 = mes actual.
      * @param float $ventas_brutas_mes
      * @param bool $es_mes_actual Si es true, el mes se siembra solo hasta HOY (no hasta fin de mes).
      * @return array<string,mixed>
      */
-    protected function sembrar_mes($meses_atras, $ventas_brutas_mes, $es_mes_actual)
+    public function sembrar_mes($meses_atras, $ventas_brutas_mes, $es_mes_actual)
     {
         $inicio_mes = Carbon::now()->startOfMonth()->subMonths($meses_atras);
         $fin_mes = $es_mes_actual ? Carbon::now()->copy() : $inicio_mes->copy()->endOfMonth();
@@ -842,6 +866,28 @@ class SembrarDatosDePrueba extends Command
 
         $this->line('Cheques: '.json_encode($ciclo_cheques));
         $this->line('Presupuestos: '.json_encode($presupuestos));
+    }
+
+    /**
+     * Grupo 321 · Prompt 06 — wrapper público de `resetear()` para el `tearDown()` de un test de
+     * aceptación: borra por el mismo camino real de controllers todo lo que `sembrar_mes()` haya
+     * sembrado para `config('semilla.user_id')` (ventas, cuentas corrientes, comprobantes,
+     * cheques), sin loguear nada por consola. Requiere haber llamado antes `preparar_para_test()`
+     * (usa `$this->user_id`).
+     *
+     * 🔴 NO borra `movimiento_cajas` (hallazgo del checker, 3/8/2026): `resetear()` llama a
+     * `SaleController::destroy()`/`CurrentAcountController::delete()`/`ExpenseController::destroy()`
+     * con un `Request::create('/')` sin `compensar_caja`, así que esos controllers nunca generan el
+     * movimiento de compensación, y no hay ningún `MovimientoCaja::...->delete()` en `resetear()`.
+     * En un test bajo `DatabaseTransactions` no importa (el rollback se encarga); fuera de un test
+     * (`semilla:datos --reset` en la instancia demo) los saldos de caja quedan inflados corrida
+     * tras corrida -- deuda técnica preexistente de `resetear()` (prompt 05), no introducida acá.
+     *
+     * @return void
+     */
+    public function limpiar_para_test()
+    {
+        $this->resetear();
     }
 
     /**

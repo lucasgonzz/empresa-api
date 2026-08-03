@@ -414,6 +414,15 @@ class SemillaHelper
      * `getSaldo()` -- crea el `CurrentAcount` con `status = 'nota_credito'` y `haber`, que es
      * exactamente lo que lee `ContabilidadRepository::query_devoluciones()`.
      *
+     * 🔴 Se le pasa un `$items` con el mismo costo al 50% que usa `venta_mostrador()`/
+     * `venta_cuenta_corriente()` (ver `attachNotaCreditoArticles()`), para que
+     * `ContabilidadRepository::costo_mercaderia_devuelta()` (que lee `article_current_acount.cost`)
+     * neteé contra `costo_mercaderia_vendida()` -- sin esto, toda devolución queda con costo
+     * devuelto en 0 y el Estado de Resultados deja de cerrar "resultado_bruto = mitad de las
+     * ventas netas" apenas hay devoluciones sembradas (hallazgo del prompt 06, grupo 321,
+     * 3/8/2026: con `DEVOLUCIONES_FRACCION=0.10` y costo al 50%, sin este neteo el resultado
+     * bruto daba 4/9 de las ventas netas, no 1/2).
+     *
      * @param string|\Carbon\Carbon $fecha
      * @param float $monto
      * @param int $client_id
@@ -425,13 +434,27 @@ class SemillaHelper
 
         try {
             $credit_account = $this->credit_account_para('client', $client_id);
+            $articulo = $this->articulo_de_operacion();
+
+            $items = [
+                [
+                    'is_article'         => true,
+                    'unidades_devueltas' => 1,
+                    'costo_real'         => round($monto * 0.5, 2),
+                    'id'                 => $articulo->id,
+                    'price_vender'       => $monto,
+                    'discount'           => 0,
+                ],
+            ];
 
             $nota_credito = CurrentAcountHelper::notaCredito(
                 $credit_account->id,
                 $monto,
                 'Devolución sembrada',
                 'client',
-                $client_id
+                $client_id,
+                null,
+                $items
             );
 
             $this->registrar('devolucion', $fecha, $monto, $nota_credito);
