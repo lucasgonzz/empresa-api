@@ -282,8 +282,24 @@ class SaleController extends Controller
 
     function update(Request $request, $id) {
 
+        $sale_a_actualizar = Sale::find($id);
+
+        if (is_null($sale_a_actualizar)) {
+
+            return response()->json(['message' => 'La venta no existe o ya fue eliminada.'], 404);
+        }
+
+        $motivo = SaleHelper::motivo_por_el_que_no_se_puede_editar($sale_a_actualizar);
+
+        if (!is_null($motivo)) {
+
+            Log::info('update sale id '.$id.': rechazado. '.$motivo);
+
+            return response()->json(['message' => $motivo], 409);
+        }
+
         DB::beginTransaction();
-        
+
         Log::info('Se va a actualizar venta id: '.$id);
         try {
 
@@ -551,6 +567,21 @@ class SaleController extends Controller
 
     function updatePrices(Request $request, $id) {
         $model = Sale::find($id);
+
+        if (is_null($model)) {
+
+            return response()->json(['message' => 'La venta no existe o ya fue eliminada.'], 404);
+        }
+
+        $motivo = SaleHelper::motivo_por_el_que_no_se_puede_editar($model);
+
+        if (!is_null($motivo)) {
+
+            Log::info('updatePrices sale id '.$id.': rechazado. '.$motivo);
+
+            return response()->json(['message' => $motivo], 409);
+        }
+
         SaleHelper::updateItemsPrices($model, $request->items);
         if ($model->client_id) {
             SaleHelper::updateCurrentAcountsAndCommissions($model);

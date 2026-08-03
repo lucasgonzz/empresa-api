@@ -32,6 +32,7 @@ use App\Http\Controllers\SellerCommissionController;
 use App\Models\AfipTicket;
 use App\Models\Article;
 use App\Models\ArticleVariant;
+use App\Models\Caja;
 use App\Models\Cart;
 use App\Models\Client;
 use App\Models\Commissioner;
@@ -442,6 +443,77 @@ class SaleHelper extends Controller {
             }
         }
 
+    }
+    /*
+        Devuelve el motivo por el que una venta NO se puede editar, o null si se puede.
+
+        La regla, definida por Lucas el 3/8/2026: los unicos dos casos editables son
+        (a) una venta a la cuenta corriente de un cliente, sin facturar, y
+        (b) una venta de mostrador en un comercio SIN cajas configuradas, con un unico metodo
+            de pago y sin facturar.
+        El caso (a) no necesita condicion propia: attachSelectedPaymentMethods() solo adjunta
+        metodos de pago cuando la venta NO va a cuenta corriente, asi que una venta de cuenta
+        corriente tiene cero current_acount_payment_methods y no la alcanza el chequeo de cajas.
+
+        POR QUE ESTA EN UN SOLO LUGAR (no duplicar la condicion en cada controlador):
+        hasta el 3/8/2026 esta decision vivia UNICAMENTE en el frontend
+        (se_puede_actualizar.js), escondiendo el boton. El endpoint quedaba alcanzable con la
+        sesion abierta, y el modal de la venta se pinta con los datos que tenia al abrirse, asi
+        que el boton podia estar visible sobre una venta que ya habia cambiado. Cada lugar que
+        modifique una venta ya guardada tiene que preguntar aca.
+
+        Recibe el modelo ya cargado para no reconsultar, y usa loadMissing para no depender de
+        que quien llama se haya acordado de traer las relaciones.
+    */
+    static function motivo_por_el_que_no_se_puede_editar($sale) {
+
+        $sale->loadMissing(['afip_tickets', 'current_acount_payment_methods']);
+
+        if (count($sale->afip_tickets) >= 1) {
+
+            return 'La venta ya fue facturada. Una venta con comprobante AFIP emitido no se puede modificar.';
+        }
+
+        if ($sale->is_cerrada) {
+
+            return 'La venta esta cerrada y no se puede modificar.';
+        }
+
+        if ($sale->caja_id && $sale->caja_id != 0) {
+
+            return 'La venta ya movio una caja y no se puede modificar.';
+        }
+
+        /*
+            Mas de un metodo de pago: actualizar la venta rehace el reparto desde cero
+            (attachSelectedPaymentMethods hace detach y vuelve a adjuntar), asi que el reparto
+            original se pierde y los importes por metodo dejan de cuadrar con el total.
+            Va ANTES del chequeo de cajas para que el mensaje sea el mas especifico de los dos
+            cuando aplican los dos.
+        */
+        if (count($sale->current_acount_payment_methods) > 1) {
+
+            return 'La venta se cobro con mas de un metodo de pago. Para modificarla hay que eliminarla y volver a cargarla.';
+        }
+
+        /*
+            Con cajas configuradas, cualquier venta ya cobrada movio plata en una caja y
+            editarla descuadra el arqueo. La venta a cuenta corriente no entra aca porque no
+            tiene metodos de pago adjuntos.
+            Se cuenta contra el user_id de la venta y no contra el usuario autenticado: el
+            helper es estatico y no tiene sesion, y ademas la venta es la que define el tenant.
+        */
+        if (count($sale->current_acount_payment_methods) >= 1) {
+
+            $cantidad_de_cajas = Caja::where('user_id', $sale->user_id)->count();
+
+            if ($cantidad_de_cajas >= 1) {
+
+                return 'El comercio tiene cajas configuradas, asi que una venta ya cobrada no se puede modificar. Para corregirla hay que eliminarla y volver a cargarla.';
+            }
+        }
+
+        return null;
     }
     static function checkNotaCredito($sale, $request) {
         if ($request->save_nota_credito) {
