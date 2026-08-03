@@ -165,11 +165,14 @@ class ReportesMesSeeder extends Seeder
                             'amount'       => 1,
                         ],
                     ],
-                    // Pago en efectivo (id = 3) por el total completo
+                    // Pago en efectivo (current_acount_payment_method_id = 3) por el total completo.
+                    // La clave tiene que ser 'current_acount_payment_method_id': con 'id' a secas,
+                    // PaymentMethodHelper::attach_payment_methods() saltea el elemento entero (ver
+                    // grupo 321, prompt 03) y la venta queda cobrada pero sin movimiento de caja.
                     'payment_methods' => [
                         [
-                            'id'     => 3,
-                            'amount' => $monto,
+                            'current_acount_payment_method_id' => 3,
+                            'amount'                            => $monto,
                         ],
                     ],
                     'created_at' => $fecha,

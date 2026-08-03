@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Models\CurrentAcountPaymentMethod;
+use Illuminate\Support\Facades\Log;
 
 class PaymentMethodHelper {
 
@@ -20,11 +21,31 @@ class PaymentMethodHelper {
                 $cuota_id 			= isset($payment_method['cuota_id']) ? $payment_method['cuota_id'] : null;
                 $caja_id 			= null;
 
+                /*
+                    Un metodo de pago sin current_acount_payment_method_id se saltea, pero el loop
+                    SIGUE con los demas.
+
+                    Hasta el 3/8/2026 aca habia un `return`, que abortaba el loop entero: si el
+                    primer elemento venia mal, la venta quedaba con CERO metodos de pago adjuntos, y
+                    como SaleCajaHelper::check_caja() solo crea movimiento si hay al menos uno, la
+                    venta terminaba cobrada y sin ningun movimiento de caja. Sin excepcion y sin
+                    error visible.
+                */
                 if (!isset($payment_method['current_acount_payment_method_id'])) {
-                    return;
+
+                    Log::warning('attach_payment_methods: metodo de pago sin current_acount_payment_method_id, se saltea. Modelo: '.get_class($model).' id: '.$model->id);
+
+                    continue;
                 }
 
                 $payment_method_model = CurrentAcountPaymentMethod::find($payment_method['current_acount_payment_method_id']);
+
+                if (is_null($payment_method_model)) {
+
+                    Log::warning('attach_payment_methods: current_acount_payment_method_id '.$payment_method['current_acount_payment_method_id'].' no existe, se saltea. Modelo: '.get_class($model).' id: '.$model->id);
+
+                    continue;
+                }
 
                 if (
                     !is_null($payment_method_model->type) 
