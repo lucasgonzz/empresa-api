@@ -18,7 +18,18 @@ class AddressSeeder extends Seeder
 
         if (config('app.FOR_USER') == 'fenix') {
             return;
-        } else if (config('app.FOR_USER') == 'bad_girls') {
+        }
+
+        // Guarda contra el doble llamado: local_y_demo() ahora llama a este seeder para
+        // sembrar las sucursales que necesitan las cajas y las ventas de la semilla de
+        // reportes, y varias ramas por FOR_USER (bad_girls, trama, racing_carts, leudinox,
+        // san_blas, ht5) YA lo llamaban por su cuenta, después de local_y_demo(). Sin este
+        // guard, esas cuentas terminarían con 8 sucursales en vez de 4.
+        if (Address::where('user_id', config('app.USER_ID'))->exists()) {
+            return;
+        }
+
+        if (config('app.FOR_USER') == 'bad_girls') {
             $this->bad_girls();
         } else {
             $this->default();

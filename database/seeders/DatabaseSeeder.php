@@ -265,6 +265,11 @@ class DatabaseSeeder extends Seeder
             $this->call(ProviderPriceListSeeder::class);
             $this->call(ColorSeeder::class);
             $this->call(DepositSeeder::class);
+
+            // Sucursales antes que los clientes: ClientSeeder reparte address_id entre ellas.
+            // Sin esto no hay cajas por sucursal ni ventas repartidas entre locales, que es
+            // justamente lo que la semilla de datos de reportes necesita poder mostrar.
+            $this->call(AddressSeeder::class);
             $this->call(ClientSeeder::class);
             $this->call(BuyerSeeder::class);
             $this->call(DiscountSeeder::class);
@@ -285,6 +290,11 @@ class DatabaseSeeder extends Seeder
             $this->call(SellerSeeder::class);
 
             $this->call(MeliPlatformConnectorSeeder::class);
+
+            // Sin esto, ContabilidadRepository::iibb_determinado() no encuentra ningún
+            // sale_tax activo y la línea de IIBB del Estado de Resultados y de la Posición
+            // Fiscal da siempre cero.
+            $this->call(SaleTaxSeeder::class);
 
         }
     }
