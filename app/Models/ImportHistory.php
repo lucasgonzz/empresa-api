@@ -10,9 +10,12 @@ class ImportHistory extends Model
     protected $guarded = [];
 
     protected $casts = [
-        'changed_fields' => 'array',
+        'changed_fields'         => 'array',
         /* Fecha en que se marcó la importación como fallida (prompt 500). */
-        'failed_at'      => 'datetime',
+        'failed_at'              => 'datetime',
+        /* Seguimiento de reversión (grupo 305, prompt 01). */
+        'rollback_requested_at'  => 'datetime',
+        'rolled_back_at'         => 'datetime',
     ];
 
     function chunks() {
