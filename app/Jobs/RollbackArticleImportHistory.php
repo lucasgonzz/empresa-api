@@ -143,6 +143,17 @@ class RollbackArticleImportHistory implements ShouldQueue
                 'expected_user_id' => $this->owner_user_id,
                 'current_user_id' => $import_history->user_id,
             ]);
+
+            /*
+             * rollback_status no puede quedar en 'encolado': si queda, el boton
+             * desaparece para siempre y el usuario no tiene forma de reintentar
+             * ni de saber que paso (grupo 305, prompt 02).
+             */
+            ImportHistory::where('id', $this->import_history_id)
+                ->update([
+                    'rollback_status' => 'fallido',
+                    'rollback_error'  => 'El usuario que pidio la reversion no coincide con el owner de la importacion',
+                ]);
             return;
         }
 
@@ -155,6 +166,12 @@ class RollbackArticleImportHistory implements ShouldQueue
                 'import_history_id' => $this->import_history_id,
                 'status' => $import_history->status,
             ]);
+
+            ImportHistory::where('id', $this->import_history_id)
+                ->update([
+                    'rollback_status' => 'fallido',
+                    'rollback_error'  => 'La importacion volvio a quedar en curso antes de que el job pudiera revertirla',
+                ]);
             return;
         }
 
@@ -386,6 +403,12 @@ class RollbackArticleImportHistory implements ShouldQueue
                 . ' Articulos creados eliminados: ' . count($created_article_ids) . '.';
 
             $import_history->observations = trim(($import_history->observations ?? '') . ' | ' . $rollback_observation);
+
+            /* Marca de reversion exitosa (grupo 305, prompt 02). */
+            $import_history->rollback_status = 'revertida';
+            $import_history->rolled_back_at  = now();
+            $import_history->rollback_error  = null;
+
             $import_history->save();
         });
 
@@ -436,6 +459,25 @@ class RollbackArticleImportHistory implements ShouldQueue
             'relations_reverted_articles'  => count($relations_restore_map),
             'deleted_created_articles'     => count($created_article_ids),
         ]);
+    }
+
+    /**
+     * Laravel llama a este metodo cuando el job termina por excepcion. Es el unico
+     * lugar donde se puede marcar el fallo: si la excepcion salta dentro del
+     * DB::transaction() de handle(), todo lo escrito ahi adentro se revierte —
+     * incluida cualquier marca de estado. failed() corre despues, fuera de esa
+     * transaccion, asi que su escritura sobrevive (grupo 305, prompt 02).
+     *
+     * @param  \Throwable $exception
+     * @return void
+     */
+    public function failed($exception)
+    {
+        ImportHistory::where('id', $this->import_history_id)
+            ->update([
+                'rollback_status' => 'fallido',
+                'rollback_error'  => substr($exception->getMessage(), 0, 500),
+            ]);
     }
 
     /**

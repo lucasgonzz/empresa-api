@@ -97,32 +97,79 @@ class RollbackTest extends ImportTestCase
     /**
      * Revertir dos veces la misma importación no puede romper ni duplicar el efecto.
      *
+     * Hasta acá la garantía era "el segundo rollback no rompe nada" (idempotencia).
+     * Con el bloqueo del grupo 305 la garantía es más fuerte: directamente no hay
+     * segundo rollback, el endpoint lo rechaza con 409. Se renombra a propósito
+     * (grupo 305, prompt 02): bloquear es más fuerte que hacer idempotente.
+     *
      * @return void
      */
-    public function test_revertir_dos_veces_es_idempotente()
+    public function test_revertir_dos_veces_no_duplica_el_efecto()
     {
         $antes = ArticleSnapshot::tomar($this->tenant->id);
 
         $import = $this->importar(self::ARCHIVO, ['provider_id' => null]);
 
         $this->revertir($import);
-        $this->revertir($import);
+        $this->revertir($import, 409);
 
         $this->assertEquals(
             $antes,
             ArticleSnapshot::tomar($this->tenant->id),
-            'El segundo rollback alteró el estado ya restaurado.'
+            'El segundo rollback (rechazado) alteró el estado ya restaurado.'
         );
+    }
+
+    /**
+     * Después de un rollback exitoso, la fila queda marcada como revertida y
+     * puede_revertirse() ya no lo permite (grupo 305, prompt 02).
+     *
+     * @return void
+     */
+    public function test_el_rollback_deja_la_importacion_marcada_como_revertida()
+    {
+        $import = $this->importar(self::ARCHIVO, ['provider_id' => null]);
+
+        $this->revertir($import);
+
+        $import->refresh();
+
+        $this->assertSame('revertida', $import->rollback_status);
+        $this->assertNotNull($import->rolled_back_at);
+        $this->assertFalse($import->puede_revertirse());
+    }
+
+    /**
+     * El index() del historial informa can_revert por fila: true antes del
+     * rollback, false para una importación ya revertida (grupo 305, prompt 02).
+     *
+     * @return void
+     */
+    public function test_el_historial_informa_que_una_importacion_revertida_no_se_puede_revertir()
+    {
+        $import = $this->importar(self::ARCHIVO, ['provider_id' => null]);
+
+        $antes = $this->getJson('/api/import-history/article')->assertStatus(200)->json('models');
+        $fila_antes = collect($antes)->firstWhere('id', $import->id);
+        $this->assertTrue($fila_antes['can_revert']);
+
+        $this->revertir($import);
+
+        $despues = $this->getJson('/api/import-history/article')->assertStatus(200)->json('models');
+        $fila_despues = collect($despues)->firstWhere('id', $import->id);
+        $this->assertFalse($fila_despues['can_revert']);
     }
 
     /**
      * Con QUEUE_CONNECTION=sync el job de rollback corre inline dentro del request.
      *
      * @param  \App\Models\ImportHistory $import
-     * @return void
+     * @param  int                       $status  Código HTTP esperado (grupo 305, prompt 02:
+     *                                             los tests que esperan el bloqueo piden 409).
+     * @return \Illuminate\Testing\TestResponse
      */
-    protected function revertir($import)
+    protected function revertir($import, $status = 202)
     {
-        $this->postJson('/api/import-history/rollback/' . $import->id)->assertStatus(202);
+        return $this->postJson('/api/import-history/rollback/' . $import->id)->assertStatus($status);
     }
 }
