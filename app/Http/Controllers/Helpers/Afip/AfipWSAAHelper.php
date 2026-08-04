@@ -13,29 +13,55 @@ class AfipWSAAHelper {
 	}
 
     function define() {
-        
+
+        // Directorio de trabajo de WSAA (TRA/TA/CMS por ws_name): ya no vive en public/, porque
+        // TA.xml es una credencial viva (token+sign) y estaba siendo descargable por HTTP.
+        // Ahora cuelga de storage/app/afip/wsaa (config('services.afip.wsaa_path')), fuera del docroot.
+        $wsaa_base_path = config('services.afip.wsaa_path').'/'.$this->ws_name;
+
+        // El directorio de trabajo de WSAA se crea al vuelo: en un servidor recien provisionado no existe,
+        // y estos archivos son temporales de firma, no assets versionados.
+        if (!is_dir($wsaa_base_path)) {
+            mkdir($wsaa_base_path, 0700, true);
+        }
+
         if (!defined('TRA_xml')) {
-            define ('TRA_xml', public_path().'/afip/wsaa/'.$this->ws_name.'/TRA.xml'); 
+            define ('TRA_xml', $wsaa_base_path.'/TRA.xml');
         }
         if (!defined('TRA_tmp')) {
-            define ('TRA_tmp', public_path().'/afip/wsaa/'.$this->ws_name.'/TRA.tmp'); 
+            define ('TRA_tmp', $wsaa_base_path.'/TRA.tmp');
         }
         if (!defined('TA_file')) {
-            define ('TA_file', public_path().'/afip/wsaa/'.$this->ws_name.'/TA.xml'); 
+            define ('TA_file', $wsaa_base_path.'/TA.xml');
         }
         if (!defined('CMS_file')) {
-            define ('CMS_file', public_path().'/afip/wsaa/'.$this->ws_name.'/CMS.txt'); 
+            define ('CMS_file', $wsaa_base_path.'/CMS.txt');
         }
 
         if ($this->testing) {
-            $this->cert = 'file://'.realpath(public_path().'/afip/testing/afip_cert.pem');
-            $this->private_key = 'file://'.realpath(public_path().'/afip/testing/afip_private.key');
+            // Certificado y clave privada de testing: se leen de storage/app/afip (fuera de public/),
+            // con ruta configurable por .env vía config/services.php (bloque 'afip').
+            $cert_path = config('services.afip.cert_path_testing');
+            $key_path = config('services.afip.key_path_testing');
             $this->url_wsaa = 'https://wsaahomo.afip.gov.ar/ws/services/LoginCms';
         } else {
-            $this->cert = 'file://'.realpath(public_path().'/afip/production/comerciocity-alias_43833c08ea3711fd.crt');
-            $this->private_key = 'file://'.realpath(public_path().'/afip/production/privada.key');
+            // Certificado y clave privada de producción: idem testing, ruta configurable por .env.
+            $cert_path = config('services.afip.cert_path');
+            $key_path = config('services.afip.key_path');
             $this->url_wsaa = 'https://wsaa.afip.gov.ar/ws/services/LoginCms';
         }
+
+        // Si falta el certificado o la clave, avisar explícitamente en vez de dejar que falle más
+        // abajo con un error de OpenSSL indescifrable (realpath() de un archivo inexistente da false).
+        if (!file_exists($cert_path)) {
+            throw new \Exception("Falta el certificado de AFIP en {$cert_path}. Ver docs/afip.md.");
+        }
+        if (!file_exists($key_path)) {
+            throw new \Exception("Falta la clave privada de AFIP en {$key_path}. Ver docs/afip.md.");
+        }
+
+        $this->cert = 'file://'.realpath($cert_path);
+        $this->private_key = 'file://'.realpath($key_path);
     }
 
     function checkWsaa() {
@@ -121,8 +147,10 @@ class AfipWSAAHelper {
             'exceptions' => 0
         ));
         $results = $client->loginCms(array('in0'=>$cms));
-        file_put_contents(public_path()."/afip/wsaa/".$this->ws_name."/request.xml",$client->__getLastRequest());
-        file_put_contents(public_path()."/afip/wsaa/".$this->ws_name."/response.xml",$client->__getLastResponse());
+        // request.xml/response.xml de depuración de WSAA: mismo directorio de trabajo fuera de public/.
+        $wsaa_base_path = config('services.afip.wsaa_path').'/'.$this->ws_name;
+        file_put_contents($wsaa_base_path."/request.xml",$client->__getLastRequest());
+        file_put_contents($wsaa_base_path."/response.xml",$client->__getLastResponse());
         if (is_soap_fault($results)) {
             Log::info("SOAP Fault: ".$results->faultcode."\n".$results->faultstring);
             exit("SOAP Fault: ".$results->faultcode."\n".$results->faultstring."\n");

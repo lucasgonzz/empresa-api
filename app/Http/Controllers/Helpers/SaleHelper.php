@@ -32,6 +32,7 @@ use App\Http\Controllers\SellerCommissionController;
 use App\Models\AfipTicket;
 use App\Models\Article;
 use App\Models\ArticleVariant;
+use App\Models\Caja;
 use App\Models\Cart;
 use App\Models\Client;
 use App\Models\Commissioner;
@@ -457,7 +458,6 @@ class SaleHelper extends Controller {
         }
 
     }
-
     /**
      * Resuelve el porcentaje de descuento/recargo aplicable al vender con un metodo de pago y una
      * cantidad de cuotas determinados (Capa 3 del motor de precios, Prompt 263).
@@ -520,6 +520,78 @@ class SaleHelper extends Controller {
                             ->first();
         if ($method_discount_generico) {
             return (float)$method_discount_generico->discount_percentage;
+        }
+
+        return null;
+    }
+
+    /*
+        Devuelve el motivo por el que una venta NO se puede editar, o null si se puede.
+
+        La regla, definida por Lucas el 3/8/2026: los unicos dos casos editables son
+        (a) una venta a la cuenta corriente de un cliente, sin facturar, y
+        (b) una venta de mostrador en un comercio SIN cajas configuradas, con un unico metodo
+            de pago y sin facturar.
+        El caso (a) no necesita condicion propia: attachSelectedPaymentMethods() solo adjunta
+        metodos de pago cuando la venta NO va a cuenta corriente, asi que una venta de cuenta
+        corriente tiene cero current_acount_payment_methods y no la alcanza el chequeo de cajas.
+
+        POR QUE ESTA EN UN SOLO LUGAR (no duplicar la condicion en cada controlador):
+        hasta el 3/8/2026 esta decision vivia UNICAMENTE en el frontend
+        (se_puede_actualizar.js), escondiendo el boton. El endpoint quedaba alcanzable con la
+        sesion abierta, y el modal de la venta se pinta con los datos que tenia al abrirse, asi
+        que el boton podia estar visible sobre una venta que ya habia cambiado. Cada lugar que
+        modifique una venta ya guardada tiene que preguntar aca.
+
+        Recibe el modelo ya cargado para no reconsultar, y usa loadMissing para no depender de
+        que quien llama se haya acordado de traer las relaciones.
+    */
+    static function motivo_por_el_que_no_se_puede_editar($sale) {
+
+        $sale->loadMissing(['afip_tickets', 'current_acount_payment_methods']);
+
+        if (count($sale->afip_tickets) >= 1) {
+
+            return 'La venta ya fue facturada. Una venta con comprobante AFIP emitido no se puede modificar.';
+        }
+
+        if ($sale->is_cerrada) {
+
+            return 'La venta esta cerrada y no se puede modificar.';
+        }
+
+        if ($sale->caja_id && $sale->caja_id != 0) {
+
+            return 'La venta ya movio una caja y no se puede modificar.';
+        }
+
+        /*
+            Mas de un metodo de pago: actualizar la venta rehace el reparto desde cero
+            (attachSelectedPaymentMethods hace detach y vuelve a adjuntar), asi que el reparto
+            original se pierde y los importes por metodo dejan de cuadrar con el total.
+            Va ANTES del chequeo de cajas para que el mensaje sea el mas especifico de los dos
+            cuando aplican los dos.
+        */
+        if (count($sale->current_acount_payment_methods) > 1) {
+
+            return 'La venta se cobro con mas de un metodo de pago. Para modificarla hay que eliminarla y volver a cargarla.';
+        }
+
+        /*
+            Con cajas configuradas, cualquier venta ya cobrada movio plata en una caja y
+            editarla descuadra el arqueo. La venta a cuenta corriente no entra aca porque no
+            tiene metodos de pago adjuntos.
+            Se cuenta contra el user_id de la venta y no contra el usuario autenticado: el
+            helper es estatico y no tiene sesion, y ademas la venta es la que define el tenant.
+        */
+        if (count($sale->current_acount_payment_methods) >= 1) {
+
+            $cantidad_de_cajas = Caja::where('user_id', $sale->user_id)->count();
+
+            if ($cantidad_de_cajas >= 1) {
+
+                return 'El comercio tiene cajas configuradas, asi que una venta ya cobrada no se puede modificar. Para corregirla hay que eliminarla y volver a cargarla.';
+            }
         }
 
         return null;
@@ -933,7 +1005,38 @@ class SaleHelper extends Controller {
             }
         }
 
-        return $iva_percentage;
+        return Self::normalize_iva_percentage_for_pivot($iva_percentage);
+    }
+
+    /**
+     * Normaliza el valor de IVA que se va a persistir en las columnas iva_percentage de los pivots
+     * (article_sale y article_current_acount).
+     *
+     * POR QUE ESAS COLUMNAS SON DE TEXTO Y NO DECIMALES (grupo 275, 30/7/2026):
+     * ivas.percentage es una columna string que guarda tanto alicuotas numericas ('21', '10.5')
+     * como etiquetas fiscales ('Exento', 'No Gravado'). Los pivots nacieron decimal(8,2) y cualquier
+     * venta con un articulo exento se caia entera con un error de MySQL. No se puede colapsar
+     * 'Exento' y 'No Gravado' a 0: ante ARCA son alicuotas distintas de 0%, y el desglose de IVA del
+     * comprobante deja de cerrar. Por eso la columna espeja el tipo de su fuente. Si alguna vez se
+     * quiere volver a un tipo numerico, primero hay que separar la etiqueta fiscal del porcentaje en
+     * la tabla ivas, no antes.
+     *
+     * @param mixed $value Valor resuelto desde ivas.percentage o el default.
+     * @return string|null Texto a persistir, o null si no hay valor utilizable.
+     */
+    static function normalize_iva_percentage_for_pivot($value)
+    {
+        if (is_null($value)) {
+            return null;
+        }
+
+        $value = trim((string) $value);
+
+        if ($value === '') {
+            return null;
+        }
+
+        return $value;
     }
 
     /**
@@ -1080,16 +1183,23 @@ class SaleHelper extends Controller {
 
 
 
-            /* 
-                Chequeo si habia un pago especifico (con tu_pay_id) para esta venta
-                Si lo habia, libero ese pago para que aporte a otras ventas
-            */
-            $pago = CurrentAcount::where('to_pay_id', $current_acount->id)
-                                ->first();
+            /*
+                Chequeo si habia algun pago especifico (con to_pay_id) para esta venta.
+                Si lo habia, lo libero para que aporte a otras ventas.
 
-            if ($pago) {
-                $pago->to_pay_id = null;
-                $pago->save();
+                Van TODOS, no el primero: desde el grupo 327 la nota de credito de una
+                devolucion tambien apunta con to_pay_id a la venta que la origino, asi que
+                una misma venta puede tener a la vez esa NC y un pago imputado a mano. Si se
+                libera solo uno, el otro queda apuntando a una fila borrada y
+                CurrentAcountPagoHelper::setSinPagar() lo resuelve en null: ese movimiento
+                deja de imputarse por completo, sin error visible.
+            */
+            $pagos_dirigidos = CurrentAcount::where('to_pay_id', $current_acount->id)
+                                            ->get();
+
+            foreach ($pagos_dirigidos as $pago_dirigido) {
+                $pago_dirigido->to_pay_id = null;
+                $pago_dirigido->save();
             }
 
 
@@ -1102,8 +1212,24 @@ class SaleHelper extends Controller {
     static function deleteSellerCommissionsFromSale($sale) {
         $seller_commissions = SellerCommission::where('sale_id', $sale->id)
                                             ->whereNull('haber')
-                                            ->pluck('id');
-        SellerCommission::destroy($seller_commissions);
+                                            ->get(['id', 'seller_id', 'moneda_id']);
+
+        // Grupo 268 · Prompt 02, bug E: antes se borraba sin recalcular los saldos posteriores.
+        // Se guardan los pares seller_id + moneda_id afectados ANTES de destruir las filas.
+        $pares = [];
+        foreach ($seller_commissions as $seller_commission) {
+            $moneda_id = !is_null($seller_commission->moneda_id) ? $seller_commission->moneda_id : 1;
+            $pares[$seller_commission->seller_id.'-'.$moneda_id] = [
+                'seller_id' => $seller_commission->seller_id,
+                'moneda_id' => $moneda_id,
+            ];
+        }
+
+        SellerCommission::destroy($seller_commissions->pluck('id'));
+
+        foreach ($pares as $par) {
+            ComisionesHelper::recalcular_saldos($par['seller_id'], $par['moneda_id']);
+        }
     }
 
     static function getDiscount($item) {

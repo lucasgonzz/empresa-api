@@ -20,7 +20,7 @@ require __DIR__.'/../CommonLaravel/fpdf/fpdf.php';
  *  - Encabezado de columnas con fondo azul oscuro y texto blanco.
  *  - Filas alternadas (azul muy claro / blanco) para facilitar la lectura.
  *  - Separadores sutiles entre filas.
- *  - Pie de página con barra de color, número de página y observaciones.
+ *  - Pie de página opcional con las observaciones del perfil (sin barra ni número de página).
  *
  * Respeta las columnas y anchos configurados en PdfColumnProfile.
  */
@@ -36,6 +36,12 @@ class ArticleTablePdf extends fpdf
 
     /** Radio de esquinas redondeadas en mm. */
     const BORDER_RADIUS     = 2.5;
+
+    /** Margen inferior de la hoja en mm (A4 = 297 mm de alto). */
+    const BOTTOM_MARGIN_MM = 5;
+
+    /** Alto reservado para el texto de observaciones del pie, en mm. */
+    const FOOTER_TEXT_HEIGHT_MM = 10;
 
     /** Fondo del encabezado de columnas de la tabla (azul intenso). */
     const COLOR_HEADER_BG   = [30, 58, 138];
@@ -613,21 +619,6 @@ class ArticleTablePdf extends fpdf
      */
     private function print_item_from_profile($index, $article, $is_last_row = false)
     {
-        if ($this->y >= $this->get_items_page_break_limit_y()) {
-            /** Cierra el bloque tabular de la página antes del salto (sin esquinas inferiores). */
-            $this->draw_page_table_outline(false);
-            $this->AddPage();
-        }
-
-        // Incrementar índice para alternar el color de fondo de la fila
-        $this->row_index++;
-
-        $this->SetFont('Arial', '', 8);
-        $this->x = $this->start_x;
-
-        /** Altura de la fila; puede crecer si hay imágenes o celdas con wrap. */
-        $row_height = $this->line_height;
-
         /**
          * Resolver la ruta de imagen una sola vez para toda la fila.
          * Evita llamadas HTTP o conversiones repetidas por columna.
@@ -640,36 +631,30 @@ class ArticleTablePdf extends fpdf
             }
         }
 
-        // ── Paso 1: calcular la altura máxima necesaria para la fila ──────────
-        foreach ($this->profile_columns as $column) {
-            $width = (int) $column['width'];
+        /** Altura de la fila; puede crecer si hay imágenes o celdas con wrap. */
+        $row_height = $this->calculate_row_height($index, $article, $article_image_fpdf_path);
 
-            if (PdfColumnService::is_article_image_column($column['value_resolver'])) {
-                // La imagen ocupa ancho × ancho como cuadrado; la fila crece si es mayor
-                if ($article_image_fpdf_path && file_exists($article_image_fpdf_path) && $width > 0) {
-                    $image_row_height = max($row_height, $width);
-                    if ($image_row_height > $row_height) {
-                        $row_height = $image_row_height;
-                    }
-                }
-                continue;
-            }
+        /**
+         * Salto de página: tiene que entrar la fila COMPLETA arriba del límite inferior.
+         * Antes se comparaba solo $this->y contra el límite, así que una fila alta que empezaba
+         * apenas arriba del límite se dibujaba entera por debajo y se pasaba del borde de la hoja.
+         * La guarda de $this->page_table_bottom_y evita un bucle infinito de páginas vacías si una
+         * sola fila fuera más alta que la página entera: en ese caso se imprime igual (Header()
+         * resetea page_table_bottom_y a null en cada página nueva).
+         */
+        $entra_en_la_pagina = ($this->y + $row_height) <= $this->get_items_page_break_limit_y();
 
-            $value = (string) $this->get_profile_column_value($column, $index, $article);
-            $font_size = $this->get_column_font_size($column);
-            $cell_line_height = $this->get_column_line_height($font_size);
-
-            /** Las celdas con wrap_content expanden la altura según líneas necesarias. */
-            $wrap_content = ! empty($column['wrap_content']);
-            if ($wrap_content && $width > 0) {
-                $this->SetFont('Arial', '', $font_size);
-                $lines = $this->NbLines($width, $value);
-                $estimated = max(1, $lines) * $cell_line_height;
-                if ($estimated > $row_height) {
-                    $row_height = $estimated;
-                }
-            }
+        if (! $entra_en_la_pagina && ! is_null($this->page_table_bottom_y)) {
+            /** Cierra el bloque tabular de la página antes del salto (sin esquinas inferiores). */
+            $this->draw_page_table_outline(false);
+            $this->AddPage();
         }
+
+        // Incrementar índice para alternar el color de fondo de la fila
+        $this->row_index++;
+
+        $this->SetFont('Arial', '', 8);
+        $this->x = $this->start_x;
 
         // ── Paso 2: pintar el fondo de la fila completa ───────────────────────
         /** Color de fondo: azul muy claro para filas impares, blanco para pares. */
@@ -741,6 +726,51 @@ class ArticleTablePdf extends fpdf
     }
 
     /**
+     * Calcula la altura que necesita una fila según sus columnas, antes de dibujarla.
+     * Se separó de print_item_from_profile() para poder decidir el salto de página conociendo
+     * el alto real de la fila y no solo su posición de arranque.
+     *
+     * @param  int                  $index                     Número de secuencia del artículo.
+     * @param  \App\Models\Article  $article                   Artículo a medir.
+     * @param  string|null          $article_image_fpdf_path   Ruta local de la primera imagen, ya resuelta.
+     * @return float                Altura de la fila en mm.
+     */
+    private function calculate_row_height($index, $article, $article_image_fpdf_path)
+    {
+        /** Altura mínima: una sola línea de texto. */
+        $row_height = $this->line_height;
+
+        foreach ($this->profile_columns as $column) {
+            $width = (int) $column['width'];
+
+            if (PdfColumnService::is_article_image_column($column['value_resolver'])) {
+                // La imagen ocupa ancho × ancho como cuadrado; la fila crece si es mayor
+                if ($article_image_fpdf_path && file_exists($article_image_fpdf_path) && $width > $row_height) {
+                    $row_height = $width;
+                }
+                continue;
+            }
+
+            $value = (string) $this->get_profile_column_value($column, $index, $article);
+            $font_size = $this->get_column_font_size($column);
+            $cell_line_height = $this->get_column_line_height($font_size);
+
+            /** Las celdas con wrap_content expanden la altura según las líneas necesarias. */
+            $wrap_content = ! empty($column['wrap_content']);
+            if ($wrap_content && $width > 0) {
+                $this->SetFont('Arial', '', $font_size);
+                $lines = $this->NbLines($width, $value);
+                $estimated = max(1, $lines) * $cell_line_height;
+                if ($estimated > $row_height) {
+                    $row_height = $estimated;
+                }
+            }
+        }
+
+        return $row_height;
+    }
+
+    /**
      * Dibuja la primera imagen del artículo dentro de su celda.
      * Si no hay imagen disponible, la celda queda vacía con el fondo ya pintado.
      *
@@ -794,67 +824,45 @@ class ArticleTablePdf extends fpdf
     // ── Límite de salto de página ─────────────────────────────────────────────
 
     /**
-     * Devuelve el límite de Y a partir del cual se debe insertar una nueva página.
-     * Deja margen para el pie de página según si hay footer_text o no.
+     * Devuelve el límite de Y a partir del cual una fila ya no entra en la página actual.
+     * Sin barra de pie, lo único que hay que reservar es el texto de observaciones cuando existe.
      *
-     * @return int  Posición Y máxima antes del salto en mm.
+     * @return int  Posición Y máxima que puede ocupar el borde inferior de una fila, en mm.
      */
     private function get_items_page_break_limit_y()
     {
-        /** Reserva extra si hay texto de observaciones en el pie (la barra es más alta). */
-        $footer_reserve = $this->footer_text ? 28 : 18;
-        return 285 - $footer_reserve;
+        $footer_reserve = $this->footer_text ? self::FOOTER_TEXT_HEIGHT_MM : 0;
+
+        return 297 - self::BOTTOM_MARGIN_MM - $footer_reserve;
     }
 
     // ── Pie de página ─────────────────────────────────────────────────────────
 
     /**
-     * Pie de página con barra de color oscuro, observaciones del perfil (si existen)
-     * y número de página alineado a la derecha.
+     * Pie de página: únicamente el texto de observaciones del perfil, si está configurado.
+     *
+     * Ya no se dibuja la barra gris ni el número de página. La barra arrancaba en y = 284 y las
+     * filas altas (columna de imagen o wrap_content) se le dibujaban encima, porque el salto de
+     * página solo miraba dónde EMPIEZA la fila (bug reportado por Lucas, 23/7/2026). El número de
+     * página no aporta a un catálogo que el comercio le manda a su cliente.
      *
      * Es invocada automáticamente por FPDF al cerrar cada página.
      */
     public function Footer()
     {
-        /** La barra es más alta cuando hay texto de observaciones. */
-        $bar_height   = $this->footer_text ? 14 : 8;
-        $usable_width = $this->table_right_x - $this->start_x;
-
-        /** Posición Y donde comienza la barra de pie (5 mm desde el borde inferior de A4 = 297 mm). */
-        $bar_y = 297 - 5 - $bar_height;
-
-        // Fondo gris del pie con esquinas redondeadas
-        $this->SetFillColor(...self::COLOR_TITLE_BAR);
-        $this->SetDrawColor(...self::COLOR_TABLE_BORDER);
-        $this->SetLineWidth(0.25);
-        $this->draw_rounded_rect(
-            $this->start_x,
-            $bar_y,
-            $usable_width,
-            $bar_height,
-            self::BORDER_RADIUS,
-            'DF',
-            '1111'
-        );
-
-        $this->SetTextColor(...self::COLOR_HEADER_TEXT);
-        $this->SetFont('Arial', '', 7);
-
-        // Número de página "Pág. X / N" alineado a la derecha
-        $page_label = 'Pág. ' . $this->PageNo() . ' / {nb}';
-        $this->y = $bar_y + 2;
-        $this->x = $this->start_x;
-        $this->Cell($usable_width - 2, 4, $page_label, 0, 0, 'R');
-
-        // Texto de observaciones alineado a la izquierda (solo si fue configurado en el perfil)
-        if ($this->footer_text) {
-            $this->y = $bar_y + 2;
-            $this->x = $this->start_x + 2;
-            $this->MultiCell($usable_width - 22, 4, $this->pdf_text($this->footer_text), 0, 'L', false);
+        if (! $this->footer_text) {
+            return;
         }
 
-        // Restaurar color de texto para no afectar posibles callbacks internos de FPDF
+        /** Ancho útil de la tabla, para que las observaciones queden alineadas con las columnas. */
+        $usable_width = $this->table_right_x - $this->start_x;
+
         $this->SetTextColor(...self::COLOR_TEXT_DARK);
+        $this->SetFont('Arial', '', 7);
+
+        $this->y = 297 - self::BOTTOM_MARGIN_MM - self::FOOTER_TEXT_HEIGHT_MM;
+        $this->x = $this->start_x;
+        $this->MultiCell($usable_width, 4, $this->pdf_text($this->footer_text), 0, 'L', false);
     }
 
     // ── Utilidades ────────────────────────────────────────────────────────────

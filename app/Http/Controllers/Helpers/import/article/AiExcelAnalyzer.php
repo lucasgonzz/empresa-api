@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use OpenSpout\Reader\Common\Creator\ReaderEntityFactory;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
+use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
 
 /**
  * Helper que analiza un archivo Excel utilizando la API de Claude (Anthropic).
@@ -47,6 +48,34 @@ class AiExcelAnalyzer
      * @var int
      */
     protected const MAX_TOKENS = 4000;
+
+    /**
+     * Umbral del fallback heurístico de politica_colision (grupo 284, prompt 02): proporción
+     * mínima de provider_codes duplicados dentro del archivo, respecto del total de filas de
+     * datos, a partir de la cual el fallback prefiere no arriesgarse y recomienda
+     * "saltear_y_reportar" en vez de "actualizar_todos". Ver ask_claude_for_recomendation().
+     *
+     * @var float
+     */
+    protected const UMBRAL_PROPORCION_PROVIDER_CODES_REPETIDOS_FALLBACK = 0.3;
+
+    /**
+     * Columnas numéricas que se analizan para la alerta de números con punto
+     * ambiguos (grupo 239, prompt 02): las mismas que ProcessRow marca con
+     * is_number en $props_to_add, más las de stock. Los valores son los
+     * system_property tal como viajan en column_mapping.
+     *
+     * @var array
+     */
+    protected const NUMERIC_COLUMNS_FOR_FORMAT_STATS = [
+        'costo',
+        'precio',
+        'margen_de_ganancia',
+        'stock_actual',
+        'stock_minimo',
+        'medida',
+        'u_individuales',
+    ];
 
     /**
      * Lista de propiedades del sistema importables que Claude puede identificar.
@@ -196,12 +225,59 @@ class AiExcelAnalyzer
          * Calcula conteos intra-archivo y cruza contra BD para detectar colisiones.
          * Nunca lanza excepción hacia el caller; en caso de error retorna conteos en 0.
          */
-        $parsed['duplicate_stats'] = ExcelDuplicateStats::analyze(
+        $duplicate_stats = ExcelDuplicateStats::analyze(
             $excel_path,
             $bar_code_idx,
             $provider_code_idx,
             $parsed['provider_id'] ?? null,
             $this->user_id
+        );
+
+        /*
+         * (grupo 291, prompt 03) ExcelDuplicateStats::analyze() ahora también devuelve
+         * 'provider_codes_distintos': la lista completa de provider_codes distintos del
+         * archivo. RunExcelAnalysisJob la necesita para persistirla en
+         * excel_analysis_runs.codigos_proveedor (así refreshProviderStats() no tiene que
+         * releer el archivo), pero puede tener decenas de miles de strings y NO debe viajar
+         * en $parsed['duplicate_stats']: ese array se copia tal cual dentro de
+         * RunExcelAnalysisJob::handle() a "resultado", que a su vez se devuelve tal cual por
+         * GET /ai-excel-import/analysis/{uuid}. Por eso se saca acá y se guarda aparte, en una
+         * clave de nivel superior que el job sí lee pero que el resultado no reexpone.
+         */
+        $parsed['provider_codes_distintos'] = $duplicate_stats['provider_codes_distintos'] ?? [];
+        unset($duplicate_stats['provider_codes_distintos']);
+        $parsed['duplicate_stats'] = $duplicate_stats;
+
+        /*
+         * Paso 8.1: Análisis de la cadena de identificación efectiva (prompt 06, grupo 229).
+         * Detecta valores placeholder ("-", "S/N", etc.) en las columnas identificadoras y
+         * calcula, con el MISMO normalizador y el MISMO orden de prioridad que usa el
+         * matching real (ArticleIndexCache::find_with_index), cuántas filas van a caer en
+         * cada escalón (id -> bar_code -> sku -> provider_code -> name -> sin_identificador).
+         * Esto es lo que permite mostrarle al usuario, antes de importar, con qué columna se
+         * va a identificar cada fila (el problema real de Servian del 24/07 fue no saberlo).
+         */
+        $identification_chain_analysis = $this->analyze_identification_chain(
+            $excel_path,
+            $parsed['column_mapping']
+        );
+        $parsed['placeholders']          = $identification_chain_analysis['placeholders'];
+        $parsed['cadena_identificacion'] = $identification_chain_analysis['cadena_identificacion'];
+        $parsed['nombres_duplicados']    = $identification_chain_analysis['nombres_duplicados'];
+
+        /*
+         * Paso 8.2 (grupo 239, prompt 02): detección de números con punto ambiguos en las
+         * columnas numéricas del mapeo (costo, precio, margen de ganancia, stock, medida y
+         * unidades individuales). Esto es lo que alimenta la alerta de "números con punto"
+         * del paso 3 del modal, al lado de duplicate_stats y placeholders. Usa el mapeo
+         * enriquecido con el proveedor todavía inferido por Claude; se recalcula más tarde
+         * en /get-recomendacion con el column_mapping confirmado por el usuario.
+         */
+        $numeric_columns_map = $this->build_numeric_columns_map($parsed['column_mapping']);
+        $parsed['formatos_numericos'] = ExcelNumericFormatStats::analyze(
+            $excel_path,
+            $numeric_columns_map['indices'],
+            $numeric_columns_map['nombres']
         );
 
         /*
@@ -224,6 +300,318 @@ class AiExcelAnalyzer
         $parsed['assistant_notes'] = $parsed['assistant_notes'] ?? [];
 
         return $parsed;
+    }
+
+    /**
+     * Recorre el column_mapping enriquecido y arma los dos arrays que necesita
+     * ExcelNumericFormatStats::analyze(): índices 0-based por columna numérica y
+     * nombres visibles del Excel por columna, filtrando solo las siete columnas
+     * numéricas de NUMERIC_COLUMNS_FOR_FORMAT_STATS y salteando las que no tengan
+     * excel_column_index.
+     *
+     * Público porque lo reusa AiExcelImportController::getRecomendacion() para
+     * recalcular con el column_mapping confirmado por el usuario, en vez de
+     * duplicar la lógica de derivar índices en el controller (grupo 239, prompt 02).
+     *
+     * @param  array $column_mapping  Mapeo de columnas enriquecido (con excel_column_index)
+     * @return array  ['indices' => [system_property => excel_column_index], 'nombres' => [system_property => nombre visible]]
+     */
+    public function build_numeric_columns_map(array $column_mapping): array
+    {
+        /* Índices 0-based de columna en el Excel, por system_property numérico. */
+        $indices = [];
+        /* Nombre visible de la columna en el Excel (excel_column), por system_property numérico. */
+        $nombres = [];
+
+        foreach ($column_mapping as $col) {
+            $prop = $col['system_property'] ?? null;
+
+            /* Solo nos interesan las siete columnas numéricas relevantes para esta alerta. */
+            if (is_null($prop) || !in_array($prop, self::NUMERIC_COLUMNS_FOR_FORMAT_STATS, true)) {
+                continue;
+            }
+
+            /* Sin índice de columna en el Excel no hay nada que leer para esta propiedad. */
+            if (!isset($col['excel_column_index'])) {
+                continue;
+            }
+
+            $indices[$prop] = (int) $col['excel_column_index'];
+            /* Nombre visible de la columna; si no vino, ExcelNumericFormatStats cae al campo. */
+            $nombres[$prop] = isset($col['excel_column']) ? (string) $col['excel_column'] : $prop;
+        }
+
+        return [
+            'indices' => $indices,
+            'nombres' => $nombres,
+        ];
+    }
+
+    /**
+     * Analiza los identificadores del Excel para el prompt 06 (grupo 229 —
+     * matching-importacion-excel): detecta valores "placeholder" (códigos que no son
+     * reales, ej. "-", "S/N") en las columnas identificadoras mapeadas, y calcula
+     * cuántas filas van a caer en cada escalón de la cadena de identificación real
+     * que usa el importador (ArticleIndexCache::find_with_index):
+     * id -> bar_code -> sku -> provider_code -> name -> sin_identificador.
+     *
+     * Usa IdentifierNormalizer::normalize()/is_placeholder() — el mismo normalizador
+     * que ProcessRow usa al importar — para que estos conteos coincidan exactamente
+     * con lo que va a pasar en la importación real. Si divergieran, la pantalla le
+     * mentiría al usuario sobre lo que va a pasar con su archivo.
+     *
+     * @param  string $excel_path      Ruta absoluta al Excel ya guardado en storage
+     * @param  array  $column_mapping  Mapeo de columnas enriquecido (con excel_column_index)
+     * @return array  ['placeholders' => [...], 'cadena_identificacion' => [...], 'nombres_duplicados' => [...]]
+     */
+    protected function analyze_identification_chain(string $excel_path, array $column_mapping): array
+    {
+        /* Resultado vacío por defecto: se retorna si no hay ninguna columna identificadora mapeada, o si falla la lectura. */
+        $empty_result = [
+            'placeholders' => [],
+            'cadena_identificacion' => [
+                'columnas_mapeadas' => [],
+                'disponible' => false,
+                'motivo' => null,
+                'total_filas' => 0,
+                'escalones' => [
+                    ['campo' => 'id',                'filas' => 0],
+                    ['campo' => 'bar_code',           'filas' => 0],
+                    ['campo' => 'sku',                'filas' => 0],
+                    ['campo' => 'provider_code',      'filas' => 0],
+                    ['campo' => 'name',               'filas' => 0],
+                    ['campo' => 'sin_identificador',  'filas' => 0],
+                ],
+            ],
+            'nombres_duplicados' => [
+                'cantidad_distintos' => 0,
+                'filas_afectadas'    => 0,
+            ],
+        ];
+
+        /*
+         * Mapa campo interno -> system_property del mapeo, en el mismo orden de
+         * prioridad que usa el matching real (ArticleIndexCache::find_with_index).
+         */
+        $campo_a_property = [
+            'id'            => 'numero',
+            'bar_code'      => 'codigo_de_barras',
+            'sku'           => 'sku',
+            'provider_code' => 'codigo_de_proveedor',
+            'name'          => 'nombre',
+        ];
+
+        /* Índice 0-based de cada columna identificadora en el Excel, o null si no está mapeada. */
+        $indices = [];
+        foreach ($campo_a_property as $campo => $property) {
+            $indices[$campo] = null;
+            foreach ($column_mapping as $col) {
+                if (($col['system_property'] ?? null) === $property) {
+                    $indices[$campo] = $col['excel_column_index'] ?? null;
+                    break;
+                }
+            }
+        }
+
+        /* Lista de campos que efectivamente tienen columna mapeada en este Excel. */
+        $columnas_mapeadas = [];
+        foreach ($indices as $campo => $idx) {
+            if (!is_null($idx)) {
+                $columnas_mapeadas[] = $campo;
+            }
+        }
+
+        /* Sin ninguna columna identificadora mapeada, no tiene sentido leer el archivo completo. */
+        if (empty($columnas_mapeadas)) {
+            $empty_result['cadena_identificacion']['motivo'] = 'sin_columnas_identificadoras';
+
+            /* Propiedades del sistema que sí llegaron en el column_mapping: permite ver de un
+             * vistazo si el mapeo vino vacío, si vino con otros nombres de propiedad, o si el
+             * problema es otro. */
+            $system_properties_presentes = [];
+            foreach ($column_mapping as $col) {
+                $prop = $col['system_property'] ?? null;
+                if (!is_null($prop)) {
+                    $system_properties_presentes[] = $prop;
+                }
+            }
+
+            Log::warning('AiExcelAnalyzer: cadena de identificación no disponible, sin columnas identificadoras mapeadas', [
+                'excel_path'        => $excel_path,
+                'system_properties' => $system_properties_presentes,
+            ]);
+
+            return $empty_result;
+        }
+
+        /* Acumulador de placeholders: campo -> valor original de la celda -> ['count' => N, 'filas' => [...]]. */
+        $placeholders_data = [];
+
+        /* Conteo de filas por escalón de la cadena de identificación. */
+        $escalon_counts = [
+            'id' => 0, 'bar_code' => 0, 'sku' => 0,
+            'provider_code' => 0, 'name' => 0, 'sin_identificador' => 0,
+        ];
+
+        /* Acumulador de nombres normalizados -> cantidad de filas, para detectar nombres repetidos. */
+        $nombres_data = [];
+
+        /* Cantidad de filas de datos efectivamente recorridas (excluye cabecera). Se hoistea acá
+         * porque el try/catch de abajo la necesita en el return final, fuera del scope del foreach. */
+        $data_row_index = 0;
+
+        try {
+            /* Mismo lector XLSX de OpenSpout que el resto del análisis, leyendo el archivo completo. */
+            $reader = ReaderEntityFactory::createXLSXReader();
+            $reader->setShouldPreserveEmptyRows(false);
+            $reader->open($excel_path);
+
+            foreach ($reader->getSheetIterator() as $sheet) {
+                $header_skipped = false;
+                /* Contador de filas de datos (sin contar la cabecera). */
+                $data_row_index = 0;
+
+                foreach ($sheet->getRowIterator() as $row) {
+                    if (!$header_skipped) {
+                        $header_skipped = true;
+                        continue;
+                    }
+
+                    $data_row_index++;
+                    /* Número de fila real en el Excel (1-based, incluye cabecera): la fila 1 es cabecera. */
+                    $excel_row_number = $data_row_index + 1;
+
+                    /* Extraemos los valores de las celdas como strings simples. */
+                    $cells = [];
+                    foreach ($row->getCells() as $cell) {
+                        $value = $cell->getValue();
+
+                        if ($value instanceof \DateTime) {
+                            $value = $value->format('Y-m-d');
+                        }
+
+                        $cells[] = trim((string) ($value ?? ''));
+                    }
+
+                    /* Detectar placeholders en cada columna identificadora mapeada. */
+                    foreach ($indices as $campo => $idx) {
+                        if (is_null($idx) || !isset($cells[$idx])) {
+                            continue;
+                        }
+
+                        $raw_value = $cells[$idx];
+                        if ($raw_value === '') {
+                            continue;
+                        }
+
+                        if (IdentifierNormalizer::is_placeholder($raw_value)) {
+                            if (!isset($placeholders_data[$campo][$raw_value])) {
+                                $placeholders_data[$campo][$raw_value] = ['count' => 0, 'filas' => []];
+                            }
+                            $placeholders_data[$campo][$raw_value]['count']++;
+                            /* Limitamos a las primeras 10 filas por valor, igual que ExcelDuplicateStats. */
+                            if (count($placeholders_data[$campo][$raw_value]['filas']) < 10) {
+                                $placeholders_data[$campo][$raw_value]['filas'][] = $excel_row_number;
+                            }
+                        }
+                    }
+
+                    /*
+                     * Cadena de identificación efectiva: misma prioridad y mismo normalizador
+                     * que ArticleIndexCache::find_with_index (id -> bar_code -> sku -> provider_code -> name).
+                     */
+                    $id_val            = !is_null($indices['id'])            ? IdentifierNormalizer::normalize($cells[$indices['id']] ?? null)            : null;
+                    $bar_code_val      = !is_null($indices['bar_code'])      ? IdentifierNormalizer::normalize($cells[$indices['bar_code']] ?? null)      : null;
+                    $sku_val           = !is_null($indices['sku'])           ? IdentifierNormalizer::normalize($cells[$indices['sku']] ?? null)           : null;
+                    $provider_code_val = !is_null($indices['provider_code']) ? IdentifierNormalizer::normalize($cells[$indices['provider_code']] ?? null) : null;
+                    $name_val          = !is_null($indices['name'])          ? IdentifierNormalizer::normalize($cells[$indices['name']] ?? null)          : null;
+
+                    if (!is_null($id_val)) {
+                        $escalon_counts['id']++;
+                    } elseif (!is_null($bar_code_val)) {
+                        $escalon_counts['bar_code']++;
+                    } elseif (!is_null($sku_val)) {
+                        $escalon_counts['sku']++;
+                    } elseif (!is_null($provider_code_val)) {
+                        $escalon_counts['provider_code']++;
+                    } elseif (!is_null($name_val)) {
+                        $escalon_counts['name']++;
+                    } else {
+                        $escalon_counts['sin_identificador']++;
+                    }
+
+                    /*
+                     * Nombres repetidos: se cuenta sobre cualquier fila con nombre normalizado
+                     * (no solo las que caen en el escalón "name"), como aviso general del archivo.
+                     */
+                    if (!is_null($name_val)) {
+                        $name_key = mb_strtolower($name_val);
+                        if (!isset($nombres_data[$name_key])) {
+                            $nombres_data[$name_key] = 0;
+                        }
+                        $nombres_data[$name_key]++;
+                    }
+                }
+
+                /* Solo procesamos la primera hoja del libro. */
+                break;
+            }
+
+            $reader->close();
+
+        } catch (\Throwable $e) {
+            Log::error('AiExcelAnalyzer: error al analizar la cadena de identificación', [
+                'message' => $e->getMessage(),
+                'file'    => $excel_path,
+            ]);
+            $empty_result['cadena_identificacion']['motivo'] = 'error_de_lectura';
+            return $empty_result;
+        }
+
+        /* Armamos el array final de placeholders detectados. */
+        $placeholders = [];
+        foreach ($placeholders_data as $campo => $valores) {
+            foreach ($valores as $valor => $data) {
+                $placeholders[] = [
+                    'campo'        => $campo,
+                    'valor'        => $valor,
+                    'repeticiones' => $data['count'],
+                    'filas'        => $data['filas'],
+                ];
+            }
+        }
+
+        /* Nombres duplicados: cuántos valores distintos se repiten y cuántas filas afecta en total. */
+        $nombres_distintos_repetidos = 0;
+        $nombres_filas_afectadas     = 0;
+        foreach ($nombres_data as $veces) {
+            if ($veces > 1) {
+                $nombres_distintos_repetidos++;
+                $nombres_filas_afectadas += $veces;
+            }
+        }
+
+        return [
+            'placeholders' => $placeholders,
+            'cadena_identificacion' => [
+                'columnas_mapeadas' => $columnas_mapeadas,
+                'disponible' => true,
+                'motivo' => null,
+                'total_filas' => $data_row_index,
+                'escalones' => [
+                    ['campo' => 'id',                'filas' => $escalon_counts['id']],
+                    ['campo' => 'bar_code',           'filas' => $escalon_counts['bar_code']],
+                    ['campo' => 'sku',                'filas' => $escalon_counts['sku']],
+                    ['campo' => 'provider_code',      'filas' => $escalon_counts['provider_code']],
+                    ['campo' => 'name',               'filas' => $escalon_counts['name']],
+                    ['campo' => 'sin_identificador',  'filas' => $escalon_counts['sin_identificador']],
+                ],
+            ],
+            'nombres_duplicados' => [
+                'cantidad_distintos' => $nombres_distintos_repetidos,
+                'filas_afectadas'    => $nombres_filas_afectadas,
+            ],
+        ];
     }
 
     /**
@@ -1196,6 +1584,117 @@ PROMPT;
     }
 
     /**
+     * Arma, para hasta 3 códigos de proveedor repetidos dentro del archivo, los nombres (hasta 4
+     * por código) que trae el Excel en esas filas. Es la evidencia que le permite a Claude
+     * distinguir si los repetidos son el mismo producto cargado más de una vez (nombres parecidos)
+     * o productos distintos que comparten código de proveedor (nombres claramente distintos) —
+     * grupo 284, prompt 03.
+     *
+     * Público porque lo arma el controller antes de llamar a ask_claude_for_recomendation(): en ese
+     * punto tiene el $excel_path y el $column_mapping confirmado que el analyzer no conserva.
+     *
+     * @param  string $excel_path                        Ruta absoluta al Excel ya guardado en storage
+     * @param  array  $detalle_provider_codes_duplicados  ExcelDuplicateStats::analyze()['detalle_provider_codes_duplicados']
+     * @param  array  $column_mapping                     Mapeo enriquecido de columnas (para ubicar la columna nombre)
+     * @return array  [['codigo' => string, 'nombres' => string[]], ...] — vacío si no hay columna
+     *                 nombre mapeada, no hay duplicados, o falla la lectura del archivo
+     */
+    public function build_duplicados_con_nombres(string $excel_path, array $detalle_provider_codes_duplicados, array $column_mapping): array
+    {
+        if (empty($detalle_provider_codes_duplicados)) {
+            return [];
+        }
+
+        $nombre_column_index = null;
+        foreach ($column_mapping as $col) {
+            if (($col['system_property'] ?? null) === 'nombre') {
+                $nombre_column_index = $col['excel_column_index'] ?? null;
+                break;
+            }
+        }
+
+        if (is_null($nombre_column_index)) {
+            return [];
+        }
+
+        /* Hasta 3 códigos, y para cada uno hasta 4 de las filas que ya trae el detalle. */
+        $codigos_a_buscar = array_slice($detalle_provider_codes_duplicados, 0, 3);
+
+        /* Mapa fila (1-based, incluye cabecera) -> código: resuelve todos los nombres en una sola
+         * pasada del archivo en vez de reabrirlo por cada código. */
+        $fila_a_codigo     = [];
+        $nombres_por_codigo = [];
+        foreach ($codigos_a_buscar as $entry) {
+            $codigo = (string) ($entry['codigo'] ?? '');
+            $nombres_por_codigo[$codigo] = [];
+            foreach (array_slice($entry['filas'] ?? [], 0, 4) as $fila) {
+                $fila_a_codigo[$fila] = $codigo;
+            }
+        }
+
+        if (empty($fila_a_codigo)) {
+            return [];
+        }
+
+        try {
+            $reader = ReaderEntityFactory::createXLSXReader();
+            $reader->setShouldPreserveEmptyRows(false);
+            $reader->open($excel_path);
+
+            foreach ($reader->getSheetIterator() as $sheet) {
+                $row_number = 0;
+
+                foreach ($sheet->getRowIterator() as $row) {
+                    $row_number++;
+
+                    if (!isset($fila_a_codigo[$row_number])) {
+                        continue;
+                    }
+
+                    $cells = [];
+                    foreach ($row->getCells() as $cell) {
+                        $value = $cell->getValue();
+
+                        if ($value instanceof \DateTime) {
+                            $value = $value->format('Y-m-d');
+                        }
+
+                        $cells[] = trim((string) ($value ?? ''));
+                    }
+
+                    $nombre = $cells[$nombre_column_index] ?? '';
+                    if ($nombre !== '') {
+                        $nombres_por_codigo[$fila_a_codigo[$row_number]][] = $nombre;
+                    }
+                }
+
+                /* Solo procesamos la primera hoja del libro. */
+                break;
+            }
+
+            $reader->close();
+        } catch (\Throwable $e) {
+            Log::warning('AiExcelAnalyzer: error al armar nombres de duplicados de provider_code', [
+                'message' => $e->getMessage(),
+            ]);
+            return [];
+        }
+
+        $resultado = [];
+        foreach ($codigos_a_buscar as $entry) {
+            $codigo = (string) ($entry['codigo'] ?? '');
+            if (!empty($nombres_por_codigo[$codigo])) {
+                $resultado[] = [
+                    'codigo'  => $codigo,
+                    'nombres' => $nombres_por_codigo[$codigo],
+                ];
+            }
+        }
+
+        return $resultado;
+    }
+
+    /**
      * Pide a Claude una recomendación de configuración basada en las estadísticas de duplicados.
      *
      * Arma un prompt con los conteos del array $stats y las columnas disponibles del Excel,
@@ -1203,18 +1702,26 @@ PROMPT;
      * Si la llamada falla, el parseo lanza error o el JSON no es válido, aplica un fallback
      * heurístico respetando las columnas disponibles.
      *
-     * @param  array $stats          Resultado de ExcelDuplicateStats::analyze()
-     * @param  array $column_mapping Mapeo enriquecido de columnas (para derivar columnas disponibles)
-     * @return array                 ['clave_identidad' => string, 'politica_colision' => string, 'explicacion' => string]
+     * La identificación de artículos usa una jerarquía FIJA (numero -> bar_code -> sku ->
+     * provider_code -> name, ver ArticleIndexCache::find_with_index()): no hay ninguna "clave de
+     * identidad" que recomendar, así que esta función ya no la devuelve (grupo 284, prompt 03).
+     *
+     * @param  array $stats                    Resultado de ExcelDuplicateStats::analyze()
+     * @param  array $column_mapping           Mapeo enriquecido de columnas (para derivar columnas disponibles)
+     * @param  array $formatos_numericos       Resultado de ExcelNumericFormatStats::analyze() (grupo 239, prompt 02);
+     *                                         default [] para no romper llamadores existentes que no lo pasen
+     * @param  array $duplicados_con_nombres   Resultado de build_duplicados_con_nombres() (grupo 284, prompt 03);
+     *                                         default [] para no romper llamadores existentes que no lo pasen
+     * @return array                 ['politica_colision' => string, 'politica_intra_archivo' => string, 'explicacion' => string]
      */
-    public function ask_claude_for_recomendation(array $stats, array $column_mapping = []): array
+    public function ask_claude_for_recomendation(array $stats, array $column_mapping = [], array $formatos_numericos = [], array $duplicados_con_nombres = []): array
     {
         /*
          * Valores aceptados para cada campo de la recomendación.
          * Se usan para validar la respuesta de Claude antes de retornarla.
          */
-        $valid_claves    = ['numero', 'bar_code', 'sku', 'provider_code', 'name'];
-        $valid_politicas = ['actualizar_todos', 'actualizar_uno', 'crear_nuevo'];
+        $valid_politicas        = ['actualizar_todos', 'saltear_y_reportar', 'crear_nuevo'];
+        $valid_politicas_intra  = ['ultima_gana', 'productos_distintos'];
 
         /*
          * Derivamos qué columnas clave están disponibles en este Excel.
@@ -1245,9 +1752,63 @@ PROMPT;
         $nombre_disponible        = $tiene_nombre        ? 'Sí' : 'No';
 
         /*
+         * Sección opcional de formatos numéricos ambiguos (grupo 239, prompt 02).
+         * Solo se agrega al prompt cuando alguna columna numérica tiene
+         * nivel_de_riesgo = 'alto' (mezcla de números interpretados como miles y
+         * como decimales dentro de la misma columna). Si no hay riesgo alto, no se
+         * agrega nada: la recomendación ya es larga y cada bloque extra le compite
+         * atención a lo importante (punto (05) del prompt).
+         */
+        $numeric_format_section = '';
+        $hay_columna_riesgo_alto = false;
+        foreach (($formatos_numericos['columnas'] ?? []) as $columna_numerica) {
+            if (($columna_numerica['nivel_de_riesgo'] ?? null) === 'alto') {
+                $hay_columna_riesgo_alto = true;
+                break;
+            }
+        }
+
+        if ($hay_columna_riesgo_alto) {
+            $numeric_format_section = <<<NUMFMT
+
+Advertencia adicional - formatos numéricos ambiguos:
+Se detectaron columnas numéricas donde algunos valores tienen un punto que se interpretó como
+separador de miles (ej. "2.500" -> dos mil quinientos) y otros valores, en la misma columna, tienen
+un punto que se interpretó como separador decimal (ej. "3330.95" -> tres mil trescientos treinta con
+noventa y cinco). Si mencionás este tema en la explicación, usá la regla concreta que aplica el
+sistema: un punto se interpreta como separador de miles SOLO cuando separa grupos de exactamente 3
+dígitos (ej. "2.500", "12.750"); en cualquier otro caso (ej. "3330.95", "12.5") se interpreta como
+separador decimal. No des una advertencia genérica sobre "formatos de número": explicá esta regla
+puntual para que el usuario entienda por qué algunos valores se leyeron distinto que otros.
+
+NUMFMT;
+        }
+
+        /*
+         * Sección opcional de nombres de filas con código de proveedor repetido (grupo 284,
+         * prompt 03): solo se agrega si build_duplicados_con_nombres() encontró algo. Es la
+         * evidencia que le permite a Claude distinguir "mismo producto cargado dos veces" de
+         * "productos distintos que comparten código" para politica_intra_archivo.
+         */
+        $nombres_repetidos_section = '';
+        if (!empty($duplicados_con_nombres)) {
+            $nombres_repetidos_lines = '';
+            foreach ($duplicados_con_nombres as $entry) {
+                $nombres_line = implode(' | ', $entry['nombres']);
+                $nombres_repetidos_lines .= "- Código \"{$entry['codigo']}\": {$nombres_line}\n";
+            }
+
+            $nombres_repetidos_section = <<<NOMBRES
+
+Nombres de las filas con código de proveedor repetido (para decidir politica_intra_archivo):
+{$nombres_repetidos_lines}
+NOMBRES;
+        }
+
+        /*
          * Arma el prompt con los conteos del preanálisis e informa a Claude
-         * qué columnas existen realmente en este Excel para evitar que sugiera
-         * claves que no están disponibles.
+         * qué columnas existen realmente en este Excel, para que la explicación final sea
+         * coherente con los datos reales del archivo.
          */
         $prompt = <<<PROMPT
 Sos un asistente que ayuda a configurar una importación de artículos desde Excel a un ERP.
@@ -1266,40 +1827,51 @@ Columnas disponibles en este Excel:
 - Código de proveedor (provider_code): {$provider_code_disponible}
 - Nombre del artículo: {$nombre_disponible}
 
-IMPORTANTE: solo podés recomendar usar una clave de identidad si esa columna existe en el Excel (ver "Columnas disponibles" arriba). Si una columna NO está disponible, no la recomiendes.
+Cómo identifica el sistema un artículo como "el mismo" (esto NO es una decisión tuya, es fijo): el
+sistema usa siempre esta jerarquía, en este orden: número interno (ID) -> código de barras -> SKU ->
+código de proveedor -> nombre. Para cada fila del Excel se usa el primer campo de esa lista que la
+fila tenga con valor; si ese campo no encuentra ningún artículo existente, se sigue bajando al
+siguiente. Usá esto solo como contexto para que tu explicación sea coherente con lo que el sistema
+realmente hace — no hay ninguna clave que recomendar.
 
-Decisión 1 - clave_identidad: qué campo usar para identificar un artículo como "el mismo".
-Elegí SIEMPRE la primera opción disponible en este orden de prioridad (de más confiable a menos):
-1. "numero": el número interno (ID del sistema). Es la clave más confiable y sólo aparece cuando el Excel fue exportado desde este mismo sistema. Si está disponible, preferila por sobre todas.
-2. "bar_code": el código de barras. Clave de identidad natural del artículo. Preferila si no hay número.
-3. "sku": el SKU del artículo. Usala si no hay número ni código de barras.
-4. "provider_code": el código de proveedor. Típico de listas de proveedor; usala si no hay número, código de barras ni SKU.
-5. "name": el nombre del artículo. Último recurso, sólo si ninguna de las anteriores está disponible.
-
-Decisión 2 - politica_colision: qué hacer cuando una fila del Excel coincide con artículos ya existentes en el sistema.
-- "actualizar_todos": el sistema encuentra TODOS los artículos con ese código y los actualiza o crea. SOLO válido cuando clave_identidad = "provider_code" y hay provider_codes repetidos en el Excel.
-- "actualizar_uno": actualiza o crea un único artículo por fila. Es la opción correcta para numero, bar_code, sku y name (que deben ser únicos), y también para provider_code cuando no hay repetidos.
-- "crear_nuevo": NUNCA recomiendes esta opción. Está reservada para casos manuales.
+Decisión 1 - politica_colision: qué hacer cuando un código de proveedor coincide con más de un
+artículo ya existente en el sistema. Esto solo puede pasar en el último escalón de la jerarquía
+(código de proveedor): número, código de barras, SKU y nombre son siempre únicos en el sistema, así
+que nunca tienen este problema.
+- "actualizar_todos": cada fila del Excel actualiza TODOS los artículos que tengan ese código de proveedor. Es lo que quiere una distribuidora que usa el mismo código en varios artículos físicos y actualiza el costo de todos con una fila. También es la opción correcta cuando todavía no hay nada existente contra qué coincidir.
+- "saltear_y_reportar": si un código coincide con más de un artículo, esa fila NO se crea ni se actualiza y queda reportada como problema para resolver a mano. Es la opción conservadora: no toca nada de lo que no está seguro.
+- "crear_nuevo": no se identifica por código de proveedor. Las filas que solo tienen ese código crean artículos nuevos aunque el código ya exista. Sirve cuando el código de proveedor del catálogo no es confiable. NUNCA recomiendes esta opción vos: está reservada para casos manuales.
 
 REGLAS CRÍTICAS para politica_colision (aplicar en orden):
-1. Si clave_identidad es "numero", "bar_code", "sku" o "name": recomendá SIEMPRE "actualizar_uno". Ninguna de estas claves puede repetirse en dos artículos del sistema. Ignorar los conteos de repetidos.
-2. Si clave_identidad es "provider_code" y provider_codes_duplicados_intra_archivo > 0: recomendá "actualizar_todos".
-3. Si clave_identidad es "provider_code" y provider_codes_duplicados_intra_archivo = 0: recomendá "actualizar_uno".
+1. Si provider_codes_existentes_mismo_proveedor = 0 (primera importación contra ese proveedor): recomendá "actualizar_todos". No hay nada existente contra qué coincidir, así que da igual cuál elijas, pero esta deja el sistema listo para que la PRÓXIMA importación actualice en vez de duplicar. Decilo en la explicación.
+2. Si provider_codes_existentes_mismo_proveedor > 0 y provider_codes_duplicados_intra_archivo > 0: recomendá "actualizar_todos".
+3. Si provider_codes_existentes_mismo_proveedor > 0 y provider_codes_duplicados_intra_archivo = 0: recomendá "actualizar_todos".
 
+Decisión 2 - politica_intra_archivo: qué hacer cuando el MISMO código de proveedor aparece más de
+una vez DENTRO del propio Excel (no contra la base: repetido en el propio archivo).
+- "ultima_gana": las filas repetidas son el mismo producto cargado más de una vez; el sistema se queda con los datos de la última fila del Excel que traiga ese código.
+- "productos_distintos": las filas repetidas son productos distintos que comparten el mismo código de proveedor (típico de ferretería: un código para varias medidas o variantes); el sistema no las mezcla, las trata como artículos separados.
+
+Criterio para politica_intra_archivo (aplicar en orden):
+1. Si provider_codes_duplicados_intra_archivo = 0: recomendá "ultima_gana". No hay filas repetidas sobre las que aplicar, es inocuo.
+2. Si hay repetidos y más abajo tenés la sección "Nombres de las filas con código de proveedor repetido": comparé los nombres de cada código. Nombres parecidos entre sí (mismo producto escrito de forma similar) -> "ultima_gana". Nombres claramente distintos entre sí -> "productos_distintos".
+3. Si hay repetidos pero no tenés los nombres para comparar: recomendá "ultima_gana" (comportamiento histórico; es el único que no puede crear duplicados por su cuenta).
+{$nombres_repetidos_section}
 Para el campo "explicacion":
 - Describí qué va a pasar en términos concretos y simples.
 - Si provider_codes_existentes_mismo_proveedor = 0 explicá que se van a crear los artículos (primera importación).
 - Si provider_codes_existentes_mismo_proveedor > 0 explicá que se van a actualizar artículos existentes.
 - Si provider_codes_existentes_otros_proveedores > 0, agregá una advertencia breve de que hay códigos que también existen en artículos de otros proveedores, y que el sistema NO los va a tocar a menos que el usuario lo habilite manualmente.
 - Si bar_codes_duplicados_intra_archivo > 0, mencioná explícitamente que se detectaron códigos de barras repetidos en el archivo y que el sistema los procesará correctamente: importará un único artículo por código, quedando con la información de la última fila del Excel que lo contenga.
-- NUNCA uses términos técnicos internos: nada de "provider_code", "bar_code", "actualizar_todos", "actualizar_uno", "crear_nuevo", "clave_identidad", "politica_colision", "intra_archivo", ni ninguna clave del sistema.
+- Si recomendaste "productos_distintos" para politica_intra_archivo, mencionalo brevemente: hay códigos de proveedor repetidos que parecen productos distintos y el sistema los va a mantener como artículos separados.
+- NUNCA uses términos técnicos internos: nada de "provider_code", "bar_code", "actualizar_todos", "saltear_y_reportar", "crear_nuevo", "politica_colision", "politica_intra_archivo", "ultima_gana", "productos_distintos", "intra_archivo", ni ninguna clave del sistema.
 - Hablá como si le explicaras a un comerciante qué va a pasar con sus artículos.
-- Máximo 3 oraciones claras y directas.
-
+- Máximo 4 oraciones claras y directas.
+{$numeric_format_section}
 Respondé SOLO con un JSON válido, sin markdown ni texto adicional:
 {
-  "clave_identidad": "numero" | "bar_code" | "sku" | "provider_code" | "name",
-  "politica_colision": "actualizar_todos" | "actualizar_uno" | "crear_nuevo",
+  "politica_colision": "actualizar_todos" | "saltear_y_reportar" | "crear_nuevo",
+  "politica_intra_archivo": "ultima_gana" | "productos_distintos",
   "explicacion": "texto claro y conciso"
 }
 PROMPT;
@@ -1321,42 +1893,59 @@ PROMPT;
             }
 
             /* Validamos que los valores estén dentro del set permitido. */
-            $clave_identidad  = $decoded['clave_identidad']  ?? null;
-            $politica_colision = $decoded['politica_colision'] ?? null;
-            $explicacion      = $decoded['explicacion']      ?? null;
+            $politica_colision      = $decoded['politica_colision']      ?? null;
+            $politica_intra_archivo = $decoded['politica_intra_archivo'] ?? null;
+            $explicacion            = $decoded['explicacion']            ?? null;
 
-            if (
-                !in_array($clave_identidad, $valid_claves, true)
-                || !in_array($politica_colision, $valid_politicas, true)
-            ) {
+            /*
+             * Compatibilidad con el valor legado 'actualizar_uno' (grupo 284, prompt 02): quedó en
+             * el historial de respuestas de Claude y puede salir por inercia aunque el prompt ya no
+             * lo mencione. 'actualizar_uno' prometía elegir el artículo más antiguo entre varios
+             * coincidentes, una conducta que nunca existió en el backend (el modo real era crear un
+             * artículo nuevo, ver el "por qué" del prompt 02). De las tres opciones que sí existen,
+             * la más cercana a esa intención es no elegir ninguno y avisar. No se agrega a
+             * $valid_politicas: es una traducción de entrada, no un valor soportado.
+             */
+            if ($politica_colision === 'actualizar_uno') {
+                $politica_colision = 'saltear_y_reportar';
+            }
+
+            if (!in_array($politica_colision, $valid_politicas, true)) {
                 throw new \RuntimeException(
-                    "Valores fuera de rango: clave_identidad={$clave_identidad}, politica_colision={$politica_colision}"
+                    "Valor fuera de rango: politica_colision={$politica_colision}"
                 );
+            }
+
+            /*
+             * politica_intra_archivo (grupo 284, prompt 03) es más tolerante que politica_colision
+             * a propósito: una respuesta ausente o inválida no amerita tirar toda la recomendación
+             * al fallback, simplemente cae al default histórico 'ultima_gana'.
+             */
+            if (!in_array($politica_intra_archivo, $valid_politicas_intra, true)) {
+                $politica_intra_archivo = 'ultima_gana';
             }
 
             /*
              * Override determinístico de politica_colision.
              * Claude puede malinterpretar el valor numérico de provider_codes_duplicados_intra_archivo.
-             * La regla es simple y no requiere juicio subjetivo: si hay códigos repetidos en el Excel
-             * y la clave es provider_code, la política debe ser actualizar_todos sin excepción.
-             * Para numero, bar_code, sku y name nunca puede haber repetidos, así que siempre actualizar_uno.
+             * La regla es simple y no requiere juicio subjetivo: si hay códigos de proveedor
+             * repetidos en el Excel, la política debe ser actualizar_todos sin excepción. La
+             * jerarquía de identificación es fija (grupo 284, prompt 03), así que este override ya
+             * no depende de ninguna "clave" elegida.
              */
-            if ($clave_identidad === 'provider_code' && $stats['provider_codes_duplicados_intra_archivo'] > 0) {
+            if ($stats['provider_codes_duplicados_intra_archivo'] > 0) {
                 $politica_colision = 'actualizar_todos';
-            } elseif (in_array($clave_identidad, ['numero', 'bar_code', 'sku', 'name'], true)) {
-                // Claves únicas del sistema: nunca puede haber dos artículos con el mismo valor.
-                $politica_colision = 'actualizar_uno';
             }
 
             Log::info('AiExcelAnalyzer: recomendación de configuración recibida', [
-                'clave_identidad'  => $clave_identidad,
-                'politica_colision' => $politica_colision,
+                'politica_colision'      => $politica_colision,
+                'politica_intra_archivo' => $politica_intra_archivo,
             ]);
 
             return [
-                'clave_identidad'  => $clave_identidad,
-                'politica_colision' => $politica_colision,
-                'explicacion'      => is_string($explicacion) ? trim($explicacion) : '',
+                'politica_colision'      => $politica_colision,
+                'politica_intra_archivo' => $politica_intra_archivo,
+                'explicacion'            => is_string($explicacion) ? trim($explicacion) : '',
             ];
 
         } catch (\Throwable $e) {
@@ -1365,43 +1954,37 @@ PROMPT;
             ]);
 
             /*
-             * Fallback heurístico con la MISMA prioridad que el matching real
-             * (ArticleIndexCache::find_with_index): numero -> bar_code -> sku -> provider_code -> name.
+             * Fallback heurístico para politica_colision (grupo 284, prompts 02 y 03):
+             * - sin nada existente en la base todavía: actualizar_todos (no hay contra qué
+             *   coincidir, y deja el sistema listo para que la próxima importación actualice en
+             *   vez de duplicar).
+             * - con existentes en la base: actualizar_todos también, SALVO que el archivo tenga
+             *   muchos códigos de proveedor repetidos respecto del total de filas (por encima de
+             *   UMBRAL_PROPORCION_PROVIDER_CODES_REPETIDOS_FALLBACK), en cuyo caso es más seguro no
+             *   arriesgarse y recomendar saltear_y_reportar.
+             * Nunca se recomienda crear_nuevo en el fallback: es la única opción que puede
+             * duplicar el catálogo.
              */
-            if ($tiene_numero) {
-                $clave_fallback = 'numero';
-            } elseif ($tiene_bar_code) {
-                $clave_fallback = 'bar_code';
-            } elseif ($tiene_sku) {
-                $clave_fallback = 'sku';
-            } elseif ($tiene_provider_code) {
-                $clave_fallback = 'provider_code';
+            if (
+                $stats['provider_codes_existentes_mismo_proveedor'] > 0
+                && $stats['total_filas_datos'] > 0
+                && ($stats['provider_codes_duplicados_intra_archivo'] / $stats['total_filas_datos']) >= self::UMBRAL_PROPORCION_PROVIDER_CODES_REPETIDOS_FALLBACK
+            ) {
+                $politica_fallback = 'saltear_y_reportar';
             } else {
-                $clave_fallback = 'name';
+                $politica_fallback = 'actualizar_todos';
             }
 
             /*
-             * Fallback heurístico para politica_colision:
-             * - numero, bar_code, sku y name son siempre únicos: actualizar_uno.
-             * - provider_code con repetidos en el Excel: actualizar_todos.
-             * - provider_code sin repetidos: actualizar_uno.
-             * Nunca se recomienda crear_nuevo en el fallback.
+             * politica_intra_archivo en el fallback (grupo 284, prompt 03): siempre 'ultima_gana'.
+             * Es el comportamiento histórico y el único que no puede crear duplicados por su
+             * cuenta — sin Claude no hay forma de comparar nombres para distinguir "mismo
+             * producto" de "productos distintos que comparten código".
              */
-            if (in_array($clave_fallback, ['numero', 'bar_code', 'sku', 'name'], true)) {
-                $politica_fallback = 'actualizar_uno';
-            } elseif (
-                $clave_fallback === 'provider_code'
-                && $stats['provider_codes_duplicados_intra_archivo'] > 0
-            ) {
-                $politica_fallback = 'actualizar_todos';
-            } else {
-                $politica_fallback = 'actualizar_uno';
-            }
-
             return [
-                'clave_identidad'  => $clave_fallback,
-                'politica_colision' => $politica_fallback,
-                'explicacion'      => 'Recomendación generada automáticamente porque la IA no devolvió una respuesta válida.',
+                'politica_colision'      => $politica_fallback,
+                'politica_intra_archivo' => 'ultima_gana',
+                'explicacion'            => 'Recomendación generada automáticamente porque la IA no devolvió una respuesta válida.',
             ];
         }
     }

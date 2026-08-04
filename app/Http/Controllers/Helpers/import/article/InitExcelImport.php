@@ -56,6 +56,25 @@ class InitExcelImport
         $this->actualizar_por_provider_code                         = $data['actualizar_por_provider_code'];
         $this->actualizar_proveedor                                 = $data['actualizar_proveedor'];
 
+        /*
+         * Modo elegido por el usuario para interpretar el punto en columnas numéricas
+         * ambiguas (grupo 239, prompt 04). El controller ya lo normalizó, pero se
+         * vuelve a resolver el default acá por si algún llamador viejo no manda la clave.
+         */
+        $this->interpretacion_punto                                 = $data['interpretacion_punto'] ?? 'auto';
+
+        /*
+         * Flag opcional que separa la decisión "repetido dentro del propio archivo"
+         * de "repetido contra la base" (prompt 04, grupo 265). Antes de este prompt,
+         * ambas decisiones compartían permitir_provider_code_repetido. Cualquier valor
+         * que no sea exactamente uno de los dos reconocidos (incluido null, si no
+         * viene el parámetro) cae al default 'ultima_gana', que preserva el
+         * comportamiento histórico: cambio 100% aditivo para llamadores viejos.
+         */
+        $this->filas_repetidas_del_archivo = $this->normalizar_filas_repetidas_del_archivo(
+            $data['filas_repetidas_del_archivo'] ?? null
+        );
+
         $this->chunkSize    = config('app.ARTICLE_EXCEL_CHUNK_SIZE');
         $this->start        = $this->start_row;
         $this->jobs         = [];
@@ -215,6 +234,27 @@ class InitExcelImport
             $this->total_rows = 1;
         }
         $this->total_chunks = (int) ceil($this->total_rows / $this->chunkSize);
+    }
+
+    /**
+     * Valida el valor crudo recibido del request para filas_repetidas_del_archivo
+     * (prompt 04, grupo 265) contra los dos valores permitidos. Cualquier otra cosa,
+     * incluido null o un string vacío, cae al default 'ultima_gana': no confiamos en
+     * que el frontend siempre mande un valor válido (mismo criterio que
+     * ImportHelper::normalizarInterpretacionPunto para interpretacion_punto).
+     *
+     * @param  mixed $valor
+     * @return string 'ultima_gana' | 'productos_distintos'
+     */
+    protected function normalizar_filas_repetidas_del_archivo($valor): string
+    {
+        $valores_validos = ['ultima_gana', 'productos_distintos'];
+
+        if (is_string($valor) && in_array($valor, $valores_validos, true)) {
+            return $valor;
+        }
+
+        return 'ultima_gana';
     }
 
     /**
@@ -399,7 +439,9 @@ class InitExcelImport
                 $this->actualizar_proveedor,
                 $this->permitir_provider_code_repetido,
                 $this->permitir_provider_code_repetido_en_multi_providers,
-                $this->actualizar_por_provider_code
+                $this->actualizar_por_provider_code,
+                $this->interpretacion_punto,
+                $this->filas_repetidas_del_archivo
             );
 
             $this->chunk_number++;
@@ -481,6 +523,26 @@ class InitExcelImport
             [
                 'name'  => 'Actualizar proveedor',
                 'value' => $this->actualizar_proveedor ? 'Si' : 'No',
+            ],
+            [
+                /*
+                 * Deja registrado con qué modo se importó (grupo 239, prompt 04), para poder
+                 * responder si un cliente reclama por un costo raro dentro de unos meses.
+                 */
+                'name'  => 'Interpretacion del punto',
+                'value' => $this->interpretacion_punto,
+            ],
+            [
+                /*
+                 * Deja registrado con qué criterio se resolvieron las filas repetidas del
+                 * propio archivo (prompt 04, grupo 265), separado del criterio "repetido
+                 * contra la base" (permitir_provider_code_repetido, arriba). Se persiste
+                 * dentro del JSON de 'operaciones' que ya existe: no se agrega columna
+                 * nueva a import_histories. build_import_options_for_notification() lo
+                 * toma de acá automáticamente para mostrarlo en el historial.
+                 */
+                'name'  => 'Filas repetidas del archivo',
+                'value' => $this->filas_repetidas_del_archivo,
             ],
         ];
     }

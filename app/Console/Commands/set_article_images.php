@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Models\Article;
 use App\Models\Image;
 use Illuminate\Console\Command;
@@ -58,8 +59,8 @@ class set_article_images extends Command
         Image::create([
             'imageable_id'  => $article->id,
             'imageable_type'  => 'article',
-            'hosting_url'   => config('app.APP_URL').'/public'.$url,
-        ]); 
+            'hosting_url'   => ApiUrlHelper::public_base().$url,
+        ]);
     }
 
     function obtener_url_imagen_producto($article) {

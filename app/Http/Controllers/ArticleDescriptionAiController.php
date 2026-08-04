@@ -290,7 +290,11 @@ class ArticleDescriptionAiController extends Controller
             return $owner->google_custom_search_api_key;
         }
 
-        return 'AIzaSyC4sUC-MuEDsMNoIQqwUPmYWZmw74rsHOI';
+        // Key de fallback global: viene de config/services.php (.env del servidor). Antes estaba
+        // hardcodeada aca; el repositorio es publico, prohibido volver a escribir el valor real
+        // como default (grupo 220, prompt 02). Si tampoco esta configurada en el .env, queda
+        // vacia y el error lo termina devolviendo la propia llamada a la API de Google.
+        return config('services.google_search.api_key');
     }
 
     /**

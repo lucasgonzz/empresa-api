@@ -28,9 +28,14 @@ class GoogleController extends Controller
 
         $owner = User::find($this->userId());
 
+        // Se usa la key propia del owner si la tiene configurada; si no, la key de fallback
+        // global que viene de config/services.php (.env del servidor). Antes esa fallback estaba
+        // hardcodeada aca; el repositorio es publico, prohibido volver a escribir el valor real
+        // como default (grupo 220, prompt 02). Si tampoco esta configurada en el .env, queda
+        // vacia y el error lo termina devolviendo la propia llamada a la API de Google.
         $google_api_key = ($owner && $owner->google_custom_search_api_key)
             ? $owner->google_custom_search_api_key
-            : 'AIzaSyC4sUC-MuEDsMNoIQqwUPmYWZmw74rsHOI';
+            : config('services.google_search.api_key');
 
         $google_cuota = ($owner && $owner->google_cuota) ? (int) $owner->google_cuota : 10;
 

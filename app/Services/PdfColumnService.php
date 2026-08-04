@@ -213,6 +213,38 @@ class PdfColumnService
                     'allow_wrap_content'               => false
                 ],
 
+                [
+                    'name'              => 'Marca del articulo',
+                    'label'                => 'Marca',
+                    'value_resolver'               => 'item_brand_name',
+                    'default_width'                => 30,
+                    'allow_wrap_content'               => false
+                ],
+
+                [
+                    'name'              => 'Categoria del articulo',
+                    'label'                => 'Categoria',
+                    'value_resolver'               => 'item_category_name',
+                    'default_width'                => 35,
+                    'allow_wrap_content'               => false
+                ],
+
+                [
+                    'name'              => 'Subcategoria del articulo',
+                    'label'                => 'Subcategoria',
+                    'value_resolver'               => 'item_sub_category_name',
+                    'default_width'                => 35,
+                    'allow_wrap_content'               => false
+                ],
+
+                [
+                    'name'              => 'Proveedor del articulo',
+                    'label'                => 'Proveedor',
+                    'value_resolver'               => 'item_provider_name',
+                    'default_width'                => 35,
+                    'allow_wrap_content'               => false
+                ],
+
             ];
         }
 
@@ -285,6 +317,13 @@ class PdfColumnService
                     'name' => 'Categoría',
                     'label' => 'Categoría',
                     'value_resolver' => 'article_category_name',
+                    'default_width' => 35,
+                    'allow_wrap_content' => false,
+                ],
+                [
+                    'name' => 'Subcategoria',
+                    'label' => 'Subcategoria',
+                    'value_resolver' => 'article_sub_category_name',
                     'default_width' => 35,
                     'allow_wrap_content' => false,
                 ],
@@ -374,6 +413,32 @@ class PdfColumnService
         }
 
         return (clone $query)->orderBy('id', 'asc')->first();
+    }
+
+    /**
+     * Precarga las relaciones de articulo que usan las columnas de venta de tipo relacion.
+     *
+     * Se llama sin condicionar al perfil: son 4 queries fijas por PDF, contra 4 queries por
+     * renglon si se dejara resolver de forma perezosa. Es idempotente (loadMissing).
+     *
+     * @param \App\Models\Sale|null $sale
+     * @return void
+     */
+    public static function eager_load_sale_article_relations($sale)
+    {
+        if (! $sale) {
+            return;
+        }
+
+        $sale->loadMissing('articles');
+
+        $articles = $sale->articles;
+
+        if (! $articles || $articles->count() < 1) {
+            return;
+        }
+
+        $articles->loadMissing(['brand', 'category', 'sub_category', 'provider']);
     }
 
     public static function resolve_value($resolver, $context)
@@ -584,9 +649,47 @@ class PdfColumnService
                     );
                 }
                 return '';
+            case 'item_brand_name':
+                return self::sale_item_relation_name($item, 'brand');
+            case 'item_category_name':
+                return self::sale_item_relation_name($item, 'category');
+            case 'item_sub_category_name':
+                return self::sale_item_relation_name($item, 'sub_category');
+            case 'item_provider_name':
+                return self::sale_item_relation_name($item, 'provider');
             default:
                 return '';
         }
+    }
+
+    /**
+     * Devuelve el `name` de una relacion del item de venta, o cadena vacia.
+     *
+     * Los renglones de una venta no son solo articulos: tambien hay combos, servicios y
+     * promociones, que no declaran estas relaciones. Por eso se valida con method_exists()
+     * antes de tocar el modelo.
+     *
+     * @param mixed  $item          Modelo del renglon (Article, Combo, Service, PromocionVinoteca).
+     * @param string $relation_name Nombre de la relacion (brand, category, sub_category, provider).
+     * @return string
+     */
+    protected static function sale_item_relation_name($item, $relation_name)
+    {
+        if (! $item || ! is_object($item)) {
+            return '';
+        }
+
+        if (! method_exists($item, $relation_name)) {
+            return '';
+        }
+
+        $related = $item->{$relation_name};
+
+        if (! $related || ! isset($related->name)) {
+            return '';
+        }
+
+        return (string) $related->name;
     }
 
     /**
@@ -660,6 +763,8 @@ class PdfColumnService
                 return $article->stock ?? '';
             case 'article_category_name':
                 return $article->category ? $article->category->name : '';
+            case 'article_sub_category_name':
+                return $article->sub_category ? $article->sub_category->name : '';
             case 'article_brand_name':
                 return $article->brand ? $article->brand->name : '';
             case 'article_provider_name':
@@ -755,8 +860,8 @@ class PdfColumnService
         }
 
         $first_image = $images->first();
-        $url_prop = env('IMAGE_URL_PROP_NAME', 'image_url');
-        $img_url = $first_image->{$url_prop} ?? null;
+        /* Nombre de columna fijo (dejo de ser configurable, ver Prompt 01/02 grupo 215) */
+        $img_url = $first_image->hosting_url ?? null;
 
         if (empty($img_url) && isset($first_image->hosting_url)) {
             $img_url = $first_image->hosting_url;

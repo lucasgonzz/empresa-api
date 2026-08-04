@@ -30,6 +30,27 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
+    /**
+     * Certificados y clave privada de AFIP (grupo 220, prompt 01): antes vivían bajo public/afip/
+     * (document root de Laravel), lo que los hacía potencialmente descargables por HTTP. Ahora
+     * cuelgan de storage/app/afip, fuera del docroot, y estas rutas son configurables por .env para
+     * que cada servidor pueda apuntar al nombre real del archivo que copió a mano al provisionar.
+     * Ver docs/afip.md para el procedimiento de instalación.
+     */
+    'afip' => [
+        // Certificado de producción (.crt) — se copia a mano en cada servidor, nunca en el repo.
+        'cert_path'         => env('AFIP_CERT_PATH', storage_path('app/afip/production/cert.crt')),
+        // Clave privada de producción (.key) — nunca se commitea.
+        'key_path'          => env('AFIP_KEY_PATH', storage_path('app/afip/production/privada.key')),
+        // Certificado de testing/homologación.
+        'cert_path_testing' => env('AFIP_CERT_PATH_TESTING', storage_path('app/afip/testing/afip_cert.pem')),
+        // Clave privada de testing/homologación.
+        'key_path_testing'  => env('AFIP_KEY_PATH_TESTING', storage_path('app/afip/testing/afip_private.key')),
+        // Directorio de trabajo de WSAA (TRA/TA/CMS por ws_name): se crea solo al vuelo, no requiere
+        // provisión manual. TA.xml es una credencial viva (token+sign), por eso no puede vivir en public/.
+        'wsaa_path'         => env('AFIP_WSAA_PATH', storage_path('app/afip/wsaa')),
+    ],
+
     // Integración con admin-api central (sistema de releases/versiones).
     // - api_key: clave que admin-api envía hacia este cliente (debe coincidir con clients.api_key en admin-api).
     // - inbound_key: clave que este cliente envía hacia admin-api al reportar lecturas (debe coincidir con clients.inbound_api_key en admin-api).
@@ -199,6 +220,62 @@ return [
             FILTER_VALIDATE_BOOLEAN
         ),
         'guzzle_ca_bundle' => env('ZIPPIN_GUZZLE_CA_BUNDLE', ''),
+    ],
+
+    /**
+     * Credenciales de AFIP SDK (app.afipsdk.com), usadas por AfipSdk::__construct() para pedir
+     * el token de autorizacion (TA) via WebService. Antes estaban escritas literalmente en
+     * AfipSdk.php (grupo 220, prompt 02); el repositorio es publico, asi que ahora se leen del
+     * .env del servidor. Prohibido volver a escribir el valor real como default aca.
+     */
+    'afip_sdk' => [
+        // Access token de la cuenta de app.afipsdk.com. Obtenido de https://app.afipsdk.com
+        'access_token' => env('AFIP_SDK_ACCESS_TOKEN', ''),
+        // CUIT asociado a esa cuenta de AFIP SDK.
+        'cuit'         => env('AFIP_SDK_CUIT', ''),
+    ],
+
+    /**
+     * Tokens de Mercado Libre usados solo por los seeders de desarrollo
+     * (MeliPlatformConnectorSeeder / MercadoLibreTokenSeeder) para crear un PlatformConnector de
+     * ejemplo ya conectado. Son tokens de una cuenta real de Mercado Libre: nunca deben quedar
+     * hardcodeados en el repositorio publico (grupo 220, prompt 02).
+     */
+    'mercado_libre' => [
+        // Access token de la cuenta de Mercado Libre usada para sembrar el conector de ejemplo.
+        'access_token'  => env('MERCADO_LIBRE_SEED_ACCESS_TOKEN', ''),
+        // Refresh token de esa misma cuenta.
+        'refresh_token' => env('MERCADO_LIBRE_SEED_REFRESH_TOKEN', ''),
+    ],
+
+    /**
+     * Access token de una cuenta de prueba de Mercado Pago, usado solo por PaymentMethodSeeder
+     * para sembrar el medio de pago de ejemplo. Credencial de entorno, no configuracion de
+     * negocio (grupo 220, prompt 02).
+     */
+    'mercado_pago' => [
+        'token' => env('MERCADO_PAGO_SEED_ACCESS_TOKEN', ''),
+    ],
+
+    /**
+     * API key de fallback global de Google Custom Search: se usa cuando un User no tiene su
+     * propia google_custom_search_api_key configurada (GoogleController,
+     * ArticleDescriptionAiController, UserSeeder, set_datos_for_demo). Antes estaba hardcodeada
+     * en varios archivos; el repositorio es publico, asi que ahora se lee del .env del servidor
+     * (grupo 220, prompt 02).
+     */
+    'google_search' => [
+        'api_key' => env('GOOGLE_SEARCH_API_KEY', ''),
+    ],
+
+    /**
+     * Token de GitHub usado por GitHubErrorReporterService para subir reportes automáticos de
+     * error al repo claude-comerciocity/errores/ (grupo 253, prompt 01). Antes se leía con
+     * env() directo dentro del servicio: con config:cache corrido en producción eso devuelve
+     * null y el reporter se apaga entero, sin avisar. Ahora se lee siempre de config().
+     */
+    'github_error_reporter' => [
+        'token' => env('GITHUB_ERROR_REPORTER_TOKEN'),
     ],
 
 ];

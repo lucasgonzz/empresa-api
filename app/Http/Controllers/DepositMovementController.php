@@ -90,6 +90,11 @@ class DepositMovementController extends Controller
 
     function pdf($id) {
         $model = DepositMovement::find($id);
+
+        if (is_null($model)) {
+            abort(404);
+        }
+
         $pdf = new DepositMovementPdf($model);
     }
 }

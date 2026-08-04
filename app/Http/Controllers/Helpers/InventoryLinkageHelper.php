@@ -290,9 +290,9 @@ class InventoryLinkageHelper extends Controller {
 		]);
         foreach ($article->images as $image) {
             $client_article_image = Image::create([
-                env('IMAGE_URL_PROP_NAME', 'image_url')     => $image->{env('IMAGE_URL_PROP_NAME', 'image_url')},
-                'imageable_id'                              => $client_article->id,
-                'imageable_type'                            => 'article',
+                'hosting_url'                                => $image->hosting_url,
+                'imageable_id'                                => $client_article->id,
+                'imageable_type'                              => 'article',
             ]);
         }
 		ArticleHelper::setFinalPrice($client_article, $this->client->comercio_city_user_id);
@@ -313,7 +313,7 @@ class InventoryLinkageHelper extends Controller {
 
 				if (!is_null($client_article)) {
 		            $image = Image::create([
-		                env('IMAGE_URL_PROP_NAME', 'image_url')     => $created_image->{env('IMAGE_URL_PROP_NAME', 'image_url')},
+		                'hosting_url'                                => $created_image->hosting_url,
 		                'imageable_id'                              => $client_article->id,
 		                'imageable_type'                            => 'article',
 		                'temporal_id'                               => null,
@@ -343,7 +343,7 @@ class InventoryLinkageHelper extends Controller {
 														->first();
 
 						if (!is_null($client_article)) {
-							$image = Image::where(env('IMAGE_URL_PROP_NAME', 'image_url'), $image_to_delete->{env('IMAGE_URL_PROP_NAME', 'image_url')})
+							$image = Image::where('hosting_url', $image_to_delete->hosting_url)
 											->where('imageable_id', $client_article->id)
 											->first();
 

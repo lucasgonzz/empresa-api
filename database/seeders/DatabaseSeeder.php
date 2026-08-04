@@ -227,6 +227,8 @@ class DatabaseSeeder extends Seeder
 
             // ReportesMesSeeder queda desenganchado (grupo 321, prompt 05): lo reemplaza
             // `php artisan semilla:datos`. Ver el comentario en la cabecera de ese archivo.
+            // (develop lo habia enganchado aca en el grupo 318; la decision del 321 es
+            // posterior y es la que rige en refractor.)
 
             if ($for_user == 'truvari') {
                 if (env('APP_ENV') == 'local') {

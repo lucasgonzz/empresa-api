@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\AuthController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\UserProfileChangeDescriptionHelper;
@@ -132,10 +133,9 @@ class UserController extends Controller
 
         if ($request->default_version) {
             $api_url = str_replace('https://', 'https://api-', $request->default_version);
-            if (!config('app.VPS') && config('app.APP_ENV') == 'production') {
-                $api_url .= '/public';
-            }
-            $model->api_url  = $api_url;
+            // Normalizacion centralizada e idempotente en ApiUrlHelper (grupo 237, prompt 01):
+            // evita que un valor ya duplicado ("/public/public") pase el guard y quede persistido.
+            $model->api_url = ApiUrlHelper::canonical_public_url($api_url);
         }
 
         $model->text_omitir_cc                  = $request->text_omitir_cc;
@@ -479,6 +479,25 @@ class UserController extends Controller
             // Recalcula precios para que `final_price` deje de depender de los price_types.
             ProcessSetFinalPrices::dispatch($owner_user->id);
         }
+    }
+
+    /**
+     * Guarda la preferencia de modo oscuro del usuario AUTENTICADO (dueño o empleado).
+     *
+     * A diferencia de set_img_auto_timeout, que resuelve con $this->userId() (siempre el dueño,
+     * porque esa preferencia es de la cuenta), acá resolvemos con Auth::user() a propósito: el
+     * modo oscuro es de CADA PERSONA. Si se usara $this->userId(), la preferencia de un empleado
+     * quedaría grabada en el dueño y el síntoma sería desconcertante (el empleado prende el modo
+     * oscuro y a quien le cambia la pantalla al recargar es al dueño).
+     */
+    function set_dark_mode($value) {
+        $model = Auth::user();
+        $model->dark_mode = (int) ((bool) $value);
+        $model->save();
+
+        UserHelper::set_sessions($model);
+
+        return response()->json(['dark_mode' => (int) $model->dark_mode], 200);
     }
 
     function set_img_auto_timeout($value) {

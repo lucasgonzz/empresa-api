@@ -20,6 +20,7 @@ use App\Models\Sale;
 use App\Notifications\BudgetCreated;
 use App\Notifications\CreatedSale;
 use Carbon\Carbon;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 class BudgetHelper {
@@ -236,12 +237,15 @@ class BudgetHelper {
 	}
 
 	static function deleteSale($budget) {
+		// Obtiene la venta asociada al presupuesto si existe
 		$sale = Sale::where('budget_id', $budget->id)
 										->first();
 		if (!is_null($sale)) {
 			Log::info(Auth()->user()->name.' va a eliminar la venta N° '.$sale->num.' por actualizar el presupuesto N° '.$budget->num);
 			$ct = new SaleController();
-			$ct->destroy($sale->id);
+			// Se pasa un Request vacío porque la venta se regenera por el update del presupuesto,
+			// no es una eliminación del usuario, así que compensar_caja debe quedar en false.
+			$ct->destroy(new Request(), $sale->id);
 			// $sale->delete();
 			return true;
 		}

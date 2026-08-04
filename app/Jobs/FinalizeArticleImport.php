@@ -72,6 +72,14 @@ class FinalizeArticleImport implements ShouldQueue
 
         $import_history->status = 'terminado';
         $import_history->terminado_at = Carbon::now();
+
+        /*
+         * Suma el matching_counts_json de todos los chunks de este import (grupo 232,
+         * prompt 03). Se hace acá, en el único punto donde se cierra la importación y ya
+         * no quedan chunks corriendo, para no pisarse con otro worker.
+         */
+        ArticleImportHelper::calcular_matching_counts_total($import_history);
+
         $import_history->save();
 
         ArticleImportHelper::enviar_notificacion($user, $import_history);

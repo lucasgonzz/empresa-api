@@ -2,13 +2,13 @@
 
 namespace App\Http\Controllers;
 
-use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
+use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\article\InitExcelImport;
-use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
-use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
 use App\Imports\ClientImport;
 use App\Imports\ProviderImport;
+use App\Jobs\RunExcelAnalysisJob;
+use App\Models\ExcelAnalysisRun;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -28,14 +28,17 @@ use Maatwebsite\Excel\Facades\Excel;
 class AiExcelImportController extends Controller
 {
     /**
-     * Analiza un archivo Excel con la IA de Claude y devuelve el mapeo de columnas sugerido.
+     * Encola el análisis de un archivo Excel con la IA de Claude (grupo 291, prompt 02).
      *
      * El archivo debe enviarse como multipart en el campo "excel_file".
-     * La respuesta incluye:
-     *   - column_mapping: array de objetos { excel_column, excel_column_letter, excel_column_index, system_property, confidence }
-     *   - provider_id: id del proveedor inferido (null si no se pudo)
-     *   - provider_confidence: "alto" | "medio" | "bajo"
-     *   - excel_path: ruta relativa del archivo guardado (para reutilizarla en /import)
+     *
+     * Antes de este prompt, este método analizaba el archivo de forma síncrona
+     * dentro del request (varios recorridos completos + la llamada a Claude), lo
+     * que con archivos grandes superaba el timeout del proxy y devolvía un 504
+     * sin mensaje útil. Ahora solo valida y guarda el archivo, crea una
+     * ExcelAnalysisRun en estado "pendiente" y encola RunExcelAnalysisJob, que
+     * hace el mismo trabajo de análisis (sin cambios) en un worker. El resultado
+     * se consulta después con GET /ai-excel-import/analysis/{uuid}.
      *
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\JsonResponse
@@ -46,6 +49,8 @@ class AiExcelImportController extends Controller
          * Validamos que venga un archivo y que sea un Excel (.xlsx, .xls).
          * En este proyecto la validación en backend se hace solo cuando es necesaria
          * por integridad mínima inevitable (el formato incorrecto rompería OpenSpout).
+         * Esta validación sigue siendo síncrona: es instantánea y rechaza el caso
+         * más común de error de uso antes de tocar storage o la cola.
          */
         if (!$request->hasFile('excel_file') || !$request->file('excel_file')->isValid()) {
             return response()->json([
@@ -63,8 +68,8 @@ class AiExcelImportController extends Controller
 
         try {
             /*
-             * Guardamos el archivo en storage para que AiExcelAnalyzer pueda leerlo
-             * con OpenSpout, y también para reutilizarlo en el endpoint /import.
+             * Guardamos el archivo en storage para que el job (y, luego, /import)
+             * puedan leerlo con OpenSpout.
              */
             /*
              * Nombre original del archivo subido (p. ej. "Lista_Distribuidora_X.xlsx").
@@ -72,9 +77,8 @@ class AiExcelImportController extends Controller
              */
             $original_filename = (string) $request->file('excel_file')->getClientOriginalName();
 
-            $filename       = 'ai_import_' . time() . '_' . Str::random(8) . '.xlsx';
-            $excel_path     = $request->file('excel_file')->storeAs('imported_files', $filename);
-            $excel_full_path = storage_path('app/' . $excel_path);
+            $filename   = 'ai_import_' . time() . '_' . Str::random(8) . '.xlsx';
+            $excel_path = $request->file('excel_file')->storeAs('imported_files', $filename);
 
             Log::info('AiExcelImportController::analyze - archivo guardado', [
                 'excel_path'         => $excel_path,
@@ -82,66 +86,90 @@ class AiExcelImportController extends Controller
             ]);
 
             /*
-             * Elegimos el analizador según el modelo indicado en el request.
+             * Modelo de análisis indicado en el request (article/client/provider).
              * El default es 'article' para mantener compatibilidad con llamadas que no envían model.
+             * La elección real del analyzer ahora ocurre dentro del job.
              */
             $model = (string) $request->input('model', 'article');
 
-            if ($model === 'client') {
-                $analyzer = new AiClientAnalyzer($this->userId());
-            } elseif ($model === 'provider') {
-                $analyzer = new AiProviderAnalyzer($this->userId());
-            } else {
-                /* model === 'article' o cualquier valor no reconocido: comportamiento original. */
-                $analyzer = new AiExcelAnalyzer($this->userId());
-            }
-
-            $analysis = $analyzer->analyze($excel_full_path, $original_filename);
-
-            return response()->json([
-                'column_mapping'      => $analysis['column_mapping'],
-                'provider_id'         => $analysis['provider_id'],
-                'provider_confidence' => $analysis['provider_confidence'],
-                /* Devolvemos la ruta relativa para que el frontend la envíe en /import. */
-                'excel_path'          => $excel_path,
-                /* Conteo real de filas de datos (excluye cabecera). */
-                'row_count'           => $analysis['row_count'] ?? 0,
-                /* Advertencias de alto nivel para mostrar al usuario antes de la tabla de mapeo. */
-                'assistant_notes'     => $analysis['assistant_notes'] ?? [],
-                /*
-                 * Estadísticas de duplicados calculadas en backend (solo para model=article).
-                 * Permite al frontend mostrar al usuario cuántos códigos están repetidos
-                 * antes de que confirme la configuración de importación.
-                 */
-                'duplicate_stats'              => $analysis['duplicate_stats'] ?? null,
-                /*
-                 * Nota: recomendacion_configuracion ya no se genera en /analyze.
-                 * Se genera en POST /ai-excel-import/get-recomendacion una vez que el
-                 * usuario confirma el proveedor real en el paso 2 del modal.
-                 */
-                /* Filas de muestra (máx. 5) para la tabla de preview del paso 2. */
-                'preview_rows'                 => $analysis['preview_rows'] ?? [],
-            ], 200);
-
-        } catch (\RuntimeException $e) {
-            Log::warning('AiExcelImportController::analyze - error de análisis', [
-                'message' => $e->getMessage(),
+            /*
+             * Creamos la corrida en estado "pendiente". guarded está vacío en el
+             * modelo, así que el create() de abajo asigna todos estos campos.
+             * payload guarda lo mínimo que el job necesita para reconstruir el
+             * mismo comportamiento que antes tenía este método.
+             */
+            $run = ExcelAnalysisRun::create([
+                'uuid'       => Str::uuid()->toString(),
+                'user_id'    => $this->userId(),
+                'tipo'       => 'analisis',
+                'estado'     => 'pendiente',
+                'excel_path' => $excel_path,
+                'payload'    => [
+                    'model'             => $model,
+                    'original_filename' => $original_filename,
+                ],
             ]);
 
+            /* Encolamos el job pasando solo el id, no el modelo (ver RunExcelAnalysisJob). */
+            RunExcelAnalysisJob::dispatch($run->id);
+
+            /*
+             * 202 Accepted: el análisis quedó encolado, todavía no hay resultado.
+             * El frontend hace polling a analysisStatus() con este uuid.
+             */
             return response()->json([
-                'message' => $e->getMessage(),
-            ], 422);
+                'analysis_uuid' => $run->uuid,
+                'excel_path'    => $excel_path,
+                'estado'        => $run->estado,
+            ], 202);
 
         } catch (\Throwable $e) {
-            Log::error('AiExcelImportController::analyze - error inesperado', [
+            Log::error('AiExcelImportController::analyze - error al encolar el análisis', [
                 'message' => $e->getMessage(),
                 'trace'   => $e->getTraceAsString(),
             ]);
 
             return response()->json([
-                'message' => 'Ocurrió un error inesperado al analizar el archivo: ' . $e->getMessage(),
+                'message' => 'Ocurrió un error inesperado al iniciar el análisis: ' . $e->getMessage(),
             ], 500);
         }
+    }
+
+    /**
+     * Consulta el estado (y, si ya terminó, el resultado) de una corrida de
+     * análisis de Excel encolada por analyze() (grupo 291, prompt 02).
+     *
+     * @param  string  $uuid  UUID de la corrida, devuelto por analyze() en "analysis_uuid".
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function analysisStatus($uuid)
+    {
+        /*
+         * Filtramos también por el usuario autenticado para que nadie pueda
+         * consultar (y de paso leer el resultado de) la corrida de otro usuario
+         * adivinando o iterando UUIDs.
+         */
+        $run = ExcelAnalysisRun::where('uuid', $uuid)
+            ->where('user_id', $this->userId())
+            ->first();
+
+        if (is_null($run)) {
+            return response()->json(['message' => 'No se encontro el analisis'], 404);
+        }
+
+        return response()->json([
+            'estado'   => $run->estado,
+            'progreso' => $run->progreso,
+            'paso'     => $run->paso,
+            'error'    => $run->error,
+            /*
+             * El resultado completo solo se devuelve cuando la corrida terminó
+             * ("listo"); mientras está pendiente/procesando/error, va null.
+             * Nunca se devuelve codigos_proveedor: puede tener decenas de miles
+             * de strings y el frontend no lo usa (ver ExcelAnalysisRun, prompt 03).
+             */
+            'resultado' => $run->estado === 'listo' ? $run->resultado : null,
+        ], 200);
     }
 
     /**
@@ -150,6 +178,14 @@ class AiExcelImportController extends Controller
      * Se llama desde el frontend cuando el usuario cambia el proveedor seleccionado en el paso 2,
      * para actualizar los chips "ya en BD (mismo proveedor)" y "ya en BD (otro proveedor)"
      * con el proveedor real en lugar del inferido por Claude.
+     *
+     * (Grupo 291, prompt 03) Antes, este endpoint releía el archivo completo en cada
+     * cambio de proveedor — con archivos grandes, varios segundos por click, dentro de
+     * un request síncrono. Ahora, si existe un análisis previo ("listo", con los
+     * provider_codes ya extraídos por RunExcelAnalysisJob), reusa esa lista y solo hace
+     * el cruce contra la base. Si no existe (archivo viejo, run limpiada por antigüedad,
+     * o análisis hecho antes de este cambio), cae al comportamiento original leyendo el
+     * archivo — el fallback no es opcional.
      *
      * Request params:
      *   - excel_path (string): ruta relativa del archivo ya guardado por /analyze
@@ -161,18 +197,11 @@ class AiExcelImportController extends Controller
      */
     public function refreshProviderStats(Request $request)
     {
-        /* Ruta relativa del Excel guardado en /analyze; obligatoria para localizar el archivo. */
+        /* Ruta relativa del Excel guardado en /analyze; obligatoria para localizar el análisis/archivo. */
         $excel_path = $request->input('excel_path');
 
         if (empty($excel_path)) {
             return response()->json(['message' => 'El campo "excel_path" es obligatorio.'], 422);
-        }
-
-        /* Ruta absoluta en storage donde quedó persistido el archivo del análisis. */
-        $excel_full_path = storage_path('app/' . $excel_path);
-
-        if (!file_exists($excel_full_path)) {
-            return response()->json(['message' => 'El archivo Excel indicado no existe o ha expirado.'], 422);
         }
 
         /* Índice 0-based de la columna provider_code en el Excel; null si no hay columna mapeada. */
@@ -186,6 +215,44 @@ class AiExcelImportController extends Controller
         $provider_id = is_numeric($provider_id) && (int) $provider_id > 0
             ? (int) $provider_id
             : null;
+
+        /*
+         * Camino rápido (grupo 291, prompt 03): buscamos el último análisis "listo" de
+         * este mismo excel_path, para este usuario, con los provider_codes ya extraídos.
+         * Filtramos también por usuario para que nadie pueda reusar códigos de otro
+         * usuario adivinando/reutilizando un excel_path.
+         */
+        $run = ExcelAnalysisRun::where('user_id', $this->userId())
+            ->where('excel_path', $excel_path)
+            ->where('tipo', 'analisis')
+            ->where('estado', 'listo')
+            ->whereNotNull('codigos_proveedor')
+            ->orderBy('id', 'DESC')
+            ->first();
+
+        if (!is_null($run)) {
+            /* Solo el cruce contra la base: sin releer el archivo. */
+            $stats = ExcelDuplicateStats::crossCheckProviderCodes(
+                $run->codigos_proveedor,
+                $provider_id,
+                $this->userId()
+            );
+
+            return response()->json([
+                'provider_codes_existentes_mismo_proveedor'   => $stats['provider_codes_existentes_mismo_proveedor'],
+                'provider_codes_existentes_otros_proveedores' => $stats['provider_codes_existentes_otros_proveedores'],
+            ], 200);
+        }
+
+        /*
+         * Fallback: no hay análisis previo utilizable, releemos el archivo como antes
+         * de este prompt. Ruta absoluta en storage donde quedó persistido el archivo.
+         */
+        $excel_full_path = storage_path('app/' . $excel_path);
+
+        if (!file_exists($excel_full_path)) {
+            return response()->json(['message' => 'El archivo Excel indicado no existe o ha expirado.'], 422);
+        }
 
         /*
          * bar_code_column en null: solo recalcula existentes por provider_code,
@@ -302,6 +369,14 @@ class AiExcelImportController extends Controller
             'actualizar_articulos_de_otro_proveedor'             => $request->input('actualizar_articulos_de_otro_proveedor', false),
             'actualizar_por_provider_code'                       => $request->input('actualizar_por_provider_code', true),
             'actualizar_proveedor'                               => $request->input('actualizar_proveedor', false),
+            'filas_repetidas_del_archivo'                        => $request->input('filas_repetidas_del_archivo'),
+
+            /*
+             * Modo elegido por el usuario para interpretar el punto en columnas numéricas
+             * ambiguas (grupo 239, prompt 04). Mismo punto de entrada y normalización que
+             * ArticleController@import: se resuelve acá, no se confía en el valor crudo.
+             */
+            'interpretacion_punto'                               => ImportHelper::normalizarInterpretacionPunto($request->input('interpretacion_punto')),
         ]);
 
         if ($result['hubo_un_error']) {
@@ -424,13 +499,22 @@ class AiExcelImportController extends Controller
     }
 
     /**
-     * Genera la recomendación de configuración de importación usando el proveedor
-     * ya confirmado por el usuario en el paso 2 del modal.
+     * Encola la recomendación de configuración de importación usando el proveedor
+     * ya confirmado por el usuario en el paso 2 del modal (grupo 291, prompt 03).
      *
      * A diferencia de /analyze (que usa el proveedor inferido por Claude),
      * este endpoint recibe el provider_id real elegido por el usuario,
      * recalcula los duplicate_stats con ese proveedor, y genera la recomendación
      * con datos correctos.
+     *
+     * Antes de este prompt, este método calculaba la recomendación de forma
+     * síncrona dentro del request (tres recorridos completos del archivo + la
+     * llamada a Claude), con el mismo problema de timeout que tenía /analyze
+     * antes del prompt 02. Ahora solo valida y crea una ExcelAnalysisRun en
+     * estado "pendiente" con tipo = 'recomendacion', encola RunExcelAnalysisJob
+     * (mismo mecanismo del prompt 02) y devuelve 202 con el uuid. El resultado
+     * se consulta con el mismo GET /ai-excel-import/analysis/{uuid} que ya usa
+     * el análisis inicial.
      *
      * @param  Request  $request  Campos: excel_path (string), provider_id (int|null),
      *                             provider_code_column_index (int|null), column_mapping (array)
@@ -445,7 +529,10 @@ class AiExcelImportController extends Controller
             return response()->json(['message' => 'El campo "excel_path" es obligatorio.'], 422);
         }
 
-        /* Ruta absoluta en el sistema de archivos */
+        /*
+         * Verificamos que el archivo siga existiendo antes de encolar: si ya expiró,
+         * mejor devolver el 422 de inmediato que gastar un ciclo de cola para lo mismo.
+         */
         $excel_full_path = storage_path('app/' . $excel_path);
 
         if (!file_exists($excel_full_path)) {
@@ -467,62 +554,48 @@ class AiExcelImportController extends Controller
         /* Mapeo de columnas confirmado por el usuario (para derivar columnas disponibles) */
         $column_mapping = $request->input('column_mapping', []);
 
-        /*
-         * Derivar el índice 0-based de la columna bar_code desde el column_mapping.
-         * Es necesario para que ExcelDuplicateStats pueda leer el archivo y calcular
-         * correctamente total_filas_datos y bar_codes_duplicados_intra_archivo.
-         * Sin este índice, cuando no hay provider_code ambos índices quedan null y
-         * ExcelDuplicateStats retorna todo en 0 — Claude interpreta "archivo vacío".
-         */
-        $bar_code_column_index = null;
-        foreach ($column_mapping as $col) {
-            if (($col['system_property'] ?? null) === 'codigo_de_barras') {
-                $bar_code_column_index = isset($col['excel_column_index'])
-                    ? (int) $col['excel_column_index']
-                    : null;
-                break;
-            }
-        }
-
         try {
             /*
-             * Recalcular duplicate_stats con el proveedor real confirmado por el usuario.
-             * Esto garantiza que la recomendación de Claude se base en datos correctos
-             * y no en el proveedor inferido durante el análisis inicial.
+             * Creamos la corrida en estado "pendiente", igual que analyze() (prompt 02).
+             * payload guarda todo lo que RunExcelAnalysisJob::handle_recomendacion()
+             * necesita para reconstruir el mismo comportamiento que antes tenía este
+             * método de forma síncrona: dentro del job no hay $this->userId(), así que
+             * todo lo relevante del request queda acá.
              */
-            $stats = ExcelDuplicateStats::analyze(
-                $excel_full_path,
-                $bar_code_column_index,
-                $provider_code_column_index,
-                $provider_id,
-                $this->userId()
-            );
-
-            /* Generar recomendación con los stats recalculados para el proveedor confirmado */
-            $analyzer        = new AiExcelAnalyzer($this->userId());
-            $recomendacion   = $analyzer->ask_claude_for_recomendation($stats, $column_mapping);
-
-            return response()->json([
-                'recomendacion_configuracion'                  => $recomendacion,
-                /* Stats actualizados para que el frontend pueda refrescar los chips de decisión */
-                'provider_codes_existentes_mismo_proveedor'    => $stats['provider_codes_existentes_mismo_proveedor'] ?? 0,
-                'provider_codes_existentes_otros_proveedores'  => $stats['provider_codes_existentes_otros_proveedores'] ?? 0,
-            ], 200);
-
-        } catch (\RuntimeException $e) {
-            Log::warning('AiExcelImportController::getRecomendacion - error', [
-                'message' => $e->getMessage(),
+            $run = ExcelAnalysisRun::create([
+                'uuid'       => Str::uuid()->toString(),
+                'user_id'    => $this->userId(),
+                'tipo'       => 'recomendacion',
+                'estado'     => 'pendiente',
+                'excel_path' => $excel_path,
+                'payload'    => [
+                    'provider_id'                 => $provider_id,
+                    'provider_code_column_index'  => $provider_code_column_index,
+                    'column_mapping'              => $column_mapping,
+                ],
             ]);
 
-            return response()->json(['message' => $e->getMessage()], 422);
+            /* Encolamos el job pasando solo el id (mismo criterio que analyze()). */
+            RunExcelAnalysisJob::dispatch($run->id);
+
+            /*
+             * 202 Accepted: la recomendación quedó encolada, todavía no hay resultado.
+             * El frontend hace polling a analysisStatus() con este uuid, igual que /analyze.
+             */
+            return response()->json([
+                'analysis_uuid' => $run->uuid,
+                'estado'        => $run->estado,
+            ], 202);
 
         } catch (\Throwable $e) {
-            Log::error('AiExcelImportController::getRecomendacion - error inesperado', [
+            Log::error('AiExcelImportController::getRecomendacion - error al encolar la recomendación', [
                 'message' => $e->getMessage(),
                 'trace'   => $e->getTraceAsString(),
             ]);
 
-            return response()->json(['message' => 'Error inesperado al generar la recomendación.'], 500);
+            return response()->json([
+                'message' => 'Ocurrió un error inesperado al iniciar la recomendación: ' . $e->getMessage(),
+            ], 500);
         }
     }
 }

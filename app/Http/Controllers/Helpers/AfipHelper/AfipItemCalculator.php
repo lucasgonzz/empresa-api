@@ -129,6 +129,9 @@ class AfipItemCalculator
         $pivot = isset($this->afip_helper->article->pivot) ? $this->afip_helper->article->pivot : null;
 
         if ($pivot && isset($pivot->iva_percentage) && !is_null($pivot->iva_percentage)) {
+            // El pivot devuelve texto a proposito: puede ser '21.00' o 'Exento'. Los consumidores de este
+            // metodo (get_price_without_iva, monto_iva_del_precio) tienen que seguir tratandolo como texto.
+            // No castear a float aca: perderia la distincion entre Exento, No Gravado y 0%.
             return $pivot->iva_percentage;
         }
 

@@ -283,8 +283,24 @@ class SaleController extends Controller
 
     function update(Request $request, $id) {
 
+        $sale_a_actualizar = Sale::find($id);
+
+        if (is_null($sale_a_actualizar)) {
+
+            return response()->json(['message' => 'La venta no existe o ya fue eliminada.'], 404);
+        }
+
+        $motivo = SaleHelper::motivo_por_el_que_no_se_puede_editar($sale_a_actualizar);
+
+        if (!is_null($motivo)) {
+
+            Log::info('update sale id '.$id.': rechazado. '.$motivo);
+
+            return response()->json(['message' => $motivo], 409);
+        }
+
         DB::beginTransaction();
-        
+
         Log::info('Se va a actualizar venta id: '.$id);
         try {
 
@@ -439,7 +455,14 @@ class SaleController extends Controller
     }
 
     public function destroy(Request $request, $id) {
+        // Obtiene la venta por ID
         $model = Sale::find($id);
+
+        // Verifica que la venta existe antes de continuar
+        if (is_null($model)) {
+            Log::info('destroy sale: no existe la venta id '.$id.'. Se responde 404 sin tocar nada.');
+            return response()->json(['message' => 'La venta no existe o ya fue eliminada.'], 404);
+        }
 
         /** Si el cliente pidió compensar caja, se valida que todas las cajas involucradas estén abiertas antes de tocar la venta. */
         $compensar_caja = $request->boolean('compensar_caja');
@@ -485,14 +508,18 @@ class SaleController extends Controller
 
             if (is_null($model->client->deleted_at)) {
 
+                // Busca la cuenta de crédito del cliente para la moneda de la venta
                 $credit_account = CreditAccount::where('model_name', 'client')
                                                     ->where('model_id', $model->client_id)
                                                     ->where('moneda_id', $model->moneda_id)
                                                     ->first();
-                
-                // $model->client->pagos_checkeados = 0;
-                // $model->client->save();
-                CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
+
+                // Verifica que la cuenta de crédito existe antes de validar saldos
+                if (!is_null($credit_account)) {
+                    CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
+                } else {
+                    Log::info('destroy sale '.$model->id.': el cliente '.$model->client_id.' no tiene credit account para la moneda '.$model->moneda_id.'. Se saltea el chequeo de saldos.');
+                }
                 $this->sendAddModelNotification('client', $model->client_id, false);
             }
         }
@@ -542,6 +569,21 @@ class SaleController extends Controller
 
     function updatePrices(Request $request, $id) {
         $model = Sale::find($id);
+
+        if (is_null($model)) {
+
+            return response()->json(['message' => 'La venta no existe o ya fue eliminada.'], 404);
+        }
+
+        $motivo = SaleHelper::motivo_por_el_que_no_se_puede_editar($model);
+
+        if (!is_null($motivo)) {
+
+            Log::info('updatePrices sale id '.$id.': rechazado. '.$motivo);
+
+            return response()->json(['message' => $motivo], 409);
+        }
+
         SaleHelper::updateItemsPrices($model, $request->items);
         if ($model->client_id) {
             SaleHelper::updateCurrentAcountsAndCommissions($model);
@@ -585,6 +627,15 @@ class SaleController extends Controller
     function pdf(Request $request, $id) {
         $sale = Sale::find($id);
 
+        /**
+         * find() devuelve null si el id no existe o si la venta se borró entre que se abrió la
+         * pantalla y se apretó imprimir. Sin esta guarda el null viaja hasta el constructor del
+         * PDF, que lo desreferencia en su primera línea (User::find($sale->user_id)) y el cliente
+         * recibe un 500 con stack trace en vez de un 404. Paso en produccion el 1/8/2026 en unicas.
+         */
+        if (is_null($sale)) {
+            abort(404);
+        }
 
         // SaleHelper::setPrinted($this, $sale, $confirmed, $user);
         $origin = $request->query('origin');
@@ -633,22 +684,42 @@ class SaleController extends Controller
 
     function afipTicketA4Pdf(Request $request, $id) {
         $afip_ticket = AfipTicket::find($id);
+
+        if (is_null($afip_ticket)) {
+            abort(404);
+        }
+
         $profile_id = $request->query('pdf_column_profile_id');
         $pdf = new SaleAfipTicketPdf($afip_ticket, $profile_id);
     }
 
     function deliveredArticlesPdf($id) {
         $sale = Sale::find($id);
+
+        if (is_null($sale)) {
+            abort(404);
+        }
+
         $pdf = new SaleDeliveredArticlesPdf($sale);
     }
 
     function saleTicketPdf($sale_id) {
         $sale = Sale::find($sale_id);
+
+        if (is_null($sale)) {
+            abort(404);
+        }
+
         $pdf = new SaleTicketPdf($sale);
     }
 
     function afipTicketPdf($afip_ticket_id) {
         $afip_ticket = AfipTicket::find($afip_ticket_id);
+
+        if (is_null($afip_ticket)) {
+            abort(404);
+        }
+
         $pdf = new SaleTicketPdf($afip_ticket->sale, $afip_ticket);
     }
 

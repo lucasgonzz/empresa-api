@@ -17,13 +17,23 @@ class PaymentMethodSeeder extends Seeder
      */
     public function run()
     {
+        // Access token de una cuenta de prueba de Mercado Pago, para el medio de pago de
+        // ejemplo. Viene de config/services.php (.env del servidor), nunca hardcodeado
+        // (grupo 220, prompt 02, repositorio publico).
+        $mercado_pago_token = config('services.mercado_pago.token');
+
+        if (empty($mercado_pago_token) && $this->command) {
+            // No frena el seeder: solo avisa que este dato quedo sin configurar.
+            $this->command->warn('PaymentMethodSeeder: MERCADO_PAGO_SEED_ACCESS_TOKEN no esta configurado, se sembro access_token=null.');
+        }
+
         $models = [
             [
                 'name' => 'MercadoPago',
                 'description' => 'Paga Online con tu cuenta de MercadoPago',
                 'payment_method_type_id' => 1,
                 'public_key' => 'TEST-4f17cb64-8711-487f-b5f3-2e363c42c717',
-                'access_token' => 'TEST-8828325407758399-030617-854a278df3d3e7f4b5255a64bc6dca49-163250661',
+                'access_token' => empty($mercado_pago_token) ? null : $mercado_pago_token,
                 'surchage'  => 100,
             ],
             [

@@ -68,14 +68,11 @@ class ExportHistoryHelper
      */
     public static function build_download_url($file_name)
     {
-        $api_url = config('app.API_URL');
-        if (
-            config('app.APP_ENV') == 'production'
-            && !config('app.VPS')
-        ) {
-            $api_url .= '/public';
-        }
-
-        return $api_url . '/exported-files/' . rawurlencode($file_name);
+        /* URL publica centralizada en ApiUrlHelper (grupo 230, prompt 01). Antes esta funcion
+           usaba su propia condicion (APP_ENV == 'production'), distinta de la que usan
+           ImageController/ProcessArticleBatchImagesJob (APP_ENV != 'local'): en instalaciones de
+           staging/beta una de las dos estaba mal. rawurlencode se mantiene porque el nombre del
+           archivo lo arma el usuario. */
+        return ApiUrlHelper::public_base() . '/exported-files/' . rawurlencode($file_name);
     }
 }

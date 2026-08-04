@@ -60,11 +60,18 @@ class ProcessArticleImport implements ShouldQueue
     public function handle()
     {
 
-        $chunkSize = env('ARTICLE_EXCEL_CHUNK_SIZE', 3500);
+        /*
+         * Grupo 291, prompt 07: antes leía env('ARTICLE_EXCEL_CHUNK_SIZE', 3500)
+         * directo acá. Con config:cache activo (lo normal en producción), env()
+         * fuera de config/ siempre devuelve el default -- la variable nunca tuvo
+         * efecto real aunque estuviera en el .env del cliente. El valor por
+         * default no cambia: 3500 es el que corre hoy en producción.
+         */
+        $chunkSize = config('import.excel_chunk_size');
 
         if (config('app.APP_ENV') == 'local') {
-            $chunkSize = 100;
-        } 
+            $chunkSize = config('import.excel_chunk_size_local');
+        }
         
         $start = $this->start_row;
 

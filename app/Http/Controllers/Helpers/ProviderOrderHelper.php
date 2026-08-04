@@ -26,13 +26,14 @@ class ProviderOrderHelper {
 	 * @return void
 	 */
 	static function liberar_pago_con_to_pay_id($current_acount) {
-		// Pago registrado contra este débito en particular (asignación manual del usuario)
-		$pago = CurrentAcount::where('to_pay_id', $current_acount->id)
-							->first();
+		// Pagos registrados contra este débito en particular (asignación manual del usuario
+		// o, desde el grupo 327, la NC de una devolución) — pueden ser más de uno.
+		$pagos_dirigidos = CurrentAcount::where('to_pay_id', $current_acount->id)
+							->get();
 
-		if ($pago) {
-			$pago->to_pay_id = null;
-			$pago->save();
+		foreach ($pagos_dirigidos as $pago_dirigido) {
+			$pago_dirigido->to_pay_id = null;
+			$pago_dirigido->save();
 		}
 	}
 

@@ -448,8 +448,8 @@ class ArticleOfferSheetPdf extends fpdf
         if (config('app.APP_ENV') == 'local') {
             $img_url = 'https://api-colman-prueba.comerciocity.com/public/storage/171699179550596.webp';
         } else {
-            $prop = env('IMAGE_URL_PROP_NAME', 'hosting_url');
-            $img_url = $article->images[0]->{$prop};
+            /* Nombre de columna fijo (dejo de ser configurable, ver Prompt 01/02 grupo 215) */
+            $img_url = $article->images[0]->hosting_url;
         }
 
         if (is_null($img_url) || $img_url === '') {

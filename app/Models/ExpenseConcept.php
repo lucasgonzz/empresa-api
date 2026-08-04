@@ -10,6 +10,10 @@ class ExpenseConcept extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        
+
+    }
+
+    function expense_category() {
+        return $this->belongsTo(ExpenseCategory::class);
     }
 }

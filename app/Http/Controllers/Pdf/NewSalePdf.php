@@ -49,6 +49,8 @@ class NewSalePdf extends fpdf
         $this->line_height = 5;
         $this->table_header_line_height = 7;
         $this->sale = $sale;
+        /* Precarga marca/categoria/subcategoria/proveedor para las columnas de relacion del perfil. */
+        PdfColumnService::eager_load_sale_article_relations($this->sale);
         $this->user = $user;
         $this->total_sale = 0;
 
@@ -56,6 +58,20 @@ class NewSalePdf extends fpdf
         $this->total_promocion_vinotecas = 0;
         $this->total_combos = 0;
         $this->total_services = 0;
+
+        /**
+         * total_bruto se inicializa ACÁ, y no solamente donde se calcula, porque
+         * render_totals_box_snapshot() lo LEE para guardarlo antes de llamar a
+         * print_totals_box(), que es justamente quien lo asigna. En un perfil no fiscal
+         * con "totales en cada hoja", Footer() dispara ese snapshot antes de que ningún
+         * otro camino haya tocado la propiedad (print_totals_only_on_last_page_when_needed()
+         * hace return apenas ve show_totals_on_each_page), y en PHP 7.4 leer una propiedad
+         * dinámica inexistente emite un notice que HandleExceptions convierte en
+         * ErrorException: el PDF no se genera. Rompió en producción el 4/8/2026 (v3.3.3).
+         * No sacar esta línea "porque total_bruto ya se calcula más abajo": se calcula
+         * DESPUÉS de la primera lectura.
+         */
+        $this->total_bruto = 0;
 
         /**
          * Flag para decidir si este perfil imprime comprobante fiscal AFIP.

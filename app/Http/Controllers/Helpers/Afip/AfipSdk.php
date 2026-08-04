@@ -12,9 +12,11 @@ class AfipSdk
         $this->sale = $sale;
         $this->testing = !$this->sale->afip_information->afip_ticket_production;
 
+        // CUIT y access_token de app.afipsdk.com: se leen de config/services.php (.env del
+        // servidor). El repositorio es publico, prohibido volver a escribir el valor real aca.
         $afip = new Afip([
-            'CUIT' => 20409378472,
-            'access_token' => '4PIO1Ua7HMKjPdaLR3GjLv4nwzFm2n4YDEbldZFA4NTTdq4j4OaQhQEocTkAu4sl' // Obtenido de https://app.afipsdk.com
+            'CUIT' => config('services.afip_sdk.cuit'),
+            'access_token' => config('services.afip_sdk.access_token') // Obtenido de https://app.afipsdk.com
         ]);
 
         $ws = $afip->WebService('wsfex');

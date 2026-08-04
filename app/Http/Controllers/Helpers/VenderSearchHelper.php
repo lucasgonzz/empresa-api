@@ -272,6 +272,10 @@ class VenderSearchHelper
      * Imagenes a usar para una variante: las propias si tiene `image_url`, si no las del articulo.
      * Movido literal desde `VenderController::get_variant_images`.
      *
+     * Clave fija 'hosting_url' (portado de develop en el sync del 4/8/2026): develop reemplazo
+     * el env('IMAGE_URL_PROP_NAME', 'image_url') por la clave literal en la copia del controller,
+     * que ya estaba extraida aca. Sin este port, el fix quedaba solo en codigo muerto.
+     *
      * @param \App\Models\ArticleVariant $variant
      * @return mixed
      */
@@ -281,7 +285,7 @@ class VenderSearchHelper
         if (!is_null($variant->image_url)) {
             $images = [
                 [
-                    env('IMAGE_URL_PROP_NAME', 'image_url') => $variant->image_url,
+                    'hosting_url' => $variant->image_url,
                 ]
             ];
         }
