@@ -27,6 +27,22 @@ class ProviderController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
+    /**
+     * Lista liviana para selectores y acumuladores que necesitan el catálogo entero. A propósito no usa
+     * withAll() ni pagina: la versión completa (index) trae el modelo con todas sus relaciones y de a 100,
+     * y el front sólo pedía la primera página, así que trabajaba sobre un catálogo parcial sin saberlo
+     * (4/8/2026). Si alguien necesita más columnas acá, primero preguntarse si no debería leer la relación
+     * ya cargada del modelo que tiene a mano.
+     */
+    public function options() {
+        $models = Provider::where('user_id', $this->userId())
+                            ->where('status', 'active')
+                            ->orderBy('name', 'ASC')
+                            ->select('id', 'name')
+                            ->get();
+        return response()->json(['models' => $models], 200);
+    }
+
     public function get_afip_information_by_cuit($cuit) {
         $ct = new AfipConstanciaInscripcionController();
         
