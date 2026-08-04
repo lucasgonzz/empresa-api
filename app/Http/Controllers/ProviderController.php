@@ -18,12 +18,30 @@ use App\Http\Controllers\AfipConstanciaInscripcionController;
 class ProviderController extends Controller
 {
 
-    public function index() {
+    public function index(Request $request) {
+        /**
+         * El tamaño de página viene del request con default y tope. Antes estaba fijo acá y
+         * duplicado en el per_page del store del front, que además nunca lo mandaba: el front
+         * creía que las páginas eran de 200 y el backend las mandaba de 500, así que la lógica
+         * que decidía "¿quedan más páginas?" comparando longitudes nunca daba verdadero y el
+         * listado se cortaba en la primera página (4/8/2026).
+         *
+         * Techo en 2000: mismo criterio que ArticleController@index_deleted, entidad liviana
+         * por fila (sin las ~20 relaciones que carga el catálogo de artículos).
+         */
+        $per_page = (int) $request->input('per_page', 100);
+        if ($per_page <= 0) {
+            $per_page = 100;
+        }
+        if ($per_page > 2000) {
+            $per_page = 2000;
+        }
+
         $models = Provider::where('user_id', $this->userId())
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
                             ->where('status', 'active')
-                            ->paginate(100);
+                            ->paginate($per_page);
         return response()->json(['models' => $models], 200);
     }
 

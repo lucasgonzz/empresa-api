@@ -18,11 +18,20 @@ use Maatwebsite\Excel\Facades\Excel;
 class ClientController extends Controller
 {
 
-    public function index() {
+    public function index(Request $request) {
+        // Techo en 2000: mismo criterio que ProviderController@index, entidad liviana por fila.
+        $per_page = (int) $request->input('per_page', 25);
+        if ($per_page <= 0) {
+            $per_page = 25;
+        }
+        if ($per_page > 2000) {
+            $per_page = 2000;
+        }
+
         $models = Client::where('user_id', $this->userId())
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
-                            ->paginate(25);
+                            ->paginate($per_page);
         return response()->json(['models' => $models], 200);
     }
 
