@@ -625,6 +625,15 @@ class SaleController extends Controller
     function pdf(Request $request, $id) {
         $sale = Sale::find($id);
 
+        /**
+         * find() devuelve null si el id no existe o si la venta se borró entre que se abrió la
+         * pantalla y se apretó imprimir. Sin esta guarda el null viaja hasta el constructor del
+         * PDF, que lo desreferencia en su primera línea (User::find($sale->user_id)) y el cliente
+         * recibe un 500 con stack trace en vez de un 404. Paso en produccion el 1/8/2026 en unicas.
+         */
+        if (is_null($sale)) {
+            abort(404);
+        }
 
         // SaleHelper::setPrinted($this, $sale, $confirmed, $user);
         $origin = $request->query('origin');
@@ -673,22 +682,42 @@ class SaleController extends Controller
 
     function afipTicketA4Pdf(Request $request, $id) {
         $afip_ticket = AfipTicket::find($id);
+
+        if (is_null($afip_ticket)) {
+            abort(404);
+        }
+
         $profile_id = $request->query('pdf_column_profile_id');
         $pdf = new SaleAfipTicketPdf($afip_ticket, $profile_id);
     }
 
     function deliveredArticlesPdf($id) {
         $sale = Sale::find($id);
+
+        if (is_null($sale)) {
+            abort(404);
+        }
+
         $pdf = new SaleDeliveredArticlesPdf($sale);
     }
 
     function saleTicketPdf($sale_id) {
         $sale = Sale::find($sale_id);
+
+        if (is_null($sale)) {
+            abort(404);
+        }
+
         $pdf = new SaleTicketPdf($sale);
     }
 
     function afipTicketPdf($afip_ticket_id) {
         $afip_ticket = AfipTicket::find($afip_ticket_id);
+
+        if (is_null($afip_ticket)) {
+            abort(404);
+        }
+
         $pdf = new SaleTicketPdf($afip_ticket->sale, $afip_ticket);
     }
 
