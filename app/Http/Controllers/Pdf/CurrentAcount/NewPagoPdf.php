@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Pdf\CurrentAcount;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\currentAcount\ComprobanteImputadoHelper;
 use fpdf;
 require(__DIR__.'/../../CommonLaravel/fpdf/fpdf.php');
 
@@ -77,23 +78,17 @@ class NewPagoPdf extends fpdf {
     }
 
     function set_concepto($datos) {
-        if ($this->current_acount->to_pay) {
+        // El detalle (venta + factura, si tiene) sale del mismo helper que arma la tabla de
+        // comprobantes imputados, para que el CONCEPTO y esa tabla no digan dos cosas
+        // distintas del mismo comprobante.
+        $detalle = ComprobanteImputadoHelper::get_detalle($this->current_acount->to_pay);
 
-            $concepto = 'COBRO EN CONCEPTO DE ';
-
-            if (
-                $this->current_acount->to_pay->sale 
-            ) {
-                if (count($this->current_acount->to_pay->sale->afip_tickets) >= 1) {
-
-                    $concepto .= 'Fac N° '.$this->current_acount->to_pay->sale->afip_tickets[0]->cbte_numero.' - ';
-                }
-            
-                $concepto .= 'Venta N° '.$this->current_acount->to_pay->sale->num;
-            } 
+        if ($detalle !== '') {
+            $concepto = 'COBRO EN CONCEPTO DE '.$detalle;
         } else {
             $concepto = 'VARIOS';
         }
+
         $datos['concepto'] = $concepto;
 
         return $datos;
@@ -381,13 +376,7 @@ class NewPagoPdf extends fpdf {
             if ($index > 10) {
                 continue;
             }    
-            if ($pagando_a->sale && $pagando_a->sale->afip_ticket) {
-                $cbte_imputado = 'Factura '.$pagando_a->sale->afip_ticket->cbte_letra.' N° '.$pagando_a->sale->afip_ticket->cbte_numero;
-            } else if ($pagando_a->sale) {
-                $cbte_imputado = 'Venta N° '.$pagando_a->sale->num;
-            } else {
-                $cbte_imputado = $pagando_a->detalle;
-            }
+            $cbte_imputado = ComprobanteImputadoHelper::get_detalle($pagando_a);
 
             $this->Cell(110,6, $cbte_imputado, 1, 0);
             $this->Cell(40,6, Numbers::price($pagando_a->debe, true), 1, 0, 'R');
