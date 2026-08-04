@@ -18,11 +18,35 @@ use Maatwebsite\Excel\Facades\Excel;
 class ClientController extends Controller
 {
 
-    public function index() {
+    public function index(Request $request) {
+        // Techo en 2000: mismo criterio que ProviderController@index, entidad liviana por fila.
+        $per_page = (int) $request->input('per_page', 25);
+        if ($per_page <= 0) {
+            $per_page = 25;
+        }
+        if ($per_page > 2000) {
+            $per_page = 2000;
+        }
+
         $models = Client::where('user_id', $this->userId())
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
-                            ->paginate(25);
+                            ->paginate($per_page);
+        return response()->json(['models' => $models], 200);
+    }
+
+    /**
+     * Lista liviana para selectores y acumuladores que necesitan el catálogo entero. A propósito no usa
+     * withAll() ni pagina: la versión completa (index) trae el modelo con todas sus relaciones y de a 25,
+     * y el front sólo pedía la primera página, así que trabajaba sobre un catálogo parcial sin saberlo
+     * (4/8/2026). Si alguien necesita más columnas acá, primero preguntarse si no debería leer la relación
+     * ya cargada del modelo que tiene a mano.
+     */
+    public function options() {
+        $models = Client::where('user_id', $this->userId())
+                            ->orderBy('name', 'ASC')
+                            ->select('id', 'name', 'address_id')
+                            ->get();
         return response()->json(['models' => $models], 200);
     }
 

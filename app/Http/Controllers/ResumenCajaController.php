@@ -180,6 +180,11 @@ class ResumenCajaController extends Controller
 
     function pdf($id) {
         $model = ResumenCaja::find($id);
+
+        if (is_null($model)) {
+            abort(404);
+        }
+
         new ResumenCajaPdf($model);
     }
 }

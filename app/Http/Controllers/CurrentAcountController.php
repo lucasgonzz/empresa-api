@@ -307,7 +307,11 @@ class CurrentAcountController extends Controller
         }
 
         $credit_account = CreditAccount::find($models[0]->credit_account_id);
-                                
+
+        if (is_null($credit_account)) {
+            abort(404);
+        }
+
         new CurrentAcountPdf($credit_account, $models, $type);
     }
 
@@ -326,7 +330,11 @@ class CurrentAcountController extends Controller
     function pdf($id) {
 
         $model = CurrentAcount::find($id);
-    
+
+        if (is_null($model)) {
+            abort(404);
+        }
+
         if ($model->status == 'pago_from_client') {
             if (!is_null($model->client_id)) {
                 $model_name = 'client';

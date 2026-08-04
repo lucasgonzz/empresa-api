@@ -213,6 +213,31 @@ class CurrentAcountHelper {
 
         Log::info('moneda_id para nota_credito: '.$moneda_id);
 
+        /**
+         * Imputación dirigida de la NC a la venta que originó la devolución
+         * (regla cerrada por Lucas el 4/7/2026 — refactor_empresa/cuentas_corrientes.md).
+         *
+         * Sin esto la NC entra a la cola general de CurrentAcountPagoHelper y salda la
+         * deuda MAS VIEJA del cliente, no la venta que se devolvió. El motor de imputación
+         * dirigida ya existe: CurrentAcountPagoHelper::setSinPagar() usa to_pay_id en la
+         * primera iteración y sigue en FIFO con el sobrante, que es justo la cascada pedida
+         * (el remanente de la NC cae en la siguiente venta/ND sin saldar).
+         */
+        $to_pay_id = null;
+
+        if (!is_null($sale_id) && !is_null($credit_account_id)) {
+
+            $debito_de_la_venta = CurrentAcount::where('sale_id', $sale_id)
+                                                ->whereNull('haber')
+                                                ->where('credit_account_id', $credit_account_id)
+                                                ->whereIn('status', ['sin_pagar', 'pagandose'])
+                                                ->first();
+
+            if (!is_null($debito_de_la_venta)) {
+                $to_pay_id = $debito_de_la_venta->id;
+            }
+        }
+
         $nota_credito = CurrentAcount::create([
             'description'       => $description,
             'haber'             => $haber,
@@ -220,6 +245,7 @@ class CurrentAcountHelper {
             'client_id'         => $model_name == 'client' ? $model_id : null,
             'provider_id'       => $model_name == 'provider' ? $model_id : null,
             'sale_id'           => $sale_id,
+            'to_pay_id'         => $to_pay_id,
             'num_receipt'       => CurrentAcountHelper::getNumReceipt(true),
             'user_id'           => UserHelper::userId(),
             'employee_id'       => UserHelper::userId(false),
@@ -365,7 +391,7 @@ class CurrentAcountHelper {
         if (!is_null($to_pay_id)) {
             $until_pago->to_pay_id = $to_pay_id;
             $until_pago->save();
-            $haber = Self::saldarSpecificCurrentAcount($to_pay_id, $pago, $haber);
+            $haber = Self::saldarSpecificCurrentAcount($to_pay_id, $until_pago, $haber);
         } 
         $haber_restante = Self::saldarPagandose($model_name, $model_id, $haber, $until_pago);
         // $saldar_pagandose = Self::saldarPagandose($model_name, $model_id, $haber, $until_pago);

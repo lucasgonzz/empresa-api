@@ -221,6 +221,11 @@ class BudgetController extends Controller
 
     function pdf($id, $with_prices, $with_images) {
         $budget = Budget::find($id);
+
+        if (is_null($budget)) {
+            abort(404);
+        }
+
         $pdf = new BudgetPdf($budget, $with_prices, $with_images);
     }
 }

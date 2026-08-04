@@ -19,6 +19,7 @@ use App\Models\Sale;
 use Carbon\Carbon;
 use Illuminate\Database\Seeder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Seeder que puebla datos de varios meses para testear el módulo de reportes con rangos de fechas.
@@ -36,6 +37,25 @@ class ReportesMesSeeder extends Seeder
      */
     public function run()
     {
+        /*
+            GUARDA DE ENTORNO — no sacar.
+
+            El primer paso de este seeder es truncate_data(), que borra TODAS las ventas, pedidos a
+            proveedor, gastos y movimientos de cuenta corriente del user_id configurado. Eso esta
+            bien para regenerar datos de prueba y es fatal contra la base de un cliente.
+
+            Hasta el 3/8/2026 la unica proteccion era que DatabaseSeeder lo llamara desde el lugar
+            correcto, y de hecho lo llamaba desde el bloque general, sin ningun if de entorno.
+            La guarda vive aca adentro porque es el unico lugar que no depende de que el proximo
+            que mueva el call se acuerde de esto.
+        */
+        if (config('app.env') !== 'local' && config('app.FOR_USER') !== 'demo') {
+
+            Log::warning('ReportesMesSeeder omitido: solo corre en local o en la instancia demo. Entorno actual: '.config('app.env'));
+
+            return;
+        }
+
         $this->truncate_data();
 
         // Id del usuario demo/owner desde .env; los helpers (ArticleHelper, UserHelper) lo requieren en CLI

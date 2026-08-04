@@ -10,9 +10,12 @@ class ImportHistory extends Model
     protected $guarded = [];
 
     protected $casts = [
-        'changed_fields' => 'array',
+        'changed_fields'         => 'array',
         /* Fecha en que se marcó la importación como fallida (prompt 500). */
-        'failed_at'      => 'datetime',
+        'failed_at'              => 'datetime',
+        /* Seguimiento de reversión (grupo 305, prompt 01). */
+        'rollback_requested_at'  => 'datetime',
+        'rolled_back_at'         => 'datetime',
     ];
 
     function chunks() {
@@ -38,5 +41,32 @@ class ImportHistory extends Model
         return $this->belongsToMany(Article::class, 'article_actualizados_import_history')
                     ->using(ArticleActualizadosImportHistory::class)
                     ->withPivot('updated_props');
+    }
+
+    /**
+     * Única definición del criterio de "se puede revertir esta importación": el
+     * controller, el index() y los tests la usan a ella, nadie repite las
+     * condiciones a mano (grupo 305, prompt 02).
+     *
+     * `rollback_status === 'fallido'` SÍ puede reintentarse -- un rollback que
+     * falló tiene que darle al usuario una salida, si no la fila queda colgada
+     * para siempre sin que nadie pueda reintentar ni saber qué pasó.
+     *
+     * @return bool
+     */
+    function puede_revertirse() {
+        if (in_array($this->status, ['en_preparacion', 'en_proceso'])) {
+            return false;
+        }
+
+        if ($this->rollback_status == 'encolado') {
+            return false;
+        }
+
+        if ($this->rollback_status == 'revertida' || !is_null($this->rolled_back_at)) {
+            return false;
+        }
+
+        return true;
     }
 }

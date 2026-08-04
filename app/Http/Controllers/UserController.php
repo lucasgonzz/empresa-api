@@ -453,6 +453,25 @@ class UserController extends Controller
         }
     }
 
+    /**
+     * Guarda la preferencia de modo oscuro del usuario AUTENTICADO (dueño o empleado).
+     *
+     * A diferencia de set_img_auto_timeout, que resuelve con $this->userId() (siempre el dueño,
+     * porque esa preferencia es de la cuenta), acá resolvemos con Auth::user() a propósito: el
+     * modo oscuro es de CADA PERSONA. Si se usara $this->userId(), la preferencia de un empleado
+     * quedaría grabada en el dueño y el síntoma sería desconcertante (el empleado prende el modo
+     * oscuro y a quien le cambia la pantalla al recargar es al dueño).
+     */
+    function set_dark_mode($value) {
+        $model = Auth::user();
+        $model->dark_mode = (int) ((bool) $value);
+        $model->save();
+
+        UserHelper::set_sessions($model);
+
+        return response()->json(['dark_mode' => (int) $model->dark_mode], 200);
+    }
+
     function set_img_auto_timeout($value) {
         $model = User::find($this->userId());
         $model->img_auto_timeout = $value;

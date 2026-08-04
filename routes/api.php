@@ -36,6 +36,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('user/last-activity', 'CommonLaravel\UserController@setLastActivity');
     Route::put('user/set_eliminar_articulos_offline/{user_id}/{value}', 'UserController@set_eliminar_articulos_offline');
     Route::put('user/set-img-auto-timeout/{value}', 'UserController@set_img_auto_timeout');
+    Route::put('user/set-dark-mode/{value}', 'UserController@set_dark_mode');
 
 
 
@@ -358,6 +359,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('category', 'CategoryController');
     Route::resource('condition', 'ConditionController');
     Route::resource('iva', 'IvaController');
+    // provider/options tiene que declararse ANTES del resource: Route::resource registra
+    // GET provider/{provider} para el show, y esa ruta captura "options" como si fuera un id
+    // si queda declarada primero (4/8/2026).
+    Route::get('provider/options', 'ProviderController@options');
     Route::resource('provider', 'ProviderController');
     Route::get('provider/get-afip-information-by-cuit/{cuit}', 'ProviderController@get_afip_information_by_cuit');
     Route::post('/provider/excel/import', 'ProviderController@import');
@@ -367,6 +372,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('iva-condition', 'IvaConditionController');
     Route::resource('location', 'LocationController');
     Route::resource('current-acount-payment-method', 'CurrentAcountPaymentMethodController');
+    // client/options tiene que declararse ANTES del resource, mismo motivo que provider/options.
+    Route::get('client/options', 'ClientController@options');
     Route::resource('client', 'ClientController');
     Route::post('client/excel/import', 'ClientController@import');
     Route::get('client/get-afip-information-by-cuit/{cuit}', 'ClientController@get_afip_information_by_cuit');

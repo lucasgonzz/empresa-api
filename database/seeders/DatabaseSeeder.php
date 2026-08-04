@@ -225,8 +225,6 @@ class DatabaseSeeder extends Seeder
 
             $this->call(DeliveryDaySeeder::class);
 
-            $this->call(ReportesMesSeeder::class);
-
             if ($for_user == 'truvari') {
                 if (env('APP_ENV') == 'local') {
                     $this->call(SaleRoadMapSeeder::class);
@@ -285,6 +283,10 @@ class DatabaseSeeder extends Seeder
             $this->call(SellerSeeder::class);
 
             $this->call(MeliPlatformConnectorSeeder::class);
+
+            // Datos historicos por mes para reportes. Va aca y no en el bloque general porque
+            // truncate_data() borra todo el historial operativo del user_id (grupo 318, 3/8/2026).
+            $this->call(ReportesMesSeeder::class);
 
         }
     }
