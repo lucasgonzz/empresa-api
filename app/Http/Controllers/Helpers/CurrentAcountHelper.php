@@ -391,7 +391,7 @@ class CurrentAcountHelper {
         if (!is_null($to_pay_id)) {
             $until_pago->to_pay_id = $to_pay_id;
             $until_pago->save();
-            $haber = Self::saldarSpecificCurrentAcount($to_pay_id, $pago, $haber);
+            $haber = Self::saldarSpecificCurrentAcount($to_pay_id, $until_pago, $haber);
         } 
         $haber_restante = Self::saldarPagandose($model_name, $model_id, $haber, $until_pago);
         // $saldar_pagandose = Self::saldarPagandose($model_name, $model_id, $haber, $until_pago);

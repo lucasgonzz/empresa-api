@@ -1102,16 +1102,23 @@ class SaleHelper extends Controller {
 
 
 
-            /* 
-                Chequeo si habia un pago especifico (con tu_pay_id) para esta venta
-                Si lo habia, libero ese pago para que aporte a otras ventas
-            */
-            $pago = CurrentAcount::where('to_pay_id', $current_acount->id)
-                                ->first();
+            /*
+                Chequeo si habia algun pago especifico (con to_pay_id) para esta venta.
+                Si lo habia, lo libero para que aporte a otras ventas.
 
-            if ($pago) {
-                $pago->to_pay_id = null;
-                $pago->save();
+                Van TODOS, no el primero: desde el grupo 327 la nota de credito de una
+                devolucion tambien apunta con to_pay_id a la venta que la origino, asi que
+                una misma venta puede tener a la vez esa NC y un pago imputado a mano. Si se
+                libera solo uno, el otro queda apuntando a una fila borrada y
+                CurrentAcountPagoHelper::setSinPagar() lo resuelve en null: ese movimiento
+                deja de imputarse por completo, sin error visible.
+            */
+            $pagos_dirigidos = CurrentAcount::where('to_pay_id', $current_acount->id)
+                                            ->get();
+
+            foreach ($pagos_dirigidos as $pago_dirigido) {
+                $pago_dirigido->to_pay_id = null;
+                $pago_dirigido->save();
             }
 
 
