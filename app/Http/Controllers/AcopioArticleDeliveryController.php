@@ -19,6 +19,10 @@ class AcopioArticleDeliveryController extends Controller
     function pdf($id) {
         $model = AcopioArticleDelivery::find($id);
 
+        if (is_null($model)) {
+            abort(404);
+        }
+
         new AcopioArticleDeliveryPdf($model);
     }
 }

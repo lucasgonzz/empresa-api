@@ -78,11 +78,21 @@ class OrderProductionController extends Controller
 
     function pdf($id, $with_prices) {
         $order_production = OrderProduction::find($id);
+
+        if (is_null($order_production)) {
+            abort(404);
+        }
+
         $pdf = new OrderProductionPdf($order_production, $with_prices);
     }
 
     function articlesPdf($id) {
         $order_production = OrderProduction::find($id);
+
+        if (is_null($order_production)) {
+            abort(404);
+        }
+
         $pdf = new OrderProductionArticlesPdf($order_production);
     }
 }

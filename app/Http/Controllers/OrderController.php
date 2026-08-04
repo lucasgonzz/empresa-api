@@ -139,6 +139,11 @@ class OrderController extends Controller
 
     function pdf($id) {
         $model = Order::find($id);
+
+        if (is_null($model)) {
+            abort(404);
+        }
+
         new OrderPdf($model);
     }
 }
