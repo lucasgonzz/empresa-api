@@ -96,14 +96,24 @@ class ArticleHelper {
      *        sin mirar esta bandera, asi que esos pivots se escriben igual aunque se pida
      *        $guardar_cambios = false. Quien necesite una simulacion realmente sin efectos
      *        secundarios debe envolver el llamado en una transaccion con rollback.
+     * @param $price_type_id_para_descripcion int|null Con un id de lista de precio, ademas del
+     *        desglose del costo real y del precio final unico se concatenan las lineas del calculo
+     *        de ESA lista (prompt 357/01), asi el front recibe un solo array que cuenta la cadena
+     *        completa. Con null el desglose sale identico al historico: no toca ningun calculo.
      */
-    static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null, $return_description = false) {
+    static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null, $return_description = false, $price_type_id_para_descripcion = null) {
 
         // Log::info('setFinalPrice para '.$article->name.' ,id: '.$article->id.' con costo de '.$article->cost.' y precio de '.$article->price);
 
         $costo_real = null;
 
         $des = [];
+
+        // Desglose de la lista de precio pedida (prompt 357/01). Se acumula aparte y se pega al
+        // final de $des, no en el lugar donde se calcula: los renglones que vienen despues de las
+        // listas (margen del proveedor, de la categoria, del articulo) son del precio final unico y
+        // NO participan del precio de la lista. Intercalarlos haria creer que si.
+        $des_lista = [];
 
         if (
             is_null($article->cost)
@@ -286,7 +296,10 @@ class ArticleHelper {
                         ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda($article, $final_price, $user);
                         
                     } else {
-                        ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $final_price, $user, $price_types);
+                        // El desglose de la lista pedida se concatena al $des que se viene armando,
+                        // para que el front reciba un solo array con la cadena entera. Sin
+                        // $price_type_id_para_descripcion esto devuelve [] y no cambia nada.
+                        $des_lista = ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $final_price, $user, $price_types, $price_type_id_para_descripcion);
                     }
 
                 } else if (UserHelper::hasExtencion('lista_de_precios_por_categoria', $user)) {
@@ -411,6 +424,10 @@ class ArticleHelper {
             $article->save();
 
             if ($return_description) {
+
+                if (count($des_lista)) {
+                    $des = array_merge($des, $des_lista);
+                }
 
                 return $des;
             }

@@ -138,8 +138,20 @@ class ArticlePricesHelper {
         
     }
 
-    static function aplicar_precios_segun_listas_de_precios($article, $cost, $user, $price_types = null) {
-        
+    /**
+     * Calcula y persiste el precio de cada lista de precio del usuario para este articulo.
+     *
+     * @param $price_type_id_para_descripcion int|null Si viene cargado, ademas de calcular se arma
+     *        el desglose paso a paso de ESA lista y se devuelve como array de strings. Es lo que
+     *        alimenta el boton "?" de cada tarjeta de lista en el modal del articulo (prompt 357/01).
+     *        Con null se devuelve un array vacio y el comportamiento es identico al historico: este
+     *        parametro NO toca el calculo, solo describe lo que ya pasa.
+     * @return array Lineas del desglose de la lista pedida. Vacio si no se pidio ninguna.
+     */
+    static function aplicar_precios_segun_listas_de_precios($article, $cost, $user, $price_types = null, $price_type_id_para_descripcion = null) {
+
+        $des_lista = [];
+
         if (is_null($price_types)) {
             $price_types = PriceType::where('user_id', $user->id)
                                     ->orderBy('position', 'ASC')
@@ -157,6 +169,14 @@ class ArticlePricesHelper {
             $relation = $article->price_types()->find($price_type->id);
 
             $previus_final_price = null;
+
+            // Solo se describe la lista que pidio el front. El resto del loop corre igual que siempre.
+            $describir = !is_null($price_type_id_para_descripcion)
+                        && $price_type->id == $price_type_id_para_descripcion;
+
+            if ($describir) {
+                $des_lista[] = 'CALCULO DEL PRECIO DE LA LISTA '.strtoupper($price_type->name);
+            }
 
 
             /* 
@@ -198,16 +218,39 @@ class ArticlePricesHelper {
             // Normalizo porcentaje por si viene null/string
             $percentage = is_null($percentage) ? 0 : (float) $percentage;
 
+            if ($describir) {
+                $des_lista[] = 'Costo de partida (costo real ya calculado arriba) = '.Numbers::price($cost, true);
+            }
+
             if ($cost !== 0.0) {
-                
+
                 if (!is_null($final_price)) {
 
 
                     $percentage = ($final_price - $cost) / $cost * 100;
 
+                    if ($describir) {
+                        // El precio lo fijo el usuario a mano (setear_precio_final en el pivot): no se
+                        // aplica ningun margen, el porcentaje se calcula al reves, a partir del precio.
+                        $des_lista[] = 'El precio de esta lista lo fijaste vos a mano = '.Numbers::price($final_price, true);
+                        $des_lista[] = 'El margen de '.round($percentage, 2).'% es el que resulta de ese precio contra el costo, no al reves';
+                    }
+
                 } else {
 
+                    if ($describir) {
+                        if (!is_null($relation) && !is_null($relation->pivot->percentage)) {
+                            $des_lista[] = 'Margen propio del articulo en esta lista: '.$percentage.'%';
+                        } else {
+                            $des_lista[] = 'Margen por defecto de la lista: '.$percentage.'%';
+                        }
+                    }
+
                     $final_price = $cost + ($cost * (float)$percentage / 100);
+
+                    if ($describir) {
+                        $des_lista[] = 'Precio con el margen aplicado = '.Numbers::price($final_price, true);
+                    }
 
                     // Capa 2 (Prompt 261): sale_taxes con formula de division, despues del margen
                     // (y de los price_type_surchages, que se preservan sin tocar mas abajo) y
@@ -215,18 +258,48 @@ class ArticlePricesHelper {
                     $res = ArticlePricesHelper::aplicar_sale_taxes($article, $final_price, $user, []);
                     $final_price = $res['price'];
 
+                    if ($describir) {
+                        $des_lista = array_merge($des_lista, $res['des']);
+                    }
+
                     if (!Self::iva_va_al_costo($user)) {
 
                         $res = ArticlePricesHelper::aplicar_iva($article, $final_price, $user, []);
                         $final_price = $res['price'];
                         // $des   = $res['des'];
+
+                        if ($describir) {
+                            $des_lista = array_merge($des_lista, $res['des']);
+                        }
+
+                    } else if ($describir) {
+
+                        // El IVA no se suma aca porque ya viene adentro del costo real. Distinguir los
+                        // dos motivos NO es un detalle: el 5/8/2026 se diagnostico como bug ("el IVA se
+                        // suma antes del margen") lo que en realidad era una cuenta sin migrar, con la
+                        // tilde vieja prendida. Si este renglon no separa los dos casos, el diagnostico
+                        // equivocado vuelve.
+                        if ($user->usar_condicion_fiscal_en_costeo) {
+                            $des_lista[] = 'No se suma IVA aca: sos Monotributista, asi que el IVA no se recupera y ya viene incluido dentro del costo real';
+                        } else {
+                            $des_lista[] = 'No se suma IVA aca: esta cuenta tiene la configuracion vieja "aplicar IVA al costo" prendida, asi que el IVA ya viene incluido dentro del costo real (no depende de tu condicion fiscal)';
+                        }
                     }
 
                 }
-            } 
+            } else if ($describir) {
+
+                $des_lista[] = 'El costo es cero, asi que no se calcula ningun margen para esta lista';
+            }
 
 
-            $res = Self::aplicar_price_type_surchages($price_type, $final_price, $cost);
+            $res = Self::aplicar_price_type_surchages($price_type, $final_price, $cost, $describir ? [] : null);
+
+            if ($describir) {
+                $des_lista = array_merge($des_lista, $res['des']);
+                $des_lista[] = 'Precio final de la lista = '.Numbers::price($res['precio_luego_de_recargos'], true);
+                $des_lista[] = 'Ganancia sobre el costo = '.Numbers::price($res['monto_ganancia'], true);
+            }
 
 
 
@@ -244,21 +317,44 @@ class ArticlePricesHelper {
             Log::info('Seteando price_type '.$price_type->name.' para article num: '.$article->id.' con percentage '.$percentage.'% y final_price de '.$final_price);
 
         }
+
+        return $des_lista;
     }
 
-    static function aplicar_price_type_surchages($price_type, $final_price, $cost) {
+    /**
+     * @param $des array|null Con un array se arma el desglose de los recargos y se devuelve en 'des'.
+     *        Con null (el default historico) 'des' vuelve vacio y no cambia nada.
+     */
+    static function aplicar_price_type_surchages($price_type, $final_price, $cost, $des = null) {
+
+        $describir = !is_null($des);
+
+        if (!$describir) {
+            $des = [];
+        }
 
         $precio_luego_de_recargos = $final_price;
 
         foreach ($price_type->price_type_surchages as $price_type_surchage) {
-            
+
             if (!is_null($price_type_surchage->percentage)) {
 
                 $precio_luego_de_recargos -= $precio_luego_de_recargos * $price_type_surchage->percentage / 100;
-            
+
+                if ($describir) {
+                    // Se llaman "recargos" pero RESTAN: el codigo hace -=, y es intencional
+                    // (decision de Lucas del 4/7, ver refactor_empresa/precios_costos.md). El texto
+                    // tiene que decir que resta, o el desglose miente.
+                    $des[] = 'Menos '.$price_type_surchage->name.' ('.$price_type_surchage->percentage.'%) = '.Numbers::price($precio_luego_de_recargos, true);
+                }
+
             } else if (!is_null($price_type_surchage->amount)) {
 
                 $precio_luego_de_recargos -= $price_type_surchage->amount;
+
+                if ($describir) {
+                    $des[] = 'Menos '.$price_type_surchage->name.' ('.Numbers::price($price_type_surchage->amount, true).') = '.Numbers::price($precio_luego_de_recargos, true);
+                }
 
             }
         }
@@ -266,6 +362,7 @@ class ArticlePricesHelper {
         return [
             'precio_luego_de_recargos'  => $precio_luego_de_recargos,
             'monto_ganancia'            => $precio_luego_de_recargos - $cost,
+            'des'                       => $des,
         ];
 
 

@@ -970,6 +970,29 @@ class ArticleController extends Controller
     }
 
     /**
+     * Prompt 357/01 — desglose del calculo del precio de UNA lista de precio, para el boton "?" de
+     * cada tarjeta de lista en el modal del articulo. Devuelve la cadena completa: el costo real y
+     * el precio final unico que ya devolvia get_final_price_description(), mas el tramo propio de
+     * esa lista al final.
+     *
+     * El $guardar_cambios en true es deliberado, igual que en el endpoint de al lado: pedir la
+     * explicacion recalcula y guarda. Ponerlo en false daria la ilusion de una simulacion sin
+     * efectos que igual escribiria, porque aplicar_precios_segun_listas_de_precios() toca los
+     * pivots con syncWithoutDetaching()/updateExistingPivot() sin mirar esa bandera (esta advertido
+     * en el docblock de setFinalPrice).
+     */
+    function get_price_type_description($id, $price_type_id) {
+        $article = Article::find($id);
+
+        if (is_null($article)) {
+            return response()->json(['message' => 'No se encontro el articulo'], 404);
+        }
+
+        $description = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true, $price_type_id);
+        return response()->json(['description'    => $description], 200);
+    }
+
+    /**
      * Prompt 308: cambio MANUAL de proveedor de un artículo desde el listado, con dos flags
      * independientes (ver modal del prompt 309):
      *   - eliminar_descuentos_proveedor_anterior (default true)

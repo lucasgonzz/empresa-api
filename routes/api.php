@@ -266,6 +266,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Descripcion del precio final
     Route::get('/article/final-price-description/{id}', 'ArticleController@get_final_price_description');
+    Route::get('/article/price-type-description/{id}/{price_type_id}', 'ArticleController@get_price_type_description');
     
     // Exportar Excel (procesamiento en cola)
     Route::get('article/excel/export', 'ArticleController@export');
