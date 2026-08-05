@@ -146,6 +146,13 @@ class TestingFerreteriaSeeder extends Seeder
     const IMPUESTO_IIBB = 'IIBB';
 
     /**
+     * Id del usuario del fixture, resuelto una sola vez por `USER_EMAIL` (ver user_id_fixture()).
+     *
+     * @var int|null
+     */
+    protected $user_id_fixture = null;
+
+    /**
      * Ejecuta el seeder completo.
      *
      * Idempotencia (tarea 2f): si el fixture ya esta completo (los 10 articulos existen), no hace
@@ -189,11 +196,25 @@ class TestingFerreteriaSeeder extends Seeder
      */
     protected function fixture_completo()
     {
+        // Si todavia no existe el usuario del fixture, el fixture no puede estar completo. Este
+        // chequeo corre antes que `seed_base_data()`, asi que no se puede exigir el usuario aca
+        // (a diferencia del resto del seeder, que ya lo tiene garantizado).
+        $user = User::where('email', self::USER_EMAIL)->first();
+
+        if (is_null($user)) {
+            return false;
+        }
+
         $nombres = array_column($this->catalogo(), 'name');
 
-        $articulos_completos = Article::whereIn('name', $nombres)->count() === count($nombres);
+        // Acotado por usuario por el mismo motivo que los proveedores: articulos como "Martillo" o
+        // "Pinza" existen en cualquier cuenta de ferreteria. Sin el filtro, los articulos de OTRO
+        // usuario podian dar el fixture por completo y saltearse el sembrado.
+        $articulos_completos = Article::whereIn('name', $nombres)
+            ->where('user_id', $user->id)
+            ->count() === count($nombres);
 
-        $caja_mp_existe = Caja::where('name', self::CAJA_MP)->exists();
+        $caja_mp_existe = Caja::where('name', self::CAJA_MP)->where('user_id', $user->id)->exists();
 
         return $articulos_completos && $caja_mp_existe;
     }
@@ -315,10 +336,21 @@ class TestingFerreteriaSeeder extends Seeder
      */
     protected function seed_clientes()
     {
-        $user_id = config('app.USER_ID');
+        $user_id = $this->user_id_fixture();
 
-        $iva_responsable_inscripto = IvaCondition::where('name', 'Responsable inscripto')->first();
-        $iva_exento = IvaCondition::where('name', 'Exento')->first();
+        // `iva_conditions` es una tabla global (no tiene columna user_id, ver su migracion), asi que
+        // aca no hay nada que acotar por usuario: alcanza con exigir que existan.
+        $iva_responsable_inscripto = $this->exigir(
+            IvaCondition::where('name', 'Responsable inscripto')->first(),
+            'la condicion de IVA "Responsable inscripto"',
+            'Corre `IvaConditionSeeder` antes de este seeder.'
+        );
+
+        $iva_exento = $this->exigir(
+            IvaCondition::where('name', 'Exento')->first(),
+            'la condicion de IVA "Exento"',
+            'Corre `IvaConditionSeeder` antes de este seeder.'
+        );
 
         $clientes = [
             self::CLIENTE_CC       => $iva_responsable_inscripto,
@@ -329,7 +361,7 @@ class TestingFerreteriaSeeder extends Seeder
         foreach ($clientes as $nombre => $iva_condition) {
             Client::firstOrCreate(
                 ['name' => $nombre, 'user_id' => $user_id],
-                ['iva_condition_id' => is_null($iva_condition) ? null : $iva_condition->id]
+                ['iva_condition_id' => $iva_condition->id]
             );
         }
     }
@@ -344,6 +376,8 @@ class TestingFerreteriaSeeder extends Seeder
      */
     protected function seed_metodos_pago_cta_cte()
     {
+        // Sin `user_id`: `current_acount_payment_methods` es una tabla global (ver su migracion), y
+        // el `firstOrCreate` no puede devolver null. No es un filtro olvidado.
         CurrentAcountPaymentMethod::firstOrCreate([
             'name' => self::PAGO_EFECTIVO,
         ]);
@@ -361,7 +395,7 @@ class TestingFerreteriaSeeder extends Seeder
      */
     protected function seed_conceptos_gasto()
     {
-        $user_id = config('app.USER_ID');
+        $user_id = $this->user_id_fixture();
 
         $nombres = [self::CONCEPTO_GASTO_COMISION, self::CONCEPTO_GASTO_OPERATIVO];
 
@@ -388,7 +422,7 @@ class TestingFerreteriaSeeder extends Seeder
      */
     protected function seed_cajas_tesoreria($conceptos)
     {
-        $user_id = config('app.USER_ID');
+        $user_id = $this->user_id_fixture();
 
         $concepto_comision_id = $conceptos[self::CONCEPTO_GASTO_COMISION]->id;
 
@@ -441,7 +475,7 @@ class TestingFerreteriaSeeder extends Seeder
      */
     protected function seed_impuesto_iibb()
     {
-        $user_id = config('app.USER_ID');
+        $user_id = $this->user_id_fixture();
 
         SaleTax::firstOrCreate(
             ['name' => self::IMPUESTO_IIBB, 'user_id' => $user_id],
@@ -451,6 +485,56 @@ class TestingFerreteriaSeeder extends Seeder
                 'activo'        => true,
             ]
         );
+    }
+
+    /**
+     * Id del usuario duenio del fixture, resuelto por `USER_EMAIL` (nunca por `config('app.USER_ID')`,
+     * que depende del .env activo) y cacheado para no repetir la consulta.
+     *
+     * Todas las busquedas de modelos de este seeder se acotan con este id: sin el filtro, un modelo
+     * homonimo de OTRO usuario puede ganar el `first()` (nombres como "Buenos Aires" o "Martillo" se
+     * repiten entre cuentas), y el fixture terminaria leyendo y modificando datos ajenos.
+     *
+     * @return int
+     * @throws \RuntimeException Si el usuario del fixture no existe en la base.
+     */
+    protected function user_id_fixture()
+    {
+        if (is_null($this->user_id_fixture)) {
+            $user = User::where('email', self::USER_EMAIL)->first();
+
+            $this->exigir(
+                $user,
+                sprintf('el usuario del fixture (email %s)', self::USER_EMAIL),
+                'Corre `UserSeeder` antes de este seeder.'
+            );
+
+            $this->user_id_fixture = $user->id;
+        }
+
+        return $this->user_id_fixture;
+    }
+
+    /**
+     * Corta la ejecucion con un mensaje claro cuando un modelo que el fixture da por sentado no
+     * aparece. Antes estas consultas devolvian `null` en silencio y el seeder seguia, hasta reventar
+     * veinte lineas mas abajo con un "propiedad de null" que no decia nada de la causa real.
+     *
+     * @param mixed $modelo Resultado de la consulta (modelo o null).
+     * @param string $que Que se estaba buscando, en criollo.
+     * @param string $como_arreglar Que tiene que hacer quien lee el error.
+     * @return mixed El mismo modelo, para poder encadenar.
+     * @throws \RuntimeException Si $modelo es null.
+     */
+    protected function exigir($modelo, $que, $como_arreglar)
+    {
+        if (is_null($modelo)) {
+            throw new \RuntimeException(
+                sprintf('TestingFerreteriaSeeder: no se encontro %s. %s', $que, $como_arreglar)
+            );
+        }
+
+        return $modelo;
     }
 
     /**
@@ -471,19 +555,35 @@ class TestingFerreteriaSeeder extends Seeder
 
     /**
      * Crea los proveedores del fixture reusando `ProviderSeeder` (ya crea "Buenos Aires" y
-     * "Rosario" con esos nombres exactos) y los resuelve por nombre para no depender del orden de
-     * insercion ni de `config('app.USER_ID')`.
+     * "Rosario" con esos nombres exactos) y los resuelve por nombre —para no depender del orden de
+     * insercion— **acotados al usuario del fixture** (ver user_id_fixture()), que es lo unico que
+     * garantiza que el proveedor que se engancha sea el propio y no el homonimo de otra cuenta.
      *
      * @return array<string,\App\Models\Provider> Provider indexado por PROVIDER_BSAS/PROVIDER_OTRO.
+     * @throws \RuntimeException Si falta alguno de los dos proveedores para ese usuario.
      */
     protected function seed_providers()
     {
         $this->call(ProviderSeeder::class);
 
-        return [
-            self::PROVIDER_BSAS => Provider::where('name', self::PROVIDER_BSAS)->first(),
-            self::PROVIDER_OTRO => Provider::where('name', self::PROVIDER_OTRO)->first(),
-        ];
+        $user_id = $this->user_id_fixture();
+
+        $providers = [];
+
+        foreach ([self::PROVIDER_BSAS, self::PROVIDER_OTRO] as $nombre) {
+            // El `where('user_id', ...)` NO sobra: "Buenos Aires" es un nombre de proveedor de lo
+            // mas comun y se repite entre usuarios. Sin el filtro, el `first()` puede devolver el
+            // proveedor de otra cuenta, y a partir de ahi el fixture le cuelga las bonificaciones
+            // del 10% y el 5% a un proveedor ajeno (lo MODIFICA) y la compra del test sale con
+            // totales que no tienen nada que ver con lo que se esta probando.
+            $providers[$nombre] = $this->exigir(
+                Provider::where('name', $nombre)->where('user_id', $user_id)->first(),
+                sprintf('el proveedor "%s" del usuario del fixture', $nombre),
+                'Corre `ProviderSeeder` (o el seeder base) antes de este seeder.'
+            );
+        }
+
+        return $providers;
     }
 
     /**
@@ -519,7 +619,7 @@ class TestingFerreteriaSeeder extends Seeder
     {
         return Address::create([
             'street'  => self::DEPOSITO,
-            'user_id' => config('app.USER_ID'),
+            'user_id' => $this->user_id_fixture(),
         ]);
     }
 
@@ -572,8 +672,13 @@ class TestingFerreteriaSeeder extends Seeder
 
             $created_article = $article_helper->crear_article($article_payload);
 
-            /** Precios finales calculados con la logica central del sistema, igual que un alta real. */
-            ArticleHelper::setFinalPrice($created_article, config('app.USER_ID'));
+            /**
+             * Precios finales calculados con la logica central del sistema, igual que un alta real.
+             * El usuario es el mismo con el que se resolvieron proveedores y deposito (por email, no
+             * por el USER_ID del .env activo): mezclar dos fuentes de user_id en el mismo fixture es
+             * justo lo que hacia que un modelo ajeno se colara.
+             */
+            ArticleHelper::setFinalPrice($created_article, $this->user_id_fixture());
         }
     }
 
@@ -581,14 +686,23 @@ class TestingFerreteriaSeeder extends Seeder
      * Resuelve el `iva_id` buscando por `percentage` (columna de tipo texto en `ivas`: valores
      * numericos como '21'/'10.5' conviven con literales 'Exento'/'No Gravado').
      *
+     * `ivas` es una tabla global (no tiene columna user_id, ver su migracion): no hay nada que
+     * acotar por usuario, pero si el iva no esta el articulo quedaba con `iva_id` null en silencio
+     * y el error recien aparecia al calcular precios. Por eso ahora corta aca.
+     *
      * @param string $percentage Valor tal cual se guarda en ivas.percentage.
-     * @return int|null
+     * @return int
+     * @throws \RuntimeException Si no existe un iva con ese percentage.
      */
     protected function resolver_iva_id($percentage)
     {
-        $iva = Iva::where('percentage', $percentage)->first();
+        $iva = $this->exigir(
+            Iva::where('percentage', $percentage)->first(),
+            sprintf('el iva con percentage "%s"', $percentage),
+            'Corre `IvaSeeder` antes de este seeder.'
+        );
 
-        return is_null($iva) ? null : $iva->id;
+        return $iva->id;
     }
 
     /**
