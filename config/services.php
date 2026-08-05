@@ -139,6 +139,19 @@ return [
             FILTER_VALIDATE_BOOLEAN
         ),
         'guzzle_ca_bundle' => env('GOOGLE_CUSTOM_SEARCH_GUZZLE_CA_BUNDLE', ''),
+
+        /**
+         * Fallback del header `Referer` que se manda en las llamadas server-to-server a la API de
+         * Google (la key tiene restriccion por referrer HTTP: sin el header, Google responde
+         * "Requests from referer <empty> are blocked").
+         *
+         * En el caso normal NO hace falta cargarla: el valor se deriva del host de `APP_URL`, que
+         * es el mismo que el navegador manda cuando la busqueda se hace desde el front. Solo se
+         * carga en instalaciones cuyo `APP_URL` no es `comerciocity.com` ni un subdominio suyo
+         * (cliente con dominio propio), con una URL que matchee el patron cargado en Google Cloud
+         * Console. Ver GoogleSearchHelpers::google_api_referer().
+         */
+        'referer' => env('GOOGLE_SEARCH_REFERER', ''),
     ],
 
     /**
