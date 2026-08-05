@@ -170,7 +170,21 @@ class UserController extends Controller
         $model->mostrar_vendedor_en_venta_pdf   = $request->mostrar_vendedor_en_venta_pdf;
         $model->pdf_image_size                  = $request->pdf_image_size;
         $model->inputs_size_id                  = $request->inputs_size_id;
-        $model->aplicar_iva_al_costo                  = $request->aplicar_iva_al_costo;
+        /**
+         * Tilde historica de costeo. Va con guard, igual que `condicion_iva_precios` mas abajo y
+         * que `usar_condicion_fiscal_en_costeo`: un request que no traiga la clave la dejaba en
+         * null, que en la columna boolean se persiste como 0, o sea que un update cualquiera
+         * apagaba el flag sin que nadie lo pidiera. Y no queda latente: los tres campos entran en
+         * la comparacion de check_actualizar_articulos(), asi que el apagado silencioso dispara el
+         * recalculo de precios de TODOS los articulos de la cuenta en el acto.
+         *
+         * Ademas del `has()` se descarta el null explicito, porque `has()` devuelve true con la
+         * clave presente en null y ese null no puede significar "apagar": apagar se manda como 0.
+         * El campo sigue siendo editable — cuando viene con valor, se guarda.
+         */
+        if ($request->has('aplicar_iva_al_costo') && !is_null($request->aplicar_iva_al_costo)) {
+            $model->aplicar_iva_al_costo = (int) $request->aplicar_iva_al_costo;
+        }
         $model->aplicar_descuentos_de_venta_a_costos = $request->aplicar_descuentos_de_venta_a_costos;
 
         /**
@@ -192,8 +206,15 @@ class UserController extends Controller
             $model->condicion_iva_precios = $request->condicion_iva_precios;
         }
 
-        // Flag que activa la nueva dinamica de costeo dependiente de la condicion fiscal de la cuenta.
-        $model->usar_condicion_fiscal_en_costeo       = $request->usar_condicion_fiscal_en_costeo;
+        /**
+         * Flag que activa la nueva dinamica de costeo dependiente de la condicion fiscal de la
+         * cuenta. Mismo guard y mismo motivo que `aplicar_iva_al_costo` mas arriba: sin el, un
+         * request que no mande la clave lo apaga en silencio y dispara el recalculo masivo de
+         * precios por check_actualizar_articulos(). No sacar el guard pensando que es redundante.
+         */
+        if ($request->has('usar_condicion_fiscal_en_costeo') && !is_null($request->usar_condicion_fiscal_en_costeo)) {
+            $model->usar_condicion_fiscal_en_costeo = (int) $request->usar_condicion_fiscal_en_costeo;
+        }
 
         /**
          * Permite `provider_code` repetido en artículos.
