@@ -87,6 +87,85 @@ class ArticleHelper {
     }
 
     /**
+     * Pasos 1 a 5 de la cadena del precio final en modo normal: costo real, margen global de la
+     * cuenta, unidades individuales y cotizacion. Extraido de setFinalPrice() (prompt 357/02) sin
+     * cambiarle una linea, porque hace falta poder correr esta parte tambien cuando hay precio
+     * manual — ahi la cadena no corre y sin embargo hay que saber cual seria la base del margen.
+     *
+     * No incluye los margenes de proveedor y categoria: entre medio va la llamada a las listas de
+     * precio, que reciben como costo justamente el resultado de este metodo. Por eso son dos
+     * metodos y no uno.
+     *
+     * @return array{price: float|null, des: array}
+     */
+    static function calcular_base_antes_de_listas($article, $user, $des = []) {
+
+        $cost = $article->costo_real;
+
+        $des[] = 'Comienza con costo real en = '.Numbers::price($cost, true);
+
+        if (!is_null($user->percentage_gain)) {
+            $cost += $cost * $user->percentage_gain / 100;
+            $des[] = 'Mas ganancia del usuario del '.$user->percentage_gain.'% = '.Numbers::price($cost, true);
+        }
+
+        if ($article->unidades_individuales) {
+            $cost = $cost / $article->unidades_individuales;
+            $des[] = 'Dividido en '.$article->unidades_individuales.' unidades individuales = '.Numbers::price($cost, true);
+        }
+
+        $price = $cost;
+
+        if (
+            UserHelper::uses_listas_de_precio($user)
+            && UserHelper::hasExtencion('ventas_en_dolares', $user)
+        ) {
+
+        } else {
+            $res = Self::cotizar($article, $user, $price, $des);
+            $price = $res['price'];
+            $des = $res['des'];
+        }
+
+        return [
+            'price' => $price,
+            'des'   => $des,
+        ];
+    }
+
+    /**
+     * Pasos 7 y 8 de la cadena del precio final: margen del proveedor (lista de precios del
+     * proveedor o su margen general) y margen de la categoria. Extraido de setFinalPrice()
+     * (prompt 357/02) tal cual estaba, por el mismo motivo que el metodo de arriba.
+     *
+     * @return array{price: float|null, des: array}
+     */
+    static function aplicar_margenes_de_proveedor_y_categoria($article, $price, $des = []) {
+
+        if ($article->apply_provider_percentage_gain) {
+
+
+            if (!is_null($article->provider_price_list)) {
+                $price = $price + ($price * $article->provider_price_list->percentage / 100);
+
+            } else if ((!is_null($article->provider) && $article->provider->percentage_gain)) {
+                $price = $price + ($price * $article->provider->percentage_gain / 100);
+                $des[] = 'Mas margen del proveedor del '.$article->provider->percentage_gain.'% = '.Numbers::price($price, true);
+
+                // Log::info('Aplicando margen del proveedor de '.$article->provider->percentage_gain.', quedo en '.$price);
+
+            }
+        }
+
+        $res = ArticlePricesHelper::aplicar_category_percentage_gain($article, $price, $des);
+
+        return [
+            'price' => $res['price'],
+            'des'   => $res['des'],
+        ];
+    }
+
+    /**
      * Calcula (y opcionalmente persiste) el costo real y el precio final de un articulo.
      *
      * @param $guardar_cambios bool Si es false, se pide una simulacion: no se debe escribir
@@ -131,6 +210,7 @@ class ArticleHelper {
                 'costo_real'            => $costo_real,
                 'final_price'           => null,
                 'current_final_price'   => null,
+                'base_margen'           => null,
             ];
         }
         
@@ -240,38 +320,20 @@ class ArticleHelper {
                     $des        = $res['des'];
                 }
 
+                // En esta modalidad el precio sale del costo de lista del proveedor mas IVA: no hay
+                // margen del articulo que invertir, asi que no hay base que guardar. Se pone en null
+                // en vez de dejar el valor de un calculo anterior, que ya no describiria nada.
+                $article->base_margen = null;
+
             } else {
 
                 // MODO NORMAL (actual): PRECIO = costo_real + margen + etc
 
                 $des[] = 'CALCULO DEL PRECIO FINAL';
 
-                $cost = $article->costo_real;
-
-                $des[] = 'Comienza con costo real en = '.Numbers::price($cost, true);
-
-                if (!is_null($user->percentage_gain)) {
-                    $cost += $cost * $user->percentage_gain / 100;
-                    $des[] = 'Mas ganancia del usuario del '.$user->percentage_gain.'% = '.Numbers::price($cost, true);
-                }
-
-                if ($article->unidades_individuales) {
-                    $cost = $cost / $article->unidades_individuales;
-                    $des[] = 'Dividido en '.$article->unidades_individuales.' unidades individuales = '.Numbers::price($cost, true);
-                }
-
-                $final_price = $cost;
-
-                if (
-                    UserHelper::uses_listas_de_precio($user)
-                    && UserHelper::hasExtencion('ventas_en_dolares', $user)
-                ) {
-
-                } else {
-                    $res = Self::cotizar($article, $user, $final_price, $des);
-                    $final_price = $res['price'];
-                    $des = $res['des'];
-                }
+                $res = Self::calcular_base_antes_de_listas($article, $user, $des);
+                $final_price = $res['price'];
+                $des = $res['des'];
                 // if (
                 //     $article->cost_in_dollars
                 //     && $user->cotizar_precios_en_dolares
@@ -308,25 +370,18 @@ class ArticleHelper {
 
                 } 
 
-                if ($article->apply_provider_percentage_gain) {
-
-
-                    if (!is_null($article->provider_price_list)) {
-                        $final_price = $final_price + ($final_price * $article->provider_price_list->percentage / 100);
-
-                    } else if ((!is_null($article->provider) && $article->provider->percentage_gain)) {
-                        $final_price = $final_price + ($final_price * $article->provider->percentage_gain / 100);
-                        $des[] = 'Mas margen del proveedor del '.$article->provider->percentage_gain.'% = '.Numbers::price($final_price, true);
-                        
-                        // Log::info('Aplicando margen del proveedor de '.$article->provider->percentage_gain.', quedo en '.$final_price);
-
-                    } 
-                }
-
-                $res = ArticlePricesHelper::aplicar_category_percentage_gain($article, $final_price, $des);
+                $res = Self::aplicar_margenes_de_proveedor_y_categoria($article, $final_price, $des);
                 $final_price = $res['price'];
                 $des         = $res['des'];
 
+                // Base sobre la que se aplica el margen del articulo. Se guarda para que el front
+                // pueda mostrar el margen que implica un precio cargado a mano (prompt 357/02).
+                // Sin costo no hay base: null, para que nadie divida por cero del otro lado.
+                if (!is_null($article->costo_real) && (float) $article->costo_real != 0.0) {
+                    $article->base_margen = $final_price;
+                } else {
+                    $article->base_margen = null;
+                }
 
                 if (!is_null($article->percentage_gain)) {
                     // Log::info('Sumando percentage_gain, va en '.$final_price);
@@ -350,6 +405,25 @@ class ArticleHelper {
             $des[] = 'CALCULO DEL PRECIO FINAL';
             $final_price = $article->price;
             $des[] = 'Usando el precio manual de '.Numbers::price($final_price, true);
+
+            // El precio manual manda y no se toca, pero la base se calcula igual: es lo que el
+            // front necesita para mostrar que margen implica ese precio (prompt 357/02). Los $des
+            // de estos dos metodos se DESCARTAN a proposito: contarian pasos que no se aplicaron.
+            if (!is_null($article->costo_real) && (float) $article->costo_real != 0.0) {
+
+                $res = Self::calcular_base_antes_de_listas($article, $user);
+                $res = Self::aplicar_margenes_de_proveedor_y_categoria($article, $res['price']);
+
+                $article->base_margen = $res['price'];
+
+                if ((float) $article->base_margen != 0.0) {
+                    $margen_implicito = ($final_price - $article->base_margen) / $article->base_margen * 100;
+                    $des[] = 'Ese precio implica un margen del '.round($margen_implicito, 2).'% sobre la base de '.Numbers::price($article->base_margen, true);
+                }
+
+            } else {
+                $article->base_margen = null;
+            }
         }
 
         // $final_price = ArticlePricesHelper::aplicar_iva($article, $final_price, $user);
@@ -442,6 +516,9 @@ class ArticleHelper {
                 'costo_real'            => $costo_real,
                 'final_price'           => $final_price,
                 'current_final_price'   => $current_final_price,
+                // Base del margen del articulo (prompt 357/02): con esto el front deriva en vivo el
+                // margen que implica un precio cargado a mano, con una division.
+                'base_margen'           => $article->base_margen,
                 // Capa 3 (Prompt 263): desglose de precio equivalente por metodo de pago (null si el
                 // flag `precio_base_incluye_tarjeta` esta apagado o no hay reglas de recargo configuradas).
                 'precios_por_metodo_pago' => ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($final_price, $user->id),
