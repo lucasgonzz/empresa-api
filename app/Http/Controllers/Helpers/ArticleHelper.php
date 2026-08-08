@@ -186,6 +186,14 @@ class ArticleHelper {
 
         $costo_real = null;
 
+        // Prompt 379/01: evita que la rama price_from_cost_mas_iva (mas abajo) reciba el IVA dos
+        // veces -- una vez adentro de esa rama y otra en el bloque comun de IVA de venta. Esa rama
+        // ya deja el precio final CON IVA adentro por definicion de la modalidad; volver a
+        // aplicarlo duplicaba el 21% para las cuentas que no llevan el IVA al costo (Responsable
+        // Inscripto). No sacar la condicion que la consulta mas abajo: es la que evita la
+        // duplicacion.
+        $iva_ya_aplicado = false;
+
         $des = [];
 
         // Desglose de la lista de precio pedida (prompt 357/01). Se acumula aparte y se pega al
@@ -306,19 +314,49 @@ class ArticleHelper {
                     $cost = $cost / $article->unidades_individuales;
                 }
 
-                $res = ArticlePricesHelper::aplicar_iva($article, $cost, $user, $des);
-                $final_price = $res['price'];
-                $des         = $res['des'];
-
-                // Respeta la lógica de cotización si aplica (dólares)
+                // Reordenado (prompt 379/01): costo -> cotizacion -> listas de precio -> IVA, el
+                // mismo orden que usa el modo normal (calcular_base_antes_de_listas() + el bloque
+                // de listas de mas abajo). Antes el IVA se aplicaba primero y las listas nunca se
+                // llamaban en esta rama, asi que los pivotes article_price_type quedaban con el
+                // valor de la ultima vez que el articulo paso por el modo normal, o vacios.
                 if (
                     !UserHelper::uses_listas_de_precio($user)
                     || !UserHelper::hasExtencion('ventas_en_dolares', $user)
                 ) {
-                    $res = Self::cotizar($article, $user, $final_price, $des);
-                    $final_price = $res['price'];
-                    $des        = $res['des'];
+                    $res = Self::cotizar($article, $user, $cost, $des);
+                    $cost = $res['price'];
+                    $des  = $res['des'];
                 }
+
+                // Se le pasa a las listas la base SIN IVA ($cost todavia no paso por
+                // aplicar_iva() de mas abajo). Si se le pasara con IVA, aplicar_precios_segun_listas_de_precios()
+                // se lo volveria a sumar y se reproduce el mismo bug adentro de cada lista.
+                if (UserHelper::uses_listas_de_precio($user)) {
+
+                    if (UserHelper::hasExtencion('ventas_en_dolares', $user)) {
+                        // Calculamos por tipo de precio y por moneda. El bug propio de este camino
+                        // (no aplica IVA ni consulta iva_va_al_costo) lo arregla el prompt 02 de
+                        // este grupo; aca solo se preserva el mismo ruteo que el modo normal.
+                        ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda($article, $cost, $user);
+
+                    } else {
+                        $des_lista = ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $cost, $user, $price_types, $price_type_id_para_descripcion);
+                    }
+
+                } else if (UserHelper::hasExtencion('lista_de_precios_por_categoria', $user)) {
+
+                    ArticlePricesHelper::aplicar_precios_segun_listas_de_precios_y_categorias($article, $cost, $user);
+                }
+
+                $res = ArticlePricesHelper::aplicar_iva($article, $cost, $user, $des);
+                $final_price = $res['price'];
+                $des         = $res['des'];
+
+                // Marca que el IVA de esta modalidad ya quedo aplicado aca: evita que el bloque
+                // comun de IVA de venta (mas abajo) lo vuelva a sumar para las cuentas que no
+                // llevan el IVA al costo (Responsable Inscripto). Sacar esta bandera vuelve a
+                // duplicar el IVA -- esta rama YA lo incorporo.
+                $iva_ya_aplicado = true;
 
                 // En esta modalidad el precio sale del costo de lista del proveedor mas IVA: no hay
                 // margen del articulo que invertir, asi que no hay base que guardar. Se pone en null
@@ -455,7 +493,11 @@ class ArticleHelper {
         $final_price = $res['price'];
         $des   = $res['des'];
 
-        if (!ArticlePricesHelper::iva_va_al_costo($user)) {
+        // $iva_ya_aplicado lo pone en true la rama price_from_cost_mas_iva de arriba: esa
+        // modalidad ya incorpora el IVA en su propio calculo (linea ~309), asi que este bloque
+        // no tiene que volver a aplicarlo o el 21% se suma dos veces (bug real, prompt 379/01).
+        // No sacar esta condicion "para simplificar": es lo unico que evita la duplicacion.
+        if (!$iva_ya_aplicado && !ArticlePricesHelper::iva_va_al_costo($user)) {
 
             $res = ArticlePricesHelper::aplicar_iva($article, $final_price, $user, $des);
             $final_price = $res['price'];
