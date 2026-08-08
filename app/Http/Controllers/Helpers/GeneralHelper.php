@@ -6,6 +6,7 @@ use App\Article;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class GeneralHelper {
@@ -149,14 +150,23 @@ class GeneralHelper {
             return null;
         }
 
-        if (preg_match('~[/\\\\](?:public/)?storage/([^/?#]+)~i', $image_url, $matches)) {
-            $local_path = storage_path('app/public/' . $matches[1]);
-            if (file_exists($local_path)) {
-                return $local_path;
+        // La captura tiene que ser el RESTO del path ([^?#]+), no un solo segmento
+        // ([^/?#]+): hay URLs de storage con subcarpetas -- el comando set_article_images
+        // arma .../storage/articles_images/zip/<desc>/<desc>.jpg. Con la version vieja esto
+        // devolvia storage/app/public/articles_images, o sea un DIRECTORIO, que pasaba el
+        // file_exists() de abajo y llegaba hasta FPDF, que reventaba sobre una carpeta y
+        // dejaba la celda en blanco sin log ni excepcion. Por eso tambien is_file() y no
+        // file_exists(): un directorio no es una imagen.
+        if (preg_match('~[/\\\\](?:public/)?storage/([^?#]+)~i', $image_url, $matches)) {
+            if (strpos($matches[1], '..') === false) {
+                $local_path = storage_path('app/public/' . $matches[1]);
+                if (is_file($local_path)) {
+                    return $local_path;
+                }
             }
         }
 
-        if (file_exists($image_url)) {
+        if (is_file($image_url)) {
             return $image_url;
         }
 
@@ -164,7 +174,14 @@ class GeneralHelper {
     }
 
     /**
-     * Ruta local usable por FPDF (convierte webp a jpg en storage si hace falta).
+     * Ruta a un archivo LOCAL que FPDF puede dibujar, o null. Nunca una URL.
+     *
+     * El contrato es lo unico que importa aca: quien la consume chequea con is_file()
+     * -- que es lo correcto para una ruta local -- y file_exists()/is_file() devuelven
+     * SIEMPRE false para un http:// porque el wrapper HTTP de PHP no implementa stat().
+     * Cuando este metodo devolvia la URL en el camino de fallback, la celda del PDF
+     * quedaba vacia sin excepcion, sin log y sin nada que investigar (bug de los JPG
+     * invisibles en ArticleTablePdf, 7/8/2026).
      *
      * @param  string|null  $image_url
      * @return string|null
@@ -182,31 +199,144 @@ class GeneralHelper {
         $extension = strtolower(pathinfo($basename, PATHINFO_EXTENSION));
         $jpg_file_url = storage_path('app/public/' . $base_name . '.jpg');
 
+        // La rama webp va primero a proposito: aprovecha los .jpg ya convertidos que hay
+        // en produccion y evita volver a bajar nada. Si la conversion falla ya no se
+        // devuelve la URL: se cae a materialize_image_for_pdf() como cualquier otro caso.
         if ($extension === 'webp') {
-            if (! file_exists($jpg_file_url)) {
+            if (! is_file($jpg_file_url)) {
                 try {
                     $image = @imagecreatefromwebp($source_for_read);
                     if ($image !== false) {
                         imagejpeg($image, $jpg_file_url, 100);
                         imagedestroy($image);
-                    } else {
-                        return $local_source ?: $image_url;
                     }
                 } catch (\Exception $e) {
-                    return $local_source ?: $image_url;
+                    Log::info('pdf_image_path: fallo la conversion de webp de '.$image_url.' ('.$e->getMessage().'), intento materializar');
                 }
             }
 
-            return $jpg_file_url;
+            if (is_file($jpg_file_url)) {
+                return $jpg_file_url;
+            }
         }
 
-        if ($local_source) {
-            return $local_source;
+        // Un jpg local es exactamente lo que FPDF quiere: se devuelve tal cual.
+        if (! is_null($local_source)) {
+            $local_extension = strtolower(pathinfo($local_source, PATHINFO_EXTENSION));
+            if ($local_extension === 'jpg' || $local_extension === 'jpeg') {
+                return $local_source;
+            }
         }
 
-        return self::getJpgImage($image_url);
+        return self::materialize_image_for_pdf($image_url, $local_source);
     }
 
+    /**
+     * Baja (o lee del disco) una imagen, la normaliza a JPEG y la deja cacheada.
+     * Devuelve la ruta del archivo cacheado, o null si no se pudo resolver.
+     *
+     * El cache NO expira. Si alguna vez hay que invalidarlo, alcanza con borrar
+     * storage/app/public/pdf_cache/ entero: se regenera solo en el proximo PDF.
+     *
+     * @param  string       $image_url
+     * @param  string|null  $local_source
+     * @return string|null
+     */
+    private static function materialize_image_for_pdf($image_url, $local_source)
+    {
+        $image = null;
+        $canvas = null;
+
+        try {
+            // La clave del cache es la URL ENTERA, no el basename: dos articulos de
+            // proveedores distintos pueden tener los dos una foto.jpg y con basename uno
+            // pisaria al otro (es la debilidad que ya tiene la rama webp de arriba).
+            $cache_path = storage_path('app/public/pdf_cache/' . md5($image_url) . '.jpg');
+            if (is_file($cache_path)) {
+                return $cache_path;
+            }
+
+            if (! is_null($local_source)) {
+                $bytes = @file_get_contents($local_source);
+            } else if (preg_match('~^https?://~i', $image_url)) {
+                $response = Http::withHeaders(['User-Agent' => 'Mozilla/5.0'])
+                                ->timeout(10)
+                                ->get($image_url);
+                // Sin Referer a proposito: mandarlo dispara las protecciones
+                // anti-hotlinking de los sitios de origen (grupo 356).
+                if (! $response->successful()) {
+                    Log::info('pdf_image_path: no se pudo resolver la imagen '.$image_url.' (la descarga devolvio '.$response->status().')');
+                    return null;
+                }
+                $bytes = $response->body();
+            } else {
+                Log::info('pdf_image_path: no se pudo resolver la imagen '.$image_url.' (no es http(s) y no existe local)');
+                return null;
+            }
+
+            if ($bytes === false || $bytes === '') {
+                Log::info('pdf_image_path: no se pudo resolver la imagen '.$image_url.' (no se pudieron leer los bytes)');
+                return null;
+            }
+
+            $image = @imagecreatefromstring($bytes);
+            if ($image === false) {
+                Log::info('pdf_image_path: no se pudo resolver la imagen '.$image_url.' (formato ilegible)');
+                return null;
+            }
+
+            $cache_dir = dirname($cache_path);
+            if (! is_dir($cache_dir)) {
+                // El segundo is_dir() cubre la carrera: otro proceso pudo haber creado la
+                // carpeta entre el chequeo y el mkdir, y ahi mkdir devuelve false sin que
+                // haya pasado nada malo.
+                if (! @mkdir($cache_dir, 0775, true) && ! is_dir($cache_dir)) {
+                    Log::info('pdf_image_path: no se pudo resolver la imagen '.$image_url.' (no se pudo crear '.$cache_dir.')');
+                    imagedestroy($image);
+                    return null;
+                }
+            }
+
+            // Aplanar sobre blanco no es adorno: un PNG con canal alfa pasado a JPEG sin
+            // fondo sale con fondo NEGRO. Y todo termina en JPEG baseline porque
+            // ArticleTablePdf extiende fpdf (no AlphaPDF) y _parsejpg es lo unico que
+            // dibuja con garantia.
+            $width = imagesx($image);
+            $height = imagesy($image);
+            $canvas = imagecreatetruecolor($width, $height);
+            $white = imagecolorallocate($canvas, 255, 255, 255);
+            imagefilledrectangle($canvas, 0, 0, $width, $height, $white);
+            imagecopy($canvas, $image, 0, 0, 0, 0, $width, $height);
+
+            $saved = imagejpeg($canvas, $cache_path, 90);
+
+            imagedestroy($canvas);
+            imagedestroy($image);
+
+            if (! $saved || ! is_file($cache_path)) {
+                Log::info('pdf_image_path: no se pudo resolver la imagen '.$image_url.' (no se pudo guardar el cache)');
+                return null;
+            }
+
+            return $cache_path;
+        } catch (\Exception $e) {
+            if (! is_null($canvas) && $canvas !== false) {
+                imagedestroy($canvas);
+            }
+            if (! is_null($image) && $image !== false) {
+                imagedestroy($image);
+            }
+            Log::info('pdf_image_path: no se pudo resolver la imagen '.$image_url.' ('.$e->getMessage().')');
+            return null;
+        }
+    }
+
+    /**
+     * OJO: devuelve una ruta local O la URL original tal cual. No sirve para quien vaya a
+     * chequear el resultado con is_file()/file_exists() -- para eso esta pdf_image_path().
+     * Sus consumidores (CatalogClassic, TCPDCCatalog, BudgetPdf, ArticleListImagePdf) se lo
+     * pasan directo a Image(), que baja la URL solo, y por eso toleran que no sea local.
+     */
     static function getJpgImage($image_url) {
 
 
