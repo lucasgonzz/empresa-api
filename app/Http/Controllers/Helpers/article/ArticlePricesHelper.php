@@ -109,27 +109,57 @@ class ArticlePricesHelper {
                     $price = $cost + ($cost * $percentage / 100);
 
                     // Capa 2 (Prompt 261): sale_taxes con formula de division, despues del margen
-                    // y antes del IVA de venta (que en este metodo esta comentado/no se aplica).
+                    // y antes del IVA de venta.
                     $res = Self::aplicar_sale_taxes($article, $price, $user, []);
                     $price = $res['price'];
 
-                    // $final_price = Self::aplicar_iva($article, $price, $user);
+                    // Prompt 379/03: mismo criterio y mismo lugar que el camino principal
+                    // (aplicar_precios_segun_listas_de_precios(), mas abajo en este archivo): el IVA
+                    // se suma despues del margen y de sale_taxes, solo si iva_va_al_costo($user) da
+                    // false. Antes esta llamada estaba comentada y las listas de esta extension
+                    // salian netas para una cuenta Responsable Inscripto, mientras el camino
+                    // principal si les sumaba el IVA -- dos precios de lista distintos para la misma
+                    // cuenta segun por que extension pasara el articulo.
+                    if (!Self::iva_va_al_costo($user)) {
+
+                        $res = Self::aplicar_iva($article, $price, $user, []);
+                        $price = $res['price'];
+                    }
 
                     $article->price_types()->syncWithoutDetaching($price_type->id);
 
-                    $final_price = ArticleHelper::redondear($price, $user)['price'];
+                    // Prompt 379/03: se saca el redondeo (antes ArticleHelper::redondear() aca). El
+                    // camino principal no redondea el precio de la lista en ningun punto -- el
+                    // redondeo es del precio FINAL del articulo y lo hace setFinalPrice() (llama a
+                    // Self::redondear() al final de su propio pipeline). Redondear aca ademas hacia
+                    // que dos cuentas con la misma configuracion de redondeo obtuvieran precios de
+                    // lista distintos segun por que camino (categorias o principal) pasara el articulo.
+                    $final_price = $price;
+
+                    // Prompt 379/03: mismas dos columnas que persiste el camino principal
+                    // (precio_luego_de_recargos y monto_ganancia), para que el desglose del boton "?"
+                    // de la tarjeta de esta lista en el modal del articulo (grupo 357) tambien
+                    // funcione para las cuentas con esta extension -- antes quedaba incompleto.
+                    $res = Self::aplicar_price_type_surchages($price_type, $final_price, $cost, null);
 
                     $article->price_types()->updateExistingPivot($price_type->id, [
-                        'percentage'    => $percentage,
-                        'price'         => $price,
-                        'final_price'   => $final_price,
+                        'percentage'                => $percentage,
+                        'price'                     => $price,
+                        'final_price'               => $final_price,
+                        'precio_luego_de_recargos'  => $res['precio_luego_de_recargos'],
+                        'monto_ganancia'            => $res['monto_ganancia'],
                     ]);
                 } else {
 
+                    // Categoria/subcategoria sin porcentaje: las cinco columnas en null, sin restos
+                    // de un calculo anterior (un precio_luego_de_recargos viejo junto a un final_price
+                    // en null seria peor que ninguno de los dos).
                     $article->price_types()->updateExistingPivot($price_type->id, [
-                        'percentage'    => null,
-                        'price'         => null,
-                        'final_price'   => null,
+                        'percentage'                => null,
+                        'price'                     => null,
+                        'final_price'               => null,
+                        'precio_luego_de_recargos'  => null,
+                        'monto_ganancia'            => null,
                     ]);
                 }
 
