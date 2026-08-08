@@ -73,8 +73,29 @@ class ArticlePriceTypeMonedaHelper {
     }
         
     /*
-        Con las relaciones y valores ya almacenados por attach_price_type_monedas, calculo y guardo el precio final
-        Recibo el costo con iva y sin cotizar
+        Con las relaciones y valores ya almacenados por attach_price_type_monedas, calculo y guardo el precio final.
+        Recibo el costo SEGUN LA CONDICION FISCAL de la cuenta, no "con IVA" (prompt 379/02: hasta ese
+        prompt el docblock decia "con iva", literalmente falso desde el grupo 231 para las cuentas
+        migradas). Ver ArticlePricesHelper::iva_va_al_costo(): para una cuenta migrada RRII el costo
+        llega NETO; para MT o una cuenta legacy con aplicar_iva_al_costo=1 llega CON el IVA ya adentro
+        (se lo suma antes ArticleHelper::aplicar_descuentos_e_iva(), al calcular costo_real). Por eso
+        el parametro se llama `$cost_base` (generico), no `$cost_sin_iva` ni `$cost_con_iva`:
+        ninguno de esos dos nombres es cierto siempre, y un nombre que miente en la mitad de los
+        casos es peor que uno generico.
+        El IVA se aplica adentro, en calc_normal(), con el MISMO criterio que el otro camino de listas
+        (ArticlePricesHelper::aplicar_precios_segun_listas_de_precios()): despues del margen, solo si
+        iva_va_al_costo($user) da false, y solo para las entradas cuyo precio se calcula desde el costo
+        (las de setear_precio_final = 1 ya traen el precio armado a mano, con el IVA que corresponda
+        adentro, y no se tocan). Los dos caminos de listas TIENEN que decidir el IVA igual -- si se
+        cambia el criterio de uno, cambiar el otro.
+
+        Orden IVA vs. cotizacion (verificado, no es un supuesto): el IVA se aplica DESPUES de
+        $get_cost_for_moneda() (que solo multiplica/divide por el tipo de cambio). Es indistinto
+        matematicamente porque ninguna de las dos operaciones redondea -- $get_cost_for_moneda() es
+        una multiplicacion/division pura y ArticlePricesHelper::aplicar_iva() tampoco llama a
+        Numbers::redondear() ni a round() en ningun punto de esta cadena (el unico uso de Numbers aca
+        es para texto de $des, que esta funcion ni arma). Sin redondeo intermedio, (costo x tipo de
+        cambio) x (1 + iva) y (costo x (1 + iva)) x tipo de cambio dan bit a bit el mismo resultado.
     */
     public static function aplicar_precios_por_price_type_y_moneda($article, $_cost, $user)
     {
@@ -92,9 +113,9 @@ class ArticlePriceTypeMonedaHelper {
             $base_cost = (float) $_cost;
         }
 
-        $get_cost_for_moneda = function ($cost_con_iva, $moneda_id) use ($article, $rate, $ars_id, $usd_id) {
+        $get_cost_for_moneda = function ($cost_base, $moneda_id) use ($article, $rate, $ars_id, $usd_id) {
 
-            $cost = (float) $cost_con_iva;
+            $cost = (float) $cost_base;
 
             if ($article->cost_in_dollars && $moneda_id == $ars_id) {
                 $cost *= $rate;
@@ -109,11 +130,11 @@ class ArticlePriceTypeMonedaHelper {
             return $cost;
         };
 
-        $calc_normal = function ($entry, $cost_con_iva) use ($get_cost_for_moneda) {
+        $calc_normal = function ($entry, $cost_base) use ($get_cost_for_moneda, $article, $user) {
 
             $moneda_id = (int) $entry->moneda_id;
 
-            $cost = $get_cost_for_moneda($cost_con_iva, $moneda_id);
+            $cost = $get_cost_for_moneda($cost_base, $moneda_id);
 
             $final_price = (float) $entry->final_price;
             $percentage  = (float) $entry->percentage;
@@ -122,6 +143,9 @@ class ArticlePriceTypeMonedaHelper {
 
             if ($setear_precio_final) {
 
+                // Precio cargado a mano (prompt 379/02): el IVA que corresponda ya esta adentro
+                // por definicion, igual que en el `else` de setFinalPrice() que respeta el precio
+                // manual. No se le aplica IVA ni se recalcula nada mas que el percentage implicito.
                 if ($cost > 0) {
                     $percentage = ($final_price - $cost) / $cost * 100;
                 } else {
@@ -131,6 +155,15 @@ class ArticlePriceTypeMonedaHelper {
             } else {
 
                 $final_price = $cost + ($cost * (float)$percentage / 100);
+
+                // Mismo criterio que ArticlePricesHelper::aplicar_precios_segun_listas_de_precios():
+                // el IVA se suma DESPUES del margen de la lista, y solo si iva_va_al_costo($user) da
+                // false (para MT, o una cuenta legacy con aplicar_iva_al_costo prendido, el IVA ya
+                // viene adentro del costo real y sumarlo aca lo duplicaria).
+                if (!ArticlePricesHelper::iva_va_al_costo($user)) {
+                    $res = ArticlePricesHelper::aplicar_iva($article, $final_price, $user, []);
+                    $final_price = $res['price'];
+                }
             }
 
             return [
