@@ -233,6 +233,68 @@ class Flujo_De_Caja_Test extends EmpresaTestCase
     }
 
     /**
+     * Test 2b (grupo 380 · prompt 03) — 🔴 Eliminar una venta comisionada por `CAJA_MP` no puede
+     * DUPLICAR (ni invertir) la "plata en tránsito". Encontrado por el checker de ese prompt leyendo
+     * el código, en la primera versión del fix: el movimiento compensatorio (egreso) que revierte la
+     * venta necesita la misma `fecha_liquidacion_estimada` que el original para que
+     * `CajaLiquidacionHelper::calcular_saldos_liquidez()` lo clasifique en el balde correcto (ver
+     * `DeleteCajaCompensacionHelper::revertir_liquidacion_del_original()`) — pero eso significaba que
+     * `FlujoCajaHelper::query_liquidaciones_pendientes()`, que filtraba solo por
+     * `fecha_liquidacion_estimada` sin importar si la fila era un ingreso o un egreso, empezaba a
+     * contar TAMBIÉN ese egreso como si fuera un ingreso pendiente más — el total se duplicaba
+     * (93.710 → 187.420) en vez de cancelarse. El fix agrega `whereNotNull('ingreso')` a esa query
+     * (mismo filtro que ya usa `CajaController::liquidaciones_pendientes()`).
+     *
+     * OJO — esto NO deja el tránsito en cero: el movimiento ORIGINAL de la venta sigue teniendo su
+     * `fecha_liquidacion_estimada` futura (nada lo borra ni lo edita, el sistema compensa, no
+     * borra), así que sigue apareciendo como "pendiente" después de eliminar la venta. Es un gap
+     * PREEXISTENTE de este reporte (`CajaController::liquidaciones_pendientes()` tiene el mismo
+     * patrón y el mismo gap, y no cambió con este prompt), fuera del alcance del prompt 380/03 —
+     * que es sobre los tres saldos de `CajaLiquidacionHelper::calcular_saldos_liquidez()`, no sobre
+     * este reporte — y quedó registrado como hallazgo
+     * (`20260809-flujo-caja-liquidaciones-pendientes-no-descuenta-ventas-eliminadas.json`). Lo que
+     * este test prueba es específicamente que NO se duplica: el total después de eliminar tiene que
+     * seguir siendo el mismo neto de antes (una sola vez), nunca el doble.
+     *
+     * @group reportes
+     * @test
+     */
+    public function eliminar_venta_comisionada_no_duplica_la_plata_en_transito()
+    {
+        $this->fijar_reloj_en('2021-04-10 10:00:00');
+
+        $venta_mp = $this->crear_venta_cobrada(TestingFerreteriaSeeder::CAJA_MP, TestingFerreteriaSeeder::PAGO_EFECTIVO, 30000);
+
+        $flujo_antes = $this->pedir_flujo_caja('2021-04-01', '2021-04-30');
+        $neto_antes = (float) $flujo_antes['plata_en_transito']['total_estimado'];
+        $this->assertGreaterThan(
+            0,
+            $neto_antes,
+            'la venta tiene que aparecer en tránsito antes de eliminarla, o el resto del test no prueba nada'
+        );
+
+        $response = $this->deleteJson('api/sale/'.$venta_mp->id, ['compensar_caja' => 1]);
+        $this->assertEquals(
+            200,
+            $response->getStatusCode(),
+            'DELETE api/sale/'.$venta_mp->id.' devolvió '.$response->getStatusCode().'. Cuerpo: '.$response->getContent()
+        );
+
+        $flujo_despues = $this->pedir_flujo_caja('2021-04-01', '2021-04-30');
+        $neto_despues = (float) $flujo_despues['plata_en_transito']['total_estimado'];
+
+        $this->assertEqualsWithDelta(
+            $neto_antes,
+            $neto_despues,
+            self::DELTA,
+            'BUG: el movimiento compensatorio (egreso) de la venta eliminada tiene que quedar AFUERA '.
+            'de plata_en_transito.total_estimado (no es un ingreso pendiente). Si vuelve a aparecer '.
+            'como uno más, el total se duplica en vez de quedar igual que antes de eliminar la venta. '.
+            'Antes: '.$neto_antes.'. Después: '.$neto_despues.' (no tendría que haber cambiado).'
+        );
+    }
+
+    /**
      * Test 3 — 🔴 La comisión de Mercado Pago aparece exactamente una vez, como gasto: una venta de
      * $100.000 por `CAJA_MP` genera (grupo 223) un `Expense` automático con el concepto
      * `CONCEPTO_GASTO_COMISION`. Se verifica que ese concepto aparece UNA sola vez dentro del

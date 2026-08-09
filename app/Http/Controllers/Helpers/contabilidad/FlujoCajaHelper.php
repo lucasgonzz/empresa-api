@@ -472,6 +472,15 @@ class FlujoCajaHelper
         $query = MovimientoCaja::query()
             ->join('cajas', 'cajas.id', '=', 'movimiento_cajas.caja_id')
             ->where('cajas.user_id', $user_id)
+            // Prompt 380/03: solo INGRESOS pendientes de liquidar. Sin este filtro, un movimiento
+            // compensatorio (egreso) que revierte un cobro "a liquidar" -- desde que
+            // DeleteCajaCompensacionHelper::revertir_liquidacion_del_original() le copia la fecha
+            // futura del original, para que CajaLiquidacionHelper::calcular_saldos_liquidez() lo
+            // clasifique bien -- tambien caía en esta query y sumaba en POSITIVO como si fuera plata
+            // por cobrar, duplicando (en sentido contrario) la "plata en transito" de una venta que
+            // ya se eliminó. Mismo filtro que ya usa CajaController::liquidaciones_pendientes()
+            // (la línea de tiempo por caja) para el mismo concepto.
+            ->whereNotNull('movimiento_cajas.ingreso')
             ->whereNotNull('movimiento_cajas.fecha_liquidacion_estimada')
             ->whereDate('movimiento_cajas.fecha_liquidacion_estimada', '>', $hoy);
 

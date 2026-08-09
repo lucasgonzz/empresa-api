@@ -151,19 +151,30 @@ class DeleteCajaCompensacionHelper
             $movimiento_compensatorio = $movimiento_helper->crear_movimiento($data);
 
             if ($es_reversion_de_cobro && !is_null($model_id)) {
-                $this->revertir_comision_del_original($movimiento_compensatorio, $model_type, $model_id, (int) $caja_id, $monto);
+                $this->revertir_liquidacion_del_original($movimiento_compensatorio, $model_type, $model_id, (int) $caja_id, $monto);
             }
         }
     }
 
     /**
-     * Busca el movimiento original que generó el cobro que se está revirtiendo y, si tuvo un gasto
-     * de comisión asociado, lo borra y copia su `monto_neto_estimado` al movimiento compensatorio.
+     * Busca el movimiento original que generó el cobro que se está revirtiendo y hace que el
+     * movimiento compensatorio "aterrice" en el mismo balde de liquidez que ese original —
+     * independientemente de si tuvo comisión o no — y, si tuvo un gasto de comisión asociado, lo
+     * borra.
      *
-     * El movimiento compensatorio mantiene `egreso` en BRUTO (el saldo contable tiene que cerrar en
-     * cero), pero copiar el neto original permite que `saldo_disponible` también cierre en cero —
-     * de lo contrario, eliminar una venta comisionada dejaría el saldo disponible corrido para
-     * siempre por el valor de la comisión.
+     * Prompt 380/03 (corrección tras el checker): la copia de `fecha_liquidacion_estimada` /
+     * `monto_neto_estimado` NO puede quedar condicionada a que exista `comision_expense_id`. Una
+     * caja puede tener `dias_liquidacion` configurado SIN comisión (0% o sin `comision_porcentaje`),
+     * o con comisión pero sin `expense_concept_id` (`CAJA_SIN_CONCEPTO` del fixture:
+     * `crear_gasto_comision()` no crea el `Expense` en ese caso, así que `comision_expense_id` queda
+     * null) — en los dos casos el movimiento original SIGUE teniendo `fecha_liquidacion_estimada`
+     * futura, y sin copiarla el compensatorio vuelve a caer en el balde equivocado (el mismo bug que
+     * este prompt vino a arreglar, solo que sin comisión de por medio).
+     *
+     * El movimiento compensatorio mantiene `egreso`/`ingreso` en BRUTO (el saldo contable tiene que
+     * cerrar en cero con la plata real que entró/salió), pero copiar el neto y la fecha del original
+     * permite que `saldo_disponible` y `saldo_a_liquidar` también cierren en cero — de lo contrario,
+     * eliminar una venta con liquidación diferida dejaría esos dos saldos corridos para siempre.
      *
      * @param \App\Models\MovimientoCaja $movimiento_compensatorio Movimiento recién creado (egreso/ingreso inverso).
      * @param string $model_type MODEL_TYPE_SALE o MODEL_TYPE_CURRENT_ACOUNT.
@@ -172,30 +183,28 @@ class DeleteCajaCompensacionHelper
      * @param float $monto Monto del pivote, usado solo en el fallback de búsqueda por CC.
      * @return void
      */
-    protected function revertir_comision_del_original($movimiento_compensatorio, $model_type, $model_id, $caja_id, $monto)
+    protected function revertir_liquidacion_del_original($movimiento_compensatorio, $model_type, $model_id, $caja_id, $monto)
     {
         $movimiento_original = $this->buscar_movimiento_original($model_type, $model_id, $caja_id, $monto);
 
-        if (is_null($movimiento_original) || is_null($movimiento_original->comision_expense_id)) {
+        if (is_null($movimiento_original)) {
             return;
         }
 
-        // Borrar el gasto automático de comisión: la venta/cobro que lo generó se está revirtiendo,
-        // no puede quedar un gasto de comisión de algo que ya no existe.
-        Expense::where('id', $movimiento_original->comision_expense_id)->delete();
-
-        // Prompt 380/03: no alcanza con copiar monto_neto_estimado. calcular_saldos_liquidez()
-        // clasifica cada movimiento en el balde "disponible" o "a liquidar" SEGUN SU PROPIA
-        // fecha_liquidacion_estimada -- el compensatorio, creado por crear_movimiento() sin pasar
-        // por la liquidacion (no manda aplica_liquidacion), nace con fecha null ("disponible"). Si
-        // el original estaba "a liquidar" (fecha futura, ej. Mercado Pago a 14 dias), el egreso
-        // compensatorio caia en el balde equivocado: restaba de "disponible" un monto que nunca
-        // habia entrado ahi, y no tocaba "a liquidar", que es donde en realidad habia que
-        // cancelarlo. Copiar tambien la fecha hace que el compensatorio aterrice en el MISMO balde
-        // que el ingreso que esta anulando.
+        // Aterriza el compensatorio en el MISMO balde de liquidez (disponible / a liquidar) que el
+        // original, tenga o no comisión: calcular_saldos_liquidez() clasifica cada movimiento SOLO
+        // por su propia fecha_liquidacion_estimada, y el compensatorio nace con fecha null (no pasa
+        // por aplica_liquidacion). Sin esto, revertir un movimiento "a liquidar" resta de
+        // "disponible" -- plata que nunca habia entrado ahi -- y no cancela "a liquidar".
         $movimiento_compensatorio->fecha_liquidacion_estimada = $movimiento_original->fecha_liquidacion_estimada;
         $movimiento_compensatorio->monto_neto_estimado = $movimiento_original->monto_neto_estimado;
         $movimiento_compensatorio->save();
+
+        if (!is_null($movimiento_original->comision_expense_id)) {
+            // Borrar el gasto automático de comisión: la venta/cobro que lo generó se está
+            // revirtiendo, no puede quedar un gasto de comisión de algo que ya no existe.
+            Expense::where('id', $movimiento_original->comision_expense_id)->delete();
+        }
     }
 
     /**
