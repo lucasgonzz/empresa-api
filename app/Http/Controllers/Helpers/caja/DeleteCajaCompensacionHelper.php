@@ -184,6 +184,16 @@ class DeleteCajaCompensacionHelper
         // no puede quedar un gasto de comisión de algo que ya no existe.
         Expense::where('id', $movimiento_original->comision_expense_id)->delete();
 
+        // Prompt 380/03: no alcanza con copiar monto_neto_estimado. calcular_saldos_liquidez()
+        // clasifica cada movimiento en el balde "disponible" o "a liquidar" SEGUN SU PROPIA
+        // fecha_liquidacion_estimada -- el compensatorio, creado por crear_movimiento() sin pasar
+        // por la liquidacion (no manda aplica_liquidacion), nace con fecha null ("disponible"). Si
+        // el original estaba "a liquidar" (fecha futura, ej. Mercado Pago a 14 dias), el egreso
+        // compensatorio caia en el balde equivocado: restaba de "disponible" un monto que nunca
+        // habia entrado ahi, y no tocaba "a liquidar", que es donde en realidad habia que
+        // cancelarlo. Copiar tambien la fecha hace que el compensatorio aterrice en el MISMO balde
+        // que el ingreso que esta anulando.
+        $movimiento_compensatorio->fecha_liquidacion_estimada = $movimiento_original->fecha_liquidacion_estimada;
         $movimiento_compensatorio->monto_neto_estimado = $movimiento_original->monto_neto_estimado;
         $movimiento_compensatorio->save();
     }

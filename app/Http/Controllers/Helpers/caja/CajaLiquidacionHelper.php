@@ -179,8 +179,19 @@ class CajaLiquidacionHelper {
      * nada en tránsito), que es exactamente lo que veía el cliente antes de este cambio.
      *
      * El COALESCE aplica igual a ingresos y a egresos: `monto_neto_estimado`, cuando existe, es el
-     * monto que impacta liquidez sin importar el signo del movimiento (así cierra en cero la
-     * reversión de una venta comisionada, ver `DeleteCajaCompensacionHelper`).
+     * monto que impacta liquidez sin importar el signo del movimiento.
+     *
+     * Prompt 380/03: los egresos se clasifican por `fecha_liquidacion_estimada` con el MISMO
+     * criterio que los ingresos (disponible si es null o ya pasó, a liquidar si es futura) -- antes
+     * los egresos se sumaban todos juntos sin mirar la fecha, así que un egreso compensatorio que
+     * revierte un ingreso "a liquidar" (ver `DeleteCajaCompensacionHelper::revertir_comision_del_original()`,
+     * que ahora también copia la fecha del original) restaba de "disponible" en vez de cancelar "a
+     * liquidar", y `eliminar_venta_comisionada_deja_los_tres_saldos_donde_estaban_antes` medía
+     * `saldo_disponible` corrido para siempre por el neto de la comisión y `saldo_a_liquidar` sin
+     * bajar nunca a cero. Para el 100% de los egresos que NO son reversión de un cobro comisionado
+     * (gastos, transferencias, pagos a proveedor: `aplica_liquidacion` nunca se les enciende, así
+     * que su `fecha_liquidacion_estimada` siempre es null) esto no cambia nada: siguen cayendo en
+     * "disponible" exactamente como antes.
      *
      * @param int $caja_id
      * @return array Array con saldo_disponible y saldo_a_liquidar (floats).
@@ -193,19 +204,21 @@ class CajaLiquidacionHelper {
                         ->where('caja_id', $caja_id)
                         ->selectRaw(
                             'SUM(CASE WHEN ingreso IS NOT NULL AND (fecha_liquidacion_estimada IS NULL OR fecha_liquidacion_estimada <= ?) THEN COALESCE(monto_neto_estimado, ingreso) ELSE 0 END) as ingresos_disponibles,
-                             SUM(CASE WHEN egreso IS NOT NULL THEN COALESCE(monto_neto_estimado, egreso) ELSE 0 END) as egresos_totales,
-                             SUM(CASE WHEN ingreso IS NOT NULL AND fecha_liquidacion_estimada > ? THEN COALESCE(monto_neto_estimado, ingreso) ELSE 0 END) as ingresos_a_liquidar',
-                            [$hoy, $hoy]
+                             SUM(CASE WHEN egreso IS NOT NULL AND (fecha_liquidacion_estimada IS NULL OR fecha_liquidacion_estimada <= ?) THEN COALESCE(monto_neto_estimado, egreso) ELSE 0 END) as egresos_disponibles,
+                             SUM(CASE WHEN ingreso IS NOT NULL AND fecha_liquidacion_estimada > ? THEN COALESCE(monto_neto_estimado, ingreso) ELSE 0 END) as ingresos_a_liquidar,
+                             SUM(CASE WHEN egreso IS NOT NULL AND fecha_liquidacion_estimada > ? THEN COALESCE(monto_neto_estimado, egreso) ELSE 0 END) as egresos_a_liquidar',
+                            [$hoy, $hoy, $hoy, $hoy]
                         )
                         ->first();
 
         $ingresos_disponibles = (float) ($agregado->ingresos_disponibles ?? 0);
-        $egresos_totales = (float) ($agregado->egresos_totales ?? 0);
+        $egresos_disponibles = (float) ($agregado->egresos_disponibles ?? 0);
         $ingresos_a_liquidar = (float) ($agregado->ingresos_a_liquidar ?? 0);
+        $egresos_a_liquidar = (float) ($agregado->egresos_a_liquidar ?? 0);
 
         return [
-            'saldo_disponible'  => Numbers::redondear($ingresos_disponibles - $egresos_totales),
-            'saldo_a_liquidar'  => Numbers::redondear($ingresos_a_liquidar),
+            'saldo_disponible'  => Numbers::redondear($ingresos_disponibles - $egresos_disponibles),
+            'saldo_a_liquidar'  => Numbers::redondear($ingresos_a_liquidar - $egresos_a_liquidar),
         ];
     }
 }
