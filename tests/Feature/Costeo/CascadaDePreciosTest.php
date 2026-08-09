@@ -185,7 +185,7 @@ class CascadaDePreciosTest extends TestCase
         // hallazgo del checker del prompt 04): si el fixture no estaba (usuario 500, articulo,
         // proveedor o price_types faltantes), $this->pinza/$this->provider siguen en null y el resto
         // de este metodo explotaria con un Error, no con el skip limpio que se busca.
-        if (is_null($this->pinza) || is_null($this->user) || is_null($this->provider)) {
+        if (is_null($this->pinza) || is_null($this->user) || is_null($this->provider) || is_null($this->category)) {
             parent::tearDown();
             return;
         }
