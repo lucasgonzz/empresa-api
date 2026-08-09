@@ -252,6 +252,23 @@ trait EscenariosDePlata
      * Garantiza que el cliente tenga `credit_account` antes de cobrar (no toda la fixture de
      * clientes trae una precargada, ver comentario de CLIENTE_CC en TestingFerreteriaSeeder).
      *
+     * Prompt 380/02 — `CurrentAcountController::pago()` (línea ~118 al momento de este prompt)
+     * devuelve el pago bajo la clave `current_acount`, no `model`. Es la única diferencia real:
+     * relevamiento completo de los endpoints que usa este trait, mirando el `return
+     * response()->json(...)` real de cada controller (no lo que "debería" devolver):
+     *
+     *   | Endpoint                        | Controller@método                  | Clave   |
+     *   |----------------------------------|-------------------------------------|---------|
+     *   | POST api/sale                    | SaleController::store()             | model   |
+     *   | POST api/expense                 | ExpenseController::store()          | model   |
+     *   | POST api/movimiento-entre-caja    | MovimientoEntreCajaController::store() | model |
+     *   | POST api/current-acount/pago      | CurrentAcountController::pago()     | current_acount |
+     *
+     * No se toca `CurrentAcountController::pago()` para unificarlo a `model`: esa respuesta la
+     * consume `empresa-spa` en producción, y cambiarle la forma es un cambio de contrato de API
+     * que merece su propio grupo, con el front adelante — acá el que estaba mal era este helper de
+     * tests, que asumía una convención que este endpoint en particular nunca tuvo.
+     *
      * @param string $cliente_nombre Nombre del Client del fixture.
      * @param string $caja_nombre Nombre de la caja que recibe el cobro.
      * @param string $metodo_pago_nombre Nombre del método de pago de cuenta corriente.
@@ -306,7 +323,8 @@ trait EscenariosDePlata
             $response,
             'api/current-acount/pago',
             'Revisar que el cliente "'.$cliente_nombre.'" tenga credit_account de moneda 1 y que la '.
-            'caja/metodo de pago existan en el fixture.'
+            'caja/metodo de pago existan en el fixture.',
+            ['current_acount', 'model']
         );
 
         $this->cobros_cc_creados_por_escenarios[] = $pago_id;
@@ -651,16 +669,31 @@ trait EscenariosDePlata
     }
 
     /**
-     * Extrae el id del modelo persistido de una respuesta JSON `{model: {...}}`, o corta el test
-     * con `fail()` con el detalle completo (status + cuerpo) si el endpoint no creó nada.
+     * Extrae el id del modelo persistido de una respuesta JSON, o corta el test con `fail()` con el
+     * detalle completo (status + cuerpo) si el endpoint no creó nada.
+     *
+     * Prompt 380/02: no todos los controllers de empresa-api devuelven el modelo bajo la misma
+     * clave (`SaleController`, `ExpenseController` y `MovimientoEntreCajaController` usan `model`,
+     * pero `CurrentAcountController::pago()` devuelve `current_acount` -- ver la tabla completa en
+     * el docblock de `cobrar_cuenta_corriente()`). Antes este helper asumía `model` siempre, así que
+     * cualquier endpoint con otra convención hacía morir el test acá, con un mensaje que ni
+     * mencionaba la clave real. Ahora recorre una lista de claves candidatas, en orden, hasta
+     * encontrar un id.
      *
      * @param \Illuminate\Testing\TestResponse $response
      * @param string $endpoint Nombre del endpoint, solo para el mensaje de error.
      * @param string|null $mensaje_guard Pista adicional específica del endpoint (ej. el guard anti-duplicado de ventas).
+     * @param string[]|null $claves Claves candidatas del body donde puede venir el modelo, probadas
+     *        en orden. Default `['model']`: los llamadores existentes (que nunca pasan este
+     *        parámetro) siguen funcionando exactamente igual que antes.
      * @return int
      */
-    protected function extraer_id_de_respuesta($response, $endpoint, $mensaje_guard = null)
+    protected function extraer_id_de_respuesta($response, $endpoint, $mensaje_guard = null, $claves = null)
     {
+        if (is_null($claves)) {
+            $claves = ['model'];
+        }
+
         $status = $response->getStatusCode();
         $contenido = $response->getContent();
 
@@ -669,10 +702,22 @@ trait EscenariosDePlata
         }
 
         $body = json_decode($contenido, true);
-        $model_id = isset($body['model']['id']) ? $body['model']['id'] : null;
+
+        $model_id = null;
+        foreach ($claves as $clave) {
+            if (isset($body[$clave]['id'])) {
+                $model_id = $body[$clave]['id'];
+                break;
+            }
+        }
 
         if (is_null($model_id)) {
-            $mensaje = 'POST '.$endpoint.' respondió '.$status.' pero no devolvió un registro nuevo (sin "model.id" en el body).';
+            $claves_probadas = implode(', ', $claves);
+            $claves_en_body = is_array($body) ? implode(', ', array_keys($body)) : '(el body no es un array/objeto)';
+
+            $mensaje = 'POST '.$endpoint.' respondió '.$status.' pero no devolvió un registro nuevo '.
+                '(busqué el id bajo las claves ['.$claves_probadas.'] y no encontré ninguna; '.
+                'el body trajo estas claves de primer nivel: ['.$claves_en_body.']).';
 
             if (!is_null($mensaje_guard)) {
                 $mensaje .= ' '.$mensaje_guard;
