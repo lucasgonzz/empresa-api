@@ -280,6 +280,48 @@ class Gasto_Comision_Test extends EmpresaTestCase
     }
 
     /**
+     * Test positivo 4 (prompt 380/01, prueba manual 9 del grupo 223) — un override con
+     * `dias_liquidacion = 0` explícito sobre una caja que en su config general tiene 14 días SIGUE
+     * contando como "tiene configuración" (`CajaLiquidacionHelper::tiene_configuracion()`): el
+     * movimiento no queda en null, liquida el mismo día. Caso borde real: `resolve_config()` cae al
+     * valor de la caja solo cuando el override es `null`, así que un `0` explícito tiene que
+     * distinguirse de "sin override" — un `empty()` o un chequeo de truthy en vez de `is_null()`
+     * confundiría los dos casos en silencio.
+     *
+     * @group tesoreria
+     * @test
+     */
+    public function override_con_dias_liquidacion_cero_sigue_contando_como_configuracion()
+    {
+        $this->configurar_override_caja(
+            TestingFerreteriaSeeder::CAJA_MP,
+            TestingFerreteriaSeeder::PAGO_TARJETA_CREDITO,
+            ['dias_liquidacion' => 0]
+        );
+
+        $venta = $this->crear_venta_cobrada(
+            TestingFerreteriaSeeder::CAJA_MP,
+            TestingFerreteriaSeeder::PAGO_TARJETA_CREDITO,
+            100000
+        );
+
+        $movimiento = MovimientoCaja::where('sale_id', $venta->id)->first();
+        $this->assertNotNull($movimiento);
+
+        // El override solo pisa dias_liquidacion; comision_porcentaje sigue viniendo de la caja
+        // (6.29%, el default del fixture para CAJA_MP), así que la comisión no tiene que quedar null.
+        $this->assertNotNull($movimiento->comision_calculada, 'BUG: el override en 0 explícito no tiene que confundirse con "sin configurar".');
+        $this->assertNotNull($movimiento->monto_neto_estimado);
+        $this->assertNotNull($movimiento->fecha_liquidacion_estimada);
+
+        // dias_liquidacion=0 -> liquida el mismo dia del movimiento (reloj de la venta), no +14.
+        $this->assertEquals(
+            Carbon::now()->format('Y-m-d'),
+            $movimiento->fecha_liquidacion_estimada
+        );
+    }
+
+    /**
      * Test negativo 7 — una transferencia entre cajas hacia CAJA_MP genera un ingreso en la caja
      * destino (`MovimientoEntreCajaHelper::ingreso_caja_destino()`), pero NO es un cobro: ese helper
      * nunca manda `aplica_liquidacion`. Cero Expense creados, `monto_neto_estimado` en null en el

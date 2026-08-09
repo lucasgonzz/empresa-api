@@ -73,6 +73,32 @@ class CajaLiquidacionHelper {
     }
 
     /**
+     * Prompt 380/01 — indica si la caja tiene REGIMEN de liquidación configurado para este método
+     * de pago (caja o su override puntual, ya resueltos por resolve_config()).
+     *
+     * Cuenta como "tiene configuración" `dias_liquidacion` o `comision_porcentaje` cargados —
+     * cualquiera de los dos, incluso en `0` explícito (un override que ponga `dias_liquidacion = 0`
+     * a propósito, para liquidar el mismo día aunque la caja tenga 14, SÍ es configuración: por eso
+     * se usa `is_null()`, no `empty()` ni un chequeo de truthy, que confundiría el 0 explícito con
+     * "sin configurar").
+     *
+     * `expense_concept_id`, `comision_iva_alicuota` y `comision_iva_incluido` NO cuentan: son
+     * parámetros del GASTO de comisión (a dónde se registra, con qué IVA), no del régimen de
+     * liquidación en sí — una caja con concepto de gasto cargado pero sin días ni porcentaje no
+     * liquida nada.
+     *
+     * @param \App\Models\Caja $caja
+     * @param int $current_acount_payment_method_id
+     * @return bool
+     */
+    static function tiene_configuracion($caja, $current_acount_payment_method_id) {
+
+        $config = Self::resolve_config($caja, $current_acount_payment_method_id);
+
+        return !is_null($config['dias_liquidacion']) || !is_null($config['comision_porcentaje']);
+    }
+
+    /**
      * Calcula la fecha de liquidación estimada, el neto y la comisión de un ingreso de $monto,
      * ocurrido en $fecha, para la caja y método de pago dados. No persiste nada (helper puro):
      * quien llama decide qué hacer con el resultado.

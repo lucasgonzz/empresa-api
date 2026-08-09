@@ -42,9 +42,25 @@ class MovimientoCajaHelper {
 		$monto_neto_estimado = null;
 		$comision_calculada = null;
 
+		$caja_liquidacion = null;
+
 		if ($aplica_liquidacion) {
 
 			$caja_liquidacion = Caja::find($data['caja_id']);
+
+			// Prompt 380/01: ademas de las tres condiciones de arriba, la caja tiene que tener
+			// REGIMEN DE LIQUIDACION configurado para este metodo de pago (dias_liquidacion o
+			// comision_porcentaje cargados, cualquiera de los dos, incluso en 0 explicito -- ver
+			// CajaLiquidacionHelper::tiene_configuracion()). Sin esto, una caja de efectivo sin
+			// configurar entraba igual por las tres condiciones de arriba, y
+			// CajaLiquidacionHelper::calcular() -- helper puro, siempre devuelve numeros -- persistia
+			// comision_calculada = '0.00' en vez de null, rompiendo el criterio "null = no aplica,
+			// 0 = aplica y da cero" que necesita el reporte de Flujo de Caja para distinguir los dos
+			// casos. calcular() NO se toca: la decision de si corresponde calcular se agrega aca.
+			$aplica_liquidacion = CajaLiquidacionHelper::tiene_configuracion($caja_liquidacion, $data['current_acount_payment_method_id']);
+		}
+
+		if ($aplica_liquidacion) {
 
 			$calculo = CajaLiquidacionHelper::calcular(
 				$caja_liquidacion,

@@ -122,6 +122,62 @@ class CajaLiquidacionHelperTest extends TestCase
         return $caja;
     }
 
+    /**
+     * Prompt 380/01 — tiene_configuracion() con el mock de alias (sin override, `resolve_config()`
+     * cae siempre al valor de la propia $caja): cubre los tres campos que SI cuentan como régimen
+     * (dias_liquidacion en null/con valor/en 0 explícito, comision_porcentaje) y uno de los que NO
+     * cuentan (expense_concept_id, que es parámetro del gasto, no del régimen). El caso del override
+     * en 0 explícito (donde SÍ importa distinguir null de 0) queda para el feature test contra la
+     * base real (`Tests\Feature\Tesoreria\Gasto_Comision_Test::override_con_dias_liquidacion_cero_sigue_contando_como_configuracion`),
+     * porque este mock siempre devuelve "sin override".
+     */
+
+    /** @test */
+    public function tiene_configuracion_da_false_sin_dias_ni_comision()
+    {
+        $caja = $this->caja();
+
+        $this->assertFalse(CajaLiquidacionHelper::tiene_configuracion($caja, 1));
+    }
+
+    /** @test */
+    public function tiene_configuracion_da_true_con_dias_liquidacion_cargado()
+    {
+        $caja = $this->caja(['dias_liquidacion' => 14]);
+
+        $this->assertTrue(CajaLiquidacionHelper::tiene_configuracion($caja, 1));
+    }
+
+    /** @test */
+    public function tiene_configuracion_da_true_con_dias_liquidacion_cero_explicito()
+    {
+        // 0 explicito en la propia caja (no un override): tiene que seguir contando, is_null(0) es
+        // false. El caso mas delicado (0 en el OVERRIDE, donde resolve_config() tiene que preferir
+        // el 0 por sobre el valor de la caja) esta cubierto en el feature test, ver docblock de arriba.
+        $caja = $this->caja(['dias_liquidacion' => 0]);
+
+        $this->assertTrue(CajaLiquidacionHelper::tiene_configuracion($caja, 1));
+    }
+
+    /** @test */
+    public function tiene_configuracion_da_true_con_comision_porcentaje_cargado()
+    {
+        $caja = $this->caja(['comision_porcentaje' => 6.29]);
+
+        $this->assertTrue(CajaLiquidacionHelper::tiene_configuracion($caja, 1));
+    }
+
+    /** @test */
+    public function tiene_configuracion_da_false_con_solo_expense_concept_id_cargado()
+    {
+        // expense_concept_id es parametro del GASTO de comision (a donde se registra), no del
+        // regimen de liquidacion: una caja con esto cargado pero sin dias ni porcentaje no liquida
+        // nada, y tiene_configuracion() tiene que seguir dando false.
+        $caja = $this->caja(['expense_concept_id' => 1]);
+
+        $this->assertFalse(CajaLiquidacionHelper::tiene_configuracion($caja, 1));
+    }
+
     /** @test */
     public function calcular_con_dias_liquidacion_suma_dias_corridos_no_habiles()
     {
