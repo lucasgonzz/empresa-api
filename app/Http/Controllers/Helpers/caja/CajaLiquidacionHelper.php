@@ -184,7 +184,7 @@ class CajaLiquidacionHelper {
      * Prompt 380/03: los egresos se clasifican por `fecha_liquidacion_estimada` con el MISMO
      * criterio que los ingresos (disponible si es null o ya pasó, a liquidar si es futura) -- antes
      * los egresos se sumaban todos juntos sin mirar la fecha, así que un egreso compensatorio que
-     * revierte un ingreso "a liquidar" (ver `DeleteCajaCompensacionHelper::revertir_comision_del_original()`,
+     * revierte un ingreso "a liquidar" (ver `DeleteCajaCompensacionHelper::revertir_liquidacion_del_original()`,
      * que ahora también copia la fecha del original) restaba de "disponible" en vez de cancelar "a
      * liquidar", y `eliminar_venta_comisionada_deja_los_tres_saldos_donde_estaban_antes` medía
      * `saldo_disponible` corrido para siempre por el neto de la comisión y `saldo_a_liquidar` sin

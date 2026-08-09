@@ -259,7 +259,7 @@ class Saldos_Y_Reversion_Test extends EmpresaTestCase
      * estaban antes de crearla. Esto es lo que falló en el intento anterior del grupo 223: el
      * movimiento compensatorio restaba el BRUTO mientras el ingreso original había sumado el NETO,
      * y cada venta comisionada eliminada dejaba el saldo corrido por el valor de la comisión, para
-     * siempre. El fix (`DeleteCajaCompensacionHelper::revertir_comision_del_original()`) copia el
+     * siempre. El fix (`DeleteCajaCompensacionHelper::revertir_liquidacion_del_original()`) copia el
      * `monto_neto_estimado` original al movimiento compensatorio para que el COALESCE de la
      * fórmula cierre en cero. Se espera rojo declarado: el fix nunca se verificó a mano.
      *
