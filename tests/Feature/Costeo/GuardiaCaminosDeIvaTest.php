@@ -18,9 +18,20 @@ use PHPUnit\Framework\TestCase;
  *
  * Este test escanea, por tokenizador de PHP (no por texto/grep, que confundiría código comentado
  * con código vivo), los cuerpos de los cinco métodos donde hoy vive una llamada a `aplicar_iva()`
- * en el pipeline reachable desde `setFinalPrice()`, y exige que la cantidad en cada uno —y el total—
- * siga siendo la conocida. Un cambio en cualquiera de estos números es información: puede ser un
- * camino nuevo, un bug (doble IVA), o un refactor legítimo que hay que reflejar acá a propósito.
+ * en el pipeline reachable desde `setFinalPrice()`, y exige que la cantidad en cada uno siga siendo
+ * la conocida. Un cambio en cualquiera de estos números es información: puede ser un camino nuevo,
+ * un bug (doble IVA), o un refactor legítimo que hay que reflejar acá a propósito.
+ *
+ * FIX (checker del prompt 04, 8/8/2026): la primera versión de este test sumaba los cinco números
+ * esperados y comparaba contra la suma de los cinco encontrados -- una asercion TAUTOLOGICA (si los
+ * cinco `assertSame()` individuales de arriba ya pasaron, la suma cierra sola) que no protegia nada
+ * contra el caso que el docblock decía cubrir: un método NUEVO, en uno de estos mismos tres
+ * archivos, con su propia llamada a `aplicar_iva()`. Ese método nuevo no está en ninguno de los
+ * cinco casos, así que nunca se escanea, y la suma "tautológica" sigue dando 6 aunque el archivo
+ * completo ahora tenga 7. Por eso se agrega una SEGUNDA medición, independiente de los cinco casos:
+ * la cantidad de llamadas vivas a `aplicar_iva()` en cada uno de los TRES ARCHIVOS COMPLETOS (no
+ * solo dentro de los métodos conocidos). Un método nuevo con IVA cambia ese total aunque los cinco
+ * casos de arriba sigan intactos -- eso es lo que realmente cierra el hueco.
  *
  * Precedente del patrón (tokenizador en vez de reflexión, que acá no alcanza porque lo que hay que
  * contar son *llamadas dentro de un cuerpo de método*, no propiedades ni métodos declarados):
@@ -62,10 +73,26 @@ class GuardiaCaminosDeIvaTest extends TestCase
         ['archivo' => self::ARTICLE_PRICE_TYPE_MONEDA_HELPER, 'metodo' => 'aplicar_precios_por_price_type_y_moneda', 'esperado' => 1],
     ];
 
+    /**
+     * Cantidad de llamadas VIVAS a `aplicar_iva()` en cada archivo COMPLETO (no solo dentro de los
+     * cinco métodos de self::CASOS) — medido con este mismo escáner, 8/8/2026. Ojo:
+     * `ArticlePriceTypeMonedaHelper.php` da 3, no 1: incluye las 2 llamadas vivas de
+     * `VIEJO_aplicar_precios_por_price_type_y_moneda()` (código muerto, sin llamadores, que el
+     * prompt 02 de este grupo dejó a propósito sin borrar como documentación de cómo se hacía
+     * antes). Si alguien borra esa función muerta, este número baja a 1 y hay que actualizarlo
+     * ACA — es una baja legítima, no una regresión.
+     *
+     * @var array<string,int>
+     */
+    private const TOTAL_POR_ARCHIVO = [
+        self::ARTICLE_HELPER                    => 3,
+        self::ARTICLE_PRICES_HELPER              => 2,
+        self::ARTICLE_PRICE_TYPE_MONEDA_HELPER   => 3,
+    ];
+
     /** @test */
     public function la_cantidad_de_llamadas_a_aplicar_iva_en_el_pipeline_es_la_conocida()
     {
-        $total_esperado = 0;
         $total_real = 0;
 
         foreach (self::CASOS as $caso) {
@@ -91,20 +118,30 @@ class GuardiaCaminosDeIvaTest extends TestCase
                 'llamadas de IVA de un camino conocido no pase desapercibido.'
             );
 
-            $total_esperado += $caso['esperado'];
             $total_real += $encontradas;
         }
 
-        // Guardia contra un QUINTO camino que aparezca con su propia logica de IVA sin que nadie le
-        // agregue una fila a self::CASOS: si el total se mueve y ninguna asercion de arriba lo
-        // explico, hay una funcion nueva en el pipeline que ni siquiera esta en la lista de casos.
-        $this->assertSame(
-            $total_esperado,
-            $total_real,
-            'la cantidad TOTAL de llamadas a aplicar_iva() en los cinco puntos conocidos de la '.
-            'cascada de precios no coincide con la suma esperada. Si cada caso individual dio bien '.
-            'pero esto no cierra, hay un bug en este mismo test.'
-        );
+        // Guardia REAL contra un metodo NUEVO (en alguno de estos tres archivos) con su propia
+        // logica de IVA: a diferencia de sumar los cinco esperados de arriba (que es tautologico --
+        // un metodo nuevo no esta en self::CASOS y nunca lo escanea ese loop), esto cuenta
+        // aplicar_iva() en el ARCHIVO COMPLETO, method_body_range() aparte. Un metodo nuevo con IVA
+        // cambia este numero aunque los cinco casos de arriba sigan intactos.
+        foreach (self::TOTAL_POR_ARCHIVO as $archivo => $esperado_archivo) {
+            $tokens = token_get_all(file_get_contents($archivo));
+            $encontradas_archivo = $this->contar_llamadas_aplicar_iva($tokens, 0, count($tokens) - 1);
+
+            $this->assertSame(
+                $esperado_archivo,
+                $encontradas_archivo,
+                'la cantidad TOTAL de llamadas a aplicar_iva() en todo '.basename($archivo).' '.
+                '(no solo dentro de los metodos conocidos de self::CASOS) cambio -- esperaba '.
+                $esperado_archivo.', encontro '.$encontradas_archivo.'. Si esto sube y ningun caso '.
+                'de self::CASOS lo explica, hay un metodo NUEVO en este archivo con su propia '.
+                'llamada a aplicar_iva() -- exactamente el quinto camino sin cobertura que esta '.
+                'guardia existe para denunciar. Agregale su fila a self::CASOS (y, si corresponde, '.
+                'un caso a la tabla de doce de CascadaDePreciosTest) antes de actualizar este numero.'
+            );
+        }
 
         // El modo de falla mas peligroso de un escaner asi es que se rompa en silencio y devuelva
         // cero en todos lados: los doce casos de CascadaDePreciosTest seguirian verdes, PERO esta

@@ -181,6 +181,15 @@ class CascadaDePreciosTest extends TestCase
 
     protected function tearDown(): void
     {
+        // PHPUnit corre tearDown() igual despues de un markTestSkipped() en setUp() (grupo 379,
+        // hallazgo del checker del prompt 04): si el fixture no estaba (usuario 500, articulo,
+        // proveedor o price_types faltantes), $this->pinza/$this->provider siguen en null y el resto
+        // de este metodo explotaria con un Error, no con el skip limpio que se busca.
+        if (is_null($this->pinza) || is_null($this->user) || is_null($this->provider)) {
+            parent::tearDown();
+            return;
+        }
+
         if (!is_null($this->iibb)) {
             $this->iibb->activo = $this->iibb_activo_original;
             $this->iibb->save();
@@ -254,19 +263,36 @@ class CascadaDePreciosTest extends TestCase
         $this->user->load('extencions');
     }
 
+    /**
+     * Fija las TRES columnas relevantes en cada caso, aunque alguna quede sin usar segun la
+     * condicion (`condicion_iva_precios` no participa cuando `usar_condicion_fiscal_en_costeo=0`,
+     * por ejemplo). Bug real encontrado por el checker (opus) del prompt 04: el caso 'legacy' no
+     * fijaba `condicion_iva_precios`, y como los doce casos corren en el orden RRII/MT/legacy por
+     * cada camino, 'legacy' heredaba el 'MT' que habia dejado la fila anterior -- asi que las
+     * cuatro filas "legacy" de la tabla en realidad NUNCA ejercian
+     * `ArticlePricesHelper::iva_va_al_costo()` por la rama vieja (`!usar_condicion_fiscal_en_costeo`
+     * -> `aplicar_iva_al_costo`), sino que colaban por `es_monotributista_para_costeo()` con
+     * `condicion_iva_precios='MT'` heredado, dando el mismo numero final pero SIN probar la
+     * distincion "mismo resultado, otro motivo" que es justamente lo que costo un dia entero el
+     * 5/8/2026 (ver comentario de ArticlePricesHelper.php ~linea 277). Fijar las tres columnas en
+     * los tres casos evita que este bug de la suite (o uno parecido) vuelva a colarse.
+     */
     protected function configurar_condicion_fiscal($condicion)
     {
         switch ($condicion) {
             case 'RRII':
                 $this->user->usar_condicion_fiscal_en_costeo = 1;
                 $this->user->condicion_iva_precios = 'RRII';
+                $this->user->aplicar_iva_al_costo = 1;
                 break;
             case 'MT':
                 $this->user->usar_condicion_fiscal_en_costeo = 1;
                 $this->user->condicion_iva_precios = 'MT';
+                $this->user->aplicar_iva_al_costo = 1;
                 break;
             case 'legacy':
                 $this->user->usar_condicion_fiscal_en_costeo = 0;
+                $this->user->condicion_iva_precios = 'RRII';
                 $this->user->aplicar_iva_al_costo = 1;
                 break;
             default:
@@ -367,6 +393,27 @@ class CascadaDePreciosTest extends TestCase
     {
         $esperado = 1694.0;
 
+        // costo_real (Capa 1, ArticleHelper::aplicar_descuentos_e_iva()) es lo UNICO que distingue
+        // las tres configuraciones fiscales -- el precio final da 1694 en las doce por la
+        // conmutatividad explicada arriba, asi que sin esta asercion el eje "configuracion fiscal"
+        // no discrimina nada (un bug que ignorara iva_va_al_costo() por completo y aplicara SIEMPRE
+        // el IVA al vender dejaria las doce celdas en 1694 igual). RRII: costo neto (1000). MT y
+        // legacy: costo con el IVA ya adentro (1000 x 1.21 = 1210), aunque por motivos DISTINTOS
+        // (condicion_iva_precios='MT' vs aplicar_iva_al_costo=1 con usar_condicion_fiscal_en_costeo
+        // apagado) -- exactamente la distincion que costo un dia el 5/8/2026 (ver comentario de
+        // ArticlePricesHelper.php ~linea 277).
+        $costo_real_esperado = [
+            'RRII'   => 1000.0,
+            'MT'     => 1210.0,
+            'legacy' => 1210.0,
+        ];
+
+        // El costo del articulo tiene que estar fijado a proposito (no heredado del seeder): si el
+        // fixture cambiara, esta tabla se pondria roja con un mensaje que apunta al IVA en vez de al
+        // costo real.
+        $this->pinza->cost = 1000;
+        $this->pinza->save();
+
         $casos = [
             [1, 'RRII'], [1, 'MT'], [1, 'legacy'],
             [2, 'RRII'], [2, 'MT'], [2, 'legacy'],
@@ -381,6 +428,16 @@ class CascadaDePreciosTest extends TestCase
             $this->configurar_camino($camino);
 
             ArticleHelper::setFinalPrice($this->pinza, null, $this->user, null, true);
+
+            $this->pinza = $this->pinza->fresh();
+            $this->assertEqualsWithDelta(
+                $costo_real_esperado[$condicion],
+                (float) $this->pinza->costo_real,
+                self::DELTA,
+                "camino $camino / $condicion: costo_real esperado ".$costo_real_esperado[$condicion].
+                ", dio ".$this->pinza->costo_real." -- esto es lo que prueba que la condicion fiscal ".
+                "se aplico de verdad, no solo que el precio final dio el numero esperado"
+            );
 
             $resultado = $this->precio_resultante($camino);
 
