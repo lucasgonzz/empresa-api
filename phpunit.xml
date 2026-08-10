@@ -21,6 +21,20 @@
         </include>
     </coverage>
     <php>
+        <!--
+            Sin esto la suite completa NO TERMINA: PHP corta el proceso por memoria cerca del test
+            290 de 310, sin resumen y sin escribir el XML de junit. Medido el 10/8/2026 en el slot 1,
+            y NO es de una rama en particular: pasa igual en origin/refractor sin ningun cambio
+            encima (exit 255, misma marca). Con `php -d memory_limit=-1 vendor/bin/phpunit` la misma
+            suite llega hasta el final: Tests: 310, Assertions: 928.
+
+            Importa mas alla de la molestia: el gate del carril de merge mide la regresion leyendo
+            ese XML, asi que mientras el proceso muera, el XML queda en 0 bytes y NINGUNA mision de
+            empresa puede pasar el gate: el carril corta con "el XML de junit quedo vacio". Va aca
+            y no en el php.ini de la maquina porque el que tiene que poder correr la suite es
+            cualquier checkout del repo, en cualquier slot, sin configurar nada a mano.
+        -->
+        <ini name="memory_limit" value="-1"/>
         <server name="APP_ENV" value="testing"/>
         <server name="BCRYPT_ROUNDS" value="4"/>
         <server name="CACHE_DRIVER" value="array"/>
