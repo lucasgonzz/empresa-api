@@ -396,7 +396,24 @@ class SearchController extends Controller
         $models = $column_filters_result['models'];
         $used_column_filters = $column_filters_result['used_filters'];
 
-        if ($model_name_param == 'article') {
+        // Modelos que solo se buscan entre los ACTIVOS, porque asi los devuelve el index que llena
+        // su store y ese es el universo que el usuario espera ver en un buscador.
+        //
+        // `provider` se agrego el 10/8/2026 (hallazgo 20260805-global-search-provider-sin-filtro-status).
+        // El grupo 352 paso la busqueda de proveedores del store a la API, y las dos fuentes no
+        // coincidian: ProviderController::index() filtra where('status', 'active') (linea 25) y este
+        // endpoint no filtraba nada. Desde ese cambio el buscador ofrecia proveedores dados de baja
+        // en el alta de compra, en el campo proveedor del articulo y en el cheque endosado. No fue
+        // una regresion de codigo —el codigo nuevo hacia lo que decia—: cambio la fuente de datos y
+        // con ella el resultado, sin que nada lo avisara.
+        //
+        // La lista es explicita a proposito. Este endpoint es generico para ~150 modelos y muchas
+        // tablas tienen una columna `status` que NO significa alta/baja (estados de venta, de
+        // importacion, etc.): filtrar solo por tener la columna haria desaparecer registros validos
+        // en silencio, que es exactamente el modo de falla que este arreglo viene a cerrar.
+        $model_names_solo_activos = ['article', 'provider'];
+
+        if (in_array($model_name_param, $model_names_solo_activos, true)) {
             $models = $models->where('status', 'active');
         }
 

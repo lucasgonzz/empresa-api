@@ -963,8 +963,31 @@ class ArticleController extends Controller
         return response()->json(['sales'    => $sales], 200);
     }
 
+    /**
+     * Desglose del calculo del precio final del articulo, para el boton "?" del modal.
+     *
+     * El articulo se resuelve SIEMPRE acotado a la cuenta (userId()), no con un find() suelto, por
+     * dos motivos que aparecieron juntos en el hallazgo
+     * 20260805-final-price-description-500-si-no-existe-el-articulo:
+     *
+     *   1. Con un id inexistente, find() devuelve null y setFinalPrice() reventaba con 500. Un id
+     *      que no existe es un 404, no un error del servidor.
+     *   2. Sin el filtro por cuenta, un id de OTRO cliente devolvia su desglose de precios: costo
+     *      real, margenes y precio final. Es una fuga de datos entre las ~40 cuentas del sistema, y
+     *      el 404 de arriba es justamente lo que la cierra sin decir si el id existe o no.
+     *
+     * @param int $id Id del articulo.
+     * @return \Illuminate\Http\JsonResponse
+     */
     function get_final_price_description($id) {
-        $article = Article::find($id);
+        $article = Article::where('id', $id)
+                        ->where('user_id', $this->userId())
+                        ->first();
+
+        if (is_null($article)) {
+            return response()->json(['message' => 'No se encontro el articulo'], 404);
+        }
+
         $description = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true);
         return response()->json(['description'    => $description], 200);
     }
@@ -982,7 +1005,12 @@ class ArticleController extends Controller
      * en el docblock de setFinalPrice).
      */
     function get_price_type_description($id, $price_type_id) {
-        $article = Article::find($id);
+        // Mismo filtro por cuenta que el metodo hermano de arriba: este endpoint tenia el guard del
+        // 404 pero tampoco acotaba por userId(), asi que devolvia el desglose de precios de un
+        // articulo de otro cliente. Los dos endpoints del boton "?" quedan con el mismo criterio.
+        $article = Article::where('id', $id)
+                        ->where('user_id', $this->userId())
+                        ->first();
 
         if (is_null($article)) {
             return response()->json(['message' => 'No se encontro el articulo'], 404);

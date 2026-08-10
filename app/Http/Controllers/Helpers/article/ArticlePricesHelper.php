@@ -205,7 +205,13 @@ class ArticlePricesHelper {
                         && $price_type->id == $price_type_id_para_descripcion;
 
             if ($describir) {
-                $des_lista[] = 'CALCULO DEL PRECIO DE LA LISTA '.strtoupper($price_type->name);
+                // mb_strtoupper y no strtoupper: strtoupper() no toca los acentos, asi que una lista
+                // llamada "Publico" con tilde salia como 'LISTA PúBLICO'. No es solo cosmetico:
+                // PriceDescription.vue decide que una linea es titulo comparando des === des.toUpperCase(),
+                // y JS SI convierte la u con tilde, asi que la comparacion daba false y el encabezado se
+                // renderizaba como un renglon mas del desglose (hallazgo
+                // 20260805-desglose-por-lista-margen-propio-y-acentos, punto 2).
+                $des_lista[] = 'CALCULO DEL PRECIO DE LA LISTA '.mb_strtoupper($price_type->name, 'UTF-8');
             }
 
 
@@ -269,7 +275,28 @@ class ArticlePricesHelper {
                 } else {
 
                     if ($describir) {
-                        if (!is_null($relation) && !is_null($relation->pivot->percentage)) {
+                        /*
+                            Se compara el margen EFECTIVO contra el default de la lista, y NO si el
+                            pivote tiene percentage cargado.
+
+                            El motivo (hallazgo 20260805-desglose-por-lista-margen-propio-y-acentos):
+                            esta misma funcion escribe percentage en el pivote con
+                            updateExistingPivot() en cada corrida, mas abajo. O sea que cualquier
+                            articulo guardado una vez ya tiene el pivote cargado, y con la condicion
+                            anterior el renglon decia "Margen propio" SIEMPRE, aunque el valor fuera
+                            literalmente el default de la lista.
+
+                            El numero nunca estuvo mal: lo que mentia era la explicacion. Y este
+                            renglon existe justamente para auditar el calculo, asi que en el caso mas
+                            comun estaba diciendo lo contrario de lo que pasaba.
+
+                            La comparacion es por diferencia y no por !=, porque los dos valores
+                            vienen de columnas decimales y pasan por (float): 10 y 10.00 tienen que
+                            contar como el mismo margen.
+                        */
+                        $percentage_por_defecto = is_null($price_type->percentage) ? 0 : (float) $price_type->percentage;
+
+                        if (abs($percentage - $percentage_por_defecto) > 0.00001) {
                             $des_lista[] = 'Margen propio del articulo en esta lista: '.$percentage.'%';
                         } else {
                             $des_lista[] = 'Margen por defecto de la lista: '.$percentage.'%';
