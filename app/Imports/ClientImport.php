@@ -381,7 +381,17 @@ class ClientImport implements ToCollection {
         $value = str_replace($con_acento, $sin_acento, $value);
 
         /* "Sucursal  Centro" y "Sucursal Centro" son el mismo nombre. */
-        $value = preg_replace('/\s+/u', ' ', $value);
+        $sin_espacios_repetidos = preg_replace('/\s+/u', ' ', $value);
+
+        /*
+         * Con el modificador /u, preg_replace devuelve null si el texto trae UTF-8 invalido.
+         * Si eso pasa se sigue con el valor sin colapsar los espacios: se pierde esa tolerancia
+         * pero el nombre se compara igual y, si no matchea, se informa. Devolver '' haria que
+         * el nombre se ignore en silencio, que es el peor de los dos comportamientos.
+         */
+        if (!is_null($sin_espacios_repetidos)) {
+            $value = $sin_espacios_repetidos;
+        }
 
         return trim($value);
     }
