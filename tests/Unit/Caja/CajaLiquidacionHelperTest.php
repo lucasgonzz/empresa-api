@@ -50,8 +50,8 @@ use Tests\TestCase;
  * alias mock muere con ese proceso y nunca contamina al resto de la suite. Las dos anotaciones que
  * lo hacen están abajo.
  *
- * 🔴 NO ESCRIBIR NINGUNA DE ESAS DOS ANOTACIONES EN LA PROSA DE ESTE DOCBLOCK, ni siquiera entre
- * backticks (misión 14, 11/8/2026). El parser de anotaciones de PHPUnit no distingue prosa de
+ * 🔴 NO ESCRIBIR NINGUNA ANOTACIÓN CON ARROBA EN LA PROSA DE ESTE DOCBLOCK, ni siquiera entre
+ * backticks (misión 14, 10/8/2026). El parser de anotaciones de PHPUnit no distingue prosa de
  * anotación: barre el docblock entero con una regex y acumula TODOS los pares nombre/valor con
  * arroba que encuentra, en orden de aparición. Y `Util\Test::getBooleanAnnotationSetting()` mira el
  * PRIMERO (`$annotations['class'][$setting][0]`). Este mismo párrafo decía antes
@@ -60,7 +60,15 @@ use Tests\TestCase;
  * parser devolvía null. Con null, TestBuilder nunca llama a setPreserveGlobalState() y queda el
  * default de PHPUnit, que es `protected $preserveGlobalState = true`: exactamente lo contrario de
  * lo que este docblock creía estar declarando. La anotación de al lado no se veía afectada porque
- * de ella sólo se pregunta isset(), nunca el valor.
+ * de ella sólo se pregunta isset(), nunca el valor. El riesgo no es exclusivo de estas dos: el
+ * parser es igual de ciego para todas, así que un `covers` o un `dataProvider` escritos en prosa
+ * romperían otra cosa distinta y con la misma falta de aviso.
+ *
+ * Y para que la regla de arriba no sea la ÚNICA defensa, abajo se declara además la propiedad
+ * `$preserveGlobalState = false`. Es inmune al parser de docblocks y no pelea con la anotación:
+ * `TestBuilder` sólo pisa la propiedad cuando la anotación resuelve a algo distinto de null, así
+ * que si mañana alguien vuelve a romper el docblock, el default deja de ser `true` y el modo de
+ * falla —verde filtrado, 13 rojos sólo en suite completa— no puede volver.
  *
  * @group tesoreria-unit
  * @runTestsInSeparateProcesses
@@ -68,6 +76,15 @@ use Tests\TestCase;
  */
 class CajaLiquidacionHelperTest extends TestCase
 {
+    /**
+     * Red de seguridad de la anotación de arriba, explicada en el docblock de la clase: si el
+     * parser vuelve a leer mal el docblock, esto evita que el default `true` de PHPUnit haga que
+     * el proceso hijo herede los archivos incluidos del padre.
+     *
+     * @var bool
+     */
+    protected $preserveGlobalState = false;
+
     /**
      * Delta de tolerancia para comparar floats (mismo criterio que la constante `DELTA` de
      * `Tests\Feature\Compras\ComprasTestCase` y sus hijas: comparar con `assertEqualsWithDelta`,
