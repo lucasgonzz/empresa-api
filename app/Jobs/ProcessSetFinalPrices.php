@@ -93,15 +93,16 @@ class ProcessSetFinalPrices implements ShouldQueue
             $run = PriceUpdateRunHelper::abrir($this->user_id, $this->origen, $this->origen_detalle);
 
             /*
-             * 🔴 El finalizador se encola ACA, antes del bucle, y no al final.
+             * 🔴 Un finalizador ACA, antes del bucle, además del de siempre que va al final.
              *
-             * Es la única red que tiene una corrida si este job se muere en el medio del
-             * ->chunk(): sin worker vivo no hay catch, no hay failed() que sirva —una
-             * propiedad que se escriba en handle() no sobrevive a la deserialización con la
-             * que Laravel llama a failed()— y la guarda de "corrida colgada" se fue con el
-             * reuso. Encolado desde el principio, el tope de reloj del finalizador cierra la
-             * corrida y avisa igual. No cierra de más: exige chunks_encolados, que este
-             * bucle todavía no puso, así que mientras el productor viva sólo se re-despacha.
+             * Es la única red que le queda a la corrida si este job se muere en el medio del
+             * ->chunk(): ahí no hay catch que valga —el worker mata el proceso— y failed()
+             * tampoco sirve, porque Laravel lo llama sobre una instancia deserializada del
+             * payload original y el id de la corrida que se abrió recién no existe en ella.
+             * Encolado desde el principio, el tope de reloj cierra la corrida y avisa igual.
+             *
+             * No cierra de más: el finalizador exige chunks_encolados, que este bucle pone
+             * recién al final, así que mientras el productor viva sólo se re-despacha.
              */
             dispatch(new FinalizeSetFinalPrices($this->user_id, $run->id));
 
@@ -144,7 +145,12 @@ class ProcessSetFinalPrices implements ShouldQueue
              * "listo" con el catálogo todavía sin recalcular. Ahora notifica el finalizador,
              * cuando los números son ciertos. Consecuencia aceptada: el aviso llega más
              * tarde que antes, minutos en un catálogo grande.
+             *
+             * Este segundo finalizador es el que cierra en el camino normal, y con una cola
+             * que ejecuta inline es el único que puede: el de arriba corrió cuando todavía no
+             * había un solo chunk procesado.
              */
+            dispatch(new FinalizeSetFinalPrices($this->user_id, $run->id));
 
         } catch (\Throwable $e) {
             /*
@@ -161,31 +167,17 @@ class ProcessSetFinalPrices implements ShouldQueue
         }
     }
 
-    /**
-     * Se ejecuta cuando el job falla de forma definitiva SIN pasar por el catch: el worker lo
-     * mató por timeout, el proceso se quedó sin memoria, o lo reinició un deploy.
+    /*
+     * ⚠️ Este job NO tiene failed(), y no es un olvido.
      *
-     * ⚠️ Acá no se puede cerrar la corrida, y no es un olvido: Laravel llama a failed() sobre
-     * una instancia deserializada del payload original, así que nada de lo que handle() haya
-     * escrito en el objeto —incluido el id de la corrida que abrió— existe en este punto.
-     * Buscar "la corrida abierta de este usuario" tampoco sirve: sería adivinar, y podría
-     * cerrar la de otro productor que está sano. De cerrarla se encarga el finalizador, que
-     * por eso se encola antes del bucle.
+     * Laravel llama a failed() sobre una instancia deserializada del payload original, así
+     * que nada de lo que handle() haya escrito en el objeto —incluido el id de la corrida que
+     * abrió— existe ahí. Buscar "la corrida abierta de este usuario" sería adivinar y podría
+     * cerrar la de otro productor que está sano.
      *
-     * Lo que sí corresponde acá es avisarle al usuario enseguida, en vez de dejarlo esperando
-     * hasta que salte el tope de reloj.
-     *
-     * @param  \Throwable $e
-     * @return void
+     * Y notificar sin poder cerrar la corrida tampoco sirve: el finalizador que se encola
+     * antes del bucle va a avisar igual cuando salte su tope de reloj, así que lo único que
+     * se lograría es mandarle al usuario dos avisos de error con textos distintos por la
+     * misma falla. El aviso lo da el finalizador, que sí sabe de qué corrida está hablando.
      */
-    public function failed($e)
-    {
-        Log::error('ProcessSetFinalPrices fallo: ' . $e->getMessage());
-
-        SetFinalPricesNotificationHelper::notify_prices_update_failed(
-            $this->user_id,
-            null,
-            'Se interrumpió el recálculo de precios antes de poder empezar: ' . $e->getMessage()
-        );
-    }
 }

@@ -181,13 +181,13 @@ class RecalculoPreciosNotificacionTest extends TestCase
 
     /**
      * Criterio: si el productor se muere antes de terminar de encolar los chunks, la corrida
-     * no queda abierta para siempre — a la media hora se cierra en error y se avisa.
+     * no queda abierta para siempre — al vencer el tope se cierra en error y se avisa.
      *
      * 🔴 Este es el único camino de contención que le queda a una corrida cuyo productor
      * murió sin llegar a ningún catch (timeout del worker, OOM, un deploy en el medio). Por
-     * eso el finalizador se encola ANTES del bucle: si se encolara al final, un productor
-     * muerto no dejaría ningún vigilante y la corrida se quedaría en_proceso sin que nadie
-     * se entere nunca.
+     * eso el finalizador se encola ANTES del bucle además de al final: si se encolara sólo al
+     * final, un productor muerto no dejaría ningún vigilante y la corrida se quedaría
+     * en_proceso sin que nadie se entere nunca.
      *
      * @group precios
      * @test
@@ -201,7 +201,7 @@ class RecalculoPreciosNotificacionTest extends TestCase
             'processed_chunks' => 0,
             /* El productor abrió la corrida y se murió antes de despachar nada. */
             'chunks_encolados' => 0,
-            'started_at'       => Carbon::now()->subMinutes(FinalizeSetFinalPrices::TOPE_MINUTOS_SIN_ENCOLAR + 1),
+            'started_at'       => Carbon::now()->subHours(FinalizeSetFinalPrices::TOPE_HORAS + 1),
         ]);
 
         Notification::fake();
@@ -619,6 +619,10 @@ class RecalculoPreciosNotificacionTest extends TestCase
         $proveedor_z = Provider::create(['name' => 'zz Zeta proveedor', 'user_id' => $user->id]);
         $proveedor_a = Provider::create(['name' => 'zz Alfa proveedor', 'user_id' => $user->id]);
 
+        /* Dos proveedores DISTINTOS con el mismo nombre: el group by es por (id, nombre), así
+           que sin deduplicar la lista traía el nombre dos veces y el modal repetía keys. */
+        $proveedor_a_bis = Provider::create(['name' => 'zz Alfa proveedor', 'user_id' => $user->id]);
+
         $run = $this->crear_corrida_abierta($user->id, [
             'status'           => 'terminado',
             'processed_chunks' => 1,
@@ -629,7 +633,7 @@ class RecalculoPreciosNotificacionTest extends TestCase
            comparación de precios (eso lo prueba el test que corre el chunk). */
         $filas = [];
 
-        foreach ([$proveedor_z->id, $proveedor_a->id] as $provider_id) {
+        foreach ([$proveedor_z->id, $proveedor_a->id, $proveedor_a_bis->id] as $provider_id) {
             $articulo = $this->crear_articulo($user, 'zz Articulo endpoint ' . $provider_id, $provider_id);
             $filas[] = ['price_update_run_id' => $run->id, 'article_id' => $articulo->id];
         }
@@ -646,7 +650,8 @@ class RecalculoPreciosNotificacionTest extends TestCase
 
         $this->assertEquals(
             ['Sin proveedor', 'zz Alfa proveedor', 'zz Zeta proveedor'],
-            $response->json('proveedores')
+            $response->json('proveedores'),
+            'La lista no esta completa, ordenada y sin nombres repetidos.'
         );
     }
 
@@ -754,23 +759,92 @@ class RecalculoPreciosNotificacionTest extends TestCase
     }
 
     /**
-     * Criterio: el productor que muere sin pasar por su catch igual avisa.
+     * Criterio: el recálculo entero, de punta a punta, con la cola ejecutando inline.
      *
-     * No cierra la corrida y no es un olvido: Laravel llama a failed() sobre una instancia
-     * deserializada del payload original, así que el id de la corrida que handle() abrió no
-     * existe en ese punto. De cerrarla se encarga el finalizador por reloj.
+     * 🔴 Este test existe por un bug que casi entra: al encolar el finalizador antes del
+     * bucle, con el driver `sync` —el de los tests y el de cualquier instalación sin worker—
+     * el finalizador corría en el acto, veía que faltaban chunks y se re-despachaba... y
+     * SyncQueue::later() ignora el delay, así que volvía a correr en el acto, sobre el mismo
+     * estado, hasta agotar la memoria del proceso. No se veía en esta suite porque Xdebug
+     * cortaba la recursión a los 256 frames; lo que se rompía eran los tests de otra carpeta
+     * que disparan un recálculo sin Queue::fake.
+     *
+     * Sin Queue::fake a propósito: es la única forma de que el test corra la cola de verdad.
      *
      * @group precios
      * @test
      */
-    public function el_productor_que_muere_sin_catch_igual_avisa()
+    public function el_recalculo_entero_corre_y_cierra_con_la_cola_inline()
     {
         $user = $this->autenticar();
 
+        $proveedor = Provider::create(['name' => 'zz Proveedor punta a punta', 'user_id' => $user->id]);
+
+        $this->crear_articulo($user, 'zz Articulo punta a punta 1', $proveedor->id);
+        $this->crear_articulo($user, 'zz Articulo punta a punta 2', $proveedor->id);
+
+        $this->assertEquals(
+            'sync',
+            config('queue.connections.' . config('queue.default') . '.driver'),
+            'Este test necesita la cola inline para probar lo que dice probar.'
+        );
+
         Notification::fake();
 
-        $job = new ProcessSetFinalPrices($user->id, null, null, false, 'dolar');
-        $job->failed(new \Exception('lo mato el timeout del worker'));
+        $ids_previos = PriceUpdateRun::where('user_id', $user->id)->pluck('id')->toArray();
+
+        /* Acotado a un proveedor para no recalcular el catálogo entero de la base sembrada. */
+        $job = new ProcessSetFinalPrices($user->id, 'provider_id', $proveedor->id, false, 'proveedor');
+        $job->handle();
+
+        $run = PriceUpdateRun::where('user_id', $user->id)
+            ->whereNotIn('id', $ids_previos)
+            ->orderBy('id', 'DESC')
+            ->first();
+
+        $this->assertNotNull($run, 'No se abrio ninguna corrida.');
+        $this->assertNotEquals('en_proceso', $run->status, 'La corrida quedo abierta: nadie la cerro.');
+        $this->assertEquals(1, (int) $run->chunks_encolados);
+        $this->assertEquals((int) $run->total_chunks, (int) $run->processed_chunks);
+
+        Notification::assertSentTo(
+            $user,
+            GlobalNotification::class,
+            function ($notification) use ($run) {
+                return $notification->notification_modal === 'price_update_result'
+                    && (int) $notification->price_stats['run_id'] === (int) $run->id;
+            }
+        );
+    }
+
+    /**
+     * Criterio: una corrida que ya cerró BIEN y después falla algo igual avisa.
+     *
+     * El corte que evita los 500 avisos repetidos mira que la corrida esté en `error`, no que
+     * simplemente no esté abierta. Si mirara sólo eso, este camino —la corrida se guardó como
+     * terminada y lo que reventó fue la notificación de éxito— dejaría al usuario sin el
+     * aviso bueno y sin el malo.
+     *
+     * @group precios
+     * @test
+     */
+    public function una_corrida_que_cerro_bien_y_despues_falla_igual_avisa()
+    {
+        $user = $this->autenticar();
+
+        $run = $this->crear_corrida_abierta($user->id, [
+            'status'           => 'terminado',
+            'processed_chunks' => 1,
+            'articles_updated' => 7,
+        ]);
+
+        Notification::fake();
+
+        SetFinalPricesNotificationHelper::notify_prices_update_failed(
+            $user->id,
+            $run->id,
+            'no se pudo avisar el resultado'
+        );
 
         Notification::assertSentTo(
             $user,
@@ -779,6 +853,11 @@ class RecalculoPreciosNotificacionTest extends TestCase
                 return $notification->message_text === 'Error al actualizar Precios';
             }
         );
+
+        $run->refresh();
+
+        /* Y no se le pisa el estado: cerró bien, el error fue del aviso. */
+        $this->assertEquals('terminado', $run->status);
     }
 
     /**

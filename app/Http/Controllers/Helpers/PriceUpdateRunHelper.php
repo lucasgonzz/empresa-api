@@ -107,8 +107,20 @@ class PriceUpdateRunHelper
                 return ['detalle' => $detalle, 'avisar' => true];
             }
 
-            if ($run->status != 'en_proceso') {
+            /* Ya está en error: del error avisó el primero que la cerró, con la causa
+               original. Este es uno de los otros 499 lotes que cayeron por lo mismo. */
+            if ($run->status == 'error') {
                 return ['detalle' => $detalle, 'avisar' => false];
+            }
+
+            /*
+             * Cerró bien (terminado / sin_cambios) y algo falló DESPUÉS. Pasa cuando lo que
+             * falla es la notificación de éxito misma: la corrida ya está guardada, pero el
+             * usuario no recibió nada. Callarse acá lo dejaría sin el aviso bueno y sin el
+             * malo, que es peor que los dos juntos.
+             */
+            if ($run->status != 'en_proceso') {
+                return ['detalle' => $detalle, 'avisar' => true];
             }
 
             $run->status        = 'error';
@@ -170,19 +182,23 @@ class PriceUpdateRunHelper
 
         $detalle = trim((string) $detalle);
 
-        if ($detalle === '') {
-            return null;
-        }
-
         /*
          * El mensaje de una QueryException trae la consulta entera pegada atrás
          * ("... (SQL: update articles set final_price = 1234 where id = 55)"). Eso lo lee el
          * usuario en el aviso: no le dice nada y encima le muestra datos de su propia base.
+         * Se busca sin el espacio de adelante porque el trim ya se lo comió si el mensaje
+         * empezaba ahí.
          */
-        $posicion_del_sql = strpos($detalle, ' (SQL:');
+        $posicion_del_sql = strpos($detalle, '(SQL:');
 
         if ($posicion_del_sql !== false) {
             $detalle = rtrim(substr($detalle, 0, $posicion_del_sql));
+        }
+
+        /* Después del recorte, no antes: si lo único que había era el SQL, no queda nada que
+           mostrar y un "Qué pasó" en blanco es peor que no poner nada. */
+        if ($detalle === '') {
+            return null;
         }
 
         if (mb_strlen($detalle) > self::MAX_LARGO_ERROR_DETALLE) {

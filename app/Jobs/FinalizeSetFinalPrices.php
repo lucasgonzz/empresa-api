@@ -10,6 +10,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Queue\SyncQueue;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -37,14 +38,6 @@ class FinalizeSetFinalPrices implements ShouldQueue
      * holgadamente "esto ya no va a terminar".
      */
     const TOPE_HORAS = 2;
-
-    /**
-     * Minutos que se le dan al productor para terminar de encolar sus chunks.
-     *
-     * El bucle que los despacha se mide en segundos y el worker lo mata a los 60, así que
-     * media hora es holgadamente "este job ya no existe".
-     */
-    const TOPE_MINUTOS_SIN_ENCOLAR = 30;
 
     protected $user_id;
     protected $price_update_run_id;
@@ -112,10 +105,24 @@ class FinalizeSetFinalPrices implements ShouldQueue
             ]);
 
             /*
+             * 🔴 Con una cola que ejecuta inline (driver `sync`, que es el de los tests y el
+             * de cualquier instalación sin worker) re-despacharse es una recursión infinita:
+             * SyncQueue::later() IGNORA el delay y llama a push(), o sea que este mismo
+             * handle() vuelve a correr en el acto, sobre el mismo estado, hasta agotar la
+             * memoria del proceso. Ahí no hay nada que esperar —el trabajo pendiente corre
+             * inline en el mismo hilo, después de esto— así que se vuelve y listo: al
+             * finalizador que despacha el productor al terminar el bucle le va a tocar el
+             * estado ya completo.
+             */
+            if ($this->la_cola_corre_inline()) {
+                return;
+            }
+
+            /*
              * El delay son 10 segundos, pero el worker de este proyecto corre con
              * --stop-when-empty una vez por minuto (app/Console/Kernel.php), así que un job
-             * demorado no lo mantiene vivo: en la práctica reintenta una vez por minuto. Los
-             * topes de arriba están puestos en esa escala, no en la de los 10 segundos.
+             * demorado no lo mantiene vivo: en la práctica reintenta una vez por minuto. El
+             * tope de arriba está puesto en esa escala, no en la de los 10 segundos.
              */
             self::dispatch($this->user_id, $this->price_update_run_id)
                 ->delay(now()->addSeconds(10))
@@ -206,14 +213,14 @@ class FinalizeSetFinalPrices implements ShouldQueue
     /**
      * Por qué esta corrida ya no va a poder cerrarse bien, o null si todavía hay que esperar.
      *
-     * Son dos topes y no uno porque son dos muertes distintas:
-     *
-     *  - El productor nunca terminó de encolar (`chunks_encolados` en 0). El bucle que
-     *    despacha los chunks no dura más que segundos —el worker mismo lo mata a los 60— así
-     *    que media hora sin el flag significa que ese job se murió. Esperar dos horas para
-     *    avisar de algo que ya se sabe es dejar al usuario mirando la nada.
-     *  - Los chunks se encolaron pero alguno no volvió nunca. Ahí sí hay trabajo real en
-     *    curso y el tope tiene que ser holgado.
+     * Un solo tope, y holgado a propósito. Se probó partirlo en dos —uno corto para la
+     * corrida que ni siquiera llegó a encolar sus chunks, con el argumento de que ese bucle
+     * dura segundos— y se descartó: en Windows `queue:work` no puede aplicar timeout (no hay
+     * pcntl) y el `->chunk(100)` pagina por offset, así que en un catálogo muy grande el
+     * productor puede tardar de verdad. Un tope corto ahí cierra en error una corrida SANA,
+     * le avisa al usuario que no se hizo nada mientras se está haciendo, y encima deja al
+     * productor escribiendo sobre una corrida ya cerrada. Avisar tarde es malo; avisar mal es
+     * peor.
      *
      * @param  \App\Models\PriceUpdateRun $run
      * @return string|null
@@ -224,25 +231,34 @@ class FinalizeSetFinalPrices implements ShouldQueue
             return null;
         }
 
-        $started_at = Carbon::parse($run->started_at);
-
-        if (!$run->chunks_encolados) {
-            if (!$started_at->copy()->addMinutes(self::TOPE_MINUTOS_SIN_ENCOLAR)->isPast()) {
-                return null;
-            }
-
-            return 'El proceso que tenía que preparar el recálculo de precios se interrumpió y'
-                . ' nunca llegó a repartir el trabajo, así que la actualización quedó sin hacer.'
-                . ' Volvé a intentarlo.';
+        if (!Carbon::parse($run->started_at)->copy()->addHours(self::TOPE_HORAS)->isPast()) {
+            return null;
         }
 
-        if (!$started_at->copy()->addHours(self::TOPE_HORAS)->isPast()) {
-            return null;
+        if (!$run->chunks_encolados) {
+            return 'El proceso que tenía que preparar el recálculo de precios se interrumpió'
+                . ' después de ' . self::TOPE_HORAS . ' horas sin llegar a repartir todo el'
+                . ' trabajo. Puede que una parte de los precios sí se haya actualizado.'
+                . ' Volvé a intentarlo.';
         }
 
         return 'El recálculo de precios no terminó después de ' . self::TOPE_HORAS
             . ' horas y se cerró como incompleto. Se procesaron '
             . (int) $run->processed_chunks . ' de ' . (int) $run->total_chunks . ' lotes.';
+    }
+
+    /**
+     * Si la cola de este job ejecuta en el acto en vez de encolar de verdad.
+     *
+     * Se le pregunta al objeto que va a recibir el dispatch y no a la config: con
+     * Queue::fake() la config sigue diciendo `sync` pero no se ejecuta nada, así que mirar la
+     * config haría que el re-despacho desapareciera justo en los tests que lo verifican.
+     *
+     * @return bool
+     */
+    protected function la_cola_corre_inline()
+    {
+        return app('queue')->connection($this->connection) instanceof SyncQueue;
     }
 
     /**
