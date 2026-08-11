@@ -366,6 +366,97 @@ class Modo_redondeo_Test extends TestCase
     }
 
     /**
+     * 🔴 El criterio de aceptación 4 nombra `miles` explícitamente, y hasta acá ningún test hacía un
+     * PUT con ese modo: la línea de `redondear_miles_en_vender` que esta misión agregó a
+     * `check_actualizar_articulos()` era código muerto para la suite. Se podía borrar y todo seguía
+     * verde.
+     *
+     * `miles` es además la columna que NUNCA estuvo en el formulario viejo —existe en la migración
+     * original y el backend la lee, pero el usuario no podía tocarla—, así que el select es lo
+     * primero que la vuelve alcanzable. Que sea la menos probada y la recién expuesta al mismo
+     * tiempo es exactamente la combinación que conviene cubrir.
+     *
+     * @group preferencias
+     * @test
+     */
+    public function pasar_de_un_modo_a_miles_apaga_la_columna_anterior()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->actingAs($user, 'web');
+        $this->poner_columnas($user, ['redondear_precios_en_decenas']);
+
+        $response = $this->putJson('api/user/'.$user->id, $this->payload($user, ['modo_redondeo' => 'miles']));
+        $response->assertStatus(200);
+
+        $this->assertEquals([
+            'redondear_miles_en_vender'      => 1,
+            'redondear_centenas_en_vender'   => 0,
+            'redondear_precios_en_decenas'   => 0,
+            'redondear_de_a_50'              => 0,
+            'redondear_precios_en_centavos'  => 0,
+        ], $this->leer_columnas($user));
+    }
+
+    /**
+     * 🔴 Y este es el que cubre la línea, con el partido de un modo a otro deshecho a propósito.
+     *
+     * Parte de las cinco APAGADAS, no de otro modo. Es la única forma de que el despacho dependa de
+     * `redondear_miles_en_vender` y de nada más: si arrancara desde `decenas`, el `ProcessSetFinalPrices`
+     * lo dispararía el cambio de `decenas` —que ya se comparaba antes de esta misión— y el test
+     * pasaría en verde con la línea de `miles` borrada. Medido: escrito así primero, se le sacó la
+     * línea a `check_actualizar_articulos()` y el test siguió pasando. Partiendo de cero, falla.
+     *
+     * @group preferencias
+     * @test
+     */
+    public function pasar_a_miles_desde_sin_redondeo_despacha_el_recalculo()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->actingAs($user, 'web');
+        $this->poner_columnas($user, []);
+
+        Queue::fake();
+
+        $response = $this->putJson('api/user/'.$user->id, $this->payload($user, ['modo_redondeo' => 'miles']));
+        $response->assertStatus(200);
+
+        $this->assertEquals(1, $this->leer_columnas($user)['redondear_miles_en_vender']);
+
+        Queue::assertPushed(ProcessSetFinalPrices::class);
+    }
+
+    /**
+     * Par de control del anterior, con el mismo criterio que el de `centenas`: si `miles` ya estaba
+     * puesto, volver a guardarlo NO despacha nada. Sin esta línea base, el test de arriba pasaría
+     * igual contra un controller que despachara el recálculo en cada guardado.
+     *
+     * @group preferencias
+     * @test
+     */
+    public function guardar_miles_cuando_ya_estaba_en_miles_no_despacha_el_recalculo()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->actingAs($user, 'web');
+        $this->poner_columnas($user, ['redondear_miles_en_vender']);
+
+        Queue::fake();
+
+        $response = $this->putJson('api/user/'.$user->id, $this->payload($user, ['modo_redondeo' => 'miles']));
+        $response->assertStatus(200);
+
+        Queue::assertNotPushed(ProcessSetFinalPrices::class);
+    }
+
+    /**
      * Contracara del anterior: guardar sin cambiar el modo NO tiene que disparar un recálculo
      * masivo. Sin esta línea base, el test de arriba pasaría igual con un helper que despachara
      * siempre.

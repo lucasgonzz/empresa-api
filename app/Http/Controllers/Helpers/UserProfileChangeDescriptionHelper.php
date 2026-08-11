@@ -189,7 +189,13 @@ class UserProfileChangeDescriptionHelper
         $modo_despues = self::derivar_modo_redondeo($after_auth);
 
         if ($modo_antes !== $modo_despues) {
-            $lines[] = self::LABEL_MODO_REDONDEO.': de '.self::texto_modo_redondeo($modo_antes).' a '.self::texto_modo_redondeo($modo_despues);
+            // 🔴 Este renglon usa la flecha y NO el ': de X a Y' de los demas campos, y no es una
+            // inconsistencia: los textos de los modos YA empiezan con "de a" ("de a 100", "de a
+            // 50"), asi que el molde comun producia "Opciones de redondeo: de de a 100 a de a 50".
+            // Con la flecha queda "Opciones de redondeo: de a 100 → de a 50", que es exactamente el
+            // formato que pedia la tarea 4. Si algun dia se unifica el molde de todos los renglones,
+            // hay que cambiar antes los textos de texto_modo_redondeo(), no este join.
+            $lines[] = self::LABEL_MODO_REDONDEO.': '.self::texto_modo_redondeo($modo_antes).' → '.self::texto_modo_redondeo($modo_despues);
         }
 
         if ($listas_before !== null && $listas_after !== null && (int) $listas_before !== (int) $listas_after) {
