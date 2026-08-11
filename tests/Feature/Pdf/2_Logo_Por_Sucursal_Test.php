@@ -102,6 +102,29 @@ class Logo_Por_Sucursal_Test extends TestCase
     }
 
     /**
+     * Lo que se devuelve tiene que ser lo mismo que se evaluo: si se decide con trim() pero
+     * se devuelve crudo, una URL con espacios al costado pasa la guarda y llega asi a FPDF,
+     * que corta la generacion del comprobante entero.
+     *
+     * @test
+     */
+    public function la_url_se_devuelve_sin_espacios_al_costado()
+    {
+        $de_la_sucursal = AfipPdfHelper::resolve_logo_url(
+            $this->sucursal_con_logo('  https://ejemplo/logo-sucursal.webp  '),
+            $this->usuario_con_logo(null)
+        );
+
+        $del_negocio = AfipPdfHelper::resolve_logo_url(
+            null,
+            $this->usuario_con_logo("\thttps://ejemplo/logo-negocio.png ")
+        );
+
+        $this->assertEquals('https://ejemplo/logo-sucursal.webp', $de_la_sucursal);
+        $this->assertEquals('https://ejemplo/logo-negocio.png', $del_negocio);
+    }
+
+    /**
      * Criterio 3 y 4: una venta sin sucursal asignada, o el recibo de un cliente sin
      * sucursal (y toda orden de pago a proveedor, que nunca tiene), usa el del negocio.
      *
@@ -255,9 +278,78 @@ class Logo_Por_Sucursal_Test extends TestCase
          */
         $helper = file_get_contents(app_path('Http/Controllers/Pdf/Afip/AfipPdfHelper.php'));
 
-        $this->assertTrue(
-            strpos($helper, '$logo_url = self::resolve_logo_url($address, $user);') !== false,
+        $this->assertStringContainsString(
+            'self::resolve_logo_url($address, $user)',
+            $helper,
             'print_logo_image tiene que resolver el logo con resolve_logo_url, no leer user->image_url.'
+        );
+    }
+
+    /**
+     * El logo de la sucursal tiene que guardarse en un formato que FPDF sepa imprimir.
+     *
+     * ImageController::setImage() guarda webp para todos los modelos menos user, y la copia
+     * de FPDF de este repo solo parsea jpg, png y gif (_parsejpg / _parsepng / _parsegif):
+     * con webp llama a Error() y tira una excepcion que corta el comprobante entero. O sea
+     * que la subida anda, la imagen se ve bien en el ABM, y lo que se rompe es la impresion
+     * de los tickets y las facturas de esa sucursal.
+     *
+     * Se testea sobre el codigo y no ejecutando FPDF a proposito: las clases de PDF hacen
+     * `require` (no require_once) de fpdf.php, asi que cargarlo desde la suite deja una mina
+     * para el proximo test que instancie un PDF. La comprobacion con FPDF real se hizo con
+     * una sonda temporal el 11/8/2026: Image() sobre webp -> "FPDF error: Unsupported image
+     * type: webp"; sobre png -> OK.
+     *
+     * @test
+     */
+    public function el_logo_de_la_sucursal_se_guarda_en_un_formato_que_fpdf_sabe_imprimir()
+    {
+        $controller = file_get_contents(app_path('Http/Controllers/CommonLaravel/ImageController.php'));
+
+        $this->assertStringContainsString(
+            "\$request->model_name == 'user' || \$request->model_name == 'address'",
+            $controller,
+            'setImage tiene que guardar el logo de la sucursal como png: FPDF no imprime webp y el comprobante no se genera.'
+        );
+
+        $fpdf = file_get_contents(app_path('Http/Controllers/CommonLaravel/fpdf/fpdf.php'));
+
+        $this->assertStringContainsString(
+            'Unsupported image type',
+            $fpdf,
+            'Si esta copia de FPDF dejo de rechazar formatos, revisa si sigue haciendo falta forzar png.'
+        );
+    }
+
+    /**
+     * El presupuesto es el caso donde la cadena se corta sin que nada falle, y por eso tiene
+     * su propio test: BudgetPdf::logo() NO lo llama nadie. El logo del presupuesto A4 lo
+     * imprime PdfHelper::cuadrante_izquierdo(), que es codigo compartido por trece
+     * comprobantes distintos y que la mision 17 tenia prohibido cambiarle el comportamiento.
+     *
+     * Por eso la sucursal viaja por $data['logo_url']: BudgetPdf::Header() resuelve y manda,
+     * cuadrante_izquierdo usa lo que le mandan y, si no le mandan nada, hace exactamente lo
+     * de siempre. Si alguien saca cualquiera de las dos mitades, el presupuesto vuelve a
+     * salir con el logo del negocio en silencio.
+     *
+     * @test
+     */
+    public function el_presupuesto_manda_su_logo_por_el_header_compartido()
+    {
+        $budget = file_get_contents(app_path('Http/Controllers/Pdf/BudgetPdf.php'));
+
+        $this->assertStringContainsString(
+            "\$data['logo_url'] = AfipPdfHelper::resolve_logo_url(\$this->budget->address, \$this->user);",
+            $budget,
+            'BudgetPdf::Header() tiene que mandar el logo ya resuelto en $data, porque su metodo logo() no se ejecuta.'
+        );
+
+        $pdf_helper = file_get_contents(app_path('Http/Controllers/CommonLaravel/Helpers/PdfHelper.php'));
+
+        $this->assertStringContainsString(
+            "isset(\$data['logo_url']) ? \$data['logo_url'] : \$user->image_url",
+            $pdf_helper,
+            'cuadrante_izquierdo tiene que usar el logo que le manda el caller y caer al del negocio si no viene.'
         );
     }
 }

@@ -884,14 +884,16 @@ class AfipPdfHelper
             && !is_null($address->image_url)
             && trim($address->image_url) !== '') {
 
-            return $address->image_url;
+            // Trimeado: lo que se devuelve tiene que ser lo mismo que se evaluo. Una URL con
+            // espacios al costado pasa la guarda y despues llega sucia a FPDF, que no perdona.
+            return trim($address->image_url);
         }
 
         if (is_null($user) || is_null($user->image_url) || trim($user->image_url) === '') {
             return null;
         }
 
-        return $user->image_url;
+        return trim($user->image_url);
     }
 
     public static function resolve_emisor_afip_information($afip_ticket, $sale, $user)
