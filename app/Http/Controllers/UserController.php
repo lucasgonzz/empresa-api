@@ -80,6 +80,9 @@ class UserController extends Controller
         $current_redondear_precios_en_decenas   = (int) $model->redondear_precios_en_decenas;
         $current_redondear_de_a_50              = (int) $model->redondear_de_a_50;
         $current_redondear_precios_en_centavos  = (int) $model->redondear_precios_en_centavos;
+        // Tarea 4: faltaban en el snapshot, ver el comentario de check_actualizar_articulos().
+        $current_redondear_centenas_en_vender   = (int) $model->redondear_centenas_en_vender;
+        $current_redondear_miles_en_vender      = (int) $model->redondear_miles_en_vender;
         $current_aplicar_iva_al_costo           = (int) $model->aplicar_iva_al_costo;
 
         $current_default_version                = (int) $model->default_version;
@@ -118,11 +121,13 @@ class UserController extends Controller
         $model->sale_ticket_price_font_size      = $request->sale_ticket_price_font_size;
         $model->sale_ticket_logo_full_width      = $request->sale_ticket_logo_full_width;
         $model->siempre_omitir_en_cuenta_corriente          = $request->siempre_omitir_en_cuenta_corriente;
-        $model->redondear_centenas_en_vender          = $request->redondear_centenas_en_vender;
-        $model->redondear_precios_en_decenas          = $request->redondear_precios_en_decenas;
-        $model->redondear_de_a_50                     = $request->redondear_de_a_50;
-        $model->redondear_precios_en_centavos         = $request->redondear_precios_en_centavos;
-        
+
+        // Tarea 4: las cuatro tildes de redondeo se reemplazaron por el select "Opciones de
+        // redondeo" (`modo_redondeo`), que es una fachada sobre las cinco columnas booleanas.
+        // La traduccion vive en un metodo aparte para que la garantia de no-op quede en un solo
+        // lugar y con su explicacion al lado.
+        $this->aplicar_modo_redondeo($model, $request);
+
         $model->header_articulos_pdf            = $request->header_articulos_pdf;
         $model->default_version                 = $request->default_version;
         $model->estable_version                 = $request->estable_version;
@@ -214,7 +219,9 @@ class UserController extends Controller
                 $current_redondear_precios_en_decenas,
                 $current_redondear_de_a_50,
                 $current_redondear_precios_en_centavos,
-                $current_aplicar_iva_al_costo
+                $current_aplicar_iva_al_costo,
+                $current_redondear_centenas_en_vender,
+                $current_redondear_miles_en_vender
             )
         ) {
             $notifications[] = [
@@ -516,7 +523,22 @@ class UserController extends Controller
      * @param int $current_redondear_precios_en_decenas Valor previo del flag redondear_precios_en_decenas.
      * @param int $current_redondear_de_a_50 Valor previo del flag redondear_de_a_50.
      * @param int $current_redondear_precios_en_centavos Valor previo del flag redondear_precios_en_centavos.
+     * @param int $current_aplicar_iva_al_costo Valor previo del flag aplicar_iva_al_costo.
+     * @param int $current_redondear_centenas_en_vender Valor previo del flag redondear_centenas_en_vender.
+     * @param int $current_redondear_miles_en_vender Valor previo del flag redondear_miles_en_vender.
      * @return bool true si se encoló un recálculo; false si no hubo cambios relevantes.
+     *
+     * 🔴 Tarea 4 — `redondear_centenas_en_vender` y `redondear_miles_en_vender` se agregaron acá el
+     * 10/8/2026. Faltaban, y era un bug real: `ArticleHelper::redondear()` lee las CINCO columnas,
+     * pero esta comparación miraba solo tres, así que prender o apagar "de a centenas" no
+     * despachaba `ProcessSetFinalPrices` y los precios quedaban con el redondeo viejo hasta que
+     * otra cosa los recalculara.
+     *
+     * Con el select "Opciones de redondeo" deja de ser un bug silencioso y pasa a ser una falla
+     * evidente: el cliente elige "de a 100", guarda, y no pasa nada. La regla que ordena esto es
+     * simple y hay que sostenerla si mañana aparece una sexta columna: **cualquier cambio de modo
+     * de redondeo tiene que disparar el recálculo**, así que toda columna que lea
+     * `ArticleHelper::redondear()` va también en esta comparación.
      */
     function check_actualizar_articulos(
         $model,
@@ -527,7 +549,9 @@ class UserController extends Controller
         $current_redondear_precios_en_decenas,
         $current_redondear_de_a_50,
         $current_redondear_precios_en_centavos,
-        $current_aplicar_iva_al_costo
+        $current_aplicar_iva_al_costo,
+        $current_redondear_centenas_en_vender,
+        $current_redondear_miles_en_vender
     ) {
 
         if (
@@ -539,6 +563,8 @@ class UserController extends Controller
             || (int) $model->redondear_de_a_50 !== (int) $current_redondear_de_a_50
             || (int) $model->redondear_precios_en_centavos !== (int) $current_redondear_precios_en_centavos
             || (int) $model->aplicar_iva_al_costo !== (int) $current_aplicar_iva_al_costo
+            || (int) $model->redondear_centenas_en_vender !== (int) $current_redondear_centenas_en_vender
+            || (int) $model->redondear_miles_en_vender !== (int) $current_redondear_miles_en_vender
 
         ) {
             Log::info($model->dollar.' | '.$current_dolar);
@@ -562,6 +588,46 @@ class UserController extends Controller
             return true;
         }
         return false;
+    }
+
+    /**
+     * Tarea 4 — traduce el valor del select "Opciones de redondeo" a las cinco columnas booleanas.
+     *
+     * Un modo conocido deja EXACTAMENTE una columna en 1 y las otras cuatro en 0.
+     *
+     * 🔴 Y hay dos casos que NO tocan ninguna de las cinco columnas. No son defensa de mas: son la
+     * garantia que hace seguro todo el cambio, y este es el lugar exacto donde alguien lo iria a
+     * "simplificar".
+     *
+     * - 'personalizado': el usuario tiene dos o mas columnas prendidas. `ModelForm` postea el
+     *   modelo ENTERO, asi que un cliente que entra a cambiarse el telefono manda
+     *   `modo_redondeo: 'personalizado'` sin haber tocado el select — es el valor que el accessor
+     *   `getModoRedondeoAttribute()` le mando en el GET. Si esta rama colapsara el estado a un
+     *   modo unico, le habriamos cambiado los precios de todo el catalogo por editar un telefono.
+     * - ausente, vacio o desconocido: mismo tratamiento por el mismo motivo. Nunca se adivina un
+     *   modo a partir de un valor que no esta en la tabla.
+     *
+     * @param User $model Usuario al que se le aplica la configuracion.
+     * @param Request $request Request del PUT, que puede traer o no `modo_redondeo`.
+     * @return void
+     */
+    private function aplicar_modo_redondeo($model, Request $request) {
+
+        $modo = $request->modo_redondeo;
+
+        if (is_null($modo) || $modo === '') {
+            return;
+        }
+
+        // in_array estricto sobre los modos conocidos: 'personalizado' NO esta en la tabla de
+        // columnas, asi que cae aca junto con cualquier valor desconocido y sale sin tocar nada.
+        if (!in_array($modo, array_values(User::COLUMNAS_MODO_REDONDEO), true)) {
+            return;
+        }
+
+        foreach (User::COLUMNAS_MODO_REDONDEO as $columna => $modo_de_esa_columna) {
+            $model->$columna = ($modo_de_esa_columna === $modo) ? 1 : 0;
+        }
     }
 
     function updatePassword(Request $request) {

@@ -33,6 +33,72 @@ class User extends Authenticatable
     
     protected $dates = ['expired_at', 'payment_expired_at', 'last_activity'];
 
+    /**
+     * Tarea 4 — `modo_redondeo` es una FACHADA de solo lectura sobre las cinco columnas booleanas
+     * de redondeo. No existe como columna y no debe existir: colapsar las combinaciones a un valor
+     * unico le moveria los precios de todo el catalogo a los clientes que hoy tienen dos flags
+     * prendidos, sin que lo hayan pedido. La fuente de verdad del calculo sigue siendo
+     * `ArticleHelper::redondear()`, que lee las cinco columnas y no se toco.
+     *
+     * @var array<int, string>
+     */
+    protected $appends = ['modo_redondeo'];
+
+    /**
+     * Columnas de redondeo, en el orden en que las aplica `ArticleHelper::redondear()`, con el
+     * valor de `modo_redondeo` que le corresponde a cada una.
+     *
+     * Se declara aca y no en el controller porque la lectura (este accessor) y la escritura
+     * (`UserController@update`) tienen que traducir con la MISMA tabla: si se separan, un valor
+     * que se escribe con una clave y se lee con otra deja al select mostrando cualquier cosa.
+     *
+     * @var array<string, string>
+     */
+    const COLUMNAS_MODO_REDONDEO = [
+        'redondear_miles_en_vender'      => 'miles',
+        'redondear_centenas_en_vender'   => 'centenas',
+        'redondear_precios_en_decenas'   => 'decenas',
+        'redondear_de_a_50'              => 'cincuenta',
+        'redondear_precios_en_centavos'  => 'centavos',
+    ];
+
+    /**
+     * Deriva el modo de redondeo a partir de las cinco columnas booleanas.
+     *
+     * - exactamente una prendida  -> el valor de esa opcion
+     * - ninguna prendida          -> 'sin_redondeo'
+     * - dos o mas prendidas       -> 'personalizado'
+     *
+     * El caso de dos o mas es real y no es un borde defensivo: las cinco columnas se ENCADENAN en
+     * `ArticleHelper::redondear()` (no hay ningun return temprano), asi que la combinacion da un
+     * resultado propio que ningun valor unico del select puede representar. Con precio 104,
+     * `centenas` + `cincuenta` da 100, mientras que `cincuenta` solo da 150. Por eso
+     * 'personalizado' es un estado legitimo que se muestra y no se puede elegir, en vez de un
+     * valor que se normaliza.
+     *
+     * @return string
+     */
+    public function getModoRedondeoAttribute() {
+
+        $prendidas = [];
+
+        foreach (Self::COLUMNAS_MODO_REDONDEO as $columna => $modo) {
+            if ((int) $this->getAttribute($columna) === 1) {
+                $prendidas[] = $modo;
+            }
+        }
+
+        if (count($prendidas) === 0) {
+            return 'sin_redondeo';
+        }
+
+        if (count($prendidas) > 1) {
+            return 'personalizado';
+        }
+
+        return $prendidas[0];
+    }
+
     function scopeWithAll($query) {
         $query->with('afip_information.iva_condition', 'permissions', 'plan', 'addresses', 'extencions', 'addresses', 'configuration', 'online_configuration', 'owner', 'inputs_size');
     }
