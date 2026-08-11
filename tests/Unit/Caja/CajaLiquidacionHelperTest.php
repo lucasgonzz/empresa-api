@@ -45,9 +45,22 @@ use Tests\TestCase;
  * (`tests/Feature/Reportes/`), que no tenían nada que ver: sus 15 tests pasan 15/15 corriendo
  * solos, y sólo fallan si esta clase corrió antes en el mismo proceso.
  *
- * `@runTestsInSeparateProcesses` + `@preserveGlobalState disabled` es la solución estándar para
- * alias/overload mocks de Mockery: aísla esta clase a su propio proceso PHP, así el alias mock
- * muere con ese proceso y nunca contamina al resto de la suite.
+ * Correr esta clase en un proceso PHP aparte, con el estado global SIN preservar, es la solución
+ * estándar para alias/overload mocks de Mockery: aísla esta clase a su propio proceso PHP, así el
+ * alias mock muere con ese proceso y nunca contamina al resto de la suite. Las dos anotaciones que
+ * lo hacen están abajo.
+ *
+ * 🔴 NO ESCRIBIR NINGUNA DE ESAS DOS ANOTACIONES EN LA PROSA DE ESTE DOCBLOCK, ni siquiera entre
+ * backticks (misión 14, 11/8/2026). El parser de anotaciones de PHPUnit no distingue prosa de
+ * anotación: barre el docblock entero con una regex y acumula TODOS los pares nombre/valor con
+ * arroba que encuentra, en orden de aparición. Y `Util\Test::getBooleanAnnotationSetting()` mira el
+ * PRIMERO (`$annotations['class'][$setting][0]`). Este mismo párrafo decía antes
+ * "preserveGlobalState disabled es la solución estándar para..." con la arroba puesta, así que el
+ * valor [0] de la anotación era el renglón de prosa entero — ni 'enabled' ni 'disabled' — y el
+ * parser devolvía null. Con null, TestBuilder nunca llama a setPreserveGlobalState() y queda el
+ * default de PHPUnit, que es `protected $preserveGlobalState = true`: exactamente lo contrario de
+ * lo que este docblock creía estar declarando. La anotación de al lado no se veía afectada porque
+ * de ella sólo se pregunta isset(), nunca el valor.
  *
  * @group tesoreria-unit
  * @runTestsInSeparateProcesses
