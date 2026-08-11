@@ -206,8 +206,16 @@ class InventoryPerformanceHelper {
 					->values()
 					->all();
 
+		/**
+		 * price_types va en el eager load porque el resolvedor de precios lo lee por cada
+		 * articulo con stock. Sin esto es una consulta por articulo (belongsToMany), y este
+		 * reporte recorre el catalogo entero: ProcessInventoryPerformanceJob deja escrito que
+		 * hay cuentas de 400k articulos. Medido el 11/8/2026: con listas activas y sin este
+		 * with(), 16 consultas al pivote para 16 articulos con stock. No explota, degrada en
+		 * silencio, que es peor.
+		 */
 		Article::select($columns)
-			->with('addresses')
+			->with('addresses', 'price_types')
 			->where('user_id', $this->user_id)
 			->where('status', 'active')
 			->orderBy('created_at', 'ASC')

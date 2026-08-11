@@ -75,19 +75,24 @@ class Resolver_Precio_De_Venta_Test extends TestCase
         /**
          * Position baja y position alta, con precios distintos, para que se note cual eligio la
          * rama por defecto. Mostrador tiene el precio MAS ALTO y la position MAS BAJA a proposito:
-         * si el resolvedor eligiera "el mayor precio" o "la primera lista" en vez de la position
-         * mas alta, este test se pondria rojo.
+         * si el resolvedor eligiera "el mayor precio" en vez de la position mas alta, este test
+         * se pondria rojo.
+         *
+         * Y la MAYORISTA se crea PRIMERO a proposito, aunque sea la que tiene que ganar: asi su id
+         * es el mas bajo y es la primera de la coleccion. Sin ese detalle, el test no distinguiria
+         * "la de position mas alta" de "la ultima creada" ni de "la ultima de la coleccion", y
+         * pasaria igual con un resolvedor que eligiera cualquiera de esas dos cosas.
          */
-        $this->mostrador = PriceType::create([
-            'name' => 'zz Mostrador',
-            'user_id' => 500,
-            'position' => 1,
-        ]);
-
         $this->mayorista = PriceType::create([
             'name' => 'zz Mayorista',
             'user_id' => 500,
             'position' => 9,
+        ]);
+
+        $this->mostrador = PriceType::create([
+            'name' => 'zz Mostrador',
+            'user_id' => 500,
+            'position' => 1,
         ]);
 
         $this->article = Article::create([
@@ -247,6 +252,46 @@ class Resolver_Precio_De_Venta_Test extends TestCase
         $this->assertNotEquals($sin_listas['final_price'], $explicita['final_price']);
         $this->assertNotEquals($explicita['final_price'], $por_defecto['final_price']);
         $this->assertNotEquals($sin_listas['final_price'], $por_defecto['final_price']);
+
+        /** Y que cada una sea la que tiene que ser, no solo distinta de las otras. */
+        $this->assertEquals(self::PRECIO_FINAL_UNICO, $sin_listas['final_price']);
+        $this->assertEquals(self::PRECIO_LISTA_MOSTRADOR, $explicita['final_price']);
+        $this->assertEquals(self::PRECIO_LISTA_MAYORISTA, $por_defecto['final_price']);
+    }
+
+    /**
+     * Empate de position: price_types no tiene indice unico en (user_id, position), asi que dos
+     * listas pueden compartir el mismo numero. Sin desempate, el precio dependeria del orden en
+     * que Eloquent devolvio la relacion —que ningun orderBy fija— y dos corridas identicas podrian
+     * dar precios distintos. El desempate es por id mas alto.
+     *
+     * @group precios-por-lista
+     * @test
+     */
+    public function con_dos_listas_de_igual_position_el_precio_es_deterministico()
+    {
+        $user = $this->cuenta_con_listas(1);
+
+        $empatada = PriceType::create([
+            'name' => 'zz Mayorista empatada',
+            'user_id' => 500,
+            'position' => 9,
+        ]);
+
+        $this->article->price_types()->attach($empatada->id, [
+            'final_price' => 1234,
+        ]);
+
+        $recargado = Article::with('price_types')->find($this->article->id);
+
+        $primera = ArticlePricesHelper::resolver_precio_de_venta($recargado, $user, null);
+        $segunda = ArticlePricesHelper::resolver_precio_de_venta($recargado, $user, null);
+
+        $this->assertEquals($primera['final_price'], $segunda['final_price']);
+
+        /** Gana el id mas alto entre las dos de position 9: la que se acaba de crear. */
+        $this->assertEquals($empatada->id, $primera['price_type_id']);
+        $this->assertEquals(1234, $primera['final_price']);
     }
 
     /**

@@ -148,6 +148,21 @@ class ArticlePricesHelper {
                 if (is_null($mayor_position) || $position > $mayor_position) {
                     $mayor_position = $position;
                     $elegida = $price_type;
+                    continue;
+                }
+
+                /**
+                 * Desempate por id mas alto. price_types no tiene indice unico en
+                 * (user_id, position), asi que dos listas pueden compartir position; sin este
+                 * desempate el precio dependeria del orden en que Eloquent devolvio la relacion,
+                 * que ningun orderBy fija. Un precio que cambia entre dos corridas identicas es
+                 * lo mas caro de diagnosticar que hay.
+                 */
+                if ($position === $mayor_position
+                    && !is_null($elegida)
+                    && (int) $price_type->id > (int) $elegida->id) {
+
+                    $elegida = $price_type;
                 }
             }
         }
