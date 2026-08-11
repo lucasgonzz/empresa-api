@@ -130,7 +130,20 @@ class ImageController extends Controller
         if (isset($request->top)) {
             $croppedImage->crop($request->width, $request->height, $request->left, $request->top);
         }           
-        if ($request->model_name == 'user') {
+        /**
+         * webp para todo, MENOS para las imagenes que terminan impresas en un PDF.
+         *
+         * La copia de FPDF de este repo solo sabe parsear jpg, png y gif
+         * (CommonLaravel/fpdf/fpdf.php: _parsejpg, _parsepng, _parsegif): con cualquier
+         * otra extension llama a Error() y tira una excepcion que corta la generacion del
+         * comprobante entero. Por eso el logo del negocio (user) siempre fue png.
+         *
+         * El logo de la sucursal (address) va al mismo lugar de los mismos comprobantes
+         * desde la tarea 17, asi que tiene que guardarse igual. Sacar 'address' de esta
+         * condicion no rompe la subida --se ve bien en el ABM-- y rompe la impresion de
+         * los tickets y las facturas de esa sucursal, que es el peor lugar para enterarse.
+         */
+        if ($request->model_name == 'user' || $request->model_name == 'address') {
             $name = time().rand(1, 100000).'.png';
         } else {
             $name = time().rand(1, 100000).'.webp';
