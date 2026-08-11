@@ -50,6 +50,14 @@ class ProcessSetFinalPrices implements ShouldQueue
     {
         Log::info('ProcessSetFinalPrices');
 
+        /*
+         * Fuera del try a propósito: si la excepción salta después de abrir la corrida, el
+         * catch tiene que poder cerrarla y decir por qué. Antes se notificaba el error sin
+         * el id, así que la corrida quedaba en_proceso y el usuario recibía un aviso que no
+         * apuntaba a nada.
+         */
+        $run = null;
+
         try {
 
             if (!is_null($this->from_model_id)) {
@@ -77,27 +85,31 @@ class ProcessSetFinalPrices implements ShouldQueue
                 $articles_query = Article::where('user_id', $this->user_id)->select('id');
             }
 
-            $run = PriceUpdateRunHelper::abrir_o_reusar($this->user_id, $this->origen, $this->origen_detalle);
+            /*
+             * Su propia corrida, siempre. Ver PriceUpdateRunHelper::abrir(): reusar la
+             * corrida abierta del usuario hacía que dos productores compartieran contador y
+             * flag, y el que terminaba primero cerraba por el otro con números parciales.
+             */
+            $run = PriceUpdateRunHelper::abrir($this->user_id, $this->origen, $this->origen_detalle);
 
-            /** Chunks despachados en esta pasada; se suman a los que la corrida ya tenía. */
-            $chunks_de_esta_pasada = 0;
+            /** Chunks despachados por este job, que es el único productor de esta corrida. */
+            $chunks_despachados = 0;
 
-            $articles_query->chunk(100, function ($articles_chunk) use ($run, &$chunks_de_esta_pasada) {
+            $articles_query->chunk(100, function ($articles_chunk) use ($run, &$chunks_despachados) {
                 $ids = $articles_chunk->pluck('id')->toArray();
                 dispatch(new ProcessChunkSetFinalPrices($ids, $this->user_id, $run->id));
-                $chunks_de_esta_pasada++;
+                $chunks_despachados++;
             });
 
-            if ($chunks_de_esta_pasada > 0) {
+            if ($chunks_despachados > 0) {
                 DB::table('price_update_runs')
                     ->where('id', $run->id)
-                    ->update(['total_chunks' => DB::raw('total_chunks + ' . (int) $chunks_de_esta_pasada)]);
-            } else if ((int) $run->total_chunks === 0) {
+                    ->update(['total_chunks' => (int) $chunks_despachados]);
+            } else {
                 /*
                  * No hay un solo artículo que recalcular. Se cierra acá y se notifica igual:
                  * un recálculo que no encontró nada es información, no silencio (decisión de
-                 * Lucas). Sin esto la corrida quedaría abierta para siempre y bloquearía los
-                 * avisos siguientes de este usuario.
+                 * Lucas). Sin esto la corrida quedaría abierta para siempre.
                  */
                 PriceUpdateRunHelper::cerrar_sin_articulos($run);
                 SetFinalPricesNotificationHelper::notify_prices_updated($this->user_id, $run);
@@ -124,7 +136,12 @@ class ProcessSetFinalPrices implements ShouldQueue
 
         } catch (\Exception $e) {
             Log::error("Error en ProcessSetFinalPrices: " . $e->getMessage());
-            SetFinalPricesNotificationHelper::notify_prices_update_failed($this->user_id);
+
+            SetFinalPricesNotificationHelper::notify_prices_update_failed(
+                $this->user_id,
+                is_null($run) ? null : $run->id,
+                'No se pudo iniciar el recálculo de precios: ' . $e->getMessage()
+            );
         }
     }
 }

@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\SetFinalPricesNotificationHelper;
 use App\Models\Article;
 use App\Models\User;
 use Illuminate\Bus\Queueable;
@@ -63,6 +64,31 @@ class ProcessChunkSetFinalPrices implements ShouldQueue
 
         $this->registrar_articulos_que_cambiaron($ids_que_cambiaron);
         $this->marcar_chunk_procesado();
+    }
+
+    /**
+     * Se ejecuta cuando el chunk falla de forma definitiva, INCLUIDO cuando el proceso muere
+     * sin llegar a ningún catch (OOM, timeout, worker reiniciado). Corre en un proceso
+     * fresco, así que puede escribir en la base aunque el anterior se haya quedado sin
+     * memoria. Mismo patrón que ProcessArticleChunk.
+     *
+     * 🔴 Sin esto, un chunk muerto deja processed_chunks por debajo de total_chunks para
+     * siempre: el finalizador se re-despacha cada 10 segundos indefinidamente y el usuario
+     * nunca recibe nada. Y ahora que el aviso sale al final, no recibir nada es no enterarse
+     * de que su recálculo se murió.
+     *
+     * @param  \Throwable $e
+     * @return void
+     */
+    public function failed($e)
+    {
+        Log::error('ProcessChunkSetFinalPrices fallo: ' . $e->getMessage());
+
+        SetFinalPricesNotificationHelper::notify_prices_update_failed(
+            $this->user_id,
+            $this->price_update_run_id,
+            'Se interrumpió el recálculo de un lote de artículos y la actualización quedó incompleta: ' . $e->getMessage()
+        );
     }
 
     /**

@@ -8,16 +8,20 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Expone el desglose completo de una corrida de recálculo de precios.
+ * Expone los proveedores de una corrida de recálculo de precios.
  *
- * El broadcast sólo lleva los grupos más grandes (el límite de 10 KB de Pusher no da para
- * más); cuando el usuario aprieta "Ver los N restantes", el modal viene acá. Mismo patrón
- * que /import-history/repeated-code-articles/{id}.
+ * El broadcast lleva sólo números (el límite de 10 KB de Pusher no da para una lista de
+ * largo impredecible), así que los nombres los pide el modal por acá cuando se abre. Mismo
+ * patrón que /import-history/repeated-code-articles/{id}.
  */
 class PriceUpdateRunController extends Controller
 {
     /**
-     * Desglose por proveedor o por categoría de una corrida.
+     * Nombres de los proveedores cuyos artículos cambiaron de precio en la corrida.
+     *
+     * Devuelve la lista COMPLETA, sin tope. El tope de 50 que tenía antes convivía con un
+     * total aparte, y el modal prometía "ver los 80" para después mostrar 50 sin ninguna
+     * señal de que faltaran: dos números que podían discrepar es peor que uno solo.
      *
      * @param  \Illuminate\Http\Request $request
      * @param  int $id
@@ -29,9 +33,8 @@ class PriceUpdateRunController extends Controller
 
         /*
          * 🔴 Pertenencia al usuario autenticado. Esto es multi-tenant: una corrida ajena
-         * filtra la composición del catálogo de otro comercio (qué proveedores tiene y con
-         * cuántos artículos cada uno). Se responde 404 y no 403 a propósito: un 403 ya
-         * confirma que la corrida existe.
+         * filtra la composición del catálogo de otro comercio (qué proveedores tiene). Se
+         * responde 404 y no 403 a propósito: un 403 ya confirma que la corrida existe.
          */
         if (is_null($run) || (int) $run->user_id !== (int) UserHelper::userId()) {
             return response()->json([
@@ -39,53 +42,33 @@ class PriceUpdateRunController extends Controller
             ], 404);
         }
 
-        $tipo = $request->tipo == 'category' ? 'category' : 'provider';
-
-        /** Tope de filas; el default acompaña al que ya usa el modal de importación. */
-        $limit = (int) $request->limit;
-        if ($limit <= 0 || $limit > 200) {
-            $limit = 50;
-        }
-
-        $es_proveedor      = $tipo == 'provider';
-        $tabla_relacionada = $es_proveedor ? 'providers' : 'categories';
-        $columna_fk        = $es_proveedor ? 'articles.provider_id' : 'articles.category_id';
-        $sin_nombre        = $es_proveedor ? 'Sin proveedor' : 'Sin categoría';
-
-        $query = DB::table('price_update_run_articles')
+        $filas = DB::table('price_update_run_articles')
             ->join('articles', 'articles.id', '=', 'price_update_run_articles.article_id')
-            ->leftJoin($tabla_relacionada, $tabla_relacionada . '.id', '=', DB::raw($columna_fk))
+            ->leftJoin('providers', 'providers.id', '=', DB::raw('articles.provider_id'))
             ->where('price_update_run_articles.price_update_run_id', $run->id)
-            ->select(
-                DB::raw($tabla_relacionada . '.name as nombre'),
-                DB::raw('COUNT(*) as cantidad')
-            )
-            ->groupBy(DB::raw($columna_fk), DB::raw($tabla_relacionada . '.name'))
-            ->orderBy('cantidad', 'DESC');
+            ->select(DB::raw('providers.name as nombre'))
+            ->groupBy(DB::raw('articles.provider_id'), DB::raw('providers.name'))
+            ->get();
 
-        /* El total es la cantidad de GRUPOS, para que el modal sepa si mostró todos. */
-        $total = DB::table(DB::raw('(' . $query->toSql() . ') as grupos'))
-            ->mergeBindings($query)
-            ->count();
+        $proveedores = [];
 
-        $items = [];
-
-        foreach ($query->limit($limit)->get() as $fila) {
+        foreach ($filas as $fila) {
             $nombre = $fila->nombre;
 
+            /* Los artículos sin proveedor son un grupo más: si se descartaran, la lista no
+               cerraría con el número que el modal ya mostró y se lee como un error. */
             if (is_null($nombre) || $nombre === '') {
-                $nombre = $sin_nombre;
+                $nombre = 'Sin proveedor';
             }
 
-            $items[] = [
-                'nombre'   => $nombre,
-                'cantidad' => (int) $fila->cantidad,
-            ];
+            $proveedores[] = $nombre;
         }
 
+        /* Alfabético: la lista es para buscar un nombre, no para ver quién tuvo más. */
+        sort($proveedores, SORT_NATURAL | SORT_FLAG_CASE);
+
         return response()->json([
-            'items' => $items,
-            'total' => $total,
+            'proveedores' => $proveedores,
         ]);
     }
 }

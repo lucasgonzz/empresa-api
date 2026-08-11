@@ -120,8 +120,13 @@ class PriceTypeHelper {
 			return;
 		}
 
-		// Su propia corrida, para que el aviso salga con numeros y no en el aire.
-		$run = PriceUpdateRunHelper::abrir_o_reusar($user_id, $origen, $origen_detalle);
+		/*
+		 * Su propia corrida, para que el aviso salga con numeros y no en el aire. SIEMPRE
+		 * una nueva: esto corre sincronico en el request web, asi que reusar la corrida
+		 * abierta del usuario lo metia como segundo productor de una corrida que un job ya
+		 * estaba llenando, y el primero que terminaba cerraba por el otro.
+		 */
+		$run = PriceUpdateRunHelper::abrir($user_id, $origen, $origen_detalle);
 
 		// Procesa en lotes para evitar jobs grandes y mantener bajo consumo de memoria.
 		$article_chunks = array_chunk($article_ids, 100);
@@ -133,7 +138,7 @@ class PriceTypeHelper {
 		DB::table('price_update_runs')
 			->where('id', $run->id)
 			->update([
-				'total_chunks'     => DB::raw('total_chunks + '.count($article_chunks)),
+				'total_chunks'     => count($article_chunks),
 				'chunks_encolados' => 1,
 			]);
 

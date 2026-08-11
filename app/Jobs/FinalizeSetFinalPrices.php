@@ -29,6 +29,15 @@ class FinalizeSetFinalPrices implements ShouldQueue
     public $tries = 120;
     public $backoff = 10;
 
+    /**
+     * Horas después de las cuales una corrida que no puede cerrar se da por perdida.
+     *
+     * No es un número fino: es el techo que impide el re-despacho eterno. Un recálculo del
+     * catálogo entero de un comercio grande se mide en minutos, así que dos horas es
+     * holgadamente "esto ya no va a terminar".
+     */
+    const TOPE_HORAS = 2;
+
     protected $user_id;
     protected $price_update_run_id;
 
@@ -62,6 +71,35 @@ class FinalizeSetFinalPrices implements ShouldQueue
          * sin ningún error visible.
          */
         if (!$run->chunks_encolados || (int) $run->processed_chunks < (int) $run->total_chunks) {
+            /*
+             * 🔴 Tope de reloj. El re-despacho no consume intentos, así que sin esta guarda
+             * una corrida que perdió un chunk se re-despacha cada 10 segundos para siempre y
+             * el usuario nunca recibe nada — y ahora que el aviso sale al final, no recibir
+             * nada es no enterarse de que su recálculo se murió.
+             */
+            if ($this->paso_el_tope_de_reloj($run)) {
+                $detalle = 'El recálculo de precios no terminó después de ' . self::TOPE_HORAS
+                    . ' horas y se cerró como incompleto. Se procesaron '
+                    . (int) $run->processed_chunks . ' de ' . (int) $run->total_chunks . ' lotes'
+                    . ($run->chunks_encolados ? '' : ', y el proceso ni siquiera llegó a encolarlos todos')
+                    . '.';
+
+                Log::error('FinalizeSetFinalPrices: se paso del tope de reloj, se cierra en error', [
+                    'price_update_run_id' => $run->id,
+                    'chunks_encolados'    => $run->chunks_encolados,
+                    'processed_chunks'    => $run->processed_chunks,
+                    'total_chunks'        => $run->total_chunks,
+                ]);
+
+                SetFinalPricesNotificationHelper::notify_prices_update_failed(
+                    $this->user_id,
+                    $run->id,
+                    $detalle
+                );
+
+                return;
+            }
+
             Log::info('FinalizeSetFinalPrices: todavia faltan chunks, re-dispatch', [
                 'price_update_run_id' => $run->id,
                 'chunks_encolados'    => $run->chunks_encolados,
@@ -81,9 +119,13 @@ class FinalizeSetFinalPrices implements ShouldQueue
             ->where('price_update_run_id', $run->id)
             ->count();
 
+        /*
+         * Sólo proveedores: las categorías salieron del modal por decisión de Lucas
+         * (11/8/2026), y calcular un desglose que nadie mira es un GROUP BY sobre decenas de
+         * miles de filas para tirarlo.
+         */
         $stats = [
-            'proveedores' => $this->agrupar_por($run->id, 'provider'),
-            'categorias'  => $this->agrupar_por($run->id, 'category'),
+            'proveedores' => $this->agrupar_proveedores($run->id),
         ];
 
         $run->articles_updated = $articles_updated;
@@ -101,37 +143,34 @@ class FinalizeSetFinalPrices implements ShouldQueue
     }
 
     /**
-     * Agrupa los artículos de la corrida por proveedor o por categoría, de mayor a menor.
+     * Agrupa por proveedor los artículos de la corrida que cambiaron de precio.
      *
      * Se hace por SQL y no en PHP porque la lista puede tener decenas de miles de filas:
      * traerlas para contarlas en memoria es lo que después no escala.
      *
-     * Los artículos sin proveedor o sin categoría NO se descartan: se agrupan bajo
-     * "Sin proveedor" / "Sin categoría". Descartarlos haría que la suma del desglose no
-     * cierre con el número grande del modal, y el usuario lo lee como un error.
+     * Los artículos sin proveedor NO se descartan: se agrupan bajo "Sin proveedor".
+     * Descartarlos haría que el modal diga "de 3 proveedores" cuando en realidad hubo un
+     * cuarto grupo, y el usuario lo lee como un error.
      *
-     * @param  int    $run_id
-     * @param  string $tipo  'provider' | 'category'
+     * La cantidad por proveedor ya no se muestra en el modal, pero se sigue guardando: es lo
+     * que hace que stats_json siga sirviendo para entender una corrida vieja sin tener que
+     * rehacer el SQL contra un catálogo que mientras tanto cambió.
+     *
+     * @param  int $run_id
      * @return array
      */
-    protected function agrupar_por($run_id, $tipo)
+    protected function agrupar_proveedores($run_id)
     {
-        $es_proveedor = $tipo == 'provider';
-
-        $tabla_relacionada = $es_proveedor ? 'providers' : 'categories';
-        $columna_fk        = $es_proveedor ? 'articles.provider_id' : 'articles.category_id';
-        $sin_nombre        = $es_proveedor ? 'Sin proveedor' : 'Sin categoría';
-
         $filas = DB::table('price_update_run_articles')
             ->join('articles', 'articles.id', '=', 'price_update_run_articles.article_id')
-            ->leftJoin($tabla_relacionada, $tabla_relacionada . '.id', '=', DB::raw($columna_fk))
+            ->leftJoin('providers', 'providers.id', '=', DB::raw('articles.provider_id'))
             ->where('price_update_run_articles.price_update_run_id', $run_id)
             ->select(
-                DB::raw($columna_fk . ' as relacion_id'),
-                DB::raw($tabla_relacionada . '.name as nombre'),
+                DB::raw('articles.provider_id as relacion_id'),
+                DB::raw('providers.name as nombre'),
                 DB::raw('COUNT(*) as cantidad')
             )
-            ->groupBy(DB::raw($columna_fk), DB::raw($tabla_relacionada . '.name'))
+            ->groupBy(DB::raw('articles.provider_id'), DB::raw('providers.name'))
             ->orderBy('cantidad', 'DESC')
             ->get();
 
@@ -141,7 +180,7 @@ class FinalizeSetFinalPrices implements ShouldQueue
             $nombre = $fila->nombre;
 
             if (is_null($nombre) || $nombre === '') {
-                $nombre = $sin_nombre;
+                $nombre = 'Sin proveedor';
             }
 
             $resultado[] = [
@@ -155,9 +194,25 @@ class FinalizeSetFinalPrices implements ShouldQueue
     }
 
     /**
+     * @param  \App\Models\PriceUpdateRun $run
+     * @return bool
+     */
+    protected function paso_el_tope_de_reloj($run)
+    {
+        if (is_null($run->started_at)) {
+            return false;
+        }
+
+        return Carbon::parse($run->started_at)
+            ->addHours(self::TOPE_HORAS)
+            ->isPast();
+    }
+
+    /**
      * Si el finalizador muere de forma definitiva, la corrida no puede quedar en_proceso
-     * para siempre: bloquearía todos los avisos posteriores de ese usuario (ver la guarda
-     * de reuso de corrida en ProcessSetFinalPrices).
+     * para siempre y, sobre todo, el usuario no puede quedarse esperando un modal que ya no
+     * va a llegar: éste es el último eslabón del aviso, así que si se muere en silencio el
+     * recálculo entero se muere en silencio.
      *
      * @param  \Throwable $e
      * @return void
@@ -166,14 +221,10 @@ class FinalizeSetFinalPrices implements ShouldQueue
     {
         Log::error('FinalizeSetFinalPrices fallo: ' . $e->getMessage());
 
-        $run = PriceUpdateRun::find($this->price_update_run_id);
-
-        if (!is_null($run) && $run->status == 'en_proceso') {
-            $run->status      = 'error';
-            $run->finished_at = Carbon::now();
-            $run->save();
-        }
-
-        SetFinalPricesNotificationHelper::notify_prices_update_failed($this->user_id, $this->price_update_run_id);
+        SetFinalPricesNotificationHelper::notify_prices_update_failed(
+            $this->user_id,
+            $this->price_update_run_id,
+            'No se pudo cerrar el recálculo de precios: ' . $e->getMessage()
+        );
     }
 }
