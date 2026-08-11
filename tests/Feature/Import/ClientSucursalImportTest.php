@@ -211,6 +211,92 @@ class ClientSucursalImportTest extends TestCase
     }
 
     /**
+     * Criterio 2 (la otra mitad): la comparacion es exacta sobre el valor normalizado,
+     * no parcial. Con un LIKE %...% el nombre "zz Sucursal Centro" matchearia tambien
+     * con "zz Sucursal Centro Norte" y el cliente terminaria en la sucursal equivocada
+     * sin que nadie se entere; y un nombre incompleto matchearia con la primera que
+     * lo contenga en vez de no matchear con ninguna.
+     *
+     * @group import_sucursal
+     * @test
+     */
+    public function el_match_es_exacto_y_no_parcial()
+    {
+        $this->autenticar();
+
+        /* La mas larga primero, para que un LIKE la encuentre antes que la exacta. */
+        $norte  = $this->crear_sucursal('zz Sucursal Centro Norte');
+        $centro = $this->crear_sucursal('zz Sucursal Centro');
+
+        $archivo = $this->excel(['Nombre', 'Sucursal'], [
+            ['zz Cliente nombre exacto',    'zz Sucursal Centro'],
+            ['zz Cliente nombre parcial',   'zz Sucursal Cen'],
+        ]);
+
+        $this->importar($archivo, [
+            'prop_nombre'   => 1,
+            'prop_sucursal' => 2,
+        ]);
+
+        $exacto = Client::where('user_id', 500)->where('name', 'zz Cliente nombre exacto')->first();
+        $this->assertNotNull($exacto, 'El cliente del nombre exacto no se creo.');
+        $this->assertEquals(
+            $centro->id,
+            $exacto->address_id,
+            'El nombre exacto no fue a su sucursal: la comparacion esta matcheando de forma parcial.'
+        );
+        $this->assertNotEquals($norte->id, $exacto->address_id);
+
+        $parcial = Client::where('user_id', 500)->where('name', 'zz Cliente nombre parcial')->first();
+        $this->assertNotNull($parcial, 'El cliente del nombre parcial no se creo.');
+        $this->assertNull(
+            $parcial->address_id,
+            'Un nombre incompleto matcheo con una sucursal: la comparacion no es exacta.'
+        );
+    }
+
+    /**
+     * Una sucursal de OTRO usuario con el mismo nombre no se puede usar: la resolucion
+     * mira solo las sucursales del usuario de la importacion.
+     *
+     * @group import_sucursal
+     * @test
+     */
+    public function no_matchea_con_la_sucursal_de_otro_usuario()
+    {
+        $this->autenticar();
+
+        /*
+         * El user_id es de otro usuario a proposito. No hace falta que ese usuario
+         * exista: lo que se prueba es que la resolucion filtra por user_id, y atarlo
+         * a un usuario sembrado haria que el test se saltee solo en otra base.
+         */
+        $ajena = Address::create([
+            'street'  => 'zz Sucursal De Otro',
+            'user_id' => 999999,
+        ]);
+
+        $archivo = $this->excel(['Nombre', 'Sucursal'], [
+            ['zz Cliente sucursal ajena', 'zz Sucursal De Otro'],
+        ]);
+
+        $this->importar($archivo, [
+            'prop_nombre'   => 1,
+            'prop_sucursal' => 2,
+        ]);
+
+        $cliente = Client::where('user_id', 500)->where('name', 'zz Cliente sucursal ajena')->first();
+
+        $this->assertNotNull($cliente, 'El cliente no se creo durante la importacion.');
+        $this->assertNotEquals(
+            $ajena->id,
+            $cliente->address_id,
+            'El cliente quedo asignado a una sucursal de otro usuario.'
+        );
+        $this->assertNull($cliente->address_id);
+    }
+
+    /**
      * Criterio 3: un nombre que no corresponde a ninguna sucursal no crea nada y deja
      * el address_id que el cliente ya tenia.
      *
