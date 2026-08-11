@@ -63,6 +63,27 @@ class User extends Authenticatable
     ];
 
     /**
+     * Los dos modos que NO corresponden a ninguna columna, y por eso no estan en la tabla de arriba.
+     *
+     * 🔴 Estan como constantes por un bug real, no por prolijidad. `sin_redondeo` vivia como literal
+     * suelto en el accessor de lectura, y la escritura validaba el modo recibido SOLO contra
+     * `COLUMNAS_MODO_REDONDEO` — donde no esta. Resultado: el select ofrecia "Sin redondeo" como
+     * primera opcion, el usuario la elegia, el controller la trataba como valor desconocido y no
+     * escribia nada. 200 OK, ningun mensaje, y el select volvia solo a la opcion anterior. Un
+     * cliente no tenia forma de apagar el redondeo desde la interfaz.
+     *
+     * O sea: la mitad de los valores que este modelo EMITE en el GET no eran los mismos que el
+     * controller ACEPTA en el PUT. Nombrarlos una sola vez es lo que impide que se vuelvan a
+     * separar; los dos son parte del contrato del atributo `modo_redondeo`, no casos de borde.
+     *
+     * La diferencia entre los dos: `sin_redondeo` es un estado que se puede ELEGIR (apaga las
+     * cinco), `personalizado` es un estado que solo se puede MOSTRAR (dos o mas columnas prendidas,
+     * y el select lo ofrece deshabilitado). Ver `UserController::aplicar_modo_redondeo()`.
+     */
+    const MODO_SIN_REDONDEO = 'sin_redondeo';
+    const MODO_PERSONALIZADO = 'personalizado';
+
+    /**
      * Deriva el modo de redondeo a partir de las cinco columnas booleanas.
      *
      * - exactamente una prendida  -> el valor de esa opcion
@@ -89,11 +110,11 @@ class User extends Authenticatable
         }
 
         if (count($prendidas) === 0) {
-            return 'sin_redondeo';
+            return Self::MODO_SIN_REDONDEO;
         }
 
         if (count($prendidas) > 1) {
-            return 'personalizado';
+            return Self::MODO_PERSONALIZADO;
         }
 
         return $prendidas[0];

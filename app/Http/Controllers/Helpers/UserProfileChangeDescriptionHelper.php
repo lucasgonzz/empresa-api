@@ -285,11 +285,11 @@ class UserProfileChangeDescriptionHelper
         }
 
         if (count($prendidas) === 0) {
-            return 'sin_redondeo';
+            return User::MODO_SIN_REDONDEO;
         }
 
         if (count($prendidas) > 1) {
-            return 'personalizado';
+            return User::MODO_PERSONALIZADO;
         }
 
         return $prendidas[0];
@@ -305,13 +305,13 @@ class UserProfileChangeDescriptionHelper
     {
         /** @var array<string, string> $textos */
         $textos = [
-            'sin_redondeo'  => 'sin redondeo',
-            'miles'         => 'de a 1000',
-            'centenas'      => 'de a 100',
-            'decenas'       => 'de a 10',
-            'cincuenta'     => 'de a 50',
-            'centavos'      => 'sin centavos',
-            'personalizado' => 'combinacion personalizada',
+            User::MODO_SIN_REDONDEO  => 'sin redondeo',
+            'miles'                  => 'de a 1000',
+            'centenas'               => 'de a 100',
+            'decenas'                => 'de a 10',
+            'cincuenta'              => 'de a 50',
+            'centavos'               => 'sin centavos',
+            User::MODO_PERSONALIZADO => 'combinacion personalizada',
         ];
 
         return array_key_exists($modo, $textos) ? $textos[$modo] : $modo;

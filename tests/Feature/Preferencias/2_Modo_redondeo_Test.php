@@ -100,6 +100,40 @@ class Modo_redondeo_Test extends TestCase
     }
 
     /**
+     * Igual que `payload()`, pero con las cinco columnas crudas en 0 — o sea CONTRADICIENDO el
+     * estado de la base.
+     *
+     * 🔴 Por qué existe, y es una corrección a la primera versión de esta suite. Los tres tests de
+     * no-op armaban el request con `$user->fresh()->toArray()`, así que las columnas crudas del
+     * payload ya venían **iguales** a lo que había en la base. Con eso el aserto "las cinco quedaron
+     * idénticas" se cumplía por dos motivos distintos e indistinguibles: porque la fachada no tocó
+     * nada (lo que se quiere probar), o porque alguien escribió las columnas crudas del request
+     * encima con esos mismos valores (lo que se quiere prohibir). Los tres pasaban tal cual contra
+     * `origin/develop`, donde el controller hacía `$model->redondear_x = $request->redondear_x`.
+     *
+     * Un test que pasa igual con el código viejo no está midiendo el cambio. Y peor: seguiría
+     * pasando el día que alguien reintrodujera las asignaciones directas al lado de la fachada, que
+     * es justamente el escenario contra el que estos tests dicen proteger.
+     *
+     * Con las crudas en 0 y la base en 1, las dos explicaciones se separan: si el endpoint honrara
+     * las columnas del request, la base terminaría en 0 y el test se cae.
+     *
+     * @param \App\Models\User $user
+     * @param array<string, mixed> $overrides
+     * @return array<string, mixed>
+     */
+    protected function payload_que_contradice($user, array $overrides = [])
+    {
+        $crudas = [];
+
+        foreach (self::COLUMNAS as $columna) {
+            $crudas[$columna] = 0;
+        }
+
+        return $this->payload($user, array_merge($crudas, $overrides));
+    }
+
+    /**
      * @group preferencias
      * @test
      */
@@ -125,6 +159,102 @@ class Modo_redondeo_Test extends TestCase
     }
 
     /**
+     * 🔴 El agujero exacto por el que se coló la regresión: la suite probaba `apagado → cincuenta`
+     * pero nunca `prendido → apagado`. El único assert de `'sin_redondeo'` era del accessor de
+     * LECTURA, y la lectura andaba bien; lo que no andaba era el PUT.
+     *
+     * `sin_redondeo` no le corresponde a ninguna columna, así que no está en
+     * `COLUMNAS_MODO_REDONDEO` y caía en el early-return de "modo desconocido": el cliente elegía
+     * la primera opción del select, recibía 200 OK y el select volvía solo a la opción anterior.
+     * Sin este test, ese camino no lo mira nadie — y el gate del carril tampoco, porque una
+     * funcionalidad que nunca funcionó no regresiona.
+     *
+     * Va con el `assertPushed` adentro a propósito: apagar el redondeo cambia el precio final de
+     * todo el catálogo tanto como prenderlo. Si el recálculo no se despachara, el cliente vería los
+     * precios redondeados igual que antes y creería que la opción no hizo nada.
+     *
+     * @group preferencias
+     * @test
+     */
+    public function apagar_el_redondeo_pone_las_cinco_columnas_en_cero_y_despacha_el_recalculo()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->actingAs($user, 'web');
+        $this->poner_columnas($user, ['redondear_de_a_50']);
+
+        Queue::fake();
+
+        $response = $this->putJson('api/user/'.$user->id, $this->payload($user, ['modo_redondeo' => 'sin_redondeo']));
+        $response->assertStatus(200);
+
+        $this->assertEquals([
+            'redondear_miles_en_vender'      => 0,
+            'redondear_centenas_en_vender'   => 0,
+            'redondear_precios_en_decenas'   => 0,
+            'redondear_de_a_50'              => 0,
+            'redondear_precios_en_centavos'  => 0,
+        ], $this->leer_columnas($user));
+
+        Queue::assertPushed(ProcessSetFinalPrices::class);
+    }
+
+    /**
+     * Contracara de lectura del anterior: después de apagar, el accessor tiene que devolver
+     * `sin_redondeo`, que es lo que hace que el select muestre "Sin redondeo" al recargar en vez de
+     * la opción vieja. Sin esta vuelta completa, la escritura podría ser correcta y la pantalla
+     * seguir mintiendo.
+     *
+     * @group preferencias
+     * @test
+     */
+    public function despues_de_apagar_el_usuario_lee_sin_redondeo()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->actingAs($user, 'web');
+        $this->poner_columnas($user, ['redondear_centenas_en_vender']);
+
+        $response = $this->putJson('api/user/'.$user->id, $this->payload($user, ['modo_redondeo' => 'sin_redondeo']));
+        $response->assertStatus(200);
+
+        $this->assertEquals('sin_redondeo', $user->fresh()->modo_redondeo);
+    }
+
+    /**
+     * Apagar desde una combinación de dos o más también tiene que funcionar: es el único camino que
+     * tiene un cliente con `personalizado` para salir de ese estado, porque el select le ofrece esa
+     * opción deshabilitada.
+     *
+     * @group preferencias
+     * @test
+     */
+    public function apagar_el_redondeo_desde_una_combinacion_personalizada_apaga_las_cinco()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->actingAs($user, 'web');
+        $this->poner_columnas($user, ['redondear_centenas_en_vender', 'redondear_de_a_50']);
+
+        $response = $this->putJson('api/user/'.$user->id, $this->payload($user, ['modo_redondeo' => 'sin_redondeo']));
+        $response->assertStatus(200);
+
+        $this->assertEquals([
+            'redondear_miles_en_vender'      => 0,
+            'redondear_centenas_en_vender'   => 0,
+            'redondear_precios_en_decenas'   => 0,
+            'redondear_de_a_50'              => 0,
+            'redondear_precios_en_centavos'  => 0,
+        ], $this->leer_columnas($user));
+    }
+
+    /**
      * 🔴 El test que protege a los clientes reales. Si este se cae, la funcionalidad no sale.
      *
      * @group preferencias
@@ -142,8 +272,10 @@ class Modo_redondeo_Test extends TestCase
         $antes = $this->leer_columnas($user);
 
         // El valor 'personalizado' es el que el propio accessor le mandó en el GET: el cliente lo
-        // devuelve sin haber tocado el select.
-        $response = $this->putJson('api/user/'.$user->id, $this->payload($user, ['modo_redondeo' => 'personalizado']));
+        // devuelve sin haber tocado el select. Y las cinco crudas van en 0 para que el aserto
+        // discrimine: contra el código viejo, que escribía `$model->redondear_x = $request->x`,
+        // esto dejaría la combinación apagada y el test se caería. Ver `payload_que_contradice()`.
+        $response = $this->putJson('api/user/'.$user->id, $this->payload_que_contradice($user, ['modo_redondeo' => 'personalizado']));
         $response->assertStatus(200);
 
         $this->assertEquals($antes, $this->leer_columnas($user));
@@ -167,13 +299,18 @@ class Modo_redondeo_Test extends TestCase
 
         $antes = $this->leer_columnas($user);
 
-        $payload = $this->payload($user);
+        // Las cinco crudas en 0 y sin `modo_redondeo`: el request no trae NADA que autorice a
+        // apagar, pero sí trae los valores que el controller viejo habría escrito. Ver
+        // `payload_que_contradice()`.
+        $payload = $this->payload_que_contradice($user);
         unset($payload['modo_redondeo']);
 
         $response = $this->putJson('api/user/'.$user->id, $payload);
         $response->assertStatus(200);
 
         $this->assertEquals($antes, $this->leer_columnas($user));
+        $this->assertEquals(1, $this->leer_columnas($user)['redondear_centenas_en_vender']);
+        $this->assertEquals(1, $this->leer_columnas($user)['redondear_de_a_50']);
     }
 
     /**
@@ -194,10 +331,13 @@ class Modo_redondeo_Test extends TestCase
 
         $antes = $this->leer_columnas($user);
 
-        $response = $this->putJson('api/user/'.$user->id, $this->payload($user, ['modo_redondeo' => 'de_a_7']));
+        // Crudas en 0 + un modo que no existe. Que la columna siga en 1 es lo único que prueba que
+        // el endpoint dejó de mirar las columnas del request. Ver `payload_que_contradice()`.
+        $response = $this->putJson('api/user/'.$user->id, $this->payload_que_contradice($user, ['modo_redondeo' => 'de_a_7']));
         $response->assertStatus(200);
 
         $this->assertEquals($antes, $this->leer_columnas($user));
+        $this->assertEquals(1, $this->leer_columnas($user)['redondear_precios_en_decenas']);
     }
 
     /**

@@ -593,11 +593,23 @@ class UserController extends Controller
     /**
      * Tarea 4 — traduce el valor del select "Opciones de redondeo" a las cinco columnas booleanas.
      *
-     * Un modo conocido deja EXACTAMENTE una columna en 1 y las otras cuatro en 0.
+     * Hay TRES resultados posibles, y la diferencia entre el segundo y el tercero es la que se paso
+     * por alto la primera vez que se escribio este metodo:
      *
-     * 🔴 Y hay dos casos que NO tocan ninguna de las cinco columnas. No son defensa de mas: son la
-     * garantia que hace seguro todo el cambio, y este es el lugar exacto donde alguien lo iria a
-     * "simplificar".
+     * 1. Un modo de la tabla ('miles', 'centenas', 'decenas', 'cincuenta', 'centavos') deja
+     *    EXACTAMENTE una columna en 1 y las otras cuatro en 0.
+     * 2. 'sin_redondeo' apaga las cinco. Es una eleccion explicita del usuario, no un caso de borde.
+     * 3. 'personalizado', ausente, vacio o desconocido: NO se toca ninguna de las cinco columnas.
+     *
+     * 🔴 El caso 2 faltaba, y era una regresion funcional dura: `sin_redondeo` no esta en
+     * `COLUMNAS_MODO_REDONDEO` —no le corresponde ninguna columna— asi que caia en el early-return
+     * del caso 3 junto con la basura. El select lo ofrece como PRIMERA opcion y habilitada, con lo
+     * cual el cliente elegia "Sin redondeo", recibia 200 OK, la pantalla recargaba `auth/me` y el
+     * select volvia solo a la opcion anterior. Sin ningun mensaje de error: el peor tipo de falla.
+     * Y era regresion, no un limite viejo: antes de la fachada, destildar una tilde la apagaba.
+     *
+     * 🔴 El caso 3 NO es defensa de mas: es la garantia que hace seguro todo el cambio, y este es el
+     * lugar exacto donde alguien lo iria a "simplificar".
      *
      * - 'personalizado': el usuario tiene dos o mas columnas prendidas. `ModelForm` postea el
      *   modelo ENTERO, asi que un cliente que entra a cambiarse el telefono manda
@@ -606,6 +618,19 @@ class UserController extends Controller
      *   modo unico, le habriamos cambiado los precios de todo el catalogo por editar un telefono.
      * - ausente, vacio o desconocido: mismo tratamiento por el mismo motivo. Nunca se adivina un
      *   modo a partir de un valor que no esta en la tabla.
+     *
+     * La linea que separa el caso 2 del 3 es "apagar es una eleccion, adivinar no": 'sin_redondeo'
+     * es un valor que el propio accessor emite y que el select ofrece, o sea que llega porque
+     * alguien lo eligio. 'personalizado' tambien lo emite el accessor, pero describe un estado que
+     * el select no puede reconstruir — por eso uno se honra y el otro se ignora.
+     *
+     * ⚠️ Limitacion conocida y FUERA DEL ALCANCE de la tarea 4, anotada donde se ve: esto escribe
+     * sobre `$model`, que es la fila del usuario AUTENTICADO, mientras que `ArticleHelper::redondear()`
+     * lee el redondeo del OWNER. Un empleado que elija un modo se lo guarda a si mismo y no cambia
+     * ningun precio, pero `check_actualizar_articulos()` detecta el cambio igual y despacha un
+     * recalculo del catalogo entero del owner que no va a mover un solo precio. `listas_de_precio` y
+     * `sale_factura_print_option` resuelven esto escribiendo en `$owner_user`; el redondeo no. Ver
+     * el hallazgo `20260811-el-select-de-redondeo-le-escribe-al-empleado-y-el-precio-lo-calcula-el-owner`.
      *
      * @param User $model Usuario al que se le aplica la configuracion.
      * @param Request $request Request del PUT, que puede traer o no `modo_redondeo`.
@@ -619,12 +644,23 @@ class UserController extends Controller
             return;
         }
 
-        // in_array estricto sobre los modos conocidos: 'personalizado' NO esta en la tabla de
-        // columnas, asi que cae aca junto con cualquier valor desconocido y sale sin tocar nada.
+        // Caso 2. Va ANTES del in_array de abajo porque `sin_redondeo` no es el valor de ninguna
+        // columna: si se dejara caer ahi, seria indistinguible de un valor desconocido — que es
+        // exactamente el bug que este bloque arregla.
+        if ($modo === User::MODO_SIN_REDONDEO) {
+            foreach (array_keys(User::COLUMNAS_MODO_REDONDEO) as $columna) {
+                $model->$columna = 0;
+            }
+            return;
+        }
+
+        // Caso 3. in_array estricto sobre los modos que SI tienen columna: 'personalizado' no esta
+        // en la tabla, asi que cae aca junto con cualquier valor desconocido y sale sin tocar nada.
         if (!in_array($modo, array_values(User::COLUMNAS_MODO_REDONDEO), true)) {
             return;
         }
 
+        // Caso 1.
         foreach (User::COLUMNAS_MODO_REDONDEO as $columna => $modo_de_esa_columna) {
             $model->$columna = ($modo_de_esa_columna === $modo) ? 1 : 0;
         }
