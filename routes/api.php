@@ -384,6 +384,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('category', 'CategoryController');
     Route::resource('condition', 'ConditionController');
     Route::resource('iva', 'IvaController');
+    // provider/options tiene que declararse ANTES del resource: Route::resource registra
+    // GET provider/{provider} para el show, y esa ruta captura "options" como si fuera un id
+    // si queda declarada primero (4/8/2026).
+    Route::get('provider/options', 'ProviderController@options');
     Route::resource('provider', 'ProviderController');
     Route::get('provider/get-afip-information-by-cuit/{cuit}', 'ProviderController@get_afip_information_by_cuit');
     Route::post('/provider/excel/import', 'ProviderController@import');
@@ -393,6 +397,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('iva-condition', 'IvaConditionController');
     Route::resource('location', 'LocationController');
     Route::resource('current-acount-payment-method', 'CurrentAcountPaymentMethodController');
+    // client/options tiene que declararse ANTES del resource, mismo motivo que provider/options.
+    Route::get('client/options', 'ClientController@options');
     Route::resource('client', 'ClientController');
     Route::post('client/excel/import', 'ClientController@import');
     Route::get('client/get-afip-information-by-cuit/{cuit}', 'ClientController@get_afip_information_by_cuit');
@@ -543,6 +549,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('/import-history/rollback/{import_history_id}', 'ImportHistoryController@rollback');
     /* Lista de artículos creados con código repetido para el modal de resultado de importación. */
     Route::get('/import-history/repeated-code-articles/{import_history_id}', 'ImportHistoryController@repeated_code_articles');
+
+    // Desglose completo de una corrida de recalculo de precios (el broadcast solo lleva el top).
+    Route::get('/price-update-run/{id}/desglose', 'PriceUpdateRunController@desglose');
     Route::get('/import-history/{import_history_id}/conflicts', 'ImportHistoryController@conflicts');
 
     /*

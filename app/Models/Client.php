@@ -68,6 +68,18 @@ class Client extends Model
     }
 
     /**
+     * Sucursal a la que pertenece el cliente (clients.address_id -> addresses).
+     *
+     * OJO con el nombre: esto NO es el domicilio del cliente. El domicilio es la
+     * columna `address` de la propia tabla clients, que es texto libre (calle y
+     * numero). Esta relacion apunta a la sucursal del negocio, cuyo nombre vive en
+     * addresses.street.
+     */
+    public function address() {
+        return $this->belongsTo('App\Models\Address');
+    }
+
+    /**
      * Chat de WhatsApp vinculado a este cliente (módulo grupo 137). Un chat puede existir
      * sin cliente todavía (client_id null en whatsapp_chats), pero un cliente tiene a lo
      * sumo un chat.

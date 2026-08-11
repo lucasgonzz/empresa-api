@@ -221,6 +221,32 @@ class SearchController extends Controller
             $models->where($request->depends_on_key, $request->depends_on_value);
         }
 
+        /**
+         * Filtro opcional por sucursal que NO deja afuera a los que no tienen sucursal asignada.
+         *
+         * Regla unica del sistema (decision de Lucas, 11/8/2026): un cliente sin sucursal
+         * asignada aparece en TODAS las sucursales.
+         *
+         * Por que no se reusa depends_on_key/depends_on_value: ese mecanismo hace un where
+         * estricto sobre la columna, o sea exactamente lo contrario de lo decidido.
+         *
+         * Es opcional a proposito: sin el parametro (o con 0/vacio) la query queda igual que
+         * antes de este cambio, asi que ningun otro modelo que use search-from-modal cambia
+         * de comportamiento.
+         */
+        $address_id_con_nulos = (int) $request->input('address_id_con_nulos', 0);
+        if ($address_id_con_nulos > 0) {
+            $models->where(function ($subquery) use ($address_id_con_nulos) {
+                $subquery->where('address_id', $address_id_con_nulos)
+                        ->orWhereNull('address_id')
+                        // El orWhere de 0 NO es redundante: el select "Sucursal" del formulario
+                        // del cliente tiene value: 0 como valor inicial, asi que en la base
+                        // conviven null y 0 para el mismo significado ("sin sucursal"). Sacarlo
+                        // deja afuera a todos los clientes guardados desde ese formulario.
+                        ->orWhere('address_id', 0);
+            });
+        }
+
         if ($model_name_param == 'article') {
             $models->where('status', 'active');
         }

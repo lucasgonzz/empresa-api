@@ -59,6 +59,16 @@ class ArticleController extends Controller
 
     // Se usa para descargar los articulos para modo offline
     function index(Request $request) {
+        // Techo en 1000 (no 2000 como Provider/Client): cada fila trae ~20 relaciones via
+        // withAll(), la respuesta más pesada del sistema.
+        $per_page = (int) $request->input('per_page', 500);
+        if ($per_page <= 0) {
+            $per_page = 500;
+        }
+        if ($per_page > 1000) {
+            $per_page = 1000;
+        }
+
         $models = Article::where('user_id', $this->userId())
                             // ->where('id', 0)
                             ->where('status', 'active')
@@ -80,7 +90,7 @@ class ArticleController extends Controller
         }
         $models = $models->orderBy('created_at', 'DESC')
                             ->withAll()
-                            ->paginate(500);
+                            ->paginate($per_page);
 
         return response()->json(['models' => $models], 200);
     }
@@ -94,13 +104,22 @@ class ArticleController extends Controller
      * @return \Illuminate\Http\JsonResponse
      */
     function get_insumos(Request $request) {
+        // Techo en 1000: mismo criterio que ArticleController@index (withAll() por fila).
+        $per_page = (int) $request->input('per_page', 500);
+        if ($per_page <= 0) {
+            $per_page = 500;
+        }
+        if ($per_page > 1000) {
+            $per_page = 1000;
+        }
+
         // Query base: insumos activos del usuario autenticado.
         $models = Article::where('user_id', $this->userId())
                             ->where('status', 'active')
                             ->where('es_insumo', 1)
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
-                            ->paginate(500);
+                            ->paginate($per_page);
 
         return response()->json(['models' => $models], 200);
     }

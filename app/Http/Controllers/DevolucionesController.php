@@ -126,7 +126,13 @@ class DevolucionesController extends Controller
             DB::rollBack();
 
             Log::info('Error enn nota de credito');
-            Log::info($e);
+            // El reporter de errores esta enganchado al handler global (Handler::register ->
+            // reportable), que Laravel solo invoca para excepciones NO manejadas. Como esta la
+            // capturamos nosotros para poder hacer rollback y responder 500, hay que empujarla a
+            // mano con report(): sin esta linea el fallo no llega a errores/ y no existe para
+            // nadie. Ya paso: dos actualizaciones de venta de Fenix que murieron por lock wait
+            // timeout el 7/8/2026 no dejaron rastro fuera de este archivo de log.
+            report($e);
 
             return response(null, 500);
         }

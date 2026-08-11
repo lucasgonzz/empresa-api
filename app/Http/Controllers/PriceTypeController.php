@@ -92,7 +92,7 @@ class PriceTypeController extends Controller
         // }
 
         // if ($apply_percentage_on_existing_articles) {
-            ProcessSetFinalPrices::dispatch($this->userId());
+            ProcessSetFinalPrices::dispatch($this->userId(), null, null, false, 'tipo_de_precio');
         // }
 
     }

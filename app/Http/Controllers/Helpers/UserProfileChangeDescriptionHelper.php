@@ -11,6 +11,14 @@ use App\Models\User;
 class UserProfileChangeDescriptionHelper
 {
     /**
+     * Etiqueta del renglon unico que describe un cambio de redondeo. Es el mismo texto que el
+     * cliente ve arriba del select en la configuracion de la cuenta.
+     *
+     * @var string
+     */
+    const LABEL_MODO_REDONDEO = 'Opciones de redondeo';
+
+    /**
      * Columnas que el `update` del controlador puede modificar y que queremos reflejar en el aviso.
      *
      * @var array<int, string>
@@ -35,6 +43,14 @@ class UserProfileChangeDescriptionHelper
         'str_limint_en_vender',
         'sale_ticket_description',
         'siempre_omitir_en_cuenta_corriente',
+        // Tarea 4: las cinco columnas de redondeo se siguen rastreando (el snapshot las necesita
+        // para poder derivar el modo de antes y el de despues), pero NO producen una linea cada
+        // una: build_change_descriptions() las saltea y emite un solo renglon "Opciones de
+        // redondeo". Antes salian hasta cuatro renglones de tildes que el usuario nunca vio, y
+        // desde el select directamente no existen como controles separados.
+        // redondear_miles_en_vender se agrego acá: faltaba en las tres listas de este helper,
+        // aunque ArticleHelper::redondear() la lee igual que a las otras cuatro.
+        'redondear_miles_en_vender',
         'redondear_centenas_en_vender',
         'redondear_precios_en_decenas',
         'redondear_de_a_50',
@@ -92,6 +108,9 @@ class UserProfileChangeDescriptionHelper
         'str_limint_en_vender' => 'Texto límite en vender',
         'sale_ticket_description' => 'Descripción en ticket de venta',
         'siempre_omitir_en_cuenta_corriente' => 'Siempre omitir en cuenta corriente',
+        // Tarea 4: se conservan por si alguna de estas columnas se muestra en otro contexto, pero
+        // el cambio de redondeo se describe con la etiqueta unica de mas abajo (LABEL_MODO_REDONDEO).
+        'redondear_miles_en_vender' => 'Redondear de a 1000',
         'redondear_centenas_en_vender' => 'Redondear centenas al vender',
         'redondear_precios_en_decenas' => 'Redondear precios en decenas',
         'redondear_de_a_50' => 'Redondear de a 50',
@@ -150,6 +169,12 @@ class UserProfileChangeDescriptionHelper
         $lines = [];
 
         foreach (self::TRACKED_FIELD_KEYS as $field_key) {
+            // Tarea 4: las cinco columnas de redondeo no describen una linea cada una. Se resuelven
+            // todas juntas despues del loop, en un solo renglon.
+            if (array_key_exists($field_key, User::COLUMNAS_MODO_REDONDEO)) {
+                continue;
+            }
+
             $old_val = array_key_exists($field_key, $before_auth) ? $before_auth[$field_key] : null;
             $new_val = array_key_exists($field_key, $after_auth) ? $after_auth[$field_key] : null;
 
@@ -159,6 +184,22 @@ class UserProfileChangeDescriptionHelper
 
             $label = self::FIELD_LABELS[$field_key] ?? $field_key;
             $lines[] = $label.': de '.self::format_value_for_display($field_key, $old_val).' a '.self::format_value_for_display($field_key, $new_val);
+        }
+
+        // El renglon unico de redondeo, si efectivamente cambio el modo. Se compara el MODO y no
+        // las columnas: pasar de "de a 100" a "de a 50" toca dos columnas y es un solo cambio para
+        // el usuario, que es lo unico que vio en la pantalla.
+        $modo_antes = self::derivar_modo_redondeo($before_auth);
+        $modo_despues = self::derivar_modo_redondeo($after_auth);
+
+        if ($modo_antes !== $modo_despues) {
+            // 🔴 Este renglon usa la flecha y NO el ': de X a Y' de los demas campos, y no es una
+            // inconsistencia: los textos de los modos YA empiezan con "de a" ("de a 100", "de a
+            // 50"), asi que el molde comun producia "Opciones de redondeo: de de a 100 a de a 50".
+            // Con la flecha queda "Opciones de redondeo: de a 100 → de a 50", que es exactamente el
+            // formato que pedia la tarea 4. Si algun dia se unifica el molde de todos los renglones,
+            // hay que cambiar antes los textos de texto_modo_redondeo(), no este join.
+            $lines[] = self::LABEL_MODO_REDONDEO.': '.self::texto_modo_redondeo($modo_antes).' → '.self::texto_modo_redondeo($modo_despues);
         }
 
         if ($listas_before !== null && $listas_after !== null && (int) $listas_before !== (int) $listas_after) {
@@ -232,6 +273,61 @@ class UserProfileChangeDescriptionHelper
     }
 
     /**
+     * Tarea 4 — deriva el modo de redondeo desde un SNAPSHOT (array de columnas), no desde el
+     * modelo. Es la misma regla que `User::getModoRedondeoAttribute()`, aplicada sobre el array
+     * que guarda `snapshot_tracked_attributes()`: una sola prendida devuelve ese modo, ninguna
+     * devuelve 'sin_redondeo' y dos o mas devuelven 'personalizado'.
+     *
+     * @param array<string, mixed> $snapshot Valores de las columnas rastreadas.
+     * @return string
+     */
+    private static function derivar_modo_redondeo(array $snapshot)
+    {
+        /** @var array<int, string> $prendidas Modos cuyas columnas estan en 1. */
+        $prendidas = [];
+
+        foreach (User::COLUMNAS_MODO_REDONDEO as $columna => $modo) {
+            $valor = array_key_exists($columna, $snapshot) ? $snapshot[$columna] : null;
+
+            if ((int) $valor === 1) {
+                $prendidas[] = $modo;
+            }
+        }
+
+        if (count($prendidas) === 0) {
+            return User::MODO_SIN_REDONDEO;
+        }
+
+        if (count($prendidas) > 1) {
+            return User::MODO_PERSONALIZADO;
+        }
+
+        return $prendidas[0];
+    }
+
+    /**
+     * Texto legible de cada modo de redondeo, para el renglon del modal.
+     *
+     * @param string $modo Valor derivado por derivar_modo_redondeo().
+     * @return string
+     */
+    private static function texto_modo_redondeo($modo)
+    {
+        /** @var array<string, string> $textos */
+        $textos = [
+            User::MODO_SIN_REDONDEO  => 'sin redondeo',
+            'miles'                  => 'de a 1000',
+            'centenas'               => 'de a 100',
+            'decenas'                => 'de a 10',
+            'cincuenta'              => 'de a 50',
+            'centavos'               => 'sin centavos',
+            User::MODO_PERSONALIZADO => 'combinacion personalizada',
+        ];
+
+        return array_key_exists($modo, $textos) ? $textos[$modo] : $modo;
+    }
+
+    /**
      * Indica si el campo se trata como booleano en UI (0/1 en base).
      *
      * @param string $field_key Nombre de columna.
@@ -245,6 +341,9 @@ class UserProfileChangeDescriptionHelper
             'iva_included',
             'ask_amount_in_vender',
             'siempre_omitir_en_cuenta_corriente',
+            // Tarea 4: siguen siendo boolish (por si se muestran sueltas en otro contexto), y se
+            // suma redondear_miles_en_vender, que faltaba.
+            'redondear_miles_en_vender',
             'redondear_centenas_en_vender',
             'redondear_precios_en_decenas',
             'redondear_de_a_50',

@@ -123,11 +123,12 @@ class GeneralHelper {
 
             if (!is_null($from_model_id)) {
                 
-                ProcessSetFinalPrices::dispatch(UserHelper::userId(), $from_model_id, $model_id);
+                // El origen viaja hasta el modal: el usuario ve por que se le movieron los precios.
+                ProcessSetFinalPrices::dispatch(UserHelper::userId(), $from_model_id, $model_id, false, 'proveedor');
 
             } else {
                 
-                ProcessSetFinalPrices::dispatch(UserHelper::userId());
+                ProcessSetFinalPrices::dispatch(UserHelper::userId(), null, null, false, 'configuracion_usuario');
             }
             
             Log::info('entro a checkNewValuesForArticlesPrices');

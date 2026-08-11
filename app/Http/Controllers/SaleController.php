@@ -273,7 +273,13 @@ class SaleController extends Controller
 
             DB::rollBack();
 
-            Log::info($e);
+            // El reporter de errores esta enganchado al handler global (Handler::register ->
+            // reportable), que Laravel solo invoca para excepciones NO manejadas. Como esta la
+            // capturamos nosotros para poder hacer rollback y responder 500, hay que empujarla a
+            // mano con report(): sin esta linea el fallo no llega a errores/ y no existe para
+            // nadie. Ya paso: dos actualizaciones de venta de Fenix que murieron por lock wait
+            // timeout el 7/8/2026 no dejaron rastro fuera de este archivo de log.
+            report($e);
 
             return response()->json(['error' => true, 'message' => $e->getMessage()], 500);
         }
@@ -449,7 +455,13 @@ class SaleController extends Controller
         
         } catch(\Throwable $e) {
             DB::rollBack();
-            Log::info($e);
+            // El reporter de errores esta enganchado al handler global (Handler::register ->
+            // reportable), que Laravel solo invoca para excepciones NO manejadas. Como esta la
+            // capturamos nosotros para poder hacer rollback y responder 500, hay que empujarla a
+            // mano con report(): sin esta linea el fallo no llega a errores/ y no existe para
+            // nadie. Ya paso: dos actualizaciones de venta de Fenix que murieron por lock wait
+            // timeout el 7/8/2026 no dejaron rastro fuera de este archivo de log.
+            report($e);
             return response()->json(['error' => true], 500);
         } 
     }

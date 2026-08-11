@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\SalePdfHelper;
+use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Http\Controllers\Pdf\AfipQrPdf;
 use App\Models\AfipInformation;
 use fpdf;
@@ -181,11 +182,14 @@ class SaleTicketPdf extends fpdf {
 
         // $image_width -= 4;
 
-        if (!is_null($this->user->image_url)) {
+        // Logo de la sucursal de la venta, con caida al del negocio (tarea 17).
+        $logo_url = AfipPdfHelper::resolve_logo_url($this->sale->address, $this->user);
+
+        if (!is_null($logo_url)) {
         	if (config('app.APP_ENV') == 'local') {
         		$this->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', 0, 0, $image_width, $image_width);
         	} else {
-	        	$this->Image($this->user->image_url, $this->x_incial, $this->x_incial, $image_width, $image_width);
+	        	$this->Image($logo_url, $this->x_incial, $this->x_incial, $image_width, $image_width);
         	}
         }
 
@@ -250,12 +254,15 @@ class SaleTicketPdf extends fpdf {
 		// Alto proporcional del logo, calculado con el mismo helper que usa getPdfHeight()
 		$logo_h = $this->getLogoFullWidthHeight();
 
-		if (!is_null($this->user->image_url)) {
+		// Logo de la sucursal de la venta, con caida al del negocio (tarea 17).
+		$logo_url = AfipPdfHelper::resolve_logo_url($this->sale->address, $this->user);
+
+		if (!is_null($logo_url)) {
 			if (config('app.APP_ENV') == 'local') {
 				// En local se mantiene el placeholder de freepik, igual que en el layout default
 				$this->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', $this->x_incial, $this->x_incial, $logo_w, $logo_h);
 			} else {
-				$this->Image($this->user->image_url, $this->x_incial, $this->x_incial, $logo_w, $logo_h);
+				$this->Image($logo_url, $this->x_incial, $this->x_incial, $logo_w, $logo_h);
 			}
 		}
 
@@ -317,9 +324,14 @@ class SaleTicketPdf extends fpdf {
 		// Fallback por default: logo cuadrado, igual que el comportamiento historico
 		$logo_h = $logo_w;
 
-		if (!is_null($this->user->image_url) && config('app.APP_ENV') != 'local') {
+		// El alto se calcula sobre el MISMO logo que se va a imprimir en logoFullWidth():
+		// si midiera el del negocio y se imprimiera el de la sucursal, el calculo de altura
+		// del PDF (getPdfHeight) quedaria desalineado con lo que se ve (tarea 17).
+		$logo_url = AfipPdfHelper::resolve_logo_url($this->sale->address, $this->user);
+
+		if (!is_null($logo_url) && config('app.APP_ENV') != 'local') {
 			// @ para no romper el render si la imagen remota no esta disponible
-			$dim = @getimagesize($this->user->image_url);
+			$dim = @getimagesize($logo_url);
 
 			if ($dim && !empty($dim[0]) && !empty($dim[1])) {
 				$logo_h = $logo_w * $dim[1] / $dim[0];

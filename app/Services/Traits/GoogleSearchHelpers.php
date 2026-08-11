@@ -103,4 +103,81 @@ trait GoogleSearchHelpers
     {
         return Http::withOptions($this->google_http_options());
     }
+
+    /**
+     * Valor del header `Referer` para las llamadas a la API de Google Custom Search.
+     *
+     * La key tiene cargada una restriccion por referrer HTTP en Google Cloud Console. El navegador
+     * la satisface solo (SearchImage.vue le pega directo a googleapis), pero una llamada
+     * server-to-server no manda `Referer` y Google la rechaza con "Requests from referer <empty>
+     * are blocked". El valor se deriva del host de `APP_URL`, que es exactamente el mismo host que
+     * el navegador manda en el camino que hoy funciona, asi que no hay que cargar ninguna variable
+     * nueva en los ~40 .env de produccion.
+     *
+     * Se lee `APP_URL` directo y NO `ApiUrlHelper::base()` a proposito: para el `Referer` alcanza
+     * con el host (el `/public` y la barra final que ApiUrlHelper normaliza son path, y parse_url
+     * los ignora solo), y `ApiUrlHelper` recien existe desde la v3.3.3 — este metodo tiene que
+     * poder aplicarse tal cual como hotfix manual sobre una instalacion mas vieja. El 5/8/2026 una
+     * version que si lo usaba murio en produccion con "Class ApiUrlHelper not found" sobre v3.3.2.
+     *
+     * La barra final no es decorativa: los patrones de referrer de Google se comparan contra una
+     * URL, no contra un host pelado.
+     *
+     * @return string
+     */
+    protected function google_api_referer()
+    {
+        $app_url = (string) config('app.APP_URL');
+        if ($app_url === '') {
+            $app_url = (string) config('app.url');
+        }
+
+        $host = (string) parse_url($app_url, PHP_URL_HOST);
+        if ($host === '') {
+            // `APP_URL` cargada sin esquema (mi-cliente.comerciocity.com/api): parse_url no
+            // reconoce host y mete todo en path. El host es el primer segmento.
+            $path   = (string) parse_url($app_url, PHP_URL_PATH);
+            $partes = explode('/', ltrim($path, '/'));
+            $host   = isset($partes[0]) ? $partes[0] : '';
+        }
+
+        // PHP 7.4: `str_ends_with` es de PHP 8 y esta prohibido en este repo, de ahi el substr.
+        // Y el caso `$es_raiz` no sobra: hay clientes servidos desde comerciocity.com/<cliente>/api,
+        // cuyo host es el dominio raiz y no matchea el sufijo.
+        $raiz          = 'comerciocity.com';
+        $sufijo        = '.comerciocity.com';
+        $es_raiz       = ($host === $raiz);
+        $es_subdominio = (strlen($host) > strlen($sufijo) && substr($host, -strlen($sufijo)) === $sufijo);
+
+        if ($host !== '' && ($es_raiz || $es_subdominio)) {
+            return 'https://'.$host.'/';
+        }
+
+        $configurado = (string) config('services.google_custom_search.referer', '');
+        if ($configurado !== '') {
+            return rtrim($configurado, '/').'/';
+        }
+
+        return 'https://www.comerciocity.com/';
+    }
+
+    /**
+     * Cliente HTTP para las llamadas a la API de Google (googleapis.com/customsearch/v1), con el
+     * header `Referer` que la key necesita.
+     *
+     * 🔴 El header va SOLO aca y NO adentro de `google_http()`, aunque mover la linea una funcion
+     * mas arriba parezca la simplificacion obvia: ese mismo cliente se usa para descargar la imagen
+     * encontrada, que vive en un sitio de terceros cualquiera. Muchos de esos sitios tienen
+     * proteccion anti-hotlinking y bloquean la descarga si el `Referer` es de otro dominio. Sin el
+     * header, hoy la dejan pasar. Unificarlo arreglaria la busqueda y romperia la descarga: el
+     * resultado neto seguiria siendo cero imagenes, por una causa mucho mas dificil de diagnosticar.
+     *
+     * @return \Illuminate\Http\Client\PendingRequest
+     */
+    protected function google_api_http()
+    {
+        return $this->google_http()->withHeaders([
+            'Referer' => $this->google_api_referer(),
+        ]);
+    }
 }
