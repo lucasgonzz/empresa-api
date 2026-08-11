@@ -95,11 +95,18 @@ class ProcessSetFinalPrices implements ShouldQueue
             /*
              * 🔴 Un finalizador ACA, antes del bucle, además del de siempre que va al final.
              *
-             * Es la única red que le queda a la corrida si este job se muere en el medio del
+             * Es la red que le queda a la corrida si este job se muere en el medio del
              * ->chunk(): ahí no hay catch que valga —el worker mata el proceso— y failed()
              * tampoco sirve, porque Laravel lo llama sobre una instancia deserializada del
              * payload original y el id de la corrida que se abrió recién no existe en ella.
              * Encolado desde el principio, el tope de reloj cierra la corrida y avisa igual.
+             *
+             * ⚠️ Con una cola que ejecuta inline no es una red: este finalizador corre acá
+             * mismo, vuelve porque todavía no hay nada procesado, y no queda ningún worker
+             * que lo retome. Es el precio de que ahí un re-despacho sea una recursión (ver
+             * FinalizeSetFinalPrices::la_cola_corre_inline). En este proyecto la cola es
+             * `database` con su worker, así que la red es real; en una instalación sin worker
+             * una muerte dura del productor deja la corrida abierta y sin aviso.
              *
              * No cierra de más: el finalizador exige chunks_encolados, que este bucle pone
              * recién al final, así que mientras el productor viva sólo se re-despacha.

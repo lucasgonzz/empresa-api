@@ -803,7 +803,11 @@ class RecalculoPreciosNotificacionTest extends TestCase
             ->first();
 
         $this->assertNotNull($run, 'No se abrio ninguna corrida.');
-        $this->assertNotEquals('en_proceso', $run->status, 'La corrida quedo abierta: nadie la cerro.');
+        $this->assertContains(
+            $run->status,
+            ['terminado', 'sin_cambios'],
+            'La corrida no cerro bien: quedo abierta, o cerro en error.'
+        );
         $this->assertEquals(1, (int) $run->chunks_encolados);
         $this->assertEquals((int) $run->total_chunks, (int) $run->processed_chunks);
 

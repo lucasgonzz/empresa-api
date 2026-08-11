@@ -97,12 +97,12 @@ class FinalizeSetFinalPrices implements ShouldQueue
                 return;
             }
 
-            Log::info('FinalizeSetFinalPrices: todavia faltan chunks, re-dispatch', [
+            $estado_de_la_corrida = [
                 'price_update_run_id' => $run->id,
                 'chunks_encolados'    => $run->chunks_encolados,
                 'processed_chunks'    => $run->processed_chunks,
                 'total_chunks'        => $run->total_chunks,
-            ]);
+            ];
 
             /*
              * 🔴 Con una cola que ejecuta inline (driver `sync`, que es el de los tests y el
@@ -115,8 +115,15 @@ class FinalizeSetFinalPrices implements ShouldQueue
              * estado ya completo.
              */
             if ($this->la_cola_corre_inline()) {
+                /* El mensaje se arma acá y no arriba a propósito: un log que dice
+                   "re-dispatch" cuando no hubo re-dispatch engaña justo al que viene a
+                   auditar este bug por el log, que es como se lo encontró. */
+                Log::info('FinalizeSetFinalPrices: todavia faltan chunks, la cola corre inline y no se re-despacha', $estado_de_la_corrida);
+
                 return;
             }
+
+            Log::info('FinalizeSetFinalPrices: todavia faltan chunks, re-dispatch', $estado_de_la_corrida);
 
             /*
              * El delay son 10 segundos, pero el worker de este proyecto corre con
