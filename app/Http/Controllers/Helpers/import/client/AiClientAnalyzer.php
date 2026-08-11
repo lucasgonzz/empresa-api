@@ -59,6 +59,7 @@ class AiClientAnalyzer
         'razon_social',
         'numero',
         'vendedor',
+        'sucursal',
         'condicion_frente_al_iva',
         'tipo_de_precio',
         'saldo_actual',
@@ -251,8 +252,9 @@ Analizá el siguiente archivo Excel de importación de clientes y devolvé SOLO 
 5. Para "condicion_frente_al_iva": mapeá columnas como "Condición IVA", "IVA", "Tipo IVA" a esta propiedad.
 6. Para "tipo_de_precio": mapeá columnas como "Lista de precios", "Tipo precio" a esta propiedad.
 7. Para "saldo_actual": mapeá columnas de saldo, deuda o cuenta corriente a esta propiedad.
+8. Para "sucursal": mapeá columnas como "Sucursal", "Local", "Punto de venta", "Filial" o "Depósito" a esta propiedad. NO la confundas con "direccion", que es el domicilio del cliente (calle y número): "sucursal" es la sucursal del negocio a la que pertenece el cliente. Si una misma planilla tiene las dos columnas, cada una va a su propia propiedad.
 
-8. Devolvé EXCLUSIVAMENTE el siguiente JSON sin texto adicional:
+9. Devolvé EXCLUSIVAMENTE el siguiente JSON sin texto adicional:
 
 {
   "column_mapping": [
