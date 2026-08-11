@@ -384,10 +384,12 @@ class ClientImport implements ToCollection {
         $sin_espacios_repetidos = preg_replace('/\s+/u', ' ', $value);
 
         /*
-         * Con el modificador /u, preg_replace devuelve null si el texto trae UTF-8 invalido.
-         * Si eso pasa se sigue con el valor sin colapsar los espacios: se pierde esa tolerancia
-         * pero el nombre se compara igual y, si no matchea, se informa. Devolver '' haria que
-         * el nombre se ignore en silencio, que es el peor de los dos comportamientos.
+         * Con el modificador /u, preg_replace devuelve null si el texto trae UTF-8 invalido, y
+         * trim(null) da '' en PHP 7.4: el nombre se ignoraria en silencio, sin matchear y sin
+         * reportarse. Por este camino hoy no puede pasar (el mb_strtolower de arriba ya sanea
+         * los bytes invalidos, se probo con latin-1 crudo y con secuencias truncadas), asi que
+         * esto es un guard y no el arreglo de un bug: queda por si alguien mueve o saca esa
+         * linea, porque el modo de falla seria mudo.
          */
         if (!is_null($sin_espacios_repetidos)) {
             $value = $sin_espacios_repetidos;
