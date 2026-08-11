@@ -848,17 +848,6 @@ class AfipPdfHelper
     }
 
     /**
-     * Resuelve la cadena de identidad fiscal del emisor por sucursal (prompt 438):
-     * en perfil fiscal (hay $afip_ticket) siempre es la afip_information del ticket;
-     * en remito negro, primero la default_afip_information de la sucursal de la venta
-     * (Address::default_afip_information) y, si no existe, la del dueño (User::afip_information).
-     *
-     * @param mixed|null $afip_ticket Ticket AFIP (null en remito negro).
-     * @param mixed $sale Venta asociada (para resolver sale->address en remito negro).
-     * @param mixed $user Usuario emisor (fallback final de la cadena).
-     * @return mixed|null Instancia de AfipInformation resuelta, o null si ningún eslabón la tiene.
-     */
-    /**
      * Resuelve qué logo va en un comprobante: el de la sucursal si tiene uno cargado,
      * el del negocio si no (tarea 17, 11/8/2026).
      *
@@ -871,8 +860,11 @@ class AfipPdfHelper
      * tener su propia versión de este if: dentro de seis meses una de las copias se
      * queda atrás y nadie se entera hasta que un cliente ve el logo equivocado.
      *
-     * No valida que el archivo exista: cada punto de impresión conserva su propia guarda
-     * (file_exists_2, try/catch, getimagesize), que son distintas entre sí a propósito.
+     * No valida que el archivo exista: eso lo hace cada punto de impresión, con la guarda
+     * que ya tenía. Y no todos tienen una: los dos puntos de SaleTicketPdf (logo() y
+     * logoFullWidth()) sólo chequean is_null, así que ahí una URL rota corta el ticket.
+     * Es preexistente —pasaba igual con el logo del negocio— y arreglarlo es cambiarle la
+     * guarda a un comprobante, que es otra tarea.
      *
      * @param mixed|null $address Sucursal del comprobante (venta, presupuesto o cliente).
      * @param mixed $user Usuario dueño del negocio (fallback final de la cadena).
@@ -896,6 +888,17 @@ class AfipPdfHelper
         return trim($user->image_url);
     }
 
+    /**
+     * Resuelve la cadena de identidad fiscal del emisor por sucursal (prompt 438):
+     * en perfil fiscal (hay $afip_ticket) siempre es la afip_information del ticket;
+     * en remito negro, primero la default_afip_information de la sucursal de la venta
+     * (Address::default_afip_information) y, si no existe, la del dueño (User::afip_information).
+     *
+     * @param mixed|null $afip_ticket Ticket AFIP (null en remito negro).
+     * @param mixed $sale Venta asociada (para resolver sale->address en remito negro).
+     * @param mixed $user Usuario emisor (fallback final de la cadena).
+     * @return mixed|null Instancia de AfipInformation resuelta, o null si ningún eslabón la tiene.
+     */
     public static function resolve_emisor_afip_information($afip_ticket, $sale, $user)
     {
         /**
