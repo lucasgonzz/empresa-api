@@ -4,9 +4,12 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\SetFinalPricesNotificationHelper;
+use App\Http\Controllers\Helpers\PriceUpdateRunHelper;
+use App\Jobs\FinalizeSetFinalPrices;
 use App\Jobs\ProcessChunkSetFinalPrices;
 use App\Models\PriceType;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class PriceTypeHelper {
@@ -112,22 +115,36 @@ class PriceTypeHelper {
 	 * @param int $user_id
 	 * @return void
 	 */
-	static function dispatch_recalculate_for_articles($article_ids, $user_id) {
+	static function dispatch_recalculate_for_articles($article_ids, $user_id, $origen = 'listas_de_precio', $origen_detalle = null) {
 		if (count($article_ids) == 0) {
 			return;
 		}
+
+		// Su propia corrida, para que el aviso salga con numeros y no en el aire.
+		$run = PriceUpdateRunHelper::abrir_o_reusar($user_id, $origen, $origen_detalle);
 
 		// Procesa en lotes para evitar jobs grandes y mantener bajo consumo de memoria.
 		$article_chunks = array_chunk($article_ids, 100);
 
 		foreach ($article_chunks as $article_chunk) {
-			dispatch(new ProcessChunkSetFinalPrices($article_chunk, $user_id));
+			dispatch(new ProcessChunkSetFinalPrices($article_chunk, $user_id, $run->id));
 		}
 
-		Log::info('Se actualizaron los precios de '.count($article_ids).' articulos');
+		DB::table('price_update_runs')
+			->where('id', $run->id)
+			->update([
+				'total_chunks'     => DB::raw('total_chunks + '.count($article_chunks)),
+				'chunks_encolados' => 1,
+			]);
 
-		// Misma notificación que ProcessSetFinalPrices tras encolar los chunks de recálculo.
-		SetFinalPricesNotificationHelper::notify_prices_updated($user_id);
+		Log::info('Se encolo el recalculo de precios de '.count($article_ids).' articulos');
+
+		/*
+		 * 🔴 Aca ya NO se notifica. Este helper avisaba "Precios actualizados" en el mismo
+		 * momento de encolar, o sea antes de que se recalculara un solo articulo. Ahora
+		 * notifica el finalizador, cuando los numeros son ciertos.
+		 */
+		dispatch(new FinalizeSetFinalPrices($user_id, $run->id));
 	}
 
 

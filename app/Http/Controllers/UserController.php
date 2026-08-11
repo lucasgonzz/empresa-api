@@ -433,7 +433,7 @@ class UserController extends Controller
                 });
 
             // Recalcula precios para que `final_price` refleje listas activadas.
-            ProcessSetFinalPrices::dispatch($owner_user->id);
+            ProcessSetFinalPrices::dispatch($owner_user->id, null, null, false, 'configuracion_usuario');
             return;
         }
 
@@ -449,7 +449,7 @@ class UserController extends Controller
             }
 
             // Recalcula precios para que `final_price` deje de depender de los price_types.
-            ProcessSetFinalPrices::dispatch($owner_user->id);
+            ProcessSetFinalPrices::dispatch($owner_user->id, null, null, false, 'configuracion_usuario');
         }
     }
 
@@ -558,7 +558,8 @@ class UserController extends Controller
                 $from_dolar = true;
             }
 
-            ProcessSetFinalPrices::dispatch(UserHelper::userId(), null, null, $from_dolar);
+            // from_dolar ya distinguia este caso; ahora ademas lo cuenta el modal.
+            ProcessSetFinalPrices::dispatch(UserHelper::userId(), null, null, $from_dolar, $from_dolar ? 'dolar' : 'configuracion_usuario');
             return true;
         }
         return false;

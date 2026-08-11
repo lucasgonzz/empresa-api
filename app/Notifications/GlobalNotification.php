@@ -41,6 +41,14 @@ class GlobalNotification extends Notification
      */
     public $import_options;
 
+    /**
+     * Resultado del recálculo de precios para el modal price_update_result (opcional).
+     * Mismo tratamiento que import_stats.
+     *
+     * @var array|null
+     */
+    public $price_stats;
+
     public function __construct($data)
     {
         $this->message_text             = $data['message_text'];
@@ -52,6 +60,7 @@ class GlobalNotification extends Notification
         $this->notification_modal       = $data['notification_modal'] ?? 'global_notification';
         $this->import_stats             = $data['import_stats'] ?? null;
         $this->import_options           = $data['import_options'] ?? null;
+        $this->price_stats              = $data['price_stats'] ?? null;
     }
 
     /**
@@ -81,6 +90,7 @@ class GlobalNotification extends Notification
             'notification_modal'        => $this->notification_modal,
             'import_stats'              => $this->import_stats,
             'import_options'            => $this->import_options,
+            'price_stats'               => $this->price_stats,
         ]);
     }
 }
