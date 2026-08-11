@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\PdfArticleHelper;
 use App\Http\Controllers\Helpers\PdfPrintArticles;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Http\Controllers\Helpers\sale\SalePdfHelper;
 use App\Http\Controllers\Pdf\Afip\TicketInfoHelper;
 use App\Http\Controllers\Pdf\AfipQrPdf;
@@ -1103,11 +1104,15 @@ class SaleAfipTicketPdf extends fpdf {
 			$this->Cell(25,4,date_format($this->afip_information->inicio_actividades, 'd/m/Y'), 0, 1,'L');
 		}
 
+		// Logo de la sucursal de la venta, con caida al del negocio (tarea 17).
+		// La guarda file_exists_2 queda igual que siempre, aplicada sobre la URL ya resuelta.
+		$logo_url = AfipPdfHelper::resolve_logo_url($this->sale->address, $this->user);
+
 		if (config('app.APP_ENV') == 'local') {
     		$this->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 5, 15.2, 35, 35);
     	} else {
-    		if (!is_null($this->user->image_url) && GeneralHelper::file_exists_2($this->user->image_url)) {
-    			$this->Image($this->user->image_url, 5, 15.2, 35, 35);
+    		if (!is_null($logo_url) && GeneralHelper::file_exists_2($logo_url)) {
+    			$this->Image($logo_url, 5, 15.2, 35, 35);
     		}
     	}
 	}
