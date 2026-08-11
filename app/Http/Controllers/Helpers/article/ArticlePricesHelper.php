@@ -593,9 +593,14 @@ class ArticlePricesHelper {
         }
 
         /**
-         * 2. Deshacer los impuestos sobre ventas, EN ORDEN INVERSO al que los aplica
-         * aplicar_sale_taxes(). Con un solo impuesto da igual; con dos, no: cada division del
-         * forward se compone sobre el resultado de la anterior.
+         * 2. Deshacer los impuestos sobre ventas.
+         *
+         * Se recorren en orden inverso para que se lea como el espejo de aplicar_sale_taxes(), y
+         * NO porque el resultado dependa del orden: el forward es un producto de escalares
+         * 1 / (1 - t) y la multiplicacion conmuta, asi que con dos impuestos o con veinte el
+         * numero es el mismo se recorran como se recorran. Queda escrito para que nadie "arregle"
+         * un bug de orden que no existe, ni confie en el reverse para uno que si existiria si
+         * algun dia un sale_tax dejara de ser un factor (por ejemplo, un monto fijo).
          */
         $sale_taxes = Self::get_sale_taxes_para_articulo($article, $user);
 

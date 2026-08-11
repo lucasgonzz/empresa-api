@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Costeo;
 
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Models\Article;
 use App\Models\Iva;
@@ -317,5 +318,63 @@ class MargenDeUnPrecioFijadoAManoTest extends TestCase
             $con_la_cuenta_nueva['precio_luego_de_recargos'],
             self::DELTA
         );
+    }
+
+    /**
+     * Parte 3: el desglose de una lista no cuenta el precio final unico. Se testea el corte, que es
+     * lo unico que esta mision cambia del desglose — el calculo no se toca.
+     *
+     * @group costeo-precios
+     * @test
+     */
+    public function el_corte_saca_la_seccion_del_precio_final_y_deja_la_del_costo_real()
+    {
+        $des = [
+            'CALCULO DEL COSTO REAL',
+            'Comienza con costo de $1.000',
+            'Costo Real queda en = $1.000',
+            'CALCULO DEL PRECIO FINAL',
+            'Comienza con costo real en = $1.000',
+            'Mas margen del articulo del 100.00%',
+            'Mas IVA de 21% = $2.420',
+        ];
+
+        $cortado = ArticleHelper::quitar_seccion_del_precio_final_unico($des);
+
+        $this->assertCount(3, $cortado);
+        $this->assertEquals('CALCULO DEL COSTO REAL', $cortado[0]);
+        $this->assertNotContains('CALCULO DEL PRECIO FINAL', $cortado);
+        $this->assertNotContains('Mas IVA de 21% = $2.420', $cortado);
+    }
+
+    /**
+     * Bordes del corte: sin la seccion no toca nada, y con claves salteadas tampoco se le escapa
+     * (array_slice cuenta posiciones, no claves — por eso el helper normaliza antes).
+     *
+     * @group costeo-precios
+     * @test
+     */
+    public function el_corte_no_toca_un_desglose_que_no_tiene_esa_seccion()
+    {
+        $sin_la_seccion = [
+            'CALCULO DEL COSTO REAL',
+            'Comienza con costo de $1.000',
+        ];
+
+        $this->assertEquals(
+            $sin_la_seccion,
+            ArticleHelper::quitar_seccion_del_precio_final_unico($sin_la_seccion)
+        );
+
+        $con_claves_salteadas = [
+            5 => 'CALCULO DEL COSTO REAL',
+            9 => 'CALCULO DEL PRECIO FINAL',
+            11 => 'Mas IVA de 21% = $2.420',
+        ];
+
+        $cortado = ArticleHelper::quitar_seccion_del_precio_final_unico($con_claves_salteadas);
+
+        $this->assertCount(1, $cortado);
+        $this->assertEquals('CALCULO DEL COSTO REAL', $cortado[0]);
     }
 }

@@ -117,11 +117,19 @@ class ArticleHelper {
             return $des;
         }
 
+        /**
+         * array_values primero: mas abajo se corta con array_slice(), que cuenta POSICIONES y no
+         * claves. Hoy $des siempre es una lista (se arma con $des[] y array_merge), asi que daria
+         * igual, pero si algun dia llega con claves salteadas el corte no cortaria nada y la
+         * seccion volveria en silencio.
+         */
+        $des = array_values($des);
+
         $corte = null;
 
-        foreach ($des as $indice => $linea) {
+        foreach ($des as $posicion => $linea) {
             if (is_string($linea) && trim($linea) === 'CALCULO DEL PRECIO FINAL') {
-                $corte = $indice;
+                $corte = $posicion;
                 break;
             }
         }
@@ -590,7 +598,14 @@ class ArticleHelper {
                  * El calculo no cambia: cambia que renglones se acumulan. El precio final unico se
                  * sigue calculando y guardando igual.
                  */
-                if (UserHelper::uses_listas_de_precio($user)) {
+                /**
+                 * Y solo cuando lo que se pidio es el desglose de UNA LISTA, que es lo que tiene
+                 * $des_lista cargado. El "?" del articulo -sin lista- sigue mostrando su seccion
+                 * completa: ahi el precio final unico SI es la respuesta a lo que la persona
+                 * pregunto, y cortarsela la dejaba con tres renglones y sin el calculo que fue a
+                 * buscar. Medido en la verificacion: pasaba de 7 renglones a 3.
+                 */
+                if (count($des_lista) && UserHelper::uses_listas_de_precio($user)) {
                     $des = Self::quitar_seccion_del_precio_final_unico($des);
                 }
 
