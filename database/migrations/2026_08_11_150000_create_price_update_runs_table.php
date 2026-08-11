@@ -58,7 +58,7 @@ class CreatePriceUpdateRunsTable extends Migration
             /** Artículos cuyo final_price EFECTIVAMENTE cambió, no los procesados. */
             $table->integer('articles_updated')->default(0);
 
-            /** Desglose por proveedor y por categoría, ya agregado. */
+            /** Desglose por proveedor, ya agregado. */
             $table->longText('stats_json')->nullable();
 
             $table->timestamp('started_at')->nullable();

@@ -173,6 +173,88 @@ class RecalculoPreciosNotificacionTest extends TestCase
             'El finalizador cerro la corrida con el bucle todavia despachando chunks.'
         );
         Notification::assertNothingSent();
+
+        /* Y se reprograma: un finalizador que vuelve sin cerrar y sin re-despacharse deja la
+           corrida colgada en silencio, que es igual de malo que cerrarla de mas. */
+        Queue::assertPushed(FinalizeSetFinalPrices::class);
+    }
+
+    /**
+     * Criterio: si el productor se muere antes de terminar de encolar los chunks, la corrida
+     * no queda abierta para siempre — a la media hora se cierra en error y se avisa.
+     *
+     * 🔴 Este es el único camino de contención que le queda a una corrida cuyo productor
+     * murió sin llegar a ningún catch (timeout del worker, OOM, un deploy en el medio). Por
+     * eso el finalizador se encola ANTES del bucle: si se encolara al final, un productor
+     * muerto no dejaría ningún vigilante y la corrida se quedaría en_proceso sin que nadie
+     * se entere nunca.
+     *
+     * @group precios
+     * @test
+     */
+    public function una_corrida_cuyo_productor_nunca_encolo_los_chunks_se_cierra_en_error()
+    {
+        $user = $this->autenticar();
+
+        $run = $this->crear_corrida_abierta($user->id, [
+            'total_chunks'     => 0,
+            'processed_chunks' => 0,
+            /* El productor abrió la corrida y se murió antes de despachar nada. */
+            'chunks_encolados' => 0,
+            'started_at'       => Carbon::now()->subMinutes(FinalizeSetFinalPrices::TOPE_MINUTOS_SIN_ENCOLAR + 1),
+        ]);
+
+        Notification::fake();
+        Queue::fake();
+
+        $job = new FinalizeSetFinalPrices($user->id, $run->id);
+        $job->handle();
+
+        $run->refresh();
+
+        $this->assertEquals('error', $run->status, 'La corrida sin productor siguio abierta.');
+        $this->assertNotNull($run->error_detalle);
+
+        Queue::assertNotPushed(FinalizeSetFinalPrices::class);
+
+        Notification::assertSentTo(
+            $user,
+            GlobalNotification::class,
+            function ($notification) {
+                return $notification->message_text === 'Error al actualizar Precios';
+            }
+        );
+    }
+
+    /**
+     * Criterio: mientras el productor esté dentro de la ventana, el finalizador espera. El
+     * tope corto no puede cerrar una corrida que recién arrancó.
+     *
+     * @group precios
+     * @test
+     */
+    public function el_finalizador_espera_al_productor_que_recien_arranco()
+    {
+        $user = $this->autenticar();
+
+        $run = $this->crear_corrida_abierta($user->id, [
+            'total_chunks'     => 0,
+            'processed_chunks' => 0,
+            'chunks_encolados' => 0,
+            'started_at'       => Carbon::now(),
+        ]);
+
+        Notification::fake();
+        Queue::fake();
+
+        $job = new FinalizeSetFinalPrices($user->id, $run->id);
+        $job->handle();
+
+        $run->refresh();
+
+        $this->assertEquals('en_proceso', $run->status, 'Cerro una corrida que recien habia arrancado.');
+        Notification::assertNothingSent();
+        Queue::assertPushed(FinalizeSetFinalPrices::class);
     }
 
     /**
@@ -432,6 +514,95 @@ class RecalculoPreciosNotificacionTest extends TestCase
     }
 
     /**
+     * Criterio: una excepción del productor cierra su corrida y avisa, y el finalizador ya
+     * quedó encolado antes de que reventara.
+     *
+     * Se fuerza con una columna que no existe: la query recién se ejecuta adentro del
+     * ->chunk(), o sea después de que la corrida se abrió y el finalizador se encoló, que es
+     * exactamente el orden que este test protege.
+     *
+     * @group precios
+     * @test
+     */
+    public function una_excepcion_del_productor_cierra_su_corrida_y_avisa()
+    {
+        $user = $this->autenticar();
+
+        Notification::fake();
+        Queue::fake();
+
+        $ids_previos = PriceUpdateRun::where('user_id', $user->id)->pluck('id')->toArray();
+
+        $job = new ProcessSetFinalPrices($user->id, 'zz_columna_que_no_existe', 1, false, 'dolar');
+        $job->handle();
+
+        $run = PriceUpdateRun::where('user_id', $user->id)
+            ->whereNotIn('id', $ids_previos)
+            ->orderBy('id', 'DESC')
+            ->first();
+
+        $this->assertNotNull($run, 'El productor no llego a abrir su corrida.');
+        $this->assertEquals('error', $run->status, 'La corrida quedo abierta despues de la excepcion.');
+        $this->assertNotNull($run->error_detalle);
+
+        /* El finalizador se encoló antes del bucle, así que existe aunque el bucle explotó. */
+        Queue::assertPushed(FinalizeSetFinalPrices::class, function ($job_encolado) use ($run) {
+            return $this->run_id_del_finalizador($job_encolado) === (int) $run->id;
+        });
+
+        Notification::assertSentTo(
+            $user,
+            GlobalNotification::class,
+            function ($notification) {
+                return $notification->message_text === 'Error al actualizar Precios';
+            }
+        );
+    }
+
+    /**
+     * Criterio: del error se avisa UNA vez. Si la corrida ya estaba cerrada, el que llega
+     * después se calla.
+     *
+     * 🔴 Con --tries=1, un error sistémico hace fallar todos los chunks de la corrida. Sin
+     * este corte, una corrida de 500 lotes le apila al usuario 500 modales de error, todos
+     * por la misma causa. El motivo que queda guardado es el del primero, que es el que vio
+     * la causa original.
+     *
+     * @group precios
+     * @test
+     */
+    public function el_error_de_una_corrida_ya_cerrada_no_se_vuelve_a_notificar()
+    {
+        $user = $this->autenticar();
+
+        $run = $this->crear_corrida_abierta($user->id);
+
+        Notification::fake();
+
+        /* El primer chunk que falla cierra y avisa. */
+        $primero = new ProcessChunkSetFinalPrices([1], $user->id, $run->id);
+        $primero->failed(new \Exception('la causa original'));
+
+        Notification::assertSentToTimes($user, GlobalNotification::class, 1);
+
+        /* Los que fallan después, por la misma causa, ya no. */
+        for ($i = 0; $i < 3; $i++) {
+            $siguiente = new ProcessChunkSetFinalPrices([2], $user->id, $run->id);
+            $siguiente->failed(new \Exception('la misma causa otra vez'));
+        }
+
+        Notification::assertSentToTimes($user, GlobalNotification::class, 1);
+
+        $run->refresh();
+
+        $this->assertStringContainsString(
+            'la causa original',
+            $run->error_detalle,
+            'El motivo guardado no es el del primero que fallo.'
+        );
+    }
+
+    /**
      * Criterio: el endpoint devuelve 200 y TODOS los nombres de los proveedores de una
      * corrida propia, en orden alfabético.
      *
@@ -548,6 +719,95 @@ class RecalculoPreciosNotificacionTest extends TestCase
                 return true;
             }
         );
+    }
+
+    /**
+     * Criterio: si el finalizador se muere de forma definitiva, avisa. Es el último eslabón
+     * del aviso: si se muere en silencio, el recálculo entero termina en silencio.
+     *
+     * @group precios
+     * @test
+     */
+    public function el_finalizador_que_muere_cierra_la_corrida_y_avisa()
+    {
+        $user = $this->autenticar();
+
+        $run = $this->crear_corrida_abierta($user->id);
+
+        Notification::fake();
+
+        $job = new FinalizeSetFinalPrices($user->id, $run->id);
+        $job->failed(new \Exception('el worker se reinicio'));
+
+        $run->refresh();
+
+        $this->assertEquals('error', $run->status);
+        $this->assertStringContainsString('el worker se reinicio', $run->error_detalle);
+
+        Notification::assertSentTo(
+            $user,
+            GlobalNotification::class,
+            function ($notification) {
+                return $notification->message_text === 'Error al actualizar Precios';
+            }
+        );
+    }
+
+    /**
+     * Criterio: el productor que muere sin pasar por su catch igual avisa.
+     *
+     * No cierra la corrida y no es un olvido: Laravel llama a failed() sobre una instancia
+     * deserializada del payload original, así que el id de la corrida que handle() abrió no
+     * existe en ese punto. De cerrarla se encarga el finalizador por reloj.
+     *
+     * @group precios
+     * @test
+     */
+    public function el_productor_que_muere_sin_catch_igual_avisa()
+    {
+        $user = $this->autenticar();
+
+        Notification::fake();
+
+        $job = new ProcessSetFinalPrices($user->id, null, null, false, 'dolar');
+        $job->failed(new \Exception('lo mato el timeout del worker'));
+
+        Notification::assertSentTo(
+            $user,
+            GlobalNotification::class,
+            function ($notification) {
+                return $notification->message_text === 'Error al actualizar Precios';
+            }
+        );
+    }
+
+    /**
+     * Criterio: el aviso de error es legible y no arrastra la consulta.
+     *
+     * El mensaje de una QueryException trae el SQL entero pegado atrás. Eso no le dice nada
+     * al usuario y encima le muestra datos de su propia base adentro de un modal.
+     *
+     * @group precios
+     * @test
+     */
+    public function el_aviso_de_error_no_arrastra_la_consulta_sql()
+    {
+        $user = $this->autenticar();
+
+        $run = $this->crear_corrida_abierta($user->id);
+
+        Notification::fake();
+
+        SetFinalPricesNotificationHelper::notify_prices_update_failed(
+            $user->id,
+            $run->id,
+            'No se pudo terminar: SQLSTATE[HY000]: General error (SQL: update articles set final_price = 1234 where id = 55)'
+        );
+
+        $run->refresh();
+
+        $this->assertStringNotContainsString('SQL:', $run->error_detalle);
+        $this->assertStringContainsString('SQLSTATE', $run->error_detalle);
     }
 
     /**

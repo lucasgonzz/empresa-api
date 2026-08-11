@@ -133,7 +133,17 @@ class SetFinalPricesNotificationHelper
     {
         /* El mismo texto va a la base y al aviso: si difieren, el soporte y el usuario están
            mirando dos cosas distintas. */
-        $detalle = PriceUpdateRunHelper::cerrar_con_error($price_update_run_id, $detalle);
+        $cierre  = PriceUpdateRunHelper::cerrar_con_error($price_update_run_id, $detalle);
+        $detalle = $cierre['detalle'];
+
+        /*
+         * La corrida ya estaba cerrada, o sea que del error ya avisó otro. Sin este corte,
+         * un error sistémico que hace fallar los 500 lotes de una corrida grande le apila al
+         * usuario 500 modales de error, todos por la misma causa.
+         */
+        if (!$cierre['avisar']) {
+            return;
+        }
 
         $user = User::find($user_id);
         if (!$user) {

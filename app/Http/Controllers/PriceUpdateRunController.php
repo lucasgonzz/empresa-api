@@ -64,6 +64,14 @@ class PriceUpdateRunController extends Controller
             $proveedores[] = $nombre;
         }
 
+        /*
+         * Sin repetidos: el GROUP BY es por (provider_id, name), así que dos proveedores
+         * distintos con el mismo nombre —o un proveedor llamado literalmente "Sin proveedor"
+         * conviviendo con artículos sin proveedor— traían dos entradas idénticas. Al usuario
+         * el nombre repetido no le dice nada y al modal le rompe las keys del v-for.
+         */
+        $proveedores = array_values(array_unique($proveedores));
+
         /* Alfabético: la lista es para buscar un nombre, no para ver quién tuvo más. */
         sort($proveedores, SORT_NATURAL | SORT_FLAG_CASE);
 

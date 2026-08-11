@@ -92,6 +92,19 @@ class ProcessSetFinalPrices implements ShouldQueue
              */
             $run = PriceUpdateRunHelper::abrir($this->user_id, $this->origen, $this->origen_detalle);
 
+            /*
+             * 🔴 El finalizador se encola ACA, antes del bucle, y no al final.
+             *
+             * Es la única red que tiene una corrida si este job se muere en el medio del
+             * ->chunk(): sin worker vivo no hay catch, no hay failed() que sirva —una
+             * propiedad que se escriba en handle() no sobrevive a la deserialización con la
+             * que Laravel llama a failed()— y la guarda de "corrida colgada" se fue con el
+             * reuso. Encolado desde el principio, el tope de reloj del finalizador cierra la
+             * corrida y avisa igual. No cierra de más: exige chunks_encolados, que este
+             * bucle todavía no puso, así que mientras el productor viva sólo se re-despacha.
+             */
+            dispatch(new FinalizeSetFinalPrices($this->user_id, $run->id));
+
             /** Chunks despachados por este job, que es el único productor de esta corrida. */
             $chunks_despachados = 0;
 
@@ -132,9 +145,12 @@ class ProcessSetFinalPrices implements ShouldQueue
              * cuando los números son ciertos. Consecuencia aceptada: el aviso llega más
              * tarde que antes, minutos en un catálogo grande.
              */
-            dispatch(new FinalizeSetFinalPrices($this->user_id, $run->id));
 
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            /*
+             * \Throwable y no \Exception: en PHP 7 un TypeError o cualquier otro \Error no es
+             * una Exception, así que con el catch anterior se escapaba sin avisarle a nadie.
+             */
             Log::error("Error en ProcessSetFinalPrices: " . $e->getMessage());
 
             SetFinalPricesNotificationHelper::notify_prices_update_failed(
@@ -143,5 +159,33 @@ class ProcessSetFinalPrices implements ShouldQueue
                 'No se pudo iniciar el recálculo de precios: ' . $e->getMessage()
             );
         }
+    }
+
+    /**
+     * Se ejecuta cuando el job falla de forma definitiva SIN pasar por el catch: el worker lo
+     * mató por timeout, el proceso se quedó sin memoria, o lo reinició un deploy.
+     *
+     * ⚠️ Acá no se puede cerrar la corrida, y no es un olvido: Laravel llama a failed() sobre
+     * una instancia deserializada del payload original, así que nada de lo que handle() haya
+     * escrito en el objeto —incluido el id de la corrida que abrió— existe en este punto.
+     * Buscar "la corrida abierta de este usuario" tampoco sirve: sería adivinar, y podría
+     * cerrar la de otro productor que está sano. De cerrarla se encarga el finalizador, que
+     * por eso se encola antes del bucle.
+     *
+     * Lo que sí corresponde acá es avisarle al usuario enseguida, en vez de dejarlo esperando
+     * hasta que salte el tope de reloj.
+     *
+     * @param  \Throwable $e
+     * @return void
+     */
+    public function failed($e)
+    {
+        Log::error('ProcessSetFinalPrices fallo: ' . $e->getMessage());
+
+        SetFinalPricesNotificationHelper::notify_prices_update_failed(
+            $this->user_id,
+            null,
+            'Se interrumpió el recálculo de precios antes de poder empezar: ' . $e->getMessage()
+        );
     }
 }

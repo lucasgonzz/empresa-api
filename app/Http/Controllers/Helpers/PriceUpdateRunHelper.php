@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Models\PriceUpdateRun;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Abre y cierra las corridas de recálculo de precios.
@@ -73,37 +75,87 @@ class PriceUpdateRunHelper
     /**
      * Deja la corrida en error con un motivo legible, si todavía estaba abierta.
      *
-     * Devuelve el motivo ya recortado para que el que la cierra mande exactamente lo mismo
-     * en la notificación: si el texto de la base y el del aviso difieren, el soporte y el
-     * usuario están mirando dos cosas distintas.
+     * Devuelve un array con:
+     *  - `detalle`: el motivo ya recortado, para que la base y la notificación digan
+     *    exactamente lo mismo (si difieren, el soporte y el usuario miran dos cosas
+     *    distintas);
+     *  - `avisar`: si corresponde notificarle al usuario.
      *
-     * Es idempotente: la primera que la cierra gana. Un chunk que falla y el finalizador
-     * que muere después pueden llegar los dos acá, y el motivo que vale es el primero.
+     * 🔴 `avisar` es false cuando la corrida YA estaba cerrada, y eso importa de verdad: con
+     * `--tries=1`, un error sistémico hace fallar todos los chunks de la corrida, y sin este
+     * corte una corrida de 500 lotes le manda al usuario 500 avisos de error apilados. El
+     * motivo que queda es el del primero que llegó, que es el que vio la causa original.
+     *
+     * Es idempotente: la primera que cierra gana.
      *
      * @param  int|null    $price_update_run_id
      * @param  string|null $detalle
-     * @return string|null
+     * @return array
      */
     public static function cerrar_con_error($price_update_run_id, $detalle = null)
     {
         $detalle = self::recortar_detalle($detalle);
 
         if (is_null($price_update_run_id)) {
-            return $detalle;
+            return ['detalle' => $detalle, 'avisar' => true];
         }
 
-        $run = PriceUpdateRun::find($price_update_run_id);
+        try {
+            $run = PriceUpdateRun::find($price_update_run_id);
 
-        if (is_null($run) || $run->status != 'en_proceso') {
-            return $detalle;
+            if (is_null($run)) {
+                return ['detalle' => $detalle, 'avisar' => true];
+            }
+
+            if ($run->status != 'en_proceso') {
+                return ['detalle' => $detalle, 'avisar' => false];
+            }
+
+            $run->status        = 'error';
+            $run->error_detalle = $detalle;
+            $run->finished_at   = Carbon::now();
+            $run->save();
+        } catch (\Throwable $e) {
+            /*
+             * 🔴 Que no se pueda guardar el motivo no puede costarle el aviso al usuario.
+             * Pasa, por ejemplo, en la base de un cliente donde la migración de
+             * error_detalle todavía no corrió: el save tira "Unknown column" y, sin este
+             * catch, la excepción se lleva puesta la notificación que venía después — y
+             * encima en silencio, porque el failed() de un job se reporta y se sigue.
+             */
+            Log::error('PriceUpdateRunHelper: no se pudo guardar el motivo del error', [
+                'price_update_run_id' => $price_update_run_id,
+                'error'               => $e->getMessage(),
+            ]);
+
+            self::cerrar_sin_guardar_el_motivo($price_update_run_id);
         }
 
-        $run->status        = 'error';
-        $run->error_detalle = $detalle;
-        $run->finished_at   = Carbon::now();
-        $run->save();
+        return ['detalle' => $detalle, 'avisar' => true];
+    }
 
-        return $detalle;
+    /**
+     * Último intento de que la corrida no quede abierta cuando no se pudo guardar el motivo.
+     *
+     * @param  int $price_update_run_id
+     * @return void
+     */
+    protected static function cerrar_sin_guardar_el_motivo($price_update_run_id)
+    {
+        try {
+            DB::table('price_update_runs')
+                ->where('id', $price_update_run_id)
+                ->where('status', 'en_proceso')
+                ->update([
+                    'status'      => 'error',
+                    'finished_at' => Carbon::now(),
+                ]);
+        } catch (\Throwable $e) {
+            Log::error('PriceUpdateRunHelper: tampoco se pudo cerrar la corrida', [
+                'price_update_run_id' => $price_update_run_id,
+                'error'               => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -120,6 +172,17 @@ class PriceUpdateRunHelper
 
         if ($detalle === '') {
             return null;
+        }
+
+        /*
+         * El mensaje de una QueryException trae la consulta entera pegada atrás
+         * ("... (SQL: update articles set final_price = 1234 where id = 55)"). Eso lo lee el
+         * usuario en el aviso: no le dice nada y encima le muestra datos de su propia base.
+         */
+        $posicion_del_sql = strpos($detalle, ' (SQL:');
+
+        if ($posicion_del_sql !== false) {
+            $detalle = rtrim(substr($detalle, 0, $posicion_del_sql));
         }
 
         if (mb_strlen($detalle) > self::MAX_LARGO_ERROR_DETALLE) {

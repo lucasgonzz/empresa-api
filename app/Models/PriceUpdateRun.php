@@ -8,8 +8,8 @@ use Illuminate\Database\Eloquent\Model;
  * Una corrida de recálculo de precios finales.
  *
  * Lleva la cuenta de los chunks encolados y procesados para que el finalizador sepa
- * cuándo puede cerrar, y guarda el resultado (cuántos artículos cambiaron de precio y
- * el desglose por proveedor y por categoría) que después muestra el modal del SPA.
+ * cuándo puede cerrar, y guarda el resultado (cuántos artículos cambiaron de precio y de
+ * qué proveedores) que después muestra el modal del SPA.
  */
 class PriceUpdateRun extends Model
 {

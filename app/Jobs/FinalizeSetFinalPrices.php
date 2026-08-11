@@ -38,6 +38,14 @@ class FinalizeSetFinalPrices implements ShouldQueue
      */
     const TOPE_HORAS = 2;
 
+    /**
+     * Minutos que se le dan al productor para terminar de encolar sus chunks.
+     *
+     * El bucle que los despacha se mide en segundos y el worker lo mata a los 60, así que
+     * media hora es holgadamente "este job ya no existe".
+     */
+    const TOPE_MINUTOS_SIN_ENCOLAR = 30;
+
     protected $user_id;
     protected $price_update_run_id;
 
@@ -72,18 +80,14 @@ class FinalizeSetFinalPrices implements ShouldQueue
          */
         if (!$run->chunks_encolados || (int) $run->processed_chunks < (int) $run->total_chunks) {
             /*
-             * 🔴 Tope de reloj. El re-despacho no consume intentos, así que sin esta guarda
-             * una corrida que perdió un chunk se re-despacha cada 10 segundos para siempre y
-             * el usuario nunca recibe nada — y ahora que el aviso sale al final, no recibir
-             * nada es no enterarse de que su recálculo se murió.
+             * 🔴 Topes de reloj. El re-despacho no consume intentos, así que sin esta guarda
+             * una corrida que perdió un chunk —o cuyo productor se murió antes de encolarlos—
+             * se re-despacharía para siempre y el usuario nunca recibiría nada. Ahora que el
+             * aviso sale al final, no recibir nada es no enterarse de que el recálculo murió.
              */
-            if ($this->paso_el_tope_de_reloj($run)) {
-                $detalle = 'El recálculo de precios no terminó después de ' . self::TOPE_HORAS
-                    . ' horas y se cerró como incompleto. Se procesaron '
-                    . (int) $run->processed_chunks . ' de ' . (int) $run->total_chunks . ' lotes'
-                    . ($run->chunks_encolados ? '' : ', y el proceso ni siquiera llegó a encolarlos todos')
-                    . '.';
+            $detalle = $this->motivo_para_darla_por_perdida($run);
 
+            if (!is_null($detalle)) {
                 Log::error('FinalizeSetFinalPrices: se paso del tope de reloj, se cierra en error', [
                     'price_update_run_id' => $run->id,
                     'chunks_encolados'    => $run->chunks_encolados,
@@ -107,6 +111,12 @@ class FinalizeSetFinalPrices implements ShouldQueue
                 'total_chunks'        => $run->total_chunks,
             ]);
 
+            /*
+             * El delay son 10 segundos, pero el worker de este proyecto corre con
+             * --stop-when-empty una vez por minuto (app/Console/Kernel.php), así que un job
+             * demorado no lo mantiene vivo: en la práctica reintenta una vez por minuto. Los
+             * topes de arriba están puestos en esa escala, no en la de los 10 segundos.
+             */
             self::dispatch($this->user_id, $this->price_update_run_id)
                 ->delay(now()->addSeconds(10))
                 ->onConnection($this->connection)
@@ -194,18 +204,45 @@ class FinalizeSetFinalPrices implements ShouldQueue
     }
 
     /**
+     * Por qué esta corrida ya no va a poder cerrarse bien, o null si todavía hay que esperar.
+     *
+     * Son dos topes y no uno porque son dos muertes distintas:
+     *
+     *  - El productor nunca terminó de encolar (`chunks_encolados` en 0). El bucle que
+     *    despacha los chunks no dura más que segundos —el worker mismo lo mata a los 60— así
+     *    que media hora sin el flag significa que ese job se murió. Esperar dos horas para
+     *    avisar de algo que ya se sabe es dejar al usuario mirando la nada.
+     *  - Los chunks se encolaron pero alguno no volvió nunca. Ahí sí hay trabajo real en
+     *    curso y el tope tiene que ser holgado.
+     *
      * @param  \App\Models\PriceUpdateRun $run
-     * @return bool
+     * @return string|null
      */
-    protected function paso_el_tope_de_reloj($run)
+    protected function motivo_para_darla_por_perdida($run)
     {
         if (is_null($run->started_at)) {
-            return false;
+            return null;
         }
 
-        return Carbon::parse($run->started_at)
-            ->addHours(self::TOPE_HORAS)
-            ->isPast();
+        $started_at = Carbon::parse($run->started_at);
+
+        if (!$run->chunks_encolados) {
+            if (!$started_at->copy()->addMinutes(self::TOPE_MINUTOS_SIN_ENCOLAR)->isPast()) {
+                return null;
+            }
+
+            return 'El proceso que tenía que preparar el recálculo de precios se interrumpió y'
+                . ' nunca llegó a repartir el trabajo, así que la actualización quedó sin hacer.'
+                . ' Volvé a intentarlo.';
+        }
+
+        if (!$started_at->copy()->addHours(self::TOPE_HORAS)->isPast()) {
+            return null;
+        }
+
+        return 'El recálculo de precios no terminó después de ' . self::TOPE_HORAS
+            . ' horas y se cerró como incompleto. Se procesaron '
+            . (int) $run->processed_chunks . ' de ' . (int) $run->total_chunks . ' lotes.';
     }
 
     /**

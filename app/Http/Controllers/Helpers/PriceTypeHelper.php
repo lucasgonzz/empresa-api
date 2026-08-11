@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
-use App\Http\Controllers\Helpers\SetFinalPricesNotificationHelper;
 use App\Http\Controllers\Helpers\PriceUpdateRunHelper;
 use App\Jobs\FinalizeSetFinalPrices;
 use App\Jobs\ProcessChunkSetFinalPrices;
