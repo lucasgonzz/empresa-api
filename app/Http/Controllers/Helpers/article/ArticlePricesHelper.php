@@ -42,6 +42,134 @@ class ArticlePricesHelper {
      */
     static $payment_method_layer3_cache = [];
 
+    /**
+     * EL punto unico donde se decide cuanto sale un articulo. Tarea 7, 11/8/2026.
+     *
+     * Por que existe: en una cuenta con listas de precio, articles.final_price es un numero que
+     * NO se le cobra a nadie. setFinalPrice() le pasa a las listas la base de
+     * calcular_base_antes_de_listas() (costo real + margen general del usuario) y recien despues
+     * aplica el margen del proveedor, el de la categoria y el percentage_gain del articulo, que
+     * van SOLO al final_price unico -- el comentario de setFinalPrice lo dice con todas las
+     * letras. Cada venta de esas cuentas sale por alguna lista, asi que mostrar el final_price
+     * como "el precio" es mostrar un numero que nadie paga.
+     *
+     * 🔴 Ningun consumidor puede reimplementar esta cascada. Repetirla es exactamente como se
+     * desincronizaron los cuatro caminos de precios que arreglan los grupos 379 y 382: cada copia
+     * envejece por su lado y nadie se entera hasta que un cliente ve dos precios distintos para
+     * el mismo articulo en dos pantallas.
+     *
+     * La cascada:
+     *   1. La cuenta no usa listas          -> articles.final_price, igual que siempre.
+     *   2. Viene un price_type_id explicito -> el final_price del pivote de esa lista.
+     *   3. Hay un cliente con lista         -> el llamador pasa su price_type_id (caso 2).
+     *   4. No hay ninguna                   -> la lista por defecto de la cuenta.
+     *
+     * SOBRE EL PUNTO 4, que es una decision de producto: en price_types NO existe ninguna columna
+     * de "lista por defecto" (mirar la migracion: hay num, name, percentage, position,
+     * ocultar_al_publico, incluir_en_lista_de_precios_de_excel, setear_precio_final,
+     * se_usa_en_tienda_nube). Pero el criterio SI existe en el sistema, implementado en el front:
+     * empresa-spa/src/mixins/vender/price_types.js elige, cuando no hay presupuesto ni cliente con
+     * lista, la de POSITION MAS ALTA. Este resolvedor usa el mismo criterio a proposito. Si eligiera
+     * otro, el front mostraria un precio y el back calcularia otro, que es el problema que esta
+     * misma funcion viene a cerrar. Queda anotado como decision pendiente: si algun dia se agrega
+     * una columna de lista por defecto, se cambia ACA y en price_types.js, y en ningun otro lado.
+     *
+     * @param mixed $article Articulo con la relacion price_types cargada (o cargable).
+     * @param mixed $user Dueño de la cuenta, para saber si usa listas.
+     * @param int|null $price_type_id Lista explicita (la del cliente, la del presupuesto, la elegida).
+     * @return array {
+     *     @var float|null $final_price Precio resuelto.
+     *     @var int|null $price_type_id Lista de la que salio, null si salio del final_price unico.
+     *     @var string|null $price_type_name Nombre de esa lista, para mostrarlo sin volver a buscarlo.
+     *     @var string $origen 'final_price' | 'lista' | 'lista_por_defecto'
+     * }
+     */
+    static function resolver_precio_de_venta($article, $user, $price_type_id = null)
+    {
+        $desde_el_articulo = [
+            'final_price'     => is_null($article) ? null : $article->final_price,
+            'price_type_id'   => null,
+            'price_type_name' => null,
+            'origen'          => 'final_price',
+        ];
+
+        if (is_null($article)) {
+            return $desde_el_articulo;
+        }
+
+        /**
+         * Rama 1: la mayoria de las cuentas. Sin listas no hay nada que resolver y este helper
+         * tiene que ser transparente: mismo numero que antes de la tarea 7.
+         */
+        if (!UserHelper::uses_listas_de_precio($user)) {
+            return $desde_el_articulo;
+        }
+
+        $price_types = $article->price_types;
+
+        if (is_null($price_types) || count($price_types) === 0) {
+            /**
+             * Cuenta con listas pero articulo sin pivotes: pasa con articulos creados antes de
+             * activar las listas, o mientras el recalculo global todavia no llego. Cae al
+             * final_price, que es lo unico que hay, en vez de devolver null y dejar la pantalla
+             * o el Excel con un precio vacio.
+             */
+            return $desde_el_articulo;
+        }
+
+        $elegida = null;
+
+        /**
+         * Rama 2 (y 3, que llega hasta aca con el price_type_id del cliente ya resuelto por el
+         * llamador: el resolvedor no conoce clientes a proposito, para no atarse a Vender).
+         */
+        if (!is_null($price_type_id) && (int) $price_type_id > 0) {
+            foreach ($price_types as $price_type) {
+                if ((int) $price_type->id === (int) $price_type_id) {
+                    $elegida = $price_type;
+                    break;
+                }
+            }
+        }
+
+        $origen = 'lista';
+
+        /**
+         * Rama 4: la lista por defecto. Ver el bloque grande de arriba sobre por que es la de
+         * position mas alta y no otra cosa.
+         */
+        if (is_null($elegida)) {
+            $origen = 'lista_por_defecto';
+            $mayor_position = null;
+
+            foreach ($price_types as $price_type) {
+                $position = is_null($price_type->position) ? 0 : (int) $price_type->position;
+
+                if (is_null($mayor_position) || $position > $mayor_position) {
+                    $mayor_position = $position;
+                    $elegida = $price_type;
+                }
+            }
+        }
+
+        if (is_null($elegida)
+            || is_null($elegida->pivot)
+            || is_null($elegida->pivot->final_price)) {
+            /**
+             * La lista existe pero su pivote no tiene precio calculado todavia. Mismo criterio
+             * que arriba: mejor el final_price del articulo que un precio vacio.
+             */
+            return $desde_el_articulo;
+        }
+
+        return [
+            'final_price'     => $elegida->pivot->final_price,
+            'price_type_id'   => $elegida->id,
+            'price_type_name' => $elegida->name,
+            'origen'          => $origen,
+        ];
+    }
+
     static function aplicar_category_percentage_gain($article, $price, $des) {
 
         if (
