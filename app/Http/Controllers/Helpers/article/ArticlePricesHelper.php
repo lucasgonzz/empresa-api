@@ -283,7 +283,9 @@ class ArticlePricesHelper {
                     // (precio_luego_de_recargos y monto_ganancia), para que el desglose del boton "?"
                     // de la tarjeta de esta lista en el modal del articulo (grupo 357) tambien
                     // funcione para las cuentas con esta extension -- antes quedaba incompleto.
-                    $res = Self::aplicar_price_type_surchages($price_type, $final_price, $cost, null);
+                    // $article y $user van para que monto_ganancia salga neto de IVA y de impuestos
+                    // sobre ventas, igual que en el camino principal (tarea 9).
+                    $res = Self::aplicar_price_type_surchages($price_type, $final_price, $cost, null, $article, $user);
 
                     $article->price_types()->updateExistingPivot($price_type->id, [
                         'percentage'                => $percentage,
@@ -405,13 +407,30 @@ class ArticlePricesHelper {
 
                 if (!is_null($final_price)) {
 
+                    /**
+                     * El precio lo fijo una persona a mano, asi que el margen se deriva de el. Pero
+                     * hay que compararlo contra el costo en la MISMA magnitud: el precio final tiene
+                     * IVA e impuestos sobre ventas adentro y el costo no. Restarlos asi nomas daba
+                     * un numero que no significa nada (con costo 1000, IVA 21% y precio 3000: 200%,
+                     * cuando el margen real es 147,93%).
+                     *
+                     * quitar_iva_y_sale_taxes() deshace exactamente los dos pasos que el camino
+                     * normal aplica despues del margen, en orden inverso. Ver su comentario: es un
+                     * par acoplado con aplicar_sale_taxes() y aplicar_iva().
+                     */
+                    $base_del_margen = Self::quitar_iva_y_sale_taxes($article, $final_price, $user);
 
-                    $percentage = ($final_price - $cost) / $cost * 100;
+                    $percentage = ($base_del_margen - $cost) / $cost * 100;
 
                     if ($describir) {
                         // El precio lo fijo el usuario a mano (setear_precio_final en el pivot): no se
                         // aplica ningun margen, el porcentaje se calcula al reves, a partir del precio.
                         $des_lista[] = 'El precio de esta lista lo fijaste vos a mano = '.Numbers::price($final_price, true);
+
+                        if (abs($base_del_margen - (float) $final_price) > 0.00001) {
+                            $des_lista[] = 'Sacandole el IVA y los impuestos sobre ventas queda '.Numbers::price($base_del_margen, true).', que es lo comparable con el costo';
+                        }
+
                         $des_lista[] = 'El margen de '.round($percentage, 2).'% es el que resulta de ese precio contra el costo, no al reves';
                     }
 
@@ -493,7 +512,9 @@ class ArticlePricesHelper {
             }
 
 
-            $res = Self::aplicar_price_type_surchages($price_type, $final_price, $cost, $describir ? [] : null);
+            // $article y $user van para que monto_ganancia salga neto de IVA y de impuestos sobre
+            // ventas: la ganancia es lo que queda para el negocio, no lo que se le debe a AFIP.
+            $res = Self::aplicar_price_type_surchages($price_type, $final_price, $cost, $describir ? [] : null, $article, $user);
 
             if ($describir) {
                 $des_lista = array_merge($des_lista, $res['des']);
@@ -522,10 +543,80 @@ class ArticlePricesHelper {
     }
 
     /**
+     * El ESPEJO de aplicar_sale_taxes() + aplicar_iva(): dado un precio final, devuelve la base
+     * de la que ese precio saldria por el camino normal. Tarea 9, 11/8/2026.
+     *
+     * Para que sirve: cuando el precio de una lista lo fijo una persona a mano (setear_precio_final
+     * en el pivote), el margen y la ganancia se derivan de ese precio. Derivarlos contra el precio
+     * CON IVA compara dos magnitudes distintas -- un precio con impuestos contra un costo sin ellos
+     * -- y da numeros que no significan nada: con costo 1000 e IVA 21%, un precio de 3000 mostraba
+     * margen 200% y ganancia 2000, cuando el margen real es 147,93% y la ganancia 1479,34. Los 520
+     * de diferencia son IVA: plata que se le debe a AFIP, no ganancia de nadie.
+     *
+     * 🔴 ES UN PAR ACOPLADO. El camino forward de aplicar_precios_segun_listas_de_precios() es
+     * costo -> margen -> aplicar_sale_taxes() -> aplicar_iva(), y esta funcion lo deshace en el
+     * orden inverso, reusando las MISMAS decisiones (iva_va_al_costo, es_monotributista_para_costeo,
+     * hasIva, get_sale_taxes_para_articulo) en vez de reimplementar las condiciones. Si alguna de
+     * esas dos cambia, esta tiene que cambiar con ellas o se desincronizan sin que nada avise. El
+     * test de ida y vuelta de tests/Feature/Costeo es el que lo denuncia.
+     *
+     * @param mixed $article
+     * @param float $price Precio final (con IVA y con impuestos sobre ventas, si correspondian).
+     * @param mixed $user
+     * @return float La base antes de esos dos pasos.
+     */
+    static function quitar_iva_y_sale_taxes($article, $price, $user)
+    {
+        $price = (float) $price;
+
+        /**
+         * 1. Deshacer el IVA. Misma condicion que usa el camino forward para sumarlo: solo si el
+         * IVA no va al costo, y solo si el articulo lo tiene aplicable.
+         */
+        if (!Self::iva_va_al_costo($user)) {
+
+            $es_monotributista = Self::es_monotributista_para_costeo($user);
+
+            if ($article->aplicar_iva || $es_monotributista) {
+
+                $article->load('iva');
+
+                if (Self::hasIva($article)) {
+
+                    $divisor = 1 + ((float) $article->iva->percentage / 100);
+
+                    if ($divisor != 0) {
+                        $price = $price / $divisor;
+                    }
+                }
+            }
+        }
+
+        /**
+         * 2. Deshacer los impuestos sobre ventas, EN ORDEN INVERSO al que los aplica
+         * aplicar_sale_taxes(). Con un solo impuesto da igual; con dos, no: cada division del
+         * forward se compone sobre el resultado de la anterior.
+         */
+        $sale_taxes = Self::get_sale_taxes_para_articulo($article, $user);
+
+        $en_orden_inverso = array_reverse(is_array($sale_taxes) ? $sale_taxes : $sale_taxes->all());
+
+        foreach ($en_orden_inverso as $sale_tax) {
+            $price = $price * (1 - ((float) $sale_tax->percentage / 100));
+        }
+
+        return $price;
+    }
+
+    /**
      * @param $des array|null Con un array se arma el desglose de los recargos y se devuelve en 'des'.
      *        Con null (el default historico) 'des' vuelve vacio y no cambia nada.
+     * @param $article mixed|null Con $article y $user, monto_ganancia sale NETO de IVA y de impuestos
+     *        sobre ventas (tarea 9). Sin ellos se mantiene la cuenta vieja, para no romper a ningun
+     *        llamador que todavia no los pase.
+     * @param $user mixed|null
      */
-    static function aplicar_price_type_surchages($price_type, $final_price, $cost, $des = null) {
+    static function aplicar_price_type_surchages($price_type, $final_price, $cost, $des = null, $article = null, $user = null) {
 
         $describir = !is_null($des);
 
@@ -559,9 +650,24 @@ class ArticlePricesHelper {
             }
         }
 
+        /**
+         * La ganancia es lo que queda para el negocio, asi que se mide contra el precio NETO de
+         * IVA y de impuestos sobre ventas (tarea 9, aprobado por Lucas el 10/8/2026). Con la
+         * cuenta vieja, una lista al 40% sobre un costo de 1000 mostraba $694 de ganancia cuando
+         * la real es $400: los $294 de diferencia eran IVA.
+         *
+         * precio_luego_de_recargos NO se toca y se sigue devolviendo CON IVA: es el precio que se
+         * le cobra a la persona. Lo que cambia es contra que se lo compara.
+         */
+        $base_para_la_ganancia = $precio_luego_de_recargos;
+
+        if (!is_null($article)) {
+            $base_para_la_ganancia = Self::quitar_iva_y_sale_taxes($article, $precio_luego_de_recargos, $user);
+        }
+
         return [
             'precio_luego_de_recargos'  => $precio_luego_de_recargos,
-            'monto_ganancia'            => $precio_luego_de_recargos - $cost,
+            'monto_ganancia'            => $base_para_la_ganancia - $cost,
             'des'                       => $des,
         ];
 

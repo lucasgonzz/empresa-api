@@ -98,6 +98,41 @@ class ArticleHelper {
      *
      * @return array{price: float|null, des: array}
      */
+    /**
+     * Saca del desglose la seccion CALCULO DEL PRECIO FINAL, de su titulo hasta el final. Tarea 9.
+     *
+     * Se puede cortar hasta el final sin mirar nada mas porque los renglones de las listas viven en
+     * $des_lista y recien se pegan DESPUES de este filtro, con el array_merge de setFinalPrice().
+     * Si algun dia se agrega otra seccion despues de esta, hay que cambiar el corte.
+     *
+     * El titulo se busca por su texto exacto y no por "esta todo en mayusculas": esa heuristica ya
+     * fallo una vez con las listas de nombre acentuado (hallazgo del 5/8/2026).
+     *
+     * @param array $des
+     * @return array
+     */
+    static function quitar_seccion_del_precio_final_unico($des) {
+
+        if (!is_array($des)) {
+            return $des;
+        }
+
+        $corte = null;
+
+        foreach ($des as $indice => $linea) {
+            if (is_string($linea) && trim($linea) === 'CALCULO DEL PRECIO FINAL') {
+                $corte = $indice;
+                break;
+            }
+        }
+
+        if (is_null($corte)) {
+            return $des;
+        }
+
+        return array_slice($des, 0, $corte);
+    }
+
     static function calcular_base_antes_de_listas($article, $user, $des = []) {
 
         $cost = $article->costo_real;
@@ -540,6 +575,24 @@ class ArticleHelper {
             $article->save();
 
             if ($return_description) {
+
+                /**
+                 * Tarea 9: en una cuenta con listas, la seccion CALCULO DEL PRECIO FINAL no
+                 * pertenece al desglose que se muestra al tocar el "?" de una lista. El comentario
+                 * de esta misma funcion lo dice mas arriba: los renglones posteriores a las listas
+                 * -margen del proveedor, de la categoria, del articulo- son del precio final UNICO
+                 * y NO participan del precio de la lista, que arranca del costo real.
+                 *
+                 * Mostrarla sugiere que el precio de la lista sale de ahi. No sale. Y cuando la
+                 * lista tiene el mismo porcentaje que el articulo los dos numeros coinciden, lo
+                 * que refuerza la confusion en vez de aclararla.
+                 *
+                 * El calculo no cambia: cambia que renglones se acumulan. El precio final unico se
+                 * sigue calculando y guardando igual.
+                 */
+                if (UserHelper::uses_listas_de_precio($user)) {
+                    $des = Self::quitar_seccion_del_precio_final_unico($des);
+                }
 
                 if (count($des_lista)) {
                     $des = array_merge($des, $des_lista);
