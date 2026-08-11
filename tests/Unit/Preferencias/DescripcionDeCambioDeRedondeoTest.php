@@ -115,14 +115,29 @@ class DescripcionDeCambioDeRedondeoTest extends TestCase
             null
         );
 
-        // Dos columnas se movieron (centenas 1->0 y de_a_50 0->1) y sale un solo renglón.
-        $this->assertCount(1, $lines);
+        // Ninguna línea puede ser la de una tilde suelta. Va ANTES del assertCount a propósito: si
+        // el `continue` desapareciera, las dos aserciones fallarían, pero esta dice CUÁL es el
+        // renglón de más y la otra sólo dice "esperaba 1, hay 3".
+        //
+        // Se comparan las ETIQUETAS de `FIELD_LABELS`, que es lo que el helper emitiría de verdad
+        // en ese caso — no los nombres de columna, que el helper no emite nunca y por lo tanto
+        // nunca podrían fallar.
+        $etiquetas_de_tildes = [
+            'Redondear de a 1000',
+            'Redondear centenas al vender',
+            'Redondear precios en decenas',
+            'Redondear de a 50',
+            'Redondear precios en centavos',
+        ];
 
-        foreach (array_keys(User::COLUMNAS_MODO_REDONDEO) as $columna) {
+        foreach ($etiquetas_de_tildes as $etiqueta) {
             foreach ($lines as $line) {
-                $this->assertStringNotContainsString($columna, $line);
+                $this->assertStringNotContainsString($etiqueta, $line);
             }
         }
+
+        // Dos columnas se movieron (centenas 1->0 y de_a_50 0->1) y sale un solo renglón.
+        $this->assertCount(1, $lines);
     }
 
     /**
