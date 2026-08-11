@@ -79,9 +79,9 @@ class Resolver_Precio_De_Venta_Test extends TestCase
          * se pondria rojo.
          *
          * Y la MAYORISTA se crea PRIMERO a proposito, aunque sea la que tiene que ganar: asi su id
-         * es el mas bajo y es la primera de la coleccion. Sin ese detalle, el test no distinguiria
-         * "la de position mas alta" de "la ultima creada" ni de "la ultima de la coleccion", y
-         * pasaria igual con un resolvedor que eligiera cualquiera de esas dos cosas.
+         * es el mas bajo. Sin ese detalle, el test no distinguiria "la de position mas alta" de
+         * "la ultima creada" y pasaria igual con un resolvedor que eligiera cualquiera de las dos.
+         * (Lo de la coleccion se resuelve en el attach de mas abajo, que es lo que fija ESE orden.)
          */
         $this->mayorista = PriceType::create([
             'name' => 'zz Mayorista',
@@ -102,12 +102,20 @@ class Resolver_Precio_De_Venta_Test extends TestCase
             'status' => 'active',
         ]);
 
-        $this->article->price_types()->attach($this->mostrador->id, [
-            'final_price' => self::PRECIO_LISTA_MOSTRADOR,
-        ]);
-
+        /**
+         * La mayorista se attachea PRIMERO, y esto no es un detalle de estilo: el orden de
+         * $article->price_types lo fija la insercion en el pivote article_price_type, NO el id
+         * de price_types. Con la mayorista attacheada primero queda la PRIMERA de la coleccion,
+         * asi que un resolvedor que eligiera "la ultima de la coleccion" —el no determinismo por
+         * orden que este helper viene a evitar— se pone rojo. Medido el 11/8/2026: con el attach
+         * al reves, ese mutante pasaba los cuatro tests de la rama 4.
+         */
         $this->article->price_types()->attach($this->mayorista->id, [
             'final_price' => self::PRECIO_LISTA_MAYORISTA,
+        ]);
+
+        $this->article->price_types()->attach($this->mostrador->id, [
+            'final_price' => self::PRECIO_LISTA_MOSTRADOR,
         ]);
 
         $this->article = Article::with('price_types')->find($this->article->id);
@@ -284,14 +292,25 @@ class Resolver_Precio_De_Venta_Test extends TestCase
 
         $recargado = Article::with('price_types')->find($this->article->id);
 
-        $primera = ArticlePricesHelper::resolver_precio_de_venta($recargado, $user, null);
-        $segunda = ArticlePricesHelper::resolver_precio_de_venta($recargado, $user, null);
+        $tal_cual = ArticlePricesHelper::resolver_precio_de_venta($recargado, $user, null);
 
-        $this->assertEquals($primera['final_price'], $segunda['final_price']);
+        /**
+         * Y el mismo articulo con la coleccion DADA VUELTA. Es la unica forma de probar que el
+         * resultado no depende del orden en que Eloquent devolvio la relacion: comparar dos
+         * llamadas seguidas sobre la misma coleccion daria lo mismo aunque el resolvedor eligiera
+         * "la primera" o "la ultima".
+         */
+        $al_reves = Article::with('price_types')->find($this->article->id);
+        $al_reves->setRelation('price_types', $al_reves->price_types->reverse()->values());
+
+        $invertido = ArticlePricesHelper::resolver_precio_de_venta($al_reves, $user, null);
+
+        $this->assertEquals($tal_cual['final_price'], $invertido['final_price']);
+        $this->assertEquals($tal_cual['price_type_id'], $invertido['price_type_id']);
 
         /** Gana el id mas alto entre las dos de position 9: la que se acaba de crear. */
-        $this->assertEquals($empatada->id, $primera['price_type_id']);
-        $this->assertEquals(1234, $primera['final_price']);
+        $this->assertEquals($empatada->id, $tal_cual['price_type_id']);
+        $this->assertEquals(1234, $tal_cual['final_price']);
     }
 
     /**
