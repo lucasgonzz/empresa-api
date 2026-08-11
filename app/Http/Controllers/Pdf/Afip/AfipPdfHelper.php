@@ -212,6 +212,12 @@ class AfipPdfHelper
          */
         $descriptor = [
             'user' => $user,
+            /**
+             * Sucursal desde la que se vendió: define el logo del comprobante
+             * (resolve_logo_url). Vale también para el fiscal — decisión de Lucas
+             * del 11/8/2026: el logo por sucursal aplica a las facturas AFIP.
+             */
+            'address' => $sale->address,
             'letra' => (string) $afip_ticket->cbte_letra,
             'mostrar_cod' => true,
             'cod' => self::left_pad((string) $afip_ticket->cbte_tipo, 2),
@@ -287,6 +293,8 @@ class AfipPdfHelper
          */
         $descriptor = [
             'user' => $user,
+            /** Sucursal de la venta: define el logo, igual que en el header fiscal. */
+            'address' => $sale->address,
             'letra' => 'X',
             'mostrar_cod' => false,
             'cod' => '',
@@ -594,6 +602,8 @@ class AfipPdfHelper
          * que la versión anterior (que leía directamente del afip_ticket).
          */
         $user = $descriptor['user'];
+        /** Sucursal del comprobante: solo se usa para resolver el logo. */
+        $address = isset($descriptor['address']) ? $descriptor['address'] : null;
         $letra = $descriptor['letra'];
         $mostrar_cod = $descriptor['mostrar_cod'];
         $cod = $descriptor['cod'];
@@ -621,7 +631,7 @@ class AfipPdfHelper
          */
         $logo_x = $layout['left_panel_x'];
         $logo_y = $block_start_y;
-        $logo_printed = self::print_logo_image($pdf, $user, $logo_x, $logo_y, $logo_size);
+        $logo_printed = self::print_logo_image($pdf, $address, $user, $logo_x, $logo_y, $logo_size);
 
         /**
          * Columna de texto al costado del logo: desde el borde derecho del logo hasta
@@ -752,15 +762,16 @@ class AfipPdfHelper
      * Imprime el logo cuadrado del emisor en las coordenadas indicadas.
      *
      * @param mixed $pdf Instancia FPDF.
+     * @param mixed|null $address Sucursal del comprobante (null si no tiene).
      * @param mixed $user Usuario emisor.
      * @param float $x Posición X del logo.
      * @param float $y Posición Y del logo.
      * @param int $logo_size Tamaño del logo en mm.
      * @return bool True si se imprimió una imagen.
      */
-    protected static function print_logo_image($pdf, $user, $x, $y, $logo_size): bool
+    protected static function print_logo_image($pdf, $address, $user, $x, $y, $logo_size): bool
     {
-        $logo_url = $user->image_url;
+        $logo_url = self::resolve_logo_url($address, $user);
 
         if (config('app.APP_ENV') == 'local') {
             $pdf->Image(
@@ -834,6 +845,47 @@ class AfipPdfHelper
          * Restablece Y al fondo del cuadro para no desalinear otros paneles.
          */
         $pdf->y = $start_y + $rect_h;
+    }
+
+    /**
+     * Resuelve qué logo va en un comprobante: el de la sucursal si tiene uno cargado,
+     * el del negocio si no (tarea 17, 11/8/2026).
+     *
+     * Por qué gana la sucursal: el caso de uso que motiva esto es un negocio con varias
+     * sucursales que operan como negocios distintos, cada una con su propia identidad
+     * (y con su propia default_afip_information — ver resolve_emisor_afip_information,
+     * que es la misma cadena con otro dato).
+     *
+     * 🔴 Este es el ÚNICO lugar donde se decide de dónde sale el logo. Ningún PDF puede
+     * tener su propia versión de este if: dentro de seis meses una de las copias se
+     * queda atrás y nadie se entera hasta que un cliente ve el logo equivocado.
+     *
+     * No valida que el archivo exista: eso lo hace cada punto de impresión, con la guarda
+     * que ya tenía. Y no todos tienen una: los dos puntos de SaleTicketPdf (logo() y
+     * logoFullWidth()) sólo chequean is_null, así que ahí una URL rota corta el ticket.
+     * Es preexistente —pasaba igual con el logo del negocio— y arreglarlo es cambiarle la
+     * guarda a un comprobante, que es otra tarea.
+     *
+     * @param mixed|null $address Sucursal del comprobante (venta, presupuesto o cliente).
+     * @param mixed $user Usuario dueño del negocio (fallback final de la cadena).
+     * @return string|null URL del logo, o null si no hay ninguno cargado en toda la cadena.
+     */
+    public static function resolve_logo_url($address, $user)
+    {
+        if (!is_null($address)
+            && !is_null($address->image_url)
+            && trim($address->image_url) !== '') {
+
+            // Trimeado: lo que se devuelve tiene que ser lo mismo que se evaluo. Una URL con
+            // espacios al costado pasa la guarda y despues llega sucia a FPDF, que no perdona.
+            return trim($address->image_url);
+        }
+
+        if (is_null($user) || is_null($user->image_url) || trim($user->image_url) === '') {
+            return null;
+        }
+
+        return trim($user->image_url);
     }
 
     /**

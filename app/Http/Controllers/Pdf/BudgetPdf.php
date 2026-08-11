@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ImageHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Models\User;
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
@@ -107,7 +108,14 @@ class BudgetPdf extends fpdf {
 
 
 		$data['user'] = $this->user;
-		
+
+		/**
+		 * Logo de la sucursal del presupuesto, con caida al del negocio (tarea 17).
+		 * Va por $data porque el logo del presupuesto lo imprime PdfHelper::cuadrante_izquierdo()
+		 * y NO el metodo logo() de esta clase, que no lo llama nadie (ver el comentario ahi).
+		 */
+		$data['logo_url'] = AfipPdfHelper::resolve_logo_url($this->budget->address, $this->user);
+
 		PdfHelper::header($this, $data);
 	}
 
@@ -120,13 +128,21 @@ class BudgetPdf extends fpdf {
 		// PdfHelper::comerciocityInfo($this, $this->y);
 	}
 
+	/**
+	 * ⚠️ HOY NO LO LLAMA NADIE. El presupuesto imprime su logo por Header() ->
+	 * PdfHelper::header() -> PdfHelper::cuadrante_izquierdo(), que recibe la URL ya
+	 * resuelta en $data['logo_url']. Se deja porque es el layout historico de esta clase
+	 * y sigue la misma regla, no porque se ejecute: medido el 11/8/2026 (tarea 17).
+	 */
 	function logo() {
-        // Logo
-        if (!is_null($this->user->image_url)) {
+        // Logo de la sucursal del presupuesto, con caida al del negocio (tarea 17).
+        $logo_url = AfipPdfHelper::resolve_logo_url($this->budget->address, $this->user);
+
+        if (!is_null($logo_url)) {
         	if (config('app.APP_ENV') == 'local') {
         		$this->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', 17, 0, 0, 25);
         	} else {
-	        	$this->Image($this->user->image_url, 17, 0, 0, 25);
+	        	$this->Image($logo_url, 17, 0, 0, 25);
         	}
         }
 		
