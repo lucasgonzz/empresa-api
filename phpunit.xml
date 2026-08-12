@@ -21,6 +21,26 @@
         </include>
     </coverage>
     <php>
+        <!--
+            Sin esto la suite completa NO TERMINA: PHP corta el proceso por memoria antes del final,
+            sin resumen y sin escribir el XML de junit. Medido el 10/8/2026 en el slot 1 sobre
+            refractor (muere en 287 de 303, exit 255) y de nuevo el 12/8/2026 en el slot 2 sobre
+            develop, en la mision 41: muere en 252 de 274, exit 255, misma marca. NO es de una rama
+            en particular ni de una mision: pasa en un checkout limpio de la base, sin ningun cambio
+            encima. Con `php -d memory_limit=-1 vendor/bin/phpunit` la misma suite llega hasta el
+            final: Tests: 310, Assertions: 928 (medicion del 10/8).
+
+            Importa mas alla de la molestia: el gate del carril de merge mide la regresion leyendo
+            ese XML, asi que mientras el proceso muera, el XML queda en 0 bytes y NINGUNA mision de
+            empresa puede pasar el gate: el carril corta con "el XML de junit quedo vacio". Va aca
+            y no en el php.ini de la maquina porque el que tiene que poder correr la suite es
+            cualquier checkout del repo, en cualquier slot, sin configurar nada a mano.
+
+            El 10/8 esto se llevo SOLO a refractor (commit 19c996f) y develop quedo sin el arreglo
+            por dos dias, con todas sus misiones frenadas en el gate sin que nadie lo notara hasta
+            la 41. Si aparece una tercera rama de larga vida, va tambien.
+        -->
+        <ini name="memory_limit" value="-1"/>
         <server name="APP_ENV" value="testing"/>
         <server name="BCRYPT_ROUNDS" value="4"/>
         <server name="CACHE_DRIVER" value="array"/>
