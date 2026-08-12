@@ -11,7 +11,23 @@ use Illuminate\Support\Facades\Route;
 // Route::middleware(['set.user.database', 'auth:sanctum'])->group(function() {
 Route::middleware(['auth:sanctum'])->group(function() {
 
-    // CommonLaravel 
+    /*
+        Todos los catalogos del arranque en UNA sola respuesta (mision 41, 12/8/2026). Reemplaza a
+        ~70 requests que la SPA dispara una detras de otra al iniciar sesion.
+
+        🔴 ES POST Y NO GET, A PROPOSITO. Son cerca de 70 nombres de modelo: una query string con
+        todos queda cerca del limite de largo de URL de algunos proxies, y el dia que se pase nadie
+        lo va a ver como "URL demasiado larga" sino como catalogos que no cargan en un cliente y si
+        en otro. No lo cambies a GET. Si te molesta que un POST no sea cacheable: este endpoint no
+        se cachea por diseno --se decidio dejar la cache para despues, ver el alcance de la mision--.
+
+        Va adentro de este mismo grupo de middleware que los endpoints individuales, y no en otro:
+        cada modelo se resuelve llamando al index() real de su controller, asi que los filtros por
+        usuario y por permisos tienen que estar puestos igual que para ellos.
+    */
+    Route::post('recursos-iniciales', 'RecursosInicialesController@index');
+
+    // CommonLaravel
     // ----------------------------------------------------------------------------------------------------
     // Generals
     Route::post('search/{model_name}/{_filters?}/{paginate?}', 'CommonLaravel\SearchController@search');
