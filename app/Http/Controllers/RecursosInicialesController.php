@@ -39,7 +39,7 @@ class RecursosInicialesController extends Controller
      * con el motivo de cada uno.
      *
      * PARA AGREGAR UNO: verificar esas cuatro condiciones sobre su `index()`. El test
-     * `RecursosInicialesTest::test_cada_modelo_de_la_whitelist_devuelve_lo_mismo_que_su_endpoint_individual`
+     * `Tests\Feature\Catalogos\Recursos_iniciales_Test::cada_modelo_de_la_whitelist_devuelve_lo_mismo_que_su_endpoint_individual`
      * recorre esta lista sola, asi que no hay que escribir un test nuevo.
      *
      * @var array
@@ -126,16 +126,27 @@ class RecursosInicialesController extends Controller
      * |-------------------------|---------------------------------------------------------------|
      * | article                 | index(Request $request): filtra y pagina segun la request     |
      * | column_position         | index(Request $request)                                       |
-     * | order                   | index($from_date = null, $until_date = null): pide fechas     |
      * | pdf_column_option       | index(Request $request)                                       |
      * | pdf_column_profile      | index(Request $request)                                       |
      * | provider                | index(Request $request)                                       |
-     * | sale                    | index($modulo, $from_date, $until_date): pide modulo y fechas |
+     * | sale                    | index($modulo, ...): $modulo es OBLIGATORIO                   |
      * | table_column_preference | no tiene index(); su ruta es show/{model_name}/{tipo}         |
+     * | order                   | ver el parrafo de abajo: NO es por la firma                   |
      *
-     * Se dejan afuera y no se fuerzan: meterlos aca significaria inventarles valores por defecto a
-     * sus parametros, y ahi el payload del masivo dejaria de ser identico al del individual, que es
-     * justamente lo unico que este endpoint promete.
+     * Los primeros siete se dejan afuera y no se fuerzan: meterlos significaria inventarles valores
+     * por defecto a sus parametros, y ahi el payload del masivo dejaria de ser identico al del
+     * individual, que es justamente lo unico que este endpoint promete.
+     *
+     * 🔴 `order` es un caso aparte y conviene leerlo, porque la primera version de este comentario
+     * decia "pide fechas" y ERA FALSO: su firma es `index($from_date = null, $until_date = null)`,
+     * los dos parametros son opcionales y `index()` sin argumentos corre bien. Lo encontro la
+     * verificacion independiente de esta mision leyendo OrderController.
+     *
+     * Queda afuera igual, por un motivo distinto y deliberado: no es un catalogo. Es una tabla
+     * transaccional, sin tope de filas y que crece con el uso del cliente, asi que meterla en la
+     * llamada del arranque es exactamente lo que haria explotar el peso de la respuesta --que hoy
+     * mide 0,84 MB con los 71-- para el cliente que mas pedidos tiene. Los catalogos son chicos y
+     * acotados; `order` no.
      */
 
     /**
@@ -149,12 +160,27 @@ class RecursosInicialesController extends Controller
         $pedidos = $request->input('models');
 
         if (!is_array($pedidos)) {
+            // Las tres claves de la respuesta 200 van tambien aca, aunque vayan vacias: un cliente
+            // que lea `con_error` sin mirar el status no se tiene que comer un undefined. El
+            // contrato es el mismo en los dos caminos.
             return response()->json(array(
                 'models'         => array(),
                 'no_soportados'  => array(),
+                'con_error'      => array(),
                 'error'          => 'El campo models tiene que ser un array de nombres de modelo.',
             ), 422);
         }
+
+        // 🔴 Deduplicar ANTES de recorrer, y no es una optimizacion: sin esto, un cliente ya
+        // autenticado que mande `array('brand') x 5000` dispara 5000 rondas de consultas en un solo
+        // request. Con los endpoints individuales eso le costaba 5000 requests --y el throttle y el
+        // servidor lo veian--; concentrarlo en uno solo convierte el ahorro de este endpoint en una
+        // amplificacion. Lo levanto la verificacion independiente de la mision.
+        //
+        // `array_unique` alcanza porque la whitelist se compara exacto: dos nombres distintos nunca
+        // resuelven al mismo controller. El tope de 200 es holgado --la whitelist tiene 71-- y esta
+        // para que un array gigante de basura no cueste ni siquiera el recorrido.
+        $pedidos = array_slice(array_unique($pedidos, SORT_REGULAR), 0, 200);
 
         $models = array();
         $no_soportados = array();
@@ -177,6 +203,14 @@ class RecursosInicialesController extends Controller
             // arranque completo de la SPA dependeria del peor de los 71 catalogos: es exactamente
             // el modo de falla que el endpoint viene a sacar del camino, y seria peor que el
             // original --alla el que fallaba se llevaba uno solo--.
+            //
+            // ALCANCE REAL DE ESTA PROTECCION, dicho sin sobrevender: cubre todo lo capturable, o
+            // sea excepciones y errores de PHP. NO cubre los fatales que PHP no deja atrapar --el
+            // `memory_limit` agotado y el `max_execution_time`--, y esos dos SI pasaron a ser un
+            // modo de falla compartido que antes no existia: hoy un OOM se lleva el arranque entero
+            // y antes se llevaba un solo catalogo. Medido, el pico es de 62 MB con 5000 localidades
+            // sembradas, bien lejos del limite, pero el que agregue modelos pesados a la whitelist
+            // tiene que saber que ese es el techo que importa.
             try {
                 $controller = app(self::$whitelist[$nombre]);
                 $respuesta = $controller->index();

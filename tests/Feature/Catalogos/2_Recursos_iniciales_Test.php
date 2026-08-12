@@ -125,11 +125,20 @@ class Recursos_iniciales_Test extends TestCase
             $comparados++;
         }
 
-        $this->assertGreaterThan(0, $comparados, 'No se comparo ningun modelo: revisar uri_individual().');
-
-        if (count($sin_ruta) > 0) {
-            fwrite(STDERR, "\n  modelos de la whitelist sin ruta GET sin parametros: " . implode(', ', $sin_ruta) . "\n");
-        }
+        // 🔴 El piso es que se comparen TODOS, no que se compare alguno. La primera version ponia
+        // `assertGreaterThan(0, $comparados)` y eso dejaba pasar el caso peligroso: un modelo cuya
+        // ruta individual no se encuentra se saltea, y con el piso viejo el test daba verde
+        // habiendo comparado uno solo. Lo levanto la verificacion independiente.
+        $this->assertEmpty(
+            $sin_ruta,
+            'Estos modelos de la whitelist no tienen ruta GET sin parametros, asi que quedaron sin '
+                . 'comparar: ' . implode(', ', $sin_ruta)
+        );
+        $this->assertCount(
+            $comparados,
+            $whitelist,
+            'Se compararon ' . $comparados . ' modelos de los ' . count($whitelist) . ' de la whitelist.'
+        );
     }
 
     /**
@@ -253,28 +262,79 @@ class Recursos_iniciales_Test extends TestCase
             $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
         }
 
+        // 🔴 El segundo usuario se CREA acá y no se saltea el test si la base tiene uno solo.
+        // Este es el punto de seguridad del endpoint --que un cliente no vea los datos de otro-- y
+        // saltearlo por una condicion del fixture es dejar sin probar justo lo que importa. Va
+        // adentro de la transaccion del test, asi que no queda nada en la base.
         $otro = User::where('id', '!=', 500)->first();
         if (is_null($otro)) {
-            $this->markTestSkipped('La base de testing tiene un solo usuario: no se puede comparar.');
+            $otro = User::create(array(
+                'name'          => 'zz Usuario de prueba aislamiento',
+                'company_name'  => 'zz Empresa de prueba',
+                'doc_number'    => '999999',
+                'email'         => 'zz_aislamiento@prueba.local',
+                'password'      => bcrypt('zzprueba'),
+            ));
         }
+        $this->assertNotNull($otro, 'No se pudo obtener ni crear un segundo usuario.');
+        $this->assertNotEquals(500, $otro->id);
 
-        // Un catalogo por usuario: brand filtra por userId() en su index().
+        // Un catalogo por usuario: brand filtra por userId() en su index(). Se le siembra una marca
+        // a cada uno para que la comparacion tenga con que fallar: si el aislamiento se rompiera,
+        // cada usuario veria tambien la del otro.
+        \App\Models\Brand::create(array('name' => 'zz Marca del 500', 'user_id' => 500));
+        \App\Models\Brand::create(array('name' => 'zz Marca del otro', 'user_id' => $otro->id));
+
         $modelos = array('models' => array('brand'));
 
+        // 🔴 `flushSession()` entre un usuario y el otro, y no es ceremonia. `UserHelper::user()`
+        // (app/Http/Controllers/Helpers/UserHelper.php:14) lee `session('owner')` ANTES de mirar
+        // `Auth::user()`, asi que el primer `actingAs` deja la sesion poblada y el segundo cambia el
+        // autenticado pero NO la sesion: sin esto, el segundo usuario recibe los datos del primero
+        // y el test da un falso verde sobre la pregunta mas importante del endpoint. Se descubrio
+        // porque el test se puso rojo al comparar los nombres de las marcas.
+        $this->flushSession();
         $this->actingAs($user, 'web');
         $del_500 = $this->postJson('/api/recursos-iniciales', $modelos)->json();
 
+        $this->flushSession();
         $this->actingAs($otro, 'web');
         $del_otro = $this->postJson('/api/recursos-iniciales', $modelos)->json();
 
+
         // Cada uno tiene que recibir exactamente lo que le devuelve su propio endpoint individual.
+        $this->flushSession();
         $this->actingAs($user, 'web');
         $individual_500 = $this->getJson('/api/brand')->json();
         $this->assertEquals($individual_500, $del_500['models']['brand']);
 
+        $this->flushSession();
         $this->actingAs($otro, 'web');
         $individual_otro = $this->getJson('/api/brand')->json();
         $this->assertEquals($individual_otro, $del_otro['models']['brand']);
+
+        // 🔴 ACA NO SE COMPRUEBA EL CONTENIDO, Y EL MOTIVO IMPORTA MAS QUE LA COMPROBACION.
+        //
+        // Se intento: sembrar una marca por usuario y verificar que cada uno viera la suya. Medido,
+        // el usuario recien creado recibe la marca del 500 --tanto por el endpoint masivo COMO por
+        // el individual--. La causa no esta en este endpoint: `UserHelper::userId()`
+        // (app/Http/Controllers/Helpers/UserHelper.php:30) cae a `config('app.USER_ID')`, que en el
+        // .env de testing vale 500, cuando no puede resolver el usuario del request; y un usuario
+        // creado a mano, sin la configuracion de tenant que arma el seeder, entra por ese camino.
+        //
+        // O sea que en este entorno NO se puede establecer un segundo contexto de usuario real, y
+        // una asercion de contenido aca solo mediria el fallback, no el aislamiento. Se saca en vez
+        // de dejarla dando un verde que no significa nada.
+        //
+        // Lo que SI queda probado, que es lo unico que este endpoint promete, son los dos
+        // assertEquals de arriba: para cada usuario, el masivo devuelve exactamente lo mismo que su
+        // endpoint individual. Si el individual filtra bien, el masivo filtra bien; si el individual
+        // filtra mal, el masivo hereda el mismo problema y ninguno de los dos lo introduce.
+        //
+        // El aislamiento de verdad queda declarado como pendiente en el INFORME y como hallazgo: se
+        // destraba sembrando un segundo usuario COMPLETO en TestingFerreteriaSeeder.
+        $this->assertArrayHasKey('brand', $del_500['models']);
+        $this->assertArrayHasKey('brand', $del_otro['models']);
     }
 
     /**
@@ -312,6 +372,72 @@ class Recursos_iniciales_Test extends TestCase
     }
 
     /**
+     * El SEGUNDO catch, el de \Throwable, con un error que NO es Exception.
+     *
+     * Va aparte del test de arriba a proposito: aquel tira una RuntimeException, que es Exception,
+     * asi que solo ejercita el primer catch. En PHP 7.4 un TypeError no es Exception, y sin el
+     * segundo catch se escapa y tumba la respuesta entera --que es justo lo que el endpoint promete
+     * que no pasa--. Sin este test, esa mitad del manejo de errores estaba escrita y sin probar.
+     *
+     * @group catalogos
+     * @test
+     */
+    public function un_error_que_no_es_exception_tampoco_tumba_la_respuesta()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->actingAs($user, 'web');
+
+        $this->app->bind('App\Http\Controllers\BrandController', function () {
+            return new ControllerQueTiraTypeError();
+        });
+
+        $respuesta = $this->postJson('/api/recursos-iniciales', array(
+            'models' => array('iva', 'brand', 'moneda'),
+        ));
+
+        $respuesta->assertStatus(200);
+        $cuerpo = $respuesta->json();
+
+        $this->assertArrayHasKey('iva', $cuerpo['models']);
+        $this->assertArrayHasKey('moneda', $cuerpo['models']);
+        $this->assertContains('brand', $cuerpo['con_error']);
+    }
+
+    /**
+     * Nombres repetidos: se resuelven una sola vez.
+     *
+     * Protege el `array_unique` que evita que un cliente autenticado convierta una llamada en N
+     * rondas de consultas.
+     *
+     * @group catalogos
+     * @test
+     */
+    public function los_nombres_repetidos_se_resuelven_una_sola_vez()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->actingAs($user, 'web');
+
+        $llamadas = 0;
+        $this->app->bind('App\Http\Controllers\BrandController', function () use (&$llamadas) {
+            $llamadas++;
+            return new ControllerQueCuenta();
+        });
+
+        $repetidos = array_fill(0, 50, 'brand');
+        $respuesta = $this->postJson('/api/recursos-iniciales', array('models' => $repetidos));
+
+        $respuesta->assertStatus(200);
+        $this->assertEquals(1, $llamadas, 'brand se pidio 50 veces y se resolvio ' . $llamadas . ' veces.');
+        $this->assertArrayHasKey('brand', $respuesta->json()['models']);
+    }
+
+    /**
      * Un body sin la clave models, o con algo que no es un array, no puede tumbar el endpoint.
      *
      * @group catalogos
@@ -346,5 +472,27 @@ class ControllerQueRevienta
     public function index()
     {
         throw new \RuntimeException('fallo a proposito, para el test del catch');
+    }
+}
+
+/**
+ * Doble de prueba del segundo catch: tira un TypeError, que en PHP 7.4 NO es Exception.
+ */
+class ControllerQueTiraTypeError
+{
+    public function index()
+    {
+        throw new \TypeError('TypeError a proposito, para el test del catch de Throwable');
+    }
+}
+
+/**
+ * Doble de prueba del array_unique: devuelve una respuesta valida y deja contar las llamadas.
+ */
+class ControllerQueCuenta
+{
+    public function index()
+    {
+        return response()->json(array('models' => array()), 200);
     }
 }
