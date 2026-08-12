@@ -16,7 +16,9 @@ use Tests\TestCase;
  * se puede afirmar corriéndolo dos veces y contando.
  *
  * DatabaseTransactions (no RefreshDatabase): la base de testing está sembrada de antes y un
- * refresh la vaciaría, rompiendo el resto de las suites.
+ * refresh la vaciaría, rompiendo el resto de las suites. Ojo que `extencion_empresas` puede estar
+ * vacía igual en la base de un slot: por eso el test siembra su propia fila testigo en vez de
+ * confiar en que el catálogo tenga algo.
  */
 class Extencion_personalizar_nombre_en_vender_Test extends TestCase
 {
@@ -58,7 +60,26 @@ class Extencion_personalizar_nombre_en_vender_Test extends TestCase
     {
         $this->artisan('db:seed', [
             '--class' => 'Database\Seeders\ExtencionPersonalizarNombreEnVenderSeeder',
-        ]);
+        ])->assertExitCode(0);
+    }
+
+    /**
+     * Foto del resto del catálogo: slug y nombre de cada fila que no es la de esta misión.
+     *
+     * Va con `slug` adentro y no sólo `name` porque lo que apaga funcionalidad en producción es
+     * que a otra extensión le cambie el slug, no el nombre que se muestra.
+     *
+     * @return array<int, string>
+     */
+    protected function foto_del_resto_del_catalogo()
+    {
+        return ExtencionEmpresa::where('slug', '!=', self::SLUG)
+            ->orderBy('id')
+            ->get(['id', 'slug', 'name'])
+            ->map(function ($extencion) {
+                return $extencion->id . '|' . $extencion->slug . '|' . $extencion->name;
+            })
+            ->toArray();
     }
 
     /**
@@ -70,12 +91,27 @@ class Extencion_personalizar_nombre_en_vender_Test extends TestCase
      */
     public function el_seeder_es_idempotente_y_no_altera_el_resto_del_catalogo()
     {
+        /**
+         * Fila testigo del catálogo. Va sembrada a mano porque la base de testing del slot puede
+         * tener `extencion_empresas` vacía, y contra una tabla vacía la comparación del final
+         * sería [] contra [] — una aserción que pasa sin medir nada. Con el testigo, el test
+         * atrapa un seeder que le pise el nombre o el slug a otra extensión del catálogo.
+         */
+        // forceCreate: el modelo no declara $fillable y afuera de `artisan db:seed` no rige el
+        // Model::unguarded() que aplica el comando, así que un create() común no asignaría nada.
+        $testigo = ExtencionEmpresa::forceCreate([
+            'name' => 'Testigo de catalogo (solo test)',
+            'slug' => 'testigo_de_catalogo_del_test',
+        ]);
+
         // Foto del catálogo antes de sembrar nada, para comparar contra el final.
         $total_antes = ExtencionEmpresa::count();
-        $otras_antes = ExtencionEmpresa::where('slug', '!=', self::SLUG)
-            ->orderBy('id')
-            ->pluck('name', 'id')
-            ->toArray();
+        $otras_antes = $this->foto_del_resto_del_catalogo();
+        $this->assertContains(
+            $testigo->id . '|testigo_de_catalogo_del_test|Testigo de catalogo (solo test)',
+            $otras_antes,
+            'La foto del catálogo no incluye la fila testigo: la comparación del final no mediría nada.'
+        );
 
         $this->correr_seeder();
 
@@ -98,12 +134,8 @@ class Extencion_personalizar_nombre_en_vender_Test extends TestCase
             'La segunda corrida cambió la cantidad de filas de extencion_empresas.'
         );
 
-        // Y ninguna de las otras extensiones del catálogo se tocó.
-        $otras_despues = ExtencionEmpresa::where('slug', '!=', self::SLUG)
-            ->orderBy('id')
-            ->pluck('name', 'id')
-            ->toArray();
-        $this->assertEquals($otras_antes, $otras_despues);
+        // Y ninguna de las otras extensiones del catálogo se tocó: mismo id, slug y nombre.
+        $this->assertEquals($otras_antes, $this->foto_del_resto_del_catalogo());
     }
 
     /**
