@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
@@ -18,6 +19,7 @@ use App\Models\Category;
 use App\Models\ImportHistory;
 use App\Models\Iva;
 use App\Models\PriceType;
+use App\Models\Provider;
 use App\Models\SubCategory;
 use App\Models\UnidadMedida;
 use Illuminate\Support\Collection;
@@ -148,6 +150,37 @@ class ProcessRow {
     protected $se_importaron_price_types = false;
 
     protected $brand_cache = [];
+
+    /**
+     * Proveedores ya resueltos en este chunk, por provider_id (mision 44). Solo se usa
+     * para saber si el proveedor tiene margen de ganancia cargado, que es una de las
+     * tres condiciones del criterio de precio.
+     *
+     * Existe para no hacer una query por fila: find_with_index() trae la relacion
+     * 'providers' (la de muchos a muchos, y solo con el id), no 'provider', asi que
+     * leer $articulo_ya_creado->provider dispararia un SELECT en cada fila del Excel.
+     * El valor null (proveedor inexistente) tambien se cachea, por eso se pregunta con
+     * array_key_exists y no con isset.
+     *
+     * @var array [provider_id => Provider|null]
+     */
+    protected $provider_cache_criterio = [];
+
+    /**
+     * Margen, precio y costo con los que va a quedar cada articulo despues de aplicar las
+     * filas de este chunk que ya se procesaron (mision 44), indexado por article_id.
+     *
+     * Existe porque dos filas del mismo Excel pueden apuntar al mismo articulo y el
+     * criterio de precio tiene que verlas como una sola: la segunda fila relee el articulo
+     * de la BASE (merge_fila_duplicada() hace Article::find()), que a esa altura todavia no
+     * tiene lo que encolo la primera. Sin esto, una fila con margen y otra con precio sobre
+     * el mismo articulo pasaban las dos, el merge por id de ActualizarBBDD fusionaba las
+     * claves y se escribian las dos columnas.
+     *
+     * @var array [article_id => ['percentage_gain' => mixed, 'price' => mixed, 'cost' => mixed]]
+     */
+    protected $criterio_pendiente_por_articulo = [];
+
     protected $category_cache = [];
     protected $sub_category_cache = []; // [category_id][name_key] => id
     protected $iva_cache = [];   
@@ -495,6 +528,25 @@ class ProcessRow {
                     }
 
                     $excel_value = $resultado_numero['value'];
+
+                    /*
+                     * Mision 44: un precio o un margen en CERO no es un valor, es el estado
+                     * sucio que traba la ficha del articulo (los dos inputs deshabilitados y
+                     * sin salida). parse_number_core() devuelve "0.00" y el UPDATE masivo de
+                     * ActualizarBBDD solo saltea null y cadena vacia, asi que ese cero llegaba
+                     * a la base tanto actualizando como CREANDO articulos.
+                     *
+                     * Se descarta el campo, o sea que la fila no lo toca -- misma semantica
+                     * que una celda vacia. NO se registra conflicto: no es un salteo por
+                     * criterio, es un valor que no significa nada. Los negativos no entran:
+                     * normalizar() solo anula el cero.
+                     */
+                    if (
+                        in_array($prop_to_add['prop_key'], ['price', 'percentage_gain'], true)
+                        && is_null(CriterioDePrecioHelper::normalizar($excel_value))
+                    ) {
+                        continue;
+                    }
                 }
 
                 $data[$prop_to_add['prop_key']] = $excel_value;
@@ -1387,6 +1439,19 @@ class ProcessRow {
         $this->terminar('get_modified_fields');
 
         /*
+         * Mision 44: en la importacion gana la columna de precio que el articulo YA
+         * tenia en el sistema. Va aca, despues de get_modified_fields() y antes de que
+         * $cambios entre a la cola de actualizacion, porque saltear tiene que ser
+         * saltear de verdad -- si el campo entrara y despues setFinalPrice() lo
+         * revirtiera, el updated_props del historial diria que ese campo cambio cuando
+         * no cambio, y el rollback lo querria restaurar desde un diff que no describe
+         * nada real.
+         */
+        $this->iniciar();
+        $cambios = $this->aplicar_criterio_de_precio($articulo_ya_creado, $data, $cambios);
+        $this->terminar('criterio de precio manual vs margen');
+
+        /*
          * Identificadores (bar_code y/o sku) que la fila traia, no matchearon su propio
          * escalon, y matchearon un UNICO articulo mas abajo en la cascada (regla de
          * Lucas, 30/7/2026, prompt 08 grupo 265): "codigo de barras nuevo + SKU
@@ -1626,6 +1691,229 @@ class ProcessRow {
         }
 
         // return $cambios;
+    }
+
+    /**
+     * Aplica el criterio de precio de la mision 44 sobre los cambios de una fila que
+     * actualiza un articulo YA EXISTENTE: gana la columna que el articulo ya tenia en
+     * el sistema, y la que trae el Excel se saltea.
+     *
+     * Regla de Lucas (12/8/2026): "que en la importacion de Excel gane la columna que
+     * ya estaba antes. Si ya tenia indicado un margen de ganancia el articulo en el
+     * sistema y en el Excel viene seteado el precio manual, se saltea el precio manual.
+     * Y viceversa."
+     *
+     * | El articulo en el sistema           | El Excel trae    | Que pasa                          |
+     * |-------------------------------------|------------------|-----------------------------------|
+     * | Margen propio (> 0)                 | price            | se saltea price, se registra      |
+     * | Precio manual (> 0)                 | percentage_gain  | se saltea el margen, se registra  |
+     * | Margen del proveedor (con costo)    | price            | se saltea price, se registra      |
+     * | Ninguno de los dos                  | los dos a la vez | gana el margen, se saltea price   |
+     *
+     * El COSTO se evalua post-importacion, no pre: si la misma fila trae cost, el
+     * articulo va a tener costo cuando la importacion termine, asi que el margen del
+     * proveedor si va a ser aplicable. Mismo criterio para provider_id y para
+     * apply_provider_percentage_gain, por si la fila los cambia.
+     *
+     * El margen y el precio del ARTICULO, en cambio, se leen de la base tal cual estan:
+     * son justamente "lo que ya estaba", que es lo que la regla protege.
+     *
+     * @param  \App\Models\Article $articulo_ya_creado modelo completo traido por find_with_index()
+     * @param  array               $data               datos crudos de la fila (para el valor a reportar)
+     * @param  array               $cambios            salida de get_modified_fields()
+     * @return array               los mismos cambios, sin las columnas salteadas
+     */
+    protected function aplicar_criterio_de_precio($articulo_ya_creado, array $data, array $cambios)
+    {
+        /*
+         * Red de seguridad del cero. La normalizacion principal esta arriba, en el armado
+         * de $data (ver procesar()), asi que en el camino normal esto no encuentra nada;
+         * queda por si algun llamador arma $data por su cuenta. Un cero del Excel no es
+         * "traer un valor": es el estado sucio que esta mision elimina.
+         */
+        foreach (['price', 'percentage_gain'] as $campo_numerico) {
+
+            if (
+                array_key_exists($campo_numerico, $cambios)
+                && is_null(CriterioDePrecioHelper::normalizar($cambios[$campo_numerico]))
+            ) {
+                $cambios = $this->descartar_campo_de_cambios($cambios, $campo_numerico);
+            }
+        }
+
+        $trae_price           = array_key_exists('price', $cambios);
+        $trae_percentage_gain = array_key_exists('percentage_gain', $cambios);
+
+        if (!$trae_price && !$trae_percentage_gain) {
+            return $cambios;
+        }
+
+        $id_articulo = isset($articulo_ya_creado->id) ? $articulo_ya_creado->id : null;
+
+        /*
+         * Lo que ya dejo encolado OTRA fila de este mismo Excel para este mismo articulo.
+         *
+         * Sin esto, dos filas que apuntan al mismo articulo (mismo bar_code, o el merge de
+         * "ultima fila gana") evaluaban las dos contra la base: la primera encolaba el
+         * margen, la segunda releia el articulo TODAVIA sin margen -- merge_fila_duplicada()
+         * hace Article::find(), que no ve la cola -- y encolaba el precio. El merge por id
+         * de ActualizarBBDD fusiona las claves de las dos entradas, asi que se escribian las
+         * DOS columnas y setFinalPrice() despues borraba el precio: el updated_props del
+         * historial quedaba diciendo que el precio cambio cuando termino en null, que es
+         * justo lo que este bloque existe para impedir.
+         */
+        $pendiente = ($id_articulo && isset($this->criterio_pendiente_por_articulo[$id_articulo]))
+                        ? $this->criterio_pendiente_por_articulo[$id_articulo]
+                        : [];
+
+        $percentage_gain_actual = array_key_exists('percentage_gain', $pendiente)
+                                    ? $pendiente['percentage_gain']
+                                    : $articulo_ya_creado->percentage_gain;
+
+        $price_actual = array_key_exists('price', $pendiente)
+                            ? $pendiente['price']
+                            : $articulo_ya_creado->price;
+
+        /* Valores que van a quedar DESPUES de aplicar esta fila (y las anteriores del chunk). */
+        $cost_resultante = array_key_exists('cost', $cambios)
+                            ? $cambios['cost']
+                            : (array_key_exists('cost', $pendiente) ? $pendiente['cost'] : $articulo_ya_creado->cost);
+
+        $provider_id_resultante = array_key_exists('provider_id', $cambios)
+                                    ? $cambios['provider_id']
+                                    : $articulo_ya_creado->provider_id;
+
+        $apply_provider_resultante = array_key_exists('apply_provider_percentage_gain', $cambios)
+                                        ? $cambios['apply_provider_percentage_gain']
+                                        : $articulo_ya_creado->apply_provider_percentage_gain;
+
+        $provider = $this->provider_para_criterio($provider_id_resultante);
+
+        $modo = CriterioDePrecioHelper::resolver(
+            $percentage_gain_actual,
+            $price_actual,
+            $cost_resultante,
+            $apply_provider_resultante,
+            is_null($provider) ? null : $provider->percentage_gain
+        );
+
+        /* El articulo ya se maneja por margen: el precio del Excel no se aplica. */
+        if (CriterioDePrecioHelper::es_margen($modo) && $trae_price) {
+            $cambios = $this->saltear_columna_de_precio($cambios, $data, 'price');
+            return $this->recordar_criterio_pendiente($id_articulo, $cambios, $percentage_gain_actual, $price_actual, $cost_resultante);
+        }
+
+        /* El articulo ya se maneja por precio manual: el margen del Excel no se aplica. */
+        if ($modo === CriterioDePrecioHelper::PRECIO_MANUAL && $trae_percentage_gain) {
+            $cambios = $this->saltear_columna_de_precio($cambios, $data, 'percentage_gain');
+            return $this->recordar_criterio_pendiente($id_articulo, $cambios, $percentage_gain_actual, $price_actual, $cost_resultante);
+        }
+
+        /*
+         * El articulo no tenia ninguno de los dos y el Excel trae los dos. No hay "lo
+         * que ya estaba", asi que la desempata una decision: gana el margen, porque es
+         * lo que setFinalPrice() va a hacer igual (pone price en null cuando hay margen
+         * propio). Registrar lo contrario seria avisarle al usuario algo que el sistema
+         * despues no cumple.
+         */
+        if ($modo === CriterioDePrecioHelper::NINGUNO && $trae_price && $trae_percentage_gain) {
+            $cambios = $this->saltear_columna_de_precio($cambios, $data, 'price');
+            return $this->recordar_criterio_pendiente($id_articulo, $cambios, $percentage_gain_actual, $price_actual, $cost_resultante);
+        }
+
+        return $this->recordar_criterio_pendiente($id_articulo, $cambios, $percentage_gain_actual, $price_actual, $cost_resultante);
+    }
+
+    /**
+     * Guarda con que margen, precio y costo va a quedar este articulo despues de aplicar
+     * la fila, para que otra fila del mismo chunk que apunte al MISMO articulo decida con
+     * ese estado y no con el de la base, que a esa altura ya quedo viejo.
+     *
+     * @param  mixed $id_articulo
+     * @param  array $cambios
+     * @param  mixed $percentage_gain_actual margen vigente antes de esta fila
+     * @param  mixed $price_actual           precio vigente antes de esta fila
+     * @param  mixed $cost_resultante        costo que va a quedar
+     * @return array los mismos cambios, sin tocar
+     */
+    protected function recordar_criterio_pendiente($id_articulo, array $cambios, $percentage_gain_actual, $price_actual, $cost_resultante)
+    {
+        if (is_null($id_articulo)) {
+            return $cambios;
+        }
+
+        $this->criterio_pendiente_por_articulo[$id_articulo] = [
+            'percentage_gain' => array_key_exists('percentage_gain', $cambios) ? $cambios['percentage_gain'] : $percentage_gain_actual,
+            'price'           => array_key_exists('price', $cambios) ? $cambios['price'] : $price_actual,
+            'cost'            => $cost_resultante,
+        ];
+
+        return $cambios;
+    }
+
+    /**
+     * Saca del cambio la columna de precio salteada y deja constancia de la fila.
+     *
+     * @param  array  $cambios
+     * @param  array  $data   datos crudos de la fila, de donde sale el valor a reportar
+     * @param  string $campo  'price' | 'percentage_gain'
+     * @return array
+     */
+    protected function saltear_columna_de_precio(array $cambios, array $data, $campo)
+    {
+        $valor_del_excel = array_key_exists($campo, $data)
+                            ? $data[$campo]
+                            : (array_key_exists($campo, $cambios) ? $cambios[$campo] : null);
+
+        $this->registrar_columna_de_precio_ignorada(
+            $this->fila_actual,
+            $campo,
+            $valor_del_excel,
+            isset($data['name']) ? $data['name'] : null
+        );
+
+        return $this->descartar_campo_de_cambios($cambios, $campo);
+    }
+
+    /**
+     * Saca un campo de $cambios junto con su __diff__.
+     *
+     * Los dos tienen que irse juntos: la entrada de $cambios se serializa tal cual en el
+     * updated_props del historial (ArticleImportHelper::guardar_articulos_actualizados()) y
+     * de ahi lo lee el rollback (RollbackArticleImportHistory). Sacar uno sin el otro deja
+     * el historial describiendo un cambio que no ocurrio.
+     *
+     * @param  array  $cambios
+     * @param  string $campo
+     * @return array
+     */
+    protected function descartar_campo_de_cambios(array $cambios, $campo)
+    {
+        unset($cambios[$campo]);
+        unset($cambios['__diff__' . $campo]);
+
+        return $cambios;
+    }
+
+    /**
+     * Proveedor de un articulo, cacheado por provider_id dentro del chunk.
+     *
+     * @param  mixed $provider_id
+     * @return \App\Models\Provider|null
+     */
+    protected function provider_para_criterio($provider_id)
+    {
+        if (is_null($provider_id) || $provider_id === '' || (int) $provider_id === 0) {
+            return null;
+        }
+
+        $key = (int) $provider_id;
+
+        if (!array_key_exists($key, $this->provider_cache_criterio)) {
+            $this->provider_cache_criterio[$key] = Provider::select('id', 'percentage_gain')->find($key);
+        }
+
+        return $this->provider_cache_criterio[$key];
     }
 
     /**
@@ -3155,6 +3443,55 @@ class ProcessRow {
         ];
 
         $this->log('Fila ' . $fila . ' sobrescrita por fila ' . $fila_ganadora . ' (campo ' . $campo . ' = "' . $valor . '")');
+    }
+
+    /**
+     * Registra que una columna de precio del Excel NO se aplico porque el articulo ya se
+     * maneja por la otra (mision 44, regla de Lucas del 12/8/2026: en la importacion gana
+     * la columna que ya estaba).
+     *
+     * Igual que 'fila_sobrescrita', ESTE tipo NO representa una fila que no se pudo
+     * procesar: la fila se proceso bien y se aplico todo menos esa columna. Por eso NO
+     * suma a conflicts_count (ver ActualizarBBDD::persistir_conflictos()); si sumara,
+     * cualquier Excel con una columna de precio de mas mostraria el aviso de "filas que
+     * no se pudieron procesar", que es un error, y esto no lo es.
+     *
+     * @param  int         $fila         numero de fila (absoluto sobre el archivo) donde se salteo.
+     * @param  string      $campo        'price' o 'percentage_gain': la columna que NO se aplico.
+     * @param  mixed       $valor        valor que traia el Excel en esa columna.
+     * @param  string|null $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
+     * @return void
+     */
+    function registrar_columna_de_precio_ignorada($fila, $campo, $valor, $nombre_excel = null): void
+    {
+        /*
+         * Una sola fila del Excel puede pasar por procesar_articulo_ya_creado() VARIAS veces
+         * cuando su provider_code matchea a mas de un articulo (ver el camino de match
+         * multiple), y ahi dejaria N conflictos identicos -- misma fila, misma columna, mismo
+         * valor -- que en el modal se leen como N filas salteadas cuando fue una sola.
+         */
+        foreach ($this->conflictos as $ya_registrado) {
+
+            if (
+                $ya_registrado['tipo'] === 'columna_de_precio_ignorada'
+                && $ya_registrado['fila'] === $fila
+                && $ya_registrado['campo'] === $campo
+            ) {
+                return;
+            }
+        }
+
+        $this->conflictos[] = [
+            'fila'          => $fila,
+            'fila_ganadora' => null,
+            'tipo'          => 'columna_de_precio_ignorada',
+            'campo'         => $campo,
+            'valor'         => is_null($valor) ? null : (string) $valor,
+            'article_ids'   => null,
+            'nombre_excel'  => $nombre_excel,
+        ];
+
+        $this->log('Fila ' . $fila . ': se ignoro la columna ' . $campo . ' ("' . $valor . '") porque el articulo se maneja por la otra');
     }
 
     /**
