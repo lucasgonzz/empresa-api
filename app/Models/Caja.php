@@ -78,4 +78,19 @@ class Caja extends Model
     function employee() {
         return $this->belongsTo(User::class, 'employee_id');
     }
+
+    /**
+     * Sucursal/deposito de la caja (columna `cajas.address_id`, migracion
+     * 2025_11_07_154645_add_address_id_to_cajas_table).
+     *
+     * 🔴 No la borres por "no la usa nadie": la usa el buscador general. Sin este metodo,
+     * GlobalSearchQueryHelper::valid_relation_props() descarta la relacion con method_exists() y
+     * EN SILENCIO, asi que "Sucursal" se ve tildada en el desplegable de Cajas y no filtra nada.
+     * El nombre tiene que seguir siendo la key sin el sufijo `_id`, en snake_case.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
+     */
+    function address() {
+        return $this->belongsTo(Address::class, 'address_id');
+    }
 }

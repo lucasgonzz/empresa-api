@@ -306,6 +306,13 @@ class DemoSetupHelper
             'PdfColumnProfileSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
+
+            /*
+                Defaults del buscador general. Tiene que quedar DESPUÉS de EmployeeSeeder: el
+                seeder borra las filas `global_search` de los empleados para que hereden las del
+                dueño, y si corriera antes no agarraría a los que la demo acaba de crear.
+            */
+            'GlobalSearchDefaultsSeeder',
         ];
     }
 
