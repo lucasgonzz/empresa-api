@@ -54,6 +54,13 @@ class PlanDeLaDemoTest extends TestCase
          */
         DemoTrackingConfig::query()->delete();
 
+        /**
+         * Idem con los eventos: el progreso que devuelve el endpoint sale de esta tabla, asi
+         * que un evento sembrado a mano fuera de la suite --o dejado por otra clase-- da vuelta
+         * el resultado de la mitad de estos casos. Misma leccion que la fila de canal.
+         */
+        DemoEvento::query()->delete();
+
         DemoTrackingConfigHelper::olvidar_cache();
 
         /** Sin este header no hay sesion en el request (ver BusDeEventosTest). */
@@ -327,8 +334,7 @@ class PlanDeLaDemoTest extends TestCase
     /**
      * 🔴 EL TEST QUE PROTEGE A LOS 40 CLIENTES REALES.
      *
-     * Sin fila de configuracion, el endpoint responde 204 sin pagar NI UNA query y sin
-     * escribir nada.
+     * Sin sesion de demo, el endpoint responde 204 sin pagar NI UNA query y sin escribir nada.
      *
      * @group demo
      * @return void
@@ -352,5 +358,68 @@ class PlanDeLaDemoTest extends TestCase
 
         $this->assertSame([], $queries, 'Un cliente real no puede pagar ninguna query por este endpoint.');
         $this->assertSame($eventos_antes, DemoEvento::count(), 'Y no se escribe nada.');
+    }
+
+    /**
+     * 🔴 Y con sesion de demo pero SIN canal, tampoco se toca el progreso.
+     *
+     * Este es el test que le faltaba al de arriba, y la diferencia importa: aquel sale por la
+     * primera guarda --la de sesion-- y nunca llega a evaluar el canal, asi que su medicion de
+     * "cero queries" la cumple una rama que ya cubre otro test. Si alguien moviera
+     * progreso_por_clip() por encima de la guarda del canal, aquel seguiria en verde. Este no.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_con_sesion_de_demo_pero_sin_canal_no_se_consulta_el_progreso()
+    {
+        $this->assertSame(0, DemoTrackingConfig::count());
+
+        $queries_de_progreso = [];
+
+        DB::listen(function ($query) use (&$queries_de_progreso) {
+            if (strpos($query->sql, 'demo_eventos') !== false) {
+                $queries_de_progreso[] = $query->sql;
+            }
+        });
+
+        $respuesta = $this->como_sesion_de_demo()->getJson('/api/demo/plan');
+
+        $respuesta->assertStatus(204);
+
+        $this->assertSame(
+            [],
+            $queries_de_progreso,
+            'Sin canal no se puede consultar el progreso: el endpoint tiene que cortar antes.'
+        );
+    }
+
+    /**
+     * Las notas de mas de 2 KB no se pierden en el F5.
+     *
+     * El emisor descarta `datos` por encima del tope y guarda una marca en su lugar. Si el
+     * endpoint tomara el ultimo evento a secas, encontraria ese sin texto, devolveria vacio y
+     * el panel le PISARIA las notas al lead con el campo en blanco -- teniendo el texto bueno
+     * ahi al lado, en el evento anterior.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_un_evento_de_notas_descartado_no_borra_las_notas_anteriores()
+    {
+        $this->configurar_canal();
+
+        $this->crear_evento('nota.escrita', null, ['texto' => 'lo que el lead escribio']);
+        /** Asi queda una nota que excedio el tope: el emisor le saca el texto. */
+        $this->crear_evento('nota.escrita', null, ['_descartado' => 'excede_tope', '_bytes' => 5000]);
+
+        $respuesta = $this->como_sesion_de_demo()->getJson('/api/demo/plan');
+
+        $respuesta->assertStatus(200);
+        $this->assertSame(
+            'lo que el lead escribio',
+            $respuesta->json('notas'),
+            'Un evento descartado no puede borrarle las notas al lead.'
+        );
     }
 }

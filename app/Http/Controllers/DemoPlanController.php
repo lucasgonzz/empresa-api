@@ -103,16 +103,30 @@ class DemoPlanController extends Controller
      */
     private static function ultimas_notas()
     {
-        $evento = DemoEvento::where('nombre', 'nota.escrita')
+        /**
+         * 🔴 Se busca el ultimo evento CON TEXTO, no el ultimo a secas.
+         *
+         * DemoEventoEmitter::acotar_datos() descarta el contenido cuando `datos` supera 2 KB
+         * serializados y guarda en su lugar una marca `_descartado`. Con `first()` a secas, un
+         * lead que escribio dos parrafos --cosa normal en una demo de 40 minutos-- recargaba y
+         * este metodo encontraba ese ultimo evento sin `texto`, devolvia '' y el panel le
+         * PISABA las notas con vacio. Y el texto bueno estaba ahi, en el evento anterior.
+         *
+         * El tope de 5 acota el escaneo: mas atras que eso ya no es "lo ultimo que escribio".
+         */
+        $eventos = DemoEvento::where('nombre', 'nota.escrita')
             ->orderBy('ocurrido_at', 'DESC')
             ->orderBy('id', 'DESC')
-            ->first();
+            ->limit(5)
+            ->get();
 
-        if (is_null($evento) || !is_array($evento->datos) || !isset($evento->datos['texto'])) {
-            return '';
+        foreach ($eventos as $evento) {
+            if (is_array($evento->datos) && isset($evento->datos['texto']) && $evento->datos['texto'] !== '') {
+                return (string) $evento->datos['texto'];
+            }
         }
 
-        return (string) $evento->datos['texto'];
+        return '';
     }
 
     /**

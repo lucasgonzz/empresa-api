@@ -345,7 +345,23 @@ class DemoEventoEmitter
             return null;
         }
 
-        return substr(trim((string) $clip_id), 0, 10);
+        $normalizado = trim((string) $clip_id);
+
+        /**
+         * 🔴 Si alguna vez hay que truncar, se avisa.
+         *
+         * Truncar no es solo perder caracteres: el panel restaura el progreso comparando la
+         * clave guardada contra el `id` COMPLETO que trae el plan, asi que un clip truncado no
+         * matchea nunca y el lead lo ve sin tildar para siempre, sin un error en ningun lado.
+         * El catalogo de hoy usa ids como "1.1" y "1.10" y no llega ni cerca de 10, pero eso lo
+         * decide admin-api y no este repo: si el dia que cambie no queda rastro, el sintoma es
+         * invisible.
+         */
+        if (strlen($normalizado) > 10) {
+            Log::warning('DemoEventoEmitter: clip_id de ' . strlen($normalizado) . ' caracteres, se trunca a 10 y el progreso de ese clip no va a restaurarse: "' . $normalizado . '".');
+        }
+
+        return substr($normalizado, 0, 10);
     }
 
     /**
