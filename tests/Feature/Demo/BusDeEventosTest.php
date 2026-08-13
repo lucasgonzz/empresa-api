@@ -279,6 +279,35 @@ class BusDeEventosTest extends TestCase
     }
 
     /**
+     * El camino del worker: sin request y sin sesion, el emisor igual registra.
+     *
+     * Es por donde va `importacion.completada`, que lo emite FinalizeArticleImport desde la
+     * cola. Ahi la guarda 1 no puede afirmar nada —no hay sesion de la cual fiarse— y decide
+     * la guarda 2, que consulta la configuracion. Si esa rama se rompiera, el unico evento
+     * que no nace de un request dejaria de existir y nada lo diria.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_sin_sesion_el_emisor_igual_registra_si_hay_canal()
+    {
+        $this->sin_red();
+        $this->configurar_canal();
+
+        $evento = DemoEventoEmitter::emitir('importacion.completada', null, ['import_history_id' => 77]);
+
+        $this->assertNotNull($evento, 'Sin sesion, la guarda 2 tiene que resolver el canal y dejar emitir.');
+        $this->assertSame('importacion.completada', $evento->nombre);
+        $this->assertSame(['import_history_id' => 77], $evento->datos);
+
+        /** Y sin canal, el mismo camino no registra nada. */
+        DemoTrackingConfig::query()->delete();
+        DemoTrackingConfigHelper::olvidar_cache();
+
+        $this->assertNull(DemoEventoEmitter::emitir('importacion.completada', null, ['import_history_id' => 78]));
+    }
+
+    /**
      * `flush()` es total: no puede tirar por ningun camino.
      *
      * Importa mas de lo que parece. El push posterior a la respuesta corre adentro de un
