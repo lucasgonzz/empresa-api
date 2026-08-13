@@ -246,6 +246,14 @@ class DatabaseSeeder extends Seeder
             // $this->call(SaleDemoSeeder::class);
 
         }
+
+        /*
+            Defaults del buscador general (preference_type global_search). Va acá, al final del
+            run() y fuera del if/else, y NO adentro de common_seeders(): common_seeders() corre
+            ANTES que UserSeeder, así que ahí no habría todavía ningún usuario y el seeder
+            sembraría cero filas sin fallar. Al final del run() cubre las dos ramas de una vez.
+        */
+        $this->call(GlobalSearchDefaultsSeeder::class);
     }
 
     function local_y_demo() {
