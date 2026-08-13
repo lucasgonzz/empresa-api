@@ -37,7 +37,13 @@ class DemoEventoController extends Controller
             return response(null, 204);
         }
 
-        $nombre = trim((string) $request->input('nombre', ''));
+        /**
+         * `is_scalar` y no un cast directo: el cuerpo lo arma el navegador, y un
+         * `{"nombre": ["clip.terminado"]}` convertiría el 204 mudo de este endpoint en un
+         * 500 con traza. La lista blanca de abajo ya rechaza la cadena vacía.
+         */
+        $nombre_crudo = $request->input('nombre', '');
+        $nombre = is_scalar($nombre_crudo) ? trim((string) $nombre_crudo) : '';
 
         if (!DemoEventoEmitter::nombre_ux_aceptado($nombre)) {
             Log::info('Demo evento: nombre fuera de la lista blanca, se descarta: "' . $nombre . '".');

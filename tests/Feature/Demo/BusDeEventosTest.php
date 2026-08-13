@@ -451,6 +451,20 @@ class BusDeEventosTest extends TestCase
         $respuesta_inventada->assertStatus(204);
 
         $this->assertSame($eventos_antes, DemoEvento::count(), 'Un nombre inventado tampoco escribe.');
+
+        /**
+         * Y un cuerpo con la forma equivocada tiene que seguir siendo un 204 mudo, no un 500
+         * con traza: el cuerpo lo arma el navegador y este endpoint no puede ser un lugar
+         * donde tirarle basura al servidor produzca un error server-side.
+         */
+        $respuesta_array = $this->como_sesion_de_demo()->postJson('/api/demo/evento', [
+            'nombre'  => ['clip.terminado'],
+            'clip_id' => ['1.1'],
+        ]);
+
+        $respuesta_array->assertStatus(204);
+
+        $this->assertSame($eventos_antes, DemoEvento::count(), 'Un nombre que no es escalar tampoco escribe.');
     }
 
     /**

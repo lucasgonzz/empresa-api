@@ -169,6 +169,10 @@ class DemoEventoEmitter
      */
     public static function nombre_ux_aceptado($nombre)
     {
+        if (!is_scalar($nombre)) {
+            return false;
+        }
+
         return in_array(trim((string) $nombre), self::NOMBRES_UX, true);
     }
 
