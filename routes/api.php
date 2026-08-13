@@ -36,6 +36,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
     */
     Route::post('demo/evento', 'DemoEventoController@store');
 
+    /*
+        El plan de la demo para el panel lateral del lead (mision 51). Mismo criterio que el
+        endpoint de arriba: 204 mudo fuera de una sesion de demo, sin tocar la base.
+    */
+    Route::get('demo/plan', 'DemoPlanController@index');
+
     // CommonLaravel
     // ----------------------------------------------------------------------------------------------------
     // Generals
