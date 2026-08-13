@@ -42,6 +42,18 @@ class PlanDeLaDemoTest extends TestCase
             $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
         }
 
+        /**
+         * La precondicion "esta instancia no es una demo" se ESTABLECE, no se asume.
+         *
+         * Se aprendio midiendo: una fila de demo_tracking_config sembrada a mano fuera de la
+         * suite —para mirar el panel en el navegador— dejo este test en rojo en la corrida
+         * completa mientras pasaba aislado, y el gate del carril lo leyo como una regresion
+         * del codigo. Un test que depende de que la base este limpia no prueba lo que dice
+         * probar: prueba el estado de la base. Como la clase usa DatabaseTransactions, este
+         * borrado se revierte al final de cada caso.
+         */
+        DemoTrackingConfig::query()->delete();
+
         DemoTrackingConfigHelper::olvidar_cache();
 
         /** Sin este header no hay sesion en el request (ver BusDeEventosTest). */

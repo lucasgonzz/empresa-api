@@ -47,6 +47,14 @@ class BusDeEventosTest extends TestCase
             $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
         }
 
+        /**
+         * La precondicion "esta instancia no es una demo" se ESTABLECE, no se asume. Una fila
+         * de demo_tracking_config sembrada a mano fuera de la suite alcanza para dar vuelta el
+         * resultado de varios de estos casos, y el gate del carril lo lee como una regresion
+         * del codigo. Con DatabaseTransactions el borrado se revierte al final de cada caso.
+         */
+        DemoTrackingConfig::query()->delete();
+
         /** El cache del canal es por proceso: entre casos hay que soltarlo a mano. */
         DemoTrackingConfigHelper::olvidar_cache();
         DemoEventoEmitter::reiniciar_estado_de_proceso();
