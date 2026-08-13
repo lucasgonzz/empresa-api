@@ -71,13 +71,6 @@ class FinalizeArticleImport implements ShouldQueue
             return;
         }
 
-        /**
-         * Se lee ANTES de pisarlo porque lo usa el evento de la demo del final del método:
-         * si ya estaba en 'terminado', esta corrida es un reintento y el import ya se cerró
-         * una vez (misión 50).
-         */
-        $ya_estaba_terminado = $import_history->status === 'terminado';
-
         $import_history->status = 'terminado';
         $import_history->terminado_at = Carbon::now();
 
@@ -109,21 +102,27 @@ class FinalizeArticleImport implements ShouldQueue
          * (InitExcelImport encola los chunks y responde 200 enseguida), así que emitir ahí
          * reportaría como completada una importación que todavía puede fallar entera.
          *
-         * Y va al FINAL del handle(), con dos guardas, porque este job se reintenta: tiene
-         * `$tries = 120`, y todo lo que hay arriba —la notificación, el Artisan::call— puede
-         * tirar. Emitiendo en el medio, una notificación fallida reintentaba el job entero y
-         * emitía el evento otra vez con un uuid nuevo, que del lado del admin son dos
-         * importaciones distintas: el uuid hace idempotente el reintento del PUSH, no el de la
-         * emisión. `$ya_estaba_terminado` cubre el reintento que igual llega hasta acá.
+         * 🔴 La idempotencia va por CLAVE, no por el status del import.
+         *
+         * Este job se reintenta hasta 120 veces, así que emitir sin más lo duplicaba: el uuid
+         * hace idempotente el reintento del PUSH, no el de la EMISIÓN. Pero condicionarlo a
+         * "el import no estaba ya en terminado" no sirve, y se probó que no sirve: el último
+         * chunk ya deja `status = 'terminado'` desde `ProcessArticleChunk::update_import_history()`
+         * antes de que este job exista, así que esa condición es falsa **siempre** y el evento no
+         * se emitía nunca. El status lo escriben otros tres lugares; no puede ser la marca.
+         *
+         * La clave es el id del import: el emisor deriva de ella un uuid estable y deja que el
+         * índice único de `demo_eventos` decida. Emitir dos veces el mismo hecho deja una fila.
          *
          * Corre en el worker, sin sesión HTTP, así que el emisor resuelve la configuración
          * contra la base: una query por importación terminada, no por request.
          */
-        if (!$ya_estaba_terminado) {
-            DemoEventoEmitter::emitir('importacion.completada', null, [
-                'import_history_id' => $import_history->id,
-            ]);
-        }
+        DemoEventoEmitter::emitir(
+            'importacion.completada',
+            null,
+            ['import_history_id' => $import_history->id],
+            (string) $import_history->id
+        );
     }
 
     /**

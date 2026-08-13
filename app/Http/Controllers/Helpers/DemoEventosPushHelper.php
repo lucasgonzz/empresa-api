@@ -58,6 +58,18 @@ class DemoEventosPushHelper
          */
         $token = '';
 
+        /**
+         * Solo se le cobra el intento a un lote que efectivamente se intento postear. Sin esto,
+         * cualquier hipo de base ANTES del POST —el COUNT de avisar_varados(), el foreach que
+         * arma el payload— le comia un intento a todos los eventos pendientes sin que el canal
+         * hubiera tenido nada que ver: diez hipos en diez minutos y la demo entera quedaba
+         * varada para siempre. Cambiar un reintento infinito por una perdida definitiva no es
+         * un arreglo.
+         *
+         * @var bool
+         */
+        $posteado = false;
+
         /*
          * Mismo criterio que el emisor: esto corre en las instancias de los clientes
          * reales (el comando esta en el schedule de todas) y ahi no tiene que hacer nada
@@ -86,6 +98,7 @@ class DemoEventosPushHelper
             $resumen['enviados'] = $pendientes->count();
 
             $respuesta = self::postear($config, $pendientes);
+            $posteado = true;
 
             if ($respuesta['ok']) {
                 $resumen['sincronizados'] = self::marcar_sincronizados($pendientes);
@@ -112,7 +125,7 @@ class DemoEventosPushHelper
 
             Log::warning('DemoEventosPushHelper: fallo el flush con ' . $cuantos . ' evento(s) en vuelo: ' . DemoTrackingConfigHelper::ocultar_token($e->getMessage(), $token));
 
-            if (!is_null($pendientes) && $cuantos > 0) {
+            if ($posteado && !is_null($pendientes) && $cuantos > 0) {
                 /** Si lo que tiro fue la base, cobrar el intento tambien tira. Se intenta y listo. */
                 try {
                     $resumen['fallados'] = self::marcar_fallados(
@@ -195,11 +208,18 @@ class DemoEventosPushHelper
          * que pasa por el enmascarado: la forma normal de un 401 es citar la credencial que
          * rechazo, y ahi el token volveria reflejado y quedaria escrito de este lado.
          */
+        /**
+         * 🔴 Se enmascara PRIMERO y se recorta DESPUES. Al reves —que era como estaba— un token
+         * que cayera a caballo del byte 500 quedaba partido: la mitad que sobrevivia al substr
+         * ya no coincidia con el token entero, el str_replace no la encontraba, y ese prefijo
+         * en claro terminaba escrito en `ultimo_error` y en el log.
+         */
         return [
             'ok' => false,
-            'error' => 'status ' . $status . ': ' . DemoTrackingConfigHelper::ocultar_token(
-                substr((string) $respuesta->body(), 0, 500),
-                $config->eventos_token
+            'error' => 'status ' . $status . ': ' . substr(
+                DemoTrackingConfigHelper::ocultar_token((string) $respuesta->body(), $config->eventos_token),
+                0,
+                500
             ),
             'definitivo' => $definitivo,
         ];

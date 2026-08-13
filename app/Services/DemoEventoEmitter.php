@@ -8,6 +8,7 @@ use App\Models\DemoEvento;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Ramsey\Uuid\Uuid;
 
 /**
  * Unico punto de entrada de los eventos de la demo (mision 50).
@@ -93,9 +94,12 @@ class DemoEventoEmitter
      * @param string $nombre Nombre del catalogo (NOMBRES_UX o NOMBRES_NEGOCIO).
      * @param string|null $clip_id Clip del plan al que pertenece, cuando aplica.
      * @param array $datos Carga util. Para los eventos de negocio, el id del registro creado y nada mas.
-     * @return \App\Models\DemoEvento|null La fila creada, o null si no habia nada que registrar.
+     * @param string|null $clave_idempotencia Identifica el HECHO, no la llamada. Con clave, dos
+     *                                        emisiones del mismo hecho dejan una sola fila.
+     * @return \App\Models\DemoEvento|null La fila creada (o la que ya existia), o null si no habia
+     *                                     nada que registrar.
      */
-    public static function emitir($nombre, $clip_id = null, $datos = [])
+    public static function emitir($nombre, $clip_id = null, $datos = [], $clave_idempotencia = null)
     {
         /**
          * Se normaliza ANTES del try, no adentro: el catch de abajo concatena $nombre en el
@@ -138,8 +142,7 @@ class DemoEventoEmitter
                 return null;
             }
 
-            $evento = DemoEvento::create([
-                'uuid' => (string) Str::uuid(),
+            $fila = [
                 'nombre' => $nombre,
                 'clip_id' => self::normalizar_clip_id($clip_id),
                 'datos' => self::acotar_datos($datos, $nombre),
@@ -147,7 +150,31 @@ class DemoEventoEmitter
                 'sincronizado_at' => null,
                 'intentos' => 0,
                 'ultimo_error' => null,
-            ]);
+            ];
+
+            if (is_null($clave_idempotencia)) {
+                $evento = DemoEvento::create(array_merge(['uuid' => (string) Str::uuid()], $fila));
+            } else {
+                /**
+                 * Con clave, el uuid sale de un hecho y no de una llamada, asi que emitir dos
+                 * veces el MISMO hecho deja una sola fila. Lo necesita el unico emisor que
+                 * puede correr mas de una vez: FinalizeArticleImport, que se reintenta hasta
+                 * 120 veces y no puede reportar 120 importaciones.
+                 *
+                 * firstOrCreate y no un chequeo previo: la columna `uuid` es unique, asi que la
+                 * base es la que decide, no una lectura que otro proceso puede invalidar entre
+                 * el select y el insert.
+                 */
+                $evento = DemoEvento::firstOrCreate(
+                    ['uuid' => self::uuid_de($nombre, $clave_idempotencia)],
+                    $fila
+                );
+
+                if (!$evento->wasRecentlyCreated) {
+                    /** Ya estaba. No se re-agenda el push: el barrido se ocupa si quedo pendiente. */
+                    return $evento;
+                }
+            }
 
             if (in_array($nombre, self::NOMBRES_CON_PUSH_INMEDIATO, true)) {
                 self::programar_flush();
@@ -159,6 +186,23 @@ class DemoEventoEmitter
 
             return null;
         }
+    }
+
+    /**
+     * uuid determinista para un hecho, de forma que dos emisiones del mismo hecho colisionen
+     * contra el indice unico en vez de crear dos eventos.
+     *
+     * Es uuid v5 (no un hash cualquiera) porque del otro lado la columna tiene forma de uuid y
+     * la idempotencia del admin es por ese valor: tiene que ser un uuid valido, estable entre
+     * corridas y distinto por nombre de evento.
+     *
+     * @param string $nombre
+     * @param string $clave
+     * @return string
+     */
+    private static function uuid_de($nombre, $clave)
+    {
+        return (string) Uuid::uuid5(Uuid::NAMESPACE_URL, 'demo-evento:' . $nombre . ':' . $clave);
     }
 
     /**
@@ -273,7 +317,17 @@ class DemoEventoEmitter
             try {
                 DemoEventosPushHelper::flush();
             } catch (\Throwable $e) {
-                Log::warning('DemoEventoEmitter: fallo el flush posterior a la respuesta: ' . $e->getMessage());
+                /**
+                 * El propio Log tambien va protegido: un canal de log caido (storage sin
+                 * permisos despues de un deploy, un handler remoto sin red) haria tirar al
+                 * catch y la excepcion se escaparia igual, que es exactamente lo que este
+                 * bloque viene a impedir.
+                 */
+                try {
+                    Log::warning('DemoEventoEmitter: fallo el flush posterior a la respuesta: ' . $e->getMessage());
+                } catch (\Throwable $e2) {
+                    // No queda a donde avisar. Callarse aca es preferible a romper la respuesta.
+                }
             }
         });
     }

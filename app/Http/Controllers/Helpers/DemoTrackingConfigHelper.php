@@ -73,22 +73,25 @@ class DemoTrackingConfigHelper
             return null;
         }
 
-        /**
-         * La tabla es de una sola fila. En el flujo real el migrate:fresh ya la dejo
-         * vacia, pero se borra igual por si este metodo se llama fuera del setup.
-         */
-        DemoTrackingConfig::query()->delete();
-
         self::$cache = null;
 
         /**
-         * El try/catch existe por el mismo motivo que la guarda de arriba: cualquier fallo
-         * del insert (deadlock, conexion caida, tabla ausente porque la instancia todavia no
-         * migro) trae el token en el mensaje de la excepcion, y ese mensaje sube hasta el
-         * body de la respuesta del setup. Se registra con el token enmascarado y el setup
-         * sigue: quedarse sin canal es un caso previsto; filtrar la credencial, no.
+         * El try/catch existe por el mismo motivo que la guarda de arriba: cualquier fallo del
+         * insert (deadlock, conexion caida, tabla ausente porque la instancia todavia no migro)
+         * trae el token en el mensaje de la excepcion, y ese mensaje sube hasta el body de la
+         * respuesta del setup. Se registra con el token enmascarado y el setup sigue: quedarse
+         * sin canal es un caso previsto; filtrar la credencial, no.
+         *
+         * El delete() va ADENTRO: la tabla ausente lo hace tirar a el primero, asi que dejarlo
+         * afuera era dejar sin cubrir justo el caso que este docblock nombra.
          */
         try {
+            /**
+             * La tabla es de una sola fila. En el flujo real el migrate:fresh ya la dejo
+             * vacia, pero se borra igual por si este metodo se llama fuera del setup.
+             */
+            DemoTrackingConfig::query()->delete();
+
             return DemoTrackingConfig::create([
                 'eventos_token' => $token,
                 'eventos_url' => $url,
@@ -133,7 +136,21 @@ class DemoTrackingConfigHelper
             return $texto;
         }
 
-        return str_replace($token, '***', $texto);
+        /**
+         * No alcanza con buscar el token tal cual: el texto que llega es de otro sistema y
+         * puede traerlo transformado. Las dos formas que aparecen de verdad son la del JSON de
+         * Laravel, que escapa las barras (`a/b` -> `a\/b`), y la de una URL, que las
+         * porcentajea. Un token base64 tiene barras con alta probabilidad, y el alfabeto lo
+         * elige el admin, no este repo.
+         */
+        $formas = [
+            $token,
+            str_replace('/', '\\/', $token),
+            rawurlencode($token),
+            urlencode($token),
+        ];
+
+        return str_replace(array_unique($formas), '***', $texto);
     }
 
     /**

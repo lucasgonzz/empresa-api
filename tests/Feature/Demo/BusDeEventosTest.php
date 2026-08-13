@@ -308,6 +308,44 @@ class BusDeEventosTest extends TestCase
     }
 
     /**
+     * 🔴 Emitir dos veces el MISMO hecho deja una sola fila.
+     *
+     * Es lo que necesita FinalizeArticleImport, que se reintenta hasta 120 veces: sin esto,
+     * una notificacion fallida convierte una importacion en 120 importaciones del lado del
+     * admin. Y la marca no puede ser el status del import —lo escriben otros tres lugares, y
+     * el ultimo chunk ya lo deja en 'terminado' antes de que el job exista—, asi que va por
+     * una clave que identifica el hecho.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_dos_emisiones_del_mismo_hecho_dejan_una_sola_fila()
+    {
+        $this->sin_red();
+        $this->configurar_canal();
+
+        $antes = DemoEvento::where('nombre', 'importacion.completada')->count();
+
+        $uno = DemoEventoEmitter::emitir('importacion.completada', null, ['import_history_id' => 4242], '4242');
+        $dos = DemoEventoEmitter::emitir('importacion.completada', null, ['import_history_id' => 4242], '4242');
+
+        $this->assertNotNull($uno);
+        $this->assertNotNull($dos, 'La segunda emision devuelve la fila que ya estaba, no null.');
+        $this->assertSame($uno->id, $dos->id, 'Las dos emisiones son la misma fila.');
+
+        $this->assertSame(
+            $antes + 1,
+            DemoEvento::where('nombre', 'importacion.completada')->count(),
+            'El mismo hecho emitido dos veces no puede dejar dos eventos.'
+        );
+
+        /** Y un hecho distinto sí es un evento distinto. */
+        $otro = DemoEventoEmitter::emitir('importacion.completada', null, ['import_history_id' => 4343], '4343');
+
+        $this->assertNotSame($uno->uuid, $otro->uuid);
+    }
+
+    /**
      * `flush()` es total: no puede tirar por ningun camino.
      *
      * Importa mas de lo que parece. El push posterior a la respuesta corre adentro de un
@@ -325,8 +363,20 @@ class BusDeEventosTest extends TestCase
         DemoTrackingConfigHelper::olvidar_cache();
         $this->assertSame(['enviados' => 0, 'sincronizados' => 0, 'fallados' => 0, 'varados' => 0], DemoEventosPushHelper::flush());
 
-        /** Con canal y con la red cortada de la peor manera. */
+        /**
+         * Con canal y con el cliente HTTP explotando.
+         *
+         * 🔴 Lo que este test NO cubre, dicho derecho: el catch externo de flush(), el que le
+         * cobra el intento al lote cuando el marcado local falla DESPUES de un POST exitoso.
+         * Una excepcion del cliente HTTP cae en el try/catch de postear() y el flujo sigue por
+         * la rama normal, asi que no llega ahi. Y el camino que si llegaria —hacer tirar a
+         * marcar_sincronizados()— no es inyectable desde un test: los dos marcados son mass
+         * updates de query builder, que no disparan eventos de modelo, y romperlos pediria
+         * mockear la conexion. Ese arreglo quedo verificado por lectura, no por test, y esta
+         * declarado como tal en el veredicto de verificacion.
+         */
         $this->configurar_canal();
+
         Http::fake(function () {
             throw new \RuntimeException('zz simulacion: el cliente HTTP exploto');
         });
@@ -335,9 +385,44 @@ class BusDeEventosTest extends TestCase
 
         $resumen = DemoEventosPushHelper::flush();
 
-        $this->assertSame(1, $resumen['fallados'], 'Un fallo cualquiera igual le cobra el intento al lote.');
+        $this->assertSame(1, $resumen['fallados'], 'Un fallo del canal igual le cobra el intento al lote.');
         $this->assertSame(1, $evento->fresh()->intentos);
         $this->assertNull($evento->fresh()->sincronizado_at);
+    }
+
+    /**
+     * Y NO se le cobra el intento a un lote que nunca se llego a postear.
+     *
+     * El arreglo de arriba, mal hecho, cambia un reintento infinito por una perdida
+     * definitiva: si lo que falla es la base ANTES del POST, cobrar el intento igual quema
+     * los 10 y varia la demo entera por algo que el canal no hizo.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_un_lote_que_no_se_llego_a_postear_no_paga_el_intento()
+    {
+        $this->configurar_canal();
+
+        Http::fake();
+
+        $evento = $this->crear_evento_pendiente();
+
+        /** Rompe el COUNT de avisar_varados(), que corre antes del POST. */
+        DemoEvento::retrieved(function () {
+            throw new \RuntimeException('zz simulacion: la base fallo antes del POST');
+        });
+
+        try {
+            $resumen = DemoEventosPushHelper::flush();
+        } finally {
+            DemoEvento::flushEventListeners();
+        }
+
+        $this->assertSame(0, $resumen['fallados'], 'Sin POST no hay intento que cobrar.');
+        $this->assertSame(0, $evento->fresh()->intentos);
+
+        Http::assertNothingSent();
     }
 
     /**
@@ -567,10 +652,26 @@ class BusDeEventosTest extends TestCase
     {
         $token_gigante = str_repeat('z', DemoTrackingConfigHelper::LARGO_MAX_TOKEN + 1);
 
+        /**
+         * Lo que importa no es que devuelva null —eso lo daria igual el try/catch, atrapando
+         * el "Data too long" DESPUES de haberle pasado el token a la base—, sino que el token
+         * NO llegue nunca a la capa de base. Por eso se cuentan las queries: sin la guarda de
+         * largo aparece un `insert into demo_tracking_config` con el token en los bindings, y
+         * ese es exactamente el binding que Laravel interpola en el mensaje de la excepcion.
+         */
+        $inserts = [];
+
+        DB::listen(function ($query) use (&$inserts) {
+            if (strpos($query->sql, 'demo_tracking_config') !== false && stripos($query->sql, 'insert') !== false) {
+                $inserts[] = $query->sql;
+            }
+        });
+
         $config = DemoTrackingConfigHelper::guardar($token_gigante, 'https://admin.test/api/demo-eventos');
 
         DemoTrackingConfigHelper::olvidar_cache();
 
+        $this->assertSame([], $inserts, 'El token largo no puede llegar ni siquiera a intentarse contra la base.');
         $this->assertNull($config, 'Un token que no entra en la columna no arma ningun canal.');
         $this->assertSame(0, DemoTrackingConfig::count(), 'Y no deja ninguna fila.');
         $this->assertFalse(DemoTrackingConfigHelper::hay_canal());
@@ -593,11 +694,32 @@ class BusDeEventosTest extends TestCase
         $this->assertStringNotContainsString('zz-token-de-prueba-mision-50', $limpio);
         $this->assertStringContainsString('***', $limpio);
 
-        /** Sin canal configurado no hay nada que ocultar, y el texto tiene que volver igual. */
+        /**
+         * Y las formas transformadas, que son las que aparecen de verdad: el JSON de Laravel
+         * escapa las barras y una URL las porcentajea. Un token base64 tiene barras seguido, y
+         * el alfabeto lo elige el admin, no este repo.
+         */
+        $con_barras = 'zz/token/con/barras';
+        $this->assertStringNotContainsString(
+            'zz\\/token\\/con\\/barras',
+            DemoTrackingConfigHelper::ocultar_token('la key zz\\/token\\/con\\/barras no existe', $con_barras),
+            'Un token escapado al estilo del JSON de Laravel tambien se tiene que enmascarar.'
+        );
+        $this->assertStringNotContainsString(
+            'zz%2Ftoken%2Fcon%2Fbarras',
+            DemoTrackingConfigHelper::ocultar_token('...?key=zz%2Ftoken%2Fcon%2Fbarras', $con_barras),
+            'Y uno url-encoded, tambien.'
+        );
+
+        /**
+         * Sin canal configurado no hay nada que ocultar, y el texto tiene que volver igual.
+         * Se usa un texto que SI contiene el token: con uno que no lo contenga, la asercion
+         * pasaria aunque ocultar_token() fuera `return $texto;`.
+         */
         DemoTrackingConfig::query()->delete();
         DemoTrackingConfigHelper::olvidar_cache();
 
-        $this->assertSame('un texto cualquiera', DemoTrackingConfigHelper::ocultar_token('un texto cualquiera'));
+        $this->assertSame($mensaje, DemoTrackingConfigHelper::ocultar_token($mensaje));
     }
 
     /**
