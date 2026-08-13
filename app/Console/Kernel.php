@@ -63,7 +63,13 @@ class Kernel extends ConsoleKernel
         // Barrido de los eventos de la demo que quedaron sin empujar al admin (misión 50).
         // Cada minuto porque el panel del lead lo poléa cada 10 segundos esperando ver el
         // movimiento en vivo; el push inmediato va por afterResponse y esto es la red de abajo.
-        // En una instancia que no es de demo el comando sale en su primera línea sin hacer nada.
+        //
+        // En una instancia que no es de demo el comando sale en su primera línea — pero ojo:
+        // sale DESPUÉS de un SELECT a demo_tracking_config. O sea que este es el único costo
+        // permanente de la misión 50 en los ~40 clientes reales: un SELECT sobre una tabla
+        // vacía por minuto. Lo que la misión exige en cero es el camino del request del
+        // usuario, y ahí sí es cero; esto es el cron, y no hay forma de saber si hay canal
+        // sin preguntárselo a la base.
         $schedule->command('demo:flush-eventos')
             ->everyMinute()
             ->withoutOverlapping(5);

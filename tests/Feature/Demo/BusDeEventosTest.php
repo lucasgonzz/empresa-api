@@ -232,6 +232,86 @@ class BusDeEventosTest extends TestCase
     }
 
     /**
+     * El alta rapida desde vender es el otro camino por el que nace un articulo, y tiene que
+     * cumplir las dos mitades: costo cero en un cliente real, y evento en una demo.
+     *
+     * Es EL "camino distinto al guiado" del que habla la decision T4: el lead que arma una
+     * venta y carga el articulo desde ahi hizo la accion igual.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_el_alta_rapida_de_articulo_tambien_respeta_las_dos_mitades()
+    {
+        $this->sin_red();
+
+        $queries = [];
+
+        DB::listen(function ($query) use (&$queries) {
+            if (strpos($query->sql, 'demo_eventos') !== false || strpos($query->sql, 'demo_tracking_config') !== false) {
+                $queries[] = $query->sql;
+            }
+        });
+
+        /** Mitad 1: cliente real, sin canal. */
+        $respuesta = $this->postJson('/api/article/new-article', [
+            'name'  => 'ZZ Alta rapida de cliente real',
+            'price' => 500,
+        ]);
+
+        $respuesta->assertStatus(201);
+        $this->assertSame([], $queries, 'El alta rapida tampoco puede pagar queries en un cliente real.');
+
+        /** Mitad 2: la misma alta, adentro de una demo. */
+        $this->configurar_canal();
+
+        $respuesta = $this->como_sesion_de_demo()->postJson('/api/article/new-article', [
+            'name'  => 'ZZ Alta rapida de la demo',
+            'price' => 500,
+        ]);
+
+        $respuesta->assertStatus(201);
+
+        $evento = DemoEvento::where('nombre', 'articulo.creado')->orderBy('id', 'DESC')->first();
+
+        $this->assertNotNull($evento, 'El alta rapida dentro de una demo tiene que dejar su evento.');
+        $this->assertSame(['id' => $respuesta->json('model.id')], $evento->datos);
+    }
+
+    /**
+     * `flush()` es total: no puede tirar por ningun camino.
+     *
+     * Importa mas de lo que parece. El push posterior a la respuesta corre adentro de un
+     * callback de `app()->terminating()`, y `public/index.php` no envuelve `$kernel->terminate()`
+     * en nada: una excepcion que se escapara de ahi terminaria pegando el HTML del error al
+     * final del JSON que el usuario ya recibio. El closure tiene su propio try/catch, y este
+     * test cubre la otra mitad.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_el_flush_no_tira_nunca()
+    {
+        /** Sin canal configurado. */
+        DemoTrackingConfigHelper::olvidar_cache();
+        $this->assertSame(['enviados' => 0, 'sincronizados' => 0, 'fallados' => 0, 'varados' => 0], DemoEventosPushHelper::flush());
+
+        /** Con canal y con la red cortada de la peor manera. */
+        $this->configurar_canal();
+        Http::fake(function () {
+            throw new \RuntimeException('zz simulacion: el cliente HTTP exploto');
+        });
+
+        $evento = $this->crear_evento_pendiente();
+
+        $resumen = DemoEventosPushHelper::flush();
+
+        $this->assertSame(1, $resumen['fallados'], 'Un fallo cualquiera igual le cobra el intento al lote.');
+        $this->assertSame(1, $evento->fresh()->intentos);
+        $this->assertNull($evento->fresh()->sincronizado_at);
+    }
+
+    /**
      * Con el canal configurado y sesion de demo, el alta de un articulo deja su evento.
      *
      * @group demo
@@ -388,8 +468,14 @@ class BusDeEventosTest extends TestCase
     {
         $this->configurar_canal();
 
+        /**
+         * El cuerpo devuelve el token a proposito. Es la forma NORMAL de un rechazo de
+         * credencial ("la key X no existe"), y ese texto ajeno se guarda en `ultimo_error`
+         * y se loguea: si no se enmascara, el secreto queda escrito de este lado sin que
+         * ninguna linea de este repo lo haya escrito.
+         */
         Http::fake([
-            '*' => Http::response('boom', 500),
+            '*' => Http::response('boom: key invalida zz-token-de-prueba-mision-50', 500),
         ]);
 
         $respuesta = $this->como_sesion_de_demo()->postJson('/api/article', $this->payload_de_articulo([
@@ -413,8 +499,62 @@ class BusDeEventosTest extends TestCase
         $this->assertStringNotContainsString(
             'zz-token-de-prueba-mision-50',
             (string) $evento->ultimo_error,
-            'El token no puede terminar guardado en el detalle de un error.'
+            'El token no puede terminar guardado en el detalle de un error, ni siquiera reflejado por el admin.'
         );
+        $this->assertStringContainsString(
+            '***',
+            (string) $evento->ultimo_error,
+            'Y tiene que quedar la marca de que ahi habia algo enmascarado.'
+        );
+        $this->assertStringContainsString('boom', (string) $evento->ultimo_error, 'Sin perder el resto del motivo.');
+    }
+
+    /**
+     * Un token mas largo que la columna no se guarda ni se intenta guardar.
+     *
+     * Intentarlo es lo peligroso: con `strict` prendido MySQL responde "Data too long" y
+     * Laravel arma el mensaje de la QueryException interpolando los bindings, asi que el
+     * token en claro terminaria en el log del setup y en el cuerpo del 500 que ese endpoint
+     * le devuelve al admin.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_un_token_mas_largo_que_la_columna_no_configura_el_canal()
+    {
+        $token_gigante = str_repeat('z', DemoTrackingConfigHelper::LARGO_MAX_TOKEN + 1);
+
+        $config = DemoTrackingConfigHelper::guardar($token_gigante, 'https://admin.test/api/demo-eventos');
+
+        DemoTrackingConfigHelper::olvidar_cache();
+
+        $this->assertNull($config, 'Un token que no entra en la columna no arma ningun canal.');
+        $this->assertSame(0, DemoTrackingConfig::count(), 'Y no deja ninguna fila.');
+        $this->assertFalse(DemoTrackingConfigHelper::hay_canal());
+    }
+
+    /**
+     * El enmascarado saca el token de cualquier texto que vaya a un log o a una columna.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_el_enmascarado_saca_el_token_de_un_texto_cualquiera()
+    {
+        $this->configurar_canal();
+
+        $mensaje = 'SQLSTATE[22001]: (SQL: insert into demo_tracking_config (eventos_token) values (zz-token-de-prueba-mision-50))';
+
+        $limpio = DemoTrackingConfigHelper::ocultar_token($mensaje);
+
+        $this->assertStringNotContainsString('zz-token-de-prueba-mision-50', $limpio);
+        $this->assertStringContainsString('***', $limpio);
+
+        /** Sin canal configurado no hay nada que ocultar, y el texto tiene que volver igual. */
+        DemoTrackingConfig::query()->delete();
+        DemoTrackingConfigHelper::olvidar_cache();
+
+        $this->assertSame('un texto cualquiera', DemoTrackingConfigHelper::ocultar_token('un texto cualquiera'));
     }
 
     /**

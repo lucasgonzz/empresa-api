@@ -18,6 +18,9 @@ use Illuminate\Support\Facades\Log;
  */
 class DemoTrackingConfigHelper
 {
+    /** Ancho de la columna `eventos_token`. Ver la guarda de guardar(). */
+    const LARGO_MAX_TOKEN = 64;
+
     /**
      * Fila cacheada dentro de este request. Tres estados distintos y los tres importan:
      * null = todavia no se resolvio, false = se resolvio y no hay canal,
@@ -55,6 +58,22 @@ class DemoTrackingConfigHelper
         }
 
         /**
+         * 🔴 Un token mas largo que la columna NO se trunca y NO se intenta guardar.
+         *
+         * Truncarlo dejaria el canal armado con una credencial que el admin va a rechazar
+         * con 401, o sea un canal roto que se ve sano. E intentar el insert es peor: con
+         * `strict` prendido, MySQL responde "Data too long" y Laravel arma el mensaje de la
+         * QueryException interpolando los bindings, asi que el token EN CLARO termina en el
+         * Log::error de DemoSetupController y en el cuerpo del 500 que ese controller le
+         * devuelve al admin. El log de esta excepcion no nombra el token por lo mismo.
+         */
+        if (strlen($token) > self::LARGO_MAX_TOKEN) {
+            Log::error('DemoTrackingConfigHelper: el token del canal vino con ' . strlen($token) . ' caracteres y la columna acepta ' . self::LARGO_MAX_TOKEN . '. No se configura el canal.');
+
+            return null;
+        }
+
+        /**
          * La tabla es de una sola fila. En el flujo real el migrate:fresh ya la dejo
          * vacia, pero se borra igual por si este metodo se llama fuera del setup.
          */
@@ -62,12 +81,59 @@ class DemoTrackingConfigHelper
 
         self::$cache = null;
 
-        return DemoTrackingConfig::create([
-            'eventos_token' => $token,
-            'eventos_url' => $url,
-            'plan' => is_array($plan) ? $plan : null,
-            'media_urls' => is_array($media_urls) ? $media_urls : null,
-        ]);
+        /**
+         * El try/catch existe por el mismo motivo que la guarda de arriba: cualquier fallo
+         * del insert (deadlock, conexion caida, tabla ausente porque la instancia todavia no
+         * migro) trae el token en el mensaje de la excepcion, y ese mensaje sube hasta el
+         * body de la respuesta del setup. Se registra con el token enmascarado y el setup
+         * sigue: quedarse sin canal es un caso previsto; filtrar la credencial, no.
+         */
+        try {
+            return DemoTrackingConfig::create([
+                'eventos_token' => $token,
+                'eventos_url' => $url,
+                'plan' => is_array($plan) ? $plan : null,
+                'media_urls' => is_array($media_urls) ? $media_urls : null,
+            ]);
+        } catch (\Throwable $e) {
+            self::$cache = null;
+
+            Log::error('DemoTrackingConfigHelper: no se pudo guardar la configuracion del canal: ' . self::ocultar_token($e->getMessage(), $token));
+
+            return null;
+        }
+    }
+
+    /**
+     * Reemplaza el token por una marca en cualquier texto que vaya a un log, a una columna
+     * o a una respuesta.
+     *
+     * Hace falta porque hay dos caminos por los que el token vuelve reflejado sin que este
+     * codigo lo haya escrito: el mensaje de una QueryException (Laravel interpola los
+     * bindings) y el cuerpo de la respuesta del admin, que es texto ajeno y puede citar la
+     * key que rechazo.
+     *
+     * @param string $texto
+     * @param string|null $token Token a ocultar. Si no se pasa, se usa el del canal actual.
+     * @return string
+     */
+    public static function ocultar_token($texto, $token = null)
+    {
+        $texto = (string) $texto;
+
+        if (is_null($token)) {
+            $config = self::actual();
+            $token = is_null($config) ? '' : (string) $config->eventos_token;
+        }
+
+        $token = trim((string) $token);
+
+        /** str_replace con aguja vacia no reemplaza nada, pero se corta igual por claridad. */
+        if ($token === '') {
+            return $texto;
+        }
+
+        return str_replace($token, '***', $texto);
     }
 
     /**
@@ -77,7 +143,22 @@ class DemoTrackingConfigHelper
      */
     public static function actual()
     {
-        if (self::$cache === null) {
+        /**
+         * 🔴 En consola NO se cachea, y ese es el punto del cache.
+         *
+         * El cache es "por request", y en PHP-FPM eso se cumple solo porque el proceso se
+         * recicla. Un worker de cola no: `queue:work --stop-when-empty` con
+         * withoutOverlapping(75) puede vivir hasta 75 minutos, y ahi el estatico se
+         * convierte en el cache persistente que el docblock de arriba dice evitar. El caso
+         * concreto: el worker resuelve "no hay canal" a las 10:00, el setup escribe la fila
+         * a las 10:02 (en otro proceso, asi que su olvidar_cache() no llega hasta aca), y a
+         * las 10:08 FinalizeArticleImport no emite importacion.completada — sin una sola
+         * linea de log que lo explique. Era el unico drop 100% silencioso de la mision.
+         *
+         * El costo de no cachear es una query por llamada en consola, y en consola las
+         * llamadas son una por importacion terminada y dos por corrida del barrido.
+         */
+        if (self::$cache === null || app()->runningInConsole()) {
             self::$cache = self::resolver();
         }
 

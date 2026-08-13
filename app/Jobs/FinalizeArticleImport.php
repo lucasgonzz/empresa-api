@@ -71,6 +71,13 @@ class FinalizeArticleImport implements ShouldQueue
             return;
         }
 
+        /**
+         * Se lee ANTES de pisarlo porque lo usa el evento de la demo del final del método:
+         * si ya estaba en 'terminado', esta corrida es un reintento y el import ya se cerró
+         * una vez (misión 50).
+         */
+        $ya_estaba_terminado = $import_history->status === 'terminado';
+
         $import_history->status = 'terminado';
         $import_history->terminado_at = Carbon::now();
 
@@ -82,20 +89,6 @@ class FinalizeArticleImport implements ShouldQueue
         ArticleImportHelper::calcular_matching_counts_total($import_history);
 
         $import_history->save();
-
-        /**
-         * Evento de la demo (mision 50). Se emite ACA y no en AiExcelImportController, que es
-         * donde la mision lo daba por ubicado: ese controller sólo ARRANCA la importación
-         * (InitExcelImport encola los chunks y responde 200 enseguida), así que emitir ahí
-         * reportaría como completada una importación que todavía puede fallar entera. Este job
-         * es el único punto donde el import queda cerrado con éxito y ya no quedan chunks.
-         *
-         * Corre en el worker, sin sesión HTTP, así que acá el emisor sí resuelve la
-         * configuración contra la base: una query por importación terminada, no por request.
-         */
-        DemoEventoEmitter::emitir('importacion.completada', null, [
-            'import_history_id' => $import_history->id,
-        ]);
 
         ArticleImportHelper::enviar_notificacion($user, $import_history);
 

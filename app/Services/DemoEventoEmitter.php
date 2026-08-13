@@ -64,6 +64,12 @@ class DemoEventoEmitter
         'articulo.creado',
         'venta.creada',
         'compra.creada',
+        /**
+         * En la practica este nunca consigue el push inmediato: su unico emisor es
+         * FinalizeArticleImport, que corre en el worker, y ahi programar_flush() no agenda
+         * nada porque no hay respuesta que esperar. Llega por el barrido del minuto. Queda
+         * declarado igual para el dia que se emita desde un request.
+         */
         'importacion.completada',
     ];
 
@@ -91,6 +97,14 @@ class DemoEventoEmitter
      */
     public static function emitir($nombre, $clip_id = null, $datos = [])
     {
+        /**
+         * Se normaliza ANTES del try, no adentro: el catch de abajo concatena $nombre en el
+         * mensaje del log, asi que un $nombre que no sea string haria tirar al propio catch
+         * ("Array to string conversion" sube como ErrorException) y la excepcion escaparia
+         * justo por donde este servicio promete que nunca escapa nada.
+         */
+        $nombre = is_scalar($nombre) ? trim((string) $nombre) : '';
+
         /*
          * Un evento de tracking NO puede romper la operacion que lo produjo. Si esto tira, el lead se
          * queda sin poder crear el articulo — y el articulo es el producto, el evento es la metrica.
@@ -105,7 +119,7 @@ class DemoEventoEmitter
              * NO toca la base. Un request que no viene de una sesion de demo no tiene nada que
              * registrar, y esa condicion se resuelve mirando la sesion y nada mas.
              */
-            if (self::fuera_de_una_sesion_de_demo()) {
+            if (self::fuera_de_una_sesion_de_demo($nombre)) {
                 return null;
             }
 
@@ -113,8 +127,6 @@ class DemoEventoEmitter
             if (!DemoTrackingConfigHelper::hay_canal()) {
                 return null;
             }
-
-            $nombre = trim((string) $nombre);
 
             /**
              * Defensa en profundidad: el endpoint del SPA ya filtra por NOMBRES_UX, pero el
@@ -178,14 +190,24 @@ class DemoEventoEmitter
      * y deja el marcador `demo_ingreso_token_id`, y DemoSessionVigente corta el turno
      * leyendo ese mismo marcador. Entonces una sesion arrancada SIN ese marcador es
      * concluyente: no es una demo. Y eso es todo el trafico del SPA de un cliente real,
-     * que es stateful por cookie (sanctum.stateful), resuelto sin consultar nada.
+     * que es stateful por cookie (`withCredentials` + /sanctum/csrf-cookie), resuelto sin
+     * consultar nada.
      *
-     * Cuando NO hay sesion arrancada no se puede afirmar nada desde aca —es el caso del
-     * worker de cola que cierra una importacion— y decide la guarda 2, que si consulta.
+     * Cuando NO hay sesion arrancada esta guarda NO descarta: devuelve false y decide la
+     * guarda 2, que si consulta. Dos casos caen ahi, y conviene tenerlos escritos:
      *
+     * 1. El worker de cola que cierra una importacion. Una query por importacion terminada.
+     * 2. Un consumidor autenticado por Bearer (Personal Access Token de Sanctum) en vez de
+     *    por cookie. **Hoy no existe ninguno** —no hay un solo createToken() en el repo, y
+     *    el SPA es cookie puro—, pero si mañana se agrega una app movil o una integracion
+     *    que pegue a estos endpoints, va a pagar una query (memoizada por request). O sea
+     *    que el costo cero no lo sostiene esta guarda sola: lo sostiene que el unico
+     *    consumidor autenticado sea stateful.
+     *
+     * @param string $nombre Nombre del evento en curso, solo para que el log sea correlacionable.
      * @return bool true si se puede descartar la demo sin consultar nada.
      */
-    private static function fuera_de_una_sesion_de_demo()
+    private static function fuera_de_una_sesion_de_demo($nombre)
     {
         try {
             $request = request();
@@ -202,7 +224,7 @@ class DemoEventoEmitter
              * segura es "no puedo descartar" y que decida la guarda 2, que tiene su propio
              * try/catch. Ni un camino de este servicio puede dejar de responder.
              */
-            Log::warning('DemoEventoEmitter: no se pudo leer la sesion: ' . $e->getMessage());
+            Log::warning('DemoEventoEmitter: no se pudo leer la sesion al emitir "' . $nombre . '": ' . $e->getMessage());
 
             return false;
         }
@@ -231,8 +253,24 @@ class DemoEventoEmitter
 
         self::$flush_agendado = true;
 
+        /**
+         * 🔴 El try/catch adentro del closure no es redundante con el de flush().
+         *
+         * Este callback corre despues de que la respuesta ya se mando, y public/index.php
+         * NO envuelve $kernel->terminate() en nada. Una excepcion que se escape de aca llega
+         * al handler global, que intenta renderizar una segunda respuesta sobre un socket con
+         * los headers ya enviados: el HTML del error queda pegado al final del JSON que el
+         * usuario ya recibio. O sea, exactamente "el evento de tracking rompio algo visible".
+         *
+         * Que flush() sea total hoy no alcanza: seria una proteccion prestada de otro archivo.
+         * Mismo patron que UserHelper::schedule_company_owner_context_updated_broadcast().
+         */
         app()->terminating(function () {
-            DemoEventosPushHelper::flush();
+            try {
+                DemoEventosPushHelper::flush();
+            } catch (\Throwable $e) {
+                Log::warning('DemoEventoEmitter: fallo el flush posterior a la respuesta: ' . $e->getMessage());
+            }
         });
     }
 

@@ -524,6 +524,15 @@ class ArticleController extends Controller
         }
         $model->save();
         ArticleHelper::setFinalPrice($model);
+
+        /**
+         * El alta rápida desde vender también es un artículo creado (misión 50). Va acá y no
+         * sólo en store() porque este ES el "camino distinto al guiado" que la decisión T4 de
+         * demo_experiencia.md §9 dice que no se puede perder: el lead que arma una venta y
+         * carga el artículo desde ahí hizo la acción igual, y el roadmap tiene que enterarse.
+         */
+        DemoEventoEmitter::emitir('articulo.creado', null, ['id' => $model->id]);
+
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 201);
     }
 

@@ -41,6 +41,14 @@ class DemoEventosPushHelper
     {
         $resumen = ['enviados' => 0, 'sincronizados' => 0, 'fallados' => 0, 'varados' => 0];
 
+        /**
+         * Fuera del try a proposito: el catch de abajo lo necesita para poder cobrarle el
+         * intento al lote que estaba en vuelo cuando algo tiro.
+         *
+         * @var \Illuminate\Support\Collection|null
+         */
+        $pendientes = null;
+
         /*
          * Mismo criterio que el emisor: esto corre en las instancias de los clientes
          * reales (el comando esta en el schedule de todas) y ahi no tiene que hacer nada
@@ -79,7 +87,33 @@ class DemoEventosPushHelper
 
             return $resumen;
         } catch (\Throwable $e) {
-            Log::warning('DemoEventosPushHelper: fallo el flush: ' . $e->getMessage());
+            /**
+             * 🔴 Este catch le cobra el intento al lote, y no es un detalle.
+             *
+             * El caso que lo justifica: el POST sale bien y el admin guarda los eventos, pero
+             * marcar_sincronizados() tira despues (un deadlock contra el insert del emisor de
+             * otro request, una conexion que vencio, una columna que falta por una migracion a
+             * medias). Sin cobrar el intento, esos eventos quedan pendientes con intentos = 0 y
+             * el barrido del minuto los reenvia para siempre: el tope de MAX_INTENTOS no los ve
+             * porque el contador no avanza, y avisar_varados() tampoco, porque filtra por ese
+             * mismo contador. Un reintento infinito que ningun freno de esta clase alcanza.
+             */
+            $cuantos = is_null($pendientes) ? 0 : $pendientes->count();
+
+            Log::warning('DemoEventosPushHelper: fallo el flush con ' . $cuantos . ' evento(s) en vuelo: ' . DemoTrackingConfigHelper::ocultar_token($e->getMessage()));
+
+            if (!is_null($pendientes) && $cuantos > 0) {
+                /** Si lo que tiro fue la base, cobrar el intento tambien tira. Se intenta y listo. */
+                try {
+                    $resumen['fallados'] = self::marcar_fallados(
+                        $pendientes,
+                        'excepcion durante el flush: ' . DemoTrackingConfigHelper::ocultar_token($e->getMessage()),
+                        false
+                    );
+                } catch (\Throwable $e2) {
+                    Log::warning('DemoEventosPushHelper: tampoco se pudo cobrar el intento del lote: ' . $e2->getMessage());
+                }
+            }
 
             return $resumen;
         }
@@ -118,8 +152,17 @@ class DemoEventosPushHelper
                 ->timeout(self::TIMEOUT_SEGUNDOS)
                 ->post($config->eventos_url, ['eventos' => $eventos]);
         } catch (\Throwable $e) {
-            /** Error de red o timeout: el canal puede volver, se reintenta en el proximo flush. */
-            return ['ok' => false, 'error' => 'excepcion: ' . $e->getMessage(), 'definitivo' => false];
+            /**
+             * Error de red o timeout: el canal puede volver, se reintenta en el proximo flush.
+             * El mensaje pasa por el enmascarado porque el de cURL trae la URL completa del
+             * request, y `eventos_url` viene verbatim del payload del admin: si algun dia
+             * emitiera la key en la query string, este log la publicaria.
+             */
+            return [
+                'ok' => false,
+                'error' => 'excepcion: ' . DemoTrackingConfigHelper::ocultar_token($e->getMessage(), $config->eventos_token),
+                'definitivo' => false,
+            ];
         }
 
         if ($respuesta->successful()) {
@@ -137,9 +180,17 @@ class DemoEventosPushHelper
          */
         $definitivo = $status === 401 || $status === 422;
 
+        /**
+         * El cuerpo es texto AJENO y se persiste en `ultimo_error` ademas de loguearse, asi
+         * que pasa por el enmascarado: la forma normal de un 401 es citar la credencial que
+         * rechazo, y ahi el token volveria reflejado y quedaria escrito de este lado.
+         */
         return [
             'ok' => false,
-            'error' => 'status ' . $status . ': ' . substr((string) $respuesta->body(), 0, 500),
+            'error' => 'status ' . $status . ': ' . DemoTrackingConfigHelper::ocultar_token(
+                substr((string) $respuesta->body(), 0, 500),
+                $config->eventos_token
+            ),
             'definitivo' => $definitivo,
         ];
     }

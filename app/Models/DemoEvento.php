@@ -26,6 +26,18 @@ class DemoEvento extends Model
     protected $guarded = [];
 
     /**
+     * `ultimo_error` guarda hasta 500 bytes de la respuesta del admin, o sea texto ajeno.
+     * Va en $hidden por lo mismo que `eventos_token` en DemoTrackingConfig: hoy ningun
+     * endpoint devuelve este modelo, pero tiene scopeWithAll() y por lo tanto esta a un
+     * fullModel() de salir entero por HTTP.
+     *
+     * @var array<int, string>
+     */
+    protected $hidden = [
+        'ultimo_error',
+    ];
+
+    /**
      * @var array<string, string>
      */
     protected $casts = [
