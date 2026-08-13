@@ -206,6 +206,125 @@ class PlanDeLaDemoTest extends TestCase
     }
 
     /**
+     * Crea un evento local, que es de donde sale el progreso para restaurar (mision 52).
+     *
+     * @param string $nombre
+     * @param string|null $clip_id
+     * @param array $datos
+     * @param bool $sincronizado
+     * @return \App\Models\DemoEvento
+     */
+    protected function crear_evento($nombre, $clip_id = null, array $datos = [], $sincronizado = false)
+    {
+        return DemoEvento::create([
+            'uuid'            => 'zz-51-' . uniqid('', true),
+            'nombre'          => $nombre,
+            'clip_id'         => $clip_id,
+            'datos'           => $datos,
+            'ocurrido_at'     => Carbon::now(),
+            'sincronizado_at' => $sincronizado ? Carbon::now() : null,
+            'intentos'        => 0,
+            'ultimo_error'    => null,
+        ]);
+    }
+
+    /**
+     * Sin ningun evento, todos los clips vienen sin marcar y las notas vacias.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_sin_eventos_ningun_clip_esta_visto_y_las_notas_estan_vacias()
+    {
+        $this->configurar_canal();
+
+        $respuesta = $this->como_sesion_de_demo()->getJson('/api/demo/plan');
+
+        $respuesta->assertStatus(200);
+        $this->assertSame('', $respuesta->json('notas'));
+
+        foreach ($respuesta->json('secciones.0.clips') as $clip) {
+            $this->assertFalse($clip['visto'], 'El clip ' . $clip['id'] . ' no deberia estar visto.');
+            $this->assertFalse($clip['abierto'], 'El clip ' . $clip['id'] . ' no deberia estar abierto.');
+        }
+    }
+
+    /**
+     * Un `clip.terminado` marca ESE clip como visto y no los demas.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_un_clip_terminado_marca_solo_ese_clip()
+    {
+        $this->configurar_canal();
+
+        $this->crear_evento('clip.abierto', '1.1');
+        $this->crear_evento('clip.terminado', '1.1');
+
+        $respuesta = $this->como_sesion_de_demo()->getJson('/api/demo/plan');
+
+        $respuesta->assertStatus(200);
+
+        $clips = $respuesta->json('secciones.0.clips');
+
+        $this->assertSame('1.1', $clips[0]['id']);
+        $this->assertTrue($clips[0]['visto'], 'El clip terminado tiene que volver visto.');
+        $this->assertTrue($clips[0]['abierto']);
+
+        $this->assertFalse($clips[1]['visto'], 'Y el otro clip no.');
+        $this->assertFalse($clips[1]['abierto']);
+    }
+
+    /**
+     * Las notas son las del ULTIMO `nota.escrita`: el panel manda el texto completo, no
+     * incrementos, asi que el ultimo evento es el estado actual del campo.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_las_notas_son_las_del_ultimo_evento()
+    {
+        $this->configurar_canal();
+
+        $this->crear_evento('nota.escrita', null, ['texto' => 'primera version']);
+        $this->crear_evento('nota.escrita', null, ['texto' => 'la que vale']);
+
+        $respuesta = $this->como_sesion_de_demo()->getJson('/api/demo/plan');
+
+        $respuesta->assertStatus(200);
+        $this->assertSame('la que vale', $respuesta->json('notas'));
+    }
+
+    /**
+     * 🔴 Un evento sin sincronizar cuenta igual.
+     *
+     * Es la mitad que sostiene la decision de derivar el progreso de la tabla LOCAL: la mision
+     * 50 se construyo para que la demo funcione con el admin caido, y si para restaurar la
+     * pantalla hiciera falta que el admin ya se hubiera enterado, una caida dejaria al lead
+     * mirando de nuevo videos que ya vio.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_un_evento_sin_sincronizar_cuenta_igual()
+    {
+        $this->configurar_canal();
+
+        $evento = $this->crear_evento('clip.terminado', '1.1', [], false);
+
+        $this->assertNull($evento->sincronizado_at, 'El evento tiene que estar pendiente de empuje.');
+
+        $respuesta = $this->como_sesion_de_demo()->getJson('/api/demo/plan');
+
+        $respuesta->assertStatus(200);
+        $this->assertTrue(
+            $respuesta->json('secciones.0.clips.0.visto'),
+            'Con el admin caido el lead igual tiene que recuperar su progreso.'
+        );
+    }
+
+    /**
      * 🔴 EL TEST QUE PROTEGE A LOS 40 CLIENTES REALES.
      *
      * Sin fila de configuracion, el endpoint responde 204 sin pagar NI UNA query y sin

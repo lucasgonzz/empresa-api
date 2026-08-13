@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
+use App\Models\DemoEvento;
 use Illuminate\Http\Request;
 
 /**
@@ -43,9 +44,75 @@ class DemoPlanController extends Controller
             return response(null, 204);
         }
 
+        /* El progreso para restaurar la pantalla se deriva de la tabla LOCAL demo_eventos, no se le
+         * pregunta al admin. Dos motivos, y el segundo es el que manda: (1) el dato ya está acá, porque
+         * todo evento se persiste local antes de empujarse; (2) la misión 50 se construyó explícitamente
+         * para que la demo funcione con el admin caído — hay un test de eso. Si la pantalla del lead
+         * dependiera del admin para saber qué clips ya miró, una caída del admin dejaría al lead mirando
+         * de nuevo videos que ya vio, que es exactamente el momento en que abandona.
+         * El admin sigue siendo la fuente de verdad de lo que MIRA LUCAS (lead_demo_hitos); son los
+         * mismos eventos con dos consumidores distintos. Misión 52. */
+        $progreso = self::progreso_por_clip();
+
         return response()->json([
-            'secciones' => self::secciones_con_urls($config->plan, $config->media_urls),
+            'notas' => self::ultimas_notas(),
+            'secciones' => self::secciones_con_urls($config->plan, $config->media_urls, $progreso),
         ], 200);
+    }
+
+    /**
+     * Estado de cada clip segun los eventos locales, en UNA sola query agrupada.
+     *
+     * No se filtra por `sincronizado_at`: para restaurarle la pantalla al lead da exactamente lo
+     * mismo si el admin ya se entero o no.
+     *
+     * @return array<string, array{abierto:bool, visto:bool}> Mapa clip_id => estado.
+     */
+    private static function progreso_por_clip()
+    {
+        $filas = DemoEvento::select('clip_id', 'nombre')
+            ->whereIn('nombre', ['clip.abierto', 'clip.terminado'])
+            ->whereNotNull('clip_id')
+            ->groupBy('clip_id', 'nombre')
+            ->get();
+
+        $progreso = [];
+
+        foreach ($filas as $fila) {
+            $clip_id = (string) $fila->clip_id;
+
+            if (!isset($progreso[$clip_id])) {
+                $progreso[$clip_id] = ['abierto' => false, 'visto' => false];
+            }
+
+            if ($fila->nombre === 'clip.terminado') {
+                $progreso[$clip_id]['visto'] = true;
+            } else {
+                $progreso[$clip_id]['abierto'] = true;
+            }
+        }
+
+        return $progreso;
+    }
+
+    /**
+     * Texto del ULTIMO `nota.escrita`. El panel manda el texto completo en cada reporte, no
+     * incrementos, asi que el ultimo evento es el estado actual del campo.
+     *
+     * @return string
+     */
+    private static function ultimas_notas()
+    {
+        $evento = DemoEvento::where('nombre', 'nota.escrita')
+            ->orderBy('ocurrido_at', 'DESC')
+            ->orderBy('id', 'DESC')
+            ->first();
+
+        if (is_null($evento) || !is_array($evento->datos) || !isset($evento->datos['texto'])) {
+            return '';
+        }
+
+        return (string) $evento->datos['texto'];
     }
 
     /**
@@ -57,9 +124,10 @@ class DemoPlanController extends Controller
      *
      * @param array $plan Plan congelado tal como lo dejo el admin (mision 48).
      * @param array|null $media_urls Mapa slot_id => url.
+     * @param array $progreso Mapa clip_id => estado, de progreso_por_clip() (mision 52).
      * @return array
      */
-    private static function secciones_con_urls(array $plan, $media_urls)
+    private static function secciones_con_urls(array $plan, $media_urls, array $progreso = [])
     {
         $urls = is_array($media_urls) ? $media_urls : [];
 
@@ -92,6 +160,9 @@ class DemoPlanController extends Controller
                     'url' => isset($urls[$clip_id]) && trim((string) $urls[$clip_id]) !== ''
                         ? (string) $urls[$clip_id]
                         : null,
+                    /** Estado restaurado (mision 52). Sin eventos, los dos en false. */
+                    'abierto' => isset($progreso[$clip_id]) ? $progreso[$clip_id]['abierto'] : false,
+                    'visto' => isset($progreso[$clip_id]) ? $progreso[$clip_id]['visto'] : false,
                 ];
             }
 
