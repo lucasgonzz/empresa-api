@@ -49,6 +49,15 @@ class DemoEventosPushHelper
          */
         $pendientes = null;
 
+        /**
+         * Idem: el catch lo usa para enmascarar sin volver a preguntarle a la base cual era
+         * el token. Si lo que tiro FUE la base, resolverlo de nuevo devolveria null y el
+         * mensaje saldria sin enmascarar, que es justo cuando mas importa que no.
+         *
+         * @var string
+         */
+        $token = '';
+
         /*
          * Mismo criterio que el emisor: esto corre en las instancias de los clientes
          * reales (el comando esta en el schedule de todas) y ahi no tiene que hacer nada
@@ -60,6 +69,7 @@ class DemoEventosPushHelper
             }
 
             $config = DemoTrackingConfigHelper::actual();
+            $token = (string) $config->eventos_token;
 
             $pendientes = DemoEvento::whereNull('sincronizado_at')
                 ->where('intentos', '<', self::MAX_INTENTOS)
@@ -100,14 +110,14 @@ class DemoEventosPushHelper
              */
             $cuantos = is_null($pendientes) ? 0 : $pendientes->count();
 
-            Log::warning('DemoEventosPushHelper: fallo el flush con ' . $cuantos . ' evento(s) en vuelo: ' . DemoTrackingConfigHelper::ocultar_token($e->getMessage()));
+            Log::warning('DemoEventosPushHelper: fallo el flush con ' . $cuantos . ' evento(s) en vuelo: ' . DemoTrackingConfigHelper::ocultar_token($e->getMessage(), $token));
 
             if (!is_null($pendientes) && $cuantos > 0) {
                 /** Si lo que tiro fue la base, cobrar el intento tambien tira. Se intenta y listo. */
                 try {
                     $resumen['fallados'] = self::marcar_fallados(
                         $pendientes,
-                        'excepcion durante el flush: ' . DemoTrackingConfigHelper::ocultar_token($e->getMessage()),
+                        'excepcion durante el flush: ' . DemoTrackingConfigHelper::ocultar_token($e->getMessage(), $token),
                         false
                     );
                 } catch (\Throwable $e2) {
