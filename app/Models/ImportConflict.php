@@ -7,14 +7,24 @@ use Illuminate\Database\Eloquent\Model;
 /**
  * Fila de un Excel de importación que quedó reportada en el resultado de la
  * importación: identificador ambiguo, placeholder descartado, fila sin
- * identificador, o fila sobrescrita por otra posterior con el mismo
- * identificador ("última fila gana").
+ * identificador, fila sobrescrita por otra posterior con el mismo
+ * identificador ("última fila gana"), valor numérico inválido o fuera de rango,
+ * identificador único que no se pudo asignar, o columna de precio ignorada.
  *
  * `fila_ganadora` (prompt 03, grupo 265) solo se usa con `tipo = 'fila_sobrescrita'`:
  * `fila` es el número de la fila que PERDIÓ (la que quedó pisada), `fila_ganadora`
  * es la fila que GANÓ (la que prevalece). Para el resto de los tipos queda null.
- * A diferencia de los demás tipos, 'fila_sobrescrita' NO representa una fila que
- * no se pudo procesar (se resolvió bien) y por eso no suma a `conflicts_count`.
+ *
+ * Tipos vigentes:
+ *   ambiguo, placeholder_descartado, sin_identificador, numero_invalido,
+ *   numero_fuera_de_rango, identificador_sin_asignar, fila_sobrescrita,
+ *   columna_de_precio_ignorada.
+ *
+ * DOS de esos tipos NO representan una fila que no se pudo procesar y por eso no
+ * suman a `conflicts_count`: 'fila_sobrescrita' (la repetición se resolvió bien) y
+ * 'columna_de_precio_ignorada' (misión 44: la fila se aplicó entera menos la columna
+ * de precio que el artículo no usa, porque se maneja por la otra). Ver
+ * ActualizarBBDD::persistir_conflictos().
  *
  * Se persiste en bloque (insert masivo) al cerrar cada chunk de importación
  * desde ActualizarBBDD::persistir_conflictos(). Ver ProcessRow::get_conflictos().

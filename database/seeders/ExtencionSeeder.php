@@ -451,6 +451,14 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Crear artículos desde vender',
                 'slug' => 'crear_articulos_desde_vender',
             ],
+            [
+                /**
+                 * El nombre dice "en VENDER" a propósito: en el admin convive con el permiso
+                 * homónimo "Personalizar nombre del articulo" y sin esa marca son indistinguibles.
+                 */
+                'name' => 'Personalizar nombre del articulo en VENDER',
+                'slug' => 'personalizar_nombre_en_vender',
+            ],
 
         ];
         foreach ($extencions as $extencion) {

@@ -2357,12 +2357,18 @@ class ActualizarBBDD {
          * tipo sumara ahí, cualquier Excel con un código repetido mostraría un aviso
          * de error que no corresponde. Se cuenta aparte y se excluye del incremento.
          * NO "arreglar" esto sumándolo de nuevo: es a propósito.
+         *
+         * 'columna_de_precio_ignorada' (misión 44) está en la misma situación por el
+         * mismo motivo: la fila se procesó bien y se aplicó todo menos una columna de
+         * precio, porque el artículo ya se maneja por la otra.
          */
+        $tipos_que_no_cuentan = ['fila_sobrescrita', 'columna_de_precio_ignorada'];
+
         $conflictos_que_cuentan_para_el_historial = 0;
 
         foreach ($conflictos as $c) {
 
-            if ($c['tipo'] !== 'fila_sobrescrita') {
+            if (!in_array($c['tipo'], $tipos_que_no_cuentan, true)) {
                 $conflictos_que_cuentan_para_el_historial++;
             }
 

@@ -10,6 +10,7 @@ use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -190,8 +191,15 @@ class ArticleController extends Controller
         $model->costo_mano_de_obra                = $request->costo_mano_de_obra;
         $model->provider_cost_in_dollars          = $request->provider_cost_in_dollars;
         $model->apply_provider_percentage_gain    = $request->apply_provider_percentage_gain;
-        $model->price                             = $request->price;
-        $model->percentage_gain                   = $request->percentage_gain;
+        /*
+         * Mision 44: un margen o un precio manual que llegan vacios o en cero se guardan
+         * como null. Un percentage_gain = 0 conviviendo con un price cargado es el estado
+         * que dejaba los DOS inputs de la ficha bloqueados y sin salida; normalizarlo aca
+         * es lo que impide que la interfaz lo vuelva a generar. No cambia ningun precio:
+         * sumar 0% y no sumar nada dan el mismo numero.
+         */
+        $model->price                             = CriterioDePrecioHelper::normalizar($request->price);
+        $model->percentage_gain                   = CriterioDePrecioHelper::normalizar($request->percentage_gain);
         $model->percentage_gain_blanco                   = $request->percentage_gain_blanco;
         $model->provider_price_list_id            = $request->provider_price_list_id;
         $model->iva_id                            = $request->iva_id;
@@ -361,10 +369,11 @@ class ArticleController extends Controller
         $model->brand_id                          = $request->brand_id;
         $model->iva_id                            = $request->iva_id;
         $model->aplicar_iva                       = $request->aplicar_iva;
-        $model->percentage_gain                   = $request->percentage_gain;
+        /* Mision 44: mismo criterio que en store(), ver el comentario de alla. */
+        $model->percentage_gain                   = CriterioDePrecioHelper::normalizar($request->percentage_gain);
         $model->percentage_gain_blanco                   = $request->percentage_gain_blanco;
         $model->provider_price_list_id            = $request->provider_price_list_id;
-        $model->price                             = $request->price;
+        $model->price                             = CriterioDePrecioHelper::normalizar($request->price);
         $model->apply_provider_percentage_gain    = $request->apply_provider_percentage_gain;
         // $model->stock                             = $request->stock;
         // $model->stock                             += $request->new_stock;
