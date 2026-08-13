@@ -102,6 +102,28 @@ class FinalizeArticleImport implements ShouldQueue
 
         ArticleIndexCache::limpiar_cache($user->id);
         Log::info('Se limpio cache');
+
+        /**
+         * Evento de la demo (misión 50). Se emite ACÁ y no en AiExcelImportController, que es
+         * donde la misión lo daba por ubicado: ese controller sólo ARRANCA la importación
+         * (InitExcelImport encola los chunks y responde 200 enseguida), así que emitir ahí
+         * reportaría como completada una importación que todavía puede fallar entera.
+         *
+         * Y va al FINAL del handle(), con dos guardas, porque este job se reintenta: tiene
+         * `$tries = 120`, y todo lo que hay arriba —la notificación, el Artisan::call— puede
+         * tirar. Emitiendo en el medio, una notificación fallida reintentaba el job entero y
+         * emitía el evento otra vez con un uuid nuevo, que del lado del admin son dos
+         * importaciones distintas: el uuid hace idempotente el reintento del PUSH, no el de la
+         * emisión. `$ya_estaba_terminado` cubre el reintento que igual llega hasta acá.
+         *
+         * Corre en el worker, sin sesión HTTP, así que el emisor resuelve la configuración
+         * contra la base: una query por importación terminada, no por request.
+         */
+        if (!$ya_estaba_terminado) {
+            DemoEventoEmitter::emitir('importacion.completada', null, [
+                'import_history_id' => $import_history->id,
+            ]);
+        }
     }
 
     /**
