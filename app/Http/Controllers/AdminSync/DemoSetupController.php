@@ -23,6 +23,12 @@ class DemoSetupController extends Controller
      * Requiere como mínimo `business_type`; el resto de campos son opcionales
      * y se interpretan como flags o datos complementarios.
      *
+     * El payload se pasa entero con $request->all(), así que las claves nuevas de la
+     * misión 50 (`demo_eventos_token`, `demo_eventos_url`, `demo_plan`,
+     * `demo_media_urls`) llegan al helper sin necesitar ninguna lista acá. Se dejan
+     * nombradas igual porque este docblock es lo único que documenta el contrato del
+     * endpoint: las cuatro son opcionales y las persiste DemoSetupHelper::run() al final.
+     *
      * @param Request $request
      */
     public function store(Request $request)

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
+use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Models\Address;
 use App\Models\AfipInformation;
@@ -55,7 +56,9 @@ class DemoSetupHelper
      *                                   consultora_de_precios, imagenes, produccion,
      *                                   ask_amount_in_vender, redondear_centenas_en_vender,
      *                                   usan_cuentas_corrientes, ventas_con_fecha_de_entrega,
-     *                                   address_1..3, price_type_1..3
+     *                                   address_1..3, price_type_1..3,
+     *                                   demo_eventos_token, demo_eventos_url, demo_plan,
+     *                                   demo_media_urls (mision 50, las cuatro opcionales)
      *
      * @return User Usuario creado
      */
@@ -137,6 +140,24 @@ class DemoSetupHelper
                 $data['demo_ingreso_token'],
                 $user->id,
                 isset($data['demo_ingreso_token_expira_at']) ? $data['demo_ingreso_token_expira_at'] : null
+            );
+        }
+
+        /**
+         * Canal de eventos de la demo (mision 50). Mismo motivo que el token de ingreso para
+         * guardarlo al final: el migrate:fresh del arranque de este metodo vacia la tabla.
+         *
+         * Las cuatro claves son OPCIONALES. Un payload sin ellas —un lead de la dinamica
+         * anterior, o un admin todavia sin desplegar— deja el setup funcionando exactamente
+         * igual que antes de esta mision: sin fila, no hay canal, y nada de la mision 50 hace
+         * nada en esta instancia.
+         */
+        if (!empty($data['demo_eventos_token']) && !empty($data['demo_eventos_url'])) {
+            DemoTrackingConfigHelper::guardar(
+                $data['demo_eventos_token'],
+                $data['demo_eventos_url'],
+                isset($data['demo_plan']) && is_array($data['demo_plan']) ? $data['demo_plan'] : null,
+                isset($data['demo_media_urls']) && is_array($data['demo_media_urls']) ? $data['demo_media_urls'] : null
             );
         }
 

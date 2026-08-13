@@ -60,6 +60,14 @@ class Kernel extends ConsoleKernel
         // Reintenta cada 5 minutos los mensajes de soporte no sincronizados a admin-api.
         $schedule->command('support:retry-pending-syncs')->everyFiveMinutes();
 
+        // Barrido de los eventos de la demo que quedaron sin empujar al admin (misión 50).
+        // Cada minuto porque el panel del lead lo poléa cada 10 segundos esperando ver el
+        // movimiento en vivo; el push inmediato va por afterResponse y esto es la red de abajo.
+        // En una instancia que no es de demo el comando sale en su primera línea sin hacer nada.
+        $schedule->command('demo:flush-eventos')
+            ->everyMinute()
+            ->withoutOverlapping(5);
+
         // Captura el snapshot de deuda diario (clientes y proveedores) a las 23:59.
         // Registra los saldos actuales de credit_accounts para análisis histórico.
         $schedule->command('debt:snapshot')->dailyAt('23:59');

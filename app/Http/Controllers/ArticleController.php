@@ -43,6 +43,7 @@ use App\Jobs\ProcessSyncArticleToTiendaNube;
 use App\Jobs\SyncProductToMercadoLibre;
 use App\Models\Article;
 use App\Models\PdfColumnProfile;
+use App\Services\DemoEventoEmitter;
 use App\Models\User;
 use App\Services\MercadoLibre\ProductService;
 use App\Services\Pdf\Catalog\CatalogClassic;
@@ -313,6 +314,21 @@ class ArticleController extends Controller
         $inventory_linkage_helper->checkArticle($model);
 
         Log::info('se guardo article con id: '.$model->id);
+
+        /**
+         * Evento de la demo (mision 50). Va del lado del servidor y no del SPA porque desde
+         * el front seria falsificable y, peor, se perderia cuando el lead cree el articulo
+         * por un camino distinto al guiado — que es justo lo que la demo quiere permitir
+         * (decision T4 de demo_experiencia.md §9).
+         *
+         * 🔴 En una instancia de cliente real esto es un no-op de costo cero: la primera
+         * guarda de emitir() mira el marcador de sesion de demo y sale sin tocar la base.
+         * Este endpoint es de los mas calientes del sistema y no puede pagar una query mas.
+         *
+         * Va despues del save() y de todo lo que cuelga de el, con el articulo ya escrito:
+         * un evento emitido antes de que la escritura este confirmada le miente al roadmap.
+         */
+        DemoEventoEmitter::emitir('articulo.creado', null, ['id' => $model->id]);
 
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 201);
     }

@@ -48,6 +48,7 @@ use App\Models\Sale;
 use App\Models\SaleModification;
 use App\Models\User;
 use Carbon\Carbon;
+use App\Services\DemoEventoEmitter;
 use Exception;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -266,6 +267,16 @@ class SaleController extends Controller
              * activa, opt-in (auto_send_sale_pdf) y cliente con teléfono por su cuenta.
              */
             SendSaleWhatsappJob::dispatch($model->id);
+
+            /**
+             * Evento de la demo (mision 50). Igual que el WhatsApp de arriba, va DESPUES del
+             * commit y nunca adentro de la transaccion: un evento emitido dentro de una
+             * transaccion que despues revierte le reporta al roadmap una venta que no existe.
+             *
+             * En una instancia de cliente real no cuesta ni una query: la primera guarda del
+             * emisor mira el marcador de sesion de demo y sale.
+             */
+            DemoEventoEmitter::emitir('venta.creada', null, ['id' => $model->id]);
 
             return response()->json(['model' => $this->fullModel('Sale', $model->id)], 201);
 

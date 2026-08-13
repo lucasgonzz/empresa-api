@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Imports\ProviderOrderArticleImport;
 use App\Jobs\ProcessProviderOrderArticleImport;
 use App\Models\ProviderOrder;
+use App\Services\DemoEventoEmitter;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -92,9 +93,18 @@ class ProviderOrderController extends Controller
 
         $helper->procesar_pedido();
 
+        /**
+         * Evento de la demo (mision 50). Va al final, con la orden ya creada y procesada
+         * (stock y precios incluidos): antes de eso todavia puede tirar y el evento estaria
+         * reportando una compra que no quedo.
+         *
+         * En una instancia de cliente real no cuesta ni una query: la primera guarda del
+         * emisor mira el marcador de sesion de demo y sale.
+         */
+        DemoEventoEmitter::emitir('compra.creada', null, ['id' => $model->id]);
 
         return response()->json(['model' => $this->fullModel('ProviderOrder', $model->id)], 201);
-    }  
+    }
 
     public function show($id) {
         return response()->json(['model' => $this->fullModel('ProviderOrder', $id)], 200);

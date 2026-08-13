@@ -27,6 +27,15 @@ Route::middleware(['auth:sanctum'])->group(function() {
     */
     Route::post('recursos-iniciales', 'RecursosInicialesController@index');
 
+    /*
+        Eventos de UX de la demo (mision 50). Va adentro de este grupo porque el grupo 'api' ya
+        trae DemoSessionVigente, que es el que corta el acceso cuando el turno del lead termino.
+
+        Responde 204 y no 403 cuando la sesion no es de demo: este mismo empresa-spa se despliega
+        en las instancias de los ~40 clientes reales.
+    */
+    Route::post('demo/evento', 'DemoEventoController@store');
+
     // CommonLaravel
     // ----------------------------------------------------------------------------------------------------
     // Generals
