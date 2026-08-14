@@ -64,6 +64,37 @@ class DemoSetupHelper
      */
     public static function run(array $data)
     {
+        /**
+         * POR QUE ESTAS DOS LINEAS, ANTES DE QUE ALGUIEN LAS "LIMPIE":
+         *
+         * Este metodo ARRANCA vaciando la base entera con `migrate:fresh` y despues dispara 52
+         * `db:seed` mas `set_company_performances --historico`. Medido el 14/8/2026 contra una
+         * base virgen, por CLI: 109 segundos, de los cuales 66 son el migrate:fresh, 31,5 los
+         * seeders y 4,5 el set_company_performances. O sea que este metodo se pasa del
+         * max_execution_time con el que corre PHP en casi cualquier servidor web -- el default
+         * que trae PHP de fabrica son 30 segundos.
+         *
+         * - set_time_limit(0): levanta el techo de PHP, y SOLO el de PHP: no toca el
+         *   request_terminate_timeout de FPM ni el read timeout del proxy que haya adelante.
+         *   Mismo patron que ya usa este repo en Exports, Imports y PDFs. Va en el helper y no en
+         *   el controller para que cubra los DOS puntos de entrada, el de AdminSync y el legacy
+         *   de /demo/setup. Comprobado el mismo dia con un control A/B contra `php -S` forzando
+         *   max_execution_time=60: sin esta linea el POST muere con "Maximum execution time of 60
+         *   seconds exceeded" a los 61,66 s; con ella devuelve 200 a los 64,23 s. Ese 60 es un
+         *   valor impuesto para que el control sea reproducible -- la maquina donde se midio
+         *   declara 120 en su php.ini --, asi que el numero no es el techo de ningun servidor en
+         *   particular: lo que prueba el control es que sin la linea el techo mata al request y
+         *   con la linea deja de existir.
+         *
+         * - ignore_user_abort(true): si el cliente HTTP corta antes (timeout de admin-api, red),
+         *   el setup tiene que terminar IGUAL. Cortarlo a mitad no deja la instancia "como
+         *   estaba": la deja con la base vaciada o a medio sembrar, porque lo primero que se
+         *   ejecuta es el migrate:fresh. Una instancia armada de la que el admin no se entero se
+         *   arregla re-consultando; una instancia con la base vacia no se arregla sola.
+         */
+        set_time_limit(0);
+        ignore_user_abort(true);
+
         // `migrate:fresh` resetea la base. Obligatorio dejarlo limpio antes de los seeders.
         Artisan::call('migrate:fresh', ['--force' => true]);
 
