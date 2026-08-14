@@ -8,6 +8,8 @@ use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
 use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
 use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
 use App\Models\ExcelAnalysisRun;
+use App\Models\User;
+use App\Notifications\GlobalNotification;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -126,10 +128,7 @@ class RunExcelAnalysisJob implements ShouldQueue
         $excel_full_path = storage_path('app/' . $run->excel_path);
 
         if (!file_exists($excel_full_path)) {
-            $run->update([
-                'estado' => 'error',
-                'error'  => 'El archivo Excel indicado no existe o ha expirado.',
-            ]);
+            $this->finalizar_con_error($run, 'El archivo Excel indicado no existe o ha expirado.');
             return;
         }
 
@@ -228,6 +227,8 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'codigos_proveedor' => $codigos_proveedor,
             ]);
 
+            $this->notificar_fin($run);
+
         } catch (\RuntimeException $e) {
             /* Mismo caso que antes devolvía 422 con el mensaje propio del analyzer. */
             Log::warning('RunExcelAnalysisJob: error de análisis', [
@@ -235,10 +236,7 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'message'                => $e->getMessage(),
             ]);
 
-            $run->update([
-                'estado' => 'error',
-                'error'  => $e->getMessage(),
-            ]);
+            $this->finalizar_con_error($run, $e->getMessage());
 
         } catch (\Throwable $e) {
             Log::error('RunExcelAnalysisJob: error inesperado', [
@@ -247,10 +245,7 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'trace'                  => $e->getTraceAsString(),
             ]);
 
-            $run->update([
-                'estado' => 'error',
-                'error'  => 'Ocurrió un error inesperado al analizar el archivo: ' . $e->getMessage(),
-            ]);
+            $this->finalizar_con_error($run, 'Ocurrió un error inesperado al analizar el archivo: ' . $e->getMessage());
         }
     }
 
@@ -375,6 +370,8 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'resultado' => $resultado,
             ]);
 
+            $this->notificar_fin($run);
+
         } catch (\RuntimeException $e) {
             /* Mismo caso que antes devolvía 422 con el mensaje propio del analyzer. */
             Log::warning('RunExcelAnalysisJob: error de recomendación', [
@@ -382,10 +379,7 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'message'                => $e->getMessage(),
             ]);
 
-            $run->update([
-                'estado' => 'error',
-                'error'  => $e->getMessage(),
-            ]);
+            $this->finalizar_con_error($run, $e->getMessage());
 
         } catch (\Throwable $e) {
             Log::error('RunExcelAnalysisJob: error inesperado al generar la recomendación', [
@@ -394,9 +388,126 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'trace'                  => $e->getTraceAsString(),
             ]);
 
-            $run->update([
-                'estado' => 'error',
-                'error'  => 'Error inesperado al generar la recomendación: ' . $e->getMessage(),
+            $this->finalizar_con_error($run, 'Error inesperado al generar la recomendación: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Deja la corrida en estado de error y le avisa al usuario.
+     *
+     * Existe para que ninguna de las cinco salidas de error del job pueda
+     * olvidarse del aviso. Mientras el usuario esperaba mirando el modal, un
+     * error simplemente aparecía en pantalla; ahora puede estar en cualquier otra
+     * parte del sistema, y un error sin aviso es una espera infinita.
+     *
+     * @param  \App\Models\ExcelAnalysisRun  $run
+     * @param  string                        $mensaje  Texto legible para el usuario
+     * @return void
+     */
+    protected function finalizar_con_error(ExcelAnalysisRun $run, string $mensaje)
+    {
+        $run->update([
+            'estado' => 'error',
+            'error'  => $mensaje,
+        ]);
+
+        $this->notificar_fin($run);
+    }
+
+    /**
+     * Avisa por broadcast que la corrida terminó (bien o mal).
+     *
+     * El aviso lleva lo mínimo para poder decir "terminó el análisis de tal
+     * archivo" y para saber adónde ir si el usuario quiere verlo: uuid, tipo,
+     * estado y módulo. El resumen del análisis NO viaja acá — se pide recién
+     * cuando el usuario aprieta el botón, que es justamente lo que le permite
+     * ignorar el aviso sin haber pagado nada por él.
+     *
+     * Nunca deja que un problema al notificar tumbe la corrida: el análisis ya
+     * está hecho y guardado, y el usuario lo va a encontrar igual a través de
+     * /analysis-en-curso la próxima vez que cargue la SPA.
+     *
+     * @param  \App\Models\ExcelAnalysisRun  $run
+     * @return void
+     */
+    protected function notificar_fin(ExcelAnalysisRun $run)
+    {
+        /*
+         * Corridas viejas (anteriores a este cambio) no tienen auth_user_id. Sin
+         * ese dato el aviso llegaría a todos los empleados del comercio, así que
+         * preferimos no avisar: el resultado sigue estando y el modal lo levanta
+         * cuando el usuario vuelve a abrirlo.
+         */
+        if (empty($run->auth_user_id)) {
+            return;
+        }
+
+        try {
+            /*
+             * La notificación se emite sobre el canal del owner (así lo hace
+             * GlobalNotification::broadcastOn) y se filtra en el frontend por
+             * is_only_for_auth_user.
+             */
+            $owner = User::find($run->user_id);
+
+            if (is_null($owner)) {
+                return;
+            }
+
+            $presentacion = $run->datos_de_presentacion();
+
+            /* Entre comillas y con nombre si lo tenemos; si no, "el archivo" a secas. */
+            $archivo = $presentacion['original_filename'] !== ''
+                ? '"' . $presentacion['original_filename'] . '"'
+                : 'el archivo';
+
+            $es_recomendacion = $run->tipo === 'recomendacion';
+
+            if ($run->estado === 'listo') {
+                $message_text = $es_recomendacion
+                    ? 'Está lista la recomendación de importación para ' . $archivo
+                    : 'Terminó el análisis de ' . $archivo;
+            } else {
+                $message_text = $es_recomendacion
+                    ? 'No se pudo generar la recomendación para ' . $archivo
+                    : 'No se pudo analizar ' . $archivo;
+            }
+
+            $owner->notify(new GlobalNotification([
+                'message_text'          => $message_text,
+                'color_variant'         => $run->estado === 'listo' ? 'success' : 'danger',
+                /*
+                 * info_to_show y functions_to_execute son el plan B: si el SPA que
+                 * recibe esto todavía no conoce el modal excel_analysis_ready, cae
+                 * en el global-notification genérico, y ahí estos dos campos son lo
+                 * único que se muestra. El aviso queda pobre pero no queda mudo.
+                 */
+                'info_to_show'          => [],
+                'functions_to_execute'  => [
+                    [
+                        'btn_text'      => 'Entendido',
+                        'function_name' => 'close_notification_modal',
+                        'btn_variant'   => 'primary',
+                    ],
+                ],
+                'owner_id'              => $run->user_id,
+                /* Solo para quien subió el Excel, no para todo el comercio. */
+                'is_only_for_auth_user' => $run->auth_user_id,
+                'notification_modal'    => 'excel_analysis_ready',
+                'excel_analysis'        => [
+                    'uuid'              => $run->uuid,
+                    'tipo'              => $run->tipo,
+                    'estado'            => $run->estado,
+                    'error'             => $run->error,
+                    'model'             => $presentacion['model'],
+                    'original_filename' => $presentacion['original_filename'],
+                ],
+            ]));
+
+        } catch (\Throwable $e) {
+            Log::error('RunExcelAnalysisJob: no se pudo notificar el fin de la corrida', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
             ]);
         }
     }
@@ -423,10 +534,7 @@ class RunExcelAnalysisJob implements ShouldQueue
 
         /* Si por alguna carrera rarísima ya quedó "listo", no lo pisamos con error. */
         if (!is_null($run) && $run->estado !== 'listo') {
-            $run->update([
-                'estado' => 'error',
-                'error'  => 'El análisis falló inesperadamente: ' . $exception->getMessage(),
-            ]);
+            $this->finalizar_con_error($run, 'El análisis falló inesperadamente: ' . $exception->getMessage());
         }
     }
 }

@@ -592,9 +592,19 @@ Route::middleware(['auth:sanctum'])->group(function() {
      *  - POST /ai-excel-import/import               : lanza la importación con el mapeo confirmado por el usuario
      *  - POST /ai-excel-import/refresh-provider-stats : recalcula conteos de códigos existentes al cambiar proveedor (sin releer el Excel si ya hay un análisis previo, grupo 291 prompt 03)
      *  - POST /ai-excel-import/get-recomendacion    : encola la recomendación de configuración con el proveedor real confirmado (grupo 291, prompt 03) y devuelve el uuid de la corrida
+     *  - GET  /ai-excel-import/analysis-en-curso    : corrida abierta del usuario (en curso, o terminada y sin ver) para recuperar el hilo tras cerrar la pestaña
+     *  - POST /ai-excel-import/analysis/{uuid}/visto : marca la corrida como vista, para dejar de ofrecerla
      */
     Route::post('/ai-excel-import/analyze', 'AiExcelImportController@analyze');
+    /*
+     * Va ANTES de /analysis/{uuid}: si se declara después, "analysis-en-curso" no
+     * matchea ninguna ruta propia y cae en el patrón de arriba solo si comparten
+     * prefijo — no es el caso acá (son segmentos distintos), pero el orden explícito
+     * evita que un futuro cambio de nombre las haga colisionar en silencio.
+     */
+    Route::get('/ai-excel-import/analysis-en-curso', 'AiExcelImportController@analysisEnCurso');
     Route::get('/ai-excel-import/analysis/{uuid}', 'AiExcelImportController@analysisStatus');
+    Route::post('/ai-excel-import/analysis/{uuid}/visto', 'AiExcelImportController@marcarAnalisisVisto');
     Route::post('/ai-excel-import/import',  'AiExcelImportController@import');
     Route::post('/ai-excel-import/refresh-provider-stats', 'AiExcelImportController@refreshProviderStats');
     Route::post('/ai-excel-import/get-recomendacion', 'AiExcelImportController@getRecomendacion');
