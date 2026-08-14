@@ -36,6 +36,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('previus-day/{model_name}/{index}/{date_param?}', 'CommonLaravel\PreviusDayController@previusDays');
     Route::get('previus-next/{model_name}/{index}', 'CommonLaravel\PreviusNextController@previusNext');
     Route::get('previus-next-index/{model_name}/{id}', 'CommonLaravel\PreviusNextController@getIndexPreviusNext');
+    /* Abre un modelo por id, en una sola request. Reemplaza al par indice + posicion de arriba. */
+    Route::get('previus-next-by-id/{model_name}/{id}', 'CommonLaravel\PreviusNextController@byId');
     Route::put('update/{model_name}', 'CommonLaravel\UpdateController@update');
     Route::put('delete/{model_name}', 'CommonLaravel\DeleteController@delete');
 

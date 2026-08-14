@@ -28,6 +28,42 @@ class PreviusNextController extends Controller
         return response()->json(['model' => null]);
     }
 
+    /**
+     * Devuelve un modelo por su id, scopeado por usuario.
+     *
+     * Existe porque abrir una venta guardada para editarla se hacia con dos requests y ninguna
+     * usaba el id: primero se pedia la POSICION de la venta en el listado ordenado por id DESC y
+     * despues la venta que estaba en esa posicion. Ese segundo paso hace
+     * `withAll()->take($index)->get()`, o sea que para abrir una venta vieja en un comercio con
+     * 35 mil ventas hidrataba miles de ventas completas en una sola request.
+     *
+     * Marca `actualizandose_por_id` igual que previusNext(), que es lo que sostiene el bloqueo de
+     * edicion. NO devuelve `actualizandose_por`: ese chequeo esta inerte desde hace tiempo (el
+     * codigo que lo devolvia esta comentado en getIndexPreviusNext) y activarlo ahora empezaria a
+     * bloquear ventas que no esta editando nadie, por los valores viejos que quedaron en
+     * produccion.
+     *
+     * @param  string  $_model_name
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function byId($_model_name, $id) {
+        $model_name = GeneralHelper::getModelName($_model_name);
+
+        $model = $model_name::where('user_id', UserHelper::userId())
+                        ->where('id', $id)
+                        ->withAll()
+                        ->first();
+
+        if (is_null($model)) {
+            return response()->json(['model' => null]);
+        }
+
+        $this->set_sale_actualizado_por($model, $_model_name);
+
+        return response()->json(['model' => $model]);
+    }
+
     function set_sale_actualizado_por($model, $_model_name) {
         if ($_model_name == 'sale') {
             $model->actualizandose_por_id = $this->userId(false);
