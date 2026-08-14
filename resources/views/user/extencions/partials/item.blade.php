@@ -10,18 +10,25 @@
     $larga = mb_strlen($descripcion) > 220;
 @endphp
 
-<div class="ext" data-buscar="{{ $extencion->name . ' ' . $extencion->slug . ' ' . $descripcion }}">
+<div class="ext">
+    {{--
+        `aria-describedby` apunta al slug y a la descripcion: sin eso, un lector de pantalla
+        anuncia solo el nombre, y hay pares que comparten el nombre visible EXACTO haciendo lo
+        contrario. La mision existe para deshacer esa ambigüedad; dejarla en pie para quien no ve
+        la pantalla seria resolver la mitad del problema.
+    --}}
     <input
         type="checkbox"
         name="extencions[]"
         id="ext-{{ $extencion->id }}"
         value="{{ $extencion->id }}"
         data-original="{{ $marcada ? '1' : '0' }}"
+        aria-describedby="slug-{{ $extencion->id }}{{ $descripcion !== '' ? ' desc-' . $extencion->id : '' }}"
         {{ $marcada ? 'checked' : '' }}
     >
     <div class="ext-cuerpo">
         <label class="ext-nombre" for="ext-{{ $extencion->id }}">{{ $extencion->name }}</label>
-        <div class="ext-slug">{{ $extencion->slug }}</div>
+        <div class="ext-slug" id="slug-{{ $extencion->id }}">{{ $extencion->slug }}</div>
 
         @if($descripcion !== '')
             <div class="ext-desc {{ $larga ? 'recortada' : '' }}" id="desc-{{ $extencion->id }}">{{ $descripcion }}</div>

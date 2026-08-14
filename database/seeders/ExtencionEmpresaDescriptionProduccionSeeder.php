@@ -8,7 +8,14 @@ use Illuminate\Support\Facades\Log;
 /**
  * Misión 54 — el seeder que se corre a mano en las bases de producción que ya existen.
  *
- *   php artisan db:seed --class=ExtencionEmpresaDescriptionProduccionSeeder
+ *   php artisan migrate
+ *   php artisan db:seed --class=ExtencionEmpresaDescriptionProduccionSeeder --force
+ *
+ * Las dos líneas, y en ese orden. La migración primero porque este seeder escribe columnas que
+ * ella crea: sobre una base sin migrar, el primer update corta con `Unknown column 'description'`
+ * y no escribe nada (falla entera, sin dejar la base a medias). Y `--force` porque con
+ * `APP_ENV=production` el comando pide confirmación por teclado, así que sin ese flag y corrido
+ * desde un script termina sin hacer nada y sin decir que no hizo nada.
  *
  * Hace lo mismo que `ExtencionEmpresaDescriptionSeeder` —del que sale el padrón, así que hay un
  * solo lugar donde viven los textos— y agrega lo único que a una base de cliente le importa y a

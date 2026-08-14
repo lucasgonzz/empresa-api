@@ -104,12 +104,118 @@ class Configurador_de_extenciones_Test extends TestCase
      */
     public function la_vista_muestra_la_descripcion_y_el_slug_de_cada_extension()
     {
-        $this->crear_extencion('zz_test_con_descripcion', 'Encendida IMPIDE agregar el articulo sin stock.');
+        $extencion = $this->crear_extencion('zz_test_con_descripcion', 'Encendida IMPIDE agregar el articulo sin stock.');
 
-        $respuesta = $this->get('/extensiones');
+        $html = $this->get('/extensiones')->getContent();
 
-        $respuesta->assertSee('Encendida IMPIDE agregar el articulo sin stock.');
-        $respuesta->assertSee('zz_test_con_descripcion');
+        /*
+         * Con `assertSee` pelado esta aserción no mediría nada: cualquier atributo que repita el
+         * texto —un data-, un title— la deja pasar con el bloque de la descripción borrado, y
+         * mostrar la descripción EN PANTALLA es todo el punto de la misión. Por eso se exige el
+         * texto adentro del div que la muestra.
+         */
+        $this->assertMatchesRegularExpression(
+            '/<div class="ext-desc[^"]*" id="desc-' . $extencion->id . '">\s*Encendida IMPIDE agregar el articulo sin stock\.\s*<\/div>/',
+            $html,
+            'La descripción no está adentro del div que la muestra en pantalla.'
+        );
+
+        $this->assertMatchesRegularExpression(
+            '/<div class="ext-slug" id="slug-' . $extencion->id . '">\s*zz_test_con_descripcion\s*<\/div>/',
+            $html,
+            'El slug no se muestra debajo del nombre.'
+        );
+
+        /* Y la descripción tiene que estar asociada al checkbox, no solo cerca en la pantalla. */
+        $this->assertMatchesRegularExpression(
+            '/id="ext-' . $extencion->id . '"[^>]*aria-describedby="slug-' . $extencion->id . ' desc-' . $extencion->id . '"/',
+            $html,
+            'El checkbox no declara su descripción con aria-describedby: para un lector de pantalla las parecidas siguen siendo indistinguibles.'
+        );
+    }
+
+    /**
+     * Los dos campos ocultos que el controlador necesita tienen que existir en la pantalla.
+     *
+     * Sin esto, los tests que postean `confirmar_quitar` y `volver_a_ruta_propia` a mano se
+     * verifican a sí mismos: si el campo desaparece del formulario la suite queda verde igual, y
+     * desde la pantalla quitar una extensión pasa a ser imposible para siempre —el controlador
+     * rechaza el envío y el aviso pide una confirmación que ya nadie puede dar—.
+     *
+     * @test
+     * @return void
+     */
+    public function el_formulario_trae_los_campos_que_el_controlador_espera()
+    {
+        $this->crear_extencion('zz_test_campos');
+
+        $desde_la_ruta_propia = $this->get('/extensiones')->getContent();
+
+        $this->assertMatchesRegularExpression(
+            '/<input type="hidden" name="confirmar_quitar" id="confirmar_quitar" value="">/',
+            $desde_la_ruta_propia,
+            'Falta el campo confirmar_quitar: sin él, el controlador rechaza todo envío que quite extensiones y no hay forma de confirmarlo.'
+        );
+
+        $this->assertMatchesRegularExpression(
+            '/<input type="hidden" name="volver_a_ruta_propia" value="1">/',
+            $desde_la_ruta_propia,
+            'Falta el campo volver_a_ruta_propia: guardar desde /extensiones va a redirigir a la URL con el id adentro.'
+        );
+
+        /* Y el caso negativo: entrando con el id, ese campo NO tiene que estar. */
+        $desde_la_ruta_vieja = $this->get('/user/extencions/edit/' . $this->user->id)->getContent();
+
+        $this->assertStringNotContainsString(
+            'name="volver_a_ruta_propia"',
+            $desde_la_ruta_vieja,
+            'La ruta con id manda volver_a_ruta_propia: el redirect va a perder el usuario que se estaba editando.'
+        );
+    }
+
+    /**
+     * El formulario agrupa por módulo, en el orden declarado, y no se come las que no tienen
+     * módulo cargado.
+     *
+     * `agrupar_por_modulo()` es la única cosa entre una extensión de la base y el formulario: si
+     * su rama de "módulo desconocido" se rompiera, esas extensiones desaparecerían de la pantalla
+     * sin ningún error — y una extensión que no está en el formulario es una que el comercio no
+     * puede encender.
+     *
+     * @test
+     * @return void
+     */
+    public function agrupa_por_modulo_y_las_que_no_tienen_modulo_no_desaparecen()
+    {
+        $this->crear_extencion('zz_test_en_vender', 'Descripcion.', 'VENDER');
+        $this->crear_extencion('zz_test_en_precios', 'Descripcion.', 'Precios');
+
+        /* Sin módulo: es lo que le pasa a una extensión que el padrón no describe. */
+        $huerfana = ExtencionEmpresa::forceCreate([
+            'name'      => 'Extension zz_test_sin_modulo',
+            'slug'      => 'zz_test_sin_modulo',
+            'en_desuso' => false,
+        ]);
+
+        $html = $this->get('/extensiones')->getContent();
+
+        $this->assertStringContainsString('data-modulo="VENDER"', $html);
+        $this->assertStringContainsString('data-modulo="Precios"', $html);
+        $this->assertStringContainsString('data-modulo="Sin clasificar"', $html);
+
+        /* La huérfana está en el formulario, tildable, y no se perdió en el camino. */
+        $this->assertMatchesRegularExpression('/name="extencions\[\]"[^>]*value="' . $huerfana->id . '"/', $html);
+
+        $posicion_vender  = strpos($html, 'data-modulo="VENDER"');
+        $posicion_precios = strpos($html, 'data-modulo="Precios"');
+        $posicion_sin     = strpos($html, 'data-modulo="Sin clasificar"');
+
+        $this->assertNotFalse($posicion_vender);
+        $this->assertNotFalse($posicion_precios);
+        $this->assertNotFalse($posicion_sin);
+
+        $this->assertLessThan($posicion_precios, $posicion_vender, 'VENDER tiene que ir antes que Precios, como declara ORDEN_MODULOS.');
+        $this->assertLessThan($posicion_sin, $posicion_precios, 'Las sin clasificar van al final del listado.');
     }
 
     /**
@@ -129,8 +235,20 @@ class Configurador_de_extenciones_Test extends TestCase
 
         $html = $respuesta->getContent();
 
-        $this->assertTrue(
-            strpos($html, 'id="detalle-desuso"') < strpos($html, 'Extension zz_test_muerta'),
+        $posicion_seccion = strpos($html, 'id="detalle-desuso"');
+        $posicion_muerta  = strpos($html, 'Extension zz_test_muerta');
+
+        /*
+         * Los assertNotFalse no sobran: `strpos` devuelve false cuando no encuentra, y PHP
+         * compara `false < 5` como booleanos y da verdadero. Sin ellos, renombrar el id de la
+         * sección convierte esta aserción en un no-op permanente que nadie nota.
+         */
+        $this->assertNotFalse($posicion_seccion, 'No está la sección de en desuso en el HTML.');
+        $this->assertNotFalse($posicion_muerta, 'No está la extensión en desuso en el HTML.');
+
+        $this->assertLessThan(
+            $posicion_muerta,
+            $posicion_seccion,
             'La extensión en desuso aparece antes de la sección de en desuso: quedó en el listado principal.'
         );
     }

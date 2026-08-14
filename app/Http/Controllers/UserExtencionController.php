@@ -59,7 +59,7 @@ class UserExtencionController extends Controller
             $user_id = config('app.USER_ID');
         }
 
-        $user = User::find($user_id);
+        $user = $this->buscar_comercio($user_id, $sin_parametro);
 
         $extencions = ExtencionEmpresa::orderBy('name')->get();
 
@@ -102,7 +102,7 @@ class UserExtencionController extends Controller
      */
     public function update(Request $request, $user_id)
     {
-        $user = User::find($user_id);
+        $user = $this->buscar_comercio($user_id, false);
 
         // sincronizamos: las extensiones seleccionadas serán exactamente las que tenga después
         $selected = is_array($request->extencions) ? $request->extencions : [];
@@ -133,6 +133,31 @@ class UserExtencionController extends Controller
         $user->extencions()->sync($selected);
 
         return $volver_a->with('success', 'Extensiones actualizadas correctamente.');
+    }
+
+    /**
+     * El comercio, o un 404 con el motivo escrito.
+     *
+     * Sin esto la pantalla contesta un fatal (`Call to a member function extencions() on null`),
+     * y con la ruta corta el caso dejó de ser teórico: `/extensiones` resuelve el id desde
+     * `config('app.USER_ID')`, así que un `.env` sin `USER_ID` o apuntando a un usuario borrado
+     * rompe la ruta nueva sin decir por qué.
+     *
+     * @param  int|null  $user_id
+     * @param  bool  $sin_parametro  si el id salió de la config en vez de la URL
+     * @return \App\Models\User
+     */
+    private function buscar_comercio($user_id, $sin_parametro)
+    {
+        $user = User::find($user_id);
+
+        if (is_null($user)) {
+            abort(404, $sin_parametro
+                ? 'No existe el usuario ' . var_export($user_id, true) . ' que declara USER_ID en el .env.'
+                : 'No existe el usuario ' . var_export($user_id, true) . '.');
+        }
+
+        return $user;
     }
 
     /**

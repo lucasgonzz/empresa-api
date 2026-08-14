@@ -47,7 +47,11 @@ class ExtencionEmpresaDescriptionSeeder extends Seeder
      * cuenta las filas CAMBIADAS, así que una segunda corrida devolvería cero para todas y
      * parecería que la base no tiene ninguna extensión.
      *
-     * @return array{actualizadas: int, faltantes: array}
+     * Idempotente en los valores, con una sola salvedad: `update()` pisa `updated_at` de las
+     * filas que toca. Nada lee esa columna para extensiones, pero "correrlo dos veces deja la
+     * base igual" vale para el contenido, no para la marca de tiempo.
+     *
+     * @return array  con las claves `actualizadas` (int) y `faltantes` (array de slugs)
      */
     public function aplicar()
     {
@@ -102,6 +106,19 @@ class ExtencionEmpresaDescriptionSeeder extends Seeder
      * `en_desuso` en true son las que ese trabajo dejó con `estado: sin_uso`, o sea las que
      * ningún código lee. Eran once y no las cinco que la misión 54 anticipaba: a las cinco sin
      * referencias se sumaron seis que el rastreo automático contaba como vivas.
+     *
+     * 🔴 SON 91, PERO NO SON LOS MISMOS 91 QUE TIENE EL CATÁLOGO. La coincidencia del número
+     * tapa dos huecos que se compensan, y conviene saberlos antes de leer "91 de 91":
+     *
+     *  - `unidades_individuales_en_articulos` está en el padrón y NO existe como fila: su
+     *    entrada de `ExtencionSeeder` está comentada. El seeder la reporta como faltante.
+     *  - `duplicar_presupuestos` existe como fila (la siembra `ExtencionDuplicarPresupuestosSeeder`,
+     *    llamado desde `DatabaseSeeder`) y NO está en el padrón: la misión 53 no le escribió
+     *    entrada. Queda con `description` en null, que es lo que corresponde — inventarle una
+     *    descripción plausible es lo que ese trabajo se prohibió a sí mismo. Ficha:
+     *    `prompts/hallazgos/20260813-duplicar-presupuestos-quedo-sin-entrada-en-el-padron-de-la-53.json`.
+     *
+     * O sea que la cobertura real sobre una base sembrada es 90 de 91.
      *
      * @return array
      */

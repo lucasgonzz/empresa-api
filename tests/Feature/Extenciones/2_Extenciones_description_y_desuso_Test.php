@@ -6,6 +6,7 @@ use App\Models\ExtencionEmpresa;
 use App\Models\User;
 use Database\Seeders\ExtencionEmpresaDescriptionSeeder;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\Artisan;
 use Tests\TestCase;
 
 /**
@@ -18,8 +19,10 @@ use Tests\TestCase;
  * producción y no hay forma de darse cuenta sin que el cliente llame.
  *
  * DatabaseTransactions y no RefreshDatabase: la base de testing del slot está sembrada de antes y
- * un refresh la vaciaría. Las filas testigo se siembran acá adentro porque `extencion_empresas`
- * puede estar vacía en la base de un slot — medido, lo está.
+ * un refresh la vaciaría. Las filas testigo se siembran acá adentro y el `setUp` borra sus slugs
+ * primero, porque el catálogo de la base de un slot puede estar vacío o completo según cuándo se
+ * mire —los dos casos se dieron el 13/8/2026, en la misma base y con horas de diferencia— y una
+ * aserción que solo vale en uno de los dos estados es una que va a fallar sin que nada esté roto.
  */
 class Extenciones_description_y_desuso_Test extends TestCase
 {
@@ -191,7 +194,8 @@ class Extenciones_description_y_desuso_Test extends TestCase
         $this->assertEquals($total_antes, ExtencionEmpresa::count(), 'El seeder creó o borró filas del catálogo.');
         $this->assertEquals(1, ExtencionEmpresa::where('slug', self::SLUG_VIVA)->count(), 'El seeder duplicó la extensión.');
 
-        $this->assertEquals(
+        /* Canonicalizing: el orden que devuelve el pivote no es parte de lo que se está midiendo. */
+        $this->assertEqualsCanonicalizing(
             $asignadas_antes,
             $user->extencions()->pluck('extencion_empresa_user.extencion_empresa_id')->toArray(),
             'El seeder cambió las extensiones asignadas al comercio.'
@@ -206,6 +210,10 @@ class Extenciones_description_y_desuso_Test extends TestCase
      * El seeder de producción reporta las dos direcciones del desfasaje, que es lo único que
      * agrega sobre el de las bases nuevas.
      *
+     * El reporte SE ASSERTA sobre la salida real del comando: es lo que Lucas va a leer cuando
+     * lo corra en la base de un cliente, y si no se mide, se puede borrar entero sin que la
+     * suite se entere.
+     *
      * @test
      * @return void
      */
@@ -213,6 +221,7 @@ class Extenciones_description_y_desuso_Test extends TestCase
     {
         $this->sembrar(self::SLUG_VIVA);
 
+        /* En la base pero no en el padrón: queda sin descripción, a propósito. */
         ExtencionEmpresa::forceCreate([
             'name' => 'Testigo ajeno al padron (solo test)',
             'slug' => 'testigo_ajeno_al_padron_del_test',
@@ -223,10 +232,29 @@ class Extenciones_description_y_desuso_Test extends TestCase
         $this->assertContains('testigo_ajeno_al_padron_del_test', $sin_descripcion);
         $this->assertNotContains(self::SLUG_VIVA, $sin_descripcion);
 
-        /* Y corre sin explotar sobre una base a la que le falta casi todo el catálogo. */
-        $this->artisan('db:seed', [
+        /*
+         * En el padrón pero no en la base: el setUp borró SLUG_EN_DESUSO, así que el seeder la
+         * tiene que reportar como faltante en vez de crearla.
+         */
+        $resultado = (new ExtencionEmpresaDescriptionSeeder())->aplicar();
+
+        $this->assertContains(self::SLUG_EN_DESUSO, $resultado['faltantes']);
+        $this->assertNotContains(self::SLUG_VIVA, $resultado['faltantes']);
+        $this->assertGreaterThan(0, $resultado['actualizadas']);
+
+        /* Y ahora el reporte que imprime el comando, que es el motivo de que este seeder exista. */
+        Artisan::call('db:seed', [
             '--class' => 'Database\Seeders\ExtencionEmpresaDescriptionProduccionSeeder',
-        ])->assertExitCode(0);
+            '--force' => true,
+        ]);
+
+        $salida = Artisan::output();
+
+        $this->assertStringContainsString('Extensiones actualizadas:', $salida);
+        $this->assertStringContainsString('Del padron, no estan en esta base: ', $salida);
+        $this->assertStringContainsString(self::SLUG_EN_DESUSO, $salida);
+        $this->assertStringContainsString('En esta base, sin descripcion en el padron: ', $salida);
+        $this->assertStringContainsString('testigo_ajeno_al_padron_del_test', $salida);
 
         $this->assertNotEmpty(ExtencionEmpresa::where('slug', self::SLUG_VIVA)->first()->description);
     }

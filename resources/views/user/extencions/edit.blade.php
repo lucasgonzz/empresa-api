@@ -20,7 +20,13 @@
             background-color: #f0f2f5;
             font-family: Arial, sans-serif;
             margin: 0;
-            padding: 0 0 90px 0;
+            /*
+             * El hueco de abajo tiene que ser mayor que la barra fija, que en teléfono se apila
+             * en dos filas y mide ~86px. Van 130 y no 90: el alto real de la barra depende del
+             * tamaño de fuente, y con el escalado de accesibilidad del sistema al 130% la barra
+             * crece y con 90 tapaba la última extensión de la lista.
+             */
+            padding: 0 0 130px 0;
             color: #333;
         }
 
@@ -116,12 +122,26 @@
             border-bottom: 2px solid #e5e7eb;
         }
 
+        /* #64748b y no #94a3b8: aquel da 2,56:1 sobre blanco y AA pide 4,5:1. */
         .modulo > h2 .cuenta {
             font-weight: normal;
             text-transform: none;
             letter-spacing: 0;
-            color: #94a3b8;
+            color: #64748b;
             font-size: 13px;
+        }
+
+        /* Visible para un lector de pantalla, invisible en la pantalla. */
+        .visualmente-oculto {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
         }
 
         /* --- una extensión --- */
@@ -183,7 +203,7 @@
 
         .ext-sin-desc {
             font-size: 13px;
-            color: #94a3b8;
+            color: #64748b;
             font-style: italic;
             margin: 4px 0 0;
         }
@@ -329,13 +349,15 @@
             <input type="hidden" name="confirmar_quitar" id="confirmar_quitar" value="">
 
             <div class="buscador">
+                <label class="visualmente-oculto" for="buscador">Buscar extensiones</label>
                 <input
                     type="text"
                     id="buscador"
                     autocomplete="off"
                     placeholder="Buscar por nombre, slug o descripción..."
                 >
-                <div class="resultado-busqueda" id="resultado-busqueda"></div>
+                {{-- aria-live: el resultado lo escribe el javascript y si no se anuncia, no existe. --}}
+                <div class="resultado-busqueda" id="resultado-busqueda" role="status" aria-live="polite"></div>
             </div>
 
             @foreach ($grupos as $modulo => $del_modulo)
@@ -371,7 +393,7 @@
 
             <div class="barra">
                 <div class="barra-interna">
-                    <span class="contador" id="contador"></span>
+                    <span class="contador" id="contador" role="status" aria-live="polite"></span>
                     <button type="submit" class="guardar">Guardar extenciones</button>
                 </div>
             </div>
@@ -387,18 +409,37 @@
         var contador   = document.getElementById('contador');
         var sinResult  = document.getElementById('sin-resultados');
         var detalle    = document.getElementById('detalle-desuso');
+        var resumen    = detalle ? detalle.querySelector('summary') : null;
         var items      = Array.prototype.slice.call(document.querySelectorAll('.ext'));
         var total      = items.length;
+        var totalDesuso = detalle ? detalle.querySelectorAll('.ext').length : 0;
 
         /* Sin acentos y en minúscula, para que "produccion" encuentre "Producción". */
         function normalizar(texto) {
             return texto.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
         }
 
-        /* El índice se arma una vez: buscar sobre el DOM en cada tecla con 91 items se nota. */
-        items.forEach(function (item) {
-            item.indiceBusqueda = normalizar(item.getAttribute('data-buscar') || '');
-        });
+        function textoDe(item, selector) {
+            var nodo = item.querySelector(selector);
+            return nodo ? nodo.textContent : '';
+        }
+
+        /*
+         * El índice se arma una vez: recorrer el DOM en cada tecla con 100 items se nota. Se lee
+         * del texto que ya está en pantalla y no de un atributo con el texto repetido, porque
+         * duplicar 91 descripciones de hasta 2470 caracteres son ~160 KB de HTML de más en una
+         * página que también se abre en teléfono.
+         */
+        function armarIndice() {
+            items.forEach(function (item) {
+                item.indiceBusqueda = normalizar(
+                    textoDe(item, '.ext-nombre') + ' ' + textoDe(item, '.ext-slug') + ' ' + textoDe(item, '.ext-desc')
+                );
+            });
+        }
+
+        /* Cuál era el texto de búsqueda cuando la sección de en desuso se abrió sola. */
+        var textoQueAbrioDesuso = null;
 
         function actualizarContador() {
             var encendidas = form.querySelectorAll('input[name="extencions[]"]:checked').length;
@@ -446,9 +487,26 @@
 
                 detalle.style.display = (texto !== '' && enDesusoVisibles === 0) ? 'none' : '';
 
-                /* Si lo buscado solo está entre las en desuso, se abre solo: si no, parece que no hay nada. */
-                if (texto !== '' && enDesusoVisibles > 0) {
+                if (resumen) {
+                    resumen.textContent = (texto === '' || enDesusoVisibles === totalDesuso)
+                        ? 'En desuso (' + totalDesuso + ')'
+                        : 'En desuso (' + enDesusoVisibles + ' de ' + totalDesuso + ')';
+                }
+
+                /*
+                 * Si lo buscado solo está entre las en desuso, la sección se abre sola: si no,
+                 * la búsqueda parece vacía. Se abre una vez por texto, así que el usuario la
+                 * puede volver a cerrar sin que la próxima tecla se la reabra; y al limpiar la
+                 * búsqueda se cierra, pero solo si la habíamos abierto nosotros.
+                 */
+                if (texto === '') {
+                    if (textoQueAbrioDesuso !== null) {
+                        detalle.open = false;
+                        textoQueAbrioDesuso = null;
+                    }
+                } else if (enDesusoVisibles > 0 && textoQueAbrioDesuso !== texto) {
                     detalle.open = true;
+                    textoQueAbrioDesuso = texto;
                 }
             }
 
@@ -462,7 +520,36 @@
             sinResult.style.display = visibles === 0 ? 'block' : 'none';
         }
 
-        buscador.addEventListener('input', filtrar);
+        /*
+         * 🔴 El buscador se arma adentro de un try, y a propósito. El listener de submit —la
+         * confirmación de quita— se registra MÁS ABAJO, y es lo único que le da salida al
+         * usuario cuando el controlador rechaza un envío que saca extensiones. Si el armado del
+         * índice explotara en un navegador sin `String.prototype.normalize`, sin este try se
+         * llevaría puesto ese listener y quitar una extensión pasaría a ser imposible desde la
+         * pantalla, con el aviso pidiendo para siempre una confirmación que ya nadie puede dar.
+         */
+        try {
+            armarIndice();
+            buscador.addEventListener('input', filtrar);
+
+            /*
+             * Enter en el buscador NO guarda. Es un input de texto en un form con un solo botón
+             * de submit, así que por default dispara el envío: en una pantalla cuyo control
+             * principal es el buscador, Enter es el gesto natural para "buscar" y terminaría
+             * guardando sin que nadie lo pidiera.
+             */
+            buscador.addEventListener('keydown', function (evento) {
+                if (evento.key === 'Enter' || evento.keyCode === 13) {
+                    evento.preventDefault();
+                }
+            });
+        } catch (error) {
+            if (window.console) {
+                window.console.error('El buscador de extensiones no pudo iniciarse:', error);
+            }
+            buscador.disabled = true;
+            buscador.placeholder = 'El buscador no funciona en este navegador';
+        }
 
         form.addEventListener('change', function (evento) {
             if (evento.target && evento.target.name === 'extencions[]') {
