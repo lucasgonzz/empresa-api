@@ -715,13 +715,27 @@ class SaleHelper extends Controller {
     }
 
     static function create_current_acount($sale) {
-        if (!is_null($sale->client_id) 
-            && $sale->save_current_acount
-            && !$sale->omitir_en_cuenta_corriente) {
-            
+        if (!is_null($sale->client_id)
+            && Self::va_a_volver_a_la_cuenta_corriente($sale)) {
+
             $helper = new CurrentAcountFromSaleHelper($sale);
             $helper->crear_current_acount();
         }
+    }
+
+    /**
+     * Si la venta corresponde a la cuenta corriente del cliente.
+     *
+     * Son las dos condiciones que create_current_acount() ya usaba, extraidas para que
+     * updateCurrentAcountsAndCommissions() pueda preguntarlo ANTES de borrar el movimiento y
+     * dejar el rastro. Que la decision viva en un solo lugar es justamente lo que evita que el
+     * borrado y la recreacion dejen de estar de acuerdo, que es lo que pasaba en el bug.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @return bool
+     */
+    static function va_a_volver_a_la_cuenta_corriente($sale) {
+        return (bool) ($sale->save_current_acount && !$sale->omitir_en_cuenta_corriente);
     }
 
     static function crear_comision($sale) {
@@ -1047,6 +1061,32 @@ class SaleHelper extends Controller {
     }
 
     static function updateCurrentAcountsAndCommissions($sale) {
+
+        /*
+            Se evalua ANTES de borrar si la venta va a volver a la cuenta corriente, con las
+            mismas dos condiciones que decide create_current_acount(). El comportamiento no
+            cambia -una venta que el usuario paso a omitida tiene que salir de la cuenta
+            corriente-, lo que se gana es el rastro: el bug de San Cayetano (mision 56) saco
+            ventas de la cuenta corriente de sus clientes y no dejo una sola linea en ningun lado,
+            porque el borrado y la no-recreacion son dos pasos que por separado parecen correctos.
+        */
+        if (!is_null($sale->client_id) && !Self::va_a_volver_a_la_cuenta_corriente($sale)) {
+
+            $current_acount_previa = CurrentAcount::where('sale_id', $sale->id)
+                                            ->whereNull('haber')
+                                            ->first();
+
+            if (!is_null($current_acount_previa)) {
+
+                Log::info(
+                    'SaleHelper: la venta '.$sale->id.' SALE de la cuenta corriente del cliente '
+                    .$sale->client_id.'. Motivo: '
+                    .($sale->omitir_en_cuenta_corriente ? 'omitir_en_cuenta_corriente' : 'save_current_acount')
+                    .' vino en '.var_export($sale->omitir_en_cuenta_corriente ? $sale->omitir_en_cuenta_corriente : $sale->save_current_acount, true)
+                    .'. Se borra el movimiento '.$current_acount_previa->id.' y no se recrea.'
+                );
+            }
+        }
 
         Self::deleteCurrentAcountFromSale($sale);
         Self::deleteSellerCommissionsFromSale($sale);

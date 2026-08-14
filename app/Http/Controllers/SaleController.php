@@ -339,8 +339,16 @@ class SaleController extends Controller
             
             $model->surchages_in_services               = $request->surchages_in_services;
             
-            $model->current_acount_payment_method_id    = $request->current_acount_payment_method_id;
-            
+            /*
+                Solo si el request manda la clave. A secas, un payload que no la incluye la deja
+                en null y la venta cambia de comportamiento sin que nadie la haya tocado. Mismo
+                patron que dias_alerta_venta_no_cobrada_personalizado, mas abajo en esta funcion.
+                Un null explicito enviado por el front sigue siendo un valor valido y se asigna.
+            */
+            if ($request->exists('current_acount_payment_method_id')) {
+                $model->current_acount_payment_method_id = $request->current_acount_payment_method_id;
+            }
+
             $model->afip_information_id                 = $request->afip_information_id;
             
             $model->address_id                          = $request->address_id;
@@ -358,8 +366,15 @@ class SaleController extends Controller
             
             $model->client_id                           = $request->client_id;
             
-            $model->omitir_en_cuenta_corriente          = $request->omitir_en_cuenta_corriente;
-            
+            /*
+                Idem: sin la guarda, un request que no manda la clave deja el campo en null, la
+                venta pasa a "no omitida" y SaleHelper la mete en la cuenta corriente del cliente
+                sin que nadie lo haya pedido. Es el campo del bug de San Cayetano.
+            */
+            if ($request->exists('omitir_en_cuenta_corriente')) {
+                $model->omitir_en_cuenta_corriente = $request->omitir_en_cuenta_corriente;
+            }
+
             $model->numero_orden_de_compra              = $request->numero_orden_de_compra;
             
             $model->seller_id                           = $request->seller_id;
