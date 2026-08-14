@@ -54,6 +54,14 @@ class Abrir_venta_por_id_Test extends TestCase
     {
         $otro = User::find(self::USER_ID)->replicate();
         $otro->email = 'zz_test_otro_comercio_mision_55@ejemplo.test';
+
+        /*
+         * `articles_export_key` es el único índice único de `users` además de la PK, y
+         * `replicate()` lo copia. Hoy no choca porque en la base del slot está en null, pero el
+         * día que se llene este test —el único que mide el scope por comercio— pasaría a fallar
+         * por una violación de índice y no por lo que mide.
+         */
+        $otro->articles_export_key = null;
         $otro->save();
 
         return $otro;
@@ -167,7 +175,7 @@ class Abrir_venta_por_id_Test extends TestCase
      * @test
      * @return void
      */
-    public function un_precio_guardado_en_cero_llega_como_cero()
+    public function un_precio_guardado_en_cero_llega_como_el_string_decimal_y_no_como_null()
     {
         $venta = $this->crear_venta();
         $this->enganchar_articulo($venta, 0);
@@ -176,7 +184,34 @@ class Abrir_venta_por_id_Test extends TestCase
 
         $this->assertNotNull($linea);
         $this->assertNotNull($linea['pivot']['price'], 'El precio 0 llegó como null.');
-        $this->assertEquals(0, (float) $linea['pivot']['price']);
+
+        /*
+         * assertSame sobre el string y no un cast a float: el TIPO es el dato. La columna es
+         * decimal y PDO la devuelve como string, así que lo que llega al front es "0.00", que en
+         * javascript es truthy. Eso importa porque la misión 55 daba por sentado lo contrario —
+         * que un 0 falsy hacía caer la línea al precio actual del artículo—, y con un cast a
+         * float esta aserción taparía justamente el dato que lo refuta. Si algún día el precio
+         * empieza a llegar como número, este test se pone en rojo y avisa que la premisa cambió.
+         */
+        $this->assertSame('0.00', $linea['pivot']['price'], 'El precio del pivot dejó de llegar como string decimal.');
+    }
+
+    /**
+     * La ruta exige autenticación. Es barato y es lo único que protege de que alguien la mueva
+     * fuera del grupo de `auth:sanctum` sin darse cuenta: sin auth, devolvería ventas de un
+     * comercio a cualquiera que sepa un id.
+     *
+     * @group sales
+     * @test
+     * @return void
+     */
+    public function la_ruta_exige_autenticacion()
+    {
+        $venta = $this->crear_venta();
+
+        $respuesta = $this->getJson('api/previus-next-by-id/sale/' . $venta->id);
+
+        $respuesta->assertStatus(401);
     }
 
     /**
@@ -225,12 +260,36 @@ class Abrir_venta_por_id_Test extends TestCase
     {
         $venta = $this->crear_venta(self::USER_ID, ['actualizandose_por_id' => null]);
 
+        /*
+         * Se le pone una fecha vieja a mano. Si se dejara la de creación, el request corre en el
+         * mismo segundo y las dos fechas darían iguales aunque Eloquent hubiera tocado la
+         * columna: la aserción de abajo pasaría siempre, midiendo nada. Medido: con este update
+         * la aserción se pone en rojo al sacar `timestamps = false`; sin él, no.
+         */
+        DB::table('sales')->where('id', $venta->id)->update(['updated_at' => '2020-01-01 00:00:00']);
+
+        $updated_at_antes = Sale::find($venta->id)->updated_at;
+
         $this->pedir_venta($venta->id);
+
+        $venta_despues = Sale::find($venta->id);
 
         $this->assertEquals(
             self::USER_ID,
-            Sale::find($venta->id)->actualizandose_por_id,
+            $venta_despues->actualizandose_por_id,
             'No quedó marcado actualizandose_por_id: el bloqueo de edición concurrente dejaría de funcionar.'
+        );
+
+        /*
+         * La otra mitad del "igual que antes": el endpoint escribe con `timestamps = false`, así
+         * que abrir una venta para mirarla no puede cambiarle la fecha de modificación. Sin esta
+         * aserción, sacar esa línea deja los otros tests en verde y ensucia el dato que Lucas usa
+         * para saber cuándo se tocó una venta.
+         */
+        $this->assertEquals(
+            (string) $updated_at_antes,
+            (string) $venta_despues->updated_at,
+            'Abrir la venta le movió updated_at: el endpoint dejó de escribir con timestamps = false.'
         );
     }
 }
