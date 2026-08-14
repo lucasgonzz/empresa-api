@@ -1078,11 +1078,23 @@ class SaleHelper extends Controller {
 
             if (!is_null($current_acount_previa)) {
 
+                /*
+                    Los dos motivos, no uno: pueden darse a la vez, y el log de una venta que se
+                    fue de la cuenta corriente se lee justamente para entender por que.
+                */
+                $motivos = [];
+
+                if ($sale->omitir_en_cuenta_corriente) {
+                    $motivos[] = 'omitir_en_cuenta_corriente vino en '.var_export($sale->omitir_en_cuenta_corriente, true);
+                }
+
+                if (!$sale->save_current_acount) {
+                    $motivos[] = 'save_current_acount vino en '.var_export($sale->save_current_acount, true);
+                }
+
                 Log::info(
                     'SaleHelper: la venta '.$sale->id.' SALE de la cuenta corriente del cliente '
-                    .$sale->client_id.'. Motivo: '
-                    .($sale->omitir_en_cuenta_corriente ? 'omitir_en_cuenta_corriente' : 'save_current_acount')
-                    .' vino en '.var_export($sale->omitir_en_cuenta_corriente ? $sale->omitir_en_cuenta_corriente : $sale->save_current_acount, true)
+                    .$sale->client_id.'. Motivo: '.implode(' y ', $motivos)
                     .'. Se borra el movimiento '.$current_acount_previa->id.' y no se recrea.'
                 );
             }

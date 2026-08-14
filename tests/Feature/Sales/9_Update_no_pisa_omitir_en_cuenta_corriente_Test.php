@@ -3,6 +3,9 @@
 namespace Tests\Feature\Sales;
 
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Models\Client;
+use App\Models\CreditAccount;
+use App\Models\CurrentAcount;
 use App\Models\Sale;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
@@ -34,6 +37,21 @@ class Update_no_pisa_omitir_en_cuenta_corriente_Test extends TestCase
     const USER_ID = 500;
 
     /**
+     * El cliente de las pruebas. Se toma uno real de la base del comercio: la cuenta corriente
+     * cuelga del cliente, así que sin cliente no hay nada que medir.
+     *
+     * @return \App\Models\Client
+     */
+    protected function cliente()
+    {
+        $cliente = Client::where('user_id', self::USER_ID)->first();
+
+        $this->assertNotNull($cliente, 'La base de testing no tiene ningún cliente del user 500.');
+
+        return $cliente;
+    }
+
+    /**
      * Crea una venta que va a la cuenta corriente del cliente: no omitida y con
      * `save_current_acount`.
      *
@@ -42,9 +60,16 @@ class Update_no_pisa_omitir_en_cuenta_corriente_Test extends TestCase
      */
     protected function crear_venta_en_cuenta_corriente($overrides = [])
     {
+        /*
+         * Con cliente, y no es un detalle: `SaleController::update()` solo llama a
+         * `updateCurrentAcountsAndCommissions()` si la venta tiene `client_id`, y
+         * `create_current_acount()` exige lo mismo. Una venta sin cliente no puede estar en
+         * ninguna cuenta corriente, así que estos tests no ejercitarían nada de lo que la misión
+         * toca en `SaleHelper`.
+         */
         return Sale::create(array_merge([
             'user_id'                    => self::USER_ID,
-            'client_id'                  => null,
+            'client_id'                  => $this->cliente()->id,
             'omitir_en_cuenta_corriente' => 0,
             'save_current_acount'        => 1,
             'terminada'                  => 1,
@@ -64,13 +89,16 @@ class Update_no_pisa_omitir_en_cuenta_corriente_Test extends TestCase
     protected function payload($sale)
     {
         /*
-         * Los cuatro campos de abajo van porque `update()` los asigna a secas desde el request y
-         * son NOT NULL en la tabla: sin ellos el update revienta con una violación de integridad.
+         * `discounts_in_services`, `surchages_in_services`, `to_check`, `checked` y `confirmed`
+         * van porque `update()` los asigna a secas desde el request y son NOT NULL en la tabla:
+         * sin ellos el update revienta con una violación de integridad.
          * Es el mismo patrón que esta misión arregla para `omitir_en_cuenta_corriente` y
          * `current_acount_payment_method_id`, salvo que estos fallan ruidosamente en vez de
          * pisar el dato en silencio. Ver el hallazgo del INFORME.
          */
         return [
+            'client_id'              => $sale->client_id,
+            'save_current_acount'    => $sale->save_current_acount,
             'items'                  => [],
             'discounts'              => [],
             'surchages'              => [],
@@ -86,6 +114,60 @@ class Update_no_pisa_omitir_en_cuenta_corriente_Test extends TestCase
     }
 
     /**
+     * La cuenta del cliente para la moneda de la venta, creándola si no está.
+     *
+     * 🔴 Tiene que existir ANTES de cualquier update que deje la venta en la cuenta corriente:
+     * `CurrentAcountFromSaleHelper::__construct()` la busca y `crear_current_acount()` usa
+     * `$this->credit_account->id` sin chequear null, así que sin ella el update responde 500 con
+     * "Trying to get property 'id' of non-object". Eso es un bug real y preexistente —queda
+     * fichado como hallazgo—, pero acá lo que se está midiendo es otra cosa, así que se siembra.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @return \App\Models\CreditAccount
+     */
+    protected function credit_account_del_cliente($sale)
+    {
+        return CreditAccount::firstOrCreate(
+            [
+                'model_name' => 'client',
+                'model_id'   => $sale->client_id,
+                'moneda_id'  => $sale->moneda_id ? $sale->moneda_id : 1,
+            ],
+            [
+                'user_id' => self::USER_ID,
+            ]
+        );
+    }
+
+    /**
+     * Le siembra a la venta el movimiento de cuenta corriente que tendría si hubiera ido a la
+     * cuenta del cliente.
+     *
+     * Se inserta a mano en vez de dejar que lo cree el flujo de alta: lo que estos tests miden es
+     * qué le pasa a ese movimiento en el UPDATE, y sembrarlo hace explícito el estado del que se
+     * parte. La forma —`whereNull('haber')` y `sale_id`— es la que usan tanto el borrado como la
+     * consulta del log.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @return \App\Models\CurrentAcount
+     */
+    protected function sembrar_movimiento_de_cuenta_corriente($sale)
+    {
+        $credit_account = $this->credit_account_del_cliente($sale);
+
+        return CurrentAcount::create([
+            'user_id'           => self::USER_ID,
+            'client_id'         => $sale->client_id,
+            'sale_id'           => $sale->id,
+            'credit_account_id' => $credit_account->id,
+            'debe'              => $sale->total,
+            'haber'             => null,
+            'saldo'             => $sale->total,
+            'detalle'           => 'Movimiento sembrado por el test de la misión 56',
+        ]);
+    }
+
+    /**
      * Hace el update y exige que haya guardado.
      *
      * El assertStatus no es decorativo: sin él, los tests de "no cambia" quedarían en verde por
@@ -97,6 +179,12 @@ class Update_no_pisa_omitir_en_cuenta_corriente_Test extends TestCase
      */
     protected function actualizar($sale, $extra = [])
     {
+        /*
+         * La cuenta del cliente tiene que existir antes: si la venta queda en la cuenta corriente,
+         * el update la recrea y revienta sin ella. Ver credit_account_del_cliente().
+         */
+        $this->credit_account_del_cliente($sale);
+
         $respuesta = $this->put('api/sale/' . $sale->id, array_merge($this->payload($sale), $extra));
 
         $respuesta->assertStatus(200);
@@ -126,10 +214,76 @@ class Update_no_pisa_omitir_en_cuenta_corriente_Test extends TestCase
 
         $this->actualizar($venta);
 
+        $guardado = Sale::find($venta->id)->omitir_en_cuenta_corriente;
+
+        /*
+         * El assertNotNull va primero y no sobra: la columna es nullable, y sin la guarda del
+         * controlador el campo queda en NULL — que casteado a int da 0 y dejaría este test en
+         * verde con el bug puesto. Es el test que lleva el rótulo del caso, así que tiene que
+         * distinguir "sigue en 0" de "quedó en null".
+         */
+        $this->assertNotNull($guardado, 'El campo quedó en NULL: el request sin la clave lo pisó.');
         $this->assertSame(
             0,
-            (int) Sale::find($venta->id)->omitir_en_cuenta_corriente,
+            (int) $guardado,
             'Un request sin la clave le cambió omitir_en_cuenta_corriente a la venta.'
+        );
+    }
+
+    /**
+     * 🔴 El comportamiento que la misión NO quiere cambiar: una venta que el usuario pasa a
+     * omitida tiene que salir de la cuenta corriente del cliente.
+     *
+     * Es el test que ejercita `updateCurrentAcountsAndCommissions()` de verdad —con cliente, que
+     * es lo que el controlador exige para llamarlo— y por lo tanto el bloque de log nuevo.
+     *
+     * @group sales
+     * @test
+     * @return void
+     */
+    public function pasar_una_venta_a_omitida_la_saca_de_la_cuenta_corriente()
+    {
+        $venta = $this->crear_venta_en_cuenta_corriente(['omitir_en_cuenta_corriente' => 0]);
+
+        $this->sembrar_movimiento_de_cuenta_corriente($venta);
+
+        $this->actualizar($venta, ['omitir_en_cuenta_corriente' => 1]);
+
+        /*
+         * Se cuenta si la venta tiene movimiento, no si sobrevivió UNO en particular: el update
+         * borra y recrea, así que el id cambia aunque la venta siga en la cuenta corriente.
+         */
+        $this->assertSame(
+            0,
+            CurrentAcount::where('sale_id', $venta->id)->whereNull('haber')->count(),
+            'La venta pasó a omitida y siguió con movimiento de cuenta corriente: cambió el comportamiento.'
+        );
+    }
+
+    /**
+     * Y el inverso, que es el bug: un update que no manda la clave no puede sacar la venta de la
+     * cuenta corriente.
+     *
+     * @group sales
+     * @test
+     * @return void
+     */
+    public function un_update_sin_la_clave_deja_la_venta_en_la_cuenta_corriente()
+    {
+        $venta = $this->crear_venta_en_cuenta_corriente(['omitir_en_cuenta_corriente' => 0]);
+
+        $this->sembrar_movimiento_de_cuenta_corriente($venta);
+
+        $this->actualizar($venta);
+
+        /*
+         * Mismo criterio que el test de arriba: lo que importa es que la venta SIGA teniendo un
+         * movimiento, no que sea el mismo objeto. El update borra y recrea, así que el id cambia.
+         */
+        $this->assertSame(
+            1,
+            CurrentAcount::where('sale_id', $venta->id)->whereNull('haber')->count(),
+            'Un update que no manda omitir_en_cuenta_corriente sacó la venta de la cuenta corriente del cliente.'
         );
     }
 
