@@ -12,20 +12,37 @@ class PreviusNextController extends Controller
 
     function previusNext($_model_name, $index) {
         $model_name = GeneralHelper::getModelName($_model_name);
-        $models = $model_name::where('user_id', UserHelper::userId())
+        $index = (int) $index;
+
+        $count = $model_name::where('user_id', UserHelper::userId())->count();
+
+        if ($count < 1 || $index < 1) {
+            return response()->json(['model' => null]);
+        }
+
+        /*
+            El min() es a proposito y conserva la semantica que habia antes: la consulta anterior
+            hacia take($index)->get() y se quedaba con el ultimo, asi que cuando $index superaba el
+            total devolvia todos los modelos y el ultimo era el mas viejo. Topando el offset en
+            $count se devuelve exactamente ese mismo modelo, pero trayendo uno solo hidratado en vez
+            de miles (San Cayetano va por el remito n° 35.364 y la request se moria).
+        */
+        $offset = min($index, $count) - 1;
+
+        $model = $model_name::where('user_id', UserHelper::userId())
                         ->withAll()
                         ->orderBy('id', 'DESC')
-                        ->take($index)
-                        ->get();
-        if (count($models) >= 1) {
-            $model = $models[count($models)-1];
+                        ->skip($offset)
+                        ->take(1)
+                        ->first();
 
-            $this->set_sale_actualizado_por($model, $_model_name);
-            
-            return response()->json(['model' => $model]);
-
+        if (is_null($model)) {
+            return response()->json(['model' => null]);
         }
-        return response()->json(['model' => null]);
+
+        $this->set_sale_actualizado_por($model, $_model_name);
+
+        return response()->json(['model' => $model]);
     }
 
     function set_sale_actualizado_por($model, $_model_name) {
