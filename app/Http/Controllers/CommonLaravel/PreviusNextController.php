@@ -14,8 +14,22 @@ class PreviusNextController extends Controller
         $model_name = GeneralHelper::getModelName($_model_name);
         $index = (int) $index;
 
+        /*
+            El count() va sin withAll() a proposito, y eso es correcto mientras se cumpla este
+            invariante: ningun scopeWithAll del proyecto filtra filas (son with() y withCount(),
+            sin joins ni wheres). Si alguna vez a un withAll se le agrega un whereHas, el conteo y
+            la consulta de abajo se desincronizan y el offset devuelve el modelo equivocado en
+            silencio: ahi hay que agregarle el withAll() tambien a este count().
+        */
         $count = $model_name::where('user_id', UserHelper::userId())->count();
 
+        /*
+            Con $index < 1 se devuelve model null. Ojo con el caso de un $index negativo: la
+            version anterior no devolvia null sino el modelo mas viejo, porque Builder::limit()
+            descarta los valores negativos y la consulta salia sin LIMIT, trayendo la tabla
+            entera. Es justo el caso que esta tarea vino a eliminar, y el front nunca pide un
+            indice negativo (lo toma de previus-next-index/sale/{id}, que cuenta filas).
+        */
         if ($count < 1 || $index < 1) {
             return response()->json(['model' => null]);
         }

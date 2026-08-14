@@ -62,7 +62,11 @@ class Previus_next_venta_Test extends TestCase
      */
     protected function venta_esperada_con_la_consulta_vieja($index)
     {
+        // select('id') a proposito: es la unica columna que se compara y evita que el test
+        // reproduzca justamente la carga que la tarea 04 vino a sacar (traer N ventas enteras
+        // para quedarse con una).
         $models = Sale::where('user_id', 500)
+                    ->select('id')
                     ->orderBy('id', 'DESC')
                     ->take($index)
                     ->get();
@@ -166,7 +170,47 @@ class Previus_next_venta_Test extends TestCase
         $response = $this->get('api/previus-next/sale/0');
 
         $response->assertStatus(200);
-        $response->assertJsonPath('model', null);
+        // assertExactJson y no assertJsonPath: este ultimo tambien pasaria si la clave 'model'
+        // directamente no viniera en la respuesta.
+        $response->assertExactJson(['model' => null]);
+    }
+
+    /**
+     * El endpoint tiene que seguir devolviendo la venta con todas sus relaciones cargadas
+     * (scopeWithAll). Sin esta asercion, sacar el withAll() del controlador dejaria al front
+     * sin cliente, sin articulos y sin descuentos, y los otros tests seguirian en verde
+     * porque solo miran el id.
+     *
+     * @group ventas-previus-next
+     * @group sales
+     * @test
+     */
+    public function la_venta_viene_con_las_relaciones_cargadas()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->actingAs($user, 'web');
+
+        $this->crear_venta();
+
+        $response = $this->get('api/previus-next/sale/1');
+
+        $response->assertStatus(200);
+        $response->assertJsonStructure([
+            'model' => [
+                'id',
+                'articles',
+                'combos',
+                'services',
+                'discounts',
+                'surchages',
+                'current_acount_payment_methods',
+                'afip_tickets',
+                'sale_modifications_count',
+            ],
+        ]);
     }
 
     /**
