@@ -34,6 +34,8 @@ class DatabaseSeeder extends Seeder
             $this->call(ExtencionDuplicarPresupuestosSeeder::class);
             $this->call(ExtencionEnviarMailClientesSeeder::class);
             $this->call(ExtencionCrearArticulosDesdeVenderSeeder::class);
+            /* Misión 54: describe las extensiones recién sembradas. Esta rama no pasa por common_seeders(). */
+            $this->call(ExtencionEmpresaDescriptionSeeder::class);
             $this->call(PermissionSeeder::class);
             // $this->call(FeaturesSeeder::class);
             // $this->call(PlansSeeder::class);
@@ -350,6 +352,13 @@ class DatabaseSeeder extends Seeder
         $this->call(PdfColumnProfileSeeder::class);
         $this->call(PdfColumnProfileComisionesSeeder::class);
         $this->call(InputsSizeSeeder::class);
+
+        /*
+         * Va ÚLTIMO a propósito (misión 54): no inserta extensiones, le escribe la descripción,
+         * el módulo y el marcado de desuso a las que ya insertaron los seeders de arriba. Si se
+         * lo llamara antes, las que se siembran después quedarían sin describir.
+         */
+        $this->call(ExtencionEmpresaDescriptionSeeder::class);
     }
 
     function article_variants() {

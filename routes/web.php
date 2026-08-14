@@ -246,6 +246,11 @@ Route::post('/demo-setup', 'DemoSetupController@setup')->name('demo.setup');
 Route::get('/user-setup', 'UserSetupController@form')->name('user.form');
 Route::post('/user-setup', 'UserSetupController@setup')->name('user.setup');
 
+/*
+ * Ruta corta al configurador de extensiones del usuario de config('app.USER_ID') (misión 54).
+ * La de abajo se mantiene porque acepta {user_id} y esa forma se sigue necesitando.
+ */
+Route::get('/extensiones', 'UserExtencionController@edit')->name('extensiones');
 Route::get('/user/extencions/edit/{user_id?}', 'UserExtencionController@edit')->name('users.extencions.edit');
 Route::post('/users/{user_id}/extencions', 'UserExtencionController@update')->name('users.extencions.update');
 
