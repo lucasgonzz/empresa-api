@@ -221,20 +221,44 @@ class DemoSetupHelper
          *    emisor, y no se agrega ni una query. La guarda de adentro del emisor existe igual,
          *    pero no se paga ni siquiera esa.
          *
-         * 4. La clave de idempotencia sale del token del canal, que es el identificador del
-         *    lead del lado del admin (no viaja lead_id). Con eso, dos corridas del setup contra
-         *    el MISMO canal dejan una sola fila en vez de dos avisos del mismo hecho: el uuid
-         *    del evento pasa a ser un uuid v5 determinista sobre esa clave y choca contra el
-         *    indice unico. Pasa de verdad — admin-api reintenta el RunDemoSetupJob cuando la
-         *    respuesta HTTP se corta, que es exactamente el escenario que este evento viene a
-         *    cubrir. El token no queda expuesto por esto: la clave se digiere en el uuid v5 y
-         *    no se persiste ni se loguea en ningun lado.
+         * 4. La clave de idempotencia sale del token del canal, que es el identificador del lead
+         *    del lado del admin (no viaja lead_id): dos corridas del setup contra el MISMO canal
+         *    dejarian una sola fila, porque el uuid pasa a ser un uuid v5 determinista sobre esa
+         *    clave y choca contra el indice unico.
+         *
+         *    🔴 SINCERIDAD SOBRE ESTA CLAVE, para que nadie la defienda con un motivo falso ni la
+         *    saque por el motivo equivocado: hoy NO tiene ningun escenario activo que la dispare.
+         *    Se necesitan dos corridas del setup compartiendo canal, y eso no puede pasar --
+         *    `RunDemoSetupJob` de admin-api declara `$tries = 1`, la llamada HTTP de la dinamica
+         *    nueva va con `retry(1)`, y sobre todo `emitir_token_de_ingreso()` REGENERA
+         *    `demo_eventos_token` en cada corrida, asi que dos corridas nunca comparten canal.
+         *    Encima el `migrate:fresh` del arranque de este metodo vacia `demo_eventos`.
+         *    Queda igual, y a proposito, porque es defensa en profundidad de costo cero contra un
+         *    cambio futuro del otro lado (que vuelvan los reintentos, o que el token deje de
+         *    rotar), y porque la alternativa -- un uuid aleatorio -- no es mas simple. Lo que NO
+         *    hay que hacer es escribir que "admin-api reintenta y por eso hace falta": es
+         *    mentira, y era lo que decia este comentario hasta que la verificacion cruzada del
+         *    14/8/2026 fue a leer la otra punta.
+         *
+         *    El token no queda expuesto: la clave se digiere en el uuid v5 y no se persiste ni se
+         *    loguea en ningun lado.
          *
          * 5. `datos` lleva el user_id del user demo y NADA mas, igual que el resto de los
          *    eventos de negocio. El admin no necesita el resto y lo que no viaja no se filtra.
          *
-         * El envio no le agrega tiempo al POST que el admin esta esperando: el emisor agenda
-         * el push en app()->terminating(), o sea despues de que este request ya respondio.
+         * Sobre el tiempo: el emisor agenda el push en app()->terminating(), o sea despues de que
+         * este request ya respondio. Bajo mod_php, `Response::send()` no suelta la conexion antes
+         * de los `terminating` (no existe `fastcgi_finish_request`), asi que en el peor caso esto
+         * le suma el timeout del push -- 5 segundos -- al POST que el admin esta esperando. Contra
+         * el techo de 300 segundos de ese POST es irrelevante, pero no es literalmente cero y
+         * conviene no escribir que lo es.
+         *
+         * Y una limitacion que vale conocer: por el punto de entrada LEGACY (`/demo/setup`, del
+         * grupo `web`) este aviso no sale nunca, porque ahi hay sesion arrancada sin marcador de
+         * demo y la guarda 1 del emisor descarta. No importa en la practica -- ese formulario
+         * manual no manda `demo_eventos_token`, asi que `$canal` queda null y ni se llega al
+         * emisor --, pero no confundirlo con el cherry-pick de mas arriba, que si cubre los dos
+         * puntos de entrada.
          */
         if (!is_null($canal)) {
             DemoEventoEmitter::emitir(

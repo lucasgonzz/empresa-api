@@ -55,7 +55,7 @@ class DemoEventoEmitter
          * Lo emite DemoSetupHelper::run() al terminar de armar la instancia, y es el unico
          * evento del catalogo que NO nace de una accion del lead: nace del propio setup.
          *
-         * Existe porque hasta la mision 61 el admin se enteraba de que el setup salio bien
+         * Existe porque hasta la mision cruzada demo-v2 el admin se enteraba de que el setup salio bien
          * SOLO por la respuesta HTTP del POST que el mismo dispara, sincronica y de hasta
          * 300 s. Si esa conexion se corta con el setup terminando bien de este lado, el lead
          * queda marcado `fallido` con la instancia perfectamente armada y nunca le aparece el

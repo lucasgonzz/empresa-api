@@ -12,7 +12,7 @@ use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
- * El aviso de vuelta "la instancia quedo armada" (mision 61).
+ * El aviso de vuelta "la instancia quedo armada" (mision cruzada demo-v2-conexion-admin-empresa, 14/8/2026).
  *
  * Hasta esta mision, el admin se enteraba de que el setup salio bien SOLO por la respuesta
  * HTTP del POST que el mismo dispara, sincronica y de hasta 300 s. Si esa conexion se corta
@@ -269,9 +269,14 @@ class AvisoDeSetupCompletadoTest extends TestCase
     /**
      * Caso 3: dos corridas del setup contra el MISMO canal dejan una sola fila.
      *
-     * No es hipotetico: admin-api reintenta el RunDemoSetupJob cuando la respuesta HTTP se
-     * corta, que es exactamente el escenario que este evento viene a cubrir. Sin la clave de
-     * idempotencia, el reintento le avisa al admin dos veces del mismo hecho.
+     * 🔴 Es un caso HIPOTETICO hoy, y hay que decirlo para no defender la clave de idempotencia
+     * con un motivo falso. Con el diseno actual dos corridas nunca comparten canal:
+     * `emitir_token_de_ingreso()` de admin-api regenera `demo_eventos_token` en cada corrida,
+     * `RunDemoSetupJob` declara `$tries = 1`, y el `migrate:fresh` del setup vacia `demo_eventos`.
+     * Lo que este caso protege es la propiedad del emisor -- que la clave produzca un uuid
+     * determinista y choque contra el indice unico -- para el dia que alguna de esas tres cosas
+     * cambie del otro lado. El comentario anterior afirmaba que admin-api reintentaba el job; lo
+     * desmintio la verificacion cruzada del 14/8/2026 leyendo el archivo de la otra punta.
      *
      * @group demo
      * @return void
