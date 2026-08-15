@@ -51,11 +51,12 @@ class AddressController extends Controller
         $model->city                  = $request->city;
         $model->province              = $request->province;
         $model->default_address       = $request->default_address;
-        // Solo si el request trae la clave: el ABM sin la extensión de
-        // sugerencias no la manda, y no debe pisar una designación existente
-        // (mismo criterio de guard que usar_condicion_fiscal_en_costeo en
-        // UserController@update).
-        if ($request->has('es_deposito_origen')) {
+        // Solo si el request trae la clave CON valor: el ABM sin la extensión de
+        // sugerencias no la manda, y no debe pisar una designación existente.
+        // El !is_null es la otra mitad del criterio (el mismo de
+        // usar_condicion_fiscal_en_costeo en UserController@update): sin él, un
+        // payload con la clave en null des-designa el depósito en silencio.
+        if ($request->has('es_deposito_origen') && !is_null($request->es_deposito_origen)) {
             $model->es_deposito_origen = (bool) $request->es_deposito_origen;
         }
         // afip_information por defecto de la sucursal, usado para resolver

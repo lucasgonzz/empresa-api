@@ -365,4 +365,46 @@ class Endpoint_viejo_dueno_y_reintento_Test extends TestCase
             'Sin credenciales no puede quedar un pendiente eterno que la vista pollee sin fin.'
         );
     }
+
+    /**
+     * El guard del PUT de sucursales exige clave CON valor: un payload que
+     * traiga es_deposito_origen en null (un cliente API viejo reenviando el
+     * modelo entero) no puede des-designar el depósito en silencio.
+     *
+     * @group sugerencias-stock
+     * @test
+     */
+    public function el_put_de_sucursal_con_null_no_desdesigna_el_deposito()
+    {
+        $this->origen->es_deposito_origen = true;
+        $this->origen->save();
+
+        $payload_base = [
+            'street'        => $this->origen->street,
+            'street_number' => $this->origen->street_number,
+            'city'          => $this->origen->city,
+            'province'      => $this->origen->province,
+        ];
+
+        // Clave en null: la designación queda como estaba.
+        $this->putJson('api/address/' . $this->origen->id, $payload_base + [
+            'es_deposito_origen' => null,
+        ])->assertStatus(200);
+        $this->assertTrue((bool) $this->origen->fresh()->es_deposito_origen);
+
+        // Clave ausente (ABM sin la extensión): tampoco cambia.
+        $this->putJson('api/address/' . $this->origen->id, $payload_base)->assertStatus(200);
+        $this->assertTrue((bool) $this->origen->fresh()->es_deposito_origen);
+
+        // Clave con valor explícito: sí cambia, en los dos sentidos.
+        $this->putJson('api/address/' . $this->origen->id, $payload_base + [
+            'es_deposito_origen' => false,
+        ])->assertStatus(200);
+        $this->assertFalse((bool) $this->origen->fresh()->es_deposito_origen);
+
+        $this->putJson('api/address/' . $this->origen->id, $payload_base + [
+            'es_deposito_origen' => true,
+        ])->assertStatus(200);
+        $this->assertTrue((bool) $this->origen->fresh()->es_deposito_origen);
+    }
 }
