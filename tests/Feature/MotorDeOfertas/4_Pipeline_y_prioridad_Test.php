@@ -299,10 +299,25 @@ class Pipeline_y_prioridad_Test extends TestCase
             $this->markTestSkipped('El comercio 500 ya tiene la extensión asistente_ia sembrada.');
         }
         config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        /*
+         * 🔴 LOS DOS FAKES VAN ANTES DEL handle(), Y NO ES CINTURÓN Y TIRADORES. Este test repone la
+         * clave (pisando el config() del setUp) y el pipeline, con la cola en 'sync' de phpunit,
+         * ejecuta GenerarResumenSugerenciaOfertaJob EN EL ACTO adentro del handle()
+         * (ProcessOfferSuggestionChunkJob.php:172). Sin Queue::fake() ni Http::fake() puestos antes,
+         * ese job hacía un POST REAL a api.anthropic.com — comprobado con un proxy roto: el test
+         * pasaba igual porque el servicio se traga el error de conexión, así que la fuga era muda.
+         * Hoy viaja 'clave-de-prueba', pero .env.testing tiene una clave REAL y lo único que separaba
+         * a la suite de gastarla era esa línea de más arriba.
+         *
+         * Queue::fake() es el arreglo estructural (mismo criterio que el test de acá arriba: el job
+         * del resumen se corre a mano después, que es lo que este test quiere probar) y el Http::fake()
+         * queda igual antes por si alguien saca el Queue::fake() sin mirar esto.
+         */
+        Queue::fake();
+        $this->respuesta_ia('Resumen sin chat.');
         $this->escenario();
         $suggestion = $this->corrida();
         (new GenerateOfferSuggestionChunksJob($suggestion->id))->handle();
-        $this->respuesta_ia('Resumen sin chat.');
         (new GenerarResumenSugerenciaOfertaJob($suggestion->id, true))->handle();
 
         $this->assertNull(AiConversation::where('origen', 'sugerencia_oferta')->where('referencia_id', $suggestion->id)->first());

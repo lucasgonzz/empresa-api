@@ -85,8 +85,13 @@ class ResumenIaOfertasService
             . "- " . $excluidos . " clientes quedaron afuera porque tienen ventas sin cobrar\n"
             . "- Ofertas por criterio de marketing:\n"
             . (count($por_criterio) ? implode("\n", $por_criterio) : '- (sin lineas)') . "\n"
+            // El tope sale de OfertaSugeridaService y no de un ($vigencia * 2) escrito acá: es el
+            // mismo número con el que aplicar_decision_de_la_ia() recorta y el que valida el
+            // controller al activar. Si el prompt prometiera un rango más ancho, la IA elegiría una
+            // fecha que el recorte le baja después sin decirle por qué.
             . "- Vigencia por defecto de la corrida: " . $vigencia . " dias"
-            . " (el rango permitido va de " . self::DIAS_VIGENCIA_MINIMOS . " a " . ($vigencia * 2) . ")\n"
+            . " (el rango permitido va de " . self::DIAS_VIGENCIA_MINIMOS
+            . " a " . OfertaSugeridaService::tope_de_vigencia($vigencia) . ")\n"
             . "- Las ofertas mas importantes, por prioridad:\n"
             . (count($lineas) ? implode("\n", $lineas) : '- (sin lineas priorizadas)');
     }
@@ -108,7 +113,8 @@ class ResumenIaOfertasService
             . "- No recalcules ni inventes precios, costos ni margenes: el rango de cada oferta ya esta calculado y su maximo es todo lo que el margen del articulo tolera.\n"
             . "- El porcentaje de cada oferta tiene que quedar adentro del rango que dice su linea. Si te pasas, el sistema lo recorta igual.\n"
             . "- Dale mas descuento a lo que esta mas parado (vendibilidad alta) y menos a lo que sale solo.\n"
-            . "- dias_vigencia tiene que ser un entero entre " . self::DIAS_VIGENCIA_MINIMOS . " y " . ($vigencia * 2) . ".\n"
+            . "- dias_vigencia tiene que ser un entero entre " . self::DIAS_VIGENCIA_MINIMOS
+            . " y " . OfertaSugeridaService::tope_de_vigencia($vigencia) . ".\n"
             . "- El motivo de cada oferta: una frase corta, tuteando en rioplatense.\n"
             . "- El resumen: maximo 6 oraciones, tuteando en rioplatense, texto corrido, sin listas ni markdown, y sin saludar ni presentarte. Deci cuantos clientes quedaron afuera por tener ventas sin cobrar.\n\n"
             . "Responde SOLO con un JSON, sin ningun texto alrededor y sin cercas de codigo, con esta forma exacta:\n"

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\MotorDeOfertas;
 
+use App\Http\Controllers\ClientOfferController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Jobs\GenerarResumenSugerenciaOfertaJob;
@@ -13,9 +14,12 @@ use App\Models\OfferSuggestion;
 use App\Models\OfferSuggestionLine;
 use App\Models\Sale;
 use App\Models\User;
+use App\Services\OfertasClientes\OfertaSugeridaService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Notification;
+use ReflectionMethod;
 use Tests\TestCase;
 
 /**
@@ -276,5 +280,106 @@ class Recorte_de_la_ia_Test extends TestCase
             $this->assertLessThanOrEqual((float) $linea->porcentaje_techo, (float) $linea->porcentaje_sugerido,
                 'la línea ' . $linea->id . ' superó su techo');
         }
+    }
+
+    /**
+     * 🔴 UN SOLO TOPE DE VIGENCIA PARA LAS DOS PUNTAS. Hasta el 15/8/2026 había dos criterios: la IA
+     * podía proponer hasta dias_vigencia_sugerida * 2 (con 180 en el formulario, 360) y el controller
+     * rechazaba cualquier `hasta` a más de 180 días. El datepicker del modal se abría con la fecha que
+     * el motor había precargado y el backend contestaba 422 sobre una fecha que el comerciante no
+     * eligió. Este test cruza los dos lados: si alguien vuelve a poner un número suelto en cualquiera
+     * de los dos, se pone rojo.
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function el_tope_de_vigencia_que_propone_la_ia_nunca_pasa_el_que_acepta_la_activacion()
+    {
+        // Con una corrida corta manda el doble, que es lo que le da margen de decisión a la IA.
+        $this->assertSame(30, OfertaSugeridaService::tope_de_vigencia(15));
+        // Con una corrida larga manda el tope duro, que es el mismo que valida el controller.
+        $this->assertSame(OfertaSugeridaService::DIAS_VIGENCIA_MAXIMOS, OfertaSugeridaService::tope_de_vigencia(90));
+        $this->assertSame(OfertaSugeridaService::DIAS_VIGENCIA_MAXIMOS, OfertaSugeridaService::tope_de_vigencia(365));
+        $this->assertSame(OfertaSugeridaService::DIAS_VIGENCIA_MAXIMOS, ClientOfferController::MAX_DIAS_VIGENCIA,
+            'los dos lados tienen que leer el MISMO número, no dos que hoy coinciden');
+
+        // Y el recorte real, con una corrida de 120 días y la IA pidiendo un disparate: la fecha que
+        // queda propuesta tiene que ser una que validar_hasta() acepte.
+        $linea = new OfferSuggestionLine([
+            'tipo_descuento'      => 'unidad',
+            'porcentaje_piso'     => 5,
+            'porcentaje_techo'    => 20,
+            'porcentaje_sugerido' => 10,
+        ]);
+        $atributos = OfertaSugeridaService::aplicar_decision_de_la_ia(
+            $linea,
+            ['porcentaje' => 10, 'dias_vigencia' => 9999],
+            120
+        );
+
+        // El mismo chequeo que hace validar_hasta(): $hasta > today + MAX es 422.
+        $propuesta = Carbon::parse($atributos['fecha_vencimiento_sugerida']);
+        $this->assertTrue(
+            $propuesta->lte(Carbon::today()->addDays(ClientOfferController::MAX_DIAS_VIGENCIA)),
+            'la fecha que precarga el motor tiene que ser una que el activador acepte, si no es un 422 seguro'
+        );
+        $this->assertSame(
+            Carbon::now()->addDays(OfertaSugeridaService::DIAS_VIGENCIA_MAXIMOS)->toDateString(),
+            $atributos['fecha_vencimiento_sugerida']
+        );
+    }
+
+    /**
+     * 🔴 LOS TRAMOS QUE PROPONE LA IA TIENEN QUE PASAR LA VALIDACIÓN DEL ACTIVADOR. recortar_tramos()
+     * recortaba los porcentajes pero copiaba los `min` tal cual, sin exigir que arrancaran en 1 ni que
+     * fueran contiguos; validar_tramos() del controller sí lo exige. Un tramo con hueco se guardaba en
+     * la sugerencia sin protestar y el modal lo rechazaba recién al activar, contra unos tramos que el
+     * comerciante no escribió. Y el hueco en sí es el problema real: el que lleva 6 unidades se queda
+     * sin ningún descuento aplicable.
+     *
+     * La aserción fuerte es la última: la salida se le pasa al validador REAL del controller, así que
+     * las dos reglas no pueden separarse de nuevo sin que esto se ponga rojo.
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function los_tramos_que_propone_la_ia_arrancan_en_1_son_contiguos_y_los_acepta_el_activador()
+    {
+        $techo = 20;
+        $linea = new OfferSuggestionLine([
+            'tipo_descuento'      => 'cantidad',
+            'porcentaje_piso'     => 5,
+            'porcentaje_techo'    => $techo,
+            'porcentaje_sugerido' => 8,
+        ]);
+
+        // Lo peor que puede devolver la IA sin dejar de ser JSON válido: no arranca en 1, tiene dos
+        // huecos, y el último trae techo de cantidad.
+        $atributos = OfertaSugeridaService::aplicar_decision_de_la_ia($linea, [
+            'porcentaje' => 8,
+            'tramos'     => [
+                ['min' => 3,  'max' => 5,  'porcentaje' => 8],
+                ['min' => 9,  'max' => 12, 'porcentaje' => 14],
+                ['min' => 20, 'max' => 40, 'porcentaje' => 999],
+            ],
+        ], 15);
+
+        $tramos = json_decode($atributos['tramos_sugeridos'], true);
+        $this->assertCount(3, $tramos, 'no se pierde ni se inventa ningún escalón de los que propuso');
+        $this->assertSame(1, $tramos[0]['min'], 'el primero arranca en 1, siempre');
+
+        $esperado_min = 1;
+        foreach ($tramos as $i => $tramo) {
+            $this->assertSame($esperado_min, $tramo['min'], 'el tramo ' . ($i + 1) . ' deja un hueco');
+            $esperado_min = is_null($tramo['max']) ? $esperado_min : $tramo['max'] + 1;
+        }
+        $this->assertNull($tramos[2]['max'], 'el último nunca tiene techo de cantidad');
+        $this->assertSame((float) $techo, (float) $tramos[2]['porcentaje'], 'y el 999 quedó clavado en el techo');
+
+        // 🔴 La aserción que ata las dos puntas: el validador real del activador los acepta.
+        $validar = new ReflectionMethod(ClientOfferController::class, 'validar_tramos');
+        $validar->setAccessible(true);
+        $this->assertNull($validar->invoke(new ClientOfferController(), $tramos, $techo),
+            'lo que el motor propone tiene que poder activarse sin que el comerciante edite nada');
     }
 }

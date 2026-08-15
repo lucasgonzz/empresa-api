@@ -36,6 +36,20 @@ class OfertaSugeridaService
     const DIAS_VIGENCIA_MINIMOS = 3;
 
     /**
+     * 🔴 VIGENCIA MÁXIMA DE UNA OFERTA, EN DÍAS, Y EL ÚNICO LUGAR DONDE VIVE ESE NÚMERO. Más allá
+     * deja de ser una oferta y pasa a ser el precio nuevo del artículo.
+     *
+     * ClientOfferController::MAX_DIAS_VIGENCIA apunta a esta constante en vez de tener la suya: hasta
+     * el 15/8/2026 había DOS topes distintos —la IA podía proponer hasta dias_vigencia_sugerida * 2,
+     * que con la config del formulario llega a 360, y el controller rechazaba cualquier `hasta` a más
+     * de 180 días—, así que el datepicker del modal se abría con una fecha PRECARGADA por el motor que
+     * el backend contestaba con 422. El comerciante no tenía cómo entender qué había hecho mal: él no
+     * eligió esa fecha, se la propuso el sistema. Dos criterios para la misma regla es cómo se llega a
+     * eso; por eso ahora hay uno solo y los dos lados lo leen de acá.
+     */
+    const DIAS_VIGENCIA_MAXIMOS = 180;
+
+    /**
      * Cantidades donde arranca cada tramo de una oferta 'cantidad'. El primero SIEMPRE en 1 (§A.3); los
      * otros dos son una propuesta de arranque —el comerciante los edita en el modal antes de activar— y
      * no salen del historial a propósito: derivarlos del promedio de venta de cada artículo daría
@@ -195,12 +209,13 @@ class OfertaSugeridaService
             (float) $linea->porcentaje_sugerido
         );
 
-        // Idéntico tratamiento para la vigencia: 3 días de piso y el doble de la vigencia de la
-        // corrida de techo. Una promoción de un año no es una oferta, es el precio nuevo.
+        // Idéntico tratamiento para la vigencia: 3 días de piso y el tope de tope_de_vigencia(), que
+        // es el que también valida el controller al activar. Una promoción de un año no es una oferta,
+        // es el precio nuevo.
         $dias = (int) self::recortar(
             isset($decision['dias_vigencia']) ? $decision['dias_vigencia'] : null,
             self::DIAS_VIGENCIA_MINIMOS,
-            (int) $dias_vigencia_sugerida * 2,
+            self::tope_de_vigencia($dias_vigencia_sugerida),
             (int) $dias_vigencia_sugerida
         );
 
@@ -227,6 +242,27 @@ class OfertaSugeridaService
         $atributos['tramos_sugeridos']    = json_encode($tramos);
 
         return $atributos;
+    }
+
+    /**
+     * 🔴 EL TOPE DE VIGENCIA QUE SE LE PERMITE PROPONER A LA IA, en UN solo lugar. Es el doble de la
+     * vigencia elegida para la corrida —para que la IA tenga margen de decisión— pero nunca más que
+     * DIAS_VIGENCIA_MAXIMOS, que es lo que el controller acepta al activar. Sin este min(), una
+     * corrida con dias_vigencia_sugerida = 90 (el formulario lo permite) proponía fechas a 180 días y
+     * el 422 del controller aparecía sobre una fecha que el propio motor había precargado.
+     *
+     * Lo usan aplicar_decision_de_la_ia() para recortar y ResumenIaOfertasService para decirle a la IA
+     * el rango: los dos tienen que decir lo mismo, si no el prompt promete un número que el recorte
+     * después baja sin explicación.
+     *
+     * @param  int $dias_vigencia_sugerida De la cabecera de la corrida.
+     * @return int
+     */
+    public static function tope_de_vigencia($dias_vigencia_sugerida)
+    {
+        $doble = (int) $dias_vigencia_sugerida * 2;
+
+        return $doble > self::DIAS_VIGENCIA_MAXIMOS ? self::DIAS_VIGENCIA_MAXIMOS : $doble;
     }
 
     /**
@@ -262,7 +298,25 @@ class OfertaSugeridaService
     }
 
     /**
-     * Recorta a [piso, techo] los tramos que devolvió la IA, conservando su forma (min/max).
+     * Recorta a [piso, techo] los porcentajes que devolvió la IA y NORMALIZA LA ESCALERA de tramos a
+     * lo que el backend acepta al activar.
+     *
+     * 🔴 LA CONTIGÜIDAD NO ES COSMÉTICA Y ACÁ NO SE PUEDE CONFIAR EN EL PROMPT. Hasta el 15/8/2026
+     * esto recortaba los porcentajes y copiaba los `min` tal cual venían, sin exigir que arrancaran en
+     * 1 ni que fueran seguidos; ClientOfferController::validar_tramos() sí lo exige. Un solo hueco
+     * (max 5 y el siguiente min 8) se guardaba en la sugerencia sin protestar y recién saltaba como
+     * 422 cuando el comerciante apretaba "Activar", contra unos tramos que él no escribió. Y en el
+     * medio, el hueco significa que el que lleva 6 unidades no tiene ningún descuento aplicable.
+     *
+     * Se conservan los ANCHOS que propuso la IA (su decisión de negocio) y se re-anclan los `min` para
+     * que no queden ni huecos ni solapamientos: el primero arranca en 1, cada uno empieza donde
+     * terminó el anterior, y el último va sin techo de cantidad —si la IA le puso uno, un pedido más
+     * grande se quedaría sin descuento, que es lo contrario de la idea—. Es exactamente el juego de
+     * reglas de validar_tramos(): si allá se agrega una, acá también.
+     *
+     * Lo que NO se toca es que los porcentajes crezcan con la cantidad: el backend no lo exige y
+     * reescribir eso sería inventarle la decisión a la IA, no normalizarla.
+     *
      * @param  array $tramos
      * @param  float $piso
      * @param  float $techo
@@ -270,20 +324,29 @@ class OfertaSugeridaService
      */
     protected static function recortar_tramos(array $tramos, $piso, $techo)
     {
+        $tramos  = array_values($tramos);
+        $ultimo  = count($tramos) - 1;
         $limpios = [];
-        foreach (array_values($tramos) as $i => $tramo) {
-            $min = isset($tramo['min']) && (int) $tramo['min'] > 0 ? (int) $tramo['min'] : ($i + 1);
+        $min     = 1;
 
+        foreach ($tramos as $i => $tramo) {
+            $max = null;
+
+            if ($i !== $ultimo) {
+                $max = isset($tramo['max']) && !is_null($tramo['max']) ? (int) $tramo['max'] : null;
+                // Un max nulo o menor que el min propio dejaría un tramo vacío o invertido: se lo
+                // achica al mínimo posible (una unidad) en vez de descartar el tramo, que le cambiaría
+                // la cantidad de escalones a la propuesta.
+                $max = (is_null($max) || $max < $min) ? $min : $max;
+            }
             $limpios[] = [
-                'min'        => $i === 0 ? 1 : $min,
-                'max'        => isset($tramo['max']) && !is_null($tramo['max']) ? (int) $tramo['max'] : null,
+                'min'        => $min,
+                'max'        => $max,
                 'porcentaje' => self::recortar(isset($tramo['porcentaje']) ? $tramo['porcentaje'] : null, $piso, $techo, $piso),
             ];
+            $min = is_null($max) ? $min : $max + 1;
         }
 
-        // El último tramo nunca tiene techo de cantidad: si la IA le puso uno, un pedido más grande
-        // que ese número se quedaría sin descuento, que es exactamente lo contrario de la idea.
-        $limpios[count($limpios) - 1]['max'] = null;
         return $limpios;
     }
 

@@ -127,12 +127,27 @@ class Activacion_Test extends TestCase
      */
     protected function activar($linea, array $body = [])
     {
-        return $this->postJson('api/client-offer', array_merge([
+        $payload = array_merge([
             'offer_suggestion_line_id' => $linea->id,
             'porcentaje'               => 10,
             'hasta'                    => Carbon::today()->addDays(10)->toDateString(),
             'tipo_descuento'           => 'unidad',
-        ], $body));
+        ], $body);
+
+        /*
+         * 🔴 EN 'cantidad' EL PORCENTAJE VIAJA EN null, QUE ES LO QUE MANDA LA SPA
+         * (ModalActivar.vue:328) y lo que se guarda en la fila: el número vive en los
+         * tramos. Hasta el 15/8/2026 este helper inyectaba un 10 fijo también en los
+         * casos 'cantidad', así que el backend quedaba probado contra un payload que la
+         * SPA no manda nunca — y contra el real devolvía 422 SIEMPRE, o sea que ninguna
+         * oferta por cantidad se podía activar y la suite entera estaba verde.
+         * Un test que le pone al request algo que el front no manda no prueba el front.
+         */
+        if ($payload['tipo_descuento'] === 'cantidad' && !array_key_exists('porcentaje', $body)) {
+            $payload['porcentaje'] = null;
+        }
+
+        return $this->postJson('api/client-offer', $payload);
     }
 
     /** El techo determinista de HOY, calculado con el servicio real. */
@@ -291,6 +306,117 @@ class Activacion_Test extends TestCase
         $this->assertSame(0, ClientOffer::where('offer_suggestion_line_id', $linea->id)->count());
         $this->assertSame(0, ClientOfferRange::whereIn('client_offer_id',
             ClientOffer::where('user_id', 500)->where('article_id', $article->id)->pluck('id'))->count());
+    }
+
+    /**
+     * 🔴 EL PAYLOAD EXACTO DE LA SPA, TIPEADO ACÁ SIN PASAR POR EL HELPER: con 'cantidad',
+     * ModalActivar.vue:324-339 manda `porcentaje: null` y el número adentro de cada tramo.
+     *
+     * Hasta el 15/8/2026 el controller casteaba y validaba el porcentaje ANTES de leer
+     * tipo_descuento: input('porcentaje', 0) con la clave presente en null devuelve null
+     * (el default de input() solo aplica si la clave FALTA), (int) null da 0 y el min:1
+     * lo rechazaba. Resultado: NINGUNA oferta por cantidad se podía activar, 422 siempre,
+     * y el toast hablaba de un campo que está detrás de un v-if y no se ve en pantalla.
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function una_oferta_por_cantidad_se_activa_con_el_porcentaje_en_null_como_lo_manda_la_spa()
+    {
+        $article = $this->articulo();
+        $client  = $this->cliente();
+        $linea   = $this->linea($article, $client, ['tipo_descuento' => 'cantidad']);
+        $techo   = $this->techo_de($article, $client);
+
+        $response = $this->postJson('api/client-offer', [
+            'offer_suggestion_line_id' => $linea->id,
+            'porcentaje'               => null,
+            'hasta'                    => Carbon::today()->addDays(10)->toDateString(),
+            'tipo_descuento'           => 'cantidad',
+            'tramos'                   => [
+                ['min' => 1, 'max' => 5, 'porcentaje' => 5],
+                ['min' => 6, 'max' => null, 'porcentaje' => min(12, $techo)],
+            ],
+        ]);
+
+        $response->assertStatus(201);
+
+        $offer = ClientOffer::where('offer_suggestion_line_id', $linea->id)->first();
+        $this->assertNotNull($offer, 'con el payload real de la SPA la oferta tiene que quedar creada');
+        $this->assertSame('cantidad', $offer->tipo_descuento);
+        // 🔴 Y el porcentaje sigue guardándose NULL: el arreglo es del lado del controller,
+        // el contrato de la SPA es el correcto y no se toca.
+        $this->assertNull($offer->porcentaje);
+        $this->assertSame(2, ClientOfferRange::where('client_offer_id', $offer->id)->count());
+        $this->assertSame($offer->id, (int) $linea->fresh()->client_offer_id);
+
+        // Y el porcentaje sigue siendo obligatorio en 'unidad', que es donde sí se usa.
+        $this->postJson('api/client-offer', [
+            'offer_suggestion_line_id' => $this->linea($article, $this->cliente())->id,
+            'porcentaje'               => null,
+            'hasta'                    => Carbon::today()->addDays(10)->toDateString(),
+            'tipo_descuento'           => 'unidad',
+        ])->assertStatus(422);
+    }
+
+    /**
+     * 🔴 Al activar el mismo par desde otra corrida, la línea VIEJA tiene que quedar desapuntada.
+     * Si conserva su client_offer_id sigue mostrando el badge "Activada" apuntando a una oferta
+     * que ya está cancelada, y el comerciante cree que esa promoción está corriendo. destroy() ya
+     * lo hacía; esta punta no.
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function activar_el_mismo_par_de_nuevo_desapunta_la_linea_de_la_oferta_cancelada()
+    {
+        $article = $this->articulo();
+        $client  = $this->cliente();
+        $vieja   = $this->linea($article, $client);
+        $this->activar($vieja)->assertStatus(201);
+        $offer_vieja = ClientOffer::where('offer_suggestion_line_id', $vieja->id)->first();
+        $this->assertSame($offer_vieja->id, (int) $vieja->fresh()->client_offer_id);
+
+        // Otra corrida, el mismo (comercio, cliente, artículo).
+        $nueva = $this->linea($article, $client);
+        $this->activar($nueva)->assertStatus(201);
+        $offer_nueva = ClientOffer::where('offer_suggestion_line_id', $nueva->id)->first();
+
+        $this->assertSame('cancelada', ClientOffer::find($offer_vieja->id)->estado);
+        $this->assertNull($vieja->fresh()->client_offer_id,
+            'la línea vieja no puede seguir apuntando a una oferta que ya no corre');
+        $this->assertSame($offer_nueva->id, (int) $nueva->fresh()->client_offer_id,
+            'y la nueva sí queda apuntada: el desapuntado no se lleva puesta a la que acaba de activarse');
+    }
+
+    /**
+     * 🔴 El invariante "una sola activa por par" es un UPDATE + INSERT sin unique en la base, así
+     * que sin lock dos activaciones simultáneas del mismo par leen las dos "no hay activa", cancelan
+     * cero filas y insertan las dos: quedan DOS activas y la tienda ve dos ofertas del mismo
+     * artículo sin desempate. Una carrera real no se puede montar en phpunit con una sola conexión,
+     * así que lo que se afirma es que el SELECT del par sale con FOR UPDATE: si alguien saca el
+     * lockForUpdate(), esto se pone rojo.
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function la_activacion_lockea_el_par_antes_de_cancelar_y_de_insertar()
+    {
+        $consultas = [];
+        DB::listen(function ($query) use (&$consultas) {
+            $consultas[] = strtolower($query->sql);
+        });
+
+        $this->activar($this->linea($this->articulo(), $this->cliente()))->assertStatus(201);
+
+        $con_lock = array_filter($consultas, function ($sql) {
+            return strpos($sql, 'client_offers') !== false
+                && strpos($sql, 'select') === 0
+                && strpos($sql, 'for update') !== false;
+        });
+
+        $this->assertNotEmpty($con_lock,
+            'la transacción de la activación tiene que lockear el par de client_offers antes de escribirlo');
     }
 
     /**
