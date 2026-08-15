@@ -920,6 +920,21 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:sugerencias_intelige
     Route::post('stock-suggestion/{id}/resumen', 'StockSuggestionController@regenerar_resumen');
 });
 
+// Chat con el asistente de IA del negocio (misión chat-ia-y-modulo-ia), gateado por auth
+// Sanctum + la extensión 'asistente_ia' (ver ExtencionAsistenteIaSeeder). La tenencia adentro
+// del controller es por PERSONA (auth_user_id + user_id): el gate corta a quien no tiene la
+// extensión, el filtro doble corta al empleado que quiera leer los chats del dueño. El POST
+// del mensaje guarda y despacha el job de respuesta; el evento del canal privado avisa con
+// ids y la SPA busca el texto acá (show_message, también usado por el polling de respaldo).
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia'])->group(function () {
+    Route::get('ai-conversations', 'AiConversationController@index');
+    Route::post('ai-conversations', 'AiConversationController@store');
+    Route::delete('ai-conversations/{id}', 'AiConversationController@destroy');
+    Route::get('ai-conversations/{id}/messages', 'AiConversationController@messages');
+    Route::post('ai-conversations/{id}/messages', 'AiConversationController@send_message');
+    Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
+});
+
 
 // Plans
 Route::get('plan', 'PlanController@index');
