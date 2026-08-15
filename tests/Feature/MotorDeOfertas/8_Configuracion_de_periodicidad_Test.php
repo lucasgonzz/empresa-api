@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\MotorDeOfertas;
 
+use App\Models\ClientOffer;
 use App\Models\ExtencionEmpresa;
 use App\Models\OfferSuggestion;
 use App\Models\User;
@@ -187,6 +188,57 @@ class Configuracion_de_periodicidad_Test extends TestCase
             OfferSuggestion::where('user_id', $user->id)->count(),
             'Con nunca no se genera nada: es el default de la columna, y ninguna cuenta existente puede empezar a ofertarle a sus clientes solo por migrar.'
         );
+        Queue::assertNotPushed(self::JOB_PADRE);
+    }
+
+    /**
+     * 🔴 EL BARRIDO DE HIGIENE TIENE QUE CORRER CON PERIODICIDAD 'nunca', QUE ES EL DEFAULT.
+     *
+     * Estaba escrito abajo de los early-return de periodicidad, así que con el default de la
+     * migración NO CORRÍA NUNCA, y la creación manual tampoco lo llama. Modo de falla: un comercio
+     * que usa el módulo a mano activa ofertas a 15 días y tres meses después la pestaña "Vigentes"
+     * le sigue mostrando todas, con su botón Cancelar, mientras "Vencidas" está siempre vacía. La
+     * tienda ya no las aplica (filtra por CURDATE()), así que la única pantalla donde el comerciante
+     * mira "qué le estoy ofreciendo hoy" es justo la que miente.
+     *
+     * Si alguien devuelve el barrido abajo del bloque de periodicidad, este test se pone rojo.
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function con_periodicidad_nunca_el_comando_igual_vence_las_ofertas_pasadas_de_fecha()
+    {
+        Queue::fake();
+        $user = $this->usuario_de_prueba();
+        $this->dar_extension($user);
+
+        $this->guardar_configuracion($user, ['ofertas_periodicidad' => 'nunca'])->assertStatus(200);
+        $this->assertEquals('nunca', $user->fresh()->ofertas_periodicidad, 'precondición: la periodicidad apagada');
+
+        $vencida = ClientOffer::create([
+            'user_id' => $user->id, 'client_id' => 999999, 'article_id' => 999999,
+            'tipo_descuento' => 'unidad', 'porcentaje' => 10, 'estado' => 'activa',
+            'desde' => now()->subDays(40)->toDateString(),
+            'hasta' => now()->subDays(25)->toDateString(),
+        ]);
+
+        // Una que sigue vigente, para que el barrido tenga que elegir y no simplemente marcar todo.
+        $vigente = ClientOffer::create([
+            'user_id' => $user->id, 'client_id' => 999998, 'article_id' => 999998,
+            'tipo_descuento' => 'unidad', 'porcentaje' => 10, 'estado' => 'activa',
+            'desde' => now()->subDays(2)->toDateString(),
+            'hasta' => now()->addDays(10)->toDateString(),
+        ]);
+
+        $this->artisan('ofertas:generar')->assertExitCode(0);
+
+        $this->assertEquals('vencida', $vencida->fresh()->estado,
+            'con periodicidad nunca el barrido de higiene igual tiene que correr: es higiene, no generación.');
+        $this->assertEquals('activa', $vigente->fresh()->estado,
+            'una oferta que todavía no venció no se toca.');
+
+        // Y sigue sin generar nada: el barrido no es una excusa para saltear el gate de periodicidad.
+        $this->assertEquals(0, OfferSuggestion::where('user_id', $user->id)->count());
         Queue::assertNotPushed(self::JOB_PADRE);
     }
 

@@ -67,6 +67,37 @@ class GenerarOfertasSugeridas extends Command
             return 0;
         }
 
+        /*
+         * 🔴 EL BARRIDO DE HIGIENE VA ACÁ ARRIBA, ANTES DE LOS EARLY-RETURN DE LA PERIODICIDAD, Y NO
+         * ES UN DETALLE DE ORDEN.
+         *
+         * Estaba abajo, después del bloque de periodicidad, y el default de la migración es
+         * ofertas_periodicidad = 'nunca': con ese default el comando salía por el return de arriba y
+         * el barrido NO CORRÍA NUNCA. La creación manual tampoco lo llama. Modo de falla medido: un
+         * comercio que usa el módulo a mano activa 30 ofertas a 15 días; tres meses después la
+         * pestaña "Vigentes" le sigue mostrando las 30 con su botón Cancelar y "Vencidas" está
+         * siempre vacía. La tienda ya no las aplica (filtra por CURDATE(), §A.6), así que la única
+         * pantalla donde el comerciante mira "qué le estoy ofreciendo hoy" es justo la que miente.
+         *
+         * Por qué arriba y no enganchado al camino manual: esto es HIGIENE DE DATOS, no generación.
+         * No mira la periodicidad porque no genera nada, no manda mails y no toca client_offers que
+         * sigan vigentes — solo le pone la etiqueta correcta a lo que la fecha ya venció. El Kernel
+         * corre ofertas:generar todos los días a las 06:00 con la sola condición de la extensión
+         * (Kernel.php:90-94), así que desde acá el barrido pasa a correr a diario en cualquier
+         * comercio con el módulo, tenga la periodicidad que tenga. Engancharlo además a la
+         * activación manual sería un segundo lugar que hace lo mismo y que hay que acordarse de
+         * mantener; con un solo lugar diario alcanza y sobra.
+         *
+         * 🔴 Lo que SÍ queda abajo del gate de periodicidad es purgar_automaticas_viejas(): eso
+         * BORRA corridas, y borrar es una consecuencia de haber generado. Un comercio en 'nunca' no
+         * genera automáticas, así que no tiene nada que purgar.
+         */
+        $vencidas = $this->vencer_ofertas_pasadas_de_fecha($user);
+
+        if ($vencidas > 0) {
+            $this->info('ofertas:generar — higiene: ' . $vencidas . ' ofertas activas pasaron de fecha y quedaron marcadas como vencidas.');
+        }
+
         $periodicidad = (string) $user->ofertas_periodicidad;
 
         if (!$this->option('force')) {
@@ -85,12 +116,6 @@ class GenerarOfertasSugeridas extends Command
                 $this->info('ofertas:generar — todavía no pasaron los días de la periodicidad "' . $periodicidad . '", no se genera nada.');
                 return 0;
             }
-        }
-
-        $vencidas = $this->vencer_ofertas_pasadas_de_fecha($user);
-
-        if ($vencidas > 0) {
-            $this->info('ofertas:generar — higiene: ' . $vencidas . ' ofertas activas pasaron de fecha y quedaron marcadas como vencidas.');
         }
 
         $borradas = $this->purgar_automaticas_viejas($user);
@@ -131,6 +156,9 @@ class GenerarOfertasSugeridas extends Command
      * fechas, y la query que corre la tienda ya filtra por desde/hasta contra CURDATE() (§A.6). Este
      * barrido existe para que el listado del ERP no muestre como "activa" una promoción que venció
      * hace tres meses. Si alguien lo borra, la tienda sigue andando bien igual.
+     *
+     * 🔴 Se llama ANTES del gate de periodicidad (ver el comentario largo de handle()): con el
+     * default 'nunca' de la migración, desde abajo no corría jamás.
      *
      * @param  User $user
      * @return int Cantidad de ofertas marcadas
