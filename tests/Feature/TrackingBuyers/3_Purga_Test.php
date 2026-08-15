@@ -261,13 +261,23 @@ class Purga_Test extends TestCase
     }
 
     /**
-     * Un --dias basura (0, negativo, texto) NO borra todo el histórico: cae a la constante.
-     * Es la diferencia entre un typo y perder el historial de la instancia.
+     * Un --dias basura CORTA con error y sin borrar nada, en vez de caer en silencio a la
+     * retención por defecto.
+     *
+     * El modo de falla es el operador que quiso purgar a 7 días, escribió mal la opción, y se
+     * queda creyendo que lo hizo porque el comando dijo que todo salió bien. Y es además el
+     * criterio del comando hermano: `tracking:agregar-buyers` corta con exit 1 ante un --fecha
+     * inválido, así que las dos opciones se tienen que comportar igual.
+     *
+     * `--dias=99999999999999999999` está en la lista porque pasa ctype_digit sin despeinarse y
+     * castea a PHP_INT_MAX; de ahí `now()->subDays()` no explota, desborda a una fecha del año
+     * 2343668 —un límite de retención en el futuro— que MySQL después rechaza con `SQLSTATE
+     * [22007] 1292 Incorrect datetime value` en el medio de la purga. Lo corta MAX_DIAS.
      *
      * @group tracking_buyers
      * @test
      */
-    public function un_dias_invalido_cae_a_la_retencion_por_defecto_y_no_barre_todo()
+    public function un_dias_invalido_corta_con_error_y_no_borra_nada()
     {
         $user = $this->usuario_de_testing();
         if (is_null($user)) {
@@ -275,13 +285,32 @@ class Purga_Test extends TestCase
         }
         $this->activar_extencion($user);
 
-        $this->sembrar_eventos(now()->subDays(5)->format('Y-m-d H:i:s'), 4);
+        // Eventos viejos: si el comando siguiera adelante con un --dias basura, se irían.
+        $this->sembrar_eventos(now()->subDays(400)->format('Y-m-d H:i:s'), 4);
 
-        $this->artisan('tracking:purgar-buyers', ['--dias' => 0])->assertExitCode(0);
-        $this->assertEquals(4, $this->eventos_restantes(), '--dias=0 borró el histórico entero.');
+        $invalidos = [
+            '0'                    => 'cero borraría el histórico entero',
+            '-5'                   => 'un negativo escribiría en el futuro',
+            '7.5'                  => 'un decimal no es una cantidad de días',
+            'abc'                  => 'texto',
+            ''                     => 'la opción vacía',
+            '99999999999999999999' => 'un entero que desborda la aritmética de fechas',
+        ];
 
-        $this->artisan('tracking:purgar-buyers', ['--dias' => 'ayer'])->assertExitCode(0);
-        $this->assertEquals(4, $this->eventos_restantes(), '--dias con texto borró el histórico entero.');
+        foreach ($invalidos as $valor => $porque) {
+            $this->artisan('tracking:purgar-buyers', ['--dias' => $valor])
+                ->assertExitCode(1);
+
+            $this->assertEquals(
+                4,
+                $this->eventos_restantes(),
+                'Con --dias inválido (' . $porque . ') el comando igual borró.'
+            );
+        }
+
+        // Y con un --dias válido sí purga: el corte es por inválido, no porque no haga nada.
+        $this->artisan('tracking:purgar-buyers', ['--dias' => 30])->assertExitCode(0);
+        $this->assertEquals(0, $this->eventos_restantes());
     }
 
     /**

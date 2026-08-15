@@ -82,6 +82,23 @@ class PurgarBuyerTracking extends Command
     const MAX_VUELTAS = 1000;
 
     /**
+     * Tope de la opción --dias: 10 años, mucho más que cualquier retención que
+     * alguien vaya a querer y lejos del borde donde la aritmética de fechas se
+     * rompe.
+     *
+     * El borde, medido: `--dias=99999999999999999999` pasa ctype_digit sin problema
+     * y castea a PHP_INT_MAX. `now()->subDays(PHP_INT_MAX)` NO tira una excepción
+     * —sería lo cómodo—: desborda y devuelve una fecha del año 2343668, o sea un
+     * límite de retención en el FUTURO. Ese valor se lo come después el DELETE y
+     * MySQL lo rechaza con `SQLSTATE[22007] 1292 Incorrect datetime value`, así que
+     * el comando se cae con una QueryException sin atrapar en el medio de la purga.
+     * El tope corta antes de todo eso, y con un mensaje que dice qué pasó.
+     *
+     * @var int
+     */
+    const MAX_DIAS = 3650;
+
+    /**
      * Ejecuta la purga sobre el dueño de la instancia (config app.USER_ID).
      *
      * @return int Código de salida (0 = OK)
@@ -114,7 +131,16 @@ class PurgarBuyerTracking extends Command
             return 0;
         }
 
-        $dias   = $this->resolver_dias();
+        $dias = $this->resolver_dias();
+
+        if (is_null($dias)) {
+            $this->error(
+                'tracking:purgar-buyers — la opción --dias tiene que ser un entero entre 1 y '
+                . self::MAX_DIAS . ', no se purga nada.'
+            );
+            return 1;
+        }
+
         $limite = now()->subDays($dias);
 
         $borradas = 0;
@@ -171,21 +197,41 @@ class PurgarBuyerTracking extends Command
     }
 
     /**
-     * Días de retención efectivos: los de --dias si vino un entero positivo, la
-     * constante si no. Un --dias=0 borraría todo el histórico de un saque, así que
-     * no se acepta.
+     * Días de retención efectivos: los de --dias si vino, la constante si no vino.
      *
-     * @return int
+     * Un --dias que no sea un entero positivo y razonable CORTA el comando, no cae
+     * en silencio a la constante. El operador que escribió `--dias=7` con un typo
+     * quiso purgar a 7 días; si el comando purga a 90 y dice que todo salió bien, se
+     * queda creyendo que hizo algo que no hizo. Es el mismo criterio que --fecha en
+     * `tracking:agregar-buyers`, que corta con exit 1 ante un formato inválido: dos
+     * comandos hermanos no pueden tratar una opción mal escrita de dos maneras
+     * distintas.
+     *
+     * Casos que corta: 0 (borraría todo el histórico), negativos, decimales, texto,
+     * y cualquier valor por encima de MAX_DIAS (ver el porqué medido en esa
+     * constante).
+     *
+     * @return int|null Días de retención, o null si --dias vino inválido
      */
     protected function resolver_dias()
     {
         $opcion = $this->option('dias');
 
-        if (!is_null($opcion) && ctype_digit((string) $opcion) && (int) $opcion > 0) {
-            return (int) $opcion;
+        if (is_null($opcion)) {
+            return self::DIAS_RETENCION;
         }
 
-        return self::DIAS_RETENCION;
+        if (!ctype_digit((string) $opcion)) {
+            return null;
+        }
+
+        $dias = (int) $opcion;
+
+        if ($dias <= 0 || $dias > self::MAX_DIAS) {
+            return null;
+        }
+
+        return $dias;
     }
 
     /**
