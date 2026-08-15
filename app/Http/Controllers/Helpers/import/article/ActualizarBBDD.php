@@ -481,7 +481,15 @@ class ActualizarBBDD {
                 'cost'          => $article->cost,
             ];
 
-            $article->providers()->attach($article->provider_id, $pivot_data);
+            /*
+             * Antes hacía attach() a ciegas: con el índice único uniq_article_provider
+             * (article_id, provider_id) que agrega la migración de dedupe del pivot, un
+             * segundo attach() sobre el mismo par tira "Integrity constraint violation"
+             * en vez de insertar en silencio como hacía hasta ahora. syncWithoutDetaching
+             * es idempotente: inserta si no existe, actualiza el pivot si ya existe, y
+             * nunca toca las demás relaciones del artículo (a diferencia de sync()).
+             */
+            $article->providers()->syncWithoutDetaching([$article->provider_id => $pivot_data]);
         }
 
         $this->terminar('set articles_providers'); 
