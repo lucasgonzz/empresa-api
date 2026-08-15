@@ -9,6 +9,7 @@ use App\Models\WhatsappChatMessage;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 /**
  * Agente de IA del módulo de WhatsApp (grupo 137, Prompt 03): genera la respuesta
@@ -84,6 +85,51 @@ SUMMARY;
     private const SUMMARY_HISTORY_LIMIT = 100;
 
     /**
+     * Tope duro de imágenes entrantes que viajan al modelo cuando la visión está prendida:
+     * las 3 más recientes del historial (D22).
+     *
+     * Sin tope, una conversación larga con fotos manda TODAS en cada turno: el gasto crece con
+     * cada mensaje nuevo y la respuesta no mejora, porque lo que el cliente está preguntando
+     * ahora casi siempre es sobre la última foto. El resto del historial sigue entrando como
+     * texto, así que el modelo no pierde el hilo: pierde la vista de las fotos viejas.
+     */
+    private const VISION_IMAGE_LIMIT = 3;
+
+    /**
+     * Traducción del mime guardado al `media_type` que acepta la API de Anthropic.
+     *
+     * 🔴 NO ES LA LISTA BLANCA DE SEGURIDAD (esa es `WhatsappInboundMediaService::safe_mime()`,
+     * y se sigue aplicando antes que esto). Es otra cosa: Anthropic acepta EXACTAMENTE cuatro
+     * media types de imagen, y `image/jpg` NO es uno de ellos aunque sea un mime perfectamente
+     * válido que el servicio guarda tal cual. Mandarlo hace que la API conteste 400, y el modo
+     * de falla es el peor de todos: `generate_response()` se traga el error y devuelve '', o
+     * sea que el síntoma no es un error visible sino "el agente dejó de contestar". Por eso se
+     * normaliza acá y un mime que no esté en esta tabla degrada a texto en vez de viajar.
+     *
+     * @var array<string, string>
+     */
+    private const VISION_MEDIA_TYPES = [
+        'image/jpeg' => 'image/jpeg',
+        'image/jpg'  => 'image/jpeg',
+        'image/png'  => 'image/png',
+        'image/gif'  => 'image/gif',
+        'image/webp' => 'image/webp',
+    ];
+
+    /**
+     * Tope de bytes del archivo original de una imagen que viaja con visión.
+     *
+     * Anthropic corta en 5 MB por imagen, y lo que cuenta es el base64, que infla el archivo
+     * un tercio: 3.932.160 bytes crudos son exactamente 5 MB codificados. Una imagen más
+     * pesada que eso hace rebotar la llamada entera con 400 — y con `generate_response()`
+     * tragándose el error, el negocio ve "el agente dejó de contestar" y no un error. Arriba
+     * del tope, ese turno degrada a texto: el agente contesta igual, sin mirar la foto.
+     *
+     * @var int
+     */
+    private const VISION_MAX_IMAGE_BYTES = 3932160;
+
+    /**
      * Genera la respuesta del agente de IA para el chat dado: personalidad configurable +
      * reglas fijas + historial de la conversación (últimos 20 mensajes, con memoria real,
      * no solo el último mensaje) + catálogo relevante (RAG sobre artículos, top 5). La usan
@@ -134,7 +180,9 @@ SUMMARY;
             }
 
             $system_prompt = $this->build_system_prompt($config);
-            $messages = $this->build_messages_payload($history, $articles, $this->owner_user($config));
+            // El `$config` viaja hasta el armado del payload porque ahí se decide si las
+            // imágenes entrantes van como bloques de visión o como texto (`ai_vision_enabled`).
+            $messages = $this->build_messages_payload($history, $articles, $this->owner_user($config), $config);
 
             $model = (string) config('services.anthropic.model', 'claude-sonnet-4-20250514');
             $http  = $this->build_http_client();
@@ -415,21 +463,58 @@ SUMMARY;
      * operador contesta y después lo hace también la IA). El bloque de catálogo se agrega
      * siempre al final del último turno de usuario para no romper la alternancia.
      *
+     * 🔴 EL CONTENIDO DE UN TURNO PUEDE SER UN STRING O UN ARRAY DE BLOQUES, Y ESA ES LA PARTE
+     * MÁS FÁCIL DE ROMPER DE TODO EL BACKEND (D23). Cuando la visión está prendida y el turno
+     * trae una imagen, el contenido deja de ser texto y pasa a ser
+     * `[{type:image,source:{...}}, {type:text,text:…}]`, que es lo que la API de Anthropic
+     * acepta. La fusión de turnos consecutivos —que ANTES era un `.=` sobre un string— revienta
+     * con eso: concatenar un array con un string es un fatal. Por eso toda la unión de contenido
+     * pasa ahora por `merge_turn_contents()`, que mantiene el `.=` de siempre cuando los dos
+     * lados son string y concatena bloques cuando alguno no lo es. Lo mismo vale para el bloque
+     * de catálogo que se pega al final del último turno de usuario: es otro `.=` y falla igual.
+     *
+     * Y el modo de falla no se ve: `generate_response()` se traga el `\Throwable` y devuelve
+     * '', así que lo que ve el negocio no es un error sino "el agente dejó de contestar" en
+     * cualquier conversación con dos imágenes seguidas.
+     *
      * @param \Illuminate\Support\Collection<int, WhatsappChatMessage> $history_messages
      * @param array                                                    $articles
      * @param \App\Models\User|null                                    $owner_user Dueño del
      *                                        bot; se usa para armar el link a su tienda online.
+     * @param WhatsappBotConfig|null                                   $config Config del bot;
+     *                                        de acá sale `ai_vision_enabled`. Null = sin visión
+     *                                        (o sea, exactamente el comportamiento previo).
      *
-     * @return array<int, array{role: string, content: string}>
+     * @return array<int, array{role: string, content: string|array}>
      */
-    private function build_messages_payload($history_messages, array $articles, $owner_user = null): array
+    private function build_messages_payload($history_messages, array $articles, $owner_user = null, $config = null): array
     {
+        // Con el interruptor apagado (el default) no se lee un solo archivo del disco y el
+        // payload sale idéntico al de antes de esta misión: la imagen entra como el texto de su
+        // epígrafe (o el literal '[Imagen recibida]'), el modelo se entera de que llegó una foto
+        // y no se gasta un token de visión.
+        $vision_message_ids = [];
+        if (! is_null($config) && (bool) $config->ai_vision_enabled) {
+            $vision_message_ids = $this->recent_vision_message_ids($history_messages);
+        }
+
         $turns = [];
 
         foreach ($history_messages as $message) {
             $body = trim((string) $message->body);
-            if ($body === '') {
-                continue;
+
+            $content = null;
+            if (in_array((int) $message->id, $vision_message_ids, true)) {
+                // Devuelve null si el archivo no está, no se puede leer o el mime no le sirve a
+                // Anthropic: ese turno degrada a texto y la conversación sigue.
+                $content = $this->build_vision_content($message, $body);
+            }
+
+            if (is_null($content)) {
+                if ($body === '') {
+                    continue;
+                }
+                $content = $body;
             }
 
             $role = $message->direction === 'in' ? 'user' : 'assistant';
@@ -437,9 +522,9 @@ SUMMARY;
 
             if ($last_index >= 0 && $turns[$last_index]['role'] === $role) {
                 // Mismo rol que el turno anterior: se funde en un solo mensaje.
-                $turns[$last_index]['content'] .= "\n".$body;
+                $turns[$last_index]['content'] = $this->merge_turn_contents($turns[$last_index]['content'], $content, "\n");
             } else {
-                $turns[] = ['role' => $role, 'content' => $body];
+                $turns[] = ['role' => $role, 'content' => $content];
             }
         }
 
@@ -454,7 +539,10 @@ SUMMARY;
         $last_index = count($turns) - 1;
 
         if ($last_index >= 0 && $turns[$last_index]['role'] === 'user') {
-            $turns[$last_index]['content'] .= "\n\n".$catalog_block;
+            // Mismo cuidado que en la fusión de arriba: si el último turno terminó siendo
+            // bloques (porque el cliente mandó una foto como último mensaje, que es el caso
+            // NORMAL cuando la visión está prendida), este `.=` sería un fatal.
+            $turns[$last_index]['content'] = $this->merge_turn_contents($turns[$last_index]['content'], $catalog_block, "\n\n");
         } else {
             // No hay ningún turno de usuario (caso borde: historial vacío tras el filtro
             // de arriba); se agrega el catálogo como único mensaje para poder llamar a la API.
@@ -462,6 +550,168 @@ SUMMARY;
         }
 
         return $turns;
+    }
+
+    /**
+     * Ids de los mensajes entrantes con imagen que van a viajar como bloques de visión: los
+     * `VISION_IMAGE_LIMIT` más recientes del historial (D22).
+     *
+     * Se recorre de atrás para adelante y se corta al llegar al tope. Los candidatos se eligen
+     * mirando solo las columnas (`direction`, `media_type`, `media_path`), sin tocar el disco:
+     * si después el archivo no se puede leer, ese turno degrada a texto y NO se promueve un
+     * cuarto candidato en su lugar. Es a propósito — el tope es de fotos que el cliente mandó
+     * recién, no de fotos que efectivamente se pudieron cargar, y así el resultado no depende
+     * del estado del disco.
+     *
+     * @param \Illuminate\Support\Collection<int, WhatsappChatMessage> $history_messages
+     *
+     * @return array<int, int>
+     */
+    private function recent_vision_message_ids($history_messages): array
+    {
+        $ids = [];
+
+        for ($index = $history_messages->count() - 1; $index >= 0; $index--) {
+            if (count($ids) >= self::VISION_IMAGE_LIMIT) {
+                break;
+            }
+
+            $message = $history_messages->get($index);
+
+            if ($message->direction !== 'in') {
+                continue;
+            }
+            if ((string) $message->media_type !== 'image') {
+                continue;
+            }
+            if (trim((string) $message->media_path) === '') {
+                continue;
+            }
+
+            $ids[] = (int) $message->id;
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Arma el contenido de un turno como bloques, con la imagen en base64 adelante y el texto
+     * (el epígrafe, o el literal de relleno) atrás.
+     *
+     * 🔴 LA IMAGEN VIAJA EN BASE64 Y NO POR URL, y no es por gusto: el archivo vive en el disco
+     * `local`, fuera del docroot, justamente para que una conversación privada no quede abierta
+     * a cualquiera que adivine una URL. No hay URL que Anthropic pueda bajar, y crear una sería
+     * deshacer esa decisión.
+     *
+     * 🔴 NUNCA LANZA. Cualquier problema (archivo borrado, disco caído, mime que la API no
+     * acepta, imagen demasiado pesada) devuelve null y el turno sigue viaje como texto. Una
+     * excepción acá sería el agente entero mudo: `generate_response()` la atrapa y devuelve '',
+     * o sea que el negocio vería "dejó de contestar" sin ningún error a la vista.
+     *
+     * @param WhatsappChatMessage $message
+     * @param string              $body  Cuerpo ya trimeado del mensaje.
+     *
+     * @return array|null Array de bloques, o null para que el turno degrade a texto.
+     */
+    private function build_vision_content(WhatsappChatMessage $message, string $body): ?array
+    {
+        try {
+            // La misma lista blanca con la que se guardó el archivo y con la que se sirve.
+            $mime = WhatsappInboundMediaService::safe_mime($message->media_mime);
+            if (is_null($mime) || ! isset(self::VISION_MEDIA_TYPES[$mime])) {
+                return null;
+            }
+
+            $path = trim((string) $message->media_path);
+            $disk = Storage::disk('local');
+
+            if ($path === '' || ! $disk->exists($path)) {
+                return null;
+            }
+
+            if ((int) $disk->size($path) > self::VISION_MAX_IMAGE_BYTES) {
+                Log::channel('daily')->warning('WhatsappBotAiService: imagen demasiado pesada para visión, va como texto.', [
+                    'message_id' => $message->id,
+                    'path'       => $path,
+                ]);
+
+                return null;
+            }
+
+            $binary = $disk->get($path);
+            if ($binary === null || $binary === '') {
+                return null;
+            }
+
+            $blocks = [[
+                'type'   => 'image',
+                'source' => [
+                    'type'       => 'base64',
+                    'media_type' => self::VISION_MEDIA_TYPES[$mime],
+                    'data'       => base64_encode($binary),
+                ],
+            ]];
+
+            // El texto va DESPUÉS de la imagen: es el orden que recomienda Anthropic para que el
+            // modelo lea la consigna con la foto ya vista. Si el mensaje no trae texto, el
+            // bloque de imagen viaja solo, que la API acepta sin problema.
+            if ($body !== '') {
+                $blocks[] = ['type' => 'text', 'text' => $body];
+            }
+
+            return $blocks;
+        } catch (\Throwable $exception) {
+            Log::channel('daily')->error('WhatsappBotAiService: no se pudo adjuntar la imagen al turno, sigue como texto.', [
+                'message_id' => $message->id,
+                'error'      => $exception->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
+     * Une el contenido de dos turnos consecutivos del mismo rol (D23).
+     *
+     * 🔴 LA REGLA, Y NO SE PUEDE SIMPLIFICAR A UN `.=`: si los dos lados son string se
+     * concatenan como siempre (el comportamiento previo, byte por byte); si alguno de los dos
+     * es un array de bloques, los dos se normalizan a bloques y se concatenan. Un `.=` con un
+     * array de un lado es un fatal, y con `generate_response()` tragándose la excepción el
+     * síntoma sería "el agente dejó de contestar" en toda conversación con dos imágenes
+     * seguidas — sin un solo error visible.
+     *
+     * @param string|array $current   Contenido que ya tenía el turno.
+     * @param string|array $incoming  Contenido que se le suma.
+     * @param string       $separator Separador entre textos, solo cuando los dos son string.
+     *
+     * @return string|array
+     */
+    private function merge_turn_contents($current, $incoming, string $separator)
+    {
+        if (is_string($current) && is_string($incoming)) {
+            return $current.$separator.$incoming;
+        }
+
+        return array_merge($this->as_content_blocks($current), $this->as_content_blocks($incoming));
+    }
+
+    /**
+     * Normaliza un contenido de turno a array de bloques: si ya lo es, lo devuelve tal cual;
+     * si es texto, lo envuelve en un bloque `text`.
+     *
+     * @param string|array $content
+     *
+     * @return array<int, array>
+     */
+    private function as_content_blocks($content): array
+    {
+        if (is_array($content)) {
+            return $content;
+        }
+
+        $text = (string) $content;
+
+        return trim($text) === '' ? [] : [['type' => 'text', 'text' => $text]];
     }
 
     /**

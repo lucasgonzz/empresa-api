@@ -209,6 +209,8 @@ class WhatsappBotController extends Controller
             // Meta, no la espera.
             'ai_reply_delay_seconds'   => 'sometimes|integer|min:0|max:600',
             'ai_confirm_delay_seconds' => 'sometimes|integer|min:0|max:3600',
+            // Si el agente mira las fotos que manda el cliente (misión whatsapp-sidebar-multimedia).
+            'ai_vision_enabled'        => 'sometimes|boolean',
         ]);
 
         // Se arranca vacío y se agrega cada campo solo si vino en el request.
@@ -250,6 +252,19 @@ class WhatsappBotController extends Controller
         // Segundos que la respuesta generada espera confirmación humana antes de auto-enviarse.
         if ($request->has('ai_confirm_delay_seconds')) {
             $data['ai_confirm_delay_seconds'] = (int) $request->ai_confirm_delay_seconds;
+        }
+
+        // Si el agente interpreta las fotos que manda el cliente (apagado de fábrica: cada foto
+        // que analiza tiene un costo extra de tokens de visión).
+        //
+        // 🔴 VA EN SU PROPIO `if ($request->has(...))`, COMO TODOS LOS DE ARRIBA, Y NO ADENTRO
+        // DE UN BLOQUE COMPARTIDO CON LOS OTROS TOGGLES DEL AGENTE. Las dos pantallas de
+        // configuración (Conexión y Agente) pegan a este mismo endpoint y cada una manda solo
+        // sus campos: agrupar dos campos en un `has()` hace que la pantalla que manda uno le
+        // escriba `false` al otro. El switch quedaría apagándose solo al guardar cualquier otra
+        // cosa, sin ningún error a la vista.
+        if ($request->has('ai_vision_enabled')) {
+            $data['ai_vision_enabled'] = (bool) $request->ai_vision_enabled;
         }
 
         $user_id = $this->userId();
