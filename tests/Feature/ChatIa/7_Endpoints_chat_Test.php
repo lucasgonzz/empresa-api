@@ -119,16 +119,21 @@ class Endpoints_chat_Test extends TestCase
 
     /**
      * R5: la tenencia es por PERSONA. Compartir la cuenta no comparte los
-     * chats, en ninguna de las dos direcciones.
+     * chats, en ninguna de las dos direcciones — cada dirección va en su
+     * propio método (patrón del test 5 del canal privado): el guard de
+     * Sanctum cachea a la persona resuelta durante todo el test, así que un
+     * segundo actingAs en el MISMO método no llega al controller y la
+     * segunda mitad correría re-autenticada como la primera persona sin que
+     * ninguna aserción lo denuncie.
      *
      * @group chat-ia
      * @test
      */
-    public function el_indice_devuelve_solo_las_conversaciones_de_la_persona()
+    public function el_indice_del_empleado_no_muestra_las_conversaciones_del_dueno()
     {
         $this->dar_extension();
 
-        $del_dueno   = $this->conversacion($this->comercio, ['titulo' => 'Chat del dueño']);
+        $del_dueno    = $this->conversacion($this->comercio, ['titulo' => 'Chat del dueño']);
         $del_empleado = $this->conversacion($this->empleado, ['titulo' => 'Chat del empleado']);
 
         $this->actingAs($this->empleado, 'web');
@@ -137,9 +142,26 @@ class Endpoints_chat_Test extends TestCase
 
         $ids = array_column($response->json('models'), 'id');
         $this->assertEquals([$del_empleado->id], $ids, 'El empleado ve SOLO su conversación, no la del dueño.');
+    }
+
+    /**
+     * La jerarquía tampoco corre al revés: ser el dueño de la cuenta no abre
+     * los chats de los empleados (pueden charlar de saldos con la IA igual
+     * que el dueño).
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function el_indice_del_dueno_no_muestra_las_conversaciones_del_empleado()
+    {
+        $this->dar_extension();
+
+        $del_dueno    = $this->conversacion($this->comercio, ['titulo' => 'Chat del dueño']);
+        $del_empleado = $this->conversacion($this->empleado, ['titulo' => 'Chat del empleado']);
 
         $this->actingAs($this->comercio, 'web');
         $response = $this->getJson('api/ai-conversations');
+        $response->assertStatus(200);
 
         $ids = array_column($response->json('models'), 'id');
         $this->assertEquals([$del_dueno->id], $ids, 'El dueño ve SOLO su conversación, no la del empleado.');

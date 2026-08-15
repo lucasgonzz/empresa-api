@@ -245,13 +245,29 @@ class Esquema_y_extencion_Test extends TestCase
     }
 
     /**
+     * El seeder se corre por artisan y no instanciándolo a mano: es el camino
+     * real (el docblock del seeder documenta `php artisan db:seed --class=...`)
+     * y es el ÚNICO que funciona — SeedCommand envuelve la corrida en
+     * Model::unguarded(), y ExtencionEmpresa está totalmente guarded (sin
+     * $fillable), así que el firstOrCreate del seeder revienta con
+     * MassAssignmentException si se lo llama por afuera de artisan. Mismo
+     * molde que el test verde de Extenciones/2 de la misión anterior.
+     *
+     * El delete previo deja el test determinista en cualquier slot: si la
+     * base ya tuviera la fila sembrada, "dos corridas dejan UNA" no probaría
+     * la idempotencia (DatabaseTransactions lo revierte al salir).
+     *
      * @group chat-ia
      * @test
      */
     public function el_seeder_suelto_corrido_dos_veces_deja_una_sola_extension()
     {
-        (new ExtencionAsistenteIaSeeder())->run();
-        (new ExtencionAsistenteIaSeeder())->run();
+        ExtencionEmpresa::where('slug', 'asistente_ia')->delete();
+
+        $this->artisan('db:seed', ['--class' => ExtencionAsistenteIaSeeder::class])
+            ->assertExitCode(0);
+        $this->artisan('db:seed', ['--class' => ExtencionAsistenteIaSeeder::class])
+            ->assertExitCode(0);
 
         $filas = ExtencionEmpresa::where('slug', 'asistente_ia')->get();
 

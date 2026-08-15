@@ -135,7 +135,30 @@ class Conversacion_de_sugerencia_Test extends TestCase
     }
 
     /**
+     * Texto que el fake de Anthropic responde en la PRÓXIMA llamada (lo lee
+     * el stub registrado en correr_el_job).
+     *
+     * @var string
+     */
+    protected $texto_de_resumen_fake = '';
+
+    /**
+     * true cuando el stub de api.anthropic.com ya quedó registrado en este test.
+     *
+     * @var bool
+     */
+    protected $fake_de_anthropic_registrado = false;
+
+    /**
      * Corre el job del resumen contra un fake que responde el texto dado.
+     *
+     * 🔴 El stub se registra UNA sola vez por test y lee el texto vigente de
+     * la propiedad: Http::fake ACUMULA stubs (Factory::fake hace merge) y el
+     * handler toma el PRIMERO que matchea (buildStubHandler:
+     * ->filter()->first()). Registrar un stub nuevo por corrida deja al
+     * primero respondiendo para siempre — el test de idempotencia corría el
+     * reintento contra el resumen viejo y el "no actualiza" era del fake, no
+     * del job.
      *
      * @param StockSuggestion $suggestion
      * @param string $texto
@@ -145,15 +168,23 @@ class Conversacion_de_sugerencia_Test extends TestCase
     {
         config(['services.anthropic.api_key' => 'clave-de-prueba']);
 
-        Http::fake([
-            'api.anthropic.com/*' => Http::response([
-                'model'   => 'claude-modelo-fake',
-                'content' => [
-                    ['type' => 'text', 'text' => $texto],
-                ],
-                'usage'   => ['input_tokens' => 400, 'output_tokens' => 90],
-            ], 200),
-        ]);
+        $this->texto_de_resumen_fake = $texto;
+
+        if (!$this->fake_de_anthropic_registrado) {
+            Http::fake([
+                'api.anthropic.com/*' => function () {
+                    return Http::response([
+                        'model'   => 'claude-modelo-fake',
+                        'content' => [
+                            ['type' => 'text', 'text' => $this->texto_de_resumen_fake],
+                        ],
+                        'usage'   => ['input_tokens' => 400, 'output_tokens' => 90],
+                    ], 200);
+                },
+            ]);
+
+            $this->fake_de_anthropic_registrado = true;
+        }
 
         (new GenerarResumenSugerenciaJob($suggestion->id))->handle();
     }
