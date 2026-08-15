@@ -880,6 +880,12 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
     Route::put('whatsapp-chats/{id}/link-client', 'WhatsappChatController@link_client');
     Route::put('whatsapp-chats/{id}/read', 'WhatsappChatController@mark_read');
 
+    // Descarga del adjunto de un mensaje (misión whatsapp-sidebar-multimedia). Va ADENTRO de
+    // este grupo y no suelta: los audios y las fotos de una conversación viven en el disco
+    // `local`, fuera del docroot, justamente porque `/storage/{path}` de routes/web.php es
+    // público y sin auth. Esta es la única puerta, y suma el chequeo de pertenencia del chat.
+    Route::get('whatsapp-chats/{chat_id}/media/{message_id}', 'WhatsappChatController@media');
+
     // Envío de plantilla de Meta (grupo 137, Prompt 04): único camino cuando la ventana de 24 h está cerrada.
     Route::post('whatsapp-chats/{id}/send-template', 'WhatsappChatController@send_template');
 

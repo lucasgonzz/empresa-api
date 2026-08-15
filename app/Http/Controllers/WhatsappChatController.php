@@ -12,8 +12,10 @@ use App\Models\WhatsappTemplate;
 use App\Services\WhatsappAiAutoSendScheduler;
 use App\Services\WhatsappBotAiService;
 use App\Services\WhatsappBotSendService;
+use App\Services\WhatsappInboundMediaService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 
 /**
  * Endpoints REST del módulo de chats de WhatsApp con clientes (grupo 137, Prompt 02),
@@ -522,6 +524,81 @@ class WhatsappChatController extends Controller
         }
 
         return response()->json(['message' => 'Mensaje descartado.'], 200);
+    }
+
+    /**
+     * Devuelve el archivo adjunto de un mensaje de la conversación (misión
+     * whatsapp-sidebar-multimedia). Es la ÚNICA forma de ver una foto o escuchar un audio de
+     * un chat: la SPA usa esta URL directo en `<img src>` y en `<audio src>`, armada por el
+     * accessor `media_src` del modelo.
+     *
+     * 🔴 POR QUÉ EXISTE ESTA RUTA EN VEZ DE GUARDAR EL ARCHIVO EN EL DISCO `public`:
+     * `routes/web.php:199-207` sirve `/storage/{path}` de forma pública, sin auth y con
+     * `->where('path', '.*')`. Una foto o un audio de una conversación privada guardados ahí
+     * quedarían abiertos para siempre a cualquiera que tenga o adivine la URL — sin sesión,
+     * sin pertenencia y sin forma de revocarlo. Los medios de conversación viven en el disco
+     * `local`, fuera del docroot, y salen solo por acá: `auth:sanctum` +
+     * `check_extencion_empresa:whatsapp` (los dos en `routes/api.php`) + el chequeo de
+     * pertenencia de abajo. Si alguien "simplifica" esto mandando los archivos a
+     * `Storage::disk('public')`, lo que se rompe es la privacidad de todas las conversaciones,
+     * en silencio y sin ningún error.
+     *
+     * 🔴 EL `Content-Type` SE VUELVE A VALIDAR CONTRA LA LISTA BLANCA, aunque ya se haya
+     * validado al guardarlo. Acá lo sirve PHP, no una ruta firmada como en `admin-api`: si se
+     * confiara en la columna sin revisar, una fila cargada por otro camino podría hacer que
+     * este endpoint devuelva un `text/html` con el cuerpo que eligió un tercero, servido desde
+     * el dominio de la API y con la sesión del operador puesta. El `nosniff` está por lo mismo:
+     * sin él el navegador puede ignorar el `Content-Type` y adivinar mirando el contenido.
+     *
+     * Todos los caminos de error devuelven 404 y no 403: quién tiene o no un adjunto es
+     * información del chat, y un 403 confirmaría que el mensaje existe.
+     *
+     * @param  int  $chat_id
+     * @param  int  $message_id
+     * @return \Illuminate\Http\JsonResponse|\Symfony\Component\HttpFoundation\BinaryFileResponse
+     */
+    public function media($chat_id, $message_id)
+    {
+        $chat = $this->find_owned_chat($chat_id);
+        if (is_null($chat)) {
+            return response()->json(['message' => 'Chat no encontrado.'], 404);
+        }
+
+        // El mensaje se busca SIEMPRE acotado al chat ya validado: sin este `where` alcanzaría
+        // con pasar un id de chat propio y un id de mensaje ajeno para leer el adjunto de otra
+        // empresa.
+        $message = WhatsappChatMessage::where('id', $message_id)
+            ->where('whatsapp_chat_id', $chat->id)
+            ->first();
+
+        if (is_null($message)) {
+            return response()->json(['message' => 'Mensaje no encontrado.'], 404);
+        }
+
+        $media_path = trim((string) $message->media_path);
+        if ($media_path === '') {
+            return response()->json(['message' => 'El mensaje no tiene un archivo adjunto.'], 404);
+        }
+
+        $disk = Storage::disk('local');
+
+        // La fila puede tener path y el archivo no estar (se limpió el disco, se restauró una
+        // base en otro servidor). Es un 404, no una excepción de "file not found" con 500.
+        if (! $disk->exists($media_path)) {
+            return response()->json(['message' => 'El archivo adjunto ya no está disponible.'], 404);
+        }
+
+        $mime = WhatsappInboundMediaService::safe_mime($message->media_mime);
+        if (is_null($mime)) {
+            // Fuera de la lista blanca se sirve como binario opaco: el navegador lo baja en vez
+            // de interpretarlo. No se devuelve 404 porque el archivo existe y es del operador.
+            $mime = 'application/octet-stream';
+        }
+
+        return response()->file($disk->path($media_path), [
+            'Content-Type'           => $mime,
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
     }
 
     /**
