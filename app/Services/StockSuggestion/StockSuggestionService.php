@@ -119,6 +119,10 @@ class StockSuggestionService
                 $deficits[] = [
                     'to_address_id' => $data['address_id'],
                     'needed' => (int) round($objetivo - $data['amount']),
+                    // Stock del destino al momento del cálculo: viaja con la
+                    // sugerencia para que la cobertura quede auditable sin
+                    // re-consultar address_article.
+                    'stock_destino' => $data['amount'],
                 ];
             }
         }
@@ -152,6 +156,7 @@ class StockSuggestionService
                     'from_address_id' => $origin['address_id'],
                     'to_address_id' => $deficit['to_address_id'],
                     'suggested_amount' => $mover,
+                    'stock_destino' => $deficit['stock_destino'],
                 ];
                 $disponible -= $mover;
             }

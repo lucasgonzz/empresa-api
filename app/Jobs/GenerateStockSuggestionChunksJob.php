@@ -4,11 +4,14 @@ namespace App\Jobs;
 
 use App\Models\Article;
 use App\Models\StockSuggestion;
+use App\Models\User;
+use App\Notifications\GlobalNotification;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Genera y procesa sugerencias de stock por lotes de artículos.
@@ -17,6 +20,9 @@ use Illuminate\Queue\SerializesModels;
 class GenerateStockSuggestionChunksJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+
+    /** @var int Reintentos antes de marcar la corrida como fallida */
+    public $tries = 3;
 
     /** @var int Identificador de la sugerencia a procesar */
     protected $stock_suggestion_id;
@@ -69,5 +75,51 @@ class GenerateStockSuggestionChunksJob implements ShouldQueue
         foreach ($article_ids_batches as $article_ids) {
             (new ProcessStockSuggestionChunkJob($article_ids, $suggestion->id))->handle();
         }
+    }
+
+    /**
+     * Marca la corrida como fallida cuando el job agotó sus reintentos: sin
+     * esto, la sugerencia quedaba 'pendiente' para siempre.
+     *
+     * @param \Throwable $exception
+     * @return void
+     */
+    public function failed(\Throwable $exception)
+    {
+        Log::error('GenerateStockSuggestionChunksJob: failed()', [
+            'stock_suggestion_id' => $this->stock_suggestion_id,
+            'message'             => $exception->getMessage(),
+        ]);
+
+        $suggestion = StockSuggestion::find($this->stock_suggestion_id);
+
+        // Si por alguna carrera ya quedó terminada, no se pisa con error.
+        if (!$suggestion || $suggestion->status === 'terminado') {
+            return;
+        }
+
+        $suggestion->status = 'error';
+        $suggestion->error_mensaje = $exception->getMessage();
+        $suggestion->save();
+
+        $user = User::find($suggestion->user_id);
+
+        if (!$user) {
+            return;
+        }
+
+        $user->notify(new GlobalNotification([
+            'message_text'          => 'La sugerencia de stock falló y quedó marcada con error',
+            'color_variant'         => 'danger',
+            'functions_to_execute'  => [
+                [
+                    'btn_text'      => 'Entendido',
+                    'btn_variant'   => 'primary',
+                ],
+            ],
+            'info_to_show'          => [],
+            'owner_id'              => $user->id,
+            'is_only_for_auth_user' => false,
+        ]));
     }
 }
