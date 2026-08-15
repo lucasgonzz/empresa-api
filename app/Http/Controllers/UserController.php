@@ -553,11 +553,99 @@ class UserController extends Controller
         return response()->json(['dark_mode' => (int) $model->dark_mode], 200);
     }
 
+    /**
+     * Guarda las preferencias de UI del chat con el asistente de IA de la
+     * persona AUTENTICADA (dueño o empleado): la posición del botón flotante
+     * y el ancho de la sidebar del panel.
+     *
+     * Mismo criterio que set_dark_mode, y a diferencia de set_img_auto_timeout:
+     * se resuelve con Auth::user() a propósito porque estas preferencias son
+     * de CADA PERSONA. Con $this->userId(), la posición que arrastra un
+     * empleado quedaría grabada en la fila del dueño y el botón se le movería
+     * de lugar al dueño al recargar.
+     *
+     * `chat_ia_fab_position` viaja como string "left,top" en px (D3 del plan:
+     * string corto en vez de JSON; parse con explode y guard de dos enteros
+     * 0..20000). `chat_ia_sidebar_width` en px, mismo rango 180..420 que la
+     * SPA permite arrastrar. Las dos claves son opcionales: se persiste solo
+     * lo que llega con valor, y un valor inválido corta con 422 SIN guardar
+     * nada (por eso se valida todo antes de escribir).
+     */
+    function set_chat_ia_preferencias(Request $request) {
+        $model = Auth::user();
+
+        $tiene_posicion = $request->has('chat_ia_fab_position') && !is_null($request->chat_ia_fab_position);
+        $tiene_ancho    = $request->has('chat_ia_sidebar_width') && !is_null($request->chat_ia_sidebar_width);
+
+        if ($tiene_posicion && !$this->es_posicion_de_fab_valida($request->chat_ia_fab_position)) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'chat_ia_fab_position invalida: se espera "left,top" con dos enteros entre 0 y 20000.',
+            ], 422);
+        }
+
+        if ($tiene_ancho) {
+            $ancho = $request->chat_ia_sidebar_width;
+
+            if (!is_numeric($ancho) || (int) $ancho != $ancho || (int) $ancho < 180 || (int) $ancho > 420) {
+                return response()->json([
+                    'error'   => true,
+                    'message' => 'chat_ia_sidebar_width invalido: se espera un entero entre 180 y 420.',
+                ], 422);
+            }
+        }
+
+        if ($tiene_posicion) {
+            $model->chat_ia_fab_position = (string) $request->chat_ia_fab_position;
+        }
+
+        if ($tiene_ancho) {
+            $model->chat_ia_sidebar_width = (int) $request->chat_ia_sidebar_width;
+        }
+
+        $model->save();
+
+        UserHelper::set_sessions($model);
+
+        return response()->json([
+            'chat_ia_fab_position'  => $model->chat_ia_fab_position,
+            'chat_ia_sidebar_width' => is_null($model->chat_ia_sidebar_width) ? null : (int) $model->chat_ia_sidebar_width,
+        ], 200);
+    }
+
+    /**
+     * true si el valor es un "left,top" válido: exactamente dos enteros no
+     * negativos de hasta 20000, separados por una coma. ctype_digit y no
+     * is_numeric: "12.5" o "1e3" no son coordenadas de pantalla.
+     *
+     * @param mixed $valor Valor recibido desde el request.
+     * @return bool
+     */
+    private function es_posicion_de_fab_valida($valor) {
+        if (!is_string($valor)) {
+            return false;
+        }
+
+        $partes = explode(',', $valor);
+
+        if (count($partes) !== 2) {
+            return false;
+        }
+
+        foreach ($partes as $parte) {
+            if (!ctype_digit($parte) || (int) $parte > 20000) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     function set_img_auto_timeout($value) {
         $model = User::find($this->userId());
         $model->img_auto_timeout = $value;
         $model->save();
-        
+
         return response()->json(['model' => $model], 200);
     }
 
