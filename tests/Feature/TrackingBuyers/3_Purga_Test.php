@@ -44,6 +44,15 @@ class Purga_Test extends TestCase
     const SLUG = 'tracking_buyers';
 
     /**
+     * Un user_id que NO es el de la instancia, para el caso de las filas que la purga vieja
+     * no podía alcanzar. No hace falta que exista en `users`: la tabla no tiene FK física, y
+     * el punto del test es justamente que esas filas se escriban igual.
+     *
+     * @var int
+     */
+    const USER_ID_AJENO = 90500;
+
+    /**
      * Usuario dueño de la instancia de testing (config('app.USER_ID') = 500 en .env.testing).
      *
      * @return \App\Models\User|null
@@ -62,7 +71,7 @@ class Purga_Test extends TestCase
     {
         parent::setUp();
 
-        DB::table('buyer_tracking_events')->where('user_id', 500)->delete();
+        DB::table('buyer_tracking_events')->whereIn('user_id', [500, self::USER_ID_AJENO])->delete();
     }
 
     /**
@@ -104,16 +113,17 @@ class Purga_Test extends TestCase
      *
      * @param string $occurred_at
      * @param int $cantidad
+     * @param int $user_id Comercio dueño de las filas; por defecto el de la instancia
      * @return void
      */
-    protected function sembrar_eventos($occurred_at, $cantidad)
+    protected function sembrar_eventos($occurred_at, $cantidad, $user_id = 500)
     {
         $ahora = now();
         $filas = [];
 
         for ($i = 0; $i < $cantidad; $i++) {
             $filas[] = [
-                'user_id'     => 500,
+                'user_id'     => $user_id,
                 'buyer_id'    => null,
                 'visitor_id'  => '11111111-1111-4111-8111-111111111111',
                 'session_id'  => '22222222-2222-4222-8222-222222222222',
@@ -137,7 +147,18 @@ class Purga_Test extends TestCase
      */
     protected function eventos_restantes()
     {
-        return DB::table('buyer_tracking_events')->where('user_id', 500)->count();
+        return $this->eventos_restantes_de(500);
+    }
+
+    /**
+     * Cantidad de eventos que quedan de un comercio puntual.
+     *
+     * @param int $user_id
+     * @return int
+     */
+    protected function eventos_restantes_de($user_id)
+    {
+        return DB::table('buyer_tracking_events')->where('user_id', $user_id)->count();
     }
 
     /**
@@ -288,6 +309,45 @@ class Purga_Test extends TestCase
         $this->artisan('tracking:purgar-buyers')->assertExitCode(0);
 
         $this->assertEquals(3, $this->eventos_restantes(), 'La purga borró sin la extensión activa.');
+    }
+
+    /**
+     * La purga alcanza a las filas de CUALQUIER user_id, no sólo al de config('app.USER_ID').
+     *
+     * El modo de falla es una tabla que crece para siempre mientras el comando dice "se
+     * borraron 0". El user_id de cada fila lo decide el `commerce_id` que manda el SPA de la
+     * tienda (VUE_APP_COMMERCE_ID), que es otra variable de entorno, en otro repo, sin nada
+     * que la ate a la de acá: alcanza un env mal copiado en un despliegue para que se empiecen
+     * a escribir filas que la purga vieja no podía tocar nunca. Y es la tabla de alto volumen
+     * del sistema.
+     *
+     * El test también mide que la retención se respeta para ese user_id ajeno: se purga, no se
+     * arrasa.
+     *
+     * @group tracking_buyers
+     * @test
+     */
+    public function la_purga_borra_las_filas_de_un_user_id_que_no_es_el_de_la_config()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->activar_extencion($user);
+
+        $this->sembrar_eventos(now()->subDays(200)->format('Y-m-d H:i:s'), 3);
+        $this->sembrar_eventos(now()->subDays(200)->format('Y-m-d H:i:s'), 4, self::USER_ID_AJENO);
+        $this->sembrar_eventos(now()->subDays(2)->format('Y-m-d H:i:s'), 2, self::USER_ID_AJENO);
+
+        $this->artisan('tracking:purgar-buyers')->assertExitCode(0);
+
+        $this->assertEquals(0, $this->eventos_restantes(), 'No se purgaron los eventos viejos de la instancia.');
+
+        $this->assertEquals(
+            2,
+            $this->eventos_restantes_de(self::USER_ID_AJENO),
+            'La purga dejó filas inmortales: las de un user_id distinto al de la config no se borran nunca y la tabla crece para siempre.'
+        );
     }
 
     /**

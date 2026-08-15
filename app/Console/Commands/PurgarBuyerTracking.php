@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\User;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -23,6 +24,16 @@ use Illuminate\Support\Facades\Schema;
  * exactamente el mecanismo del `1205 Lock wait timeout` que ya tumbó ventas en
  * producción en este sistema. El bucle de lotes chicos deja huecos entre
  * sentencia y sentencia para que el resto de la aplicación siga escribiendo.
+ *
+ * Y purga TODOS los `user_id` que estén en la tabla, no sólo el de
+ * `config('app.USER_ID')`. El motivo: el `user_id` que se escribe en cada fila
+ * viene del `commerce_id` que manda el SPA de la tienda (`VUE_APP_COMMERCE_ID`),
+ * que es OTRA variable de entorno, en OTRO repo, sin nada que la ate a la de acá.
+ * Si alguna vez se escribe una fila con un user_id distinto —un env mal copiado
+ * al desplegar, un cliente apuntando a la base equivocada—, una purga que filtra
+ * por el user_id configurado no la borra NUNCA: la tabla de alto volumen crece
+ * para siempre mientras el comando reporta alegremente "se borraron 0". Es la
+ * clase de error de la medición que falla devolviendo un valor tranquilizador.
  */
 class PurgarBuyerTracking extends Command
 {
@@ -106,7 +117,32 @@ class PurgarBuyerTracking extends Command
         $dias   = $this->resolver_dias();
         $limite = now()->subDays($dias);
 
-        $borradas = $this->purgar_por_lotes($user->id, $limite);
+        $borradas = 0;
+
+        /*
+         * Se recorren los user_id que REALMENTE están en la tabla, y se purga cada
+         * uno con el mismo bucle de lotes. Así se sigue entrando por
+         * bte_user_ocurrido_index (user_id, occurred_at) —que es el motivo por el
+         * que el DELETE fija el user_id, ver purgar_por_lotes()— y además no queda
+         * ninguna fila afuera por tener un user_id que nadie esperaba.
+         */
+        foreach ($this->user_ids_presentes() as $user_id) {
+
+            if ((int) $user_id !== (int) $user->id) {
+                /*
+                 * No es un caso normal: significa que se escribieron eventos con un
+                 * commerce_id que no es el de esta instancia. Se purgan igual (para
+                 * eso está el recorrido), pero se avisa, porque lo que hay atrás es
+                 * una configuración mal puesta en algún despliegue.
+                 */
+                Log::warning('tracking:purgar-buyers: hay eventos con un user_id que no es el de la instancia. Se purgan igual, pero revisar el commerce_id que manda el SPA de la tienda.', [
+                    'user_id_en_la_tabla'  => (int) $user_id,
+                    'user_id_configurado'  => (int) $user->id,
+                ]);
+            }
+
+            $borradas += $this->purgar_por_lotes($user_id, $limite);
+        }
 
         $this->info(
             'tracking:purgar-buyers — se borraron ' . $borradas . ' eventos anteriores a '
@@ -114,6 +150,24 @@ class PurgarBuyerTracking extends Command
         );
 
         return 0;
+    }
+
+    /**
+     * Los `user_id` distintos presentes hoy en la tabla.
+     *
+     * Es barato aunque la tabla sea enorme: el SELECT DISTINCT lo resuelve
+     * bte_user_ocurrido_index sin tocar los datos, y en una base de cliente el
+     * resultado tiene casi siempre un solo valor.
+     *
+     * @return array<int, int>
+     */
+    protected function user_ids_presentes()
+    {
+        return DB::table('buyer_tracking_events')
+            ->select('user_id')
+            ->distinct()
+            ->pluck('user_id')
+            ->all();
     }
 
     /**
@@ -153,6 +207,11 @@ class PurgarBuyerTracking extends Command
              * entrar por bte_user_ocurrido_index (user_id, occurred_at). Sin el
              * user_id fijo, el rango sobre occurred_at no tiene prefijo por donde
              * empezar y el DELETE degrada a full scan.
+             *
+             * Por eso el comando NO borra con un solo DELETE global: recorre los
+             * user_id presentes (ver user_ids_presentes()) y llama acá una vez por
+             * cada uno. Se queda con el índice Y no deja filas inmortales, que es lo
+             * que pasaba cuando el único user_id posible era el de la config.
              */
             $lote = DB::table('buyer_tracking_events')
                 ->where('user_id', $user_id)
