@@ -81,6 +81,18 @@ class Kernel extends ConsoleKernel
                 ->withoutOverlapping(60);
         }
 
+        // Corrida automática del motor de ofertas por cliente, solo con la extensión
+        // motor_de_ofertas. Mismo patrón que los dos de arriba: el comando decide adentro si hoy
+        // toca según la periodicidad, y ese doble gate es a propósito (el de acá evita el SELECT;
+        // el de adentro cubre la corrida a mano). 06:00 y no 05:00/05:30: no se pisa con
+        // sugerencias:generar ni con compras:generar, que en la misma ventana recorren catálogo e
+        // historial del mismo comercio. withoutOverlapping(60) cubre padrones de clientes grandes.
+        if ($company_owner && UserHelper::hasExtencion('motor_de_ofertas', $company_owner)) {
+            $schedule->command('ofertas:generar')
+                ->dailyAt('06:00')
+                ->withoutOverlapping(60);
+        }
+
         // Rollup diario del tracking de comportamiento de compradores de la tienda
         // (misión tracking-buyers-tienda): colapsa el día de ayer de
         // buyer_tracking_events en buyer_tracking_daily. 03:30 porque el día de ayer
