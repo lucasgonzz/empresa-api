@@ -98,13 +98,24 @@ class Criterios_de_seleccion_Test extends TestCase
     }
 
     /** Un evento crudo de la tienda. La ventana se mide por occurred_at, nunca por created_at. */
-    protected function sembrar_evento($buyer, $article, $dias_atras, $tipo = 'cart_add')
+    protected function sembrar_evento($buyer, $article, $dias_atras, $tipo = 'cart_add', array $extra = [])
     {
-        DB::table('buyer_tracking_events')->insert([
+        DB::table('buyer_tracking_events')->insert(array_merge([
             'user_id' => $this->comercio->id, 'buyer_id' => $buyer->id, 'event_type' => $tipo,
             'visitor_id' => '11111111-1111-4111-8111-111111111111',
-            'session_id' => '22222222-2222-4222-8222-222222222222', 'article_id' => $article->id,
+            'session_id' => '22222222-2222-4222-8222-222222222222',
+            'article_id' => is_null($article) ? null : $article->id,
             'occurred_at' => now()->subDays($dias_atras), 'created_at' => now(), 'updated_at' => now(),
+        ], $extra));
+    }
+
+    /** Un buyer del ecommerce atado (o no) a un cliente del ERP. @return Buyer */
+    protected function comprador($cliente = null)
+    {
+        return Buyer::create([
+            'name' => 'Comprador ' . uniqid(), 'email' => 'buyer-' . uniqid() . '@test.local',
+            'user_id' => $this->comercio->id,
+            'comercio_city_client_id' => is_null($cliente) ? null : $cliente->id,
         ]);
     }
 
@@ -237,6 +248,149 @@ class Criterios_de_seleccion_Test extends TestCase
             'user_id' => $this->comercio->id, 'comercio_city_client_id' => null]);
         $this->sembrar_evento($buyer, $article, 2);
         $this->assertSame([], $this->servicio()->carrito_abandonado());
+    }
+
+    /**
+     * 🔴 LA MITAD DEL PEDIDO QUE FALTABA: "qué productos vio y cuánto tiempo, qué buscó".
+     *
+     * El motor consumía dos de las cuatro señales que pidió Lucas (cart_add y las compras) y nadie
+     * leía product_view, dwell_ms, search ni search_term. Este test siembra las dos señales nuevas y
+     * comprueba que las dos llegan a ser candidatos.
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function el_interes_en_la_tienda_trae_lo_que_miro_con_tiempo_y_lo_que_busco()
+    {
+        $cliente = $this->cliente('Cliente que mira la tienda');
+        $mirado  = $this->articulo('Articulo mirado tres veces');
+        $buscado = $this->articulo('Termostato zzterminobuscado digital');
+        $buyer   = $this->comprador($cliente);
+
+        // Tres visitas a la misma ficha, un minuto cada una: volvió y se quedó.
+        foreach ([1, 2, 3] as $dias) {
+            $this->sembrar_evento($buyer, $mirado, $dias, 'product_view', ['dwell_ms' => 60000]);
+        }
+
+        // 🔴 Una búsqueda NO trae article_id (el esquema no lo ata): el puente es el texto.
+        $this->sembrar_evento($buyer, null, 2, 'search', ['search_term' => 'zzterminobuscado']);
+
+        $candidatos = $this->servicio()->interes_en_el_ecommerce();
+        $pares      = $this->pares($candidatos);
+
+        $this->assertContains($cliente->id . '-' . $mirado->id, $pares,
+            'lo que miró varias veces y con tiempo tiene que ser candidato');
+        $this->assertContains($cliente->id . '-' . $buscado->id, $pares,
+            'lo que buscó por nombre tiene que ser candidato: el match va por texto contra articles');
+
+        foreach ($candidatos as $candidato) {
+            $this->assertSame(CriteriosDeOfertaService::CRITERIO_INTERES_ECOMMERCE, $candidato['criterio']);
+            // 🔴 La escala: mirar y buscar valen MENOS que una compra previa (afinidad = cantidad de
+            // compras, o sea >= 1.0) y mucho menos que un carrito abandonado (3.0). Si alguien sube
+            // estos scores por encima de 1, el dedupe empieza a tapar afinidad con vistas.
+            $this->assertLessThan(1.0, $candidato['score'], 'una vista vale menos que una compra previa');
+            $this->assertLessThan(CriteriosDeOfertaService::SCORE_CARRITO_ABANDONADO, $candidato['score']);
+            $this->assertGreaterThan(0, $candidato['score']);
+        }
+
+        // El detalle lo escribe el código y tiene que contar las dos cosas que se midieron.
+        $del_mirado = array_values(array_filter($candidatos, function ($c) use ($mirado) {
+            return $c['article_id'] == $mirado->id;
+        }));
+        $this->assertStringContainsString('3 veces', $del_mirado[0]['detalle']);
+        $this->assertStringContainsString('3 minutos', $del_mirado[0]['detalle']);
+
+        // 🔴 Volver varias veces y quedarse un rato tienen que MOVER el score: si no, las dos señales
+        // que Lucas pidió ("cuánto tiempo", "varias veces") se leen y se tiran.
+        $tibio = $this->cliente('Cliente que paso de largo');
+        $this->sembrar_evento($this->comprador($tibio), $mirado, 1, 'product_view', ['dwell_ms' => 1000]);
+
+        $scores = [];
+        foreach ($this->servicio()->interes_en_el_ecommerce() as $candidato) {
+            $scores[$candidato['client_id'] . '-' . $candidato['article_id']] = $candidato['score'];
+        }
+        $this->assertGreaterThan(
+            $scores[$tibio->id . '-' . $mirado->id],
+            $scores[$cliente->id . '-' . $mirado->id],
+            'tres visitas de un minuto valen más que una de un segundo'
+        );
+
+        // 🔴 Y el criterio tiene que estar ENCHUFADO al pipeline, no solo existir: sin la llamada en
+        // candidatos() todo lo de arriba pasa igual y la funcionalidad no existe.
+        $this->assertContains($cliente->id . '-' . $mirado->id, $this->pares($this->servicio()->candidatos()));
+    }
+
+    /**
+     * 🔴 El estado real de hoy, igual que el carrito abandonado: tracking en CERO FILAS. El criterio
+     * devuelve [], no lanza, y la corrida sigue dando resultados por afinidad y reactivación.
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function el_interes_en_la_tienda_con_las_tablas_de_tracking_vacias_devuelve_vacio()
+    {
+        $cliente = $this->cliente('Cliente sin tracking de interes');
+        $article = $this->articulo('Articulo sin tracking de interes');
+        $this->comprar($cliente, $article, 5);
+
+        $this->assertSame([], $this->servicio()->interes_en_el_ecommerce());
+        $this->assertNotEmpty(
+            $this->servicio()->candidatos(),
+            'sin una sola fila de tracking la corrida igual tiene que dar resultados'
+        );
+    }
+
+    /**
+     * El mismo descarte que el carrito abandonado: si ya lo compró después de mirarlo, no hay nada
+     * que ofrecerle. Y la ventana se mide por occurred_at, nunca por created_at.
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function el_interes_desaparece_si_despues_lo_compro_y_si_la_vista_quedo_fuera_de_ventana()
+    {
+        $cliente = $this->cliente('Cliente que mira y compra');
+        $article = $this->articulo('Articulo mirado y comprado');
+        $buyer   = $this->comprador($cliente);
+
+        $this->sembrar_evento($buyer, $article, 3, 'product_view', ['dwell_ms' => 90000]);
+        $this->assertContains(
+            $cliente->id . '-' . $article->id,
+            $this->pares($this->servicio()->interes_en_el_ecommerce())
+        );
+
+        $this->comprar($cliente, $article, 1);
+        $this->assertSame([], $this->servicio()->interes_en_el_ecommerce(),
+            'lo que ya compró después de mirarlo no se ofrece de nuevo');
+
+        // 🔴 occurred_at y no created_at: este evento pasó hace 60 días (la ventana del interés es el
+        // doble de dias_carrito_abandonado, o sea 14) aunque la tienda lo haya mandado recién hoy.
+        $viejo = $this->articulo('Articulo mirado hace mucho');
+        $this->sembrar_evento($buyer, $viejo, 60, 'product_view', ['dwell_ms' => 90000]);
+        $this->assertSame([], $this->servicio()->interes_en_el_ecommerce());
+    }
+
+    /**
+     * 🔴 El término buscado entra CRUDO en un LIKE: sus comodines se escapan. Sin el addcslashes, un
+     * "50%" matchea todo lo que empieza con 50 y el cliente recibe ofertas de cualquier cosa.
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function los_comodines_de_un_termino_buscado_no_matchean_todo_el_catalogo()
+    {
+        $cliente = $this->cliente('Cliente que busca con comodines');
+        $otro    = $this->articulo('zzcatalogo articulo cualquiera');
+        $buyer   = $this->comprador($cliente);
+
+        // "zz%" con el comodín sin escapar matchea 'zzcatalogo articulo cualquiera'.
+        $this->sembrar_evento($buyer, null, 1, 'search', ['search_term' => 'zz%']);
+
+        $this->assertNotContains(
+            $cliente->id . '-' . $otro->id,
+            $this->pares($this->servicio()->interes_en_el_ecommerce()),
+            'el % del término tiene que ser un porcentaje literal, no un comodín de LIKE'
+        );
     }
 
     /**

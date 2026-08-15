@@ -7,16 +7,25 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
- * A quién ofrecerle qué: los tres criterios de marketing del motor de ofertas (§A.5) y el filtro de
+ * A quién ofrecerle qué: los cuatro criterios de marketing del motor de ofertas (§A.5) y el filtro de
  * crédito. Devuelve candidatos `['client_id','article_id','criterio','score','detalle','compras']`;
  * el techo y el porcentaje son de otros servicios y este no los mira.
+ *
+ * Los cuatro criterios, y las CUATRO señales del pedido de Lucas ("qué productos vio y cuánto
+ * tiempo, qué buscó, qué agregó al carrito, qué compró"):
+ *   - afinidad (A.5.1)              -> qué compró        (article_purchases)
+ *   - reactivación (A.5.3)          -> qué compró        (article_purchases)
+ *   - carrito abandonado (A.5.2)    -> qué agregó al carrito (buyer_tracking_events, cart_add)
+ *   - interés en el ecommerce       -> qué vio y cuánto tiempo, y qué buscó
+ *                                      (buyer_tracking_events, product_view + dwell_ms y search)
  *
  * 🔴 LAS DOS TABLAS DE TRACKING (buyer_tracking_events, buyer_tracking_daily) ESTÁN HOY EN CERO
  * FILAS. Medido el 15/8/2026 sobre empresa_testing_s2: se crearon con la misión 2 y las escribe la
  * tienda, que todavía no está desplegada. Por eso el motor tiene que dar sugerencias útiles SIN UNA
  * SOLA FILA DE TRACKING: afinidad (A.5.1) y reactivación (A.5.3) salen de article_purchases, que sí
- * tiene historia, y son los que funcionan desde el día uno. Carrito abandonado (A.5.2) degrada a
- * conjunto vacío y no lanza. Si una corrida vuelve vacía, el problema NO es el tracking.
+ * tiene historia, y son los que funcionan desde el día uno. Carrito abandonado (A.5.2) e interés en
+ * el ecommerce degradan a conjunto vacío y no lanzan. Si una corrida vuelve vacía, el problema NO es
+ * el tracking.
  *
  * 🔴 EL MAL PAGADOR SE EXCLUYE ENTERO, ANTES DE CALCULAR NADA. Es una DECISIÓN DE NEGOCIO de Lucas
  * del 15/8/2026 —"al que debe hace mucho no se le ofrece nada"—, no una optimización. El plan
@@ -32,6 +41,7 @@ class CriteriosDeOfertaService
     const CRITERIO_AFINIDAD = 'afinidad';
     const CRITERIO_CARRITO_ABANDONADO = 'carrito_abandonado';
     const CRITERIO_REACTIVACION = 'reactivacion';
+    const CRITERIO_INTERES_ECOMMERCE = 'interes_ecommerce';
 
     /** Compras mínimas del par (cliente, artículo) para que la afinidad cuente. */
     const MIN_COMPRAS_AFINIDAD = 1;
@@ -44,6 +54,45 @@ class CriteriosDeOfertaService
 
     /** Cuánto se amplía la ventana de afinidad, solo para un dormido sin historia reciente. */
     const MULTIPLICADOR_VENTANA_DORMIDO = 4;
+
+    /*
+     * 🔴 LA ESCALA DE SCORES DEL CRITERIO NUEVO, Y POR QUÉ VIVE ENTERA POR DEBAJO DE 1.0.
+     * Los otros tres criterios ya fijan la escala: carrito abandonado 3.0, reactivación 2.0 + los
+     * días dormido, y afinidad = CUÁNTAS VECES lo compró, o sea >= 1.0 siempre. Mirar no es comprar
+     * y buscar tampoco: una vista tiene que valer MENOS que un carrito abandonado y MENOS que una
+     * compra previa, así que el techo de todo este criterio (0.40 + 0.20 + 0.20 = 0.80, y 0.80 para
+     * una búsqueda) queda por debajo del 1.0 de UNA sola compra. Si alguien sube estos números por
+     * encima de 1, el dedupe por mayor score empieza a tapar afinidad con vistas y el tope por
+     * cliente (A.5.6) se llena de gente que solo miró.
+     */
+    const SCORE_BASE_VISTA = 0.40;
+    const SCORE_BUSQUEDA = 0.80;
+    const BONUS_MAXIMO_POR_VISITAS = 0.20;
+    const BONUS_MAXIMO_POR_DWELL = 0.20;
+
+    /** Visitas al mismo artículo a partir de las cuales el bonus por repetición es máximo. */
+    const VISITAS_PARA_BONUS_MAXIMO = 5;
+
+    /** Permanencia acumulada (2 minutos) a partir de la cual el bonus por tiempo es máximo. */
+    const DWELL_MS_PARA_BONUS_MAXIMO = 120000;
+
+    /**
+     * La ventana del interés es el doble que la del carrito abandonado. Mirar y buscar son señales
+     * más débiles pero también mucho más frecuentes que un cart_add, y 7 días dejarían afuera al que
+     * recorrió la tienda el fin de semana anterior. NO se agrega un parámetro nuevo a la cabecera:
+     * multiplicar la configuración por una señal que hoy da vacío es pedirle al comerciante que
+     * ajuste algo que todavía no puede ver.
+     */
+    const MULTIPLICADOR_VENTANA_INTERES = 2;
+
+    /** Largo mínimo de un término buscado para tomarlo en serio: con 1 o 2 letras matchea medio catálogo. */
+    const MIN_LARGO_TERMINO_BUSCADO = 3;
+
+    /** Techo de términos distintos que se resuelven contra el catálogo en una corrida. */
+    const MAX_TERMINOS_BUSCADOS = 30;
+
+    /** Techo de artículos que puede traer UN término: un LIKE amplio no puede inundar la corrida. */
+    const MAX_ARTICULOS_POR_TERMINO = 5;
 
     /** @var mixed Cabecera de la corrida: de ahí salen los parámetros del algoritmo */
     protected $suggestion;
@@ -72,7 +121,7 @@ class CriteriosDeOfertaService
     }
 
     /**
-     * El pipeline completo: los tres criterios, dedupe, filtro de crédito y tope por cliente.
+     * El pipeline completo: los cuatro criterios, dedupe, filtro de crédito y tope por cliente.
      *
      * @return array Lista de ['client_id','article_id','criterio','score','detalle','compras']
      */
@@ -81,7 +130,8 @@ class CriteriosDeOfertaService
         $candidatos = $this->dedupe(array_merge(
             $this->afinidad(),
             $this->carrito_abandonado(),
-            $this->reactivacion()
+            $this->reactivacion(),
+            $this->interes_en_el_ecommerce()
         ));
 
         return $this->tope_por_cliente($this->excluir_malos_pagadores($candidatos));
@@ -192,6 +242,36 @@ class CriteriosDeOfertaService
         }
 
         return $candidatos;
+    }
+
+    /**
+     * Interés en el ecommerce: LO QUE VIO Y CUÁNTO TIEMPO, Y LO QUE BUSCÓ.
+     *
+     * Es la mitad del pedido de Lucas que faltaba. El motor consumía dos de las cuatro señales
+     * (`cart_add` y `article_purchases`) y nadie leía `product_view`, `dwell_ms`, `search` ni
+     * `search_term`, que la misión 2 puebla y estaban ahí sin usar. Un cliente que entró tres veces
+     * a la misma ficha y se quedó dos minutos mirándola, o que buscó el artículo por su nombre, ya
+     * dijo que lo quiere: es intención de compra, más débil que un carrito pero de la misma familia.
+     *
+     * 🔴 HOY DEVUELVE [] Y ESO ESTÁ BIEN: buyer_tracking_events está en cero filas hasta que la
+     * tienda se despliegue (ver el docblock de la clase). No lanza, no vacía la corrida y no cambia
+     * en nada lo que devuelven afinidad y reactivación, que son las que funcionan desde el día uno.
+     *
+     * @return array
+     */
+    public function interes_en_el_ecommerce(): array
+    {
+        $desde = Carbon::now()->subDays(
+            (int) $this->suggestion->dias_carrito_abandonado * self::MULTIPLICADOR_VENTANA_INTERES
+        );
+
+        $candidatos = array_merge($this->vistas_con_tiempo($desde), $this->busquedas($desde));
+
+        if (empty($candidatos)) {
+            return [];
+        }
+
+        return $this->descartar_los_ya_comprados($candidatos);
     }
 
     /**
@@ -318,6 +398,238 @@ class CriteriosDeOfertaService
         }
 
         return $mapa;
+    }
+
+    /**
+     * "Qué productos vio y cuánto tiempo": product_view agrupado por (cliente, artículo), contando
+     * visitas y sumando dwell_ms.
+     *
+     * 🔴 Se agrupa por comercio_city_client_id y NO por buyer_id, igual que carrito_abandonado(): un
+     * cliente del ERP puede tener más de un Buyer (se registró dos veces, o la familia comparte la
+     * cuenta) y el candidato es del CLIENTE, no del comprador. Agrupando por buyer saldrían dos
+     * filas del mismo par que el dedupe colapsaría igual, pero quedándose con el score de una sola
+     * de las dos sesiones en vez de con el interés sumado.
+     *
+     * 🔴 La ventana va por occurred_at, NUNCA por created_at (docblock de la migración
+     * 2026_08_15_140000:148-151): created_at es cuándo la tienda mandó el lote, occurred_at es
+     * cuándo el comprador miró. Además es la columna del índice (user_id, occurred_at).
+     *
+     * @param  \Carbon\Carbon $desde
+     * @return array
+     */
+    protected function vistas_con_tiempo($desde)
+    {
+        $filas = DB::table('buyer_tracking_events as e')
+            ->join('buyers as b', 'b.id', '=', 'e.buyer_id')
+            ->where('e.user_id', $this->user_id)
+            ->where('e.event_type', 'product_view')
+            ->where('e.occurred_at', '>=', $desde)
+            ->whereNotNull('e.article_id')
+            ->whereNotNull('b.comercio_city_client_id')
+            ->groupBy('b.comercio_city_client_id', 'e.article_id')
+            ->selectRaw(
+                'b.comercio_city_client_id as client_id, e.article_id as article_id,
+                 COUNT(*) as visitas, SUM(e.dwell_ms) as dwell_ms_total, MAX(e.occurred_at) as ultimo'
+            )
+            ->get();
+
+        $candidatos = [];
+
+        foreach ($filas as $fila) {
+            $visitas = (int) $fila->visitas;
+            // dwell_ms es nullable y SUM() de puros nulls devuelve NULL: sin el cast el bonus por
+            // tiempo se calcularía sobre null y una tienda que todavía no manda el reloj daría
+            // scores distintos a los de una que lo manda en cero.
+            $dwell = (int) $fila->dwell_ms_total;
+
+            $candidatos[] = [
+                'client_id'  => (int) $fila->client_id,
+                'article_id' => (int) $fila->article_id,
+                'criterio'   => self::CRITERIO_INTERES_ECOMMERCE,
+                // Volver varias veces y quedarse un rato son dos señales distintas del mismo
+                // interés, así que suman por separado y cada una tiene su propio techo.
+                'score'      => self::SCORE_BASE_VISTA
+                    + min(1, $visitas / self::VISITAS_PARA_BONUS_MAXIMO) * self::BONUS_MAXIMO_POR_VISITAS
+                    + min(1, $dwell / self::DWELL_MS_PARA_BONUS_MAXIMO) * self::BONUS_MAXIMO_POR_DWELL,
+                'compras'    => 0,
+                'ultimo'     => $fila->ultimo,
+                'detalle'    => $this->detalle_de_vista($visitas, $dwell),
+            ];
+        }
+
+        return $candidatos;
+    }
+
+    /**
+     * "Qué buscó": los términos que el cliente escribió en el buscador de la tienda, resueltos
+     * contra el catálogo.
+     *
+     * 🔴 buyer_tracking_events NO ATA LA BÚSQUEDA A UN article_id — mirá el esquema: guarda
+     * search_term y results_count, y nada más (2026_08_15_140000:116-125). El único puente hacia el
+     * catálogo es el texto, así que el match se hace POR TEXTO contra articles, y eso obliga a
+     * acotarlo por los dos lados:
+     *   - por término: MAX_ARTICULOS_POR_TERMINO, para que un "cable" no meta 400 líneas de una;
+     *   - por corrida: MAX_TERMINOS_BUSCADOS términos DISTINTOS resueltos, memoizados, porque
+     *     muchos clientes buscan lo mismo y el catálogo no cambia entre uno y otro.
+     * El costo queda en un scan acotado al catálogo del comercio, a lo sumo 30 veces por corrida y
+     * una sola vez por término. 🔴 Lo que NO se hace es el producto cartesiano evidente (cruzar cada
+     * fila de búsqueda contra articles en un solo JOIN con LIKE), que con 5.000 búsquedas y 50.000
+     * artículos son 250 millones de comparaciones para el mismo resultado.
+     *
+     * @param  \Carbon\Carbon $desde
+     * @return array
+     */
+    protected function busquedas($desde)
+    {
+        $filas = DB::table('buyer_tracking_events as e')
+            ->join('buyers as b', 'b.id', '=', 'e.buyer_id')
+            ->where('e.user_id', $this->user_id)
+            ->where('e.event_type', 'search')
+            ->where('e.occurred_at', '>=', $desde)
+            ->whereNotNull('e.search_term')
+            ->where('e.search_term', '!=', '')
+            ->whereNotNull('b.comercio_city_client_id')
+            ->groupBy('b.comercio_city_client_id', 'e.search_term')
+            ->selectRaw('b.comercio_city_client_id as client_id, e.search_term as termino, MAX(e.occurred_at) as ultimo')
+            ->get();
+
+        if ($filas->isEmpty()) {
+            return [];
+        }
+
+        $por_termino = [];
+        $resueltos   = 0;
+        $candidatos  = [];
+
+        foreach ($filas as $fila) {
+            $termino = trim((string) $fila->termino);
+
+            // Con 1 o 2 letras el LIKE matchea medio catálogo y el "interés" sería ruido.
+            if (mb_strlen($termino) < self::MIN_LARGO_TERMINO_BUSCADO) {
+                continue;
+            }
+
+            if (!array_key_exists($termino, $por_termino)) {
+                if ($resueltos >= self::MAX_TERMINOS_BUSCADOS) {
+                    continue;
+                }
+
+                $por_termino[$termino] = $this->articulos_que_matchean($termino);
+                $resueltos++;
+            }
+
+            foreach ($por_termino[$termino] as $article_id) {
+                $candidatos[] = [
+                    'client_id'  => (int) $fila->client_id,
+                    'article_id' => $article_id,
+                    'criterio'   => self::CRITERIO_INTERES_ECOMMERCE,
+                    // Fijo: buscar algo por su nombre es una intención declarada, no una escala.
+                    'score'      => self::SCORE_BUSQUEDA,
+                    'compras'    => 0,
+                    'ultimo'     => $fila->ultimo,
+                    'detalle'    => 'Buscó "' . $termino . '" en la tienda y todavía no lo compró',
+                ];
+            }
+        }
+
+        return $candidatos;
+    }
+
+    /**
+     * Los artículos del comercio que matchean un término buscado, acotados y en orden estable.
+     *
+     * @param  string $termino
+     * @return array Lista de article_id
+     */
+    protected function articulos_que_matchean($termino)
+    {
+        /*
+         * 🔴 Los comodines del LIKE se escapan: un término real como "50%" o "cable_2" los trae
+         * adentro, y sin escaparlos "50%" matchea todo lo que empieza con 50 y "cable_2" matchea
+         * "cableX2". La barra invertida va también porque es el carácter de escape del propio LIKE.
+         */
+        $escapado = addcslashes($termino, '%_\\');
+
+        $ids = DB::table('articles')
+            ->where('user_id', $this->user_id)
+            ->where('status', '!=', 'inactive')
+            ->where(function ($q) use ($escapado, $termino) {
+                // El nombre por contenido (es como busca la gente: "hdmi" contra "Cable HDMI 2m") y
+                // los dos códigos por igualdad exacta, que es la única forma en que alguien pega un
+                // código en el buscador.
+                $q->where('name', 'like', '%' . $escapado . '%')
+                    ->orWhere('bar_code', $termino)
+                    ->orWhere('provider_code', $termino);
+            })
+            // Orden explícito para que el recorte de MAX_ARTICULOS_POR_TERMINO sea el MISMO en dos
+            // corridas iguales: sin ORDER BY, el LIMIT se queda con lo que el motor devuelva primero.
+            ->orderBy('id')
+            ->limit(self::MAX_ARTICULOS_POR_TERMINO)
+            ->pluck('id');
+
+        $limpios = [];
+
+        foreach ($ids as $id) {
+            $limpios[] = (int) $id;
+        }
+
+        return $limpios;
+    }
+
+    /**
+     * 🔴 El mismo descarte que hace carrito_abandonado(): si el par ya tiene una compra REAL
+     * posterior a la señal, no hay nada que ofrecerle — ya lo compró. Va en PHP y contra
+     * article_purchases por el mismo motivo que allá: checkout_complete no garantiza traer
+     * article_id, así que un NOT EXISTS contra la propia tabla de eventos dejaría pasar lo comprado.
+     *
+     * De paso saca la clave 'ultimo', que es de uso interno de este criterio y no forma parte del
+     * contrato de un candidato.
+     *
+     * @param  array $candidatos
+     * @return array
+     */
+    protected function descartar_los_ya_comprados(array $candidatos)
+    {
+        $ya_comprados = $this->ultima_compra_por_par(collect($candidatos));
+        $sobreviven   = [];
+
+        foreach ($candidatos as $candidato) {
+            $clave = $candidato['client_id'] . '-' . $candidato['article_id'];
+
+            if (isset($ya_comprados[$clave]) && $ya_comprados[$clave] >= $candidato['ultimo']) {
+                continue;
+            }
+
+            unset($candidato['ultimo']);
+            $sobreviven[] = $candidato;
+        }
+
+        return $sobreviven;
+    }
+
+    /**
+     * La frase en criollo de una vista, con el tiempo en la unidad que se entiende. La escribe el
+     * código y no la IA, igual que el detalle de los otros tres criterios.
+     *
+     * @param  int $visitas
+     * @param  int $dwell_ms
+     * @return string
+     */
+    protected function detalle_de_vista($visitas, $dwell_ms)
+    {
+        $texto = $visitas > 1
+            ? 'Miró este artículo ' . $visitas . ' veces en la tienda'
+            : 'Miró este artículo en la tienda';
+
+        $segundos = (int) round($dwell_ms / 1000);
+
+        if ($segundos >= 60) {
+            $texto .= ' y le dedicó ' . (int) round($segundos / 60) . ' minutos';
+        } elseif ($segundos > 0) {
+            $texto .= ' y le dedicó ' . $segundos . ' segundos';
+        }
+
+        return $texto . ', y todavía no lo compró';
     }
 
     /**
