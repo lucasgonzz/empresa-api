@@ -43,6 +43,11 @@ class Prioridad_cobertura_Test extends TestCase
         // Los jobs notifican al terminar; el test no depende de Pusher.
         Notification::fake();
 
+        // Sin credencial de Anthropic el job del resumen no se despacha (degradación D28).
+        // Con la cola sync de phpunit.xml y la clave real del .env.testing, el pipeline
+        // completo saldría a la API de verdad en cada corrida: costo y flakiness.
+        config(['services.anthropic.api_key' => null]);
+
         $this->comercio = User::create([
             'name'     => 'Comercio sugerencias P5',
             'email'    => 'sugerencias-p5-' . uniqid() . '@test.local',

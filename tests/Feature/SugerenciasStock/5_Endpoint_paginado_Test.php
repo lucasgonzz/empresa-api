@@ -44,6 +44,11 @@ class Endpoint_paginado_Test extends TestCase
 
         Notification::fake();
 
+        // Sin credencial de Anthropic el job del resumen no se despacha (degradación D28).
+        // Con la cola sync de phpunit.xml y la clave real del .env.testing, store() y el
+        // reproceso de update() saldrían a la API de verdad en cada corrida.
+        config(['services.anthropic.api_key' => null]);
+
         $this->comercio = User::create([
             'name'     => 'Comercio sugerencias P6',
             'email'    => 'sugerencias-p6-' . uniqid() . '@test.local',
