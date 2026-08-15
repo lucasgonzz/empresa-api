@@ -139,6 +139,15 @@ class ArticlePurchaseHelper {
 					'price'			=> $article->price,
 					'amount'		=> $combo->pivot->amount * $article->pivot->amount,
 					'created_at'	=> $this->sale->created_at,
+					/*
+						Sin sucursal ni canal, las lineas vendidas por combo no sumaban a la
+						velocidad de venta de ninguna sucursal (la cobertura de esos articulos
+						daba infinito). Se setean igual que en el bucle principal de
+						set_article_purcase(). Las filas viejas quedan como estan: con
+						address_id null no suman a ninguna sucursal, que es lo que ya pasaba.
+					*/
+					'sale_channel_id'	=> $this->get_sale_channel_id($this->sale),
+					'address_id'	=> $this->sale->address_id,
 				]);
 			}
 		}
