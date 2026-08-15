@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Models\AiConversation;
 use App\Models\StockSuggestion;
 use App\Models\StockSuggestionArticle;
 use App\Models\User;
@@ -202,6 +203,46 @@ class ProcessStockSuggestionChunkJob implements ShouldQueue
                 'stock_suggestion_id' => $this->suggestion->id,
             ],
         ];
+
+        /*
+         * Misión chat-ia-y-modulo-ia (D21): si la sugerencia dejó su
+         * conversación en el chat del asistente (la crea
+         * GenerarResumenSugerenciaJob solo con la extensión asistente_ia
+         * activa), la notificación suma el botón "Charlar con la IA" y los
+         * dos ids que lee abrir_conversacion_de_sugerencia() en la SPA. Sin
+         * conversación —sin la extensión, o el resumen falló— la notificación
+         * queda EXACTAMENTE como era: dos botones y ninguna clave nueva.
+         *
+         * 🔴 El canal de esta notificación es público por empresa: acá van
+         * ids y nada más; ni una letra de la conversación viaja por ella.
+         *
+         * Límite conocido (reportado en el informe de la misión): con la cola
+         * database real, este método corre antes de que el job del resumen
+         * cree la conversación, así que el primer aviso puede salir sin el
+         * botón; la conversación queda igual en la sidebar del panel. En cola
+         * sync (tests) y en el reintento la conversación ya existe.
+         */
+        $conversation = AiConversation::where('origen', 'sugerencia_stock')
+            ->where('referencia_id', $this->suggestion->id)
+            ->where('auth_user_id', $this->suggestion->user_id)
+            ->first();
+
+        if ($conversation) {
+            // "Charlar con la IA" va en el medio: la acción principal sigue
+            // siendo ver la tabla; "Entendido" cierra como siempre.
+            array_splice($functions_to_execute, 1, 0, [
+                [
+                    'btn_text'      => 'Charlar con la IA',
+                    'btn_variant'   => 'outline-primary',
+                    'function_name' => 'abrir_conversacion_de_sugerencia',
+                ],
+            ]);
+
+            $info_to_show[0]['ai_conversation_id'] = $conversation->id;
+            // La SPA compara este id contra su user.id: si el logueado no es
+            // el dueño, cae a ir_a_sugerencias_de_stock() sin pedir nada.
+            $info_to_show[0]['ai_conversation_auth_user_id'] = $conversation->auth_user_id;
+        }
 
         $user = User::find($this->suggestion->user_id);
 
