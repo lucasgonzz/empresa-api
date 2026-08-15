@@ -196,7 +196,11 @@ class DemoSetupHelper
         }
 
         /**
-         * Aviso de vuelta al admin: "la instancia quedo armada" (mision 61).
+         * Aviso de vuelta al admin: "la instancia quedo armada".
+         *
+         * Mision cruzada `demo-v2-conexion-admin-empresa` (14/8/2026), que corre desde la raiz del
+         * pool y toca los dos proyectos a la vez -- no es una tarea numerada de `tareas/`. El
+         * informe esta en `claude-comerciocity/informes/20260814-demo-v2-conexion-admin-empresa.md`.
          *
          * POR QUE ESTO NO SE PUEDE SUBIR DE LUGAR NI SIMPLIFICAR:
          *
