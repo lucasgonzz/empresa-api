@@ -125,6 +125,10 @@ class WhatsappChatController extends Controller
      * 24 h de Meta (`is_within_service_window()`); si está cerrada devuelve 422 con
      * `code: 'fuera_de_ventana'` y NO llega a llamar a Kapso (el front ofrece plantillas).
      *
+     * Responde 201 con `{ model, enviado }`: `model` es la fila del mensaje (que se guarda
+     * siempre) y `enviado` dice si el texto efectivamente salió hacia WhatsApp. Puede ser false
+     * con un 201 al lado: el chat está en simulación o Kapso rechazó el envío.
+     *
      * @param  Request  $request  Espera `body` (texto a enviar).
      * @param  int  $id
      * @return JsonResponse
@@ -167,7 +171,23 @@ class WhatsappChatController extends Controller
         $sent_by_user_id = $this->userId(false);
         $message = WhatsappChatHelper::store_outbound_manual_message($chat, $body, $wa_message_id, $sent_by_user_id);
 
-        return response()->json(['model' => $this->fullModel('WhatsappChatMessage', $message->id)], 201);
+        // `enviado` dice si el texto SALIÓ hacia WhatsApp; el 201 dice solamente que la fila del
+        // mensaje se creó. Son dos cosas distintas y hasta el 15/8/2026 la respuesta solo
+        // informaba la segunda: un 201 pelado sobre un envío frenado (chat en simulación) o
+        // fallado (Kapso caído) daba a entender que el cliente lo había recibido.
+        //
+        // Por qué el status sigue siendo 201 y no un 4xx/5xx: el mensaje YA se persistió y tiene
+        // que aparecer en la conversación, marcado como no enviado. La SPA solo lo agrega en el
+        // `.then` de `sendMessage()` (store/whatsapp_chat.js) y en el `.catch` no limpia el
+        // textarea, así que un status de error dejaría la fila guardada pero invisible hasta
+        // recargar, con el texto todavía en el input listo para que el operador lo mande de
+        // nuevo y duplique la fila. Cambiar el status obliga a tocar la SPA, y las dos puntas no
+        // llegan juntas a producción: el campo se agrega como opcional (compatible hacia atrás)
+        // y el front lo puede empezar a leer cuando le toque.
+        return response()->json([
+            'model'   => $this->fullModel('WhatsappChatMessage', $message->id),
+            'enviado' => ! is_null($wa_message_id),
+        ], 201);
     }
 
     /**
@@ -176,6 +196,9 @@ class WhatsappChatController extends Controller
      * (`!$chat->is_within_service_window()`), pero también funciona con la ventana
      * abierta. Valida que la plantilla sea del owner autenticado, esté `aprobada` y que
      * la cantidad de variables recibidas coincida con la que declara la plantilla.
+     *
+     * Responde 201 con `{ model, enviado }`, igual que `send_message()`: `model` es la fila del
+     * mensaje (que se guarda siempre) y `enviado` dice si la plantilla efectivamente salió.
      *
      * @param  Request  $request  Espera `template_id` y `variables` (array, en el mismo orden que la plantilla).
      * @param  int  $id
@@ -227,7 +250,20 @@ class WhatsappChatController extends Controller
             $template->meta_template_name
         );
 
-        return response()->json(['model' => $this->fullModel('WhatsappChatMessage', $message->id)], 201);
+        // Mismo criterio que en `send_message()`: el 201 dice que la fila se creó, `enviado` dice
+        // si la plantilla SALIÓ hacia WhatsApp. `send_template()` también devuelve null cuando
+        // Kapso falla (clave vencida, caída, rate limit), y sin este campo la respuesta daba a
+        // entender que el cliente la había recibido.
+        //
+        // Va acá aunque el revisor haya marcado solo `send_message()`: dos endpoints casi
+        // iguales, uno que informa si salió y otro que no, dejan al que lea el controller sin
+        // saber cuál de los dos es el correcto. El status sigue siendo 201 por el mismo motivo
+        // que allá (la SPA solo agrega el mensaje en el `.then`), y el campo es opcional, así
+        // que el front no se entera hasta que lo quiera leer.
+        return response()->json([
+            'model'   => $this->fullModel('WhatsappChatMessage', $message->id),
+            'enviado' => ! is_null($wa_message_id),
+        ], 201);
     }
 
     /**

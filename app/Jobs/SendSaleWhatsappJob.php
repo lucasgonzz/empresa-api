@@ -87,16 +87,35 @@ class SendSaleWhatsappJob implements ShouldQueue
             // $sent_by_user_id = null: el envío automático no lo dispara ningún empleado puntual.
             $sender_service->send_sale($sale, null);
 
+            // 🔴 Esta línea solo se alcanza si `send_sale()` NO lanzó, y desde el 15/8/2026
+            // `send_sale()` lanza cuando Kapso no confirmó el envío. Antes de eso el service se
+            // comía el null de `send_document()`/`send_template()` y este log afirmaba que el
+            // comprobante había salido cuando no había salido nada. Si algún día alguien vuelve
+            // a hacer que el service devuelva "ok" sin confirmación, este log vuelve a mentir:
+            // la garantía vive allá, no acá.
             Log::info('SendSaleWhatsappJob: comprobante enviado automáticamente.', [
                 'sale_id' => $this->sale_id,
             ]);
         } catch (SaleWhatsappSendException $e) {
-            // Condición esperada (sin config, sin teléfono, plantilla no aprobada, etc.), no un error real.
-            Log::info('SendSaleWhatsappJob: no se pudo enviar (condición controlada).', [
-                'sale_id' => $this->sale_id,
-                'error_code' => $e->error_code(),
-                'message' => $e->getMessage(),
-            ]);
+            if ($e->error_code() === SaleWhatsappSenderService::CODE_ENVIO_NO_CONFIRMADO) {
+                // Esto NO es una condición esperada del negocio: el comprobante tenía que salir
+                // y no salió (clave de Kapso vencida, servicio caído, rate limit, número
+                // rechazado por Meta). Va como error porque hay algo que arreglar, y porque el
+                // cliente se quedó sin comprobante sin que nadie más se entere: el envío
+                // automático no tiene pantalla donde avisar.
+                Log::error('SendSaleWhatsappJob: WhatsApp no confirmó el envío del comprobante.', [
+                    'sale_id' => $this->sale_id,
+                    'error_code' => $e->error_code(),
+                    'message' => $e->getMessage(),
+                ]);
+            } else {
+                // Condición esperada (sin config, sin teléfono, plantilla no aprobada, etc.), no un error real.
+                Log::info('SendSaleWhatsappJob: no se pudo enviar (condición controlada).', [
+                    'sale_id' => $this->sale_id,
+                    'error_code' => $e->error_code(),
+                    'message' => $e->getMessage(),
+                ]);
+            }
         } catch (\Throwable $e) {
             Log::error('SendSaleWhatsappJob: error inesperado al enviar el comprobante.', [
                 'sale_id' => $this->sale_id,

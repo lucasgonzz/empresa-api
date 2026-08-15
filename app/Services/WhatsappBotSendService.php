@@ -27,7 +27,7 @@ class WhatsappBotSendService
         // chat lo inyectó `simulate-inbound`, la ventana de 24 h está forzada y el texto libre
         // NO puede salir. Se devuelve null, que es el mismo "no se pudo enviar" que ya manejan
         // todos los callers.
-        if ($this->chat_en_simulacion($to, $config, 'texto')) {
+        if ($this->chat_en_simulacion($to, $config)) {
             return null;
         }
 
@@ -215,13 +215,16 @@ class WhatsappBotSendService
      */
     public function send_document(string $to, string $document_url, string $filename, string $caption, WhatsappBotConfig $config): ?string
     {
-        // Mismo freno que en `send_text()`, y por el mismo motivo: el documento por link solo
-        // es válido DENTRO de la ventana de 24 h, y en un chat en simulación esa ventana está
-        // forzada. Ver `chat_en_simulacion()`.
-        if ($this->chat_en_simulacion($to, $config, 'documento')) {
-            return null;
-        }
-
+        // 🔴 ACÁ NO VA EL FRENO DE SIMULACIÓN. Estuvo y se sacó el 15/8/2026: el criterio
+        // "frenar todo lo que solo es legal dentro de la ventana de 24 h" es correcto para el
+        // texto libre, pero este método no es solo del módulo de WhatsApp. Su único caller es
+        // `SaleWhatsappSenderService`, o sea el comprobante de una venta, que lo dispara una
+        // VENTA REAL y no la simulación. Con el freno acá, si el dueño simulaba un mensaje
+        // sobre el teléfono de un cliente real (el modal de simulación tiene un buscador de
+        // clientes que autocompleta justamente eso), el chat quedaba marcado hasta que ese
+        // cliente escribiera de verdad, y mientras tanto CADA venta a ese cliente generaba un
+        // comprobante que nunca salía. El vendedor no veía nada: la pantalla de ventas no sabe
+        // nada de la simulación. El razonamiento completo está en `chat_en_simulacion()`.
         $to_digits = preg_replace('/\D+/', '', $to) ?? '';
         if ($to_digits === '') {
             Log::channel('daily')->warning('WhatsappBotSendService: número destino inválido (documento).', [
@@ -314,13 +317,26 @@ class WhatsappBotSendService
      * Por qué el freno vive acá y no en el job del agente: hay dos caminos de envío (el
      * inmediato con `ai_confirm_delay_seconds = 0` y el diferido que espera la confirmación
      * humana), y los dos terminan en `AutoSendWhatsappAiMessageJob` llamando a `send_text()`.
-     * Este método es el único punto por el que pasan los dos, y además atrapa cualquier
-     * camino futuro que quiera mandar texto o documento a un chat en simulación.
+     * Este método es el único punto por el que pasan los dos.
      *
-     * Por qué las plantillas (`send_template()`) NO se frenan: el criterio es "frenar todo lo
-     * que solo es legal DENTRO de la ventana de 24 h", que es exactamente lo que la simulación
-     * falsea. Una plantilla aprobada de Meta se puede mandar con la ventana abierta o cerrada,
-     * así que no depende del dato forzado y no hay nada que proteger ahí.
+     * 🔴 SOLO LO LLAMA `send_text()`, y eso es a propósito (corregido el 15/8/2026, después de
+     * que el revisor lo marcara como bloqueante). El criterio no es "frenar todo envío de un
+     * chat marcado" sino "frenar lo que se apoya en la ventana de 24 h falseada Y lo dispara
+     * la simulación". Los otros dos métodos quedan afuera por motivos distintos:
+     *
+     *   - `send_template()`: una plantilla aprobada de Meta se puede mandar con la ventana
+     *     abierta o cerrada, así que no depende del dato forzado. No hay nada que proteger.
+     *   - `send_document()`: su único caller es `SaleWhatsappSenderService`, o sea el
+     *     comprobante de una venta. Ese envío lo dispara una venta real, no la simulación, y
+     *     frenarlo hacía que el comprobante se perdiera en silencio en cada venta a un cliente
+     *     cuyo chat quedó marcado por una prueba. Un freno que solo el módulo de WhatsApp
+     *     conoce no puede colgarse del camino de otro módulo que no lo mira.
+     *
+     * Lo que queda como riesgo asumido: si el chat está en simulación, la ventana forzada hace
+     * que el comprobante salga por `send_document()` (documento suelto) cuando en realidad no
+     * hay conversación abierta, y Meta lo puede rechazar. Eso ya NO es silencioso:
+     * `SaleWhatsappSenderService` chequea el null y lanza `SaleWhatsappSendException`, así que
+     * queda un error en el log y un 422 en el camino manual, en vez de un "enviado" mentiroso.
      *
      * Cómo se sale del modo simulación: solo. La columna se reescribe en CADA mensaje
      * entrante, en los dos caminos (webhook real y simulación), así que apenas el cliente
@@ -329,11 +345,10 @@ class WhatsappBotSendService
      *
      * @param  string             $to        Número destino, en cualquier formato.
      * @param  WhatsappBotConfig  $config    Config del bot; su `user_id` acota la búsqueda del chat.
-     * @param  string             $tipo_envio Para el log: 'texto' | 'documento'.
      *
      * @return bool True si hay que frenar el envío.
      */
-    private function chat_en_simulacion(string $to, WhatsappBotConfig $config, string $tipo_envio): bool
+    private function chat_en_simulacion(string $to, WhatsappBotConfig $config): bool
     {
         // Los chats se persisten siempre con el teléfono normalizado (solo dígitos); acá se
         // normaliza de nuevo porque el caller puede pasar tanto `$chat->phone` (ya normalizado)
@@ -352,11 +367,11 @@ class WhatsappBotSendService
             return false;
         }
 
-        Log::channel('daily')->warning('WhatsappBotSendService: envío frenado, el chat está en modo simulación.', [
-            'chat_id'    => $chat->id,
-            'phone'      => $phone,
-            'tipo_envio' => $tipo_envio,
-            'motivo'     => 'El último mensaje entrante fue simulado, no lo escribió el cliente. No se sale a Kapso.',
+        Log::channel('daily')->warning('WhatsappBotSendService: envío de texto frenado, el chat está en modo simulación.', [
+            'chat_id' => $chat->id,
+            'phone'   => $phone,
+            'camino'  => 'send_text',
+            'motivo'  => 'El último mensaje entrante fue simulado, no lo escribió el cliente. No se sale a Kapso.',
         ]);
 
         return true;

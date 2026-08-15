@@ -30,10 +30,19 @@ use App\Models\Description;
  * "algo para pintar una pared con humedad" y el producto correcto se encuentra por la
  * descripción, porque el nombre no dice nada de humedad.
  *
- * Este observer tapa el agujero 1 (disparo inmediato). El agujero 2 lo tapa
- * `Description::$touches = ['article']`, que hace que guardar una descripción bumpee
- * `articles.updated_at` y así el comando agendado también la levante. Son dos defensas
- * independientes a propósito: si una falla, la otra sigue.
+ * Este observer tapa el agujero 1 (disparo inmediato). El agujero 2 NO está tapado: hay UNA
+ * sola defensa, no dos. La revectorización inmediata depende enteramente de este observer,
+ * que dispara en created, updated y deleted.
+ *
+ * 🔴 Para taparlo NO agregues `Description::$touches = ['article']`. Estuvo y se sacó el
+ * 15/8/2026, no se perdió: bumpear `articles.updated_at` al guardar una descripción hace que
+ * la SPA se baje el catálogo ENTERO después de una importación (ese reloj es la clave del
+ * sync incremental y del export por keyset) y deja 20.000 artículos por encima de
+ * `embedding_generated_at`, o sea 20.000 jobs que hidratan el artículo entero antes de poder
+ * cortar por hash. El razonamiento completo está escrito en `App\Models\Description`, donde
+ * antes estaba la propiedad. Si en algún momento hace falta la segunda defensa, la forma
+ * correcta es que `articles:generate-embeddings` mire también `descriptions.updated_at`, en
+ * vez de ensuciar el reloj del artículo, que lo lee medio sistema.
  *
  * El criterio para disparar (extensión whatsapp_ia, y nada mientras haya una importación
  * en curso) NO se reimplementa acá: se reusa ArticleObserver::debe_generar_embedding(),
