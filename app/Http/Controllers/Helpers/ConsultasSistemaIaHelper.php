@@ -227,6 +227,66 @@ class ConsultasSistemaIaHelper
     }
 
     /**
+     * Última oferta vigente por (artículo, proveedor) que coincida con la
+     * búsqueda (nombre de artículo o de proveedor), la más reciente primero.
+     * Tool de lectura del chat de IA (misión sugerencias de compra): la IA
+     * la usa para responder a cuánto ofrece un proveedor un artículo, desde
+     * el histórico real (provider_price_offers), nunca inventado.
+     *
+     * @param  int     $owner_id  Id del dueño. Nunca Auth: esta tool corre en un job sin sesión.
+     * @param  string  $busqueda  Nombre de artículo o de proveedor; vacío trae lo más reciente.
+     * @return array<int, array<string, mixed>>
+     */
+    public static function precios_de_proveedores(int $owner_id, string $busqueda): array
+    {
+        $busqueda = trim($busqueda);
+
+        $query = DB::table('provider_price_offers')
+            ->join('articles', 'articles.id', '=', 'provider_price_offers.article_id')
+            ->join('providers', 'providers.id', '=', 'provider_price_offers.provider_id')
+            ->where('provider_price_offers.user_id', $owner_id);
+
+        if ($busqueda !== '') {
+            $query->where(function ($sub) use ($busqueda) {
+                $sub->where('articles.name', 'LIKE', '%' . $busqueda . '%')
+                    ->orWhere('providers.name', 'LIKE', '%' . $busqueda . '%');
+            });
+        }
+
+        // Orden global por fecha (no agrupado por par primero) para que el
+        // tope no se gaste entero en el historial de un solo par.
+        $filas = $query->orderBy('provider_price_offers.fecha', 'DESC')
+            ->orderBy('provider_price_offers.id', 'DESC')
+            ->limit(self::MAX_RESULTS)
+            ->get(['provider_price_offers.article_id', 'provider_price_offers.provider_id',
+                'provider_price_offers.cost', 'provider_price_offers.fecha', 'provider_price_offers.origen',
+                'articles.name as articulo_nombre', 'providers.name as proveedor_nombre']);
+
+        // Una sola fila por par (artículo, proveedor): la primera que aparece es la más nueva por el ORDER BY de arriba.
+        $vistos = [];
+        $result = [];
+
+        foreach ($filas as $fila) {
+            $clave = $fila->article_id . '-' . $fila->provider_id;
+
+            if (isset($vistos[$clave])) {
+                continue;
+            }
+            $vistos[$clave] = true;
+
+            $result[] = [
+                'articulo'  => (string) $fila->articulo_nombre,
+                'proveedor' => (string) $fila->proveedor_nombre,
+                'costo'     => (float) $fila->cost,
+                'fecha'     => (string) $fila->fecha,
+                'origen'    => (string) $fila->origen,
+            ];
+        }
+
+        return $result;
+    }
+
+    /**
      * Extrae una palabra clave de producto/entidad desde el texto de la consulta.
      *
      * Quita los disparadores conocidos (stock, cuánto tengo, de, etc.) y devuelve el resto.

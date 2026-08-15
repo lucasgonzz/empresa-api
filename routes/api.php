@@ -943,6 +943,19 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia'])->gro
     Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
 });
 
+// Sugerencias de compra a proveedores (misión sugerencias-compra-proveedores), gateado por auth
+// Sanctum + la extensión 'sugerencias_compras' (ver ExtencionSugerenciasComprasSeeder). Sin
+// endpoint update: reprocesar es crear una corrida nueva (D10 del plan), no editar la existente.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:sugerencias_compras'])->group(function () {
+    Route::get('purchase-suggestion', 'PurchaseSuggestionController@index');
+    Route::post('purchase-suggestion', 'PurchaseSuggestionController@store');
+    Route::get('purchase-suggestion/{id}', 'PurchaseSuggestionController@show');
+    Route::delete('purchase-suggestion/{id}', 'PurchaseSuggestionController@destroy');
+    Route::get('purchase-suggestion/{id}/articles', 'PurchaseSuggestionController@articles');
+    Route::post('purchase-suggestion/{id}/resumen', 'PurchaseSuggestionController@resumen');
+    Route::post('purchase-suggestion/{id}/create-provider-order', 'PurchaseSuggestionController@create_provider_order');
+});
+
 
 // Plans
 Route::get('plan', 'PlanController@index');

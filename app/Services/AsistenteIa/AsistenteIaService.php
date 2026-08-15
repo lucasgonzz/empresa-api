@@ -435,6 +435,20 @@ SYSTEM;
                     'required' => [],
                 ],
             ],
+            [
+                'name' => 'consultar_precios_de_proveedores',
+                'description' => 'Devuelve la última oferta vigente de precio por artículo y proveedor: a cuánto ofreció cada proveedor cada artículo, y cuándo. Filtrá por nombre de artículo o de proveedor. Usala cuando te pregunten a cuánto compra o compró el negocio algo, o qué proveedor ofrece mejor precio.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'busqueda' => [
+                            'type' => 'string',
+                            'description' => 'Nombre o parte del nombre de un artículo o de un proveedor. Cadena vacía trae las ofertas más recientes sin filtrar.',
+                        ],
+                    ],
+                    'required' => ['busqueda'],
+                ],
+            ],
         ];
     }
 
@@ -494,6 +508,10 @@ SYSTEM;
                         $dias = 30;
                     }
                     $data = ConsultasSistemaIaHelper::mas_vendidos($owner_id, $dias);
+                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
+                } elseif ($tool_name === 'consultar_precios_de_proveedores') {
+                    $busqueda = (string) ($tool_input['busqueda'] ?? '');
+                    $data = ConsultasSistemaIaHelper::precios_de_proveedores($owner_id, $busqueda);
                     $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
                 } else {
                     $tool_desconocida = true;
