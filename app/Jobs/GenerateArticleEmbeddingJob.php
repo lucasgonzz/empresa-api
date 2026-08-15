@@ -22,6 +22,12 @@ use Illuminate\Support\Facades\Log;
  * El job carga las relaciones necesarias para armar el texto representativo
  * (category, brand, descriptions) y delega la generación y persistencia
  * al ArticleEmbeddingService.
+ *
+ * Antes de salir a la red compara la huella (sha1) del texto a vectorizar contra la
+ * que quedó guardada en articles.embedding_source_hash la última vez. Si coinciden, el
+ * vector que devolvería OpenAI sería idéntico al que ya está en la base, así que el job
+ * corta ahí y solo refresca la marca de tiempo. Es lo que evita que una importación que
+ * únicamente movió precios o stock termine pagando una llamada por artículo.
  */
 class GenerateArticleEmbeddingJob implements ShouldQueue
 {
@@ -83,14 +89,47 @@ class GenerateArticleEmbeddingJob implements ShouldQueue
         }
 
         try {
+            // El texto que efectivamente se vectoriza y su huella. Se calculan ACÁ, antes
+            // de cualquier llamada a OpenAI, porque son lo único que permite saber si el
+            // artículo cambió en algo que al embedding le mueva la aguja.
+            $texto = $service->embedding_for_article($article);
+            $hash  = sha1($texto);
+
+            if ($texto !== ''
+                && ! is_null($article->embedding)
+                && (string) $article->embedding_source_hash === $hash) {
+                // El texto relevante no cambió. Caso típico: una importación que solo movió
+                // final_price o stock, y el comando agendado lo reencola igual porque su
+                // filtro mira updated_at > embedding_generated_at.
+                //
+                // Se refresca solo la marca de tiempo, para que el scheduler deje de
+                // re-encolarlo, y se corta acá SIN gastar la llamada paga a OpenAI: el
+                // vector que devolvería es exactamente el que ya está guardado. El filtro
+                // SQL del comando queda como está (es barato); el corte real es este.
+                DB::table('articles')
+                    ->where('id', $article->id)
+                    ->update(['embedding_generated_at' => now()]);
+
+                Log::channel('daily')->info('GenerateArticleEmbeddingJob: el texto del artículo no cambió, se omite la llamada a OpenAI.', [
+                    'article_id' => $this->article_id,
+                ]);
+
+                return;
+            }
+
             // Generar y persistir el embedding via el servicio.
             $service->update_article_embedding($article);
 
             // Registrar cuándo se generó el embedding para que el scheduler detecte
-            // si el artículo se modifica después de esta fecha (updated_at > embedding_generated_at).
+            // si el artículo se modifica después de esta fecha (updated_at > embedding_generated_at),
+            // y la huella del texto usado, que es lo que permite cortar la próxima vez si
+            // el artículo se toca pero el texto queda igual.
             DB::table('articles')
                 ->where('id', $article->id)
-                ->update(['embedding_generated_at' => now()]);
+                ->update([
+                    'embedding_generated_at' => now(),
+                    'embedding_source_hash'  => $hash,
+                ]);
 
             Log::channel('daily')->info('GenerateArticleEmbeddingJob: embedding generado correctamente.', [
                 'article_id'   => $this->article_id,

@@ -8,10 +8,12 @@ use Illuminate\Database\Eloquent\Relations\Relation;
 
 use App\Models\Article;
 use App\Models\Category;
+use App\Models\Description;
 use App\Models\SubCategory;
 use App\Models\User;
 use App\Observers\ArticleObserver;
 use App\Observers\CategoryObserver;
+use App\Observers\DescriptionObserver;
 use App\Observers\SubCategoryObserver;
 use App\Observers\UserEtiquetaMedidaObserver;
 
@@ -43,6 +45,8 @@ class AppServiceProvider extends ServiceProvider
 
 
         Article::observe(ArticleObserver::class);
+        /* La descripción vive en otra tabla: sin este observer, editarla dejaba el embedding viejo. */
+        Description::observe(DescriptionObserver::class);
         Category::observe(CategoryObserver::class);
         SubCategory::observe(SubCategoryObserver::class);
         User::observe(UserEtiquetaMedidaObserver::class);

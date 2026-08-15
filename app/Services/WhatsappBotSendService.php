@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Models\WhatsappBotConfig;
+use App\Models\WhatsappChat;
 use App\Models\WhatsappTemplate;
 use Illuminate\Support\Facades\Log;
 
@@ -21,6 +23,14 @@ class WhatsappBotSendService
      */
     public function send_text(string $to, string $body, WhatsappBotConfig $config): ?string
     {
+        // Freno de la simulación. Ver `chat_en_simulacion()`: si el último entrante de este
+        // chat lo inyectó `simulate-inbound`, la ventana de 24 h está forzada y el texto libre
+        // NO puede salir. Se devuelve null, que es el mismo "no se pudo enviar" que ya manejan
+        // todos los callers.
+        if ($this->chat_en_simulacion($to, $config)) {
+            return null;
+        }
+
         $to_digits = preg_replace('/\D+/', '', $to) ?? '';
         if ($to_digits === '') {
             Log::channel('daily')->warning('WhatsappBotSendService: número destino inválido.', [
@@ -205,6 +215,16 @@ class WhatsappBotSendService
      */
     public function send_document(string $to, string $document_url, string $filename, string $caption, WhatsappBotConfig $config): ?string
     {
+        // 🔴 ACÁ NO VA EL FRENO DE SIMULACIÓN. Estuvo y se sacó el 15/8/2026: el criterio
+        // "frenar todo lo que solo es legal dentro de la ventana de 24 h" es correcto para el
+        // texto libre, pero este método no es solo del módulo de WhatsApp. Su único caller es
+        // `SaleWhatsappSenderService`, o sea el comprobante de una venta, que lo dispara una
+        // VENTA REAL y no la simulación. Con el freno acá, si el dueño simulaba un mensaje
+        // sobre el teléfono de un cliente real (el modal de simulación tiene un buscador de
+        // clientes que autocompleta justamente eso), el chat quedaba marcado hasta que ese
+        // cliente escribiera de verdad, y mientras tanto CADA venta a ese cliente generaba un
+        // comprobante que nunca salía. El vendedor no veía nada: la pantalla de ventas no sabe
+        // nada de la simulación. El razonamiento completo está en `chat_en_simulacion()`.
         $to_digits = preg_replace('/\D+/', '', $to) ?? '';
         if ($to_digits === '') {
             Log::channel('daily')->warning('WhatsappBotSendService: número destino inválido (documento).', [
@@ -263,6 +283,98 @@ class WhatsappBotSendService
             ]);
             return null;
         }
+    }
+
+    /**
+     * Indica si el chat de este teléfono está en modo simulación, o sea si su último mensaje
+     * entrante lo inyectó `WhatsappBotController@simulate_inbound` en vez de haberlo escrito
+     * una persona (columna `whatsapp_chats.last_inbound_simulated`).
+     *
+     * 🔴 ESTO NO ES UNA LIMITACIÓN QUE HAYA QUE "ARREGLAR". Es el freno que existe para que
+     * la simulación no mande WhatsApp de verdad, y sacarlo reabre un agujero grave. El
+     * razonamiento completo, porque leyendo el `return null` suelto parece una función a
+     * medio hacer:
+     *
+     * La simulación tiene que recorrer TODO el flujo interno (persistencia, ventana,
+     * agrupación con su demora, generación de la respuesta, estado de confirmación, registro
+     * de tokens) — si no, no prueba nada. Eso incluye pasar por `store_inbound_message()`, que
+     * setea `last_inbound_at = now()`. Y `last_inbound_at` es la ÚNICA fuente de verdad de la
+     * ventana de 24 h de Meta (`WhatsappChat::is_within_service_window()`). O sea que
+     * simulando un mensaje desde un número que nunca escribió, el sistema queda convencido de
+     * que hay una conversación abierta con ese número. Sin este freno, el agente generaba la
+     * respuesta y se la mandaba DE VERDAD por Kapso a alguien que nunca habló con el negocio.
+     *
+     * Meta rechaza esos mensajes de su lado, así que "no llegan" — pero cada intento le baja
+     * la calificación al número de WhatsApp Business del negocio, y un número con mala
+     * calificación queda limitado o dado de baja. Es el activo que ComercioCity le gestiona al
+     * cliente: no se arriesga para que una prueba se vea más linda.
+     *
+     * Qué SÍ pasa con la respuesta simulada: se persiste igual, marcada con
+     * `whatsapp_chat_messages.is_simulated = 1`, y se ve en la conversación. Lucas puede leer
+     * exactamente lo que el agente contestó sin que se le haya mandado nada a nadie, que es
+     * justo para lo que se construyó la simulación.
+     *
+     * Por qué el freno vive acá y no en el job del agente: hay dos caminos de envío (el
+     * inmediato con `ai_confirm_delay_seconds = 0` y el diferido que espera la confirmación
+     * humana), y los dos terminan en `AutoSendWhatsappAiMessageJob` llamando a `send_text()`.
+     * Este método es el único punto por el que pasan los dos.
+     *
+     * 🔴 SOLO LO LLAMA `send_text()`, y eso es a propósito (corregido el 15/8/2026, después de
+     * que el revisor lo marcara como bloqueante). El criterio no es "frenar todo envío de un
+     * chat marcado" sino "frenar lo que se apoya en la ventana de 24 h falseada Y lo dispara
+     * la simulación". Los otros dos métodos quedan afuera por motivos distintos:
+     *
+     *   - `send_template()`: una plantilla aprobada de Meta se puede mandar con la ventana
+     *     abierta o cerrada, así que no depende del dato forzado. No hay nada que proteger.
+     *   - `send_document()`: su único caller es `SaleWhatsappSenderService`, o sea el
+     *     comprobante de una venta. Ese envío lo dispara una venta real, no la simulación, y
+     *     frenarlo hacía que el comprobante se perdiera en silencio en cada venta a un cliente
+     *     cuyo chat quedó marcado por una prueba. Un freno que solo el módulo de WhatsApp
+     *     conoce no puede colgarse del camino de otro módulo que no lo mira.
+     *
+     * Lo que queda como riesgo asumido: si el chat está en simulación, la ventana forzada hace
+     * que el comprobante salga por `send_document()` (documento suelto) cuando en realidad no
+     * hay conversación abierta, y Meta lo puede rechazar. Eso ya NO es silencioso:
+     * `SaleWhatsappSenderService` chequea el null y lanza `SaleWhatsappSendException`, así que
+     * queda un error en el log y un 422 en el camino manual, en vez de un "enviado" mentiroso.
+     *
+     * Cómo se sale del modo simulación: solo. La columna se reescribe en CADA mensaje
+     * entrante, en los dos caminos (webhook real y simulación), así que apenas el cliente
+     * escribe de verdad queda en 0 y el chat vuelve a enviar normalmente. No hay estado
+     * pegado ni proceso de limpieza.
+     *
+     * @param  string             $to        Número destino, en cualquier formato.
+     * @param  WhatsappBotConfig  $config    Config del bot; su `user_id` acota la búsqueda del chat.
+     *
+     * @return bool True si hay que frenar el envío.
+     */
+    private function chat_en_simulacion(string $to, WhatsappBotConfig $config): bool
+    {
+        // Los chats se persisten siempre con el teléfono normalizado (solo dígitos); acá se
+        // normaliza de nuevo porque el caller puede pasar tanto `$chat->phone` (ya normalizado)
+        // como un número crudo.
+        $phone = WhatsappPhoneHelper::normalize($to);
+        if ($phone === '') {
+            return false;
+        }
+
+        $chat = WhatsappChat::where('user_id', $config->user_id)
+            ->where('phone', $phone)
+            ->first();
+
+        // Sin chat no hay marca que mirar: no es una simulación, se envía normalmente.
+        if (is_null($chat) || ! $chat->last_inbound_simulated) {
+            return false;
+        }
+
+        Log::channel('daily')->warning('WhatsappBotSendService: envío de texto frenado, el chat está en modo simulación.', [
+            'chat_id' => $chat->id,
+            'phone'   => $phone,
+            'camino'  => 'send_text',
+            'motivo'  => 'El último mensaje entrante fue simulado, no lo escribió el cliente. No se sale a Kapso.',
+        ]);
+
+        return true;
     }
 
     /**

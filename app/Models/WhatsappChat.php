@@ -22,6 +22,11 @@ class WhatsappChat extends Model
         'ai_enabled' => 'boolean',
         'last_message_at' => 'datetime',
         'last_inbound_at' => 'datetime',
+        // Contador del debounce del agente (misión whatsapp-agente). Lo escribe y lo lee
+        // `WhatsappAgentScheduler` por query builder crudo, no por el modelo; el cast está
+        // para que si alguna vez sale serializado en una respuesta o en un broadcast salga
+        // como número y no como el string que devuelve el driver de MySQL.
+        'ai_schedule_token' => 'integer',
     ];
 
     /**
