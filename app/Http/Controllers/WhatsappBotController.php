@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Services\WhatsappAgentScheduler;
+use App\Services\WhatsappInboundMediaService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -78,6 +79,14 @@ class WhatsappBotController extends Controller
     /**
      * Procesa un mensaje entrante del webhook: lo parsea y delega en `process_inbound()`.
      *
+     * 🔴 EL CORTE POR CUERPO VACÍO MIRA TAMBIÉN SI HAY ADJUNTO, y ese "y" es la mitad del
+     * arreglo de la misión whatsapp-sidebar-multimedia. Hasta acá el guard era
+     * `body === ''  →  return`, así que una imagen SIN epígrafe moría en esta línea aunque
+     * `parse_inbound_message()` la hubiera dejado pasar: son dos guards distintos y hay que
+     * tocar los dos. El síntoma no era un error sino silencio — la foto no aparecía en la
+     * conversación y, peor, no se abría la ventana de 24 h, así que el operador no le podía
+     * contestar al cliente que le acababa de mandar una foto (D14).
+     *
      * @param  WhatsappBotConfig  $config
      * @param  array  $payload  Payload completo del webhook.
      * @return void
@@ -85,11 +94,19 @@ class WhatsappBotController extends Controller
     private function handle_message_received(WhatsappBotConfig $config, array $payload): void
     {
         $parsed = $this->parse_inbound_message($payload);
-        if ($parsed === null || trim((string) ($parsed['body'] ?? '')) === '') {
+        if ($parsed === null) {
             return;
         }
 
-        $this->process_inbound($config, $parsed['from'], (string) $parsed['body'], $payload);
+        $body  = trim((string) ($parsed['body'] ?? ''));
+        $media = (isset($parsed['media']) && is_array($parsed['media'])) ? $parsed['media'] : null;
+
+        // Solo se descarta cuando no hay NADA: ni texto ni adjunto.
+        if ($body === '' && is_null($media)) {
+            return;
+        }
+
+        $this->process_inbound($config, $parsed['from'], $body, $payload, false, $media);
     }
 
     /**
@@ -114,9 +131,14 @@ class WhatsappBotController extends Controller
      *                              Es lo ÚNICO que diferencia los dos caminos: se propaga a la
      *                              fila del mensaje y al chat, y de ahí lo lee el freno de
      *                              `WhatsappBotSendService` para no salir a Kapso.
+     * @param  array|null  $media  Descriptor del adjunto que armó `parse_inbound_message()`, o
+     *                             null si el mensaje es de texto. Va ÚLTIMO y con default a
+     *                             propósito: `simulate_inbound()` llama con cinco argumentos
+     *                             posicionales y PHP 7.4 no tiene argumentos nombrados, así que
+     *                             cualquier otra posición obligaría a tocar ese caller.
      * @return void
      */
-    public function process_inbound(WhatsappBotConfig $config, $from, $body, array $payload, $is_simulated = false): void
+    public function process_inbound(WhatsappBotConfig $config, $from, $body, array $payload, $is_simulated = false, $media = null): void
     {
         $user_id = (int) $config->user_id;
 
@@ -124,12 +146,13 @@ class WhatsappBotController extends Controller
             'from'      => $from,
             'type'      => isset($payload['message']['type']) ? strtolower((string) $payload['message']['type']) : 'text',
             'body'      => mb_substr((string) $body, 0, 120),
+            'media'     => (isset($media['media_type']) ? (string) $media['media_type'] : null),
             'user_id'   => $user_id,
             'simulado'  => (bool) $is_simulated,
         ]);
 
         // Persiste el chat (con auto-vinculación de cliente si corresponde) y el mensaje 'in'.
-        $chat = WhatsappChatHelper::store_inbound_message($user_id, $from, (string) $body, $payload, $config, (bool) $is_simulated);
+        $chat = WhatsappChatHelper::store_inbound_message($user_id, $from, (string) $body, $payload, $config, (bool) $is_simulated, $media);
 
         // El scheduler aplica el debounce configurado: descarta lo que quedó pendiente de
         // confirmación, bumpea el token y encola el job que genera la respuesta.
@@ -400,10 +423,18 @@ class WhatsappBotController extends Controller
     }
 
     /**
-     * Extrae from, type y body del payload Kapso para mensajes entrantes.
-     * Solo procesa text y audio; ignora imagen, documento, etc.
+     * Extrae from, type, body y el descriptor del adjunto del payload de Kapso.
      *
-     * @return array{from: string, type: string, body: string|null}|null
+     * Tipos soportados: `text`, `audio`/`ptt`/`voice` e `image` (D15). `document`, `video` y
+     * `sticker` siguen devolviendo `null` a propósito: cada tipo nuevo necesita además una
+     * forma de dibujarse en la burbuja de la conversación, y el alcance de la misión son
+     * audios e imágenes. Queda anotado como limitación conocida.
+     *
+     * ⚠️ Este es UNO de los dos guards que descartaban las imágenes. El otro es el corte por
+     * cuerpo vacío de `handle_message_received()`: agregar `'image'` acá sin tocar aquél deja
+     * pasar la foto con epígrafe y sigue perdiendo la foto sin epígrafe, que es el caso normal.
+     *
+     * @return array{from: string, type: string, body: string|null, media: array|null}|null
      */
     private function parse_inbound_message(array $payload): ?array
     {
@@ -423,14 +454,30 @@ class WhatsappBotController extends Controller
 
         $raw_type = isset($message['type']) ? strtolower((string) $message['type']) : 'text';
 
-        // Solo procesamos text y audio
-        if (! in_array($raw_type, ['text', 'audio', 'ptt', 'voice'], true)) {
+        // Texto, nota de voz e imagen (D15).
+        if (! in_array($raw_type, ['text', 'audio', 'ptt', 'voice', 'image'], true)) {
             return null;
+        }
+
+        // El descriptor del adjunto se resuelve ANTES del cuerpo porque el epígrafe de la
+        // imagen sale de ahí: la clave del nodo donde vive el adjunto no siempre es el `type`
+        // del mensaje (una nota de voz puede llegar como `type: ptt` con nodo `audio`), y esa
+        // traducción vive en un solo lugar, adentro del servicio.
+        $media = null;
+        if ($raw_type !== 'text') {
+            $media = (new WhatsappInboundMediaService())->extract_inbound_media($message, $raw_type);
         }
 
         $body = null;
         if ($raw_type === 'text') {
             $body = isset($message['text']['body']) ? trim((string) $message['text']['body']) : null;
+        } elseif ($raw_type === 'image') {
+            // Una imagen sin epígrafe NO tiene cuerpo, y antes eso alcanzaba para que el
+            // mensaje se descartara entero. El literal la deja existir en la conversación y en
+            // el historial que ve el agente ("llegó una foto"). La burbuja lo esconde cuando
+            // hay miniatura, así que el operador no ve el relleno.
+            $caption = (isset($media['caption'])) ? trim((string) $media['caption']) : '';
+            $body = $caption !== '' ? $caption : '[Imagen recibida]';
         } else {
             // audio / ptt / voice: transcripción Kapso
             if (isset($message['kapso']['transcript']['text'])) {
@@ -442,9 +489,10 @@ class WhatsappBotController extends Controller
         }
 
         return [
-            'from' => (string) $from,
-            'type' => $raw_type,
-            'body' => $body,
+            'from'  => (string) $from,
+            'type'  => $raw_type,
+            'body'  => $body,
+            'media' => $media,
         ];
     }
 }

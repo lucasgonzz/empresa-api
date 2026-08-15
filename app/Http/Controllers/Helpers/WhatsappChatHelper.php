@@ -9,6 +9,7 @@ use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
 use App\Services\WhatsappAiAutoSendScheduler;
 use App\Services\WhatsappBotSendService;
+use App\Services\WhatsappInboundMediaService;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -94,9 +95,14 @@ class WhatsappChatHelper
      *                              lo escribió nadie. Queda grabado en la fila del mensaje y,
      *                              denormalizado, en el chat: es lo que impide que la respuesta
      *                              del agente salga por Kapso hacia un número que nunca escribió.
+     * @param  array|null  $media  Descriptor del adjunto (`media_type`, `media_url`, `media_id`,
+     *                             `mime`, `caption`) que armó `parse_inbound_message()`, o null
+     *                             si el mensaje es de texto. Va último y con default porque los
+     *                             callers existentes pasan seis argumentos posicionales y PHP 7.4
+     *                             no tiene argumentos nombrados.
      * @return WhatsappChat  El chat (nuevo o existente) ya persistido con el mensaje aplicado.
      */
-    public static function store_inbound_message($user_id, $from, $body, array $payload, WhatsappBotConfig $config, $is_simulated = false)
+    public static function store_inbound_message($user_id, $from, $body, array $payload, WhatsappBotConfig $config, $is_simulated = false, $media = null)
     {
         // Teléfono siempre normalizado (solo dígitos) al persistirlo, así el listado y el
         // matching de auto-vinculación son consistentes.
@@ -135,7 +141,43 @@ class WhatsappChatHelper
         $chat->unread_count = ((int) $chat->unread_count) + 1;
         $chat->save();
 
-        $message = WhatsappChatMessage::create([
+        // 🔴 EL ADJUNTO SE BAJA DESPUÉS DEL `save()` DEL CHAT, Y EL ORDEN ES TODO EL PUNTO DE
+        // LA UNIDAD. Arriba ya quedó escrito `last_inbound_at`, que es el único campo que abre
+        // la ventana de 24 h de Meta. Recién ahí se sale a la red a buscar el archivo, que es
+        // lo que puede tardar o fallar: si el CDN de Kapso se cae, la ventana ya está abierta y
+        // el operador le puede contestar al cliente igual. Bajar primero y guardar después
+        // ataría la ventana —lo importante— al éxito de una descarga de un tercero, que es
+        // exactamente el bug que esta misión viene a arreglar. No dar vuelta estas dos cosas.
+        $media_columns = [];
+        if (is_array($media)) {
+            // `media_type` va SIEMPRE, con archivo o sin él: es lo que le dice a la
+            // conversación "acá llegó una foto" aunque no se haya podido bajar (D14).
+            $media_columns['media_type'] = isset($media['media_type']) ? $media['media_type'] : null;
+
+            // El id del mensaje en WhatsApp se lee acá y se le pasa al servicio SOLO para armar
+            // el nombre determinista del archivo. 🔴 NO SE PERSISTE (D17):
+            // `handle_delivery_status_event()` busca por la columna `wa_message_id` sin filtrar
+            // `direction`, así que sembrarla con ids de mensajes entrantes le abriría una
+            // colisión — un evento de entrega podría caer sobre la fila equivocada.
+            $wa_message_id = isset($payload['message']['id']) ? (string) $payload['message']['id'] : null;
+
+            $stored = (new WhatsappInboundMediaService())->store_inbound_media(
+                $media,
+                (int) $chat->id,
+                $wa_message_id,
+                (string) $body,
+                $config
+            );
+
+            // `null` significa "no hay archivo", no "no hay mensaje". El servicio nunca lanza.
+            if (is_array($stored)) {
+                $media_columns['media_path'] = $stored['media_path'];
+                $media_columns['media_mime'] = $stored['media_mime'];
+                $media_columns['media_size'] = $stored['media_size'];
+            }
+        }
+
+        $message = WhatsappChatMessage::create(array_merge([
             'whatsapp_chat_id' => $chat->id,
             'direction' => 'in',
             'source' => 'cliente',
@@ -145,7 +187,7 @@ class WhatsappChatHelper
             // que recorrer el mismo camino), así que sin esta columna el registro comercial
             // quedaba falseado y la única traza era una línea de log.
             'is_simulated' => $is_simulated ? 1 : 0,
-        ]);
+        ], $media_columns));
 
         self::broadcast_update($user_id, $chat, $message);
 
