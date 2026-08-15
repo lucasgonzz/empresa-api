@@ -301,4 +301,51 @@ class Prioridad_cobertura_Test extends TestCase
         // Solo la venta viva: 45/90 = 0.5, no 1.0.
         $this->assertEqualsWithDelta(0.5, (float) $linea->velocidad_diaria, 0.0001);
     }
+
+    /**
+     * El pipeline es re-entrante: con $tries = 3 un reintento tras un fallo
+     * parcial vuelve a correr handle() entero, y un update() puede encolar una
+     * segunda corrida de la misma sugerencia. La segunda pasada tiene que
+     * limpiar lo de la primera, no apilarse encima.
+     *
+     * @group sugerencias-stock
+     * @test
+     */
+    public function correr_el_pipeline_dos_veces_no_duplica_lineas_ni_contadores()
+    {
+        $urgente = $this->articulo_en_deficit('Re-entrante urgente P5');
+        $this->articulo_en_deficit('Re-entrante dormido P5');
+
+        $this->sembrar_venta($urgente->id, $this->destino->id, 45, now()->subDays(10));
+
+        $suggestion = $this->correr_sugerencia();
+
+        $lineas_primera_corrida = StockSuggestionArticle::where('stock_suggestion_id', $suggestion->id)->count();
+        $this->assertGreaterThan(0, $lineas_primera_corrida);
+
+        // Segunda pasada sobre la MISMA sugerencia.
+        (new GenerateStockSuggestionChunksJob($suggestion->id))->handle();
+
+        $suggestion->refresh();
+
+        $this->assertEquals(
+            $lineas_primera_corrida,
+            StockSuggestionArticle::where('stock_suggestion_id', $suggestion->id)->count(),
+            'Re-ejecutar el pipeline tiene que re-insertar desde cero, no duplicar las líneas.'
+        );
+
+        $this->assertEquals('terminado', $suggestion->status);
+        $this->assertEquals(
+            $suggestion->total_chunks,
+            $suggestion->processed_chunks,
+            'El contador de chunks tiene que arrancar de cero en cada corrida, no acumularse entre corridas.'
+        );
+
+        // Y el ranking sigue siendo 1..N sin huecos ni repetidos.
+        $prioridades = StockSuggestionArticle::where('stock_suggestion_id', $suggestion->id)
+            ->orderBy('prioridad')
+            ->pluck('prioridad')
+            ->toArray();
+        $this->assertEquals(range(1, count($prioridades)), $prioridades);
+    }
 }

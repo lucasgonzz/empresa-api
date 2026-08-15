@@ -45,9 +45,13 @@ class GenerarResumenSugerenciaJob implements ShouldQueue
 
     public function handle()
     {
+        // Se recarga y se verifica el estado al momento de correr: entre el
+        // despacho y acá un reproceso (update/reintento del pipeline) pudo
+        // resetear la sugerencia. Redactar sobre cero líneas gasta una llamada
+        // a la API y muestra un resumen falso sobre datos que ya no existen.
         $suggestion = StockSuggestion::find($this->stock_suggestion_id);
 
-        if (!$suggestion) {
+        if (!$suggestion || $suggestion->status !== 'terminado') {
             return;
         }
 

@@ -915,6 +915,9 @@ Route::get('integraciones/articulos/{export_key}', 'Integraciones\ArticulosExpor
 // extensión, y create-deposit-movement lo comparten los dos flujos.
 Route::middleware(['auth:sanctum', 'check_extencion_empresa:sugerencias_inteligentes'])->group(function () {
     Route::get('stock-suggestion/{id}/articles', 'StockSuggestionController@articles');
+    // Reintento del resumen IA desde la vista: el job no reintenta solo
+    // ($tries = 1, D29), este botón es el camino de vuelta tras un 529.
+    Route::post('stock-suggestion/{id}/resumen', 'StockSuggestionController@regenerar_resumen');
 });
 
 

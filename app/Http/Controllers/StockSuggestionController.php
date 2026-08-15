@@ -4,11 +4,13 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\DepositMovementHelper;
+use App\Jobs\GenerarResumenSugerenciaJob;
 use App\Jobs\GenerateStockSuggestionChunksJob;
 use App\Models\Article;
 use App\Models\DepositMovement;
 use App\Models\StockSuggestion;
 use App\Models\StockSuggestionArticle;
+use App\Services\StockSuggestion\ResumenIaService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -39,7 +41,17 @@ class StockSuggestionController extends Controller
     }
 
     public function show($id) {
-        return response()->json(['model' => $this->fullModel('StockSuggestion', $id)], 200);
+        // Filtro de dueño en show/update/destroy/create_deposit_movement,
+        // mismo criterio que index() y articles(): sin él, cualquier id ajeno
+        // se leía y —peor— el update reprocesador agrandó el radio de daño de
+        // un id ajeno (borraba y recalculaba la sugerencia de otro comercio).
+        $model = $this->sugerencia_del_usuario($id);
+
+        if (!$model) {
+            return response()->json(['message' => 'Sugerencia no encontrada.'], 404);
+        }
+
+        return response()->json(['model' => $this->fullModel('StockSuggestion', $model->id)], 200);
     }
 
     /**
@@ -49,7 +61,17 @@ class StockSuggestionController extends Controller
      * calculadas con los parámetros anteriores).
      */
     public function update(Request $request, $id) {
-        $model = StockSuggestion::find($id);
+        $model = $this->sugerencia_del_usuario($id);
+
+        if (!$model) {
+            return response()->json(['message' => 'Sugerencia no encontrada.'], 404);
+        }
+
+        // Una sugerencia en curso no se edita: reprocesar acá encolaría una
+        // segunda corrida de la misma sugerencia pisándose con la primera.
+        if ($model->status === 'pendiente') {
+            return response()->json(['message' => 'La sugerencia se está generando. Esperá a que termine para editarla.'], 422);
+        }
 
         DB::transaction(function () use ($model, $request) {
             StockSuggestionArticle::where('stock_suggestion_id', $model->id)->delete();
@@ -73,7 +95,19 @@ class StockSuggestionController extends Controller
     }
 
     public function destroy($id) {
-        $model = StockSuggestion::find($id);
+        $model = $this->sugerencia_del_usuario($id);
+
+        if (!$model) {
+            return response()->json(['message' => 'Sugerencia no encontrada.'], 404);
+        }
+
+        // Una sugerencia en curso no se borra: sacarle el modelo de abajo a
+        // los chunks que la están escribiendo deja la corrida manoteando ids
+        // que ya no existen.
+        if ($model->status === 'pendiente') {
+            return response()->json(['message' => 'La sugerencia se está generando. Esperá a que termine para borrarla.'], 422);
+        }
+
         ImageController::deleteModelImages($model);
 
         // Las líneas van en la misma transacción que la cabecera: antes
@@ -170,6 +204,12 @@ class StockSuggestionController extends Controller
     }
 
     public function create_deposit_movement(Request $request, $id) {
+        $suggestion = $this->sugerencia_del_usuario($id);
+
+        if (!$suggestion) {
+            return response()->json(['message' => 'Sugerencia no encontrada.'], 404);
+        }
+
         // IDs de filas stock_suggestion_articles (lo que el usuario seleccionó en pantalla)
         $stock_suggestion_article_ids = $request->input('stock_suggestion_article_ids', []);
 
@@ -177,7 +217,7 @@ class StockSuggestionController extends Controller
             return response()->json(['message' => 'No se enviaron líneas de sugerencia.'], 422);
         }
 
-        $suggestion_articles = StockSuggestionArticle::where('stock_suggestion_id', $id)
+        $suggestion_articles = StockSuggestionArticle::where('stock_suggestion_id', $suggestion->id)
             ->whereIn('id', $stock_suggestion_article_ids)
             ->get();
 
@@ -247,9 +287,77 @@ class StockSuggestionController extends Controller
         $article_count = Article::where('user_id', $model->user_id)->count();
 
         if ($article_count <= $sync_article_limit) {
-            (new GenerateStockSuggestionChunksJob($model->id))->handle();
+            try {
+                (new GenerateStockSuggestionChunksJob($model->id))->handle();
+            } catch (\Throwable $e) {
+                // failed() de los jobs solo corre en la vía de cola: sin esta
+                // red, una excepción del camino sincrónico dejaba la
+                // sugerencia 'pendiente' eterna y la vista nueva polleando por
+                // un resultado que no iba a llegar. Mismo formato que failed():
+                // status 'error' + error_mensaje, sin pisar una ya terminada.
+                $model->refresh();
+
+                if ($model->status !== 'terminado') {
+                    $model->status = 'error';
+                    $model->error_mensaje = $e->getMessage();
+                    $model->save();
+                }
+
+                throw $e;
+            }
         } else {
             dispatch(new GenerateStockSuggestionChunksJob($model->id));
         }
+    }
+
+    /**
+     * Reintento del resumen IA desde la vista: resetea el estado del resumen y
+     * vuelve a despachar el job, sin tocar el cálculo ya terminado. Es la
+     * contracara de que el job no reintente solo ($tries = 1): el 529 de
+     * Anthropic se resuelve con este botón, no tapando la cola de chunks.
+     *
+     * @param int $id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function regenerar_resumen($id) {
+        $model = $this->sugerencia_del_usuario($id);
+
+        if (!$model) {
+            return response()->json(['message' => 'Sugerencia no encontrada.'], 404);
+        }
+
+        // El resumen habla del resultado completo: sobre una corrida en curso
+        // o fallida no hay nada serio que redactar.
+        if ($model->status !== 'terminado') {
+            return response()->json(['message' => 'La sugerencia no está terminada: el resumen se escribe sobre el resultado completo.'], 422);
+        }
+
+        if (!(new ResumenIaService())->hay_credenciales()) {
+            return response()->json(['message' => 'La cuenta no tiene la IA configurada: no hay credenciales para pedir el resumen.'], 422);
+        }
+
+        $model->resumen_ia         = null;
+        $model->resumen_ia_error   = null;
+        // 'pendiente' desde ya: la vista muestra "lo estamos escribiendo" sin
+        // esperar a que el worker levante el job.
+        $model->resumen_ia_estado  = 'pendiente';
+        $model->save();
+
+        dispatch(new GenerarResumenSugerenciaJob($model->id));
+
+        return response()->json(['model' => $model], 200);
+    }
+
+    /**
+     * Resuelve una sugerencia del usuario autenticado (null si no existe o es
+     * de otro comercio). Todos los métodos por id pasan por acá.
+     *
+     * @param int $id
+     * @return StockSuggestion|null
+     */
+    protected function sugerencia_del_usuario($id) {
+        return StockSuggestion::where('user_id', $this->userId())
+            ->where('id', $id)
+            ->first();
     }
 }

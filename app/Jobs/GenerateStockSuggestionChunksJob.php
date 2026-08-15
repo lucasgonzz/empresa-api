@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\Article;
 use App\Models\StockSuggestion;
+use App\Models\StockSuggestionArticle;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
 use Illuminate\Bus\Queueable;
@@ -50,6 +51,22 @@ class GenerateStockSuggestionChunksJob implements ShouldQueue
         if (!$suggestion) {
             return;
         }
+
+        // Re-entrada limpia ANTES de calcular total_chunks: con $tries = 3, un
+        // reintento tras un fallo parcial re-inserta desde cero en vez de
+        // duplicar lo que la corrida anterior alcanzó a escribir; y si un
+        // update() encoló una segunda corrida, la segunda limpia lo de la
+        // primera y el resultado final es consistente (worker único secuencial).
+        StockSuggestionArticle::where('stock_suggestion_id', $suggestion->id)->delete();
+
+        $suggestion->update([
+            'processed_chunks'  => 0,
+            'status'            => 'pendiente',
+            'error_mensaje'     => null,
+            'resumen_ia'        => null,
+            'resumen_ia_estado' => null,
+            'resumen_ia_error'  => null,
+        ]);
 
         // Lotes de IDs para procesar sin disparar jobs hijos en cola.
         // Filtrado por el dueño de la sugerencia: sin este where, en una base
