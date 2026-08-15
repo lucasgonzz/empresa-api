@@ -58,6 +58,21 @@ class CoberturaService
     }
 
     /**
+     * Clave del mapa de velocidades para un artículo a nivel global (todas
+     * las sucursales del comercio sumadas, sin distinguir destino). Existe
+     * para que el llamador use la misma forma `->clave_*()` que clave_para(),
+     * no porque haga falta ofuscar el id: sin sucursal no hay nada que
+     * concatenar.
+     *
+     * @param int $article_id
+     * @return string
+     */
+    public function clave_global($article_id)
+    {
+        return (string) $article_id;
+    }
+
+    /**
      * Velocidad de venta diaria para cada par (article_id, address_id), en UNA
      * consulta agregada (nunca una por artículo: article_purchases tiene
      * 10⁵-10⁶ filas y este cálculo corre por chunk de hasta 5000 artículos).
@@ -122,6 +137,90 @@ class CoberturaService
 
             // El whereIn es cartesiano (artículos × sucursales del chunk):
             // pueden venir pares que nadie pidió y se ignoran.
+            if (!array_key_exists($clave, $velocidades)) {
+                continue;
+            }
+
+            $velocidades[$clave] = $this->mezclar_velocidades(
+                (float) $fila->suma_reciente,
+                (float) $fila->suma_interanual
+            );
+        }
+
+        return $velocidades;
+    }
+
+    /**
+     * Velocidad de venta diaria por artículo, sumando TODAS las sucursales
+     * del comercio (a diferencia de velocidades_para(), que la calcula por
+     * par artículo/sucursal). Mismo patrón de UNA consulta agregada por
+     * chunk; copia literal de velocidades_para() con tres diferencias, y
+     * solo esas tres: sin whereIn de address_id, groupBy solo por
+     * article_id, y el select sin address_id.
+     *
+     * 🔴 Este método NO es "sumar velocidades_para() por sucursal": la
+     * mezcla 2/3-1/3 de mezclar_velocidades() no es aditiva por el branch
+     * `if ($v_interanual > 0)` — sumar mezclas ya calculadas por sucursal da
+     * un número distinto de mezclar las sumas de todas las sucursales
+     * juntas. Por eso esta query propia en vez de reusar velocidades_para()
+     * y sumar sus resultados por artículo.
+     *
+     * @param array $article_ids
+     * @return array Mapa clave_global() => velocidad diaria (float, 0.0 sin ventas)
+     */
+    public function velocidades_globales(array $article_ids): array
+    {
+        $velocidades = [];
+
+        foreach ($article_ids as $article_id) {
+            $velocidades[$this->clave_global($article_id)] = 0.0;
+        }
+
+        if (empty($article_ids)) {
+            return $velocidades;
+        }
+
+        $article_ids_unicos = array_values(array_unique($article_ids));
+
+        $ahora = now();
+        $desde_reciente = $ahora->copy()->subDays(self::VENTANA_DIAS);
+        $desde_interanual = $ahora->copy()->subDays(self::DESFASE_INTERANUAL_DIAS + self::VENTANA_DIAS);
+        $hasta_interanual = $ahora->copy()->subDays(self::DESFASE_INTERANUAL_DIAS);
+
+        // Mismo WHERE global [hoy-455, hoy] que velocidades_para(): cada CASE
+        // recorta su ventana y las filas del hueco entre ambas no suman en
+        // ninguna. El scope por comercio lo da articles.user_id, igual que
+        // en velocidades_para().
+        $filas = DB::table('article_purchases')
+            ->join('articles', 'article_purchases.article_id', '=', 'articles.id')
+            ->join('sales', 'article_purchases.sale_id', '=', 'sales.id')
+            ->where('articles.user_id', $this->user_id)
+            ->whereNull('sales.deleted_at')
+            // Condición de Sale::scopeSoloVentasReales, con prefijo de tabla
+            // porque acá el FROM es article_purchases (las consolidaciones de
+            // facturación duplicarían las ventas que agrupan).
+            ->where(function ($q) {
+                $q->whereNull('sales.is_consolidacion_facturacion')
+                  ->orWhere('sales.is_consolidacion_facturacion', 0);
+            })
+            ->whereIn('article_purchases.article_id', $article_ids_unicos)
+            ->where('article_purchases.created_at', '>=', $desde_interanual)
+            ->groupBy('article_purchases.article_id')
+            ->selectRaw(
+                'article_purchases.article_id as article_id,
+                 SUM(CASE WHEN article_purchases.created_at >= ? THEN article_purchases.amount ELSE 0 END) as suma_reciente,
+                 SUM(CASE WHEN article_purchases.created_at <= ? THEN article_purchases.amount ELSE 0 END) as suma_interanual',
+                [$desde_reciente, $hasta_interanual]
+            )
+            ->get();
+
+        foreach ($filas as $fila) {
+            $clave = $this->clave_global($fila->article_id);
+
+            // Sin sucursal para acotar, el whereIn de article_id ya garantiza
+            // que no puede traer claves de más; se valida igual por simetría
+            // con velocidades_para() (y por si el día de mañana esto se
+            // reusa con un whereIn más laxo).
             if (!array_key_exists($clave, $velocidades)) {
                 continue;
             }

@@ -471,6 +471,12 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Asistente IA',
                 'slug' => 'asistente_ia',
             ],
+            [
+                // Va acá porque UserSetupHelper/DemoSetupHelper corren SOLO este seeder:
+                // una extensión que no esté en este array no existe para una instancia nueva.
+                'name' => 'Sugerencias de compra a proveedores',
+                'slug' => 'sugerencias_compras',
+            ],
 
         ];
         foreach ($extencions as $extencion) {
