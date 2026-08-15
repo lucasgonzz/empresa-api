@@ -68,6 +68,38 @@ class Kernel extends ConsoleKernel
                 ->withoutOverlapping(60);
         }
 
+        // Rollup diario del tracking de comportamiento de compradores de la tienda
+        // (misión tracking-buyers-tienda): colapsa el día de ayer de
+        // buyer_tracking_events en buyer_tracking_daily. 03:30 porque el día de ayer
+        // ya está cerrado y la tienda a esa hora no tiene tráfico; withoutOverlapping(30)
+        // cubre una tienda con muchos grupos por día.
+        //
+        // Costo permanente en los ~40 clientes reales: CERO consultas a la base. El
+        // gate por extensión de este if corta antes de que el comando arranque, y el
+        // $company_owner que mira ya está resuelto arriba (:34) para el resto del
+        // schedule — o sea que ni siquiera agrega el SELECT que sí paga
+        // demo:flush-eventos acá abajo. Y si alguien lo corre a mano, el comando
+        // repite el gate adentro.
+        if ($company_owner && UserHelper::hasExtencion('tracking_buyers', $company_owner)) {
+            $schedule->command('tracking:agregar-buyers')
+                ->dailyAt('03:30')
+                ->withoutOverlapping(30);
+        }
+
+        // Retención de los eventos crudos del tracking de compradores: borra por lotes
+        // lo de más de 90 días. 04:00, media hora después del rollup, para que el
+        // agregado del día ya esté escrito antes de que se toque nada; el agregado no
+        // se purga nunca. withoutOverlapping(30) porque el borrado por lotes de una
+        // tabla grande puede tardar.
+        //
+        // Mismo costo permanente que el de arriba en los ~40 clientes reales: cero,
+        // por el mismo gate.
+        if ($company_owner && UserHelper::hasExtencion('tracking_buyers', $company_owner)) {
+            $schedule->command('tracking:purgar-buyers')
+                ->dailyAt('04:00')
+                ->withoutOverlapping(30);
+        }
+
         // Reintenta cada 5 minutos los mensajes de soporte no sincronizados a admin-api.
         $schedule->command('support:retry-pending-syncs')->everyFiveMinutes();
 
