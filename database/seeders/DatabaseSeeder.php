@@ -329,6 +329,8 @@ class DatabaseSeeder extends Seeder
         $this->call(ExtencionPersonalizarNombreEnVenderSeeder::class);
         /* Extensión para la importación de artículos asistida por Claude IA. */
         $this->call(ExtencionEmpresaAiExcelImportSeeder::class);
+        /* Extensión de la v2 de sugerencias de traslado de stock entre sucursales. */
+        $this->call(ExtencionSugerenciasInteligentesSeeder::class);
         /* Extensión + permisos del módulo de chats de WhatsApp con clientes (grupo 137). */
         $this->call(ExtencionEmpresaWhatsappSeeder::class);
         $this->call(PermissionEmpresaWhatsappSeeder::class);
