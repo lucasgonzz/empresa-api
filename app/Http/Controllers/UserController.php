@@ -229,7 +229,29 @@ class UserController extends Controller
             $model->usa_provider_codes_repetidos = (bool) $request->usa_provider_codes_repetidos;
         }
 
-
+        /**
+         * Configuración de sugerencias de stock (v2): periodicidad de la
+         * generación automática y valores por defecto de cada sugerencia.
+         * Con guard has() (mismo criterio que usar_condicion_fiscal_en_costeo):
+         * el form sin la extensión sugerencias_inteligentes no manda estas
+         * claves, y un request viejo no puede pisar la configuración con null
+         * (la periodicidad en null apagaría la generación en silencio).
+         */
+        if ($request->has('sugerencias_periodicidad') && !is_null($request->sugerencias_periodicidad)) {
+            $model->sugerencias_periodicidad = $request->sugerencias_periodicidad;
+        }
+        if ($request->has('sugerencias_modo') && !is_null($request->sugerencias_modo)) {
+            $model->sugerencias_modo = $request->sugerencias_modo;
+        }
+        if ($request->has('sugerencias_origen') && !is_null($request->sugerencias_origen)) {
+            $model->sugerencias_origen = $request->sugerencias_origen;
+        }
+        if ($request->has('sugerencias_limite_origen') && !is_null($request->sugerencias_limite_origen)) {
+            $model->sugerencias_limite_origen = $request->sugerencias_limite_origen;
+        }
+        if ($request->has('sugerencias_ultima_generacion_at')) {
+            $model->sugerencias_ultima_generacion_at = $request->sugerencias_ultima_generacion_at;
+        }
 
         $model->save();
 

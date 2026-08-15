@@ -57,6 +57,17 @@ class Kernel extends ConsoleKernel
                 ->withoutOverlapping(25);
         }
 
+        // Generación automática de sugerencias de stock (v2), solo con la
+        // extensión sugerencias_inteligentes. El comando decide adentro si
+        // según la periodicidad configurada hoy toca (o sale en una línea).
+        // 05:00: lejos de debt:snapshot (23:59) y antes de que abra el
+        // comercio; withoutOverlapping(60) cubre catálogos grandes.
+        if ($company_owner && UserHelper::hasExtencion('sugerencias_inteligentes', $company_owner)) {
+            $schedule->command('sugerencias:generar')
+                ->dailyAt('05:00')
+                ->withoutOverlapping(60);
+        }
+
         // Reintenta cada 5 minutos los mensajes de soporte no sincronizados a admin-api.
         $schedule->command('support:retry-pending-syncs')->everyFiveMinutes();
 
