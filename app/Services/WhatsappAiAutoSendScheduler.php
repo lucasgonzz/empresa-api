@@ -7,7 +7,7 @@ use App\Jobs\AutoSendWhatsappAiMessageJob;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
-use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -15,20 +15,22 @@ use Illuminate\Support\Facades\Log;
  * ventana de confirmación humana que configuró el dueño
  * (`whatsapp_bot_configs.ai_confirm_delay_seconds`).
  *
- * Mismo mecanismo de token en caché que `WhatsappAgentScheduler`, pero por MENSAJE en vez de
- * por chat: si una persona confirma o descarta el mensaje antes de que se cumpla la espera,
- * el token se invalida y el job pendiente se auto-descarta cuando se despierta. Así el
- * mensaje nunca se manda dos veces ni se manda uno que ya fue descartado.
+ * Mismo mecanismo de token que `WhatsappAgentScheduler` —contador en la base, no en caché,
+ * por el motivo que está escrito en `bump_token()`— pero por MENSAJE en vez de por chat
+ * (columna `whatsapp_chat_messages.ai_auto_send_token`): si una persona confirma o descarta
+ * el mensaje antes de que se cumpla la espera, el token se invalida y el job pendiente se
+ * auto-descarta cuando se despierta. Así el mensaje nunca se manda dos veces ni se manda uno
+ * que ya fue descartado.
  *
  * Réplica adaptada de `admin-api\app\Services\LeadAiSuggestionAutoSendScheduler`.
  */
 class WhatsappAiAutoSendScheduler
 {
-    /** Prefijo de la clave de caché del token de auto-envío, por mensaje. */
-    private const CACHE_KEY_PREFIX = 'whatsapp_ai_auto_send_token:';
+    /** Tabla donde vive el token de auto-envío del mensaje. */
+    private const TOKEN_TABLE = 'whatsapp_chat_messages';
 
-    /** TTL del token en caché: tiene que cubrir demoras largas y una cola lenta. */
-    private const CACHE_TTL_SECONDS = 7200;
+    /** Columna contador del token de auto-envío, por mensaje. */
+    private const TOKEN_COLUMN = 'ai_auto_send_token';
 
     /**
      * Encola el envío automático de una respuesta recién generada por el agente.
@@ -115,38 +117,77 @@ class WhatsappAiAutoSendScheduler
      */
     public function is_token_current(int $message_id, int $token): bool
     {
-        $current = Cache::get($this->cache_key($message_id));
+        // Los tokens válidos arrancan en 1. Un 0 significa "nunca se programó nada acá" (es
+        // el default de la columna, y también lo que devuelve `bump_token()` cuando el
+        // mensaje ya no existe), así que nunca puede estar vigente.
+        if ($token <= 0) {
+            return false;
+        }
+
+        $current = DB::table(self::TOKEN_TABLE)
+            ->where('id', $message_id)
+            ->value(self::TOKEN_COLUMN);
+
+        // Mensaje borrado (el cliente siguió escribiendo y se descartó el pendiente): no hay
+        // token vigente. El chequeo explícito de null es necesario porque `(int) null` es 0 y
+        // daría un falso positivo contra un token 0.
+        if (is_null($current)) {
+            return false;
+        }
 
         return (int) $current === $token;
     }
 
     /**
-     * Incrementa el token de auto-envío del mensaje y lo persiste en caché.
+     * Incrementa el token de auto-envío del mensaje y devuelve el valor nuevo.
+     *
+     * 🔴 ESTE TOKEN VA A LA BASE Y NO A `Cache::`, Y NO ES POR GUSTO. Si estás por
+     * "simplificar" esto volviendo a `Cache::get()` / `Cache::put()` como en admin-api,
+     * leé esto primero: `empresa-api` corre con `CACHE_DRIVER=array` (ver `.env`), que es
+     * una caché en memoria del proceso y muere con él. Y este token lo escribe UN proceso
+     * (el que genera la respuesta) y lo tiene que leer OTRO (el worker de `queue:work` que
+     * ejecuta `AutoSendWhatsappAiMessageJob`, porque `QUEUE_CONNECTION=database`). Con
+     * `array`, el worker levanta con la caché vacía, `Cache::get()` devuelve null, el token
+     * nunca coincide y el job se descarta EN SILENCIO: con cualquier demora de confirmación
+     * mayor a 0 el mensaje no sale nunca y no queda ni un error en el log. En admin-api el
+     * mismo código anda solo porque allá el driver es `file`. Tampoco alcanza con cambiar el
+     * driver: `.env` no está versionado y no controlamos el de cada cliente.
+     *
+     * Sobre la atomicidad: el bump corre dentro de una transacción que primero toma el lock
+     * de la fila con `lockForUpdate()` (`SELECT ... FOR UPDATE`), así dos llamadas casi
+     * simultáneas (por ejemplo alguien confirmando el mensaje justo cuando el agente lo está
+     * reprogramando) no se pueden llevar el mismo número: la segunda espera al commit de la
+     * primera y lee el valor ya incrementado. El `increment()` es además atómico en SQL
+     * (`SET col = col + 1`, no manda un valor calculado en PHP).
+     *
+     * Se usa el query builder crudo y no Eloquent a propósito: `Model::update()` e
+     * `increment()` de Eloquent tocan `updated_at`, y un bump de token no es una
+     * modificación del mensaje que la interfaz tenga que ver.
      *
      * @param int $message_id
      *
-     * @return int
+     * @return int Token nuevo. 0 si el mensaje ya no existe (nunca es un token vigente, así
+     *             que el job que lo traiga se auto-descarta).
      */
     private function bump_token(int $message_id): int
     {
-        $cache_key = $this->cache_key($message_id);
-        $current = (int) Cache::get($cache_key, 0);
-        $next = $current + 1;
+        return (int) DB::transaction(function () use ($message_id) {
+            $current = DB::table(self::TOKEN_TABLE)
+                ->where('id', $message_id)
+                ->lockForUpdate()
+                ->value(self::TOKEN_COLUMN);
 
-        Cache::put($cache_key, $next, self::CACHE_TTL_SECONDS);
+            if (is_null($current)) {
+                return 0;
+            }
 
-        return $next;
-    }
+            DB::table(self::TOKEN_TABLE)
+                ->where('id', $message_id)
+                ->increment(self::TOKEN_COLUMN);
 
-    /**
-     * Arma la clave de caché del token de auto-envío del mensaje.
-     *
-     * @param int $message_id
-     *
-     * @return string
-     */
-    private function cache_key(int $message_id): string
-    {
-        return self::CACHE_KEY_PREFIX.$message_id;
+            // El valor nuevo se sabe con certeza porque el lock ya es nuestro: nadie más
+            // pudo tocar la fila entre el SELECT y el UPDATE. Por eso no hace falta releer.
+            return (int) $current + 1;
+        });
     }
 }

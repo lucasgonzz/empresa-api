@@ -6,7 +6,7 @@ use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Jobs\GenerateWhatsappAiReplyJob;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
-use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -16,22 +16,25 @@ use Illuminate\Support\Facades\Log;
  * tres mensajes seguidos.
  *
  * Cómo funciona el debounce, porque es el corazón de todo esto y no es obvio leyendo el job
- * suelto: cada mensaje entrante incrementa un contador guardado en caché (el "token") y
- * despacha un job llevándose ese número. Cuando el job se despierta, compara el token que
- * trae contra el vigente: si no coincide es porque después de él entró otro mensaje, así que
- * se descarta solo sin generar nada. De los tres jobs que dispararon los tres mensajes, solo
- * el último sobrevive — y ese ve los tres mensajes en el historial.
+ * suelto: cada mensaje entrante incrementa un contador guardado en la columna
+ * `whatsapp_chats.ai_schedule_token` (el "token") y despacha un job llevándose ese número.
+ * Cuando el job se despierta, compara el token que trae contra el vigente: si no coincide es
+ * porque después de él entró otro mensaje, así que se descarta solo sin generar nada. De los
+ * tres jobs que dispararon los tres mensajes, solo el último sobrevive — y ese ve los tres
+ * mensajes en el historial.
  *
  * Es el mismo patrón ya probado en producción en admin-api
- * (`LeadAiSuggestionScheduler` + `GenerateLeadAiSuggestionJob`).
+ * (`LeadAiSuggestionScheduler` + `GenerateLeadAiSuggestionJob`), con una diferencia que NO
+ * es cosmética y está explicada en `bump_token()`: allá el token vive en caché, acá tiene
+ * que vivir en la base.
  */
 class WhatsappAgentScheduler
 {
-    /** Prefijo de la clave de caché del token de debounce, por chat. */
-    private const CACHE_KEY_PREFIX = 'whatsapp_agent_reply_token:';
+    /** Tabla donde vive el token de debounce del chat. */
+    private const TOKEN_TABLE = 'whatsapp_chats';
 
-    /** TTL del token en caché: tiene que cubrir demoras largas y una cola lenta. */
-    private const CACHE_TTL_SECONDS = 7200;
+    /** Columna contador del token de debounce, por chat. */
+    private const TOKEN_COLUMN = 'ai_schedule_token';
 
     /**
      * Reinicia la espera y programa el job que genera la respuesta del agente.
@@ -115,38 +118,80 @@ class WhatsappAgentScheduler
      */
     public function is_token_current(int $chat_id, int $token): bool
     {
-        $current = Cache::get($this->cache_key($chat_id));
+        // Los tokens válidos arrancan en 1. Un 0 significa "nunca se programó nada acá" (es
+        // el default de la columna, y también lo que devuelve `bump_token()` cuando el chat
+        // ya no existe), así que nunca puede estar vigente.
+        if ($token <= 0) {
+            return false;
+        }
+
+        $current = DB::table(self::TOKEN_TABLE)
+            ->where('id', $chat_id)
+            ->value(self::TOKEN_COLUMN);
+
+        // Chat borrado: no hay token vigente y el job que lo traiga se descarta. El chequeo
+        // explícito de null es necesario porque `(int) null` es 0 y daría un falso positivo
+        // contra un token 0.
+        if (is_null($current)) {
+            return false;
+        }
 
         return (int) $current === $token;
     }
 
     /**
-     * Incrementa el token de programación del chat y lo persiste en caché.
+     * Incrementa el token de programación del chat y devuelve el valor nuevo.
+     *
+     * 🔴 ESTE TOKEN VA A LA BASE Y NO A `Cache::`, Y NO ES POR GUSTO. Si estás por
+     * "simplificar" esto volviendo a `Cache::get()` / `Cache::put()` como en admin-api,
+     * leé esto primero: `empresa-api` corre con `CACHE_DRIVER=array` (ver `.env`), que es
+     * una caché en memoria del proceso y muere con él. Y este token lo escribe UN proceso
+     * (el request del webhook de Kapso) y lo tiene que leer OTRO (el worker de
+     * `queue:work`, porque `QUEUE_CONNECTION=database`). Con `array`, el worker levanta con
+     * la caché vacía, `Cache::get()` devuelve null, el token nunca coincide y el job se
+     * descarta EN SILENCIO: con cualquier demora mayor a 0 el agente no contesta nunca y no
+     * queda ni un error en el log. En admin-api el mismo código anda solo porque allá el
+     * driver es `file`. Tampoco alcanza con cambiar el driver: `.env` no está versionado y
+     * no controlamos el de cada cliente.
+     *
+     * Sobre la atomicidad, que es el otro motivo por el que esto no es un simple
+     * `leer + 1 + guardar`: dos mensajes entrantes casi simultáneos (dos requests del
+     * webhook en paralelo) no pueden llevarse el mismo token, porque los dos jobs se
+     * creerían vigentes y el cliente recibiría dos respuestas. Por eso el bump corre dentro
+     * de una transacción que primero toma el lock de la fila con `lockForUpdate()`
+     * (`SELECT ... FOR UPDATE`): el segundo proceso queda esperando ahí hasta que el
+     * primero commitea, así que lee el valor ya incrementado y se lleva el siguiente. El
+     * `increment()` es además atómico en SQL (`SET col = col + 1`, no manda un valor
+     * calculado en PHP), o sea que el contador nunca retrocede aunque el lock no estuviera.
+     *
+     * Se usa el query builder crudo y no Eloquent a propósito: `Model::update()` e
+     * `increment()` de Eloquent tocan `updated_at`, y un bump de token no es una
+     * modificación del chat que la interfaz tenga que ver.
      *
      * @param int $chat_id
      *
-     * @return int Token nuevo, el que se le pasa al job recién encolado.
+     * @return int Token nuevo, el que se le pasa al job recién encolado. 0 si el chat ya no
+     *             existe (nunca es un token vigente, así que el job se auto-descarta).
      */
     private function bump_token(int $chat_id): int
     {
-        $cache_key = $this->cache_key($chat_id);
-        $current = (int) Cache::get($cache_key, 0);
-        $next = $current + 1;
+        return (int) DB::transaction(function () use ($chat_id) {
+            $current = DB::table(self::TOKEN_TABLE)
+                ->where('id', $chat_id)
+                ->lockForUpdate()
+                ->value(self::TOKEN_COLUMN);
 
-        Cache::put($cache_key, $next, self::CACHE_TTL_SECONDS);
+            if (is_null($current)) {
+                return 0;
+            }
 
-        return $next;
-    }
+            DB::table(self::TOKEN_TABLE)
+                ->where('id', $chat_id)
+                ->increment(self::TOKEN_COLUMN);
 
-    /**
-     * Arma la clave de caché del token de debounce del chat.
-     *
-     * @param int $chat_id
-     *
-     * @return string
-     */
-    private function cache_key(int $chat_id): string
-    {
-        return self::CACHE_KEY_PREFIX.$chat_id;
+            // El valor nuevo se sabe con certeza porque el lock ya es nuestro: nadie más
+            // pudo tocar la fila entre el SELECT y el UPDATE. Por eso no hace falta releer.
+            return (int) $current + 1;
+        });
     }
 }
