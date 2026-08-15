@@ -2,9 +2,11 @@
 
 namespace Tests\Feature\TrackingBuyers;
 
+use App\Console\Commands\AgregarBuyerTracking;
 use App\Models\ExtencionEmpresa;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
@@ -22,6 +24,12 @@ use Tests\TestCase;
  * sirve en MySQL, ver la migración del agregado), así que la da el comando borrando el día
  * completo antes de reinsertar — y por eso "correrlo dos veces deja el mismo resultado" es LA
  * aserción de este archivo, no una de más.
+ *
+ * El segundo modo de falla es la cara oscura de ese mismo borrar-y-reinsertar: si la inserción
+ * falla después del borrado, el día queda BORRADO Y VACÍO, y como los eventos crudos se purgan
+ * a los 90 días, pasada esa ventana no se puede reconstruir con nada. Los dos tests del final
+ * miden las dos defensas: que un monto monstruoso no voltee la corrida (se acota en el SELECT)
+ * y que, si la inserción falla igual, la transacción devuelva el agregado del día como estaba.
  *
  * DatabaseTransactions (no RefreshDatabase): la base de testing está sembrada de antes y un
  * refresh la vaciaría, rompiendo el resto de las suites.
@@ -357,5 +365,160 @@ class Agregacion_Test extends TestCase
         $this->artisan('tracking:agregar-buyers', ['--fecha' => '2026-13-45'])->assertExitCode(1);
 
         $this->assertCount(0, $this->agregado(), 'Escribió con una fecha inválida.');
+    }
+
+    /**
+     * Un monto imposible NO voltea la corrida ni deja el día destruido.
+     *
+     * El camino real es corto y no hace falta ningún dato inventado a mano: todos los
+     * `checkout_complete` de visitantes anónimos caen en UN SOLO grupo (buyer_id y article_id
+     * en NULL), así que alcanza con dos eventos de monto grande para que el SUM del rollup no
+     * entre en decimal(22,2) y MySQL conteste `1264 Out of range value`... justo después de que
+     * el comando borró el agregado del día. Sin el LEAST, esta corrida termina con el día
+     * borrado y sin reinsertar, y pasados los 90 días de retención de los crudos eso no se
+     * puede reconstruir con nada.
+     *
+     * @group tracking_buyers
+     * @test
+     */
+    public function un_amount_monstruoso_no_voltea_la_corrida_ni_destruye_el_dia()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->activar_extencion($user);
+
+        $fecha = '2026-08-10';
+
+        // El grupo sano del día: es lo que se perdería para siempre si la corrida se cae.
+        $this->sembrar_evento(['buyer_id' => 77, 'article_id' => 10, 'event_type' => 'product_view', 'dwell_ms' => 1000, 'occurred_at' => $fecha . ' 09:00:00']);
+
+        /*
+         * Los montos van como STRING: a esta escala un float de PHP ya no representa el número
+         * exacto y el test estaría midiendo otra cosa. Cada uno entra holgado en decimal(22,2);
+         * lo que no entra es la SUMA de los dos.
+         */
+        $this->sembrar_evento(['event_type' => 'checkout_complete', 'amount' => '99000000000000000000.00', 'occurred_at' => $fecha . ' 18:00:00']);
+        $this->sembrar_evento(['event_type' => 'checkout_complete', 'amount' => '99000000000000000000.00', 'occurred_at' => $fecha . ' 18:05:00']);
+
+        $this->artisan('tracking:agregar-buyers', ['--fecha' => $fecha])
+            ->assertExitCode(0);
+
+        $filas = $this->agregado();
+
+        $this->assertCount(2, $filas, 'El monto desbordado se llevó puesto el rollup del día entero.');
+
+        $checkout = $this->fila_por_tipo($filas, 'checkout_complete');
+        $vista    = $this->fila_por_tipo($filas, 'product_view');
+
+        $this->assertNotNull($vista, 'Se perdió el grupo sano del día por culpa de un grupo con datos sucios.');
+        $this->assertEquals(1, $vista['total']);
+
+        $this->assertNotNull($checkout, 'No quedó la fila del grupo con monto desbordado.');
+        $this->assertEquals(2, $checkout['total'], 'El conteo de eventos tenía que quedar intacto aunque el monto se acote.');
+        $this->assertEquals(
+            AgregarBuyerTracking::TECHO_AMOUNT_TOTAL,
+            (string) $checkout['amount_total'],
+            'El monto tenía que quedar acotado al techo de la columna, no desbordarla.'
+        );
+    }
+
+    /**
+     * Y si la inserción falla IGUAL —por cualquier motivo que el techo no cubra: una desconexión,
+     * un deadlock, un dato sucio en otra columna—, la transacción tiene que devolver el agregado
+     * del día como estaba. Sin la transacción, el borrado ya está hecho y el día queda vacío.
+     *
+     * El fallo se inyecta con una subclase del comando que rompe en insertar(), que es
+     * exactamente el punto peligroso: después del borrado y antes de reponer nada. El resto del
+     * handle() —transacción, catch, código de salida— es el heredado del comando real.
+     *
+     * @group tracking_buyers
+     * @test
+     */
+    public function si_la_insercion_falla_la_transaccion_deja_el_agregado_del_dia_intacto()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->activar_extencion($user);
+
+        $fecha = '2026-08-10';
+
+        $this->sembrar_evento(['buyer_id' => 77, 'article_id' => 10, 'dwell_ms' => 1000, 'occurred_at' => $fecha . ' 09:00:00']);
+        $this->sembrar_evento(['buyer_id' => null, 'article_id' => 20, 'dwell_ms' => 500, 'occurred_at' => $fecha . ' 11:00:00']);
+
+        // Corrida buena: el día queda agregado. Esto es lo que no se puede perder.
+        $this->artisan('tracking:agregar-buyers', ['--fecha' => $fecha])->assertExitCode(0);
+
+        $antes = $this->agregado();
+        $this->assertCount(2, $antes, 'La corrida buena tenía que dejar el día agregado.');
+
+        Artisan::registerCommand(new AgregarBuyerTrackingQueFallaAlInsertar());
+
+        $this->artisan('tracking:agregar-buyers-que-falla-al-insertar', ['--fecha' => $fecha])
+            ->assertExitCode(1);
+
+        $this->assertEquals(
+            $antes,
+            $this->agregado(),
+            'La corrida fallida dejó el día borrado: el borrado y la inserción no están en la misma transacción.'
+        );
+    }
+
+    /**
+     * Primera fila del agregado con ese event_type, o null.
+     *
+     * @param array<int, array> $filas
+     * @param string $event_type
+     * @return array|null
+     */
+    protected function fila_por_tipo($filas, $event_type)
+    {
+        foreach ($filas as $fila) {
+            if ($fila['event_type'] === $event_type) {
+                return $fila;
+            }
+        }
+
+        return null;
+    }
+}
+
+/**
+ * Comando de rollup que rompe justo en la inserción, para probar que el borrado del día se
+ * revierte. Vive acá y no en app/Console/Commands/ a propósito: es andamio de test y no tiene
+ * por qué existir en producción.
+ *
+ * Hereda todo el handle() del comando real —guardas, transacción, catch, código de salida— y
+ * sólo reemplaza insertar(), que es el paso que corre DESPUÉS del borrado del día.
+ */
+class AgregarBuyerTrackingQueFallaAlInsertar extends AgregarBuyerTracking
+{
+    /**
+     * Nombre propio: si compartiera el del comando real, la registración pisaría al verdadero
+     * y el resto de los tests del archivo estarían corriendo el roto sin darse cuenta.
+     *
+     * @var string
+     */
+    protected $signature = 'tracking:agregar-buyers-que-falla-al-insertar {--fecha= : Día a agregar en formato Y-m-d}';
+
+    /**
+     * @var string
+     */
+    protected $description = 'Sólo para tests: rollup que falla al insertar, después de borrar el día';
+
+    /**
+     * Rompe siempre, en el peor momento posible.
+     *
+     * @param int $user_id
+     * @param string $fecha
+     * @param \Illuminate\Support\Collection $grupos
+     * @return int
+     */
+    protected function insertar($user_id, $fecha, $grupos)
+    {
+        throw new \RuntimeException('Fallo inyectado por el test: la inserción del agregado se cayó después del borrado del día.');
     }
 }

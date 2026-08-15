@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\User;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -24,6 +25,19 @@ use Illuminate\Support\Facades\Schema;
  * porque tres de las cinco columnas que formarían la clave son nullable y en
  * MySQL NULL != NULL (el porqué largo está en la migración
  * 2026_08_15_140100_create_buyer_tracking_daily_table).
+ *
+ * 🔴 Ese borrar-y-reinsertar es también el punto peligroso del comando, y por eso
+ * tiene TRES defensas encima. `buyer_tracking_daily` es la única memoria de largo
+ * plazo del comportamiento de la tienda (los crudos se purgan a los 90 días), así
+ * que un borrado que no llega a reinsertar es pérdida PERMANENTE de un día. Las
+ * defensas, de adentro hacia afuera:
+ *
+ *   1. `LEAST(SUM(amount), TECHO_AMOUNT_TOTAL)` en el propio SELECT del rollup,
+ *      para que un dato sucio no pueda voltear la corrida (ver agregar_dia()).
+ *   2. Borrado + inserción dentro de una sola DB::transaction(): si la inserción
+ *      falla igual, el borrado se revierte y el día queda como estaba.
+ *   3. try/catch en handle() que loguea y devuelve código de salida 1, para que
+ *      una corrida fallida no pase por buena en el cron.
  */
 class AgregarBuyerTracking extends Command
 {
@@ -51,6 +65,28 @@ class AgregarBuyerTracking extends Command
      * @var int
      */
     const FILAS_POR_INSERT = 500;
+
+    /**
+     * Techo del monto sumado de un grupo, exactamente el máximo que entra en
+     * `buyer_tracking_daily.amount_total` = decimal(22,2).
+     *
+     * Existe porque el SUM del rollup puede desbordar la columna y tumbar la
+     * corrida entera: todos los `checkout_complete` de visitantes anónimos caen en
+     * un solo grupo (buyer_id y article_id en NULL), así que alcanzan DOS eventos
+     * con un amount grande para que el SUM dé más de lo que entra y MySQL conteste
+     * `1264 Out of range value` — con la corrida abortada después del borrado del
+     * día. Medido contra el MySQL local, no es teórico.
+     *
+     * Se ACOTA con LEAST y no se descarta el grupo, y esa es la decisión: descartar
+     * el grupo perdería también el `total` de eventos, que es un dato sano y es el
+     * que más se lee; acotar deja el conteo intacto y sólo el monto tocado. Para
+     * que el valor acotado no sea "una medición que falla devolviendo un valor
+     * tranquilizador", cada grupo acotado sale por Log::warning diciendo cuál fue
+     * (ver insertar()).
+     *
+     * @var string
+     */
+    const TECHO_AMOUNT_TOTAL = '99999999999999999999.99';
 
     /**
      * Ejecuta el rollup sobre el dueño de la instancia (config app.USER_ID).
@@ -94,13 +130,50 @@ class AgregarBuyerTracking extends Command
             return 1;
         }
 
-        $borradas = $this->borrar_dia($user->id, $fecha);
-        $grupos   = $this->agregar_dia($user->id, $fecha);
-        $insertadas = $this->insertar($user->id, $fecha, $grupos);
+        /*
+         * 🔴 Borrado + inserción en UNA transacción, y no es un detalle de prolijidad.
+         * borrar_dia() se lleva el agregado del día y sólo insertar() lo repone; si
+         * insertar() tira en el medio —un desborde de columna, una desconexión, un
+         * deadlock—, sin transacción el día queda BORRADO Y SIN REINSERTAR. Y como los
+         * eventos crudos se purgan a los 90 días, después de esa ventana ese día ya no
+         * se puede reconstruir con nada: es pérdida permanente.
+         */
+        try {
+            $resultado = DB::transaction(function () use ($user, $fecha) {
+                $borradas = $this->borrar_dia($user->id, $fecha);
+                $grupos   = $this->agregar_dia($user->id, $fecha);
+
+                return [
+                    'borradas'   => $borradas,
+                    'insertadas' => $this->insertar($user->id, $fecha, $grupos),
+                ];
+            });
+        } catch (\Throwable $e) {
+            /*
+             * La transacción ya revirtió el borrado, así que el agregado del día quedó
+             * como estaba. Lo que falta es que no pase inadvertido: el cron lo corre de
+             * noche y sin nadie mirando, así que va al log Y con código de salida != 0.
+             * Un rollup que falla en silencio son cifras del ERP que dejan de moverse
+             * sin que nada lo denuncie.
+             */
+            Log::error('tracking:agregar-buyers: falló el rollup diario, la transacción se revirtió y el agregado del día quedó intacto.', [
+                'fecha'     => $fecha,
+                'user_id'   => $user->id,
+                'excepcion' => get_class($e),
+                'mensaje'   => $e->getMessage(),
+            ]);
+
+            $this->error(
+                'tracking:agregar-buyers — ' . $fecha . ': falló el rollup (' . get_class($e) . ': '
+                . $e->getMessage() . '). No se modificó el agregado del día.'
+            );
+
+            return 1;
+        }
 
         $this->info(
-            'tracking:agregar-buyers — ' . $fecha . ': se borraron ' . $borradas
-            . ' filas previas y se insertaron ' . $insertadas . '.'
+            'tracking:agregar-buyers — ' . $fecha . ': se borraron ' . $resultado['borradas']
+            . ' filas previas y se insertaron ' . $resultado['insertadas'] . '.'
         );
 
         return 0;
@@ -168,7 +241,22 @@ class AgregarBuyerTracking extends Command
             ->select('buyer_id', 'article_id', 'event_type')
             ->selectRaw('COUNT(*) as total')
             ->selectRaw('COALESCE(SUM(dwell_ms), 0) as dwell_ms_total')
-            ->selectRaw('COALESCE(SUM(amount), 0) as amount_total')
+            /*
+             * El monto va ACOTADO al techo de la columna destino. Sin el LEAST, un
+             * SUM que no entra en decimal(22,2) hace fallar el INSERT y se lleva
+             * puesta la corrida justo después de haber borrado el día (ver el
+             * porqué completo en TECHO_AMOUNT_TOTAL). Es la segunda línea de
+             * defensa: la primera es el tope de monto de la ingesta en tienda-api,
+             * pero ese tope vive en otro repo, se despliega en otro momento y no
+             * cubre los datos que ya estén escritos.
+             */
+            ->selectRaw('LEAST(COALESCE(SUM(amount), 0), ' . self::TECHO_AMOUNT_TOTAL . ') as amount_total')
+            /*
+             * La comparación la hace MySQL sobre los decimales, no PHP sobre floats:
+             * a esta escala un float no distingue el techo de un valor apenas mayor,
+             * y este flag es lo único que hace visible un grupo acotado.
+             */
+            ->selectRaw('CASE WHEN COALESCE(SUM(amount), 0) > ' . self::TECHO_AMOUNT_TOTAL . ' THEN 1 ELSE 0 END as amount_desbordado')
             ->where('user_id', $user_id)
             ->whereBetween('occurred_at', [$desde, $hasta])
             ->groupBy('buyer_id', 'article_id', 'event_type')
@@ -193,6 +281,24 @@ class AgregarBuyerTracking extends Command
         $filas = [];
 
         foreach ($grupos as $grupo) {
+
+            /*
+             * Un grupo acotado se avisa fuerte: el número que queda en la tabla es
+             * el techo y no la suma real, y eso tiene que poder diagnosticarse
+             * después. Se nombra el grupo completo para poder ir a buscar los
+             * eventos crudos mientras todavía existan (90 días).
+             */
+            if (!empty($grupo->amount_desbordado)) {
+                Log::warning('tracking:agregar-buyers: el monto sumado de un grupo superó el techo de amount_total y se acotó. Revisar los eventos crudos de ese grupo, hay datos sucios.', [
+                    'fecha'      => $fecha,
+                    'user_id'    => $user_id,
+                    'buyer_id'   => $grupo->buyer_id,
+                    'article_id' => $grupo->article_id,
+                    'event_type' => $grupo->event_type,
+                    'techo'      => self::TECHO_AMOUNT_TOTAL,
+                ]);
+            }
+
             $filas[] = [
                 'user_id'        => $user_id,
                 'fecha'          => $fecha,
