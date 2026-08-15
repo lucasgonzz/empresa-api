@@ -2,6 +2,7 @@
 
 namespace App\Services\Compras;
 
+use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -21,6 +22,23 @@ class OfertasDeProveedorService
 
     /** Moneda de una oferta que no trae moneda_id explícito (1 = Peso) */
     const MONEDA_POR_DEFECTO = 1;
+
+    /**
+     * Arreglo post-chequeo (A3). Aunque el costo no haya cambiado, se escribe
+     * una fila de reconfirmación si la última vigente tiene MÁS de esta
+     * cantidad de días. Por qué hace falta: registrar_lote() lee "la última
+     * fila" SIN ventana de fecha (mira todo el historial), pero
+     * mejores_ofertas_para() sí filtra por `fecha >= hoy - dias_vigencia`
+     * (120 por default). Sin este reconfirmado, un proveedor que manda la
+     * misma lista de precios todas las semanas deja UNA sola fila -- la del
+     * primer día -- y al día 121 esa fila deja de estar vigente: el
+     * proveedor deja de competir por "el más barato" aunque siga ofreciendo
+     * exactamente lo mismo hoy. 30 días asegura que, con dias_vigencia en su
+     * default de 120, siempre quede al menos una fila de los últimos 30 días
+     * dentro de la ventana de 120: nunca se llega a la fecha de corte sin
+     * una fila reciente que la sostenga.
+     */
+    const DIAS_RECONFIRMACION = 30;
 
     /**
      * Registra un lote de ofertas de precio, aplicando la regla de
@@ -43,14 +61,20 @@ class OfertasDeProveedorService
      *    punto de escritura) y cost null o <= 0.
      * 2. Leer, en UNA sola query (whereIn sobre los article_id del lote), la
      *    última fila vigente de cada par (article_id, provider_id) que ya
-     *    exista en la tabla — sin filtrar por origen a propósito: un precio
-     *    cargado por importación y después confirmado por una compra real
-     *    es la misma "verdad" a efectos de detectar si cambió.
+     *    exista en la tabla, con su costo Y su fecha — sin filtrar por
+     *    origen a propósito: un precio cargado por importación y después
+     *    confirmado por una compra real es la misma "verdad" a efectos de
+     *    detectar si cambió.
      * 3. Descartar las entradas cuyo costo sea igual, con epsilon 0.000001
      *    (nunca "==" a secas: son decimales que vienen de un Excel o de un
      *    cálculo previo, y una comparación exacta dejaría pasar diferencias
      *    de redondeo de centésimas de centavo como si fueran "cambios de
-     *    precio" reales) al de esa última fila.
+     *    precio" reales) al de esa última fila — EXCEPTO si esa última fila
+     *    tiene más de DIAS_RECONFIRMACION (30) días: ahí se escribe de todos
+     *    modos, para reconfirmar que el proveedor sigue vigente (ver el
+     *    docblock de la constante — arreglo A3 post-chequeo: sin esto, un
+     *    precio estable deja una sola fila que termina venciendo en
+     *    mejores_ofertas_para() aunque el proveedor lo siga ofertando hoy).
      * 4. Las que sobreviven se escriben con upsert() por tandas de 1000
      *    contra el unique (article_id, provider_id, fecha, origen), pisando
      *    SOLO cost/provider_code/referencia_id/updated_at — nunca user_id,
@@ -125,10 +149,14 @@ class OfertasDeProveedorService
             ->orderBy('provider_id')
             ->orderBy('fecha', 'desc')
             ->orderBy('id', 'desc')
-            ->select(['article_id', 'provider_id', 'cost'])
+            ->select(['article_id', 'provider_id', 'cost', 'fecha'])
             ->get();
 
-        $ultimo_costo_vigente = [];
+        // [article_id][provider_id] => ['cost' => float, 'fecha' => 'Y-m-d']
+        // Se guarda también la fecha (antes solo el costo) para poder decidir
+        // la reconfirmación del paso 3 (A3): hace falta saber CUÁNTO hace que
+        // no se escribe una fila de este par, no solo si el costo cambió.
+        $ultima_fila_vigente = [];
 
         foreach ($filas_existentes as $fila) {
             $clave_article = (int) $fila->article_id;
@@ -138,8 +166,11 @@ class OfertasDeProveedorService
             // par: la primera vez que aparece un (article_id, provider_id)
             // es la vigente. Las filas siguientes del mismo par son
             // historial más viejo y no interesan acá.
-            if (!isset($ultimo_costo_vigente[$clave_article][$clave_provider])) {
-                $ultimo_costo_vigente[$clave_article][$clave_provider] = (float) $fila->cost;
+            if (!isset($ultima_fila_vigente[$clave_article][$clave_provider])) {
+                $ultima_fila_vigente[$clave_article][$clave_provider] = [
+                    'cost' => (float) $fila->cost,
+                    'fecha' => $fila->fecha,
+                ];
             }
         }
 
@@ -149,14 +180,24 @@ class OfertasDeProveedorService
         $filas_a_escribir = [];
 
         foreach ($candidatas as $candidata) {
-            $costo_previo = isset($ultimo_costo_vigente[$candidata['article_id']][$candidata['provider_id']])
-                ? $ultimo_costo_vigente[$candidata['article_id']][$candidata['provider_id']]
+            $previa = isset($ultima_fila_vigente[$candidata['article_id']][$candidata['provider_id']])
+                ? $ultima_fila_vigente[$candidata['article_id']][$candidata['provider_id']]
                 : null;
 
             // Sin fila previa: siempre es una novedad y se escribe. Con fila
-            // previa: solo se escribe si el costo cambió más allá del epsilon.
-            if ($costo_previo !== null && abs($costo_previo - $candidata['cost']) < self::EPSILON_COSTO) {
-                continue;
+            // previa: solo se descarta si el costo NO cambió (epsilon) Y
+            // además esa fila previa todavía está dentro de la ventana de
+            // reconfirmación (A3). Pasados los DIAS_RECONFIRMACION días, se
+            // escribe igual aunque el costo sea el mismo — ver el docblock
+            // de la constante y del método.
+            if ($previa !== null && abs($previa['cost'] - $candidata['cost']) < self::EPSILON_COSTO) {
+                $dias_desde_la_ultima = Carbon::parse($previa['fecha'])->diffInDays($ahora);
+
+                if ($dias_desde_la_ultima < self::DIAS_RECONFIRMACION) {
+                    continue;
+                }
+                // Si no: cae al armado de abajo y escribe una fila de
+                // reconfirmación con el mismo costo y fecha = hoy.
             }
 
             $filas_a_escribir[] = [
@@ -203,6 +244,16 @@ class OfertasDeProveedorService
      * articles.provider_id y article_provider.cost — datos que este método
      * no tiene por qué conocer.
      *
+     * 🔴 Arreglo post-chequeo (A11): el desempate entre dos filas del MISMO
+     * día ya no es solo `id DESC`. Antes, si una importación se procesaba
+     * más tarde en el día que una compra real, la fila de la importación
+     * (id más alto) le ganaba a la de la compra — siendo la compra el dato
+     * más confiable del histórico (es plata que efectivamente se pagó, no
+     * una lista de precios). Ahora se prioriza `origen = 'compra'` antes que
+     * `id DESC`: ese criterio solo entra a jugar cuando la fecha ya empató
+     * (el ORDER BY por fecha sigue siendo el criterio principal), y dentro
+     * de un mismo origen sigue desempatando por id DESC como antes.
+     *
      * @param array $article_ids
      * @param int $user_id
      * @param int $dias_vigencia
@@ -225,6 +276,10 @@ class OfertasDeProveedorService
             ->orderBy('article_id')
             ->orderBy('provider_id')
             ->orderBy('fecha', 'desc')
+            // Desempate del mismo día (A11): 'compra' antes que cualquier
+            // otro origen. `origen = 'compra'` evalúa a 1/0 en MySQL, así
+            // que DESC deja primero las filas de compra.
+            ->orderByRaw("origen = 'compra' desc")
             ->orderBy('id', 'desc')
             ->select(['article_id', 'provider_id', 'cost', 'fecha', 'origen', 'moneda_id'])
             ->get();

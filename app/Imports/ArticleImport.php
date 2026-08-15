@@ -471,6 +471,13 @@ class ArticleImport implements ToCollection
                 Log::warning('ArticleImport: no se pudo registrar el histórico de precios ofertados', [
                     'message' => $e->getMessage(),
                 ]);
+            } finally {
+                // Arreglo A15 post-chequeo: se limpia SIEMPRE, haya salido bien o mal el
+                // registro de arriba. Si no se limpiara acá, un chunk siguiente que reuse
+                // esta misma instancia de ProcessRow volvería a mandar todo lo ya
+                // consumido (o lo que falló) además de lo nuevo, pagando una lectura
+                // whereIn() cada vez más grande dentro de registrar_lote().
+                $this->process_row->limpiar_ofertas_de_precio_buffer();
             }
 
             return $actualizar_bbdd->get_articulos_creados_models();

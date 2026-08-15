@@ -14,6 +14,21 @@ use Illuminate\Database\Eloquent\Model;
  * OfertasDeProveedorService. No escribir filas sueltas acá afuera: se
  * rompería la regla de deduplicación temporal (una fila por combinación
  * artículo/proveedor/fecha/origen, ver la migración de esta tabla).
+ *
+ * 🔴 Arreglo post-chequeo (A16): este modelo tenía un scopeVigentes() cuyo
+ * comentario decía "la regla de cuál es la fila vigente vive acá, no en cada
+ * consumidor" -- y no era cierto: ni registrar_lote() ni
+ * mejores_ofertas_para() (los dos en OfertasDeProveedorService, arriba) lo
+ * llamaban -- las dos hacen su propio DB::table() con su propio ORDER BY
+ * fecha DESC/id DESC -- y tampoco lo llamaba
+ * Helpers\ConsultasSistemaIaHelper::precios_de_proveedores() (tercera
+ * reimplementación de la misma idea, para la tool del chat de IA). Un scope
+ * sin un solo caller, prometiendo una centralización que en los hechos está
+ * reimplementada a mano en TRES lugares, es peor que no tener scope: alguien
+ * lo iba a encontrar y confiar en el comentario. Se saca acá. Unificar los
+ * tres lugares de verdad no entra en esta pasada: el tercero
+ * (ConsultasSistemaIaHelper) no está en la lista cerrada de archivos de este
+ * arreglo puntual, y tocarlo igual sería ampliar el alcance sin pedirlo.
  */
 class ProviderPriceOffer extends Model
 {
@@ -34,26 +49,6 @@ class ProviderPriceOffer extends Model
     function scopeWithAll($q)
     {
         return $q;
-    }
-
-    /**
-     * Acota a ofertas vigentes desde hace `$dias_vigencia` días hasta hoy,
-     * ordenadas de la más reciente a la más vieja (mayor fecha primero,
-     * desempate por id DESC): encadenado a un filtro por article_id (y
-     * opcionalmente provider_id), ->first() da la oferta vigente de ese par.
-     *
-     * Misma idea de lectura que CreditAccountSnapshot::scopeSaldoAlDia: la
-     * regla de "cuál es la fila vigente" vive acá, no en cada consumidor.
-     *
-     * @param  \Illuminate\Database\Eloquent\Builder  $q
-     * @param  int  $dias_vigencia
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    function scopeVigentes($q, $dias_vigencia)
-    {
-        return $q->where('fecha', '>=', now()->subDays($dias_vigencia)->toDateString())
-                  ->orderBy('fecha', 'desc')
-                  ->orderBy('id', 'desc');
     }
 
     function article()

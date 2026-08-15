@@ -37,6 +37,23 @@ use Illuminate\Support\Facades\Schema;
  * Efecto colateral bueno y esperado: con el índice creado, el upsert() masivo de
  * ActualizarBBDD (hoy siempre INSERT) empieza a hacer UPDATE cuando corresponde. Ese es el
  * arreglo real del bug que esta migración viene a cerrar.
+ *
+ * 🔴 Dos casos límite del paso 1 (arreglo A12 post-chequeo), documentados y NO arreglados
+ * en esta pasada porque arreglarlos de verdad excede el alcance (el segundo pide decidir
+ * qué user_id usar para una fila sin artículo, y eso es una decisión de negocio, no un
+ * one-liner):
+ * - **Fila huérfana**: `volcar_duplicadas_al_historico()` hace INNER JOIN contra `articles`
+ *   para conseguir el `user_id` que `provider_price_offers` exige y `article_provider` no
+ *   tiene. Si una fila descartable del pivot apunta a un `article_id` que ya no existe (el
+ *   artículo se borró pero el pivot quedó huérfano), el INNER JOIN la excluye del SELECT y
+ *   **nunca se vuelca** al histórico — pero el DELETE del paso 2 no tiene ese join (solo se
+ *   apoya en la subquery de duplicados) y **sí la borra**. Es una pérdida de dato histórico
+ *   silenciosa para el caso específico de pivots huérfanos con más de una fila.
+ * - **`created_at` null**: sin guard, `DATE(ap.created_at)` de una fila legacy con
+ *   `created_at` null evalúa a NULL, y como `provider_price_offers.fecha` es NOT NULL, ese
+ *   INSERT degradaría a `'0000-00-00'` en vez de fallar (según el modo SQL del server). Se
+ *   excluyen esas filas del volcado con `whereNotNull('ap.created_at')`: mismo destino que
+ *   la huérfana (se borran sin volcar) en vez de ensuciar el histórico con una fecha falsa.
  */
 class DedupAndIndexArticleProviderTable extends Migration
 {
@@ -63,6 +80,12 @@ class DedupAndIndexArticleProviderTable extends Migration
      * del paso 2 -- con join a `articles` para conseguir el user_id que exige
      * provider_price_offers y que article_provider no tiene. Solo se vuelcan filas con
      * costo real (cost IS NOT NULL AND cost > 0): una fila sin costo no es una oferta.
+     *
+     * 🔴 El join a `articles` es INNER (no LEFT): una fila de pivot huérfana (article_id sin
+     * Article vivo) no aparece acá y por lo tanto no se vuelca, aunque el DELETE del paso 2
+     * sí la borre -- ver el docblock de la clase, "Fila huérfana". Y `whereNotNull('ap.created_at')`
+     * excluye del volcado (no del DELETE) las filas legacy sin created_at, para no degradar
+     * `fecha` a '0000-00-00' -- ver "created_at null" en el mismo docblock.
      *
      * insertOrIgnore respeta el unique (article_id, provider_id, fecha, origen) de
      * provider_price_offers: si dos duplicadas descartables del mismo par comparten fecha
@@ -104,6 +127,12 @@ class DedupAndIndexArticleProviderTable extends Migration
             ->whereColumn('ap.id', '<', 'dup.keep_id')
             ->whereNotNull('ap.cost')
             ->where('ap.cost', '>', 0)
+            // A12: sin esto, una fila legacy con created_at null volcaría
+            // DATE(NULL) = NULL a una columna `fecha` NOT NULL (degrada a
+            // '0000-00-00' según el modo SQL). Se excluye del volcado -- el
+            // DELETE del paso 2 la sigue borrando igual, mismo destino que
+            // la fila huérfana documentada arriba.
+            ->whereNotNull('ap.created_at')
             ->select($columnas)
             ->get();
 

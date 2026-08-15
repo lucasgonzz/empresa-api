@@ -1148,7 +1148,7 @@ class ProcessRow {
                         $this->terminar('procesar_articulo_ya_creado con provider_code repetido');
                     } else {
                         // El artículo pertenece a otro proveedor y se sigue salteando igual que
-                        // siempre (attach_provider ya corrió en :1072 y el pivot se pisa como
+                        // siempre (attach_provider ya corrió en :1092 y el pivot se pisa como
                         // antes): lo único nuevo es que la oferta queda con fecha en el histórico.
                         $this->registrar_oferta_de_otro_proveedor([$_articulo_ya_creado->id], $provider_id, $data);
                     }
@@ -1167,7 +1167,7 @@ class ProcessRow {
                     $this->terminar('procesar_articulo_ya_creado');
                 } else {
                     // El artículo pertenece a otro proveedor y se sigue salteando igual que
-                    // siempre (attach_provider ya corrió en :1072 y el pivot se pisa como
+                    // siempre (attach_provider ya corrió en :1092 y el pivot se pisa como
                     // antes): lo único nuevo es que la oferta queda con fecha en el histórico.
                     $this->registrar_oferta_de_otro_proveedor([$articulo_ya_creado->id], $provider_id, $data);
                 }
@@ -3859,12 +3859,36 @@ class ProcessRow {
     }
 
     /**
+     * Vacía el buffer de ofertas de precio (arreglo A15 post-chequeo).
+     *
+     * ArticleImport::guardar_articulos() llama a get_ofertas_de_precio_buffer()
+     * UNA vez por chunk para volcarlo a OfertasDeProveedorService::registrar_lote(),
+     * pero antes de este arreglo nada lo vaciaba después: el buffer seguía creciendo
+     * y, si esta misma instancia procesa más de un chunk, el chunk N termina
+     * re-mandando TODO lo acumulado desde el chunk 1. La deduplicación de
+     * registrar_lote() lo vuelve inocuo a nivel de filas escritas, pero cada chunk
+     * paga una lectura whereIn() cada vez más grande — en una importación de
+     * decenas de miles de filas eso degrada de verdad. Mismo patrón preexistente
+     * de $provider_relations_buffer (tampoco se limpia), pero fuera del alcance de
+     * este arreglo: acá solo se resuelve el buffer que esta misión introdujo.
+     *
+     * @return void
+     */
+    public function limpiar_ofertas_de_precio_buffer(): void
+    {
+        $this->ofertas_de_precio_buffer = [];
+    }
+
+    /**
      * Registra que ESTE proveedor ofrecía el/los artículo(s) a $data['cost'], en los dos
      * puntos donde el importador descarta o saltea la fila sin tocar el pivot con ella
      * (sugerencias de compra). Captura de solo lectura: no decide nada del importador.
-     * Guardas duras: sin provider_id sale; sin cost o cost<=0 sale (misma condición de
-     * update_provider_relation(), :1560); cada id tiene que ser entero > 0, nunca un
-     * fake_id; y nunca lanza (try/catch con Log::warning).
+     * Guardas duras: sin provider_id sale; sin cost o cost<=0 sale -- a propósito MÁS
+     * estricta que update_provider_relation() (:1582), que solo chequea
+     * isset($data['cost']) y NO descarta un costo <= 0 (arreglo A10 post-chequeo: el
+     * comentario original citaba :1560 y decía "misma condición", y ninguna de las dos
+     * cosas era cierta); cada id tiene que ser entero > 0, nunca un fake_id; y nunca
+     * lanza (try/catch con Log::warning).
      *
      * @param array $article_ids ids reales (int) o strings 'fake_...' a descartar
      * @param int|null $provider_id

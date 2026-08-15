@@ -1061,10 +1061,38 @@ class NewProviderOrderHelper {
         }
 
         try {
+            // Arreglo post-chequeo (A1): moneda REAL de este costo, para que el
+            // histórico no lo asuma "en pesos" por default. $cost (arriba) es el
+            // valor LITERAL tipeado en la línea -- nunca se convierte acá, se
+            // sigue guardando tal cual en article_provider -- pero ese literal
+            // puede estar en dólares. get_total_article() (~:608-611) muestra la
+            // regla real del sistema: el flag cost_in_dollars del PIVOT DE LA
+            // LÍNEA marca que ESE costo puntual se tipeó en dólares aunque el
+            // resto de la orden esté en pesos, y ahí se convierte recién AL
+            // TOTALIZAR (nunca antes). Y si la orden ENTERA está en dólares
+            // (provider_order->moneda_id == 2), cualquier costo tipeado ya se
+            // interpreta directo en esa moneda sin que haga falta tildar
+            // cost_in_dollars por línea (el if de get_total_article() solo
+            // convierte cuando moneda_id == 1: con moneda_id == 2 nunca entra,
+            // porque ahí el costo ya está en la moneda de la orden). Sin este
+            // dato, catalogar_costo_proveedor() nunca mandaba moneda_id y
+            // registrar_lote() completaba con el default (1 = Peso): una compra
+            // de USD 10 quedaba anotada como oferta de $10, y ese proveedor
+            // ganaba "el más barato" por ~1000x en la corrida siguiente del
+            // motor de sugerencias.
+            $moneda_id_de_la_oferta = (
+                !empty($new_article['pivot']['cost_in_dollars'])
+                || (int) $this->provider_order->moneda_id === 2
+            ) ? 2 : 1;
+
             // El costo de una compra REAL es el dato más confiable del histórico: ya viene
             // neto (back-out de IVA arriba) y con proveedor y fecha ciertos.
             OfertasDeProveedorService::registrar_lote(
-                [$article->id => [$provider_id => ['cost' => $cost, 'provider_code' => isset($pivot_data['provider_code']) ? $pivot_data['provider_code'] : null]]],
+                [$article->id => [$provider_id => [
+                    'cost' => $cost,
+                    'provider_code' => isset($pivot_data['provider_code']) ? $pivot_data['provider_code'] : null,
+                    'moneda_id' => $moneda_id_de_la_oferta,
+                ]]],
                 (int) $this->provider_order->user_id,
                 'compra',
                 $this->provider_order->id
