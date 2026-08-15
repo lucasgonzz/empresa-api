@@ -2,6 +2,7 @@
 
 namespace App\Services\StockSuggestion;
 
+use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Models\Address;
 use App\Models\StockSuggestionArticle;
 use Illuminate\Support\Facades\Http;
@@ -40,10 +41,39 @@ class ResumenIaService
      * Arma el prompt (un solo mensaje user, texto plano): rol, datos ya
      * calculados, reglas duras y formato de salida.
      *
+     * La parte de datos vive en armar_datos(); acá solo se le ponen las
+     * instrucciones de redacción alrededor. La salida es byte por byte la
+     * misma que antes de extraer ese método.
+     *
      * @param \App\Models\StockSuggestion $suggestion Sugerencia terminada
      * @return string
      */
     public function armar_prompt($suggestion): string
+    {
+        $prompt = "Sos el encargado de depósito de un comercio argentino. Escribí un resumen breve y ameno, tuteando en rioplatense, sobre los traslados de stock entre sucursales que el sistema ya calculó: qué conviene mover primero y por qué (menos días de cobertura = el stock se acaba antes).\n\n"
+            . $this->armar_datos($suggestion) . "\n\n"
+            . "Reglas:\n"
+            . "- No recalcules ni inventes cantidades: usa exactamente estas.\n"
+            . "- Maximo 6 oraciones.\n"
+            . "- Sin listas ni markdown: texto corrido.\n"
+            . "- No saludes ni te presentes.\n\n"
+            . "Responde solo con el texto plano del resumen.";
+
+        return $prompt;
+    }
+
+    /**
+     * Bloque de DATOS ya calculados de la sugerencia (agregados + top
+     * priorizado), sin instrucciones de redacción.
+     *
+     * Público porque el chat del asistente de IA lo guarda tal cual en
+     * ai_conversations.contexto: es el fondo sobre el que la conversación
+     * de una sugerencia puede charlar sin recalcular nada.
+     *
+     * @param \App\Models\StockSuggestion $suggestion Sugerencia terminada
+     * @return string
+     */
+    public function armar_datos($suggestion): string
     {
         $base = StockSuggestionArticle::where('stock_suggestion_id', $suggestion->id);
 
@@ -99,23 +129,14 @@ class ResumenIaService
                 . ' | ' . $cobertura;
         }
 
-        $prompt = "Sos el encargado de depósito de un comercio argentino. Escribí un resumen breve y ameno, tuteando en rioplatense, sobre los traslados de stock entre sucursales que el sistema ya calculó: qué conviene mover primero y por qué (menos días de cobertura = el stock se acaba antes).\n\n"
-            . "Datos ya calculados:\n"
+        return "Datos ya calculados:\n"
             . "- Lineas de traslado sugeridas: " . $total_lineas . "\n"
             . "- Articulos distintos: " . $articulos_distintos . "\n"
             . "- Unidades totales a mover: " . $this->formatear_cantidad($unidades_totales) . "\n"
             . "- Totales por par de sucursales:\n"
             . (count($lineas_pares) ? implode("\n", $lineas_pares) : '- (sin pares)') . "\n"
             . "- Los traslados mas urgentes, por dias hasta quedarse sin stock:\n"
-            . (count($lineas_top) ? implode("\n", $lineas_top) : '- (sin lineas priorizadas)') . "\n\n"
-            . "Reglas:\n"
-            . "- No recalcules ni inventes cantidades: usa exactamente estas.\n"
-            . "- Maximo 6 oraciones.\n"
-            . "- Sin listas ni markdown: texto corrido.\n"
-            . "- No saludes ni te presentes.\n\n"
-            . "Responde solo con el texto plano del resumen.";
-
-        return $prompt;
+            . (count($lineas_top) ? implode("\n", $lineas_top) : '- (sin lineas priorizadas)');
     }
 
     /**
@@ -123,12 +144,20 @@ class ResumenIaService
      * hardcodeado (misma práctica que WhatsappBotAiService, a diferencia de
      * los servicios viejos que clavaban el modelo en una constante).
      *
+     * Retrofit de metering (misión chat-ia-y-modulo-ia): cuando llega
+     * $user_id se registra el consumo de tokens leído del `usage` de la
+     * respuesta. Parámetros opcionales para no tocar a ningún llamador que
+     * solo quiera el texto; sin $user_id no se graba nada (no hay a quién
+     * imputar el gasto).
+     *
      * @param string $prompt
+     * @param int|null $user_id Dueño de la cuenta, para el registro de tokens
+     * @param int|null $suggestion_id Sugerencia de origen (referencia_id del registro)
      * @return string Texto del resumen
      *
      * @throws \RuntimeException Si la llamada falla o la API devuelve error
      */
-    public function pedir_resumen(string $prompt): string
+    public function pedir_resumen(string $prompt, $user_id = null, $suggestion_id = null): string
     {
         $api_key = (string) config('services.anthropic.api_key');
 
@@ -171,6 +200,17 @@ class ResumenIaService
         }
 
         $response_data = $response->json();
+
+        // El registro nunca lanza: una falla de metering no voltea el resumen.
+        if (! is_null($user_id)) {
+            AiTokenUsageHelper::registrar([
+                'user_id'       => $user_id,
+                'proceso'       => 'resumen_sugerencia_stock',
+                'modelo'        => (string) config('services.anthropic.model'),
+                'body'          => is_array($response_data) ? $response_data : [],
+                'referencia_id' => $suggestion_id,
+            ]);
+        }
 
         $text = $response_data['content'][0]['text'] ?? null;
 
