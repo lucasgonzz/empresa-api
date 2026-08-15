@@ -46,6 +46,10 @@ class ArticleObserver
      * Resultado del gate ya resuelto, indexado por user_id. Vive lo que vive el proceso:
      * un request web, un comando de consola o un worker de cola.
      *
+     * Es UNO SOLO para los dos observers (Article y Description): DescriptionObserver
+     * llama a debe_generar_embedding() de acá justamente para compartir este memo y que
+     * resetear_cache_gate() siga siendo un único lugar donde limpiar.
+     *
      * ESTO NO ES UNA OPTIMIZACIÓN OPCIONAL, es parte del diseño. El gate cuesta dos
      * consultas (el usuario con sus extensiones, y si hay una importación en curso) y el
      * observer corre UNA VEZ POR ARTÍCULO GUARDADO. Sin el memo, una importación de
@@ -74,7 +78,7 @@ class ArticleObserver
      */
     public function created(Article $article): void
     {
-        if (! $this->debe_generar_embedding($article->user_id)) {
+        if (! self::debe_generar_embedding($article->user_id)) {
             return;
         }
 
@@ -100,7 +104,7 @@ class ArticleObserver
             return;
         }
 
-        if (! $this->debe_generar_embedding($article->user_id)) {
+        if (! self::debe_generar_embedding($article->user_id)) {
             return;
         }
 
@@ -115,6 +119,8 @@ class ArticleObserver
      * cero en cada caso; y un worker de cola de vida larga que quiera refrescar el
      * criterio sin reiniciarse.
      *
+     * Limpia el memo para los DOS observers, porque el memo es uno solo.
+     *
      * @return void
      */
     public static function resetear_cache_gate(): void
@@ -128,11 +134,16 @@ class ArticleObserver
      * Replica el mismo criterio que usa el comando articles:generate-embeddings, para que
      * las dos puntas (observer inmediato y scheduler cada 30 min) no se contradigan.
      *
+     * Es pública y estática a propósito: DescriptionObserver la usa tal cual para no
+     * duplicar el criterio (extensión whatsapp_ia + importación en curso) ni tener un
+     * segundo memo que resetear_cache_gate() se olvidaría de limpiar. Si mañana hay que
+     * cambiar el criterio, se cambia acá y las dos puntas quedan iguales solas.
+     *
      * @param int|string|null $user_id Dueño del artículo (articles.user_id).
      *
      * @return bool
      */
-    private function debe_generar_embedding($user_id): bool
+    public static function debe_generar_embedding($user_id): bool
     {
         // 1. Sin dueño no hay a quién preguntarle por la extensión.
         if (empty($user_id)) {
@@ -141,33 +152,43 @@ class ArticleObserver
 
         $clave = (int) $user_id;
 
-        // Memo por proceso: ver el comentario largo de $cache_gate. Si este tenant ya se
-        // resolvió, no se vuelve a la base.
-        if (array_key_exists($clave, self::$cache_gate)) {
-            return self::$cache_gate[$clave];
-        }
-
-        // Se cachea la negativa de entrada: cualquier salida temprana de acá abajo deja
-        // false guardado sin tener que repetirlo en cada return.
-        self::$cache_gate[$clave] = false;
-
-        // 2. El usuario con sus extensiones cargadas.
-        $user = User::with('extencions')->find($clave);
-
-        if (is_null($user)) {
+        // 🔴 EL MEMO CUBRE SOLO LA EXTENSIÓN, NO LA IMPORTACIÓN. No unifiques los dos
+        // chequeos en una sola entrada de caché, por más que ahorre una consulta.
+        //
+        // La extensión de un negocio no cambia durante la vida de un proceso, así que
+        // memorizarla es seguro. El estado de la importación SÍ cambia, y justo en el
+        // orden que rompe todo: un `queue:work` de vida larga procesa cualquier job que
+        // guarde un artículo, deja memorizado "sí, generá", y recién DESPUÉS el dueño
+        // sube un Excel de 20.000 filas. Con el memo unificado, ese worker nunca vuelve
+        // a preguntar y despacha los 20.000 jobs — exactamente la avalancha que el punto
+        // 3 de abajo viene a evitar.
+        if (array_key_exists($clave, self::$cache_gate) && self::$cache_gate[$clave] === false) {
             return false;
         }
 
-        // 3. Sin la extensión whatsapp_ia el catálogo vectorial no lo consume nadie, así
-        // que generarlo sería gasto puro.
-        if (! UserHelper::hasExtencion('whatsapp_ia', $user)) {
-            return false;
+        // 2. Extensión: se resuelve una sola vez por proceso y por tenant.
+        if (! array_key_exists($clave, self::$cache_gate)) {
+            self::$cache_gate[$clave] = false;
+
+            $user = User::with('extencions')->find($clave);
+
+            if (is_null($user)) {
+                return false;
+            }
+
+            // Sin la extensión whatsapp_ia el catálogo vectorial no lo consume nadie, así
+            // que generarlo sería gasto puro.
+            if (! UserHelper::hasExtencion('whatsapp_ia', $user)) {
+                return false;
+            }
+
+            self::$cache_gate[$clave] = true;
         }
 
-        // 4. Importación en curso: no se dispara nada. Una importación toca miles de
-        // artículos de una y encolaría una tormenta de jobs sobre filas que además siguen
-        // cambiando. Lo que el observer se saltea acá lo levanta después el comando
-        // agendado, que justamente busca los artículos con updated_at > embedding_generated_at.
+        // 3. Importación en curso: se pregunta SIEMPRE, sin memo. Una importación toca
+        // miles de artículos de una y encolaría una tormenta de jobs sobre filas que
+        // además siguen cambiando. Lo que el observer se saltea acá lo levanta después el
+        // comando agendado, que busca los artículos con updated_at > embedding_generated_at.
         $importacion_activa = ImportStatus::where('user_id', $clave)
             ->where('status', 'en_proceso')
             ->exists();
@@ -175,8 +196,6 @@ class ArticleObserver
         if ($importacion_activa) {
             return false;
         }
-
-        self::$cache_gate[$clave] = true;
 
         return true;
     }
