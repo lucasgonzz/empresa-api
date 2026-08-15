@@ -275,6 +275,20 @@ class UserController extends Controller
             $model->sugerencias_compras_periodicidad = $request->sugerencias_compras_periodicidad;
         }
 
+        /**
+         * Motor de ofertas por cliente: periodicidad de la generación automática
+         * (ofertas:generar). Mismo criterio que los dos bloques de arriba: guard
+         * has() para que un form sin la extensión motor_de_ofertas no mande la
+         * clave, y descarte del null para que "no mandó nada" no apague nada.
+         *
+         * ofertas_ultima_generacion_at NO se asigna acá, mismo motivo que sus dos
+         * hermanas: la escribe SOLO el comando. Si el PUT la aceptara, cada guardado
+         * del form retrocedería la marca y adelantaría la próxima corrida.
+         */
+        if ($request->has('ofertas_periodicidad') && !is_null($request->ofertas_periodicidad)) {
+            $model->ofertas_periodicidad = $request->ofertas_periodicidad;
+        }
+
         $model->save();
 
         if ($owner_user && $request->has('listas_de_precio')) {
