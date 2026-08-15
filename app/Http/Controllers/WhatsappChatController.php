@@ -9,6 +9,7 @@ use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
 use App\Models\WhatsappTemplate;
+use App\Services\WhatsappAiAutoSendScheduler;
 use App\Services\WhatsappBotAiService;
 use App\Services\WhatsappBotSendService;
 use Illuminate\Http\JsonResponse;
@@ -293,8 +294,12 @@ class WhatsappChatController extends Controller
             return response()->json(['message' => 'No hay una configuración de WhatsApp activa para esta empresa.'], 422);
         }
 
+        // El proceso se declara distinto del de la respuesta automática ('whatsapp_respuesta')
+        // aunque sea la misma llamada HTTP: el gasto tiene otro dueño (lo pidió una persona a
+        // mano) y hay que poder distinguirlos al mirar los números. `userId(false)` es el
+        // empleado autenticado, sin resolver al dueño.
         $ai_service = new WhatsappBotAiService();
-        $suggestion = $ai_service->generate_response($chat, $config);
+        $suggestion = $ai_service->generate_response($chat, $config, 'whatsapp_sugerencia', $this->userId(false));
 
         return response()->json(['suggestion' => $suggestion], 200);
     }
@@ -314,10 +319,99 @@ class WhatsappChatController extends Controller
             return response()->json(['message' => 'Chat no encontrado.'], 404);
         }
 
+        // Igual que en suggest(): el resumen lo pidió una persona, así que el gasto se
+        // registra con su propio proceso y con el empleado autenticado.
         $ai_service = new WhatsappBotAiService();
-        $summary = $ai_service->generate_summary($chat);
+        $summary = $ai_service->generate_summary($chat, 'whatsapp_resumen', $this->userId(false));
 
         return response()->json(['summary' => $summary], 200);
+    }
+
+    /**
+     * Confirma y envía una respuesta del agente que estaba esperando aprobación humana
+     * (misión whatsapp-agente). Es el "mandalo ahora" del operador: corta el auto-envío
+     * programado, manda por Kapso y marca la fila como enviada.
+     *
+     * @param  int  $message_id
+     * @return JsonResponse
+     */
+    public function confirm_ai_message($message_id): JsonResponse
+    {
+        $message = $this->find_owned_ai_message($message_id);
+        if (is_null($message)) {
+            return response()->json(['message' => 'Mensaje no encontrado.'], 404);
+        }
+
+        if ((string) $message->ai_status !== 'a_confirmar') {
+            return response()->json(['message' => 'El mensaje ya no está esperando confirmación.'], 422);
+        }
+
+        $chat = WhatsappChat::find($message->whatsapp_chat_id);
+        if (is_null($chat)) {
+            return response()->json(['message' => 'Chat no encontrado.'], 404);
+        }
+
+        // 🔴 Los dos guards que pueden rechazar el pedido van ANTES de cancelar el token, y el
+        // orden importa: si se cancela primero, una confirmación rechazada deja el mensaje en
+        // 'a_confirmar' pero ya sin temporizador, o sea que nunca más se enviaría solo. El
+        // operador vería un error y, sin saberlo, habría desactivado el auto-envío de ese
+        // mensaje. Una operación que devuelve error no puede dejar efectos.
+        // Mismo contrato que send_message(): fuera de la ventana de 24 h de Meta no se puede
+        // mandar texto libre, el front tiene que ofrecer una plantilla.
+        if (! $chat->is_within_service_window()) {
+            return response()->json(['code' => 'fuera_de_ventana'], 422);
+        }
+
+        $config = WhatsappBotConfig::where('user_id', $chat->user_id)->first();
+        if (is_null($config)) {
+            return response()->json(['message' => 'No hay una configuración de WhatsApp activa para esta empresa.'], 422);
+        }
+
+        // Recién acá, con el envío ya asegurado, se cancela. Sigue ocurriendo ANTES del envío:
+        // si el job de auto-envío se despertara en el medio, encontraría el token viejo y se
+        // descartaría solo. Nunca se manda dos veces.
+        (new WhatsappAiAutoSendScheduler())->cancel_for_message((int) $message->id);
+
+        $send_service = new WhatsappBotSendService();
+        $wa_message_id = $send_service->send_text($chat->phone, (string) $message->body, $config);
+
+        WhatsappChatHelper::mark_ai_message_sent($message, $wa_message_id);
+
+        return response()->json(['model' => $this->fullModel('WhatsappChatMessage', $message->id)], 200);
+    }
+
+    /**
+     * Descarta una respuesta del agente que estaba esperando aprobación humana: cancela el
+     * auto-envío y BORRA la fila (misma decisión que cuando el cliente sigue escribiendo: si
+     * quedara, la IA la leería como algo que ya contestó y el operador vería en la
+     * conversación un mensaje que el cliente nunca recibió).
+     *
+     * @param  int  $message_id
+     * @return JsonResponse
+     */
+    public function discard_ai_message($message_id): JsonResponse
+    {
+        $message = $this->find_owned_ai_message($message_id);
+        if (is_null($message)) {
+            return response()->json(['message' => 'Mensaje no encontrado.'], 404);
+        }
+
+        if ((string) $message->ai_status !== 'a_confirmar') {
+            return response()->json(['message' => 'El mensaje ya no está esperando confirmación.'], 422);
+        }
+
+        $chat = WhatsappChat::find($message->whatsapp_chat_id);
+
+        (new WhatsappAiAutoSendScheduler())->cancel_for_message((int) $message->id);
+
+        $message->delete();
+
+        if (! is_null($chat)) {
+            // Sin mensaje adjunto: el front no puede actualizar una fila que ya no existe.
+            WhatsappChatHelper::broadcast_update((int) $chat->user_id, $chat);
+        }
+
+        return response()->json(['message' => 'Mensaje descartado.'], 200);
     }
 
     /**
@@ -331,6 +425,25 @@ class WhatsappChatController extends Controller
     {
         return WhatsappChat::where('id', $id)
             ->where('user_id', $this->userId())
+            ->first();
+    }
+
+    /**
+     * Busca un mensaje por id validando, a través de su chat, que pertenezca al owner del
+     * usuario autenticado. Sin este filtro un empleado de otra empresa podría confirmar o
+     * borrar mensajes ajenos pasando un id cualquiera.
+     *
+     * @param  int  $message_id
+     * @return WhatsappChatMessage|null
+     */
+    private function find_owned_ai_message($message_id)
+    {
+        $user_id = $this->userId();
+
+        return WhatsappChatMessage::where('id', $message_id)
+            ->whereHas('whatsapp_chat', function ($chat_query) use ($user_id) {
+                $chat_query->where('user_id', $user_id);
+            })
             ->first();
     }
 }

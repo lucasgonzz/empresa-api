@@ -892,6 +892,14 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
     Route::put('whatsapp-templates/{id}', 'WhatsappTemplateController@update');
     Route::delete('whatsapp-templates/{id}', 'WhatsappTemplateController@destroy');
     Route::put('whatsapp-templates/{id}/solicitar-alta', 'WhatsappTemplateController@solicitar_alta');
+
+    // Confirmación humana de la respuesta del agente (grupo 137, misión whatsapp-agente).
+    Route::put('whatsapp-chats/messages/{message_id}/confirm', 'WhatsappChatController@confirm_ai_message');
+    Route::delete('whatsapp-chats/messages/{message_id}', 'WhatsappChatController@discard_ai_message');
+
+    // Inyecta un mensaje entrante como si lo hubiera mandado el cliente (solo dueño). Corre
+    // exactamente el mismo camino que el webhook real: ventana de 24 h, debounce y agente.
+    Route::post('whatsapp-bot/simulate-inbound', 'WhatsappBotController@simulate_inbound');
 });
 
 // Callback público Mercado Libre (notificaciones); sin auth Sanctum.
