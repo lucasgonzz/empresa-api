@@ -22,7 +22,7 @@ use Illuminate\Support\Facades\Schema;
  * reinsertarlo. Esa es la propiedad que lo hace seguro de correr a mano, de
  * reintentar si el cron falló, y de recorrer el histórico hacia atrás sin
  * duplicar nada. La idempotencia NO viene de un unique en la tabla — no podría,
- * porque tres de las cinco columnas que formarían la clave son nullable y en
+ * porque tres de las seis columnas que formarían la clave son nullable y en
  * MySQL NULL != NULL (el porqué largo está en la migración
  * 2026_08_15_140100_create_buyer_tracking_daily_table).
  *
