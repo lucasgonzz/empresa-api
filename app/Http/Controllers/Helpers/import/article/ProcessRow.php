@@ -3892,7 +3892,7 @@ class ProcessRow {
      *
      * @param array $article_ids ids reales (int) o strings 'fake_...' a descartar
      * @param int|null $provider_id
-     * @param array $data fila armada por procesar(): se leen 'cost' y 'provider_code'
+     * @param array $data fila armada por procesar(): se leen 'cost', 'provider_code' y 'cost_in_dollars'
      */
     protected function registrar_oferta_de_otro_proveedor($article_ids, $provider_id, array $data): void
     {
@@ -3902,9 +3902,22 @@ class ProcessRow {
                 return;
             }
 
+            // Arreglo de bloqueante de merge (15/8/2026): moneda REAL de esta fila, para
+            // que el histórico no la asuma "en pesos" por default. $data['cost_in_dollars']
+            // ya está resuelto acá (procesar(), ~:776, corre ANTES que los tres call sites
+            // de este método: ~:993, ~:1153 y ~:1172) y sale de la columna "moneda" del
+            // Excel (get_cost_in_dollars(): usd/u$s/dolar/dólar/... = 1, cualquier otra cosa
+            // o columna ausente = 0). Sin esta clave, registrar_lote() completaba con
+            // MONEDA_POR_DEFECTO (1 = Peso) -- el mismo bug que A1 ya había arreglado del
+            // lado de la compra (NewProviderOrderHelper::catalogar_costo_proveedor()), pero
+            // acá sin tocar: una oferta en dólares mal etiquetada como pesos compite en
+            // mejores_ofertas_para() (que solo deja competir moneda_id=1) y le gana a todo
+            // el resto por ~1000x, con el ahorro estimado, el total y la orden de compra
+            // generada arrastrando el mismo desvío.
             $oferta = [
                 'provider_code' => isset($data['provider_code']) ? $data['provider_code'] : null,
                 'cost'          => $data['cost'],
+                'moneda_id'     => !empty($data['cost_in_dollars']) ? 2 : 1,
                 'origen'        => 'importacion',
             ];
 

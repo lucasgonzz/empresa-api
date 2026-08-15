@@ -68,8 +68,9 @@ class GenerarResumenSugerenciaCompraJob implements ShouldQueue
     public $notificar_al_terminar = false;
 
     /**
-     * Firma CONGELADA con U3 (ProcessPurchaseSuggestionChunkJob la despacha
-     * contra esta firma exacta, sin declararla).
+     * Firma CONGELADA: ProcessPurchaseSuggestionChunkJob la despacha contra
+     * esta firma exacta, sin declararla -- no se cambia sin revisar antes ese
+     * llamador.
      *
      * @param int $purchase_suggestion_id
      * @param bool $notificar_al_terminar
@@ -166,8 +167,8 @@ class GenerarResumenSugerenciaCompraJob implements ShouldQueue
      * sin sesión — mismo límite conocido que sugerencias de stock. 🔴 Este
      * mismo trío (origen/referencia_id/auth_user_id=$suggestion->user_id) es
      * el que lee ProcessPurchaseSuggestionChunkJob::notificar_corrida_terminada()
-     * para decidir si suma el botón "Charlar con la IA": no cambiar sin
-     * avisar a U3.
+     * para decidir si suma el botón "Charlar con la IA": no cambiarlo sin
+     * revisar antes ese llamador.
      *
      * Idempotencia contra el botón de reintento (PurchaseSuggestionController::resumen
      * vuelve a despachar este job): si la conversación de esta sugerencia ya
@@ -294,8 +295,8 @@ class GenerarResumenSugerenciaCompraJob implements ShouldQueue
     /**
      * Anuncia "Sugerencia de compra terminada" cuando este job lleva la
      * posta. La arma ProcessPurchaseSuggestionChunkJob::notificar_corrida_terminada()
-     * (firma congelada, U3), que suma el botón "Charlar con la IA" si la
-     * conversación existe.
+     * (firma congelada: no cambiarla sin revisar antes ese llamador), que
+     * suma el botón "Charlar con la IA" si la conversación existe.
      *
      * NUNCA lanza: se llama en caminos donde el resumen ya quedó guardado
      * ('listo' o 'error') y un Pusher caído no puede mandar eso al catch (que

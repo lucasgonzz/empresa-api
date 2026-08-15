@@ -77,9 +77,11 @@ class DedupAndIndexArticleProviderTable extends Migration
     /**
      * Paso 1: SELECT de las filas descartables de cada par (article_id, provider_id) con
      * más de una fila -- todas menos la de mayor id, el mismo criterio que usa el DELETE
-     * del paso 2 -- con join a `articles` para conseguir el user_id que exige
-     * provider_price_offers y que article_provider no tiene. Solo se vuelcan filas con
-     * costo real (cost IS NOT NULL AND cost > 0): una fila sin costo no es una oferta.
+     * del paso 2 -- con join a `articles` para conseguir el user_id y el cost_in_dollars
+     * que hacen falta más abajo (provider_price_offers exige el user_id y article_provider
+     * no lo tiene; cost_in_dollars decide moneda_id, ver el paso de armado de filas). Solo
+     * se vuelcan filas con costo real (cost IS NOT NULL AND cost > 0): una fila sin costo
+     * no es una oferta.
      *
      * 🔴 El join a `articles` es INNER (no LEFT): una fila de pivot huérfana (article_id sin
      * Article vivo) no aparece acá y por lo tanto no se vuelca, aunque el DELETE del paso 2
@@ -89,8 +91,15 @@ class DedupAndIndexArticleProviderTable extends Migration
      *
      * insertOrIgnore respeta el unique (article_id, provider_id, fecha, origen) de
      * provider_price_offers: si dos duplicadas descartables del mismo par comparten fecha
-     * (mismo día de created_at), colapsan en una sola fila del histórico -- es la misma
-     * información, no una fila por cada una.
+     * (mismo día de created_at), colapsan en una sola fila del histórico -- eso puede pasar
+     * con costos DISTINTOS (dos importaciones del mismo día, cada una con su propio precio),
+     * así que "es la misma información" no era cierto en general (arreglo de bloqueante de
+     * merge, 15/8/2026 -- el comentario original lo afirmaba sin esa salvedad). El ORDER BY
+     * de abajo deja primero, dentro de cada par, a la fila más nueva -- mismo criterio "la
+     * más nueva gana" que ya usa el DELETE del paso 2 -- así que es ESA la que efectivamente
+     * se inserta y sobrevive el insertOrIgnore cuando dos duplicadas comparten fecha. Antes
+     * el SELECT no tenía ORDER BY: cuál sobrevivía dependía del orden físico que MySQL
+     * eligiera devolver, no de una regla.
      *
      * @return void
      */
@@ -103,6 +112,7 @@ class DedupAndIndexArticleProviderTable extends Migration
             'ap.article_id as article_id',
             'ap.provider_id as provider_id',
             'ap.cost as cost',
+            'a.cost_in_dollars as cost_in_dollars',
             DB::raw('DATE(ap.created_at) as fecha_creacion'),
         ];
 
@@ -133,6 +143,16 @@ class DedupAndIndexArticleProviderTable extends Migration
             // DELETE del paso 2 la sigue borrando igual, mismo destino que
             // la fila huérfana documentada arriba.
             ->whereNotNull('ap.created_at')
+            // Arreglo de bloqueante de merge (15/8/2026): ORDER BY explícito para que
+            // el volcado sea determinista. Dentro de cada par (article_id, provider_id)
+            // deja primero a la fila más nueva (created_at DESC; id DESC para desempatar
+            // un created_at idéntico) -- mismo criterio "la más nueva gana" que el DELETE
+            // del paso 2 -- así que si dos duplicadas colapsan por compartir fecha en el
+            // insertOrIgnore de abajo, la que gana es siempre la más nueva de las dos.
+            ->orderBy('ap.article_id')
+            ->orderBy('ap.provider_id')
+            ->orderByDesc('ap.created_at')
+            ->orderByDesc('ap.id')
             ->select($columnas)
             ->get();
 
@@ -150,7 +170,19 @@ class DedupAndIndexArticleProviderTable extends Migration
                 'provider_id' => (int) $fila->provider_id,
                 'provider_code' => $incluir_provider_code ? $fila->provider_code : null,
                 'cost' => $fila->cost,
-                'moneda_id' => 1,
+                // Arreglo de bloqueante de merge (15/8/2026): moneda REAL del costo
+                // volcado, igual que ya hacen los otros dos escritores del histórico
+                // (NewProviderOrderHelper::catalogar_costo_proveedor() y ProcessRow::
+                // registrar_oferta_de_otro_proveedor()). article_provider no tiene su
+                // propia columna de moneda -- ActualizarBBDD::set_articles_providers()
+                // copia articles.cost tal cual a article_provider.cost -- así que el
+                // flag real vive en articles.cost_in_dollars (ArticleHelper.php:643-649
+                // confirma que el sistema trata ese costo como dólares cuando
+                // cost_in_dollars > 0), ya disponible en $fila por el JOIN que este
+                // método hace de todos modos, arriba, para el user_id. Sin esto, TODAS
+                // las filas volcadas por esta migración quedaban ancladas a 1 (Peso) sin
+                // importar la moneda real del costo.
+                'moneda_id' => !empty($fila->cost_in_dollars) ? 2 : 1,
                 'origen' => 'pivot_dedupe',
                 'fecha' => $fila->fecha_creacion,
                 'referencia_id' => null,
