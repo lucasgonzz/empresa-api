@@ -10,7 +10,14 @@ use Illuminate\Database\Eloquent\Model;
  *
  * Existe porque los eventos crudos se purgan a los 90 días y esto no: es la única
  * memoria de largo plazo del comportamiento de la tienda. Una fila es un
- * (comercio, día, comprador, artículo, tipo de evento) con sus totales.
+ * (comercio, día, comprador, artículo, tipo de evento, término buscado) con sus
+ * totales: cantidad de eventos, visitantes distintos, tiempo en pantalla, monto y
+ * —para las búsquedas— el máximo de resultados que devolvió.
+ *
+ * Que el término buscado y los resultados estén acá y no resumidos es lo que
+ * permite contestar "qué buscaron y no encontraron" después de que la purga se
+ * llevó los eventos crudos; pasada esa ventana, lo que no esté en esta tabla no
+ * se puede reconstruir con nada.
  *
  * La escribe `tracking:agregar-buyers`, que borra el día completo y lo reinserta.
  * Nada más debería escribirle: si dos fuentes le insertan, el borrado del rollup
@@ -44,7 +51,10 @@ class BuyerTrackingDaily extends Model
         'buyer_id'       => 'integer',
         'article_id'     => 'integer',
         'total'          => 'integer',
+        'visitantes'     => 'integer',
         'dwell_ms_total' => 'integer',
+        /* El cast no pisa el NULL (Eloquent lo devuelve tal cual): 0 = no encontró nada, null = no aplica */
+        'results_count'  => 'integer',
     ];
 
     /**

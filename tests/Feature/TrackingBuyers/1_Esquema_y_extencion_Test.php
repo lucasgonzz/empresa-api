@@ -224,6 +224,13 @@ class Esquema_y_extencion_Test extends TestCase
     {
         $this->assertTrue(Schema::hasTable('buyer_tracking_daily'));
 
+        /*
+         * search_term, results_count y visitantes están acá porque son lo único que la tabla
+         * puede recordar de una búsqueda y de cuánta gente distinta pasó: a los 90 días la
+         * purga se lleva los eventos crudos y lo que no esté en estas columnas no se puede
+         * reconstruir con nada. Que estén clavadas en el test es para que un "esto no lo usa
+         * nadie todavía" no se las lleve puestas antes de que la misión de lectura las use.
+         */
         $esperados = [
             'id'             => 'bigint unsigned',
             'user_id'        => 'int unsigned',
@@ -231,7 +238,10 @@ class Esquema_y_extencion_Test extends TestCase
             'buyer_id'       => 'bigint unsigned',
             'article_id'     => 'bigint unsigned',
             'event_type'     => 'varchar(32)',
+            'search_term'    => 'varchar(120)',
+            'results_count'  => 'int unsigned',
             'total'          => 'int unsigned',
+            'visitantes'     => 'int unsigned',
             'dwell_ms_total' => 'bigint unsigned',
             'amount_total'   => 'decimal(22,2)',
             'created_at'     => 'timestamp',

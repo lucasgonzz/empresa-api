@@ -15,6 +15,13 @@ use Illuminate\Support\Facades\Schema;
  * "cuántas veces vieron este artículo en 2025" se contesta sobre miles de filas
  * agregadas en vez de millones de eventos que ya ni existen.
  *
+ * 🔴 Y por lo mismo, lo que ESTA tabla no guarda se pierde para siempre a los 90
+ * días: no hay de dónde reconstruirlo. Esa es la razón de que `search_term`,
+ * `results_count` y `visitantes` estén acá aunque hoy nadie los lea todavía —la
+ * lectura desde el ERP es una misión aparte—. Agregarlos ahora, con la tabla sin
+ * crear en ningún cliente, sale gratis; agregarlos en tres meses es una migración
+ * cara sobre datos que ya no existen.
+ *
  * Nombre en singular a propósito, igual que `demo_tracking_config`: es una tabla
  * de agregado diario, no una colección de "dailies". El modelo lo declara con
  * $table explícito porque Eloquent inferiría `buyer_tracking_dailies`.
@@ -57,8 +64,38 @@ class CreateBuyerTrackingDailyTable extends Migration
             /* Tipo de evento agregado; misma lista blanca que los eventos crudos */
             $table->string('event_type', 32);
 
+            /*
+             * Término buscado (sólo tiene valor en los eventos `search`; en el
+             * resto queda NULL). El agregado AGRUPA por esta columna, no la
+             * resume: sin ella todos los `search` del día colapsarían en una sola
+             * fila con article_id NULL y a los 90 días —cuando los crudos ya se
+             * purgaron— se perdería QUÉ buscó la gente, que es justamente lo que
+             * el motor de ofertas va a querer leer.
+             */
+            $table->string('search_term', 120)->nullable();
+
+            /*
+             * Resultados que devolvió esa búsqueda. Es el MÁXIMO del grupo, no la
+             * suma ni el promedio, y el porqué está en el comando: MAX = 0
+             * significa "esta búsqueda no devolvió NADA ninguna de las veces que
+             * la hicieron", que es el dato más valioso del tracking (hay demanda y
+             * no hay oferta). Con un SUM o un promedio esa pregunta no se puede
+             * contestar. NULL = no aplica (el evento no es una búsqueda).
+             */
+            $table->unsignedInteger('results_count')->nullable();
+
             /* Cantidad de eventos crudos que colapsaron en esta fila */
             $table->unsignedInteger('total');
+
+            /*
+             * Visitantes DISTINTOS del grupo (COUNT DISTINCT de visitor_id), que no
+             * es lo mismo que `total`: 40 vistas pueden ser 40 personas o una sola
+             * que recargó 40 veces. Como el grueso del tráfico es anónimo y todos
+             * los anónimos comparten el mismo grupo (buyer_id NULL), sin esta
+             * columna "cuántas personas distintas vieron este artículo" se vuelve
+             * irrecuperable en cuanto se purgan los crudos.
+             */
+            $table->unsignedInteger('visitantes')->default(0);
 
             /* Suma de dwell_ms del grupo. bigInteger porque son milisegundos sumados: un día de tienda desborda unsignedInteger (49 días) sin esfuerzo */
             $table->unsignedBigInteger('dwell_ms_total')->default(0);
@@ -74,8 +111,8 @@ class CreateBuyerTrackingDailyTable extends Migration
              *
              * 🔴 Índice NORMAL, NO unique — y esto es a propósito, no un olvido.
              * El unique natural sería (user_id, fecha, buyer_id, article_id,
-             * event_type), pero tres de esas cinco columnas son nullable y en MySQL
-             * NULL != NULL: dos filas con buyer_id null NUNCA chocarían, así que el
+             * event_type, search_term), pero tres de esas seis columnas son nullable
+             * y en MySQL NULL != NULL: dos filas con buyer_id null NUNCA chocarían, así que el
              * unique no protegería de nada mientras cobraría el costo de un índice
              * más ancho. La idempotencia no la da el esquema, la da el comando:
              * `tracking:agregar-buyers` BORRA el día completo del comercio y lo

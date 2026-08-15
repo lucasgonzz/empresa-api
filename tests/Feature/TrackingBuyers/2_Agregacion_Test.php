@@ -140,7 +140,11 @@ class Agregacion_Test extends TestCase
             ->orderByRaw('COALESCE(buyer_id, 0)')
             ->orderByRaw('COALESCE(article_id, 0)')
             ->orderBy('event_type')
-            ->get(['fecha', 'buyer_id', 'article_id', 'event_type', 'total', 'dwell_ms_total', 'amount_total'])
+            ->orderByRaw("COALESCE(search_term, '')")
+            ->get([
+                'fecha', 'buyer_id', 'article_id', 'event_type', 'search_term',
+                'results_count', 'total', 'visitantes', 'dwell_ms_total', 'amount_total',
+            ])
             ->map(function ($fila) {
                 return (array) $fila;
             })
@@ -468,6 +472,117 @@ class Agregacion_Test extends TestCase
     }
 
     /**
+     * El término buscado y los resultados llegan al agregado, y dos términos distintos NO
+     * colapsan en la misma fila.
+     *
+     * Es lo que hace que la tabla siga sirviendo después de la purga: agrupado sólo por
+     * (buyer, artículo, tipo), TODOS los `search` del día caen en una fila con article_id NULL
+     * y a los 90 días no queda registro de qué buscó la gente ni de cuántos resultados hubo.
+     *
+     * Y `results_count` es el MÁXIMO del grupo justamente para que el 0 signifique algo:
+     * MAX = 0 es "esta búsqueda no devolvió nada ninguna de las veces", que es la pregunta que
+     * el motor de ofertas le va a hacer a esta tabla. Con un SUM, una sola búsqueda con
+     * resultados taparía el cero.
+     *
+     * @group tracking_buyers
+     * @test
+     */
+    public function el_agregado_guarda_el_termino_buscado_y_el_maximo_de_resultados()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->activar_extencion($user);
+
+        $fecha = '2026-08-10';
+
+        // "zapatillas": dos búsquedas, con 5 y con 3 resultados. El máximo es 5.
+        $this->sembrar_evento(['event_type' => 'search', 'search_term' => 'zapatillas', 'results_count' => 5, 'occurred_at' => $fecha . ' 09:00:00']);
+        $this->sembrar_evento(['event_type' => 'search', 'search_term' => 'zapatillas', 'results_count' => 3, 'occurred_at' => $fecha . ' 09:05:00']);
+
+        // "camperas rojas": las dos veces devolvió CERO. Este es el dato que no se puede perder.
+        $this->sembrar_evento(['event_type' => 'search', 'search_term' => 'camperas rojas', 'results_count' => 0, 'occurred_at' => $fecha . ' 10:00:00']);
+        $this->sembrar_evento(['event_type' => 'search', 'search_term' => 'camperas rojas', 'results_count' => 0, 'occurred_at' => $fecha . ' 10:01:00']);
+
+        // Y una vista de producto, que no es búsqueda: search_term y results_count en NULL.
+        $this->sembrar_evento(['article_id' => 10, 'event_type' => 'product_view', 'occurred_at' => $fecha . ' 11:00:00']);
+
+        $this->artisan('tracking:agregar-buyers', ['--fecha' => $fecha])->assertExitCode(0);
+
+        $filas = $this->agregado();
+
+        $this->assertCount(
+            3,
+            $filas,
+            'Los dos términos distintos colapsaron en una sola fila: el agregado no agrupa por search_term.'
+        );
+
+        $zapatillas = $this->fila_por_termino($filas, 'zapatillas');
+        $camperas   = $this->fila_por_termino($filas, 'camperas rojas');
+        $vista      = $this->fila_por_tipo($filas, 'product_view');
+
+        $this->assertNotNull($zapatillas, 'No quedó la fila del término "zapatillas".');
+        $this->assertEquals(2, $zapatillas['total']);
+        $this->assertEquals(5, $zapatillas['results_count'], 'results_count tenía que ser el MÁXIMO del grupo.');
+
+        $this->assertNotNull($camperas, 'No quedó la fila del término "camperas rojas".');
+        $this->assertEquals(2, $camperas['total']);
+        $this->assertSame(
+            0,
+            (int) $camperas['results_count'],
+            'La búsqueda sin resultados tenía que quedar en 0, que es lo que la vuelve accionable.'
+        );
+        $this->assertNotNull(
+            $camperas['results_count'],
+            'El 0 se guardó como NULL: "no encontró nada" y "no aplica" quedaron indistinguibles.'
+        );
+
+        $this->assertNotNull($vista);
+        $this->assertNull($vista['search_term'], 'Una vista de producto no tiene término buscado.');
+        $this->assertNull($vista['results_count'], 'Una vista de producto no tiene resultados: es NULL, no 0.');
+    }
+
+    /**
+     * `visitantes` cuenta visitantes DISTINTOS, no eventos. 40 vistas de un artículo pueden ser
+     * 40 personas o una sola recargando, y para decidir una oferta no es lo mismo. Como el
+     * grueso del tráfico es anónimo y todos los anónimos comparten el grupo (buyer_id NULL),
+     * sin esta columna esa pregunta se vuelve irrecuperable en cuanto se purgan los crudos.
+     *
+     * @group tracking_buyers
+     * @test
+     */
+    public function visitantes_cuenta_visitantes_distintos_y_no_eventos()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->activar_extencion($user);
+
+        $fecha     = '2026-08-10';
+        $visitante_a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+        $visitante_b = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+        // Tres eventos del mismo artículo, pero de DOS personas: el visitante A entró dos veces.
+        $this->sembrar_evento(['article_id' => 10, 'visitor_id' => $visitante_a, 'occurred_at' => $fecha . ' 09:00:00']);
+        $this->sembrar_evento(['article_id' => 10, 'visitor_id' => $visitante_a, 'occurred_at' => $fecha . ' 09:30:00']);
+        $this->sembrar_evento(['article_id' => 10, 'visitor_id' => $visitante_b, 'occurred_at' => $fecha . ' 10:00:00']);
+
+        $this->artisan('tracking:agregar-buyers', ['--fecha' => $fecha])->assertExitCode(0);
+
+        $filas = $this->agregado();
+
+        $this->assertCount(1, $filas);
+        $this->assertEquals(3, $filas[0]['total'], 'total cuenta eventos: eran 3.');
+        $this->assertEquals(
+            2,
+            $filas[0]['visitantes'],
+            'visitantes tiene que contar personas distintas (2), no eventos (3).'
+        );
+    }
+
+    /**
      * Primera fila del agregado con ese event_type, o null.
      *
      * @param array<int, array> $filas
@@ -478,6 +593,24 @@ class Agregacion_Test extends TestCase
     {
         foreach ($filas as $fila) {
             if ($fila['event_type'] === $event_type) {
+                return $fila;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Primera fila del agregado con ese término buscado, o null.
+     *
+     * @param array<int, array> $filas
+     * @param string $search_term
+     * @return array|null
+     */
+    protected function fila_por_termino($filas, $search_term)
+    {
+        foreach ($filas as $fila) {
+            if ($fila['search_term'] === $search_term) {
                 return $fila;
             }
         }

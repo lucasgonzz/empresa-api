@@ -222,7 +222,13 @@ class AgregarBuyerTracking extends Command
     }
 
     /**
-     * Agrupa los eventos crudos del día por (buyer_id, article_id, event_type).
+     * Agrupa los eventos crudos del día por (buyer_id, article_id, event_type,
+     * search_term).
+     *
+     * `search_term` entra en el GROUP BY y no es un capricho: sin él, todos los
+     * eventos `search` del día colapsan en UNA fila con article_id NULL, y a los 90
+     * días —cuando la purga ya se llevó los crudos— no queda registro de qué buscó
+     * la gente. Es el dato que el motor de ofertas viene a leer.
      *
      * El filtro va por RANGO de occurred_at y no por DATE(occurred_at): una función
      * sobre la columna anula el índice bte_user_ocurrido_index y convierte esto en
@@ -238,8 +244,25 @@ class AgregarBuyerTracking extends Command
         $hasta = $fecha . ' 23:59:59';
 
         return DB::table('buyer_tracking_events')
-            ->select('buyer_id', 'article_id', 'event_type')
+            ->select('buyer_id', 'article_id', 'event_type', 'search_term')
             ->selectRaw('COUNT(*) as total')
+            /*
+             * Visitantes DISTINTOS, no eventos: 40 vistas de un artículo pueden ser
+             * 40 personas o una sola que recargó 40 veces, y son dos cosas muy
+             * distintas para decidir una oferta. `total` ya cuenta los eventos.
+             */
+            ->selectRaw('COUNT(DISTINCT visitor_id) as visitantes')
+            /*
+             * MÁXIMO de resultados, no suma ni promedio, y no es obvio: el valor que
+             * importa es el CERO. MAX(results_count) = 0 significa que esa búsqueda
+             * no devolvió nada NINGUNA de las veces que la hicieron en el día — hay
+             * demanda y no hay oferta, que es la pregunta que el motor de ofertas le
+             * va a hacer a esta tabla. Con un SUM el cero se diluye en cuanto una
+             * sola de las búsquedas devolvió algo, y con un promedio queda un número
+             * que no contesta ninguna pregunta. MAX ignora los NULL, así que un grupo
+             * que no es de búsquedas queda en NULL = no aplica.
+             */
+            ->selectRaw('MAX(results_count) as results_count')
             ->selectRaw('COALESCE(SUM(dwell_ms), 0) as dwell_ms_total')
             /*
              * El monto va ACOTADO al techo de la columna destino. Sin el LEAST, un
@@ -259,7 +282,7 @@ class AgregarBuyerTracking extends Command
             ->selectRaw('CASE WHEN COALESCE(SUM(amount), 0) > ' . self::TECHO_AMOUNT_TOTAL . ' THEN 1 ELSE 0 END as amount_desbordado')
             ->where('user_id', $user_id)
             ->whereBetween('occurred_at', [$desde, $hasta])
-            ->groupBy('buyer_id', 'article_id', 'event_type')
+            ->groupBy('buyer_id', 'article_id', 'event_type', 'search_term')
             ->get();
     }
 
@@ -290,12 +313,13 @@ class AgregarBuyerTracking extends Command
              */
             if (!empty($grupo->amount_desbordado)) {
                 Log::warning('tracking:agregar-buyers: el monto sumado de un grupo superó el techo de amount_total y se acotó. Revisar los eventos crudos de ese grupo, hay datos sucios.', [
-                    'fecha'      => $fecha,
-                    'user_id'    => $user_id,
-                    'buyer_id'   => $grupo->buyer_id,
-                    'article_id' => $grupo->article_id,
-                    'event_type' => $grupo->event_type,
-                    'techo'      => self::TECHO_AMOUNT_TOTAL,
+                    'fecha'       => $fecha,
+                    'user_id'     => $user_id,
+                    'buyer_id'    => $grupo->buyer_id,
+                    'article_id'  => $grupo->article_id,
+                    'event_type'  => $grupo->event_type,
+                    'search_term' => $grupo->search_term,
+                    'techo'       => self::TECHO_AMOUNT_TOTAL,
                 ]);
             }
 
@@ -305,7 +329,11 @@ class AgregarBuyerTracking extends Command
                 'buyer_id'       => $grupo->buyer_id,
                 'article_id'     => $grupo->article_id,
                 'event_type'     => $grupo->event_type,
+                'search_term'    => $grupo->search_term,
+                /* Se conserva el NULL a propósito: null = no aplica, 0 = buscó y no encontró nada */
+                'results_count'  => is_null($grupo->results_count) ? null : (int) $grupo->results_count,
                 'total'          => (int) $grupo->total,
+                'visitantes'     => (int) $grupo->visitantes,
                 'dwell_ms_total' => (int) $grupo->dwell_ms_total,
                 'amount_total'   => $grupo->amount_total,
                 'created_at'     => $ahora,
