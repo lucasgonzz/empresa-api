@@ -55,8 +55,19 @@ use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
  * 🔴 El margen SIEMPRE se deriva del precio vigente resuelto contra costo_real (§A.4.2): no se lee
  * articles.percentage_gain ni article_price_type.percentage. Hay cinco capas de margen (usuario,
  * unidades individuales, proveedor, categoría, artículo — ArticleHelper:144-177 y :186-209) y
- * percentage_gain es solo la última; derivar del precio resuelto cubre las cinco, cubre el precio
- * manual y cubre setear_precio_final con UNA sola fórmula.
+ * percentage_gain es solo la última; derivar del precio resuelto cubre las capas de MARGEN, el precio
+ * manual y setear_precio_final con UNA sola fórmula.
+ *
+ * ⚠️ CON UNA EXCEPCIÓN, Y NO ES LA QUE ESTE DOCBLOCK AFIRMABA HASTA EL 15/8/2026: `unidades_individuales`
+ * NO QUEDA CUBIERTA. No es una capa de margen: es un cambio de unidad. calcular_base_antes_de_listas()
+ * divide el costo por $article->unidades_individuales (ArticleHelper.php:155-158), así que el precio
+ * resultante es POR UNIDAD SUELTA mientras que costo_real sigue siendo POR BULTO. La resta del paso 6
+ * compara dos cosas distintas y da un margen negativo, con lo cual la línea sale por
+ * EXCLUIDO_MARGEN_NO_POSITIVO. 🔴 O sea: un artículo fraccionado NO SE OFERTA, y se excluye en
+ * silencio, sin que el motivo diga "unidades individuales". Es el lado seguro (nunca se sugiere un
+ * descuento sobre una comparación que no cierra) pero es una limitación conocida, no un descuido, y va
+ * declarada en el informe. Arreglarla es dividir también el costo, y eso se decide con Lucas: no se
+ * "emparcha" acá.
  *
  * Este servicio no escribe nada en la base. PHP 7.4: sin match, ?->, str_contains ni #[...].
  */
@@ -79,8 +90,13 @@ class TechoDeDescuentoService
     /** costo_real null, vacío o <= 0: sin costo no hay techo posible. */
     const EXCLUIDO_SIN_COSTO = 'sin_costo';
 
-    /** Artículo en dólares en cuenta con listas: costo y precio quedan en monedas distintas. */
-    const EXCLUIDO_DOLARES_CON_LISTAS = 'dolares_con_listas';
+    /**
+     * El precio persistido pasó por ArticleHelper::cotizar() y el costo no: el precio quedó en pesos
+     * y costo_real siguió en dólares, así que no son comparables. Se llama por lo que efectivamente
+     * pasa (el costo quedó sin cotizar) y NO "dolares_con_listas": las listas de precio no tienen
+     * nada que ver, ver el guard del paso 2.
+     */
+    const EXCLUIDO_COSTO_EN_DOLARES_SIN_COTIZAR = 'costo_en_dolares_sin_cotizar';
 
     /** El resolvedor no devolvió precio (artículo sin precio en ninguna punta). */
     const EXCLUIDO_SIN_PRECIO = 'sin_precio';
@@ -167,13 +183,32 @@ class TechoDeDescuentoService
         }
 
         /*
-         * Paso 2, borde "dólares con listas": EXCLUYE. ArticleHelper::cotizar() (:640-659) NO corre
-         * cuando la cuenta usa listas junto con la extensión ventas_en_dolares (:162-171), así que
-         * el costo queda en dólares y el precio en pesos. Restar uno del otro es una cuenta sin
-         * sentido, y de esa resta saldría un margen inventado.
+         * Paso 2, borde "el costo quedó en dólares y el precio no": EXCLUYE.
+         *
+         * 🔴 LO QUE DESALINEA COSTO Y PRECIO NO ES USAR LISTAS DE PRECIO: ES QUE CORRA
+         * ArticleHelper::cotizar() (:640-659). costo_real sale de aplicar_descuentos_e_iva($article->cost)
+         * (ArticleHelper.php:282-292) y NUNCA pasa por cotizar(): queda en la moneda en la que se cargó
+         * el costo, siempre. El precio SÍ se cotiza —calcular_base_antes_de_listas() llama a cotizar()
+         * en el else de :162-171, y la rama price_from_cost_mas_iva en :365-372 con la misma condición
+         * escrita por De Morgan— y queda en pesos. Restar uno del otro es una cuenta sin sentido y de
+         * esa resta sale un margen inventado. La condición exacta está en
+         * el_precio_se_cotiza_y_el_costo_no(), abajo.
+         *
+         * MEDIDO el 15/8/2026 sobre la cuenta 500 (cotizar_precios_en_dolares = 1, listas_de_precio = 0):
+         * artículo de 10 USD con 20% de margen y el dólar a 1000 -> final_price 14.520 (pesos) contra
+         * costo_real 10 (dólares) -> margen 112,226% -> techo 60%, el tope absoluto. El comerciante
+         * terminaría vendiendo a ~5.800 algo que le costó 10.000. En la base `prueba` hay 409 de 695
+         * artículos con cost_in_dollars = 1: no es un caso de laboratorio.
+         *
+         * 🔴 Y PARA EL OTRO LADO: cuando cotizar() NO corre, NO se excluye. Sin cotización el precio se
+         * deriva del costo sin cambiar de moneda, los dos quedan del mismo lado y el margen es
+         * correcto; excluir ahí sería tirar líneas buenas a la basura. El guard viejo miraba
+         * uses_listas_de_precio() y se equivocaba en las dos puntas a la vez: dejaba pasar el caso roto
+         * (sin listas, cotizando) y excluía el sano (con listas + ventas_en_dolares, que es justo la
+         * combinación donde cotizar() no corre).
          */
-        if ($article->cost_in_dollars && UserHelper::uses_listas_de_precio($user)) {
-            $resultado['excluido_por'] = self::EXCLUIDO_DOLARES_CON_LISTAS;
+        if (self::el_precio_se_cotiza_y_el_costo_no($article, $user)) {
+            $resultado['excluido_por'] = self::EXCLUIDO_COSTO_EN_DOLARES_SIN_COTIZAR;
             return $resultado;
         }
 
@@ -211,11 +246,24 @@ class TechoDeDescuentoService
         /*
          * Paso 6, borde "cuenta Monotributista": NO excluye, se MARCA. 🔴 Riesgo medido: con costo
          * importado el IVA se cuenta DOS VECES. ProcessRow.php:306-312 nunca hace el back-out
-         * (precios_incluyen_iva queda siempre en false) mientras que la compra manual sí lo hace en
-         * NewProviderOrderHelper.php:1038-1039, así que articles.cost queda BRUTO y aplicar_iva() le
-         * suma el 21% otra vez por ser MT: el margen que sale de acá queda ~21% ALTO, y el techo con
-         * él. Lo amortiguan el floor del paso 10 y MAX_DESCUENTO_ABSOLUTO, y va declarado en el
-         * informe de la misión.
+         * (precios_incluyen_iva queda siempre en false porque ningún llamador pasa la clave) mientras
+         * que la compra manual sí lo hace en NewProviderOrderHelper.php:1038-1039. Entonces
+         * articles.cost queda BRUTO —con el IVA del Excel del proveedor adentro— y
+         * aplicar_descuentos_e_iva() le suma el 21% otra vez, porque para MT iva_va_al_costo() da true
+         * (ArticlePricesHelper.php:754-772): costo_real queda ~21% INFLADO.
+         *
+         * 🔴 LA DIRECCIÓN DEL ERROR, QUE ES AL REVÉS DE LO QUE DECÍA ESTE COMENTARIO HASTA EL
+         * 15/8/2026: con el costo inflado, margen = (precio_neto - costo) / costo baja, y el techo
+         * m/(100+m) baja con él. O sea que el techo sale MÁS BAJO, no más alto: MÁS conservador. Si el
+         * precio se deriva de ese mismo costo inflado, los dos suben juntos y el margen porcentual ni
+         * se mueve; la distorsión aparece cuando el precio NO viene de ahí (precio manual, o precio de
+         * antes de la reimportación del costo), y siempre para abajo.
+         *
+         * 🔴 Por eso EL RIESGO ACÁ ES COMERCIAL, NO DE PLATA: se le ofrece al cliente menos descuento
+         * del que el margen real aguantaba, y en el borde la línea ni se sugiere (cae por debajo de
+         * MIN_DESCUENTO). NUNCA se vende bajo costo por esta vía. No "compensar" el 21% subiendo el
+         * techo acá: el que hay que arreglar es el back-out del import, que está fuera del alcance de
+         * esta misión y va declarado en el informe.
          */
         $resultado['marca_monotributista'] = ArticlePricesHelper::es_monotributista_para_costeo($user);
 
@@ -259,6 +307,43 @@ class TechoDeDescuentoService
         }
 
         return $resultado;
+    }
+
+    /**
+     * true cuando el precio persistido del artículo pasó por ArticleHelper::cotizar() y el costo no,
+     * o sea cuando los dos quedaron en monedas distintas y compararlos no significa nada.
+     *
+     * Es la conjunción de DOS condiciones que viven en ArticleHelper y que hay que espejar juntas:
+     *
+     *   1. cotizar() CONVIERTE   <=>  $article->cost_in_dollars && $user->cotizar_precios_en_dolares
+     *                                 (el if de ArticleHelper.php:642-645; adentro multiplica por el
+     *                                 dólar del proveedor o por el global, pero eso ya no cambia el
+     *                                 diagnóstico: cambió de moneda).
+     *   2. cotizar() se LLAMA    <=>  !( UserHelper::uses_listas_de_precio($user)
+     *                                    && UserHelper::hasExtencion('ventas_en_dolares', $user) )
+     *                                 Los dos llamadores usan la misma condición: el else de
+     *                                 calcular_base_antes_de_listas() (:162-171) y el if de la rama
+     *                                 price_from_cost_mas_iva (:365-372), que es la misma escrita con
+     *                                 De Morgan.
+     *
+     * 🔴 Vive en un método propio y no inline en el guard por dos razones: el día que alguien cambie
+     * el ruteo de cotizar() en ArticleHelper tiene UN solo lugar acá que espejar, y el test la afirma
+     * sola, sin tener que construir el artículo entero.
+     *
+     * @param  mixed $article
+     * @param  mixed $user
+     * @return bool
+     */
+    public static function el_precio_se_cotiza_y_el_costo_no($article, $user)
+    {
+        if (!$article->cost_in_dollars || !$user->cotizar_precios_en_dolares) {
+            return false;
+        }
+
+        return !(
+            UserHelper::uses_listas_de_precio($user)
+            && UserHelper::hasExtencion('ventas_en_dolares', $user)
+        );
     }
 
     /**
