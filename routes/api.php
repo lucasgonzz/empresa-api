@@ -67,16 +67,20 @@ Route::middleware(['auth:sanctum'])->group(function() {
     
     // User
     Route::get('user', 'CommonLaravel\AuthController@get_user');
+    // Preferencias de UI del chat con el asistente de IA (misión chat-ia-y-modulo-ia). Misma
+    // familia que set-dark-mode: es una preferencia POR PERSONA (Auth::user()) y va acá, fuera
+    // del gate de la extensión — el gate protege los DATOS del chat, no una coordenada de pantalla.
+    // 🔴 Tiene que registrarse ANTES de `user/{id}`: las rutas se matchean en orden de registro
+    // y esta tiene dos segmentos, igual que la del comodín — abajo de `user/{id}`, el PUT caería
+    // en UserController@update con id = "set-chat-ia-preferencias" (set-dark-mode zafa solo
+    // porque sus tres segmentos no calzan en el comodín de dos).
+    Route::put('user/set-chat-ia-preferencias', 'UserController@set_chat_ia_preferencias');
     Route::put('user/{id}', 'UserController@update');
     Route::put('user-password', 'CommonLaravel\UserController@updatePassword');
     Route::post('user/last-activity', 'CommonLaravel\UserController@setLastActivity');
     Route::put('user/set_eliminar_articulos_offline/{user_id}/{value}', 'UserController@set_eliminar_articulos_offline');
     Route::put('user/set-img-auto-timeout/{value}', 'UserController@set_img_auto_timeout');
     Route::put('user/set-dark-mode/{value}', 'UserController@set_dark_mode');
-    // Preferencias de UI del chat con el asistente de IA (misión chat-ia-y-modulo-ia). Misma
-    // familia que set-dark-mode: es una preferencia POR PERSONA (Auth::user()) y va acá, fuera
-    // del gate de la extensión — el gate protege los DATOS del chat, no una coordenada de pantalla.
-    Route::put('user/set-chat-ia-preferencias', 'UserController@set_chat_ia_preferencias');
 
 
 

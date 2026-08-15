@@ -59,6 +59,16 @@ class AiConversationController extends Controller
             'auth_user_id' => UserHelper::userId(false),
         ]);
 
+        /*
+         * refresh(): un modelo recién creado solo carga los atributos que se le
+         * pasaron — sin esto la respuesta viaja SIN `titulo`, `origen` ni
+         * `last_message_at` (ni siquiera como null) y la SPA, que mete este
+         * model tal cual en la sidebar, lo necesita con la misma forma que las
+         * filas del index. De paso trae los defaults reales de la base
+         * (origen 'usuario').
+         */
+        $model->refresh();
+
         return response()->json(['model' => $model], 201);
     }
 
