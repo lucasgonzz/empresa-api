@@ -908,6 +908,15 @@ Route::get('integraciones/zippin/callback', 'ZippinOAuthController@callback');
 Route::get('integraciones/articulos/{export_key}', 'Integraciones\ArticulosExportController@index')
         ->middleware('throttle:120,1');
 
+// Sugerencias inteligentes de stock (v2): rutas de la vista propia, gateadas por auth Sanctum +
+// la extensión 'sugerencias_inteligentes' (ver ExtencionSugerenciasInteligentesSeeder). Las tres
+// rutas viejas del módulo (resource + create-deposit-movement + stock-suggestion-article) quedan
+// arriba SIN gate a propósito: son el flujo de modales que conservan los clientes sin la
+// extensión, y create-deposit-movement lo comparten los dos flujos.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:sugerencias_inteligentes'])->group(function () {
+    Route::get('stock-suggestion/{id}/articles', 'StockSuggestionController@articles');
+});
+
 
 // Plans
 Route::get('plan', 'PlanController@index');
