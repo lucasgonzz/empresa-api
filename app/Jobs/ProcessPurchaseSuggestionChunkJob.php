@@ -23,11 +23,6 @@ use Illuminate\Support\Facades\Log;
  * compra. Cuando el chunk que procesa es el último (processed_chunks llega a
  * total_chunks), cierra la corrida entera: prioriza, arma el contexto
  * financiero y reparte quién avisa que terminó.
- *
- * 🔴 ResumenIaComprasService y GenerarResumenSugerenciaCompraJob los escribe
- * otro agente (U4) en paralelo sobre esta misma rama: este archivo los
- * referencia contra las firmas ya congeladas en el plan, pero no los
- * declara. Si todavía no existen en el momento de correr esto, es esperable.
  */
 class ProcessPurchaseSuggestionChunkJob implements ShouldQueue
 {
@@ -52,6 +47,16 @@ class ProcessPurchaseSuggestionChunkJob implements ShouldQueue
 
     public function handle()
     {
+        // Arreglo A9 del chequeo post-misión: sin este guard, un
+        // purchase_suggestion_id sin fila (la cabecera se borró, o el id
+        // nunca existió) revienta más abajo en increment() con "Call to a
+        // member function increment() on null" en vez de salir limpio.
+        // Mismo criterio que el guard de
+        // GeneratePurchaseSuggestionChunksJob::handle().
+        if (!$this->suggestion) {
+            return;
+        }
+
         $service = new PurchaseSuggestionService($this->suggestion);
 
         $lineas = $service->calcular_para_articulos($this->article_ids);
@@ -238,8 +243,7 @@ class ProcessPurchaseSuggestionChunkJob implements ShouldQueue
      * avisaría), y GenerarResumenSugerenciaCompraJob en todos sus finales
      * cuando el chunk le pasó la posta — recién ahí la conversación del chat
      * ya existe (o ya se sabe que no va a existir) y el botón "Charlar con
-     * la IA" puede salir. Firma congelada con U4, que la llama pero no la
-     * escribe.
+     * la IA" puede salir.
      *
      * @param PurchaseSuggestion $suggestion Sugerencia terminada a anunciar.
      * @return void

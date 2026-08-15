@@ -62,12 +62,24 @@ class GeneratePurchaseSuggestionChunksJob implements ShouldQueue
         PurchaseSuggestionArticle::where('purchase_suggestion_id', $suggestion->id)->delete();
 
         $suggestion->update([
-            'processed_chunks'  => 0,
-            'status'            => 'pendiente',
-            'error_mensaje'     => null,
-            'resumen_ia'        => null,
-            'resumen_ia_estado' => null,
-            'resumen_ia_error'  => null,
+            'processed_chunks'    => 0,
+            'status'              => 'pendiente',
+            'error_mensaje'       => null,
+            'resumen_ia'          => null,
+            'resumen_ia_estado'   => null,
+            'resumen_ia_error'    => null,
+            // Arreglo A5 del chequeo post-misión: sin este reset, re-correr
+            // una sugerencia que ya había cerrado dejaba el total y el
+            // contexto financiero de la corrida ANTERIOR mostrados junto a
+            // líneas nuevas — o junto a CERO líneas nuevas, si el catálogo
+            // quedó vacío (chunk_count === 0 más abajo marca 'terminado' y
+            // sale sin volver a calcular nada). Se resetean ACÁ, antes de
+            // procesar, para que ningún estado intermedio ni el caso de
+            // catálogo vacío puedan mostrar la plata de otra corrida. El
+            // cierre normal (ProcessPurchaseSuggestionChunkJob) los vuelve a
+            // calcular sobre las líneas de ESTA corrida.
+            'total_estimado'      => null,
+            'contexto_financiero' => null,
         ]);
 
         // Lotes de IDs para procesar sin disparar jobs hijos en cola.

@@ -5,12 +5,15 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Jobs\GeneratePurchaseSuggestionChunksJob;
 use App\Jobs\GenerarResumenSugerenciaCompraJob;
+use App\Models\Article;
 use App\Models\ProviderOrder;
 use App\Models\PurchaseSuggestion;
 use App\Models\PurchaseSuggestionArticle;
+use App\Services\PurchaseSuggestion\PurchaseSuggestionService;
 use App\Services\PurchaseSuggestion\ResumenIaComprasService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 
 /**
  * Los 7 endpoints de sugerencias de compra a proveedores (contrato
@@ -22,6 +25,33 @@ use Illuminate\Support\Facades\DB;
  */
 class PurchaseSuggestionController extends Controller
 {
+    /**
+     * Límites de los cuatro parámetros del motor (arreglo A4 del chequeo
+     * post-misión). Antes store() hacía (int) $request->input(...) sin
+     * validar: la SPA usa v-model.number, así que un campo vaciado manda ""
+     * y (int)"" = 0. Con dias_cobertura_objetivo = 0 y dias_lead_time = 0,
+     * PurchaseSuggestionService calcula velocidad*0 - stock_global (negativo),
+     * cae al piso, y CADA línea disparada queda en cantidad 1 sin ningún
+     * aviso al usuario.
+     *
+     * Mínimo 1 en los cuatro: 0 nunca es una entrada intencional (es lo que
+     * manda un campo vacío), y en dias_vigencia_oferta = 0 solo compiten las
+     * ofertas cargadas hoy, vaciando la comparación de precios casi siempre.
+     * Los máximos son un techo defensivo por lo que representa cada campo,
+     * no un límite exacto del negocio.
+     */
+    const MIN_DIAS_PUNTO_PEDIDO = 1;
+    /** Más de un año como umbral de alarma de cobertura no tiene sentido operativo. */
+    const MAX_DIAS_PUNTO_PEDIDO = 365;
+    const MIN_DIAS_COBERTURA_OBJETIVO = 1;
+    /** Comprar para cubrir más de un año de venta es un caso extremo, probable error de tipeo. */
+    const MAX_DIAS_COBERTURA_OBJETIVO = 365;
+    const MIN_DIAS_LEAD_TIME = 1;
+    /** Medio año de demora de entrega de un proveedor ya es un caso patológico. */
+    const MAX_DIAS_LEAD_TIME = 180;
+    const MIN_DIAS_VIGENCIA_OFERTA = 1;
+    /** Solo acota la ventana de lectura del histórico (no toca cantidades): techo generoso, pero finito. */
+    const MAX_DIAS_VIGENCIA_OFERTA = 3650;
 
     public function index() {
         $models = PurchaseSuggestion::where('user_id', $this->userId())
@@ -33,23 +63,116 @@ class PurchaseSuggestionController extends Controller
     }
 
     public function store(Request $request) {
-        $model = PurchaseSuggestion::create([
-            'user_id'                  => $this->userId(),
-            'status'                   => 'pendiente',
-            'origen_generacion'        => 'manual',
-            'dias_punto_pedido'        => (int) $request->input('dias_punto_pedido', 15),
-            'dias_cobertura_objetivo'  => (int) $request->input('dias_cobertura_objetivo', 30),
-            'dias_lead_time'           => (int) $request->input('dias_lead_time', 7),
-            'dias_vigencia_oferta'     => (int) $request->input('dias_vigencia_oferta', 120),
-        ]);
+        // Se castea ANTES de validar (y no se valida el $request crudo): un
+        // campo vacío llega como "" y las reglas min/max de Laravel NO corren
+        // sobre strings vacíos salvo que la regla sea "required" (se
+        // saltearían en silencio, dejando pasar exactamente el caso que este
+        // arreglo tiene que frenar). Al castear primero, "" y cualquier
+        // entrada no numérica caen a 0 y quedan atrapadas por el mínimo.
+        $parametros = [
+            'dias_punto_pedido'        => (int) $request->input('dias_punto_pedido', PurchaseSuggestionService::DIAS_PUNTO_PEDIDO),
+            'dias_cobertura_objetivo'  => (int) $request->input('dias_cobertura_objetivo', PurchaseSuggestionService::DIAS_COBERTURA_OBJETIVO),
+            'dias_lead_time'           => (int) $request->input('dias_lead_time', PurchaseSuggestionService::DIAS_LEAD_TIME),
+            'dias_vigencia_oferta'     => (int) $request->input('dias_vigencia_oferta', PurchaseSuggestionService::DIAS_VIGENCIA_OFERTA),
+        ];
 
-        // GeneratePurchaseSuggestionChunksJob procesa TODOS sus chunks inline
-        // (no despacha hijos, ver su docblock): un solo dispatch alcanza. Con
-        // QUEUE_CONNECTION=database (producción) esto solo encola; con
-        // QUEUE_CONNECTION=sync (tests) corre en el mismo request.
-        dispatch(new GeneratePurchaseSuggestionChunksJob($model->id));
+        $error = $this->validar_parametros_del_motor($parametros);
+
+        if ($error !== null) {
+            return response()->json(['message' => $error], 422);
+        }
+
+        $model = PurchaseSuggestion::create(array_merge([
+            'user_id'           => $this->userId(),
+            'status'            => 'pendiente',
+            'origen_generacion' => 'manual',
+        ], $parametros));
+
+        $this->despachar_procesamiento($model);
 
         return response()->json(['model' => $this->fullModel('PurchaseSuggestion', $model->id)], 201);
+    }
+
+    /**
+     * Valida los cuatro parámetros del motor ya casteados a int (ver store()).
+     * Devuelve el PRIMER mensaje de error en español, o null si están todos
+     * en rango.
+     *
+     * @param array $parametros ['dias_punto_pedido','dias_cobertura_objetivo','dias_lead_time','dias_vigencia_oferta'] => int
+     * @return string|null
+     */
+    protected function validar_parametros_del_motor(array $parametros) {
+        $validator = Validator::make($parametros, [
+            // 🔴 'integer' no es decorativo acá: sin una regla numérica en el
+            // set, Laravel compara min/max por mb_strlen() del valor (regla
+            // pensada para strings), no por su valor numérico -- "0" mide 1
+            // carácter y pasaría un min:1 igual. Con 'integer' presente,
+            // Validator::getSize() sí compara el número.
+            'dias_punto_pedido'       => 'integer|min:' . self::MIN_DIAS_PUNTO_PEDIDO . '|max:' . self::MAX_DIAS_PUNTO_PEDIDO,
+            'dias_cobertura_objetivo' => 'integer|min:' . self::MIN_DIAS_COBERTURA_OBJETIVO . '|max:' . self::MAX_DIAS_COBERTURA_OBJETIVO,
+            'dias_lead_time'          => 'integer|min:' . self::MIN_DIAS_LEAD_TIME . '|max:' . self::MAX_DIAS_LEAD_TIME,
+            'dias_vigencia_oferta'    => 'integer|min:' . self::MIN_DIAS_VIGENCIA_OFERTA . '|max:' . self::MAX_DIAS_VIGENCIA_OFERTA,
+        ], [
+            'dias_punto_pedido.min'       => 'Los días de punto de pedido tienen que ser un número entero de al menos ' . self::MIN_DIAS_PUNTO_PEDIDO . '.',
+            'dias_punto_pedido.max'       => 'Los días de punto de pedido no pueden superar los ' . self::MAX_DIAS_PUNTO_PEDIDO . '.',
+            'dias_cobertura_objetivo.min' => 'Los días de cobertura objetivo tienen que ser un número entero de al menos ' . self::MIN_DIAS_COBERTURA_OBJETIVO . ': en 0 la cantidad sugerida se cae a 1 en cada línea disparada, sin ningún aviso.',
+            'dias_cobertura_objetivo.max' => 'Los días de cobertura objetivo no pueden superar los ' . self::MAX_DIAS_COBERTURA_OBJETIVO . '.',
+            'dias_lead_time.min'          => 'Los días de lead time del proveedor tienen que ser un número entero de al menos ' . self::MIN_DIAS_LEAD_TIME . ': en 0 la cantidad sugerida se cae a 1 en cada línea disparada, sin ningún aviso.',
+            'dias_lead_time.max'          => 'Los días de lead time del proveedor no pueden superar los ' . self::MAX_DIAS_LEAD_TIME . '.',
+            'dias_vigencia_oferta.min'    => 'Los días de vigencia de la oferta tienen que ser un número entero de al menos ' . self::MIN_DIAS_VIGENCIA_OFERTA . ': en 0 solo compiten las ofertas cargadas hoy.',
+            'dias_vigencia_oferta.max'    => 'Los días de vigencia de la oferta no pueden superar los ' . self::MAX_DIAS_VIGENCIA_OFERTA . '.',
+        ]);
+
+        if ($validator->fails()) {
+            return $validator->errors()->first();
+        }
+
+        return null;
+    }
+
+    /**
+     * Camino único de despacho del cálculo (arreglo A8 del chequeo
+     * post-misión, molde exacto de
+     * StockSuggestionController::despachar_procesamiento()).
+     *
+     * Catálogos chicos: procesamiento inmediato (WAMP/local suele no tener
+     * queue:work corriendo — sin este camino, una sugerencia manual creada a
+     * mano quedaba 'pendiente' para siempre y parecía rota, justo el primer
+     * paso de la checklist de prueba manual). Catálogos grandes: cola, para
+     * no superar el timeout HTTP. El conteo se acota al dueño de la
+     * sugerencia: en una base con varios comercios, contar el catálogo ajeno
+     * inflaba la decisión.
+     *
+     * @param PurchaseSuggestion $model
+     * @return void
+     */
+    protected function despachar_procesamiento($model) {
+        $sync_article_limit = 500;
+
+        $article_count = Article::where('user_id', $model->user_id)->count();
+
+        if ($article_count <= $sync_article_limit) {
+            try {
+                (new GeneratePurchaseSuggestionChunksJob($model->id))->handle();
+            } catch (\Throwable $e) {
+                // failed() de los jobs solo corre en la vía de cola: sin esta
+                // red, una excepción del camino sincrónico dejaba la
+                // sugerencia 'pendiente' eterna y la vista polleando por un
+                // resultado que no iba a llegar. Mismo formato que failed():
+                // status 'error' + error_mensaje, sin pisar una ya terminada.
+                $model->refresh();
+
+                if ($model->status !== 'terminado') {
+                    $model->status = 'error';
+                    $model->error_mensaje = $e->getMessage();
+                    $model->save();
+                }
+
+                throw $e;
+            }
+        } else {
+            dispatch(new GeneratePurchaseSuggestionChunksJob($model->id));
+        }
     }
 
     public function show($id) {
@@ -67,6 +190,16 @@ class PurchaseSuggestionController extends Controller
 
         if (!$model) {
             return response()->json(['message' => 'Sugerencia no encontrada.'], 404);
+        }
+
+        // Arreglo A6 del chequeo post-misión (guard que StockSuggestionController
+        // sí tiene y este molde había perdido): una sugerencia en curso no se
+        // borra. Sacarle el modelo de abajo a los chunks que la están
+        // escribiendo deja líneas huérfanas y hace que el refresh() del
+        // polling (que usa firstOrFail()) tire ModelNotFoundException en cada
+        // uno de sus reintentos.
+        if ($model->status === 'pendiente') {
+            return response()->json(['message' => 'La sugerencia se está generando. Esperá a que termine para borrarla.'], 422);
         }
 
         // Las líneas van en la misma transacción que la cabecera: sin esto
@@ -117,10 +250,18 @@ class PurchaseSuggestionController extends Controller
         }
 
         if ($request->filled('solo_cambio_de_proveedor')) {
-            // Comparación null-safe (<=>): ambos NULL no es "cambio" (nunca
-            // hubo proveedor de ningún lado); un NULL contra un valor SÍ lo
-            // es (se asignó uno donde antes no había titular, o viceversa).
-            $query->whereRaw('NOT (provider_id <=> provider_id_titular)');
+            // Arreglo A7 del chequeo post-misión: antes usaba <=> (comparación
+            // null-safe), que cuenta como "cambio" cualquier línea con
+            // provider_id = null contra un titular real. El front
+            // (TablaPriorizada.vue::es_cambio_de_proveedor) exige los DOS no
+            // nulos para pintar el ícono de cambio de proveedor -- con el
+            // filtro viejo prendido aparecían filas "Sin proveedor asignado"
+            // sin el ícono, porque el filtro y el ícono no significaban lo
+            // mismo. Ahora el criterio es el mismo de los dos lados: cambio
+            // real entre dos proveedores CONOCIDOS, nunca contra un hueco.
+            $query->whereNotNull('provider_id')
+                ->whereNotNull('provider_id_titular')
+                ->whereColumn('provider_id', '<>', 'provider_id_titular');
         }
 
         $order = $request->input('order');
