@@ -195,6 +195,16 @@ class ProcessRow {
     protected $provider_relations_buffer = []; // [article_id][provider_id] => pivot_data
 
     /**
+     * Buffer paralelo a $provider_relations_buffer (mismo molde): ofertas de OTROS
+     * proveedores que la importación descarta o saltea sin tocar el pivot con ellas.
+     * No decide nada del importador; ArticleImport::guardar_articulos() lo vacía al
+     * histórico de precios ofertados (misión sugerencias de compra).
+     * [article_id][provider_id] => ['provider_code'=>..., 'cost'=>..., 'origen'=>'importacion'] — última fila gana
+     * @var array
+     */
+    protected $ofertas_de_precio_buffer = [];
+
+    /**
      * Cache en memoria de los descuentos estándar (ProviderDiscount) de cada proveedor,
      * indexado por provider_id, para no repetir la consulta fila a fila del Excel.
      * Se llena de forma perezosa en get_provider_standard_discount_percentages().
@@ -976,6 +986,16 @@ class ProcessRow {
             $this->contar_fila('bloqueado_otro_proveedor');
             $this->log('No hubo mach (bloqueado por provider_code existente en otro proveedor)');
             $this->articles_repetidos++;
+
+            // La fila se sigue descartando igual que siempre; lo único nuevo es que antes
+            // de tirarla queda registrado que ESTE proveedor ofrecía ese artículo a ese
+            // precio (misión sugerencias de compra).
+            $this->registrar_oferta_de_otro_proveedor(
+                isset($articulo_ya_creado['matched_other_provider_ids']) ? $articulo_ya_creado['matched_other_provider_ids'] : [],
+                $provider_id,
+                $data
+            );
+
             $this->sumar_durations();
             return $this->observations;
         }
@@ -1126,6 +1146,11 @@ class ProcessRow {
                         $this->procesar_articulo_ya_creado($_articulo_ya_creado, $data, $row);
 
                         $this->terminar('procesar_articulo_ya_creado con provider_code repetido');
+                    } else {
+                        // El artículo pertenece a otro proveedor y se sigue salteando igual que
+                        // siempre (attach_provider ya corrió en :1072 y el pivot se pisa como
+                        // antes): lo único nuevo es que la oferta queda con fecha en el histórico.
+                        $this->registrar_oferta_de_otro_proveedor([$_articulo_ya_creado->id], $provider_id, $data);
                     }
 
                 }
@@ -1140,6 +1165,11 @@ class ProcessRow {
                     $this->procesar_articulo_ya_creado($articulo_ya_creado, $data, $row, $identificadores_pendientes);
 
                     $this->terminar('procesar_articulo_ya_creado');
+                } else {
+                    // El artículo pertenece a otro proveedor y se sigue salteando igual que
+                    // siempre (attach_provider ya corrió en :1072 y el pivot se pisa como
+                    // antes): lo único nuevo es que la oferta queda con fecha en el histórico.
+                    $this->registrar_oferta_de_otro_proveedor([$articulo_ya_creado->id], $provider_id, $data);
                 }
             }
 
@@ -3811,6 +3841,66 @@ class ProcessRow {
     public function get_provider_relations_buffer(): array
     {
         return $this->provider_relations_buffer;
+    }
+
+    public function buffer_oferta_de_precio(int $article_id, int $provider_id, array $oferta): void
+    {
+        if (!isset($this->ofertas_de_precio_buffer[$article_id])) {
+            $this->ofertas_de_precio_buffer[$article_id] = [];
+        }
+
+        // Última fila gana (mismo criterio que buffer_provider_relation()).
+        $this->ofertas_de_precio_buffer[$article_id][$provider_id] = $oferta;
+    }
+
+    public function get_ofertas_de_precio_buffer(): array
+    {
+        return $this->ofertas_de_precio_buffer;
+    }
+
+    /**
+     * Registra que ESTE proveedor ofrecía el/los artículo(s) a $data['cost'], en los dos
+     * puntos donde el importador descarta o saltea la fila sin tocar el pivot con ella
+     * (sugerencias de compra). Captura de solo lectura: no decide nada del importador.
+     * Guardas duras: sin provider_id sale; sin cost o cost<=0 sale (misma condición de
+     * update_provider_relation(), :1560); cada id tiene que ser entero > 0, nunca un
+     * fake_id; y nunca lanza (try/catch con Log::warning).
+     *
+     * @param array $article_ids ids reales (int) o strings 'fake_...' a descartar
+     * @param int|null $provider_id
+     * @param array $data fila armada por procesar(): se leen 'cost' y 'provider_code'
+     */
+    protected function registrar_oferta_de_otro_proveedor($article_ids, $provider_id, array $data): void
+    {
+        try {
+            // Guardas 1 y 2: sin provider_id, o sin cost / cost <= 0, no hay nada que registrar.
+            if (empty($provider_id) || !isset($data['cost']) || (float) $data['cost'] <= 0 || empty($article_ids)) {
+                return;
+            }
+
+            $oferta = [
+                'provider_code' => isset($data['provider_code']) ? $data['provider_code'] : null,
+                'cost'          => $data['cost'],
+                'origen'        => 'importacion',
+            ];
+
+            foreach ($article_ids as $article_id) {
+                // Guarda 3: nunca un fake_id (artículo todavía sin INSERT en este chunk).
+                if (is_string($article_id) && strncmp($article_id, 'fake_', strlen('fake_')) === 0) {
+                    continue;
+                }
+                $article_id_int = (int) $article_id;
+                if ($article_id_int > 0) {
+                    $this->buffer_oferta_de_precio($article_id_int, (int) $provider_id, $oferta);
+                }
+            }
+        } catch (\Throwable $e) {
+            // Guarda 4: nunca lanza. Un histórico de precios que revienta la importación
+            // sería peor que no tener histórico.
+            Log::warning('ProcessRow: no se pudo registrar oferta de otro proveedor', [
+                'message' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

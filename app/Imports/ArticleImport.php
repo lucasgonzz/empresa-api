@@ -24,6 +24,7 @@ use App\Models\Article;
 use App\Models\ImportHistory;
 use App\Models\PriceType;
 use App\Models\Provider;
+use App\Services\Compras\OfertasDeProveedorService;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
@@ -454,6 +455,23 @@ class ArticleImport implements ToCollection
 
             /* Capturar IDs de artículos creados con código repetido para reportarlos. */
             $this->articulos_creados_con_codigo_repetido_ids = $actualizar_bbdd->get_articulos_creados_con_codigo_repetido_ids();
+
+            try {
+                // Vacía el buffer de ofertas de precio (histórico, misión sugerencias de
+                // compra) en UNA sola llamada por chunk. Propio try/catch, separado del de
+                // ActualizarBBDD de arriba: el histórico es un extra y su falla nunca puede
+                // voltear la importación, que es lo que el usuario vino a hacer.
+                OfertasDeProveedorService::registrar_lote(
+                    $this->process_row->get_ofertas_de_precio_buffer(),
+                    (int) $this->user->id,
+                    'importacion',
+                    $this->import_history_id ? (int) $this->import_history_id : null
+                );
+            } catch (\Throwable $e) {
+                Log::warning('ArticleImport: no se pudo registrar el histórico de precios ofertados', [
+                    'message' => $e->getMessage(),
+                ]);
+            }
 
             return $actualizar_bbdd->get_articulos_creados_models();
 

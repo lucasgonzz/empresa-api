@@ -20,6 +20,7 @@ use App\Models\MovimientoCaja;
 use App\Models\Provider;
 use App\Models\ProviderOrderDiscount;
 use App\Models\ProviderOrderExtraCost;
+use App\Services\Compras\OfertasDeProveedorService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
@@ -1057,6 +1058,23 @@ class NewProviderOrderHelper {
         } else {
 
             $article->providers()->attach($provider_id, $pivot_data);
+        }
+
+        try {
+            // El costo de una compra REAL es el dato más confiable del histórico: ya viene
+            // neto (back-out de IVA arriba) y con proveedor y fecha ciertos.
+            OfertasDeProveedorService::registrar_lote(
+                [$article->id => [$provider_id => ['cost' => $cost, 'provider_code' => isset($pivot_data['provider_code']) ? $pivot_data['provider_code'] : null]]],
+                (int) $this->provider_order->user_id,
+                'compra',
+                $this->provider_order->id
+            );
+        } catch (\Throwable $e) {
+            // Igual que en la importación: el histórico de precios ofertados es un extra,
+            // su falla nunca puede voltear la carga de la compra.
+            Log::warning('NewProviderOrderHelper: no se pudo registrar el histórico de precios ofertados', [
+                'message' => $e->getMessage(),
+            ]);
         }
     }
 
