@@ -797,6 +797,20 @@ SUMMARY;
             $line .= ' | Link: '.$url;
         }
 
+        // 🔴 SIN ESTE CAMPO LA FOTO DEL PRODUCTO NO SE PUEDE MANDAR NUNCA. El system prompt le
+        // pide al modelo que cierre con `[FOTO:<código de barras>]`, y `GenerateWhatsappAiReplyJob`
+        // resuelve el artículo por `bar_code`. Si la línea del catálogo no trae el código, el
+        // modelo no tiene de dónde sacarlo: o se lo inventa (y no resuelve nada) o no escribe el
+        // marcador. La consulta del RAG ya lo selecciona desde siempre
+        // (`ArticleEmbeddingService::search_similar_articles`), pero se perdía acá.
+        //
+        // Va último a propósito: lo primero que lee el modelo tiene que ser lo que le sirve al
+        // cliente (nombre, precio, stock, link). El código es maquinaria interna.
+        $bar_code = trim((string) $this->article_field($article, 'bar_code', ''));
+        if ($bar_code !== '') {
+            $line .= ' | Código: '.$bar_code;
+        }
+
         return $line;
     }
 
