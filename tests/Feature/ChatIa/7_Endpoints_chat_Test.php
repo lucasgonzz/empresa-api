@@ -327,6 +327,85 @@ class Endpoints_chat_Test extends TestCase
     }
 
     /**
+     * Arreglo post-chequeo: el 409 solo defiende contra una respuesta EN
+     * CURSO. Un pendiente más viejo que MINUTOS_VENCIMIENTO_PENDIENTE (10
+     * minutos, contra un techo real del job de 4) es un huérfano — dispatch
+     * que falló o worker caído antes de failed() — y sin vencimiento dejaba
+     * la conversación clavada en 409 para siempre. Decisión documentada: el
+     * huérfano no se ignora a secas, pasa a 'error' con el contenido
+     * amigable (dejarlo 'pendiente' sería un globo "pensando" eterno que
+     * cada recarga de la SPA volvería a esperar).
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_pendiente_vencido_no_bloquea_el_post_y_queda_cerrado_en_error()
+    {
+        $this->dar_extension();
+        $this->actingAs($this->empleado, 'web');
+        Queue::fake();
+
+        $conversation = $this->conversacion($this->empleado);
+
+        $huerfano = AiMessage::create([
+            'ai_conversation_id' => $conversation->id,
+            'rol'                => 'assistant',
+            'estado'             => 'pendiente',
+            'created_at'         => now()->subMinutes(11),
+        ]);
+
+        $response = $this->postJson('api/ai-conversations/' . $conversation->id . '/messages', [
+            'contenido' => 'mensaje después del huérfano',
+        ]);
+
+        $response->assertStatus(201);
+        Queue::assertPushed(ResponderMensajeChatIaJob::class, 1);
+
+        // El huérfano quedó cerrado con el error amigable, no 'pendiente'.
+        $huerfano->refresh();
+        $this->assertEquals('error', $huerfano->estado);
+        $this->assertEquals(ResponderMensajeChatIaJob::CONTENIDO_ERROR_AMIGABLE, $huerfano->contenido);
+        $this->assertNotEmpty($huerfano->error_mensaje);
+
+        // Y la conversación siguió: globo del usuario + assistant pendiente nuevo.
+        $this->assertEquals(
+            3,
+            AiMessage::where('ai_conversation_id', $conversation->id)->count(),
+            'Huérfano cerrado + mensaje del usuario + assistant nuevo.'
+        );
+    }
+
+    /**
+     * La contracara del vencimiento: un pendiente de hace poco (9 minutos,
+     * adentro de la ventana) sigue bloqueando con 409 — el vencimiento no
+     * puede haber aflojado la defensa contra dos mensajes seguidos.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_pendiente_dentro_de_la_ventana_sigue_bloqueando_con_409()
+    {
+        $this->dar_extension();
+        $this->actingAs($this->empleado, 'web');
+        Queue::fake();
+
+        $conversation = $this->conversacion($this->empleado);
+
+        AiMessage::create([
+            'ai_conversation_id' => $conversation->id,
+            'rol'                => 'assistant',
+            'estado'             => 'pendiente',
+            'created_at'         => now()->subMinutes(9),
+        ]);
+
+        $this->postJson('api/ai-conversations/' . $conversation->id . '/messages', [
+            'contenido' => 'demasiado pronto',
+        ])->assertStatus(409);
+
+        Queue::assertNothingPushed();
+    }
+
+    /**
      * @group chat-ia
      * @test
      */

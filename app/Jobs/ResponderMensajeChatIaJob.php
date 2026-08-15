@@ -44,12 +44,18 @@ class ResponderMensajeChatIaJob implements ShouldQueue
     public $tries = 1;
 
     /**
-     * El loop puede encadenar hasta 5 llamadas de 120s de timeout HTTP; 180
-     * segundos es el mismo techo que el polling de respaldo de la SPA.
+     * Coherente con el presupuesto del servicio (arreglo post-chequeo): el
+     * peor caso del loop es PRESUPUESTO_SEGUNDOS (150) más una llamada HTTP
+     * de 60s ya en vuelo ≈ 210s; 240 deja margen para las tools y los saves.
+     * En WAMP/Windows sin pcntl este timeout NO rige (por eso existe el
+     * presupuesto adentro del servicio); donde sí rige, tiene que ser MAYOR
+     * que el presupuesto o mataría al worker antes del corte prolijo. El
+     * polling de la SPA corta su espera a los 180s con el aviso de demora,
+     * pero una respuesta que llegue después la registra igual el evento.
      *
      * @var int
      */
-    public $timeout = 180;
+    public $timeout = 240;
 
     /**
      * Texto amigable que ve el usuario cuando la generación falla. El detalle

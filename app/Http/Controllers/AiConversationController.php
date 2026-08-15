@@ -9,6 +9,7 @@ use App\Models\AiConversation;
 use App\Models\AiMessage;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Endpoints REST del chat con el asistente de IA (misión chat-ia-y-modulo-ia).
@@ -26,6 +27,16 @@ use Illuminate\Http\Request;
  */
 class AiConversationController extends Controller
 {
+    /**
+     * Minutos tras los cuales un assistant 'pendiente' deja de bloquear el
+     * POST de un mensaje nuevo. El techo real del job de respuesta es menor
+     * (ResponderMensajeChatIaJob::$timeout = 240s = 4 minutos): un pendiente
+     * más viejo que esto es un huérfano de un dispatch que falló o de un
+     * worker caído ANTES de failed(), y sin este vencimiento la conversación
+     * quedaba clavada en 409 `respuesta_en_curso` para siempre.
+     */
+    const MINUTOS_VENCIMIENTO_PENDIENTE = 10;
+
     /**
      * Conversaciones de la persona autenticada, ordenadas por actividad
      * (last_message_at DESC con nulls al final, D44: la SPA abre
@@ -155,9 +166,29 @@ class AiConversationController extends Controller
             'contenido' => 'required|string|max:4000',
         ]);
 
+        $limite_pendiente_vigente = now()->subMinutes(self::MINUTOS_VENCIMIENTO_PENDIENTE);
+
+        /*
+         * Los pendientes vencidos se cierran acá mismo con el error amigable
+         * (decisión documentada: pasan a 'error', no quedan 'pendiente'):
+         * si solo se los ignorara, el globo "pensando" de ese huérfano
+         * quedaría eterno en la conversación y cada recarga de la SPA
+         * re-armaría el polling sobre un mensaje que ya no tiene job.
+         */
+        AiMessage::where('ai_conversation_id', $conversation->id)
+            ->where('rol', 'assistant')
+            ->where('estado', 'pendiente')
+            ->where('created_at', '<', $limite_pendiente_vigente)
+            ->update([
+                'contenido'     => ResponderMensajeChatIaJob::CONTENIDO_ERROR_AMIGABLE,
+                'estado'        => 'error',
+                'error_mensaje' => 'pendiente vencido: superó los ' . self::MINUTOS_VENCIMIENTO_PENDIENTE . ' minutos sin que el job lo resolviera (dispatch fallido o worker caído)',
+            ]);
+
         $hay_respuesta_en_curso = AiMessage::where('ai_conversation_id', $conversation->id)
             ->where('rol', 'assistant')
             ->where('estado', 'pendiente')
+            ->where('created_at', '>=', $limite_pendiente_vigente)
             ->exists();
 
         if ($hay_respuesta_en_curso) {
@@ -193,10 +224,39 @@ class AiConversationController extends Controller
         $conversation->last_message_at = now();
         $conversation->save();
 
-        dispatch(new ResponderMensajeChatIaJob($assistant_message->id));
+        /*
+         * Red de seguridad del encolado (arreglo post-chequeo): si dispatch()
+         * lanza (tabla jobs caída, driver mal configurado), el assistant NO
+         * puede quedar 'pendiente' — ningún worker lo va a resolver y el
+         * chequeo del 409 bloquearía la conversación hasta el vencimiento. Se
+         * lo cierra con el error amigable y se relanza: el mensaje del usuario
+         * queda guardado, el POST devuelve 500 y el globo optimista de la SPA
+         * ofrece reintentar.
+         */
+        try {
+            dispatch(new ResponderMensajeChatIaJob($assistant_message->id));
+        } catch (\Throwable $e) {
+            $assistant_message->contenido = ResponderMensajeChatIaJob::CONTENIDO_ERROR_AMIGABLE;
+            $assistant_message->estado = 'error';
+            // Mismo recorte defensivo que marcar_error() del job.
+            $assistant_message->error_mensaje = mb_substr('no se pudo encolar el job de respuesta: ' . $e->getMessage(), 0, 5000);
+            $assistant_message->save();
+
+            throw $e;
+        }
 
         if ($inferir_titulo) {
-            dispatch(new InferirTituloConversacionIaJob($conversation->id, (string) $request->contenido));
+            // El título es cosmético (D19: si falla queda null y la SPA
+            // muestra "Nueva conversación"): una falla al encolarlo no puede
+            // voltear un POST cuyo job de respuesta ya quedó despachado.
+            try {
+                dispatch(new InferirTituloConversacionIaJob($conversation->id, (string) $request->contenido));
+            } catch (\Throwable $e) {
+                Log::warning('AiConversationController: no se pudo encolar la inferencia del título', [
+                    'ai_conversation_id' => $conversation->id,
+                    'message'            => $e->getMessage(),
+                ]);
+            }
         }
 
         return response()->json([

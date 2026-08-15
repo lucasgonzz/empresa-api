@@ -43,8 +43,27 @@ class AsistenteIaService
     /** Techo de tokens de la respuesta. */
     const MAX_TOKENS = 1500;
 
-    /** Timeout de cada llamada HTTP a Anthropic, en segundos. */
-    const TIMEOUT_SEGUNDOS = 120;
+    /**
+     * Timeout de cada llamada HTTP a Anthropic, en segundos (alineado con el
+     * timeout(60) de WhatsappBotAiService: una respuesta de chat que tarda
+     * más que eso ya está perdida para el usuario).
+     */
+    const TIMEOUT_SEGUNDOS = 60;
+
+    /**
+     * Presupuesto acumulado del loop completo, en segundos: al inicio de cada
+     * iteración, si ya pasó este techo desde el arranque, se corta con el
+     * error amigable en vez de pedir otra llamada.
+     *
+     * Existe porque en WAMP/Windows sin pcntl el $timeout del job NO se
+     * aplica (Laravel lo implementa con pcntl_alarm): sin este techo, un
+     * Anthropic colgado que responde lento —sin vencer el timeout HTTP— puede
+     * retener el worker compartido con las importaciones hasta 5 llamadas
+     * enteras. Peor caso real con presupuesto: ~150s + una llamada de 60s en
+     * vuelo ≈ 210s, por debajo del $timeout = 240 del job (que sí rige donde
+     * hay pcntl).
+     */
+    const PRESUPUESTO_SEGUNDOS = 150;
 
     /**
      * true si hay clave de Anthropic configurada. No tener IA contratada no
@@ -81,8 +100,25 @@ class AsistenteIaService
 
         $iterations = 0;
         $final_text = '';
+        $inicio_del_loop = time();
 
         while ($iterations < self::MAX_TOOL_ITERATIONS) {
+            /*
+             * Presupuesto acumulado (ver PRESUPUESTO_SEGUNDOS): el chequeo va
+             * ANTES de cada llamada — la que ya está en vuelo no se puede
+             * cortar, pero no se arranca una nueva con el tiempo vencido.
+             */
+            if ((time() - $inicio_del_loop) > self::PRESUPUESTO_SEGUNDOS) {
+                Log::warning('AsistenteIaService: presupuesto de tiempo del loop agotado.', [
+                    'ai_conversation_id' => $conversation->id,
+                    'iterations'         => $iterations,
+                ]);
+
+                throw new \RuntimeException(
+                    'El servicio de IA no está disponible en este momento. Esperá unos segundos y volvé a intentarlo.'
+                );
+            }
+
             $iterations++;
 
             $response = $http->post('https://api.anthropic.com/v1/messages', [
@@ -427,19 +463,30 @@ SYSTEM;
             $tool_name  = (string) ($block['name'] ?? '');
             $tool_input = isset($block['input']) && is_array($block['input']) ? $block['input'] : [];
 
+            /*
+             * A los cuatro json_encode se les pone el fallback `?: '[]'`:
+             * con UTF-8 inválido en la base (nombres importados de un Excel
+             * roto) json_encode devuelve false, y un content false rompería
+             * el request siguiente del loop con un 400 críptico.
+             */
             try {
+                // true cuando la tool pedida no está en la whitelist: el
+                // tool_result viaja con is_error para que Claude no lo lea
+                // como un resultado válido de la consulta.
+                $tool_desconocida = false;
+
                 if ($tool_name === 'consultar_stock_de_articulos') {
                     $busqueda = (string) ($tool_input['busqueda'] ?? '');
                     $data = ConsultasSistemaIaHelper::stock_de_articulos($owner_id, $busqueda);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE);
+                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
                 } elseif ($tool_name === 'consultar_clientes') {
                     $busqueda = (string) ($tool_input['busqueda'] ?? '');
                     $data = ConsultasSistemaIaHelper::clientes($owner_id, $busqueda);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE);
+                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
                 } elseif ($tool_name === 'consultar_movimientos_de_cuenta_corriente') {
                     $client_id = (int) ($tool_input['client_id'] ?? 0);
                     $data = ConsultasSistemaIaHelper::movimientos_de_cuenta_corriente($owner_id, $client_id);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE);
+                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
                 } elseif ($tool_name === 'consultar_articulos_mas_vendidos') {
                     $dias = (int) ($tool_input['dias'] ?? 30);
                     // Defensa contra un valor fuera del enum: se cae al default.
@@ -447,16 +494,23 @@ SYSTEM;
                         $dias = 30;
                     }
                     $data = ConsultasSistemaIaHelper::mas_vendidos($owner_id, $dias);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE);
+                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
                 } else {
+                    $tool_desconocida = true;
                     $content = 'Tool desconocida: ' . $tool_name;
                 }
 
-                $tool_results[] = [
+                $tool_result = [
                     'type'        => 'tool_result',
                     'tool_use_id' => $tool_id,
                     'content'     => $content,
                 ];
+
+                if ($tool_desconocida) {
+                    $tool_result['is_error'] = true;
+                }
+
+                $tool_results[] = $tool_result;
             } catch (\Throwable $exception) {
                 Log::warning('AsistenteIaService: error en tool call.', [
                     'ai_conversation_id' => $conversation->id,
@@ -518,9 +572,9 @@ SYSTEM;
 
     /**
      * Cliente HTTP hacia Anthropic: headers de versión y caché de prompt,
-     * timeout largo (el loop puede encadenar consultas) y el mismo bloque
-     * TLS que ResumenIaService (WAMP/Windows suele requerir ca_bundle o
-     * verify_ssl=false).
+     * timeout de 60s por llamada (el techo del loop completo lo pone
+     * PRESUPUESTO_SEGUNDOS) y el mismo bloque TLS que ResumenIaService
+     * (WAMP/Windows suele requerir ca_bundle o verify_ssl=false).
      *
      * @return \Illuminate\Http\Client\PendingRequest
      */
