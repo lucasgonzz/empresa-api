@@ -7,6 +7,7 @@ use App\Models\StockSuggestionArticle;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
 use App\Services\StockSuggestion\CoberturaService;
+use App\Services\StockSuggestion\ResumenIaService;
 use App\Services\StockSuggestion\StockSuggestionService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -102,7 +103,26 @@ class ProcessStockSuggestionChunkJob implements ShouldQueue
             $cobertura_service->asignar_prioridades($this->stock_suggestion_id);
 
             $this->suggestion->status = 'terminado';
+
+            // El resumen IA se pide recién acá, sobre el resultado completo
+            // (por chunk hablaría de datos parciales) y SOLO si hay clave:
+            // sin ANTHROPIC_API_KEY el estado queda null, que la vista
+            // muestra como "sin resumen", no como error.
+            $resumen_service = new ResumenIaService();
+            $pedir_resumen = $resumen_service->hay_credenciales();
+
+            if ($pedir_resumen) {
+                // 'pendiente' desde antes del dispatch: la vista muestra "lo
+                // estamos escribiendo" sin esperar a que el worker arranque.
+                $this->suggestion->resumen_ia_estado = 'pendiente';
+            }
+
             $this->suggestion->save();
+
+            if ($pedir_resumen) {
+                dispatch(new GenerarResumenSugerenciaJob($this->stock_suggestion_id));
+            }
+
             $this->notificacion();
         }
     }
@@ -156,15 +176,32 @@ class ProcessStockSuggestionChunkJob implements ShouldQueue
 
     function notificacion() {
 
-
+        // El botón "Ver sugerencia" ejecuta ir_a_sugerencias_de_stock() del
+        // mixin global_notification_functions de la SPA (mismo mecanismo que
+        // open_masive_update_history): navega al detalle si el usuario tiene
+        // la extensión, o al listado como fallback.
         $functions_to_execute = [
             [
-                'btn_text'      => 'Entendido',
+                'btn_text'      => 'Ver sugerencia',
                 'btn_variant'   => 'primary',
+                'function_name' => 'ir_a_sugerencias_de_stock',
+            ],
+            [
+                'btn_text'      => 'Entendido',
+                'btn_variant'   => 'outline-primary',
             ],
         ];
 
-        $info_to_show = [];
+        // El primer elemento lleva la clave stock_suggestion_id, que es la
+        // que lee el mixin para armar la ruta del detalle; title/value son lo
+        // que el modal renderiza.
+        $info_to_show = [
+            [
+                'title'               => 'Sugerencia',
+                'value'               => '#' . $this->suggestion->id,
+                'stock_suggestion_id' => $this->suggestion->id,
+            ],
+        ];
 
         $user = User::find($this->suggestion->user_id);
 
@@ -174,7 +211,6 @@ class ProcessStockSuggestionChunkJob implements ShouldQueue
 
         $user->notify(new GlobalNotification([
             'message_text'              => 'Sugerencia de stock terminada',
-            // 'message_text'              => 'Estamos actualizando tus precios, te notificaremos cuando finalice',
             'color_variant'             => 'primary',
             'functions_to_execute'      => $functions_to_execute,
             'info_to_show'              => $info_to_show,
