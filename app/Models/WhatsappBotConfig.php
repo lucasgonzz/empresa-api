@@ -20,6 +20,11 @@ class WhatsappBotConfig extends Model
         // Segundos que la respuesta generada espera confirmación humana antes de enviarse
         // sola. 0 = se envía sin esperar a nadie.
         'ai_confirm_delay_seconds' => 'integer',
+        // Si el agente interpreta las imágenes que manda el cliente. Se castea a booleano
+        // porque MySQL devuelve 0/1 como string y este valor decide, con un `if`, si el turno
+        // viaja a Anthropic como texto o como bloques con la imagen en base64: un '0' string
+        // es truthy en PHP y prendería la visión (y su costo) en TODOS los negocios.
+        'ai_vision_enabled' => 'boolean',
     ];
 
     /**
