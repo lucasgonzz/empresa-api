@@ -333,6 +333,8 @@ class DatabaseSeeder extends Seeder
         $this->call(ExtencionSugerenciasInteligentesSeeder::class);
         /* Extensión del chat con el asistente de IA del negocio (misión chat-ia-y-modulo-ia). */
         $this->call(ExtencionAsistenteIaSeeder::class);
+        /* Extensión del seguimiento de comportamiento de compradores en la tienda (misión tracking-buyers-tienda). */
+        $this->call(ExtencionTrackingBuyersSeeder::class);
         /* Extensión + permisos del módulo de chats de WhatsApp con clientes (grupo 137). */
         $this->call(ExtencionEmpresaWhatsappSeeder::class);
         $this->call(PermissionEmpresaWhatsappSeeder::class);
