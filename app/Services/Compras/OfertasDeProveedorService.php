@@ -223,7 +223,18 @@ class OfertasDeProveedorService
             DB::table('provider_price_offers')->upsert(
                 $lote,
                 ['article_id', 'provider_id', 'fecha', 'origen'],
-                ['cost', 'provider_code', 'referencia_id', 'updated_at']
+                /*
+                 * `moneda_id` va en la lista de columnas a pisar, y no es un detalle:
+                 * en un INSERT nuevo se escribe bien igual, pero en el UPDATE por
+                 * conflicto del unique (mismo par, mismo dia, mismo origen) sin esta
+                 * clave quedaba el valor viejo. Escenario real: el proveedor manda su
+                 * lista en dolares a la tarde despues de una en pesos, o el usuario
+                 * corrige la columna `moneda` y reimporta -- el costo se actualizaba y
+                 * la moneda no, que es exactamente el error de plata que este campo
+                 * vino a evitar (una oferta en dolares etiquetada como pesos compite y
+                 * gana "el mas barato" por ~1000x).
+                 */
+                ['cost', 'provider_code', 'moneda_id', 'referencia_id', 'updated_at']
             );
         }
     }
