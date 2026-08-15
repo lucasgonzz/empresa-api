@@ -886,6 +886,11 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
     // público y sin auth. Esta es la única puerta, y suma el chequeo de pertenencia del chat.
     Route::get('whatsapp-chats/{chat_id}/media/{message_id}', 'WhatsappChatController@media');
 
+    // Envío de una foto o un audio desde el composer (misión whatsapp-sidebar-multimedia).
+    // Multipart: `file` + `caption` opcional. Solo dentro de la ventana de 24 h de Meta; fuera
+    // de ella devuelve 422 `fuera_de_ventana` SIN salir a Kapso, y el front ofrece plantillas.
+    Route::post('whatsapp-chats/{id}/media', 'WhatsappChatController@send_media');
+
     // Envío de plantilla de Meta (grupo 137, Prompt 04): único camino cuando la ventana de 24 h está cerrada.
     Route::post('whatsapp-chats/{id}/send-template', 'WhatsappChatController@send_template');
 

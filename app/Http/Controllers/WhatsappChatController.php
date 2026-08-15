@@ -15,6 +15,7 @@ use App\Services\WhatsappBotSendService;
 use App\Services\WhatsappInboundMediaService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 /**
@@ -25,6 +26,56 @@ use Illuminate\Support\Facades\Storage;
  */
 class WhatsappChatController extends Controller
 {
+    /**
+     * Tope de una imagen que manda el operador, en bytes (5 MB, D28).
+     *
+     * Es el límite real de la Cloud API de Meta, no un número elegido acá. Está duplicado a
+     * propósito con el del composer de la SPA: el front evita el viaje inútil de subir algo que
+     * va a rebotar, y el back es el que manda porque el front se puede saltear.
+     *
+     * @var int
+     */
+    private const MEDIA_MAX_IMAGE_BYTES = 5242880;
+
+    /**
+     * Tope de un audio que manda el operador, en bytes (16 MB, D28). Mismo criterio que el de
+     * la imagen: es el límite de la Cloud API de Meta.
+     *
+     * @var int
+     */
+    private const MEDIA_MAX_AUDIO_BYTES = 16777216;
+
+    /**
+     * Extensión con la que se guarda y se sube cada mime.
+     *
+     * 🔴 ESTO NO ES LA LISTA BLANCA Y NO DECIDE QUÉ SE ACEPTA. Quién entra y quién no lo decide
+     * `WhatsappInboundMediaService::safe_mime()`, que es la MISMA función con la que se guardan
+     * los entrantes y con la que `media()` los sirve (dos listas que se desincronizan son una
+     * fuga esperando). Esta tabla solo traduce un mime YA ACEPTADO a una extensión de archivo,
+     * porque hacen falta dos: el nombre en disco y —sobre todo— el nombre del multipart, que
+     * Meta valida contra el mime declarado y rechaza si no coinciden.
+     *
+     * Tiene que cubrir toda la lista blanca del servicio. Si alguna vez no la cubre, el mime que
+     * falte se rechaza con 422 y queda logueado: es preferible eso a mandarle a Meta un
+     * `archivo.bin` que va a rebotar después de pagar el viaje.
+     *
+     * @var array<string, string>
+     */
+    private const MEDIA_EXTENSIONS = [
+        'image/jpeg' => 'jpg',
+        'image/jpg'  => 'jpg',
+        'image/png'  => 'png',
+        'image/webp' => 'webp',
+        'image/gif'  => 'gif',
+        'audio/ogg'  => 'ogg',
+        'audio/opus' => 'ogg',
+        'audio/mpeg' => 'mp3',
+        'audio/mp4'  => 'm4a',
+        'audio/aac'  => 'm4a',
+        'audio/amr'  => 'amr',
+        'audio/webm' => 'webm',
+    ];
+
     /**
      * Lista los chats del owner autenticado, con el cliente vinculado, ordenados por
      * último mensaje. Búsqueda opcional por `?q=` (nombre del chat, teléfono o nombre
@@ -186,6 +237,204 @@ class WhatsappChatController extends Controller
         // nuevo y duplique la fila. Cambiar el status obliga a tocar la SPA, y las dos puntas no
         // llegan juntas a producción: el campo se agrega como opcional (compatible hacia atrás)
         // y el front lo puede empezar a leer cuando le toque.
+        return response()->json([
+            'model'   => $this->fullModel('WhatsappChatMessage', $message->id),
+            'enviado' => ! is_null($wa_message_id),
+        ], 201);
+    }
+
+    /**
+     * Manda una foto o un audio que subió el operador desde el composer (misión
+     * whatsapp-sidebar-multimedia). Multipart: `file` (obligatorio) y `caption` (opcional, solo
+     * para imágenes). Responde `201 { model, enviado }` con el mismo contrato que
+     * `send_message()`: el 201 dice que la fila se creó, `enviado` dice si el archivo SALIÓ
+     * hacia WhatsApp.
+     *
+     * 🔴 EL FRENO DE SIMULACIÓN VA ACÁ, ANTES DE `upload_media()`, Y NO ADENTRO DEL SERVICE.
+     * `upload_media()` no recibe el teléfono, así que no tiene con qué resolver de qué chat se
+     * trata: es el único de los tres métodos nuevos que NO puede llevar el guard adentro. Si el
+     * corte no estuviera acá, un chat en simulación subiría el archivo a Kapso de verdad —
+     * gastando el viaje y dejando un media_id colgado en Meta— aunque después `send_image()` /
+     * `send_audio()` no lo manden. Se mira `$chat->last_inbound_simulated`, que ya viene cargado
+     * por `find_owned_chat()`, porque `chat_en_simulacion()` del service es privado.
+     *
+     * 🔴 EL ESTADO DE ERROR SE ESCRIBE ANTES DEL `create()`, NO DESPUÉS. Cuando el envío falla,
+     * `delivery_status = 'fallido'` y `send_error` viajan adentro del `$extra`, así que la fila
+     * NACE fallada y el broadcast que sale en vivo a la pantalla del operador ya lleva la
+     * verdad. Guardar primero y corregir después con un `save()` deja una ventana en la que la
+     * conversación dibuja como "en camino" algo que nunca salió: es el bug #4 de la misión
+     * whatsapp-agente ("un envío fallido se marcaba como enviado"), que ya costó un hallazgo.
+     *
+     * 🔴 EL ARCHIVO LOCAL NO SE BORRA CUANDO EL ENVÍO FALLA, a diferencia del rollback de
+     * `admin-api` (que borra mensaje, adjunto y archivo). Acá la fila se conserva marcada como
+     * fallida —para que el operador vea qué quiso mandar y pueda reintentarlo—, y una fila con
+     * `media_path` apuntando a un archivo borrado es una miniatura rota. El costo de dejarlo es
+     * disco; el de borrarlo es un registro mentiroso.
+     *
+     * Orden de los guards, y no es intercambiable: primero el chat del owner (404), después la
+     * ventana de 24 h (422 `fuera_de_ventana`, SIN haber tocado disco ni red), y recién ahí el
+     * archivo. Una operación que devuelve error no puede dejar efectos, así que
+     * `discard_pending_ai_messages()` va después de TODOS los guards — mismo criterio que
+     * `send_message()`.
+     *
+     * La lista blanca de mimes es la de `WhatsappInboundMediaService::safe_mime()`, la misma con
+     * la que se guardan los entrantes y con la que `media()` los sirve. No se escribe una acá:
+     * dos listas que se desincronizan son una fuga esperando.
+     *
+     * @param  Request  $request  Espera `file` (multipart) y `caption` (opcional).
+     * @param  int  $id
+     * @return JsonResponse
+     */
+    public function send_media(Request $request, $id): JsonResponse
+    {
+        $chat = $this->find_owned_chat($id);
+        if (is_null($chat)) {
+            return response()->json(['message' => 'Chat no encontrado.'], 404);
+        }
+
+        // Antes que nada y antes de tocar el disco: una foto o un audio suelto (o sea, no
+        // plantilla) solo es legal dentro de la ventana de 24 h de Meta. El front ofrece
+        // plantillas con este mismo `code`.
+        if (! $chat->is_within_service_window()) {
+            return response()->json(['code' => 'fuera_de_ventana'], 422);
+        }
+
+        $file = $request->file('file');
+        if (is_null($file) || is_array($file) || ! $file->isValid()) {
+            return response()->json(['message' => 'No llegó ningún archivo válido.'], 422);
+        }
+
+        // El mime sale de `getMimeType()` (lo detecta finfo mirando el contenido), NUNCA del
+        // nombre ni del `Content-Type` que declaró el navegador: los dos los elige el cliente.
+        $mime = WhatsappInboundMediaService::safe_mime($file->getMimeType());
+        if (is_null($mime)) {
+            return response()->json([
+                'message' => 'Ese tipo de archivo no se puede mandar por WhatsApp. Solo imágenes y audios.',
+            ], 422);
+        }
+
+        $extension = self::extension_de_mime($mime);
+        if (is_null($extension)) {
+            // No debería pasar nunca: la tabla de abajo cubre toda la lista blanca del servicio.
+            // Si pasa, alguien agregó un mime allá y se olvidó acá, y es preferible rechazarlo
+            // ruidosamente que subirle a Meta un archivo con extensión incoherente (que Meta
+            // rechaza igual, pero recién después de pagar el viaje y con un error mucho más
+            // difícil de leer).
+            Log::channel('daily')->error('WhatsappChatController: mime permitido sin extensión conocida.', [
+                'mime' => $mime,
+            ]);
+
+            return response()->json([
+                'message' => 'Ese tipo de archivo no se puede mandar por WhatsApp. Solo imágenes y audios.',
+            ], 422);
+        }
+
+        $es_imagen = strpos($mime, 'image/') === 0;
+        $size = (int) $file->getSize();
+        $tope = $es_imagen ? self::MEDIA_MAX_IMAGE_BYTES : self::MEDIA_MAX_AUDIO_BYTES;
+
+        if ($size <= 0 || $size > $tope) {
+            // El tope está duplicado a propósito con el del front (D28): el front evita el viaje
+            // inútil, pero es el back el que manda porque el front se puede saltear.
+            return response()->json([
+                'message' => $es_imagen
+                    ? 'La imagen no puede pesar más de 5 MB.'
+                    : 'El audio no puede pesar más de 16 MB.',
+            ], 422);
+        }
+
+        $config = WhatsappBotConfig::where('user_id', $chat->user_id)->first();
+        if (is_null($config)) {
+            return response()->json(['message' => 'No hay una configuración de WhatsApp activa para esta empresa.'], 422);
+        }
+
+        // Mandar un archivo es una intervención humana: la respuesta que el agente dejó
+        // esperando confirmación ya no sirve y se descarta, para que el cliente no reciba dos
+        // cosas descoordinadas. Mismo criterio y mismo lugar que en `send_message()`: después de
+        // todos los guards (una operación que devuelve error no deja efectos) y antes del envío.
+        WhatsappChatHelper::discard_pending_ai_messages($chat);
+
+        // 🔴 El nombre lo arma el servidor entero: la extensión sale del mime ya validado y no
+        // del nombre que mandó el cliente. Un `.php` del lado del cliente no puede llegar a
+        // escribirse en disco por más que el archivo se llame así.
+        $stored_name = 'op_'.time().'_'.mt_rand(1000, 9999).'.'.$extension;
+        $carpeta = 'whatsapp/'.$chat->id;
+        $stored_path = $carpeta.'/'.$stored_name;
+
+        if (Storage::disk('local')->putFileAs($carpeta, $file, $stored_name) === false) {
+            Log::channel('daily')->error('WhatsappChatController: no se pudo guardar el adjunto del operador.', [
+                'chat_id' => $chat->id,
+                'path'    => $stored_path,
+            ]);
+
+            return response()->json(['message' => 'No se pudo guardar el archivo en el servidor.'], 500);
+        }
+
+        $caption = trim((string) $request->input('caption', ''));
+
+        // Ver el docblock: el corte por simulación es lo primero del envío, antes de subir nada.
+        $frenado_por_simulacion = (bool) $chat->last_inbound_simulated;
+        $wa_message_id = null;
+
+        if (! $frenado_por_simulacion) {
+            $send_service = new WhatsappBotSendService();
+            $media_id = $send_service->upload_media(
+                Storage::disk('local')->path($stored_path),
+                $mime,
+                $stored_name,
+                $config
+            );
+
+            if (! is_null($media_id)) {
+                if ($es_imagen) {
+                    $wa_message_id = $send_service->send_image($chat->phone, ['id' => $media_id], $caption, $config);
+                } else {
+                    // El audio no lleva epígrafe: Meta no acepta `caption` en `audio`. Si el
+                    // operador mandara uno, guardarlo en el body dibujaría en la conversación un
+                    // texto que el cliente nunca recibió.
+                    $wa_message_id = $send_service->send_audio($chat->phone, $media_id, $mime, $config);
+                }
+            }
+        }
+
+        // Los tres literales de relleno son los que la burbuja oculta cuando hay medio para
+        // mostrar: sin ellos el body quedaría vacío y la conversación no tendría qué mostrar en
+        // la bandeja ni en el historial que ve la IA.
+        if ($es_imagen) {
+            $body = $caption !== '' ? $caption : '[Imagen enviada]';
+        } else {
+            $body = '[Audio enviado]';
+        }
+
+        $extra = [
+            'media_type' => $es_imagen ? 'image' : 'audio',
+            'media_path' => $stored_path,
+            'media_mime' => $mime,
+            'media_size' => $size,
+        ];
+
+        // 🔴 El estado fallado va ADENTRO del `$extra`, o sea antes del `create()` y antes del
+        // broadcast (ver el docblock). Y la simulación NO entra por acá: ahí no falló nada, el
+        // envío se frenó a propósito, y marcar 'fallido' le mostraría al operador un "no se pudo
+        // enviar" que es mentira. Es el mismo razonamiento que ya está escrito en
+        // `WhatsappChatHelper::send_pending_ai_message()` para la respuesta del agente.
+        if (is_null($wa_message_id) && ! $frenado_por_simulacion) {
+            $extra['delivery_status'] = 'fallido';
+            $extra['send_error'] = 'No se pudo enviar el archivo a WhatsApp.';
+        }
+
+        // Empleado autenticado (sin resolver al owner) que efectivamente mandó el archivo.
+        $message = WhatsappChatHelper::store_outbound_media_message(
+            $chat,
+            $body,
+            $wa_message_id,
+            $this->userId(false),
+            $extra
+        );
+
+        // `enviado` false con un 201 al lado significa una de dos: el chat está en simulación o
+        // WhatsApp rechazó el archivo. En los dos casos la fila existe y tiene que aparecer en
+        // la conversación — el mismo motivo por el que `send_message()` tampoco devuelve un 4xx.
         return response()->json([
             'model'   => $this->fullModel('WhatsappChatMessage', $message->id),
             'enviado' => ! is_null($wa_message_id),
@@ -599,6 +848,19 @@ class WhatsappChatController extends Controller
             'Content-Type'           => $mime,
             'X-Content-Type-Options' => 'nosniff',
         ]);
+    }
+
+    /**
+     * Extensión de archivo para un mime YA validado por
+     * `WhatsappInboundMediaService::safe_mime()`. Ver el comentario de `MEDIA_EXTENSIONS`:
+     * traduce, no decide.
+     *
+     * @param  string  $mime  Mime normalizado (minúsculas, sin el parámetro después del `;`).
+     * @return string|null  null solo si la tabla quedó corta respecto de la lista blanca.
+     */
+    private static function extension_de_mime($mime)
+    {
+        return isset(self::MEDIA_EXTENSIONS[$mime]) ? self::MEDIA_EXTENSIONS[$mime] : null;
     }
 
     /**

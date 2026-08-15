@@ -595,6 +595,33 @@ class WhatsappChatHelper
     }
 
     /**
+     * Guarda un mensaje `out` con una foto o un audio que mandó el operador desde el composer
+     * (endpoint `POST whatsapp-chats/{id}/media`, misión whatsapp-sidebar-multimedia) y emite
+     * el broadcast.
+     *
+     * 🔴 EL `$extra` LLEGA CON EL ESTADO DE ENTREGA YA RESUELTO, Y ESE ES TODO EL PUNTO DE QUE
+     * ESTE MÉTODO EXISTA. Cuando el envío falló, el caller mete `delivery_status = 'fallido'` y
+     * `send_error` ADENTRO del `$extra`, o sea que la fila NACE fallada: el broadcast que sale
+     * en el `create()` de abajo ya lleva la verdad a la pantalla del operador. Si en vez de eso
+     * se guardara primero y se corrigiera después con un `save()`, entre las dos escrituras sale
+     * un broadcast que dibuja el mensaje como pendiente, y el operador ve un envío que nunca
+     * salió como si estuviera en camino. Es el bug #4 de la misión whatsapp-agente ("un envío
+     * fallido se marcaba como enviado"), que ya costó un hallazgo.
+     *
+     * @param  WhatsappChat  $chat  Chat al que pertenece el mensaje.
+     * @param  string  $body  Epígrafe de la imagen, o el literal de relleno que la burbuja oculta.
+     * @param  string|null  $wa_message_id  Id que devolvió Kapso al enviar; null si no salió.
+     * @param  int|null  $sent_by_user_id  Empleado autenticado que lo mandó.
+     * @param  array  $extra  Columnas del medio (`media_type`, `media_path`, `media_mime`,
+     *                        `media_size`) y, si el envío falló, `delivery_status` + `send_error`.
+     * @return WhatsappChatMessage
+     */
+    public static function store_outbound_media_message(WhatsappChat $chat, $body, $wa_message_id, $sent_by_user_id, array $extra = [])
+    {
+        return self::store_outbound_message($chat, $body, $wa_message_id, 'manual', $sent_by_user_id, null, null, null, null, $extra);
+    }
+
+    /**
      * Lógica común de persistencia de un mensaje saliente (compartida entre la respuesta
      * de IA, el envío manual, el envío de plantilla y el envío de documentos desde el módulo).
      *
@@ -610,11 +637,26 @@ class WhatsappChatHelper
      *                                  null = no aplica (todo lo que no salga del agente),
      *                                  'a_confirmar' = generado y esperando que una persona lo apruebe,
      *                                  'enviado' = ya salió. Es independiente de `delivery_status`.
+     * @param  array  $extra  Columnas extra que se mergean sobre las fijas de abajo
+     *                        (misión whatsapp-sidebar-multimedia).
+     *
+     *   🔴 `$extra` ES SOLO PARA CAMPOS DE MEDIO (`media_type`, `media_path`, `media_mime`,
+     *   `media_size`), ESTADO DE ENTREGA (`delivery_status`) Y ERROR (`send_error`). No es una
+     *   puerta de atrás para escribir cualquier columna: el `array_merge` lo pone ÚLTIMO, así
+     *   que una clave de más —o un typo que coincida con una clave fija— pisa en silencio lo
+     *   que este método garantiza. `is_simulated`, `direction` y `source` en particular son
+     *   invariantes del módulo y no se tocan desde acá.
+     *
+     *   Por qué un parámetro suelto y no cambiar la firma: son 9 parámetros posicionales con 5
+     *   callers y PHP 7.4 no tiene argumentos nombrados, así que meter las cuatro columnas del
+     *   medio en el medio de la lista obligaba a tocar los cinco callers para no cambiar nada.
+     *   Yendo último y con default, ningún caller existente cambia.
+     *
      * @return WhatsappChatMessage
      */
-    private static function store_outbound_message(WhatsappChat $chat, $body, $wa_message_id, $source, $sent_by_user_id, $template_meta_name = null, $media_type = null, $media_url = null, $ai_status = null)
+    private static function store_outbound_message(WhatsappChat $chat, $body, $wa_message_id, $source, $sent_by_user_id, $template_meta_name = null, $media_type = null, $media_url = null, $ai_status = null, array $extra = [])
     {
-        $message = WhatsappChatMessage::create([
+        $message = WhatsappChatMessage::create(array_merge([
             'whatsapp_chat_id' => $chat->id,
             'direction' => 'out',
             'source' => $source,
@@ -631,7 +673,7 @@ class WhatsappChatHelper
             // agente y para cualquier otra cosa que se mande en ese chat, así que la fila
             // nunca miente sobre si el cliente recibió algo o no.
             'is_simulated' => $chat->last_inbound_simulated ? 1 : 0,
-        ]);
+        ], $extra));
 
         $chat->last_message_at = now();
         $chat->save();
