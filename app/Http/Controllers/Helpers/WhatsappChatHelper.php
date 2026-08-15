@@ -226,11 +226,21 @@ class WhatsappChatHelper
      *
      * @param  WhatsappChat  $chat  Chat al que pertenece la respuesta.
      * @param  string  $body  Texto generado por la IA.
+     * @param  array  $extra  Columnas del medio cuando el agente recomendó un producto puntual y
+     *                        se le adjunta la foto (misión whatsapp-sidebar-multimedia, D20):
+     *                        `media_type = 'image'` + `media_url` con la `hosting_url` del
+     *                        catálogo. Vacío cuando la respuesta es texto, que es el caso normal.
+     *
+     *   Las columnas del medio se escriben ACÁ, junto con el resto de la fila, y no con un
+     *   `save()` después: la respuesta nace esperando confirmación y el broadcast del `create()`
+     *   es el que le dibuja la burbuja al operador. Escribiéndolas en un segundo paso, el
+     *   operador vería primero un mensaje de texto y la foto le aparecería después, o —peor— la
+     *   confirmaría en el medio y saldría sin la foto.
      * @return WhatsappChatMessage
      */
-    public static function store_pending_ai_message(WhatsappChat $chat, $body)
+    public static function store_pending_ai_message(WhatsappChat $chat, $body, array $extra = [])
     {
-        return self::store_outbound_message($chat, $body, null, 'ia', null, null, null, null, 'a_confirmar');
+        return self::store_outbound_message($chat, $body, null, 'ia', null, null, null, null, 'a_confirmar', $extra);
     }
 
     /**
@@ -287,7 +297,23 @@ class WhatsappChatHelper
         }
 
         try {
-            $wa_message_id = (new WhatsappBotSendService())->send_text($chat->phone, (string) $message->body, $config);
+            if ($message->media_type === 'image' && trim((string) $message->media_url) !== '') {
+                // La respuesta trae la foto del producto que recomendó el agente (D20): sale
+                // como UNA imagen con el texto de epígrafe, no como dos mensajes.
+                //
+                // Va por `link` y no por `upload_media()` porque `media_url` es la `hosting_url`
+                // del catálogo, una URL pública absoluta que Meta puede bajar sola. Es la única
+                // excepción del módulo: todo lo demás vive en el disco privado y se sube.
+                //
+                // 🔴 LA BIFURCACIÓN VA ACÁ ADENTRO Y NO ANTES DEL EMBUDO. Todo lo de arriba —el
+                // claim que serializa al operador contra el job de auto-envío, el corte por
+                // simulación, y abajo el manejo del null— vale igual mande texto o mande foto, y
+                // duplicarlo en dos ramas es exactamente cómo se llega a que el cliente reciba
+                // el mismo mensaje dos veces. Lo único que cambia es con qué se manda.
+                $wa_message_id = (new WhatsappBotSendService())->send_image($chat->phone, ['link' => $message->media_url], (string) $message->body, $config);
+            } else {
+                $wa_message_id = (new WhatsappBotSendService())->send_text($chat->phone, (string) $message->body, $config);
+            }
         } catch (\Throwable $exception) {
             // Hoy `send_text()` se traga todas sus excepciones y devuelve null, pero si alguna
             // se le escapara la fila quedaría clavada en 'enviando' para siempre: nadie la

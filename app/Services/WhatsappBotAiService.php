@@ -397,8 +397,22 @@ SUMMARY;
 
     /**
      * Arma el system prompt final: personalidad configurable (o la default) primero,
-     * reglas fijas no negociables después, y por último el nombre del negocio como
-     * contexto adicional.
+     * reglas fijas no negociables después, la consigna del marcador de foto, y por último
+     * el nombre del negocio como contexto adicional.
+     *
+     * 🔴 LA CONSIGNA DE LA FOTO VA DESPUÉS DE LAS REGLAS FIJAS Y NO ADENTRO DE ELLAS, aunque
+     * las reglas fijas serían el lugar obvio. Dos motivos: una de esas reglas dice "texto
+     * plano, sin markdown", y el marcador es exactamente lo contrario —un token con corchetes
+     * que el modelo tiene que escribir literal—, así que meterlo en la misma lista lo deja
+     * peleando contra su vecina de arriba; y este bloque explica un mecanismo del sistema
+     * (algo que se saca del mensaje antes de mandarlo), no una restricción de qué se le puede
+     * decir al cliente, que es de lo que hablan las reglas fijas.
+     *
+     * ⚠️ QUE EL MARCADOR NO SALGA NUNCA NO DEPENDE DE ESTE TEXTO. El prompt es una pedida, no
+     * una garantía: el modelo puede escribir el marcador cuando no corresponde, escribirlo con
+     * un código inventado, o no escribirlo nunca. Quien garantiza que el cliente jamás vea un
+     * `[FOTO:...]` es `GenerateWhatsappAiReplyJob`, que lo saca del cuerpo SIEMPRE, exista o no
+     * el artículo. Acá solo se le pide que lo ponga cuando tiene sentido.
      *
      * @param WhatsappBotConfig $config
      *
@@ -411,7 +425,21 @@ SUMMARY;
             $personality = self::DEFAULT_PERSONALITY;
         }
 
-        $blocks = [$personality, self::FIXED_RULES];
+        // El marcador se pide en una línea sola y al final a propósito: así el texto que le
+        // queda al cliente después de sacarlo termina prolijo, sin un corte en medio de una
+        // oración. Y se aclara que no lo mencione, porque si no el modelo tiende a explicarle
+        // al cliente que "te mando la foto con el código", que es ruido de implementación.
+        $photo_rule = 'Si estás recomendando UN producto puntual del catálogo de abajo, terminá tu respuesta con'
+            .' una última línea que diga exactamente [FOTO:<código de barras del producto>], sin ningún otro'
+            .' texto en esa línea.'
+            ."\n"
+            .'Esa línea es una marca interna del sistema: se saca del mensaje antes de mandárselo al cliente y'
+            .' sirve para adjuntarle la foto del producto. No la menciones ni la expliques en el texto.'
+            ."\n"
+            .'Poné como mucho una por respuesta, y solo si estás recomendando un producto puntual: si estás'
+            .' listando varios, o no estás recomendando ninguno, no la pongas.';
+
+        $blocks = [$personality, self::FIXED_RULES, $photo_rule];
 
         $business_name = $this->business_name($config);
         if ($business_name !== '') {
