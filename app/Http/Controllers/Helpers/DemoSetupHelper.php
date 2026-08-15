@@ -14,6 +14,7 @@ use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
 use App\Models\PriceType;
 use App\Models\User;
+use App\Services\DemoEventoEmitter;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
@@ -183,12 +184,60 @@ class DemoSetupHelper
          * igual que antes de esta mision: sin fila, no hay canal, y nada de la mision 50 hace
          * nada en esta instancia.
          */
+        $canal = null;
+
         if (!empty($data['demo_eventos_token']) && !empty($data['demo_eventos_url'])) {
-            DemoTrackingConfigHelper::guardar(
+            $canal = DemoTrackingConfigHelper::guardar(
                 $data['demo_eventos_token'],
                 $data['demo_eventos_url'],
                 isset($data['demo_plan']) && is_array($data['demo_plan']) ? $data['demo_plan'] : null,
                 isset($data['demo_media_urls']) && is_array($data['demo_media_urls']) ? $data['demo_media_urls'] : null
+            );
+        }
+
+        /**
+         * Aviso de vuelta al admin: "la instancia quedo armada" (mision 61).
+         *
+         * POR QUE ESTO NO SE PUEDE SUBIR DE LUGAR NI SIMPLIFICAR:
+         *
+         * 1. Va AL FINAL, y no arriba junto al resto del setup, por el mismo motivo por el que
+         *    estan al final las dos escrituras de aca arriba: este metodo ARRANCA con
+         *    `migrate:fresh`, que vacia la base entera. Un evento emitido antes queda borrado
+         *    y el admin no se entera de nada.
+         *
+         * 2. Se usa el RESULTADO de guardar() y no `!empty($data['demo_eventos_token'])`.
+         *    Parecen lo mismo y no lo son: guardar() devuelve null cuando el token no entra en
+         *    la columna o cuando el insert falla, y en esos casos el canal no existe. Emitir
+         *    ahi seria escribir una fila en demo_eventos que nadie va a poder empujar nunca,
+         *    porque el push necesita el token y la url que no se guardaron.
+         *
+         * 3. La condicion tambien es la que sostiene el costo cero en las instancias de los
+         *    ~40 clientes REALES. Un cliente real corre este mismo helper al instalarse y su
+         *    payload no trae `demo_eventos_token`: entonces $canal queda null, no se llama al
+         *    emisor, y no se agrega ni una query. La guarda de adentro del emisor existe igual,
+         *    pero no se paga ni siquiera esa.
+         *
+         * 4. La clave de idempotencia sale del token del canal, que es el identificador del
+         *    lead del lado del admin (no viaja lead_id). Con eso, dos corridas del setup contra
+         *    el MISMO canal dejan una sola fila en vez de dos avisos del mismo hecho: el uuid
+         *    del evento pasa a ser un uuid v5 determinista sobre esa clave y choca contra el
+         *    indice unico. Pasa de verdad — admin-api reintenta el RunDemoSetupJob cuando la
+         *    respuesta HTTP se corta, que es exactamente el escenario que este evento viene a
+         *    cubrir. El token no queda expuesto por esto: la clave se digiere en el uuid v5 y
+         *    no se persiste ni se loguea en ningun lado.
+         *
+         * 5. `datos` lleva el user_id del user demo y NADA mas, igual que el resto de los
+         *    eventos de negocio. El admin no necesita el resto y lo que no viaja no se filtra.
+         *
+         * El envio no le agrega tiempo al POST que el admin esta esperando: el emisor agenda
+         * el push en app()->terminating(), o sea despues de que este request ya respondio.
+         */
+        if (!is_null($canal)) {
+            DemoEventoEmitter::emitir(
+                'demo.setup.completado',
+                null,
+                ['user_id' => $user->id],
+                (string) $canal->eventos_token
             );
         }
 
