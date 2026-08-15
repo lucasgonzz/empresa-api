@@ -120,11 +120,25 @@ class ProcessStockSuggestionChunkJob implements ShouldQueue
 
             $this->suggestion->save();
 
+            /*
+             * Quién avisa que la corrida terminó depende de quién es el ÚLTIMO
+             * en tocarla (arreglo post-chequeo de la misión chat-ia-y-modulo-ia):
+             *
+             * - CON credenciales, avisa GenerarResumenSugerenciaJob en todos
+             *   sus finales (recibe la posta por el segundo argumento). Antes
+             *   este job notificaba inline acá y, con la cola database real, la
+             *   notificación salía ANTES de que el job del resumen creara la
+             *   conversación del chat: el botón "Charlar con la IA" no aparecía
+             *   nunca en producción (solo en los tests, que corren en sync).
+             *
+             * - SIN credenciales no hay job de resumen ni conversación posible:
+             *   se notifica acá mismo, con los dos botones de siempre.
+             */
             if ($pedir_resumen) {
-                dispatch(new GenerarResumenSugerenciaJob($this->stock_suggestion_id));
+                dispatch(new GenerarResumenSugerenciaJob($this->stock_suggestion_id, true));
+            } else {
+                self::notificar_corrida_terminada($this->suggestion);
             }
-
-            $this->notificacion();
         }
     }
 
@@ -175,7 +189,19 @@ class ProcessStockSuggestionChunkJob implements ShouldQueue
         ]));
     }
 
-    function notificacion() {
+    /**
+     * Notificación de "Sugerencia de stock terminada". Es estática y recibe la
+     * sugerencia porque tiene DOS llamadores (arreglo post-chequeo de la
+     * misión chat-ia-y-modulo-ia): este mismo job cuando no hay credenciales
+     * de IA (no se despacha el resumen y nadie más avisaría), y
+     * GenerarResumenSugerenciaJob en todos sus finales cuando el chunk le
+     * pasó la posta — recién ahí la conversación del chat ya existe (o ya se
+     * sabe que no va a existir) y el botón "Charlar con la IA" puede salir.
+     *
+     * @param StockSuggestion $suggestion Sugerencia terminada a anunciar.
+     * @return void
+     */
+    public static function notificar_corrida_terminada(StockSuggestion $suggestion) {
 
         // El botón "Ver sugerencia" ejecuta ir_a_sugerencias_de_stock() del
         // mixin global_notification_functions de la SPA (mismo mecanismo que
@@ -199,8 +225,8 @@ class ProcessStockSuggestionChunkJob implements ShouldQueue
         $info_to_show = [
             [
                 'title'               => 'Sugerencia',
-                'value'               => '#' . $this->suggestion->id,
-                'stock_suggestion_id' => $this->suggestion->id,
+                'value'               => '#' . $suggestion->id,
+                'stock_suggestion_id' => $suggestion->id,
             ],
         ];
 
@@ -215,16 +241,10 @@ class ProcessStockSuggestionChunkJob implements ShouldQueue
          *
          * 🔴 El canal de esta notificación es público por empresa: acá van
          * ids y nada más; ni una letra de la conversación viaja por ella.
-         *
-         * Límite conocido (reportado en el informe de la misión): con la cola
-         * database real, este método corre antes de que el job del resumen
-         * cree la conversación, así que el primer aviso puede salir sin el
-         * botón; la conversación queda igual en la sidebar del panel. En cola
-         * sync (tests) y en el reintento la conversación ya existe.
          */
         $conversation = AiConversation::where('origen', 'sugerencia_stock')
-            ->where('referencia_id', $this->suggestion->id)
-            ->where('auth_user_id', $this->suggestion->user_id)
+            ->where('referencia_id', $suggestion->id)
+            ->where('auth_user_id', $suggestion->user_id)
             ->first();
 
         if ($conversation) {
@@ -244,7 +264,7 @@ class ProcessStockSuggestionChunkJob implements ShouldQueue
             $info_to_show[0]['ai_conversation_auth_user_id'] = $conversation->auth_user_id;
         }
 
-        $user = User::find($this->suggestion->user_id);
+        $user = User::find($suggestion->user_id);
 
         if (!$user) {
             return;

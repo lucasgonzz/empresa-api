@@ -22,6 +22,15 @@ use Illuminate\Support\Facades\Log;
  * sugerencia sigue 'terminado' con su tabla completa y el resumen queda en
  * 'error' con el detalle. Sin ANTHROPIC_API_KEY este job directamente no se
  * despacha y el estado queda null (no tener IA contratada no es un error).
+ *
+ * Y desde el arreglo post-chequeo de la misión chat-ia-y-modulo-ia, cuando
+ * ProcessStockSuggestionChunkJob le pasa la posta (segundo argumento del
+ * constructor), este job es también quien anuncia "Sugerencia de stock
+ * terminada" — en TODOS sus finales, patrón de las cinco salidas de
+ * RunExcelAnalysisJob (misión 61): éxito (con el botón del chat si la
+ * conversación se creó), error, sin credenciales y failed(). El chunk job ya
+ * no notifica en ese caso: con la cola database su aviso salía antes de que
+ * la conversación existiera y el botón "Charlar con la IA" no aparecía nunca.
  */
 class GenerarResumenSugerenciaJob implements ShouldQueue
 {
@@ -40,11 +49,27 @@ class GenerarResumenSugerenciaJob implements ShouldQueue
     protected $stock_suggestion_id;
 
     /**
-     * @param int $stock_suggestion_id
+     * true cuando este job es el encargado de anunciar el fin de la corrida
+     * (la posta que le pasa ProcessStockSuggestionChunkJob al despacharlo con
+     * credenciales). El reintento manual de la vista (regenerar_resumen) lo
+     * despacha SIN la posta: la corrida ya fue anunciada en su momento y
+     * re-notificarla por cada reintento sería ruido.
+     *
+     * Pública para que los tests puedan assertPushed sobre ella; el default
+     * false también cubre jobs viejos serializados antes de este cambio.
+     *
+     * @var bool
      */
-    public function __construct($stock_suggestion_id)
+    public $notificar_al_terminar = false;
+
+    /**
+     * @param int $stock_suggestion_id
+     * @param bool $notificar_al_terminar
+     */
+    public function __construct($stock_suggestion_id, $notificar_al_terminar = false)
     {
         $this->stock_suggestion_id = $stock_suggestion_id;
+        $this->notificar_al_terminar = $notificar_al_terminar;
     }
 
     public function handle()
@@ -53,6 +78,11 @@ class GenerarResumenSugerenciaJob implements ShouldQueue
         // despacho y acá un reproceso (update/reintento del pipeline) pudo
         // resetear la sugerencia. Redactar sobre cero líneas gasta una llamada
         // a la API y muestra un resumen falso sobre datos que ya no existen.
+        //
+        // Salida 1 de 5, la ÚNICA muda a propósito: si la sugerencia se borró
+        // no hay a quién anunciarle nada, y si un reproceso la reseteó,
+        // anunciar "terminada" sería mentira — el pipeline nuevo va a avisar
+        // cuando termine de verdad.
         $suggestion = StockSuggestion::find($this->stock_suggestion_id);
 
         if (!$suggestion || $suggestion->status !== 'terminado') {
@@ -61,8 +91,18 @@ class GenerarResumenSugerenciaJob implements ShouldQueue
 
         $service = new ResumenIaService();
 
-        // Guard por si el job quedó encolado y la clave se quitó después.
+        // Salida 2 de 5: el job quedó encolado y la clave se quitó después.
+        // El estado vuelve a null ('pendiente' sería un spinner eterno y no
+        // tener IA contratada no es un error) y, si este job lleva la posta,
+        // la corrida se anuncia igual — con los dos botones de siempre.
         if (!$service->hay_credenciales()) {
+            if ($suggestion->resumen_ia_estado === 'pendiente') {
+                $suggestion->resumen_ia_estado = null;
+                $suggestion->save();
+            }
+
+            $this->notificar_fin_de_corrida($suggestion);
+
             return;
         }
 
@@ -87,6 +127,12 @@ class GenerarResumenSugerenciaJob implements ShouldQueue
             // La entrega por el chat es un EXTRA del resumen: su falla se
             // loguea y no toca el estado 'listo' que ya quedó guardado.
             $this->crear_o_actualizar_conversacion($suggestion, $texto, $service);
+
+            // Salida 3 de 5 (éxito): la conversación ya existe (o su creación
+            // ya falló y quedó logueada), así que la notificación sale con el
+            // botón del chat cuando corresponde. Nunca lanza: si lanzara, el
+            // catch de abajo pisaría el 'listo' y notificaría de nuevo.
+            $this->notificar_fin_de_corrida($suggestion);
         } catch (\Throwable $e) {
             Log::error('GenerarResumenSugerenciaJob: falló el resumen', [
                 'stock_suggestion_id' => $this->stock_suggestion_id,
@@ -94,6 +140,10 @@ class GenerarResumenSugerenciaJob implements ShouldQueue
             ]);
 
             $this->marcar_error($suggestion, $e->getMessage());
+
+            // Salida 4 de 5 (falla controlada): la tabla quedó usable y la
+            // corrida se anuncia igual, sin el botón del chat.
+            $this->notificar_fin_de_corrida($suggestion);
         }
     }
 
@@ -204,6 +254,13 @@ class GenerarResumenSugerenciaJob implements ShouldQueue
      * sin esto, resumen_ia_estado quedaba 'pendiente' eterno y la vista
      * girando por un texto que no iba a llegar.
      *
+     * Salida 5 de 5: con la posta, también anuncia el fin de la corrida — el
+     * handle() nunca llegó a hacerlo (failed() solo corre cuando handle()
+     * murió sin atrapar, y todos los caminos que notifican atrapan). Si el
+     * resumen ya quedó 'listo' no se pisa NI se re-notifica: es el mismo
+     * trade-off del patrón de RunExcelAnalysisJob — la ventana entre el save
+     * de 'listo' y el aviso es de microsegundos y el aviso doble sería peor.
+     *
      * @param \Throwable $exception
      * @return void
      */
@@ -219,6 +276,45 @@ class GenerarResumenSugerenciaJob implements ShouldQueue
         // Si por alguna carrera ya quedó listo, no se pisa con error.
         if ($suggestion && $suggestion->resumen_ia_estado !== 'listo') {
             $this->marcar_error($suggestion, $exception->getMessage());
+            $this->notificar_fin_de_corrida($suggestion);
+        }
+    }
+
+    /**
+     * Anuncia "Sugerencia de stock terminada" cuando este job lleva la posta
+     * (arreglo post-chequeo de la misión chat-ia-y-modulo-ia). La arma
+     * ProcessStockSuggestionChunkJob::notificar_corrida_terminada(), que suma
+     * el botón "Charlar con la IA" si la conversación existe.
+     *
+     * NUNCA lanza: se llama en caminos donde el resumen ya quedó guardado
+     * ('listo' o 'error') y un Pusher caído no puede mandar eso al catch (que
+     * lo pisaría con error y volvería a notificar). Mismo criterio que
+     * notificar_fin() de RunExcelAnalysisJob.
+     *
+     * @param StockSuggestion $suggestion
+     * @return void
+     */
+    protected function notificar_fin_de_corrida($suggestion)
+    {
+        // Sin la posta (reintento manual de la vista) no se anuncia nada: la
+        // corrida ya fue anunciada cuando terminó.
+        if (!$this->notificar_al_terminar) {
+            return;
+        }
+
+        // Un reproceso pudo resetear la corrida entre medio: anunciar
+        // "terminada" una sugerencia que volvió a 'pendiente' sería mentira.
+        if (!$suggestion || $suggestion->status !== 'terminado') {
+            return;
+        }
+
+        try {
+            ProcessStockSuggestionChunkJob::notificar_corrida_terminada($suggestion);
+        } catch (\Throwable $e) {
+            Log::warning('GenerarResumenSugerenciaJob: no se pudo notificar el fin de la corrida', [
+                'stock_suggestion_id' => $suggestion->id,
+                'message'             => $e->getMessage(),
+            ]);
         }
     }
 
