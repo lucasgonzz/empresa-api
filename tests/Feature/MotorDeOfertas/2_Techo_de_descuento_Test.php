@@ -13,16 +13,14 @@ use ReflectionClass;
 use Tests\TestCase;
 
 /**
- * Misión motor-de-ofertas-por-cliente — archivo 2: EL TECHO DE DESCUENTO. Es la parte de plata de
- * la misión: un techo mal calculado se le cobra mal a un cliente real.
+ * Misión motor-de-ofertas-por-cliente — archivo 2: EL TECHO DE DESCUENTO, la parte de plata de la
+ * misión: un techo mal calculado se le cobra mal a un cliente real.
  *
  * 🔴 ACÁ NO SE HARDCODEA NINGÚN PRECIO. empresa_testing_s2 tiene DOS sale_taxes activos con
- * apply_to_all ("Ingresos Brutos" 3% e "IIBB" 3,5%) — la misma causa de los 4 rojos preexistentes
- * de tests/Feature/Costeo. Todo lo esperado se calcula con los MISMOS helpers que usa el servicio
- * (resolver_precio_de_venta / quitar_iva_y_sale_taxes) o con la fórmula del plan.
- *
- * El test que importa es el del invariante: aplicar el techo deja el precio neto EN el costo, y un
- * punto más lo deja por debajo. Es la prueba directa de que la fórmula es m/(100+m) y no m.
+ * apply_to_all ("Ingresos Brutos" 3% e "IIBB" 3,5%) — la misma causa de los 4 rojos preexistentes de
+ * tests/Feature/Costeo. Todo lo esperado se calcula con los MISMOS helpers que usa el servicio o con
+ * la fórmula del plan. El test que importa es el del invariante: aplicar el techo deja el precio
+ * neto EN el costo y un punto más lo deja abajo, o sea que la fórmula es m/(100+m) y no m.
  */
 class Techo_de_descuento_Test extends TestCase
 {
@@ -92,7 +90,9 @@ class Techo_de_descuento_Test extends TestCase
             'name'            => 'zz-motor-ofertas-' . uniqid(),
             'user_id'         => 500,
             'cost'            => 1000,
-            'percentage_gain' => 30,
+            // 🔴 20 y no otro: con margen 20 el techo crudo es 16,6667, o sea floor 16 contra
+            // round 17. Es el margen que hace que el test central denuncie un round en el servicio.
+            'percentage_gain' => 20,
             'aplicar_iva'     => 1,
             'iva_id'          => self::IVA_21,
         ], $atributos));
@@ -177,6 +177,7 @@ class Techo_de_descuento_Test extends TestCase
 
         $this->assertLessThan($costo, $neto * (1 - $resultado['margen'] / 100),
             'tomar el margen como descuento directo vende bajo costo: por eso el techo es m/(100+m)');
+        $this->assertNotSame((int) round($crudo), $resultado['techo'], 'el servicio usa floor, no round');
     }
 
     /**
@@ -250,7 +251,6 @@ class Techo_de_descuento_Test extends TestCase
 
         $this->user->listas_de_precio = 1;
         $this->user->save();
-
         $this->assertNull(TechoDeDescuentoService::calcular($article, null, $this->user));
         $this->assertSame(TechoDeDescuentoService::EXCLUIDO_DOLARES_CON_LISTAS,
             TechoDeDescuentoService::evaluar($article, null, $this->user)['excluido_por']);

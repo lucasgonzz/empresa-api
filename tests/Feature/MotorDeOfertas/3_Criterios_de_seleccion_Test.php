@@ -97,7 +97,7 @@ class Criterios_de_seleccion_Test extends TestCase
         return $sale;
     }
 
-    /** Un evento crudo de la tienda. occurred_at, nunca created_at. */
+    /** Un evento crudo de la tienda. La ventana se mide por occurred_at, nunca por created_at. */
     protected function sembrar_evento($buyer, $article, $dias_atras, $tipo = 'cart_add')
     {
         DB::table('buyer_tracking_events')->insert([
@@ -138,8 +138,7 @@ class Criterios_de_seleccion_Test extends TestCase
     }
 
     /**
-     * 🔴 El filtro de ventas reales de A.5.0: una venta borrada NO cuenta, y una consolidación de
-     * facturación tampoco (duplicaría las ventas que agrupa).
+     * 🔴 A.5.0: una venta borrada NO cuenta, y una consolidación de facturación tampoco.
      *
      * @group motor-de-ofertas
      * @test
@@ -183,8 +182,7 @@ class Criterios_de_seleccion_Test extends TestCase
     }
 
     /**
-     * 🔴 El estado real de hoy: las dos tablas de tracking están en CERO FILAS. El criterio devuelve
-     * [] y NO lanza, y la corrida sigue viva con los otros dos criterios.
+     * 🔴 El estado real de hoy: tracking en CERO FILAS. Devuelve [], no lanza, y la corrida sigue.
      *
      * @group motor-de-ofertas
      * @test
@@ -200,8 +198,7 @@ class Criterios_de_seleccion_Test extends TestCase
     }
 
     /**
-     * A.5.2 — con un cart_add sembrado aparece; y desaparece si después lo compró de verdad. El
-     * descarte se hace contra article_purchases, no contra los eventos.
+     * A.5.2 — aparece con un cart_add y desaparece si lo compró: el descarte va contra article_purchases.
      *
      * @group motor-de-ofertas
      * @test
@@ -210,22 +207,25 @@ class Criterios_de_seleccion_Test extends TestCase
     {
         $cliente = $this->cliente('Cliente con carrito');
         $article = $this->articulo('Articulo abandonado');
-
         $buyer = Buyer::create(['name' => 'Comprador', 'email' => 'buyer-' . uniqid() . '@test.local',
             'user_id' => $this->comercio->id, 'comercio_city_client_id' => $cliente->id]);
-
         $this->sembrar_evento($buyer, $article, 3);
         $this->assertContains($cliente->id . '-' . $article->id, $this->pares($this->servicio()->carrito_abandonado()));
 
         // Compra posterior al carrito: ya no hay nada que ofrecerle.
         $this->comprar($cliente, $article, 1);
+        $this->assertSame([], $this->servicio()->carrito_abandonado());
 
+        // 🔴 Y la ventana se mide por occurred_at: este evento pasó hace 30 días (fuera de los 7 de
+        // la corrida) aunque la tienda lo haya mandado recién hoy. Si alguien cambia occurred_at por
+        // created_at, este par vuelve a aparecer y el test se pone rojo.
+        $viejo = $this->articulo('Articulo de carrito viejo');
+        $this->sembrar_evento($buyer, $viejo, 30);
         $this->assertSame([], $this->servicio()->carrito_abandonado());
     }
 
     /**
-     * 🔴 El vínculo buyers.comercio_city_client_id es opcional y manual: un buyer sin cliente
-     * asociado no genera ninguna línea, porque no hay a quién ofrecerle nada.
+     * 🔴 buyers.comercio_city_client_id es opcional: sin cliente asociado no hay a quién ofrecerle.
      *
      * @group motor-de-ofertas
      * @test
@@ -233,17 +233,14 @@ class Criterios_de_seleccion_Test extends TestCase
     public function un_buyer_sin_cliente_asociado_no_genera_ninguna_linea()
     {
         $article = $this->articulo('Articulo de buyer suelto');
-
         $buyer = Buyer::create(['name' => 'Comprador suelto', 'email' => 'buyer-s-' . uniqid() . '@test.local',
             'user_id' => $this->comercio->id, 'comercio_city_client_id' => null]);
-
         $this->sembrar_evento($buyer, $article, 2);
         $this->assertSame([], $this->servicio()->carrito_abandonado());
     }
 
     /**
-     * A.5.6 — un cliente con diez candidatos deja tres. Un cliente con cuarenta ofertas no es una
-     * campaña, es spam.
+     * A.5.6 — diez candidatos dejan tres: cuarenta ofertas no son una campaña, son spam.
      *
      * @group motor-de-ofertas
      * @test
@@ -257,39 +254,46 @@ class Criterios_de_seleccion_Test extends TestCase
         }
 
         $candidatos = $this->servicio()->candidatos();
-
-        $this->assertCount((int) $this->suggestion->max_ofertas_por_cliente, $candidatos);
-        $this->assertSame(3, count($candidatos), 'el tope por defecto de la corrida es 3');
+        $this->assertCount((int) $this->suggestion->max_ofertas_por_cliente, $candidatos, 'el tope de la corrida es 3');
     }
 
     /**
-     * 🔴 LA CORRECCIÓN DEL 15/8/2026: al que debe hace mucho NO se le ofrece nada. Se excluye entero
-     * —no se le baja el techo— y el conteo queda disponible para
-     * offer_suggestions.total_clientes_excluidos_por_deuda.
+     * 🔴 LA CORRECCIÓN DEL 15/8/2026: al que debe hace mucho NO se le ofrece nada. Se excluye
+     * entero —no se le baja el techo— y el conteo queda para total_clientes_excluidos_por_deuda.
      *
      * @group motor-de-ofertas
      * @test
      */
     public function el_mal_pagador_se_excluye_entero_y_se_cuenta()
     {
-        $deudor  = $this->cliente('Debe hace 60 dias');
-        $al_dia  = $this->cliente('Paga al dia');
-        $article = $this->articulo('Articulo de los dos clientes');
+        $deudor    = $this->cliente('Debe hace 60 dias');
+        $al_dia    = $this->cliente('Paga al dia');
+        $pagandose = $this->cliente('Pagandose sin deuda');
+        $article   = $this->articulo('Articulo de los tres clientes');
 
-        $this->comprar($deudor, $article, 10);
-        $this->comprar($al_dia, $article, 10);
+        foreach ([$deudor, $al_dia, $pagandose] as $c) {
+            $this->comprar($c, $article, 10);
+        }
 
         // La venta vencida sin cobrar, con el mismo criterio de SaleController::ventas_sin_cobrar().
-        $vencida = $this->comprar($deudor, $article, 60);
+        CurrentAcount::create(['sale_id' => $this->comprar($deudor, $article, 60)->id,
+            'client_id' => $deudor->id, 'user_id' => $this->comercio->id,
+            'debe' => 15000, 'status' => 'sin_pagar']);
 
-        CurrentAcount::create(['sale_id' => $vencida->id, 'client_id' => $deudor->id,
-            'user_id' => $this->comercio->id, 'debe' => 15000, 'status' => 'sin_pagar']);
+        // 🔴 Y la divergencia intencional con SaleController.php:789-796, donde el orWhere sin
+        // agrupar deja entrar una venta 'pagandose' SIN exigir debe > 0. Con debe 0 no hay deuda y
+        // este cliente NO se excluye; con la agrupación del original el conteo daría 2 y esto se
+        // pondría rojo. Es la única punta que denuncia si alguien "alinea" el criterio al original.
+        CurrentAcount::create(['sale_id' => $this->comprar($pagandose, $article, 60)->id,
+            'client_id' => $pagandose->id, 'user_id' => $this->comercio->id,
+            'debe' => 0, 'status' => 'pagandose']);
 
         $servicio = $this->servicio();
         $clientes = array_unique(array_column($servicio->candidatos(), 'client_id'));
 
         $this->assertNotContains($deudor->id, $clientes, 'al mal pagador no se le ofrece nada');
         $this->assertContains($al_dia->id, $clientes);
+        $this->assertContains($pagandose->id, $clientes, 'con debe 0 no hay deuda aunque este pagandose');
         $this->assertSame(1, $servicio->clientes_excluidos_por_deuda());
         $this->assertFalse($servicio->evaluacion_crediticia()[$deudor->id]);
     }
