@@ -150,6 +150,16 @@ class WhatsappChatController extends Controller
             return response()->json(['message' => 'No hay una configuración de WhatsApp activa para esta empresa.'], 422);
         }
 
+        // 🔴 INTERVENCIÓN HUMANA: si el operador está contestando a mano, la respuesta del
+        // agente que quedó esperando confirmación ya no sirve y se descarta. Sin esto el
+        // cliente recibe DOS respuestas descoordinadas de la misma empresa: la del operador
+        // ahora, y la de la IA cuando vence el plazo y el job la manda igual.
+        // Va acá abajo, después de todos los guards: una operación que devuelve error no puede
+        // dejar efectos (mismo criterio que está escrito en confirm_ai_message()). Y va ANTES
+        // del envío, no después, para achicar todo lo posible la ventana en la que el job de
+        // auto-envío puede arrancar mientras este request está esperando a Kapso.
+        WhatsappChatHelper::discard_pending_ai_messages($chat);
+
         $send_service = new WhatsappBotSendService();
         $wa_message_id = $send_service->send_text($chat->phone, $body, $config);
 
@@ -196,6 +206,11 @@ class WhatsappChatController extends Controller
             return response()->json(['message' => 'No hay una configuración de WhatsApp activa para esta empresa.'], 422);
         }
 
+        // Misma intervención humana que en send_message(): el operador está contestando él,
+        // así que la respuesta del agente que esperaba confirmación se descarta antes de
+        // mandar nada. Si no, el cliente recibe la plantilla y después la respuesta de la IA.
+        WhatsappChatHelper::discard_pending_ai_messages($chat);
+
         $send_service = new WhatsappBotSendService();
         $wa_message_id = $send_service->send_template($chat->phone, $template, $variables, $config);
 
@@ -230,6 +245,15 @@ class WhatsappChatController extends Controller
 
         $chat->ai_enabled = ! $chat->ai_enabled;
         $chat->save();
+
+        if (! $chat->ai_enabled) {
+            // 🔴 Apagar la IA del chat también es una intervención humana: el operador vio la
+            // respuesta que el agente dejó esperando, no le gustó, y se hace cargo él de la
+            // conversación. Si la pendiente quedara viva, el job de auto-envío la mandaría
+            // igual al vencer el plazo y el cliente terminaría con dos respuestas.
+            // Solo al apagar: al prender no hay nada del agente esperando que descartar.
+            WhatsappChatHelper::discard_pending_ai_messages($chat);
+        }
 
         return response()->json(['model' => $this->fullModel('WhatsappChat', $chat->id)], 200);
     }
@@ -343,7 +367,17 @@ class WhatsappChatController extends Controller
         }
 
         if ((string) $message->ai_status !== 'a_confirmar') {
-            return response()->json(['message' => 'El mensaje ya no está esperando confirmación.'], 422);
+            // 'enviando' = la otra punta está mandándolo en este mismo momento; cualquier otro
+            // valor = ya salió hace rato. Se distinguen con `code` para que el front pueda
+            // decir algo distinto en cada caso. Ojo: este chequeo es solo un atajo para no
+            // hacer trabajo al pedo, NO es lo que garantiza que no se mande dos veces — lee el
+            // estado sin bloquearlo. Eso lo hace la transición condicional del helper.
+            $code = (string) $message->ai_status === 'enviando' ? 'ya_en_envio' : 'ya_no_esta_pendiente';
+
+            return response()->json([
+                'code'    => $code,
+                'message' => 'El mensaje ya no está esperando confirmación.',
+            ], 422);
         }
 
         $chat = WhatsappChat::find($message->whatsapp_chat_id);
@@ -367,15 +401,39 @@ class WhatsappChatController extends Controller
             return response()->json(['message' => 'No hay una configuración de WhatsApp activa para esta empresa.'], 422);
         }
 
-        // Recién acá, con el envío ya asegurado, se cancela. Sigue ocurriendo ANTES del envío:
-        // si el job de auto-envío se despertara en el medio, encontraría el token viejo y se
-        // descartaría solo. Nunca se manda dos veces.
+        // Recién acá, con el envío ya asegurado, se cancela el token del auto-envío.
+        //
+        // ⚠️ Ojo con lo que esto SÍ y lo que NO garantiza: cancelar el token solamente hace
+        // que un job que TODAVÍA NO ARRANCÓ se descarte solo al despertarse. NO frena al job
+        // que ya está corriendo: ese lee el token al principio y recién varios pasos después
+        // manda el POST a Kapso, que tarda segundos. Si el operador confirma dentro de esa
+        // ventana, el token que se cancela acá ya fue leído y saldrían los dos envíos.
+        // Lo que de verdad impide el envío doble es la transición de estado condicional que
+        // hay adentro de `send_pending_ai_message()`: gana uno solo.
         (new WhatsappAiAutoSendScheduler())->cancel_for_message((int) $message->id);
 
-        $send_service = new WhatsappBotSendService();
-        $wa_message_id = $send_service->send_text($chat->phone, (string) $message->body, $config);
+        $resultado = WhatsappChatHelper::send_pending_ai_message($message, $chat, $config);
 
-        WhatsappChatHelper::mark_ai_message_sent($message, $wa_message_id);
+        if ($resultado === WhatsappChatHelper::ENVIO_YA_TOMADO) {
+            // El job de auto-envío ganó la transición y lo está mandando él: no se manda de
+            // nuevo. Se le avisa al operador para que no se quede esperando un cambio que va
+            // a llegar por el broadcast del otro proceso.
+            return response()->json([
+                'code'    => 'ya_en_envio',
+                'message' => 'El mensaje ya se está enviando solo, no hizo falta confirmarlo.',
+            ], 422);
+        }
+
+        if ($resultado === WhatsappChatHelper::ENVIO_FALLIDO) {
+            // WhatsApp no lo aceptó. NO se puede devolver 200 con el modelo como si hubiera
+            // salido: el cliente no recibió nada y el operador tiene que enterarse. El mensaje
+            // quedó en 'a_confirmar' con el motivo en `send_error`, así que se puede reintentar.
+            return response()->json([
+                'code'    => 'envio_fallido',
+                'message' => 'No se pudo enviar el mensaje por WhatsApp. Quedó pendiente y podés volver a intentarlo.',
+                'model'   => $this->fullModel('WhatsappChatMessage', $message->id),
+            ], 422);
+        }
 
         return response()->json(['model' => $this->fullModel('WhatsappChatMessage', $message->id)], 200);
     }
@@ -397,14 +455,30 @@ class WhatsappChatController extends Controller
         }
 
         if ((string) $message->ai_status !== 'a_confirmar') {
-            return response()->json(['message' => 'El mensaje ya no está esperando confirmación.'], 422);
+            // Mismo criterio que en confirm_ai_message(): atajo con el motivo distinguible por
+            // `code`. La defensa de verdad es el borrado condicional de abajo.
+            $code = (string) $message->ai_status === 'enviando' ? 'ya_en_envio' : 'ya_no_esta_pendiente';
+
+            return response()->json([
+                'code'    => $code,
+                'message' => 'El mensaje ya no está esperando confirmación.',
+            ], 422);
         }
 
         $chat = WhatsappChat::find($message->whatsapp_chat_id);
 
-        (new WhatsappAiAutoSendScheduler())->cancel_for_message((int) $message->id);
+        // El borrado es CONDICIONAL adentro del helper (solo se va si sigue en 'a_confirmar').
+        // El chequeo de arriba lee el estado y no lo bloquea: entre esa lectura y el borrado el
+        // job de auto-envío puede haber arrancado el POST a Kapso, y borrar ahí dejaría al
+        // cliente recibiendo un mensaje del que no queda ningún registro.
+        $descartado = WhatsappChatHelper::discard_pending_ai_message($message);
 
-        $message->delete();
+        if (! $descartado) {
+            return response()->json([
+                'code'    => 'ya_en_envio',
+                'message' => 'No se pudo descartar: el mensaje ya salió hacia el cliente.',
+            ], 422);
+        }
 
         if (! is_null($chat)) {
             // Sin mensaje adjunto: el front no puede actualizar una fila que ya no existe.
