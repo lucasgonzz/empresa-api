@@ -45,12 +45,16 @@ class GenerateStockSuggestionChunksJob implements ShouldQueue
             return;
         }
 
-        // Lotes de IDs para procesar sin disparar jobs hijos en cola
+        // Lotes de IDs para procesar sin disparar jobs hijos en cola.
+        // Filtrado por el dueño de la sugerencia: sin este where, en una base
+        // con varios user_id se encolaban artículos de otros comercios.
         $article_ids_batches = [];
 
-        Article::select('id')->chunk($this->chunk_size, function ($articles) use (&$article_ids_batches) {
-            $article_ids_batches[] = $articles->pluck('id')->toArray();
-        });
+        Article::select('id')
+            ->where('user_id', $suggestion->user_id)
+            ->chunk($this->chunk_size, function ($articles) use (&$article_ids_batches) {
+                $article_ids_batches[] = $articles->pluck('id')->toArray();
+            });
 
         $chunk_count = count($article_ids_batches);
 

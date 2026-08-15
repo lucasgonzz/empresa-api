@@ -25,6 +25,10 @@ class AddressController extends Controller
             'city'                  => $request->city,
             'province'              => $request->province,
             'default_address'       => $request->default_address,
+            // Designación de depósito de origen preferente para sugerencias de
+            // stock (v2). Cast a bool: la columna no admite null y el ABM sin
+            // la extensión no manda la clave.
+            'es_deposito_origen'    => (bool) $request->es_deposito_origen,
             'user_id'               => $this->userId(),
             // afip_information por defecto de la sucursal, usado para resolver
             // la identidad fiscal en ventas en negro (remitos sin facturacion).
@@ -47,6 +51,13 @@ class AddressController extends Controller
         $model->city                  = $request->city;
         $model->province              = $request->province;
         $model->default_address       = $request->default_address;
+        // Solo si el request trae la clave: el ABM sin la extensión de
+        // sugerencias no la manda, y no debe pisar una designación existente
+        // (mismo criterio de guard que usar_condicion_fiscal_en_costeo en
+        // UserController@update).
+        if ($request->has('es_deposito_origen')) {
+            $model->es_deposito_origen = (bool) $request->es_deposito_origen;
+        }
         // afip_information por defecto de la sucursal, usado para resolver
         // la identidad fiscal en ventas en negro (remitos sin facturacion).
         $model->default_afip_information_id = $request->default_afip_information_id;
