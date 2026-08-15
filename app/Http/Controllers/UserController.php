@@ -256,6 +256,25 @@ class UserController extends Controller
             $model->sugerencias_limite_origen = $request->sugerencias_limite_origen;
         }
 
+        /**
+         * Configuración de sugerencias de compra a proveedores: periodicidad
+         * de la generación automática (comando compras:generar). Mismo
+         * criterio que el bloque de sugerencias de stock de arriba: guard
+         * has() para que un form sin la extensión sugerencias_compras no
+         * mande esta clave, y descarte explícito del null para que ese "no
+         * mandó nada" nunca apague la generación en silencio (la
+         * periodicidad en null se comporta como 'nunca' en compras:generar).
+         *
+         * sugerencias_compras_ultima_generacion_at NO se asigna acá, mismo
+         * motivo que la marca de stock: la escribe únicamente el comando
+         * compras:generar. Si el PUT la aceptara, cada guardado del form
+         * retrocedería la marca y adelantaría la próxima generación
+         * automática.
+         */
+        if ($request->has('sugerencias_compras_periodicidad') && !is_null($request->sugerencias_compras_periodicidad)) {
+            $model->sugerencias_compras_periodicidad = $request->sugerencias_compras_periodicidad;
+        }
+
         $model->save();
 
         if ($owner_user && $request->has('listas_de_precio')) {
