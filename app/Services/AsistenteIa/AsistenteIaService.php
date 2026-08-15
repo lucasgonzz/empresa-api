@@ -370,8 +370,13 @@ SYSTEM;
     }
 
     /**
-     * Las cuatro tools de LECTURA del asistente, con su input_schema para la
-     * API de Anthropic. Ninguna crea, modifica ni borra nada.
+     * Las tools de LECTURA del asistente, con su input_schema para la API de
+     * Anthropic. Ninguna crea, modifica ni borra nada.
+     *
+     * 🔴 Toda tool se declara en DOS lugares de este archivo: acá (para que
+     * Claude sepa que existe) y en el if/elseif de execute_tool_calls() (para
+     * que al usarla se resuelva). Con una sola de las dos, la IA "tiene" la
+     * tool y al llamarla recibe "Tool desconocida". Se agregan juntas.
      *
      * @return array<int, array<string, mixed>>
      */
@@ -449,6 +454,20 @@ SYSTEM;
                     'required' => ['busqueda'],
                 ],
             ],
+            [
+                'name' => 'consultar_ofertas_activas',
+                'description' => 'Devuelve las ofertas personalizadas VIGENTES HOY en la tienda online: qué descuento tiene cada cliente sobre cada artículo, desde cuándo, hasta cuándo y si se le avisó por mail. Filtrá por nombre de cliente o de artículo. Usala cuando te pregunten qué se le está ofreciendo a un cliente, o qué promociones hay corriendo.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'busqueda' => [
+                            'type' => 'string',
+                            'description' => 'Nombre o parte del nombre de un cliente o de un artículo. Cadena vacía trae las ofertas que se vencen antes.',
+                        ],
+                    ],
+                    'required' => ['busqueda'],
+                ],
+            ],
         ];
     }
 
@@ -512,6 +531,12 @@ SYSTEM;
                 } elseif ($tool_name === 'consultar_precios_de_proveedores') {
                     $busqueda = (string) ($tool_input['busqueda'] ?? '');
                     $data = ConsultasSistemaIaHelper::precios_de_proveedores($owner_id, $busqueda);
+                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
+                } elseif ($tool_name === 'consultar_ofertas_activas') {
+                    // La otra punta de esta tool está en build_tools(): las dos
+                    // se agregan juntas o la IA la llama y recibe un error.
+                    $busqueda = (string) ($tool_input['busqueda'] ?? '');
+                    $data = ConsultasSistemaIaHelper::ofertas_activas($owner_id, $busqueda);
                     $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
                 } else {
                     $tool_desconocida = true;

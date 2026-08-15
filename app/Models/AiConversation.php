@@ -15,8 +15,13 @@ use Illuminate\Database\Eloquent\Model;
  * origen:
  * - 'usuario': la abrió una persona desde el panel del chat.
  * - 'sugerencia_stock': la creó automáticamente el resumen de una sugerencia
- *   de stock terminada (referencia_id = stock_suggestions.id). Las misiones
- *   futuras suman sus propios orígenes (compras, ofertas).
+ *   de stock terminada (referencia_id = stock_suggestions.id).
+ * - 'sugerencia_compra': ídem con una sugerencia de compra a proveedores
+ *   terminada (referencia_id = purchase_suggestions.id). La misión de compras
+ *   sumó el origen y NO actualizó esta lista: la deuda se salda acá (15/8/2026).
+ * - 'sugerencia_oferta': ídem con una corrida del motor de ofertas por cliente
+ *   terminada (referencia_id = offer_suggestions.id). Toda misión que sume un
+ *   origen actualiza esta lista en el MISMO commit: no hay enum ni constante.
  *
  * `contexto` guarda el bloque de DATOS ya calculados de la sugerencia (no las
  * instrucciones de redacción): viaja como segundo bloque del system en cada

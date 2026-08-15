@@ -287,6 +287,75 @@ class ConsultasSistemaIaHelper
     }
 
     /**
+     * Ofertas personalizadas VIGENTES hoy: qué descuento tiene cada cliente
+     * sobre cada artículo en la tienda. Tool de lectura del chat de IA (misión
+     * motor de ofertas): la IA responde "qué le estoy ofreciendo a Fulano"
+     * desde client_offers, nunca inventado.
+     *
+     * 🔴 La vigencia la da la FECHA, no solo `estado`. Una oferta cuyo `hasta`
+     * ya pasó sigue con estado 'activa' hasta que el barrido de higiene de
+     * ofertas:generar la marque 'vencida' (puede tardar hasta un día). Filtrar
+     * solo por estado le haría contar al chat ofertas que la tienda ya no
+     * aplica — es exactamente la misma condición que corre la tienda (query
+     * textual en el docblock de 2026_08_17_100200_create_client_offers_table).
+     *
+     * Los tramos por cantidad NO se traen: `porcentaje` es null en ese caso
+     * (por diseño, para que nadie lea el campo equivocado) y se informa el tipo
+     * de descuento, que es lo que la IA necesita para contestar sin mentir un
+     * número que depende de cuántas unidades lleve el cliente.
+     *
+     * @param  int     $owner_id  Id del dueño (client_offers.user_id). Nunca Auth: corre en un job sin sesión.
+     * @param  string  $busqueda  Nombre de cliente o de artículo; vacío trae las que vencen primero.
+     * @return array<int, array<string, mixed>>
+     */
+    public static function ofertas_activas(int $owner_id, string $busqueda): array
+    {
+        $busqueda = trim($busqueda);
+        $hoy = date('Y-m-d');
+
+        $query = DB::table('client_offers')
+            ->join('clients', 'clients.id', '=', 'client_offers.client_id')
+            ->join('articles', 'articles.id', '=', 'client_offers.article_id')
+            ->where('client_offers.user_id', $owner_id)
+            ->where('client_offers.estado', 'activa')
+            ->where('client_offers.desde', '<=', $hoy)
+            ->where('client_offers.hasta', '>=', $hoy);
+
+        if ($busqueda !== '') {
+            $query->where(function ($sub) use ($busqueda) {
+                $sub->where('clients.name', 'LIKE', '%' . $busqueda . '%')
+                    ->orWhere('articles.name', 'LIKE', '%' . $busqueda . '%');
+            });
+        }
+
+        // Primero las que se vencen antes: es lo urgente y lo que el
+        // comerciante suele estar preguntando.
+        $filas = $query->orderBy('client_offers.hasta', 'ASC')
+            ->orderBy('client_offers.id', 'ASC')
+            ->limit(self::MAX_RESULTS)
+            ->get(['client_offers.id', 'client_offers.tipo_descuento', 'client_offers.porcentaje',
+                'client_offers.desde', 'client_offers.hasta', 'client_offers.notificada_email_at',
+                'clients.name as cliente_nombre', 'articles.name as articulo_nombre']);
+
+        $result = [];
+
+        foreach ($filas as $fila) {
+            $result[] = [
+                'cliente'        => (string) $fila->cliente_nombre,
+                'articulo'       => (string) $fila->articulo_nombre,
+                'tipo_descuento' => (string) $fila->tipo_descuento,
+                // null real cuando es 'cantidad': el descuento vive en los tramos.
+                'porcentaje'     => $fila->porcentaje !== null ? (float) $fila->porcentaje : null,
+                'desde'          => (string) $fila->desde,
+                'hasta'          => (string) $fila->hasta,
+                'notificada'     => !is_null($fila->notificada_email_at),
+            ];
+        }
+
+        return $result;
+    }
+
+    /**
      * Extrae una palabra clave de producto/entidad desde el texto de la consulta.
      *
      * Quita los disparadores conocidos (stock, cuánto tengo, de, etc.) y devuelve el resto.
