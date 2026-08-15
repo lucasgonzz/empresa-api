@@ -194,7 +194,9 @@ class ArticleEmbeddingService
      * @param int    $user_id ID del usuario/tenant propietario de los artículos.
      * @param int    $limit   Número máximo de resultados a retornar (default: 8).
      *
-     * @return Collection Colección de objetos stdClass con id, name, final_price, stock y bar_code.
+     * @return Collection Colección de objetos stdClass con id, name, final_price, stock,
+     *                    bar_code y slug. El slug viaja para que el agente de WhatsApp pueda
+     *                    armar el link público del artículo en la tienda online del negocio.
      *
      * @throws \RuntimeException Si generate_embedding() falla.
      */
@@ -207,7 +209,7 @@ class ArticleEmbeddingService
             $vector_string = '['.implode(',', $query_embedding).']';
 
             $results = DB::select(
-                'SELECT id, name, final_price, stock, bar_code
+                'SELECT id, name, final_price, stock, bar_code, slug
                  FROM articles
                  WHERE user_id = ?
                    AND status = ?
@@ -246,7 +248,7 @@ class ArticleEmbeddingService
     protected function search_similar_articles_in_php(array $query_embedding, int $user_id, int $limit): Collection
     {
         $rows = DB::table('articles')
-            ->select('id', 'name', 'final_price', 'stock', 'bar_code', 'embedding')
+            ->select('id', 'name', 'final_price', 'stock', 'bar_code', 'slug', 'embedding')
             ->where('user_id', $user_id)
             ->where('status', 'active')
             ->whereNull('deleted_at')
