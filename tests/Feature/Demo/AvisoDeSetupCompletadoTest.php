@@ -44,7 +44,7 @@ class AvisoDeSetupCompletadoTest extends TestCase
     use DatabaseTransactions;
 
     /** Token del canal con el que corren estos casos. Mismo valor en todos: es el del lead. */
-    const TOKEN = 'zz-token-canal-mision-61';
+    const TOKEN = 'zz-token-canal-demo-v2';
 
     /** URL del canal de ingesta del admin. */
     const URL = 'https://admin.test/api/demo-eventos';
