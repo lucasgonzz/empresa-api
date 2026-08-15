@@ -328,6 +328,33 @@ class WhatsappInboundMediaService
     }
 
     /**
+     * Extensión que le corresponde a un mime ya validado.
+     *
+     * 🔴 VIVE AL LADO DE `safe_mime()` A PROPÓSITO, Y NO SE COPIA A NINGÚN OTRO ARCHIVO. Las dos
+     * respuestas salen de la MISMA constante, así que no pueden desincronizarse: si mañana se
+     * suma un mime a la lista blanca, la extensión aparece sola en los tres lugares que la usan
+     * (guardar el entrante, guardar el saliente y armar el nombre del multipart).
+     *
+     * Nació duplicada en `WhatsappChatController` el 15/8/2026, porque quien construyó el envío
+     * del operador tenía prohibido tocar este archivo y necesitaba la traducción. Se unificó en
+     * cuanto se detectó: dos tablas iguales en dos archivos es una divergencia con fecha de
+     * vencimiento, y la mitad que se olvide de actualizar acepta un mime que la otra no sabe
+     * nombrar — o peor, lo guarda con una extensión que Meta después rechaza.
+     *
+     * @param  string|null  $mime  Mime crudo o ya normalizado.
+     * @return string|null  La extensión sin punto, o null si el mime no está permitido.
+     */
+    public static function extension_for($mime): ?string
+    {
+        $normalizado = self::safe_mime($mime);
+        if ($normalizado === null) {
+            return null;
+        }
+
+        return self::MIME_EXTENSIONS[$normalizado];
+    }
+
+    /**
      * Nombre del archivo en disco, determinista (D17).
      *
      * 🔴 EL NOMBRE SALE DEL ID DEL MENSAJE, NO DEL RELOJ NI DE UN RANDOM. Kapso reintenta el

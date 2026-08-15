@@ -46,37 +46,6 @@ class WhatsappChatController extends Controller
     private const MEDIA_MAX_AUDIO_BYTES = 16777216;
 
     /**
-     * Extensión con la que se guarda y se sube cada mime.
-     *
-     * 🔴 ESTO NO ES LA LISTA BLANCA Y NO DECIDE QUÉ SE ACEPTA. Quién entra y quién no lo decide
-     * `WhatsappInboundMediaService::safe_mime()`, que es la MISMA función con la que se guardan
-     * los entrantes y con la que `media()` los sirve (dos listas que se desincronizan son una
-     * fuga esperando). Esta tabla solo traduce un mime YA ACEPTADO a una extensión de archivo,
-     * porque hacen falta dos: el nombre en disco y —sobre todo— el nombre del multipart, que
-     * Meta valida contra el mime declarado y rechaza si no coinciden.
-     *
-     * Tiene que cubrir toda la lista blanca del servicio. Si alguna vez no la cubre, el mime que
-     * falte se rechaza con 422 y queda logueado: es preferible eso a mandarle a Meta un
-     * `archivo.bin` que va a rebotar después de pagar el viaje.
-     *
-     * @var array<string, string>
-     */
-    private const MEDIA_EXTENSIONS = [
-        'image/jpeg' => 'jpg',
-        'image/jpg'  => 'jpg',
-        'image/png'  => 'png',
-        'image/webp' => 'webp',
-        'image/gif'  => 'gif',
-        'audio/ogg'  => 'ogg',
-        'audio/opus' => 'ogg',
-        'audio/mpeg' => 'mp3',
-        'audio/mp4'  => 'm4a',
-        'audio/aac'  => 'm4a',
-        'audio/amr'  => 'amr',
-        'audio/webm' => 'webm',
-    ];
-
-    /**
      * Lista los chats del owner autenticado, con el cliente vinculado, ordenados por
      * último mensaje. Búsqueda opcional por `?q=` (nombre del chat, teléfono o nombre
      * del cliente vinculado).
@@ -851,16 +820,19 @@ class WhatsappChatController extends Controller
     }
 
     /**
-     * Extensión de archivo para un mime YA validado por
-     * `WhatsappInboundMediaService::safe_mime()`. Ver el comentario de `MEDIA_EXTENSIONS`:
-     * traduce, no decide.
+     * Extensión de archivo para un mime YA validado.
+     *
+     * 🔴 DELEGA EN `WhatsappInboundMediaService`, NO TIENE TABLA PROPIA. Acá vivía una copia
+     * literal de las doce entradas, y duraba hasta que alguien sumara un mime de un solo lado:
+     * el que se olvidara aceptaría un archivo que el otro no sabe nombrar. Quién entra y con qué
+     * extensión sale son la misma decisión, así que viven en la misma constante.
      *
      * @param  string  $mime  Mime normalizado (minúsculas, sin el parámetro después del `;`).
-     * @return string|null  null solo si la tabla quedó corta respecto de la lista blanca.
+     * @return string|null  null si el mime no está en la lista blanca.
      */
     private static function extension_de_mime($mime)
     {
-        return isset(self::MEDIA_EXTENSIONS[$mime]) ? self::MEDIA_EXTENSIONS[$mime] : null;
+        return WhatsappInboundMediaService::extension_for($mime);
     }
 
     /**
