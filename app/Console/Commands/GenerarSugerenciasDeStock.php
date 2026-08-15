@@ -5,8 +5,10 @@ namespace App\Console\Commands;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Jobs\GenerateStockSuggestionChunksJob;
 use App\Models\StockSuggestion;
+use App\Models\StockSuggestionArticle;
 use App\Models\User;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Genera la sugerencia de stock automática del comercio de la instancia según
@@ -50,6 +52,13 @@ class GenerarSugerenciasDeStock extends Command
     ];
 
     /**
+     * Días que se conserva una sugerencia automática sin movimientos asociados.
+     *
+     * @var int
+     */
+    const DIAS_RETENCION_AUTOMATICAS = 30;
+
+    /**
      * Ejecuta el comando sobre el dueño de la instancia (config app.USER_ID).
      *
      * @return int Código de salida (0 = OK)
@@ -91,6 +100,16 @@ class GenerarSugerenciasDeStock extends Command
             }
         }
 
+        $borradas = $this->purgar_automaticas_viejas($user);
+
+        if ($borradas > 0) {
+            $this->info(
+                'sugerencias:generar — retención: se borraron ' . $borradas
+                . ' sugerencias automáticas de más de ' . self::DIAS_RETENCION_AUTOMATICAS
+                . ' días sin movimientos asociados.'
+            );
+        }
+
         $suggestion = StockSuggestion::create([
             'modo'              => $user->sugerencias_modo ? $user->sugerencias_modo : 'minimo',
             'origen'            => $user->sugerencias_origen ? $user->sugerencias_origen : 'absoluto',
@@ -113,6 +132,35 @@ class GenerarSugerenciasDeStock extends Command
         $this->info('sugerencias:generar — sugerencia automática #' . $suggestion->id . ' creada y despachada.');
 
         return 0;
+    }
+
+    /**
+     * Retención de las sugerencias automáticas: borra (cabecera + líneas, en
+     * transacción como destroy()) las del usuario con más de
+     * DIAS_RETENCION_AUTOMATICAS días que no tengan movimientos de depósito
+     * asociados. La generación periódica sin retención acumula millones de
+     * filas por año; 30 días conservan historial útil, y lo que se usó (generó
+     * movimientos) queda para siempre. Las manuales no se tocan jamás.
+     *
+     * @param User $user
+     * @return int Cantidad de sugerencias borradas
+     */
+    protected function purgar_automaticas_viejas($user)
+    {
+        $viejas = StockSuggestion::where('user_id', $user->id)
+            ->where('origen_generacion', 'automatica')
+            ->where('created_at', '<', now()->subDays(self::DIAS_RETENCION_AUTOMATICAS))
+            ->whereDoesntHave('deposit_movements')
+            ->get();
+
+        foreach ($viejas as $vieja) {
+            DB::transaction(function () use ($vieja) {
+                StockSuggestionArticle::where('stock_suggestion_id', $vieja->id)->delete();
+                $vieja->delete();
+            });
+        }
+
+        return $viejas->count();
     }
 
     /**

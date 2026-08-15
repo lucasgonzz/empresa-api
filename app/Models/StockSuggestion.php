@@ -38,4 +38,14 @@ class StockSuggestion extends Model
     {
         return $this->hasMany(StockSuggestionArticle::class);
     }
+
+    /**
+     * Movimientos de depósito generados desde esta sugerencia. La retención de
+     * automáticas (sugerencias:generar) no borra ninguna sugerencia que tenga
+     * movimientos: es la evidencia de qué originó cada traslado.
+     */
+    public function deposit_movements()
+    {
+        return $this->hasMany(DepositMovement::class);
+    }
 }

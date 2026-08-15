@@ -236,6 +236,12 @@ class UserController extends Controller
          * el form sin la extensión sugerencias_inteligentes no manda estas
          * claves, y un request viejo no puede pisar la configuración con null
          * (la periodicidad en null apagaría la generación en silencio).
+         *
+         * sugerencias_ultima_generacion_at NO se asigna acá a propósito: esa
+         * marca la escribe únicamente el comando sugerencias:generar. El form
+         * de configuración manda el modelo entero, así que aceptarla por
+         * request hacía que cada guardado retrocediera la marca y adelantara
+         * la próxima generación automática.
          */
         if ($request->has('sugerencias_periodicidad') && !is_null($request->sugerencias_periodicidad)) {
             $model->sugerencias_periodicidad = $request->sugerencias_periodicidad;
@@ -248,9 +254,6 @@ class UserController extends Controller
         }
         if ($request->has('sugerencias_limite_origen') && !is_null($request->sugerencias_limite_origen)) {
             $model->sugerencias_limite_origen = $request->sugerencias_limite_origen;
-        }
-        if ($request->has('sugerencias_ultima_generacion_at')) {
-            $model->sugerencias_ultima_generacion_at = $request->sugerencias_ultima_generacion_at;
         }
 
         $model->save();

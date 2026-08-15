@@ -3,8 +3,10 @@
 namespace Tests\Feature\SugerenciasStock;
 
 use App\Jobs\GenerateStockSuggestionChunksJob;
+use App\Models\DepositMovement;
 use App\Models\ExtencionEmpresa;
 use App\Models\StockSuggestion;
+use App\Models\StockSuggestionArticle;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Hash;
@@ -18,8 +20,9 @@ use Tests\TestCase;
  * Protege que el comando decida contra sugerencias_ultima_generacion_at (no
  * contra el día del calendario), que 'nunca' realmente sea nunca, que correrlo
  * dos veces el mismo día no duplique, que --force saltee la periodicidad (pero
- * no el gate por extensión) y que el PUT de configuración persista las cinco
- * columnas nuevas.
+ * no el gate por extensión), que el PUT de configuración persista las cuatro
+ * columnas editables SIN tocar la marca del scheduler, y que la retención
+ * borre solo las automáticas viejas sin movimientos.
  */
 class Generacion_automatica_Test extends TestCase
 {
@@ -195,14 +198,16 @@ class Generacion_automatica_Test extends TestCase
     }
 
     /**
-     * El PUT de Configuración → general persiste la configuración nueva.
-     * Payload como lo manda el frontend (el modelo entero, patrón de la suite
-     * de Preferencias), sobre el usuario del fixture.
+     * El PUT de Configuración → general persiste la configuración nueva (las
+     * cuatro columnas editables). La marca sugerencias_ultima_generacion_at NO
+     * está entre ellas: la escribe solo el comando, y como el form manda el
+     * modelo entero, si el PUT la aceptara cada guardado la retrocedería y
+     * adelantaría la próxima generación automática.
      *
      * @group sugerencias-stock
      * @test
      */
-    public function el_put_de_usuario_persiste_las_cinco_columnas()
+    public function el_put_de_usuario_persiste_las_cuatro_columnas_sin_tocar_la_marca()
     {
         $user = User::find(500);
         if (is_null($user)) {
@@ -210,12 +215,18 @@ class Generacion_automatica_Test extends TestCase
         }
         $this->actingAs($user, 'web');
 
+        // Marca conocida, puesta como la pondría el comando.
+        $user->sugerencias_ultima_generacion_at = '2026-08-10 05:00:00';
+        $user->save();
+
         $payload = array_merge($user->fresh()->toArray(), [
             'sugerencias_periodicidad'         => 'semanal',
             'sugerencias_modo'                 => 'maximo',
             'sugerencias_origen'               => 'relativo',
             'sugerencias_limite_origen'        => 'ideal',
-            'sugerencias_ultima_generacion_at' => '2026-08-13 05:00:00',
+            // El form manda el modelo entero: la clave viaja aunque nadie la
+            // haya editado. El backend tiene que ignorarla.
+            'sugerencias_ultima_generacion_at' => '2020-01-01 00:00:00',
         ]);
 
         $response = $this->putJson('api/user/' . $user->id, $payload);
@@ -227,9 +238,96 @@ class Generacion_automatica_Test extends TestCase
         $this->assertEquals('maximo', $fresco->sugerencias_modo);
         $this->assertEquals('relativo', $fresco->sugerencias_origen);
         $this->assertEquals('ideal', $fresco->sugerencias_limite_origen);
+
         $this->assertEquals(
-            '2026-08-13 05:00:00',
-            \Carbon\Carbon::parse($fresco->sugerencias_ultima_generacion_at)->format('Y-m-d H:i:s')
+            '2026-08-10 05:00:00',
+            \Carbon\Carbon::parse($fresco->sugerencias_ultima_generacion_at)->format('Y-m-d H:i:s'),
+            'La marca del scheduler la escribe solo el comando: un PUT con la clave no puede moverla.'
+        );
+    }
+
+    /**
+     * Retención de automáticas: la generación periódica sin retención acumula
+     * millones de filas por año. Se borra solo lo automático, viejo y sin
+     * movimientos de depósito asociados; lo usado y lo manual queda.
+     *
+     * @group sugerencias-stock
+     * @test
+     */
+    public function la_retencion_borra_las_automaticas_viejas_sin_movimientos_y_respeta_el_resto()
+    {
+        $this->dar_extension();
+
+        $this->comercio->sugerencias_periodicidad = 'diaria';
+        $this->comercio->sugerencias_ultima_generacion_at = now()->subDay();
+        $this->comercio->save();
+
+        $hace_40_dias = now()->subDays(40);
+
+        // Automática vieja SIN movimientos: tiene que desaparecer con sus líneas.
+        $borrable = StockSuggestion::create([
+            'modo'              => 'minimo',
+            'origen'            => 'absoluto',
+            'limite_origen'     => 'minimo',
+            'status'            => 'terminado',
+            'origen_generacion' => 'automatica',
+            'user_id'           => $this->comercio->id,
+            'created_at'        => $hace_40_dias,
+        ]);
+        StockSuggestionArticle::create([
+            'stock_suggestion_id' => $borrable->id,
+            'article_id'          => 1,
+            'suggested_amount'    => 5,
+        ]);
+
+        // Automática vieja CON movimiento: lo usado queda para siempre.
+        $usada = StockSuggestion::create([
+            'modo'              => 'minimo',
+            'origen'            => 'absoluto',
+            'limite_origen'     => 'minimo',
+            'status'            => 'terminado',
+            'origen_generacion' => 'automatica',
+            'user_id'           => $this->comercio->id,
+            'created_at'        => $hace_40_dias,
+        ]);
+        DepositMovement::create([
+            'num'                        => 1,
+            'from_address_id'            => 1,
+            'to_address_id'              => 2,
+            'deposit_movement_status_id' => 1,
+            'stock_suggestion_id'        => $usada->id,
+            'user_id'                    => $this->comercio->id,
+        ]);
+
+        // Manual vieja: no se toca jamás, tenga la edad que tenga.
+        $manual = StockSuggestion::create([
+            'modo'              => 'minimo',
+            'origen'            => 'absoluto',
+            'limite_origen'     => 'minimo',
+            'status'            => 'terminado',
+            'origen_generacion' => 'manual',
+            'user_id'           => $this->comercio->id,
+            'created_at'        => $hace_40_dias,
+        ]);
+
+        $this->artisan('sugerencias:generar')->assertExitCode(0);
+
+        $this->assertNull(
+            StockSuggestion::find($borrable->id),
+            'La automática vieja sin movimientos tiene que borrarse.'
+        );
+        $this->assertEquals(
+            0,
+            StockSuggestionArticle::where('stock_suggestion_id', $borrable->id)->count(),
+            'Las líneas van con la cabecera: borrar solo la cabecera dejaría huérfanas.'
+        );
+        $this->assertNotNull(
+            StockSuggestion::find($usada->id),
+            'Una automática con movimientos asociados queda para siempre.'
+        );
+        $this->assertNotNull(
+            StockSuggestion::find($manual->id),
+            'Las manuales no entran en la retención jamás.'
         );
     }
 }
