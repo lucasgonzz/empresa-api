@@ -67,6 +67,13 @@ class OfertaSugeridaService
     protected $criterios;
 
     /**
+     * @var array Mapa motivo => cantidad de líneas candidatas que TechoDeDescuentoService descartó.
+     *            Los motivos son las constantes EXCLUIDO_* de ese servicio. Acumula desde que se
+     *            creó el servicio: cada lote tiene el suyo y el job los suma en la cabecera.
+     */
+    protected $exclusiones_por_motivo = [];
+
+    /**
      * @param mixed $suggestion Cabecera (OfferSuggestion).
      * @param mixed $user       Dueño; si viene null se busca por suggestion->user_id.
      */
@@ -99,6 +106,43 @@ class OfertaSugeridaService
     public function evaluacion_crediticia(): array
     {
         return $this->criterios->evaluacion_crediticia();
+    }
+
+    /**
+     * Cuántas líneas candidatas descartó el techo y por qué. Ordenado de mayor a menor: el motivo
+     * que más pesa es el primero que el comerciante tiene que ir a arreglar.
+     *
+     * @return array Mapa motivo => cantidad (motivos = constantes EXCLUIDO_* de TechoDeDescuentoService)
+     */
+    public function exclusiones_por_motivo(): array
+    {
+        $exclusiones = $this->exclusiones_por_motivo;
+        arsort($exclusiones);
+
+        return $exclusiones;
+    }
+
+    /**
+     * Los motivos de exclusión en criollo. 🔴 Vive acá y no en la vista porque el MISMO texto lo lee
+     * el comerciante en la pantalla y la IA en el bloque de datos: dos redacciones distintas del
+     * mismo motivo terminan siendo dos explicaciones distintas del mismo número.
+     *
+     * @param  string $motivo Una de las constantes EXCLUIDO_* de TechoDeDescuentoService.
+     * @return string
+     */
+    public static function texto_de_exclusion($motivo)
+    {
+        $textos = [
+            TechoDeDescuentoService::EXCLUIDO_SIN_COSTO             => 'no tienen el costo cargado',
+            TechoDeDescuentoService::EXCLUIDO_SIN_PRECIO            => 'no tienen precio de venta',
+            TechoDeDescuentoService::EXCLUIDO_MARGEN_NO_POSITIVO    => 'se venden al costo o por debajo',
+            TechoDeDescuentoService::EXCLUIDO_TECHO_MENOR_AL_MINIMO => 'tienen tan poco margen que el descuento no llegaba al mínimo',
+            TechoDeDescuentoService::EXCLUIDO_COSTO_EN_DOLARES_SIN_COTIZAR => 'tienen el precio en pesos y el costo todavía en dólares',
+        ];
+
+        // Un motivo nuevo en TechoDeDescuentoService sin su texto acá no puede romper la pantalla:
+        // se muestra el string crudo, que es feo pero informativo.
+        return isset($textos[$motivo]) ? $textos[$motivo] : str_replace('_', ' ', $motivo);
     }
 
     /**
@@ -143,6 +187,22 @@ class OfertaSugeridaService
             $techo = TechoDeDescuentoService::evaluar($article, $client, $this->user, 1.0);
 
             if (!is_null($techo['excluido_por'])) {
+                /*
+                 * 🔴 EL MOTIVO DE EXCLUSIÓN SE CUENTA, NO SE TIRA. Hasta el 15/8/2026 este continue
+                 * se comía el 'excluido_por' que evaluar() se toma el trabajo de calcular: un
+                 * artículo sin costo cargado, con margen negativo o en dólares en una cuenta con
+                 * listas desaparecía sin que nada lo dijera, y la mitad de evaluar() era camino
+                 * muerto. La diferencia entre "no encontré nada" y "miré 800 artículos y 200 no
+                 * tienen el costo cargado" no es cosmética: la segunda es una tarea concreta para el
+                 * comerciante, y es la única forma de que se entere de que tiene el catálogo a medio
+                 * cargar. El desglose viaja a la cabecera de la corrida, a la vista y al bloque de
+                 * datos de la IA.
+                 */
+                $motivo = $techo['excluido_por'];
+                $this->exclusiones_por_motivo[$motivo] = isset($this->exclusiones_por_motivo[$motivo])
+                    ? $this->exclusiones_por_motivo[$motivo] + 1
+                    : 1;
+
                 continue;
             }
 
@@ -150,7 +210,20 @@ class OfertaSugeridaService
                 ? (float) $vendibilidades[$candidato['article_id']]
                 : 1.0;
 
-            $porcentaje = $porcentaje_service->porcentaje($techo['piso'], $techo['techo'], $vendibilidad);
+            // Se resuelve ACÁ ARRIBA y no recién al armar la fila porque desde el 15/8/2026 entra en
+            // el porcentaje: al que paga al día se le sugiere más cerca del techo (§ el docblock de
+            // PorcentajeSugeridoService::BONUS_BUEN_PAGADOR). 🔴 null (sin datos de cuenta corriente)
+            // no es false (mal pagador): no se colapsan, y ninguno de los dos cobra el premio.
+            $es_buen_pagador = isset($evaluacion_crediticia[$candidato['client_id']])
+                ? $evaluacion_crediticia[$candidato['client_id']]
+                : null;
+
+            $porcentaje = $porcentaje_service->porcentaje(
+                $techo['piso'],
+                $techo['techo'],
+                $vendibilidad,
+                $es_buen_pagador
+            );
             $tipo       = isset($tipos[$candidato['article_id']]) ? $tipos[$candidato['article_id']] : 'unidad';
 
             $lineas[] = [
@@ -166,10 +239,7 @@ class OfertaSugeridaService
                 'price_type_id'              => $techo['price_type_id'],
                 'criterio'                   => $candidato['criterio'],
                 'criterio_detalle'           => $candidato['detalle'],
-                // null (sin datos de cuenta corriente) no es false (mal pagador): no se colapsan.
-                'es_buen_pagador'            => isset($evaluacion_crediticia[$candidato['client_id']])
-                    ? $evaluacion_crediticia[$candidato['client_id']]
-                    : null,
+                'es_buen_pagador'            => $es_buen_pagador,
                 'factor_credito'             => $techo['factor_credito'],
                 'vendibilidad'               => round($vendibilidad, 3),
                 'score'                      => round((float) $candidato['score'], 4),
@@ -398,9 +468,33 @@ class OfertaSugeridaService
     }
 
     /**
-     * Los artículos del lote, del comercio y no inactivos, con price_types cargado porque
-     * resolver_precio_de_venta() lo recorre en cuentas con listas (sin eager load es una query por
-     * artículo).
+     * Los artículos del lote, del comercio y no inactivos, con TRES relaciones precargadas. Las tres
+     * están medidas contra el camino real de una línea y ninguna es "por las dudas":
+     *
+     * - price_types: resolver_precio_de_venta() lo recorre en cuentas con listas.
+     * - provider:    🔴 CriterioDePrecioHelper::desde_articulo() toca $article->provider en el paso 1
+     *   de TechoDeDescuentoService. Sin eager load es un SELECT a `providers` por cada artículo
+     *   distinto del lote, adentro del request HTTP (el camino sincrónico es el default hasta 500
+     *   clientes). Medido el 15/8/2026 con 20 clientes × 3 artículos: 3 consultas a `providers` que
+     *   con el eager load quedan en 0. La firma desde_articulo($article, $provider) también acepta
+     *   el proveedor explícito, pero ese llamador vive adentro de TechoDeDescuentoService y con la
+     *   relación precargada $article->provider ya no consulta: el eager load lo resuelve sin
+     *   ensuciar la firma de la cadena entera.
+     * - iva:         lo pide quitar_iva_y_sale_taxes() en el paso 4.
+     *
+     * ⚠️ HALLAZGO MEDIDO Y DECLARADO, para que nadie borre el 'iva' de acá creyendo que no sirve ni
+     * lo agregue creyendo que ya arregló algo: ArticlePricesHelper.php:582 hace $article->load('iva')
+     * y load() RE-CONSULTA SIEMPRE, esté o no cargada la relación (loadMissing() es la que mira). Así
+     * que el eager load de 'iva' NO baja ese conteo: con 60 líneas se miden 60 SELECT a `ivas`, uno
+     * por línea, antes y después. La cuenta del modo de falla es real — 500 clientes × 3 ofertas =
+     * 1.500 SELECT a `ivas` adentro del request — y el arreglo de VERDAD es cambiar ese load() por
+     * loadMissing() en ArticlePricesHelper, que es un helper compartido por todo el sistema de
+     * precios y queda FUERA del alcance de esta misión: va al informe para que Lucas lo decida.
+     * Medido el 15/8/2026 sobre el mismo lote de 60 líneas: 71 consultas antes, 70 con este eager
+     * load, y 10 con el loadMissing() puesto. Y 'iva' se precarga acá igual porque es lo que hace la
+     * diferencia el día que ese load() se arregle: con loadMissing y sin eager load serían tantos
+     * SELECT como artículos distintos tenga el lote, y con el eager load es uno solo.
+     *
      * @param  array $article_ids
      * @return \Illuminate\Support\Collection Mapa article_id => Article
      */
@@ -410,7 +504,7 @@ class OfertaSugeridaService
         Article::where('user_id', $this->user_id)
             ->where('status', '!=', 'inactive')
             ->whereIn('id', $article_ids)
-            ->with('price_types')
+            ->with(['price_types', 'provider', 'iva'])
             ->chunk(self::LOTE_LECTURA_ARTICULOS, function ($lote) use (&$articulos) {
                 foreach ($lote as $article) {
                     $articulos[(int) $article->id] = $article;

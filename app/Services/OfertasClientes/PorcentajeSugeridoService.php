@@ -40,6 +40,33 @@ class PorcentajeSugeridoService
     /** Días desde la última compra al proveedor a partir de los cuales la mercadería es vieja. */
     const DIAS_DESDE_COMPRA_TOPE = 365;
 
+    /**
+     * 🔴 EL BUEN PAGADOR, COMO MODIFICADOR REAL — Y POR QUÉ ACÁ Y NO EN EL TECHO.
+     *
+     * Lucas pidió "al que paga bien se le habilita más descuento". Hasta el 15/8/2026 eso no pasaba:
+     * es_buen_pagador se calculaba, se guardaba en la línea y se le mostraba a la IA, pero no entraba
+     * ni en el score, ni en el techo, ni en el porcentaje. Dos clientes idénticos —uno que paga al
+     * día y otro sin datos de cuenta corriente— recibían exactamente el mismo descuento, o sea que la
+     * mitad crediticia del pedido existía solo como decoración.
+     *
+     * La fracción de abajo es cuánto de lo que le SOBRA al porcentaje determinista para llegar al
+     * techo se le regala al que paga al día: con piso 5, techo 25 y un determinista de 13, el buen
+     * pagador se lleva 13 + (25 - 13) * 0,25 = 16.
+     *
+     * 🔴 EL TECHO NO SE TOCA, Y ESE ES EL PUNTO DE HACERLO ACÁ. El techo es el margen del artículo
+     * (TechoDeDescuentoService) y es lo único que separa una oferta de una venta bajo costo. El bonus
+     * se mueve ADENTRO del rango [piso, techo] y por construcción no puede salirse: parte de un
+     * número que ya es <= techo y avanza una fracción < 1 de la distancia que le falta, así que el
+     * invariante "el descuento nunca supera el techo" se mantiene para cualquier valor de esta
+     * constante entre 0 y 1. Si algún día alguien quiere premiar más al buen pagador, lo que sube es
+     * ESTE número, nunca el techo. Hay un test que lo prueba con el techo pegado al piso.
+     *
+     * 🔴 Y solo premia el true. null es "sin datos de cuenta corriente", que NO es "paga mal" —el mal
+     * pagador ni siquiera llega hasta acá, se excluye entero en CriteriosDeOfertaService— pero
+     * tampoco es un buen antecedente: no saber no se premia.
+     */
+    const BONUS_BUEN_PAGADOR = 0.25;
+
     /** @var int Comercio dueño, al que se acota toda consulta */
     protected $user_id;
 
@@ -102,19 +129,24 @@ class PorcentajeSugeridoService
 
     /**
      * El porcentaje determinista: dónde cae el artículo dentro de su propio rango. Vendibilidad 0
-     * (sale solo) deja el descuento en el piso; vendibilidad 1 (parado) lo lleva al techo.
+     * (sale solo) deja el descuento en el piso; vendibilidad 1 (parado) lo lleva al techo. Y si el
+     * cliente paga al día, se lo acerca un poco más al techo, sin tocarlo nunca (ver
+     * BONUS_BUEN_PAGADOR): esa es la única forma en que "al que paga bien se le habilita más
+     * descuento" puede convivir con "el descuento nunca supera el margen".
      *
      * floor y no round, por lo mismo que el techo (ver TechoDeDescuentoService, paso 10): hacia
      * abajo nunca se rompe el margen. Y el resultado se recorta al rango igual, porque este
      * porcentaje viaja después por el recorte incondicional de la decisión de la IA (§A.7) y las dos
      * puntas tienen que coincidir.
      *
-     * @param  int   $piso
-     * @param  int   $techo
-     * @param  float $vendibilidad
+     * @param  int       $piso
+     * @param  int       $techo
+     * @param  float     $vendibilidad
+     * @param  bool|null $es_buen_pagador true = paga al día, false = mal pagador (no llega hasta acá,
+     *                                    se excluye antes), null = sin datos de cuenta corriente.
      * @return int
      */
-    public function porcentaje($piso, $techo, $vendibilidad): int
+    public function porcentaje($piso, $techo, $vendibilidad, $es_buen_pagador = null): int
     {
         $piso  = (int) $piso;
         $techo = (int) $techo;
@@ -128,6 +160,15 @@ class PorcentajeSugeridoService
         $vendibilidad = $vendibilidad < 0 ? 0.0 : $vendibilidad;
 
         $porcentaje = (int) floor($piso + $vendibilidad * ($techo - $piso));
+
+        /*
+         * El premio del buen pagador (ver BONUS_BUEN_PAGADOR): se acerca al techo una fracción de lo
+         * que le falta, y nunca lo alcanza salvo que ya estuviera ahí. === true y no un truthy
+         * suelto: null es "sin datos" y tiene que comportarse igual que no saber nada.
+         */
+        if ($es_buen_pagador === true) {
+            $porcentaje = (int) floor($porcentaje + ($techo - $porcentaje) * self::BONUS_BUEN_PAGADOR);
+        }
 
         if ($porcentaje > $techo) {
             return $techo;

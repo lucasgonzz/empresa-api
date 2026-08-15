@@ -71,11 +71,15 @@ class GenerateOfferSuggestionChunksJob implements ShouldQueue
             'resumen_ia'        => null,
             'resumen_ia_estado' => null,
             'resumen_ia_error'  => null,
-            // Los tres informativos también se resetean acá y no solo al cerrar: sin esto, una
-            // corrida re-ejecutada que termina vacía seguiría mostrando los totales de la anterior.
+            // Los informativos también se resetean acá y no solo al cerrar: sin esto, una corrida
+            // re-ejecutada que termina vacía seguiría mostrando los totales de la anterior. El
+            // desglose de exclusiones va en la misma lista y por el mismo motivo, y encima él se
+            // ACUMULA lote a lote: sin el reset, un reintento sumaría las exclusiones de la corrida
+            // anterior a las de esta y el número saldría al doble.
             'total_clientes'                     => null,
             'total_lineas'                       => null,
             'total_clientes_excluidos_por_deuda' => null,
+            'exclusiones_por_motivo'             => null,
         ]);
 
         $service = new OfertaSugeridaService($suggestion);

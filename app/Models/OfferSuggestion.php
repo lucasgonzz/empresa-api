@@ -29,12 +29,66 @@ use Illuminate\Database\Eloquent\Model;
  * (decisión de Lucas del 15/8/2026), y el número es lo que le muestra al
  * comerciante que el sistema tuvo criterio.
  *
+ * exclusiones_por_motivo es la otra mitad de esa misma pregunta, del lado de los
+ * ARTÍCULOS: mapa motivo => cantidad de líneas candidatas que el techo descartó
+ * (sin costo cargado, sin precio, margen no positivo, etc.). Informativo, se
+ * llena al calcular cada lote. Es la diferencia entre "no encontré nada" y
+ * "miré 800 artículos y 200 no tienen el costo cargado".
+ *
  * El detalle columna por columna está en el docblock de la migración
  * 2026_08_17_100000_create_offer_suggestions_table.php.
  */
 class OfferSuggestion extends Model
 {
     protected $guarded = [];
+
+    /**
+     * 🔴 exclusiones_por_motivo viaja como ARRAY, no como string JSON. La columna es text (ver la
+     * migración 2026_08_17_100500) y el cast es lo que hace que la SPA reciba un objeto en el JSON de
+     * show()/index() y no una cadena que tendría que parsear a mano en la vista. Sin el cast, el
+     * v-for del detalle recorre los caracteres del string.
+     */
+    protected $casts = [
+        'exclusiones_por_motivo' => 'array',
+    ];
+
+    /**
+     * 🔴 El desglose YA EXPLICADO viaja en la respuesta de todos los endpoints que serializan la
+     * corrida. Se appendea acá y no se arma en la vista porque el texto de cada motivo tiene que
+     * salir de UN solo lugar (OfertaSugeridaService::texto_de_exclusion()): el mismo que lee la
+     * pantalla del detalle es el que lee la IA en su bloque de datos, y dos redacciones distintas del
+     * mismo motivo terminan siendo dos explicaciones distintas del mismo número. No hace ninguna
+     * consulta: lee la columna que ya vino con el modelo.
+     */
+    protected $appends = ['exclusiones_explicadas'];
+
+    /**
+     * Los motivos de exclusión de artículos, ya en criollo y ordenados de mayor a menor: el que más
+     * pesa es el primero que el comerciante tiene que ir a arreglar.
+     *
+     * @return array Lista de ['motivo' => string, 'texto' => string, 'cantidad' => int]
+     */
+    public function getExclusionesExplicadasAttribute()
+    {
+        $exclusiones = $this->exclusiones_por_motivo;
+
+        if (!is_array($exclusiones) || empty($exclusiones)) {
+            return [];
+        }
+
+        arsort($exclusiones);
+        $explicadas = [];
+
+        foreach ($exclusiones as $motivo => $cantidad) {
+            $explicadas[] = [
+                'motivo'   => $motivo,
+                'texto'    => \App\Services\OfertasClientes\OfertaSugeridaService::texto_de_exclusion($motivo),
+                'cantidad' => (int) $cantidad,
+            ];
+        }
+
+        return $explicadas;
+    }
 
     function scopeWithAll($q) {
         // withCount y no with: el listado necesita la columna "líneas" (una

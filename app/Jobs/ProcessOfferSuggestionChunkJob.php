@@ -99,6 +99,8 @@ class ProcessOfferSuggestionChunkJob implements ShouldQueue
             OfferSuggestionLine::insert($lote);
         }
 
+        $this->acumular_exclusiones($service->exclusiones_por_motivo());
+
         $this->suggestion->increment('processed_chunks');
         $this->suggestion->refresh();
 
@@ -109,6 +111,36 @@ class ProcessOfferSuggestionChunkJob implements ShouldQueue
         ) {
             $this->cerrar_corrida();
         }
+    }
+
+    /**
+     * Suma el desglose de exclusiones de ESTE lote al que ya tiene la cabecera.
+     *
+     * 🔴 Se acumula contra la base y no en una propiedad del job porque cada lote es un job nuevo: la
+     * cuenta tiene que sobrevivir de uno a otro y el único lugar compartido es la cabecera. Los lotes
+     * corren SECUENCIALMENTE dentro de GenerateOfferSuggestionChunksJob::handle() (un foreach que
+     * llama ->handle()), así que este leer-sumar-escribir no compite con nadie. Si algún día los
+     * lotes pasaran a despacharse en paralelo a varios workers, esto necesita un lock o un
+     * increment por columna: queda escrito acá para que no se descubra en producción.
+     *
+     * @param  array $del_lote Mapa motivo => cantidad del lote recién calculado.
+     * @return void
+     */
+    protected function acumular_exclusiones(array $del_lote)
+    {
+        if (empty($del_lote)) {
+            return;
+        }
+
+        $acumulado = $this->suggestion->exclusiones_por_motivo;
+        $acumulado = is_array($acumulado) ? $acumulado : [];
+
+        foreach ($del_lote as $motivo => $cantidad) {
+            $acumulado[$motivo] = (isset($acumulado[$motivo]) ? (int) $acumulado[$motivo] : 0) + (int) $cantidad;
+        }
+
+        $this->suggestion->exclusiones_por_motivo = $acumulado;
+        $this->suggestion->save();
     }
 
     /**

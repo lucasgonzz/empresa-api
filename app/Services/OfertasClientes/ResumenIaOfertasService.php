@@ -83,6 +83,7 @@ class ResumenIaOfertasService
             // Lucas del 15/8/2026 (al que debe hace mucho no se le ofrece nada) y es lo que le muestra
             // al comerciante que el sistema tuvo criterio. Un "3" suelto no significa nada.
             . "- " . $excluidos . " clientes quedaron afuera porque tienen ventas sin cobrar\n"
+            . $this->bloque_de_exclusiones($suggestion)
             . "- Ofertas por criterio de marketing:\n"
             . (count($por_criterio) ? implode("\n", $por_criterio) : '- (sin lineas)') . "\n"
             // El tope sale de OfertaSugeridaService y no de un ($vigencia * 2) escrito acá: es el
@@ -233,6 +234,43 @@ class ResumenIaOfertasService
             ->orderBy('prioridad', 'ASC')
             ->limit(self::TOP_LINEAS_PROMPT)
             ->get();
+    }
+
+    /**
+     * El desglose de artículos que quedaron afuera y por qué, como DATO y no como instrucción (este
+     * bloque es parte de armar_datos(), que el chat guarda tal cual en ai_conversations.contexto).
+     *
+     * Es lo que le permite a la IA decir "de 800 artículos que miré, 200 no tienen el costo cargado"
+     * en vez de "encontré 12 ofertas" a secas. El texto de cada motivo sale de
+     * OfertaSugeridaService::texto_de_exclusion(), el mismo que lee la pantalla del detalle: dos
+     * redacciones distintas del mismo motivo son dos explicaciones distintas del mismo número.
+     *
+     * Devuelve cadena vacía —y no un "0 artículos excluidos"— cuando no hubo ninguna exclusión o la
+     * corrida es vieja y no tiene desglose: una línea de relleno en el prompt es una línea que la IA
+     * puede terminar contando.
+     *
+     * @param  mixed $suggestion
+     * @return string
+     */
+    protected function bloque_de_exclusiones($suggestion)
+    {
+        $exclusiones = $suggestion->exclusiones_por_motivo;
+
+        if (!is_array($exclusiones) || empty($exclusiones)) {
+            return '';
+        }
+
+        arsort($exclusiones);
+
+        $total  = array_sum(array_map('intval', $exclusiones));
+        $filas  = [];
+
+        foreach ($exclusiones as $motivo => $cantidad) {
+            $filas[] = '  - ' . (int) $cantidad . ' ' . OfertaSugeridaService::texto_de_exclusion($motivo);
+        }
+
+        return "- " . $total . " articulos candidatos quedaron afuera porque no se les puede calcular un descuento seguro:\n"
+            . implode("\n", $filas) . "\n";
     }
 
     /**
