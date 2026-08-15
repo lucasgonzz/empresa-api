@@ -14,6 +14,12 @@ class WhatsappBotConfig extends Model
         'ai_enabled_default' => 'boolean',
         // Si se debe enviar automáticamente el comprobante PDF de la venta por el agente.
         'auto_send_sale_pdf' => 'boolean',
+        // Segundos que espera el agente después de un mensaje entrante antes de generar la
+        // respuesta (agrupa los mensajes que el cliente manda seguidos). 0 = responde al instante.
+        'ai_reply_delay_seconds' => 'integer',
+        // Segundos que la respuesta generada espera confirmación humana antes de enviarse
+        // sola. 0 = se envía sin esperar a nadie.
+        'ai_confirm_delay_seconds' => 'integer',
     ];
 
     /**

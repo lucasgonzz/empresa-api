@@ -7,6 +7,7 @@ use App\Models\Client;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
+use App\Services\WhatsappAiAutoSendScheduler;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -93,9 +94,15 @@ class WhatsappChatHelper
     }
 
     /**
-     * Guarda la respuesta del agente de IA como mensaje `out` y emite el broadcast.
-     * `delivery_status` nace en `pendiente`: se actualiza más adelante con los eventos
-     * `whatsapp.message.sent/delivered/read/failed` (ver `handle_delivery_status_event`).
+     * Guarda la respuesta del agente de IA como mensaje `out` YA ENVIADO y emite el
+     * broadcast. `delivery_status` nace en `pendiente`: se actualiza más adelante con los
+     * eventos `whatsapp.message.sent/delivered/read/failed` (ver `handle_delivery_status_event`).
+     *
+     * ⚠️ Desde la misión whatsapp-agente el flujo automático NO pasa más por acá: el agente
+     * crea la respuesta con `store_pending_ai_message()` y recién cuando sale de verdad la
+     * marca con `mark_ai_message_sent()`. El método se deja porque sigue siendo el camino
+     * correcto para cualquier caller que envíe primero y persista después, y se le pasa
+     * `ai_status = 'enviado'` para que la fila quede coherente con el eje nuevo.
      *
      * @param  WhatsappChat  $chat  Chat al que pertenece la respuesta.
      * @param  string  $body  Texto generado por la IA.
@@ -104,7 +111,97 @@ class WhatsappChatHelper
      */
     public static function store_outbound_ai_message(WhatsappChat $chat, $body, $wa_message_id)
     {
-        return self::store_outbound_message($chat, $body, $wa_message_id, 'ia', null);
+        return self::store_outbound_message($chat, $body, $wa_message_id, 'ia', null, null, null, null, 'enviado');
+    }
+
+    /**
+     * Guarda una respuesta del agente que TODAVÍA NO SE ENVIÓ, esperando la confirmación de
+     * una persona (misión whatsapp-agente). Nace con `ai_status = 'a_confirmar'` y sin
+     * `wa_message_id`, porque no pasó por Kapso: la manda después
+     * `AutoSendWhatsappAiMessageJob` (si vence la espera) o el endpoint de confirmación.
+     *
+     * Sí mueve `last_message_at` y broadcastea a propósito: el chat tuvo actividad y el
+     * operador necesita verlo flotar arriba de la lista para poder confirmarlo o descartarlo.
+     *
+     * @param  WhatsappChat  $chat  Chat al que pertenece la respuesta.
+     * @param  string  $body  Texto generado por la IA.
+     * @return WhatsappChatMessage
+     */
+    public static function store_pending_ai_message(WhatsappChat $chat, $body)
+    {
+        return self::store_outbound_message($chat, $body, null, 'ia', null, null, null, null, 'a_confirmar');
+    }
+
+    /**
+     * Marca como enviada una respuesta del agente que estaba esperando confirmación: le
+     * carga el `wa_message_id` que devolvió Kapso, le saca la fecha de auto-envío (ya no hay
+     * contador que mostrar) y la pasa a `ai_status = 'enviado'`, que es el valor con el que
+     * entra al historial que ve la IA.
+     *
+     * `delivery_status` NO se toca: sigue en `pendiente` hasta que llegue el evento de Meta.
+     * Son dos ejes distintos ("¿lo aprobó un humano?" vs "¿lo entregó Meta?") y mezclarlos
+     * rompería el rankeo anti-retroceso de `handle_delivery_status_event()`.
+     *
+     * @param  WhatsappChatMessage  $message  Mensaje con `ai_status = 'a_confirmar'`.
+     * @param  string|null  $wa_message_id  Id que devolvió Kapso al enviar (puede no venir).
+     * @return WhatsappChatMessage
+     */
+    public static function mark_ai_message_sent(WhatsappChatMessage $message, $wa_message_id)
+    {
+        $message->ai_status = 'enviado';
+        $message->wa_message_id = $wa_message_id;
+        $message->ai_auto_send_at = null;
+        $message->save();
+
+        $chat = WhatsappChat::find($message->whatsapp_chat_id);
+        if (! is_null($chat)) {
+            $chat->last_message_at = now();
+            $chat->save();
+
+            self::broadcast_update((int) $chat->user_id, $chat, $message);
+        }
+
+        return $message;
+    }
+
+    /**
+     * Borra las respuestas del agente que están esperando confirmación en un chat, cancelando
+     * antes su job de auto-envío. Se llama cuando el cliente vuelve a escribir.
+     *
+     * Se BORRAN, no se marcan (decisión D2 del plan), por dos motivos: el historial que ve la
+     * IA leería un `direction = 'out'` que nunca se envió y creería que ya contestó; y el
+     * operador vería en la conversación un mensaje que el cliente jamás recibió.
+     *
+     * @param  WhatsappChat  $chat
+     * @return int  Cantidad de mensajes descartados.
+     */
+    public static function discard_pending_ai_messages(WhatsappChat $chat)
+    {
+        $pending_ids = WhatsappChatMessage::where('whatsapp_chat_id', $chat->id)
+            ->where('ai_status', 'a_confirmar')
+            ->pluck('id');
+
+        if ($pending_ids->isEmpty()) {
+            return 0;
+        }
+
+        Log::channel('daily')->info('WhatsappChatHelper: respuestas del agente descartadas (el cliente siguió escribiendo).', [
+            'chat_id'     => $chat->id,
+            'message_ids' => $pending_ids->all(),
+        ]);
+
+        $auto_send_scheduler = new WhatsappAiAutoSendScheduler();
+        foreach ($pending_ids as $pending_id) {
+            $auto_send_scheduler->cancel_for_message((int) $pending_id);
+        }
+
+        WhatsappChatMessage::whereIn('id', $pending_ids)->delete();
+
+        // Sin mensaje: el front no puede "actualizar" una fila que ya no existe, tiene que
+        // recargar los mensajes del chat.
+        self::broadcast_update((int) $chat->user_id, $chat);
+
+        return $pending_ids->count();
     }
 
     /**
@@ -173,9 +270,13 @@ class WhatsappChatHelper
      * @param  string|null  $template_meta_name  Solo aplica a source 'plantilla'.
      * @param  string|null  $media_type  'document' si el mensaje trae un adjunto (Prompt 05), null si es texto plano.
      * @param  string|null  $media_url  URL del adjunto, solo si `$media_type` no es null.
+     * @param  string|null  $ai_status  Eje de confirmación humana del agente (misión whatsapp-agente):
+     *                                  null = no aplica (todo lo que no salga del agente),
+     *                                  'a_confirmar' = generado y esperando que una persona lo apruebe,
+     *                                  'enviado' = ya salió. Es independiente de `delivery_status`.
      * @return WhatsappChatMessage
      */
-    private static function store_outbound_message(WhatsappChat $chat, $body, $wa_message_id, $source, $sent_by_user_id, $template_meta_name = null, $media_type = null, $media_url = null)
+    private static function store_outbound_message(WhatsappChat $chat, $body, $wa_message_id, $source, $sent_by_user_id, $template_meta_name = null, $media_type = null, $media_url = null, $ai_status = null)
     {
         $message = WhatsappChatMessage::create([
             'whatsapp_chat_id' => $chat->id,
@@ -188,6 +289,7 @@ class WhatsappChatHelper
             'template_meta_name' => $template_meta_name,
             'media_type' => $media_type,
             'media_url' => $media_url,
+            'ai_status' => $ai_status,
         ]);
 
         $chat->last_message_at = now();

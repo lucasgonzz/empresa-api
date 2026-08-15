@@ -13,7 +13,12 @@ class WhatsappChatMessage extends Model
 {
     protected $guarded = [];
 
-    protected $casts = [];
+    protected $casts = [
+        // Momento en que la respuesta del agente se envía sola si nadie la confirma antes
+        // (misión whatsapp-agente). Se castea a Carbon para que el front reciba una fecha
+        // ISO y pueda armar el contador regresivo. Null cuando no hay auto-envío pendiente.
+        'ai_auto_send_at' => 'datetime',
+    ];
 
     /**
      * Relaciones a precargar cuando el controller pide el modelo completo vía
