@@ -536,14 +536,35 @@ SUMMARY;
      *     producción, que es justo el agujero que vino a tapar la simulación de entrantes;
      * (c) el gate real y suficiente es que el negocio tenga tienda cargada (`users.online`).
      *
+     * 🔴 OJO CON LAS DOS COLUMNAS QUE SE LLAMAN `online`, QUE NO SON LO MISMO:
+     * `users.online` es un string con la URL de la tienda del negocio; `articles.online` es un
+     * booleano (0/1, default 1) que dice si ESE artículo está publicado en la tienda. Hacen
+     * falta las dos: sin la primera no hay dominio al que apuntar, y sin la segunda se arma un
+     * link a un 404, porque el ecommerce lista con `->where('online', 1)` y un artículo
+     * despublicado no tiene página. Un negocio puede tener miles de artículos en el ERP y solo
+     * unos cientos publicados, así que el caso es la norma y no el borde.
+     *
+     * El artículo despublicado SÍ sigue apareciendo en el catálogo que ve la IA, con su precio
+     * y su stock: se vende en el mostrador aunque no esté en la web, y contestar eso está bien.
+     * Lo único que se le saca es el link.
+     *
      * @param array|object          $article
      * @param \App\Models\User|null $owner_user
      *
-     * @return string Vacío si no se puede armar el link (sin dueño, sin tienda o sin slug).
+     * @return string Vacío si no se puede armar el link (sin dueño, sin tienda, sin slug, o
+     *                artículo no publicado en la tienda).
      */
     private function article_url($article, $owner_user): string
     {
         if (is_null($owner_user)) {
+            return '';
+        }
+
+        // `articles.online`: si el artículo no está publicado, su URL pública da 404. Se corta
+        // acá, antes de armar nada. El default de la columna es 1, así que un artículo viejo
+        // sin el dato explícito se sigue tratando como publicado, igual que en la tienda.
+        $article_online = $this->article_field($article, 'online', 1);
+        if (! $article_online) {
             return '';
         }
 

@@ -110,21 +110,26 @@ class WhatsappBotController extends Controller
      * @param  string  $from  Teléfono del cliente, sin normalizar.
      * @param  string  $body  Texto (o transcripción del audio) del mensaje entrante.
      * @param  array  $payload  Payload completo, para extraer el nombre de contacto.
+     * @param  bool  $is_simulated  True solo cuando el mensaje vino de `simulate_inbound()`.
+     *                              Es lo ÚNICO que diferencia los dos caminos: se propaga a la
+     *                              fila del mensaje y al chat, y de ahí lo lee el freno de
+     *                              `WhatsappBotSendService` para no salir a Kapso.
      * @return void
      */
-    public function process_inbound(WhatsappBotConfig $config, $from, $body, array $payload): void
+    public function process_inbound(WhatsappBotConfig $config, $from, $body, array $payload, $is_simulated = false): void
     {
         $user_id = (int) $config->user_id;
 
         Log::channel('daily')->info('WhatsappBotController: mensaje entrante.', [
-            'from'    => $from,
-            'type'    => isset($payload['message']['type']) ? strtolower((string) $payload['message']['type']) : 'text',
-            'body'    => mb_substr((string) $body, 0, 120),
-            'user_id' => $user_id,
+            'from'      => $from,
+            'type'      => isset($payload['message']['type']) ? strtolower((string) $payload['message']['type']) : 'text',
+            'body'      => mb_substr((string) $body, 0, 120),
+            'user_id'   => $user_id,
+            'simulado'  => (bool) $is_simulated,
         ]);
 
         // Persiste el chat (con auto-vinculación de cliente si corresponde) y el mensaje 'in'.
-        $chat = WhatsappChatHelper::store_inbound_message($user_id, $from, (string) $body, $payload, $config);
+        $chat = WhatsappChatHelper::store_inbound_message($user_id, $from, (string) $body, $payload, $config, (bool) $is_simulated);
 
         // El scheduler aplica el debounce configurado: descarta lo que quedó pendiente de
         // confirmación, bumpea el token y encola el job que genera la respuesta.
@@ -271,13 +276,30 @@ class WhatsappBotController extends Controller
     /**
      * Inyecta un mensaje entrante como si lo hubiera mandado el cliente por WhatsApp (misión
      * whatsapp-agente). Sirve para probar el agente de punta a punta sin depender de que
-     * alguien escriba de verdad a un número de Kapso: la fila que se persiste es idéntica a la
-     * de un mensaje real (`direction = 'in'`, `source = 'cliente'`), que es exactamente el
-     * punto. La trazabilidad de que fue simulado queda en el log.
+     * alguien escriba de verdad a un número de Kapso.
+     *
+     * Recorre EXACTAMENTE el mismo camino interno que el webhook real —persistencia del chat y
+     * del mensaje, ventana de 24 h, agrupación con su demora, generación de la respuesta,
+     * estado de confirmación y registro de tokens—, pero con dos diferencias que no son
+     * cosméticas y que son todo el punto de este endpoint:
+     *
+     *  1. El mensaje queda marcado con `is_simulated = 1`, y el chat con
+     *     `last_inbound_simulated = 1`. `direction = 'in'` y `source = 'cliente'` siguen
+     *     siendo idénticos a los de un mensaje real a propósito (el flujo tiene que ser el
+     *     mismo), así que sin esa marca el registro comercial quedaba falseado: un empleado
+     *     leía mañana un mensaje que el cliente nunca escribió y no tenía cómo distinguirlo.
+     *  2. La respuesta que genera el agente NUNCA sale hacia Kapso: la frena
+     *     `WhatsappBotSendService::chat_en_simulacion()` (leer el comentario de ese método
+     *     antes de tocar nada). Se persiste igual y se ve en la conversación, así que Lucas
+     *     lee lo que el agente contestó sin que se le haya mandado nada a nadie.
      *
      * 🔴 La config se resuelve SIEMPRE por el usuario autenticado, nunca con el atajo
      * mono-tenant del webhook (`where('is_active', true)->first()`). Eso es lo único que
      * impide que el dueño de una empresa inyecte mensajes en la cuenta de otra.
+     *
+     * La ruta lleva además un `throttle` propio y bajo (ver `routes/api.php`): cada llamada
+     * gasta un embedding de OpenAI más una respuesta de Anthropic, y con el límite genérico
+     * de 300/min eso eran 300 llamadas pagas por minuto sin techo.
      *
      * @param  Request  $request  Espera `phone` y `body`.
      * @return JsonResponse
@@ -326,8 +348,9 @@ class WhatsappBotController extends Controller
 
         // Mismo camino que el webhook real: persiste el chat y el mensaje 'in', abre la
         // ventana de 24 h (store_inbound_message setea last_inbound_at = now()) y dispara el
-        // agente con su debounce.
-        $this->process_inbound($config, $phone, $body, $payload);
+        // agente con su debounce. El `true` final marca el mensaje y el chat como simulados:
+        // es lo que hace que esa ventana forzada no se pueda usar para enviar de verdad.
+        $this->process_inbound($config, $phone, $body, $payload, true);
 
         $chat = WhatsappChat::where('user_id', $user_id)
             ->where('phone', WhatsappPhoneHelper::normalize($phone))

@@ -899,7 +899,13 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
 
     // Inyecta un mensaje entrante como si lo hubiera mandado el cliente (solo dueño). Corre
     // exactamente el mismo camino que el webhook real: ventana de 24 h, debounce y agente.
-    Route::post('whatsapp-bot/simulate-inbound', 'WhatsappBotController@simulate_inbound');
+    // Throttle propio y bajo, contra los 300/min genéricos: cada llamada gasta un embedding
+    // pago de OpenAI más una respuesta paga de Anthropic. 10 por minuto alcanza de sobra para
+    // probar la agrupación de mensajes seguidos y le pone un techo real al gasto.
+    // La respuesta que genera el agente para un entrante simulado NO sale por Kapso: la frena
+    // WhatsappBotSendService::chat_en_simulacion(), y el porqué está escrito ahí.
+    Route::post('whatsapp-bot/simulate-inbound', 'WhatsappBotController@simulate_inbound')
+        ->middleware('throttle:10,1');
 });
 
 // Callback público Mercado Libre (notificaciones); sin auth Sanctum.
