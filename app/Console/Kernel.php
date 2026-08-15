@@ -68,6 +68,19 @@ class Kernel extends ConsoleKernel
                 ->withoutOverlapping(60);
         }
 
+        // Generación automática de sugerencias de compra a proveedores, solo
+        // con la extensión sugerencias_compras. Mismo patrón que
+        // sugerencias:generar de arriba: el comando decide adentro si según
+        // la periodicidad configurada hoy toca (o sale en una línea).
+        // 05:30 y no 05:00: no se pisa con sugerencias:generar (mismo
+        // comercio, misma ventana horaria, dos comandos que recorren todo el
+        // catálogo). withoutOverlapping(60) cubre catálogos grandes.
+        if ($company_owner && UserHelper::hasExtencion('sugerencias_compras', $company_owner)) {
+            $schedule->command('compras:generar')
+                ->dailyAt('05:30')
+                ->withoutOverlapping(60);
+        }
+
         // Reintenta cada 5 minutos los mensajes de soporte no sincronizados a admin-api.
         $schedule->command('support:retry-pending-syncs')->everyFiveMinutes();
 
