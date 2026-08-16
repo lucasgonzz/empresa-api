@@ -79,6 +79,10 @@ class Lectura_arbitraria_de_archivos_Test extends TestCase
     {
         foreach ($this->archivos_creados as $archivo) {
             if (is_file($archivo)) {
+                // Segunda linea de defensa: si un test dejo el archivo sin permiso de escritura,
+                // @unlink() falla en silencio y queda basura en un directorio que se sirve
+                // publicamente. Reponer el permiso antes de borrar cuesta nada.
+                @chmod($archivo, 0644);
                 @unlink($archivo);
             }
         }
@@ -354,9 +358,27 @@ class Lectura_arbitraria_de_archivos_Test extends TestCase
         $archivo = storage_path('app/public/'.$this->prefijo.'_ilegible.txt');
         $this->crear_archivo($archivo, 'no se deberia poder leer');
 
-        if (! @chmod($archivo, 0000) || is_readable($archivo)) {
+        $sin_permiso = @chmod($archivo, 0000) && ! is_readable($archivo);
+
+        /*
+         * El permiso se repone ANTES de cualquier salida del test, incluida la de markTestSkipped().
+         * markTestSkipped() lanza una excepcion, asi que un chmod puesto despues no corre nunca: en
+         * Windows, donde este test saltea, el archivo quedaba de solo lectura y el @unlink() del
+         * tearDown fallaba en silencio. Resultado: un archivo de basura por corrida acumulandose en
+         * storage/app/public, que es un directorio que se sirve publicamente. Detectado el
+         * 16/8/2026 por el revisor de merge, con cuatro residuos ya en el disco.
+         */
+        @chmod($archivo, 0644);
+
+        if (! $sin_permiso) {
             $this->markTestSkipped('Este entorno no permite sacarle el permiso de lectura al archivo.');
         }
+
+        /*
+         * Se vuelve a sacar el permiso para la medicion real, y se repone enseguida. Acá ya sabemos
+         * que el entorno lo soporta, asi que no hay salida temprana entre las dos lineas.
+         */
+        @chmod($archivo, 0000);
 
         $resultado = \App\Http\Controllers\Helpers\StoragePathHelper::inspeccionar(
             storage_path('app/public'),

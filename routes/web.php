@@ -261,6 +261,19 @@ $servir_archivo_confinado = function ($etiqueta, $base_dir, $path, $servir) {
     try {
         return $servir($resultado['path']);
     } catch (\Exception $e) {
+        /*
+         * Se loguea porque este catch convierte en 404 cualquier fallo del servido, no solo el
+         * archivo que desaparecio: si alguna vez un cliente reporta "veo 404 en un archivo que
+         * existe", sin esta linea no queda ningun rastro para diagnosticarlo.
+         *
+         * Y se atrapa \Exception y no \Throwable a proposito: un \Error es un bug de programacion y
+         * tiene que seguir saliendo como 500, no enmascararse de 404.
+         */
+        Log::warning($etiqueta.': fallo el servido de un archivo ya verificado', [
+            'archivo' => $resultado['path'],
+            'error'   => $e->getMessage(),
+        ]);
+
         abort(404);
     }
 };
