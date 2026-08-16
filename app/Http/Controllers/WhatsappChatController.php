@@ -111,17 +111,34 @@ class WhatsappChatController extends Controller
      * que todavía no le escribió). Si ya existe un chat para ese teléfono, lo devuelve
      * en vez de duplicarlo.
      *
-     * @param  Request  $request  Espera `phone` (obligatorio) y `client_id` (opcional).
+     * `display_name` es el nombre con el que el operador ve el chat en la bandeja. Importa
+     * cuando el chat NO va vinculado a un cliente del ERP: desde Clientes el nombre sale del
+     * `client_id`, pero un chat abierto desde un pedido de la tienda o desde Compradores no
+     * tiene cliente que lo nombre, así que sin este campo la bandeja muestra un número de
+     * teléfono pelado y el operador no sabe con quién está hablando.
+     *
+     * @param  Request  $request  Espera `phone` (obligatorio), `client_id` (opcional) y
+     *                            `display_name` (opcional).
      * @return JsonResponse
      */
     public function store(Request $request): JsonResponse
     {
+        // El largo se valida y no se trunca: `whatsapp_chats.display_name` es un string(120) y
+        // un nombre más largo lo cortaría MySQL por la mitad (o reventaría la query, según el
+        // modo estricto de la base). Es `nullable` porque los tres botones que abren un chat
+        // mandan lo que tienen a mano y un pedido de la tienda puede no tener comprador cargado.
+        $request->validate([
+            'display_name' => 'nullable|string|max:120',
+        ]);
+
         $user_id = $this->userId();
         $phone = WhatsappPhoneHelper::normalize($request->phone);
 
         if ($phone === '') {
             return response()->json(['message' => 'Teléfono inválido.'], 422);
         }
+
+        $display_name = trim((string) $request->display_name);
 
         $chat = WhatsappChat::where('user_id', $user_id)
             ->where('phone', $phone)
@@ -134,9 +151,22 @@ class WhatsappChatController extends Controller
                 'user_id' => $user_id,
                 'phone' => $phone,
                 'client_id' => $request->client_id ?: null,
+                'display_name' => $display_name !== '' ? $display_name : null,
                 'ai_enabled' => ! is_null($config) ? (bool) $config->ai_enabled_default : true,
                 'unread_count' => 0,
             ]);
+        } elseif ($display_name !== '' && empty($chat->display_name)) {
+            // 🔴 SOLO SI EL CHAT NO TENÍA NOMBRE. Este endpoint es idempotente por teléfono: lo
+            // llaman los tres botones nuevos de la SPA y se lo come cada vez que el operador
+            // abre la misma conversación. Pisar el nombre existente haría que el nombre del
+            // chat dependa de por dónde entró la última persona, y se llevaría puesto tanto el
+            // nombre que mandó Kapso del perfil de WhatsApp como el que ya venía de otro
+            // origen. Rellenar uno vacío, en cambio, no rompe nada y arregla el caso real: un
+            // chat que nació de un entrante sin nombre de contacto y que ahora se abre desde un
+            // pedido, donde sí sabemos cómo se llama el comprador. Es el mismo criterio, y por
+            // los mismos motivos, que `WhatsappChatHelper::store_inbound_message()`.
+            $chat->display_name = $display_name;
+            $chat->save();
         }
 
         return response()->json(['model' => $this->fullModel('WhatsappChat', $chat->id)], 201);
