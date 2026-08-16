@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Helpers\StoragePathHelper;
 use App\Models\Article;
 use App\Services\PlatformConnector\PlatformConnectorOAuthService;
 use App\Services\MercadoLibre\CategoryService;
@@ -196,36 +197,86 @@ Route::post('/password-reset/update-password',
 	'CommonLaravel\PasswordResetController@updatePassword'
 );
 
+/*
+ * Las tres rutas de abajo son PUBLICAS (routes/web.php se monta con el grupo 'web', que no tiene
+ * ninguna capa de autenticacion) y sirven archivos del disco a partir de un parametro del usuario.
+ * Hasta el 16/8/2026 concatenaban ese parametro directo a storage_path(), asi que un "../" alcanzaba
+ * para leer cualquier archivo del servidor, empezando por el .env.
+ *
+ * El confinamiento vive en StoragePathHelper y se hace sobre realpath(), no sobre el string: un
+ * chequeo textual de ".." no ve los symlinks. Leer el docblock de esa clase antes de tocar esto.
+ *
+ * El {path} sigue aceptando '.*' a proposito: los consumidores legitimos usan subcarpetas anidadas
+ * -- articles_images/zip/<desc>/<desc>.jpg que arma el comando set_article_images, y
+ * support_messages/<ticket_id>/<hash>.ext de los adjuntos del chat de soporte. Achicar el regex
+ * romperia eso y no es donde va la defensa.
+ *
+ * Y responden 404, nunca 403: un 403 le confirma al atacante que el archivo existe.
+ */
 Route::get('/storage/{path}', function ($path) {
-    $full_path = storage_path('app/public/' . $path);
+    /*
+     * Esta ruta es el fallback para las instalaciones SIN el symlink public/storage. Donde el
+     * symlink existe, el servidor web sirve el archivo antes de llegar a index.php y esto no corre
+     * nunca; en hosting compartido, donde no se puede crear el symlink, es lo unico que sirve las
+     * imagenes de articulos. Por eso no se borra.
+     */
+    $resultado = StoragePathHelper::inspeccionar(storage_path('app/public'), $path);
 
-    if (!file_exists($full_path)) {
+    if (StoragePathHelper::es_intento_de_escape($resultado['motivo'])) {
+        Log::warning('storage: intento de salir del directorio permitido', [
+            'path_pedido' => $path,
+            'motivo'      => $resultado['motivo'],
+            'ip'          => request()->ip(),
+        ]);
+    }
+
+    if (is_null($resultado['path'])) {
         abort(404);
     }
 
-    return response()->file($full_path);
+    return response()->file($resultado['path']);
 })->where('path', '.*');
 
 Route::get('/imported-files/{path}', function ($path) {
-    $full_path = storage_path('app/imported_files/' . $path);
+    $resultado = StoragePathHelper::inspeccionar(storage_path('app/imported_files'), $path);
 
-    Log::info($full_path);
-    if (!file_exists($full_path)) {
+    /*
+     * Solo se loguea el intento de escape. Antes habia un Log::info($full_path) que escribia la ruta
+     * absoluta de CADA descarga legitima: ruido en el log y, de paso, el layout del servidor
+     * anotado en un archivo que se comparte para diagnosticar otras cosas.
+     */
+    if (StoragePathHelper::es_intento_de_escape($resultado['motivo'])) {
+        Log::warning('imported-files: intento de salir del directorio permitido', [
+            'path_pedido' => $path,
+            'motivo'      => $resultado['motivo'],
+            'ip'          => request()->ip(),
+        ]);
+    }
+
+    if (is_null($resultado['path'])) {
         abort(404);
     }
 
-    return response()->file($full_path);
+    return response()->file($resultado['path']);
 })->where('path', '.*');
 
 Route::get('/exported-files/{path}', function ($path) {
     // Se expone archivo exportado para descarga desde notificación global.
-    $full_path = storage_path('app/exported-files/' . $path);
+    $resultado = StoragePathHelper::inspeccionar(storage_path('app/exported-files'), $path);
 
-    if (!file_exists($full_path)) {
+    if (StoragePathHelper::es_intento_de_escape($resultado['motivo'])) {
+        Log::warning('exported-files: intento de salir del directorio permitido', [
+            'path_pedido' => $path,
+            'motivo'      => $resultado['motivo'],
+            'ip'          => request()->ip(),
+        ]);
+    }
+
+    if (is_null($resultado['path'])) {
         abort(404);
     }
 
-    return response()->download($full_path);
+    return response()->download($resultado['path']);
 })->where('path', '.*');
 
 
