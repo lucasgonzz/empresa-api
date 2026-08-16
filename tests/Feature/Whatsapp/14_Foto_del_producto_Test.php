@@ -10,6 +10,7 @@ use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
 use App\Services\WhatsappAgentScheduler;
+use App\Services\WhatsappBotAiService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
@@ -32,6 +33,15 @@ use Tests\TestCase;
  * degradación correcta es "sale como texto normal", nunca "sale con basura de implementación a
  * la vista". Lo cubren los cuatro casos de degradación, empezando por
  * `un_codigo_que_no_existe_igual_sale_sin_el_marcador()`, que es el caso crítico 14.3 del plan.
+ *
+ * 🔴 Y QUE NO LO VEA POR NINGÚN CAMINO, NO SOLO POR EL DEL AGENTE AUTOMÁTICO. El marcador se
+ * filtraba por el botón "Sugerir respuesta" (`POST whatsapp-chats/{id}/suggest`), que devolvía el
+ * texto crudo de la IA: el borrador le caía al operador terminado en `[FOTO:7791234567890]` y, si
+ * lo mandaba sin leer hasta abajo, eso viajaba a WhatsApp. Ese agujero existía porque el recorte
+ * vivía en UNO de los dos consumidores del service en vez de en el service; ahora vive en el
+ * productor y lo protegen `el_borrador_del_operador_nunca_trae_el_marcador()` y
+ * `el_service_le_devuelve_el_texto_limpio_a_cualquier_caller()`, que es el que le cierra la puerta
+ * a cualquier consumidor que aparezca mañana.
  *
  * - Que la foto viaje por `link` y no por upload: `images.hosting_url` ya es una URL pública
  *   absoluta del catálogo, la misma que ve cualquiera en la tienda.
@@ -470,5 +480,73 @@ class Foto_del_producto_Test extends TestCase
         $this->assertEquals('enviado', $mensaje->ai_status, 'Se ve en la conversación, que es el punto de simular.');
         $this->assertNull($mensaje->wa_message_id, 'Sin id de Meta: nunca pasó por WhatsApp.');
         $this->assertEquals(1, (int) $mensaje->is_simulated);
+    }
+
+    /**
+     * 🔴 EL BUG. El botón "Sugerir respuesta" usa exactamente la misma llamada a la IA que el
+     * agente automático, así que la respuesta viene con el `[FOTO:...]` puesto. Mientras el
+     * recorte vivió adentro de `GenerateWhatsappAiReplyJob`, este camino devolvía el texto crudo:
+     * el borrador le caía al operador en el input terminado en `[FOTO:7791234567890]` y, si lo
+     * mandaba sin leer hasta abajo, el cliente recibía eso por WhatsApp. Y encima por acá el
+     * marcador no servía para nada: `send_message()` manda texto y nunca adjunta la foto.
+     *
+     * Que el otro consumidor —el agente automático— estuviera perfecto es justamente lo que hacía
+     * silencioso al bug.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function el_borrador_del_operador_nunca_trae_el_marcador()
+    {
+        Queue::fake();
+        $this->fakes_de_red();
+        $this->texto_de_la_ia = "Te recomiendo el taladro percutor de 750W, lo tenemos en stock.\n[FOTO:" . self::BAR_CODE . ']';
+
+        // El artículo existe y tiene foto: el camino feliz de la funcionalidad, que es el que
+        // más seguido le pone el marcador a la respuesta.
+        $this->articulo();
+        $chat = $this->chat_con_entrante();
+
+        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        $this->actingAs($this->empleado, 'web');
+
+        $response = $this->postJson('api/whatsapp-chats/' . $chat->id . '/suggest');
+        $response->assertStatus(200);
+
+        $sugerencia = (string) $response->json('suggestion');
+
+        $this->assertStringNotContainsString(
+            '[FOTO:',
+            $sugerencia,
+            'EL OPERADOR NO PUEDE VER EL MARCADOR: lo manda tal cual y termina en el WhatsApp del cliente.'
+        );
+        $this->assertEquals('Te recomiendo el taladro percutor de 750W, lo tenemos en stock.', $sugerencia);
+    }
+
+    /**
+     * La misma garantía, pero un escalón más abajo: pedida directo al service, que es donde vive
+     * el recorte. Este es el test que le cierra la puerta al consumidor que aparezca mañana —otro
+     * endpoint, otro job, una integración—, porque el marcador ya no existe del lado de afuera de
+     * `WhatsappBotAiService`. Sin él, la única red de contención serían los tests de los dos
+     * consumidores de hoy, y un tercero nacería con la fuga puesta.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function el_service_le_devuelve_el_texto_limpio_a_cualquier_caller()
+    {
+        Queue::fake();
+        $this->fakes_de_red();
+        $this->texto_de_la_ia = "Este es el que te sirve.\n[FOTO:" . self::BAR_CODE . ']';
+
+        $this->articulo();
+        $chat = $this->chat_con_entrante();
+
+        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+
+        $texto = (new WhatsappBotAiService())->generate_response($chat, $this->config);
+
+        $this->assertEquals('Este es el que te sirve.', $texto);
+        $this->assertStringNotContainsString('[FOTO:', $texto, 'El texto sale limpio del productor, no de cada caller.');
     }
 }

@@ -559,6 +559,19 @@ class WhatsappChatController extends Controller
      * envía ni la persiste: el front la carga en el input para que el operador la edite y
      * la mande a mano por `POST whatsapp-chats/{id}/messages` (Prompt 02).
      *
+     * 🔴 LA SUGERENCIA SALE COMO TEXTO PELADO, SIN LA FOTO DEL PRODUCTO, Y ES A PROPÓSITO. El
+     * agente automático puede adjuntar la foto porque él mismo persiste la fila del mensaje y la
+     * manda; acá el texto cae en el input del operador y después viaja por
+     * `POST whatsapp-chats/{id}/messages`, que envía `body` y nada más: un adjunto no tiene por
+     * dónde pasar en ese camino. Hacer que la sugerencia lleve la foto no es agregar un campo:
+     * es un segundo campo en esta respuesta, un adjunto pendiente dibujado en el composer y otro
+     * en el endpoint de envío del operador — y el operador YA tiene el clip al lado del input
+     * para mandar la foto que quiera. No entra en el arreglo de un bug.
+     *
+     * Lo que sí se garantiza es que el `[FOTO:...]` con el que el agente pide esa foto no le
+     * llegue nunca al operador ni, a través suyo, al cliente: el marcador lo saca
+     * `WhatsappBotAiService::generate_response()`, o sea el productor del texto, no este caller.
+     *
      * @param  int  $id
      * @return JsonResponse
      */

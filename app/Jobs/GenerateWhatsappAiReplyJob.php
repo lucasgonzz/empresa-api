@@ -31,19 +31,6 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     /**
-     * Marcador con el que el agente pide que se le adjunte la foto de un producto: el system
-     * prompt le indica que cierre la respuesta con `[FOTO:<código de barras>]` en una línea
-     * sola (ver `WhatsappBotAiService::build_system_prompt()`).
-     *
-     * Está anclado en `$` porque la consigna es que vaya al final de todo: un `[FOTO:...]`
-     * suelto en el medio del texto no es lo que se pidió, y sacarlo de ahí dejaría un hueco en
-     * mitad de una oración. `[^\]\n]+` corta el código en el primer `]` o en el fin de línea,
-     * así que un modelo que se olvide de cerrar el corchete se lleva puesta una línea y no
-     * media respuesta.
-     */
-    private const PHOTO_MARKER_PATTERN = '/\s*\[FOTO:([^\]\n]+)\]\s*$/';
-
-    /**
      * Tope de caracteres del texto para que la respuesta pueda viajar como epígrafe de la
      * imagen (D20).
      *
@@ -145,9 +132,20 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
                 return;
             }
 
-            $texto = (new WhatsappBotAiService())->generate_response($chat, $config);
+            // Se pide la variante con foto porque este es el ÚNICO consumidor que puede hacer
+            // algo con el código de barras marcado. El texto que devuelve ya viene sin el
+            // marcador: el recorte lo hace el service, que es el único que produce el texto, y
+            // así ningún otro consumidor (hoy `suggest()`, mañana lo que aparezca) puede
+            // filtrarlo.
+            $respuesta = (new WhatsappBotAiService())->generate_response_with_photo($chat, $config);
+            $texto     = $respuesta['body'];
 
-            if ($texto === '') {
+            // El corte es contra la respuesta ENTERA, cuerpo y marcador: si el modelo contestó
+            // solamente `[FOTO:123]`, el cuerpo limpio queda vacío pero la respuesta no lo
+            // estaba, y esa sí hay que seguir procesándola (más abajo se ve si el producto se
+            // pudo resolver). Mirando solo `$texto` se descartaría acá una respuesta con foto
+            // válida.
+            if ($texto === '' && $respuesta['bar_code'] === '') {
                 // Mismo comportamiento que tenía el controller: si la IA no devolvió nada
                 // (error HTTP, sin API key, historial vacío) no se manda ni se persiste nada.
                 Log::channel('daily')->warning('GenerateWhatsappAiReplyJob: respuesta IA vacía, no se persiste nada.', [
@@ -170,15 +168,14 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
                 return;
             }
 
-            // La foto del producto se resuelve ACÁ ABAJO y no apenas llega `$texto`, aunque el
-            // marcador ya estuviera ahí: entre las dos posiciones está el re-chequeo del token,
-            // que descarta la respuesta entera si el cliente siguió escribiendo. Resolviéndola
-            // antes, cada respuesta descartada se llevaría puesta una query al catálogo para
-            // nada. Después del re-chequeo, todo lo que se consulta se usa.
-            $foto  = $this->resolve_product_photo($chat, $texto);
-            $texto = $foto['body'];
+            // La foto del producto se resuelve ACÁ ABAJO y no apenas llega la respuesta, aunque
+            // el código de barras ya estuviera en la mano: entre las dos posiciones está el
+            // re-chequeo del token, que descarta la respuesta entera si el cliente siguió
+            // escribiendo. Resolviéndola antes, cada respuesta descartada se llevaría puesta una
+            // query al catálogo para nada. Después del re-chequeo, todo lo que se consulta se usa.
+            $extra = $this->resolve_product_photo($chat, $texto, $respuesta['bar_code']);
 
-            if ($texto === '' && empty($foto['extra'])) {
+            if ($texto === '' && empty($extra)) {
                 // Caso de borde real: el modelo contestó SOLO el marcador y encima no se pudo
                 // resolver el producto. Con el marcador sacado no queda nada que decir, y una
                 // fila con el cuerpo vacío se le dibujaría al operador como una burbuja en
@@ -191,7 +188,7 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
                 return;
             }
 
-            $message = WhatsappChatHelper::store_pending_ai_message($chat, $texto, $foto['extra']);
+            $message = WhatsappChatHelper::store_pending_ai_message($chat, $texto, $extra);
 
             // El auto-envío decide si sale al instante (ai_confirm_delay_seconds = 0) o si
             // espera la confirmación de una persona.
@@ -208,71 +205,57 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
     }
 
     /**
-     * Saca el marcador `[FOTO:<código de barras>]` del final de la respuesta del agente y, si
-     * todo da, resuelve la foto del producto para que la respuesta salga como UNA imagen con
-     * epígrafe en lugar de dos mensajes sueltos (D20).
+     * Resuelve la foto del producto que el agente marcó con `[FOTO:<código de barras>]`, para
+     * que la respuesta salga como UNA imagen con epígrafe en lugar de dos mensajes sueltos (D20).
      *
-     * 🔴 EL MARCADOR SE SACA DEL CUERPO SIEMPRE, PASE LO QUE PASE. Es lo primero que hace este
-     * método, fuera del `try` y antes de mirar siquiera el código de barras, y por eso el
-     * recorte no comparte una sola línea de código con la resolución del artículo. La forma
-     * obvia de escribir esto —buscar el artículo, y recortar el texto recién cuando encontrás
-     * la foto— deja que el `[FOTO:...]` le llegue al cliente en todos los caminos de falla, que
-     * son la mayoría: el modelo inventa un código, el artículo no tiene imagen cargada, el
-     * texto se pasó del tope, la base se cae. La degradación de esta funcionalidad es "sale
-     * como texto normal", NUNCA "sale con el marcador a la vista". Es basura de implementación
-     * y quien la lee es el cliente del negocio.
+     * 🔴 ACÁ NO SE RECORTA NADA, Y NO ES UN OLVIDO: el marcador ya vino sacado del texto por
+     * `WhatsappBotAiService::generate_response_with_photo()`, que es el único lugar que produce
+     * la respuesta y por eso el único que puede garantizar que ningún consumidor la vea con el
+     * marcador puesto. Este método recibe el cuerpo ya limpio y el código por separado, así que
+     * decida lo que decida —que el artículo no existe, que no tiene foto, que el texto es
+     * larguísimo, que se cayó la base— el texto que se persiste sale limpio igual. La
+     * degradación de esta funcionalidad es "sale como texto normal", NUNCA "sale con el marcador
+     * a la vista": es basura de implementación y quien la leería es el cliente del negocio.
      *
-     * Ningún camino de falla lanza: todos devuelven el cuerpo ya limpio y sin medio, y el
-     * `catch` final está para lo que no se previó (la query, el modelo, el disco). Un problema
-     * con la foto no puede costar la respuesta.
+     * Si alguien vuelve a meter el recorte acá adentro, que es lo que hacía antes, el marcador
+     * se le filtra otra vez al otro consumidor del service (hoy el botón "Sugerir respuesta")
+     * y encima nadie se entera, porque el agente automático sigue andando igual de bien.
+     *
+     * Ningún camino de falla lanza: todos devuelven un array vacío de columnas, y el `catch`
+     * final está para lo que no se previó (la query, el modelo, el disco). Un problema con la
+     * foto no puede costar la respuesta.
      *
      * El artículo se busca acotado a `user_id` del chat y no solo por `bar_code`: el código de
      * barras se repite entre negocios (es del fabricante, no del comercio), así que sin ese
      * filtro un cliente podría terminar viendo la foto que cargó otra empresa del sistema.
      *
-     * @param WhatsappChat $chat  Chat que se está respondiendo; de acá sale el dueño del catálogo.
-     * @param string       $texto Respuesta cruda del agente, con marcador o sin él.
+     * @param WhatsappChat $chat     Chat que se está respondiendo; de acá sale el dueño del catálogo.
+     * @param string       $texto    Cuerpo de la respuesta YA sin marcador; es lo que va a viajar
+     *                               como epígrafe, y por eso es lo que se mide contra el tope.
+     * @param string       $bar_code Código que marcó el agente, o cadena vacía si no marcó ninguno.
      *
-     * @return array{body: string, extra: array} `body` es el texto ya sin marcador —lo único que
-     *                                           este método garantiza—, y `extra` son las columnas
-     *                                           de medio para `store_pending_ai_message()`: vacío
-     *                                           si la respuesta sale como texto.
+     * @return array Columnas de medio para `store_pending_ai_message()`. Vacío = la respuesta
+     *               sale como texto.
      */
-    private function resolve_product_photo(WhatsappChat $chat, string $texto): array
+    private function resolve_product_photo(WhatsappChat $chat, string $texto, string $bar_code): array
     {
-        // Sin marcador no se toca nada: es el 100% de las respuestas de antes de esta misión y
-        // tienen que seguir saliendo byte por byte iguales.
-        if (! preg_match(self::PHOTO_MARKER_PATTERN, $texto, $matches, PREG_OFFSET_CAPTURE)) {
-            return ['body' => $texto, 'extra' => []];
+        // Sin marcador no hay nada que resolver: es el 100% de las respuestas de antes de esta
+        // misión y tienen que seguir saliendo byte por byte iguales.
+        if ($bar_code === '') {
+            return [];
         }
 
-        // El recorte es un `substr` hasta donde arranca el marcador, y no un segundo
-        // `preg_replace`, justamente porque acá no puede fallar nada: `PREG_OFFSET_CAPTURE` ya
-        // devolvió la posición exacta en la misma pasada que encontró el marcador, así que
-        // cortar es aritmética y no hay una segunda ejecución del motor de expresiones que
-        // pueda devolver null y dejarme sin cuerpo. Los offsets son en bytes igual que
-        // `substr`, y `trim` solo saca espacios ASCII, así que no parte un carácter multibyte.
-        $resultado = [
-            'body'  => trim(substr($texto, 0, $matches[0][1])),
-            'extra' => [],
-        ];
-
         try {
-            $bar_code = trim((string) $matches[1][0]);
-            if ($bar_code === '') {
-                return $resultado;
-            }
-
             // El tope se mide en caracteres y no en bytes porque es lo que cuenta Meta, y una
             // respuesta en español lleva acentos: con `strlen` el mismo texto mediría más de lo
             // que mide para ellos y se perderían fotos que entraban bien.
-            if (mb_strlen($resultado['body'], 'UTF-8') > self::PHOTO_CAPTION_LIMIT) {
+            if (mb_strlen($texto, 'UTF-8') > self::PHOTO_CAPTION_LIMIT) {
                 Log::channel('daily')->info('GenerateWhatsappAiReplyJob: respuesta demasiado larga para epígrafe, la foto del producto no se adjunta.', [
                     'chat_id'    => $this->chat_id,
-                    'caracteres' => mb_strlen($resultado['body'], 'UTF-8'),
+                    'caracteres' => mb_strlen($texto, 'UTF-8'),
                 ]);
 
-                return $resultado;
+                return [];
             }
 
             $article = Article::where('user_id', $chat->user_id)
@@ -289,7 +272,7 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
                     'bar_code' => $bar_code,
                 ]);
 
-                return $resultado;
+                return [];
             }
 
             // `hosting_url` es una URL pública absoluta del catálogo (la misma que ve cualquiera
@@ -306,10 +289,10 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
                     'article_id' => $article->id,
                 ]);
 
-                return $resultado;
+                return [];
             }
 
-            $resultado['extra'] = [
+            return [
                 'media_type' => 'image',
                 'media_url'  => $hosting_url,
             ];
@@ -320,7 +303,9 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
             ]);
         }
 
-        return $resultado;
+        // Solo se llega acá desde el `catch`: cualquier cosa que no se previó deja la respuesta
+        // saliendo como texto, que ya está limpio desde el service.
+        return [];
     }
 
     /**

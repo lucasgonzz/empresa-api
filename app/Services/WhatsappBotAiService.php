@@ -130,12 +130,32 @@ SUMMARY;
     private const VISION_MAX_IMAGE_BYTES = 3932160;
 
     /**
+     * Marcador con el que el agente pide que se le adjunte la foto de un producto: el system
+     * prompt le indica que cierre la respuesta con `[FOTO:<código de barras>]` en una línea
+     * sola (ver `build_system_prompt()`).
+     *
+     * Está anclado en `$` porque la consigna es que vaya al final de todo: un `[FOTO:...]`
+     * suelto en el medio del texto no es lo que se pidió, y sacarlo de ahí dejaría un hueco en
+     * mitad de una oración. `[^\]\n]+` corta el código en el primer `]` o en el fin de línea,
+     * así que un modelo que se olvide de cerrar el corchete se lleva puesta una línea y no
+     * media respuesta.
+     *
+     * @var string
+     */
+    private const PHOTO_MARKER_PATTERN = '/\s*\[FOTO:([^\]\n]+)\]\s*$/';
+
+    /**
      * Genera la respuesta del agente de IA para el chat dado: personalidad configurable +
      * reglas fijas + historial de la conversación (últimos 20 mensajes, con memoria real,
      * no solo el último mensaje) + catálogo relevante (RAG sobre artículos, top 5). La usan
      * tanto el webhook (respuesta automática que se envía) como el endpoint `suggest`
      * (respuesta sugerida que el operador edita antes de mandarla) — mismo servicio, mismo
      * resultado, la diferencia de qué se hace con el string queda del lado del caller.
+     *
+     * 🔴 EL TEXTO QUE SALE DE ACÁ YA VIENE SIN EL MARCADOR `[FOTO:...]`, y esa es la garantía
+     * que hace que el cliente del negocio no lo pueda ver nunca. El motivo largo está en
+     * `generate_response_with_photo()`, que es donde vive el recorte. Un caller que solo quiera
+     * el texto usa este método y no tiene que saber que el marcador existe.
      *
      * @param WhatsappChat      $chat         Chat ya persistido (el mensaje que dispara la
      *                                        respuesta ya debe estar guardado en sus mensajes).
@@ -148,21 +168,65 @@ SUMMARY;
      * @param int|null          $auth_user_id Persona que disparó la llamada, o null si la
      *                                        disparó un job automático.
      *
-     * @return string Respuesta generada, o cadena vacía si hubo un error o no hay historial.
+     * @return string Respuesta generada y ya limpia, o cadena vacía si hubo un error o no hay
+     *                historial.
      */
     public function generate_response(WhatsappChat $chat, WhatsappBotConfig $config, $proceso = 'whatsapp_respuesta', $auth_user_id = null): string
+    {
+        $resultado = $this->generate_response_with_photo($chat, $config, $proceso, $auth_user_id);
+
+        return $resultado['body'];
+    }
+
+    /**
+     * Lo mismo que `generate_response()`, pero devolviendo aparte el código de barras que el
+     * agente marcó con `[FOTO:...]`. Lo usa el único consumidor que puede hacer algo con ese
+     * código: `GenerateWhatsappAiReplyJob`, que resuelve el artículo del catálogo y adjunta la
+     * foto a la respuesta que persiste.
+     *
+     * 🔴 EL RECORTE DEL MARCADOR VIVE ACÁ, EN EL ÚNICO LUGAR QUE PRODUCE EL TEXTO, Y NO EN
+     * NINGUNO DE SUS CONSUMIDORES. Antes vivía adentro de `GenerateWhatsappAiReplyJob`, o sea
+     * en UNO de los dos caminos, y el otro —`WhatsappChatController@suggest()`, el botón
+     * "Sugerir respuesta"— devolvía el texto crudo: al operador le caía en el input un borrador
+     * que terminaba en `[FOTO:7791234567890]` y, si lo mandaba sin leer hasta abajo, eso le
+     * llegaba al cliente por WhatsApp. Y encima por ese camino el marcador no servía para nada,
+     * porque `send_message()` manda texto y nunca adjunta una foto: era basura de
+     * implementación pura, a la vista del cliente del negocio.
+     *
+     * Si alguien vuelve a mover el recorte a un solo camino, el bug vuelve tal cual y vuelve
+     * silencioso: el agente automático —que es lo que se prueba primero— sigue andando perfecto,
+     * y lo que se rompe es el OTRO consumidor. Peor todavía, cada consumidor nuevo que aparezca
+     * (otro endpoint, otro job, una integración) nace con la fuga puesta y nadie se entera hasta
+     * que la ve un cliente. Con el recorte en el productor, un consumidor nuevo nace limpio sin
+     * hacer nada, porque afuera de este service el marcador directamente no existe.
+     *
+     * La forma del par también es a propósito: el método corto y de nombre obvio
+     * (`generate_response()`) es el seguro, y el que devuelve el código de barras es el que hay
+     * que ir a buscar. El camino fácil tiene que ser el que no rompe nada.
+     *
+     * @param WhatsappChat      $chat         Chat ya persistido.
+     * @param WhatsappBotConfig $config       Configuración activa del bot del owner del chat.
+     * @param string            $proceso      Nombre con el que se imputa el gasto de tokens.
+     * @param int|null          $auth_user_id Persona que disparó la llamada, o null si la
+     *                                        disparó un job automático.
+     *
+     * @return array{body: string, bar_code: string} `body` es el texto ya sin marcador;
+     *                                               `bar_code` es el código que marcó el agente,
+     *                                               o cadena vacía si no marcó ninguno.
+     */
+    public function generate_response_with_photo(WhatsappChat $chat, WhatsappBotConfig $config, $proceso = 'whatsapp_respuesta', $auth_user_id = null): array
     {
         try {
             $api_key = (string) config('services.anthropic.api_key');
             if ($api_key === '') {
                 Log::channel('daily')->warning('WhatsappBotAiService: ANTHROPIC_API_KEY no configurada.');
-                return '';
+                return $this->empty_response();
             }
 
             // Últimos N mensajes del chat, en orden cronológico (el más viejo primero).
             $history = $this->fetch_recent_messages($chat, self::HISTORY_LIMIT);
             if ($history->isEmpty()) {
-                return '';
+                return $this->empty_response();
             }
 
             // El RAG se dispara sobre TODOS los mensajes del cliente que quedaron sin
@@ -200,7 +264,7 @@ SUMMARY;
                     'body'   => substr($response->body(), 0, 500),
                 ]);
                 // Sin respuesta válida no hay consumo que imputar: se sale antes de registrar.
-                return '';
+                return $this->empty_response();
             }
 
             $body = $response->json();
@@ -217,14 +281,66 @@ SUMMARY;
                 'referencia_id' => (int) $chat->id,
             ]);
 
-            return $this->extract_text($body);
+            return $this->split_photo_marker($this->extract_text($body));
         } catch (\Throwable $exception) {
             Log::channel('daily')->error('WhatsappBotAiService: excepción al generar respuesta.', [
                 'chat_id' => $chat->id,
                 'error'   => $exception->getMessage(),
             ]);
-            return '';
+            return $this->empty_response();
         }
+    }
+
+    /**
+     * Parte la respuesta cruda del modelo en el cuerpo que va a leer una persona y el código de
+     * barras que el agente marcó con `[FOTO:...]`.
+     *
+     * 🔴 EL MARCADOR SE SACA SIEMPRE, PASE LO QUE PASE. Este método no sabe si el artículo
+     * existe, si tiene foto cargada ni si el texto entra en un epígrafe, y no le importa: la
+     * degradación de la foto es "sale como texto normal", NUNCA "sale con el marcador a la
+     * vista". Quien decide si la foto se adjunta es el job, y decide sobre el `bar_code` que
+     * sale de acá, con el cuerpo ya limpio en la mano — así ningún camino de falla de la foto
+     * (código inventado, artículo sin imagen, texto largo, base caída) puede devolver el
+     * marcador al texto.
+     *
+     * El recorte es un `substr` hasta donde arranca el marcador y no un segundo `preg_replace`,
+     * justamente porque acá no puede fallar nada: `PREG_OFFSET_CAPTURE` ya devolvió la posición
+     * exacta en la misma pasada que encontró el marcador, así que cortar es aritmética y no hay
+     * una segunda ejecución del motor de expresiones que pueda devolver null y dejarme sin
+     * cuerpo. Los offsets son en bytes igual que `substr`, y `trim` solo saca espacios ASCII,
+     * así que no parte un carácter multibyte.
+     *
+     * @param string $texto Respuesta cruda del modelo, con marcador o sin él.
+     *
+     * @return array{body: string, bar_code: string} `bar_code` vacío = el modelo no marcó
+     *                                               ninguna foto, que es el 100% de las
+     *                                               respuestas de antes de esta funcionalidad.
+     */
+    private function split_photo_marker(string $texto): array
+    {
+        // Sin marcador no se toca nada: el texto sale byte por byte como lo devolvió el modelo.
+        if (! preg_match(self::PHOTO_MARKER_PATTERN, $texto, $matches, PREG_OFFSET_CAPTURE)) {
+            return ['body' => $texto, 'bar_code' => ''];
+        }
+
+        return [
+            'body'     => trim(substr($texto, 0, $matches[0][1])),
+            'bar_code' => trim((string) $matches[1][0]),
+        ];
+    }
+
+    /**
+     * "No hay respuesta", con la forma que devuelve `generate_response_with_photo()`.
+     *
+     * Existe para que los seis cortes tempranos de ese método (sin API key, historial vacío,
+     * error HTTP, excepción) no tengan que repetir el literal: si mañana el par gana un tercer
+     * campo, se agrega en un solo lugar y ninguna rama se queda sin él.
+     *
+     * @return array{body: string, bar_code: string}
+     */
+    private function empty_response(): array
+    {
+        return ['body' => '', 'bar_code' => ''];
     }
 
     /**
@@ -411,8 +527,14 @@ SUMMARY;
      * ⚠️ QUE EL MARCADOR NO SALGA NUNCA NO DEPENDE DE ESTE TEXTO. El prompt es una pedida, no
      * una garantía: el modelo puede escribir el marcador cuando no corresponde, escribirlo con
      * un código inventado, o no escribirlo nunca. Quien garantiza que el cliente jamás vea un
-     * `[FOTO:...]` es `GenerateWhatsappAiReplyJob`, que lo saca del cuerpo SIEMPRE, exista o no
-     * el artículo. Acá solo se le pide que lo ponga cuando tiene sentido.
+     * `[FOTO:...]` es `generate_response_with_photo()`, que lo saca del cuerpo SIEMPRE, exista o
+     * no el artículo. Acá solo se le pide que lo ponga cuando tiene sentido.
+     *
+     * Por eso mismo la consigna se le manda igual a los dos consumidores y no solo al agente
+     * automático: la sugerencia para el operador tiene que ser LA MISMA respuesta que habría
+     * dado el agente (es lo que promete `suggest()`), y de todas formas el marcador nunca
+     * sobrevive a la salida del service. Gatearlo por consumidor sería fingir una garantía que
+     * no da el prompt y hacer que las dos respuestas dejen de ser comparables.
      *
      * @param WhatsappBotConfig $config
      *
