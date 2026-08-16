@@ -981,6 +981,20 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:sugerencias_compras'
     Route::post('purchase-suggestion/{id}/create-provider-order', 'PurchaseSuggestionController@create_provider_order');
 });
 
+// Motor de ofertas por cliente, gateado por Sanctum + 'motor_de_ofertas' (ExtencionMotorDeOfertasSeeder).
+// 🔴 POST client-offer es el ÚNICO escritor de client_offers, la tabla que LEE LA TIENDA por SQL.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:motor_de_ofertas'])->group(function () {
+    Route::get('offer-suggestion', 'OfferSuggestionController@index');
+    Route::post('offer-suggestion', 'OfferSuggestionController@store');
+    Route::get('offer-suggestion/{id}', 'OfferSuggestionController@show');
+    Route::delete('offer-suggestion/{id}', 'OfferSuggestionController@destroy');
+    Route::get('offer-suggestion/{id}/lines', 'OfferSuggestionController@lines');
+    Route::post('offer-suggestion/{id}/resumen', 'OfferSuggestionController@resumen');
+    Route::get('client-offer', 'ClientOfferController@index');
+    Route::post('client-offer', 'ClientOfferController@store');
+    Route::delete('client-offer/{id}', 'ClientOfferController@destroy');
+});
+
 
 // Plans
 Route::get('plan', 'PlanController@index');

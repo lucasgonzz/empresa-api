@@ -483,6 +483,12 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Seguimiento de compradores en la tienda',
                 'slug' => 'tracking_buyers',
             ],
+            [
+                // Va acá porque UserSetupHelper/DemoSetupHelper corren SOLO este seeder:
+                // una extensión que no esté en este array no existe para una instancia nueva.
+                'name' => 'Motor de ofertas por cliente',
+                'slug' => 'motor_de_ofertas',
+            ],
 
         ];
         foreach ($extencions as $extencion) {
