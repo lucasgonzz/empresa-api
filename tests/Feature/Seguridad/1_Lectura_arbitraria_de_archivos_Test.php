@@ -47,10 +47,16 @@ class Lectura_arbitraria_de_archivos_Test extends TestCase
         // Archivo legitimo dos niveles adentro: es el caso real de articles_images/zip/<x>/<x>.jpg
         // y de support_messages/<ticket_id>/<hash>.ext. Si esto se rompiera, se caerian las
         // imagenes de articulos y los adjuntos del chat de soporte.
+        //
+        // El nombre del anidado es DISTINTO del de la raiz a proposito, y no es un detalle
+        // cosmetico: es lo que hace que un_dot_dot_que_vuelve_adentro_del_directorio_si_se_sirve
+        // discrimine. Con el mismo nombre en los dos lugares, ese test daba 200 tanto si el ".."
+        // llegaba vivo al closure como si el framework lo hubiera colapsado antes, o sea que no
+        // probaba nada.
         $this->crear_directorio(storage_path('app/public/'.$this->prefijo.'_dir'));
         $this->crear_directorio(storage_path('app/public/'.$this->prefijo.'_dir/sub'));
         $this->crear_archivo(
-            storage_path('app/public/'.$this->prefijo.'_dir/sub/'.$this->prefijo.'.txt'),
+            storage_path('app/public/'.$this->prefijo.'_dir/sub/'.$this->prefijo.'_anidado.txt'),
             'contenido anidado legitimo'
         );
 
@@ -100,7 +106,7 @@ class Lectura_arbitraria_de_archivos_Test extends TestCase
     /** @test */
     public function storage_sirve_un_archivo_en_subcarpeta_anidada()
     {
-        $ruta = '/storage/'.$this->prefijo.'_dir/sub/'.$this->prefijo.'.txt';
+        $ruta = '/storage/'.$this->prefijo.'_dir/sub/'.$this->prefijo.'_anidado.txt';
 
         $this->get($ruta)->assertStatus(200);
     }
@@ -110,22 +116,36 @@ class Lectura_arbitraria_de_archivos_Test extends TestCase
      * explicacion.
      *
      * Los tests que piden "../" y esperan 404 son verdes si el confinamiento funciona, PERO TAMBIEN
-     * son verdes si el framework normalizo el ".." antes de que el path llegara al closure. En ese
-     * segundo caso son falsos verdes: no estan probando nada y el dia que alguien saque el
-     * confinamiento van a seguir en verde.
+     * serian verdes si el framework hubiera normalizado el ".." antes de que el path llegara al
+     * closure. En ese segundo caso son falsos verdes: no prueban nada, y el dia que alguien saque
+     * el confinamiento van a seguir en verde.
      *
-     * Este los desambigua. Un ".." que vuelve a entrar al directorio permitido es legitimo y tiene
-     * que devolver 200. Si devuelve 200, es porque el ".." llego vivo hasta realpath() y realpath()
-     * lo resolvio -- que es justo lo que los otros tests necesitan que sea cierto.
+     * Este los desambigua, y depende de un detalle del setUp que hay que respetar: el archivo de la
+     * raiz se llama "<prefijo>.txt" y el anidado "<prefijo>_anidado.txt", DISTINTO. Entonces, para
+     * la URL "<prefijo>_dir/sub/../../<prefijo>.txt":
      *
-     * 🔴 Si este test se pone rojo, los de traversal dejan de significar algo: hay que cambiar el
-     * vector (probar %2e%2e en vez de ".." crudo, o $this->call('GET', $uri)) antes de confiar en
-     * ninguno de ellos.
+     *   - Si el ".." llega vivo al closure, realpath() lo resuelve y termina en el archivo de la
+     *     raiz, que existe -> 200.
+     *   - Si el framework hubiera colapsado los ".." antes, el path pedido seria
+     *     "<prefijo>_dir/sub/<prefijo>.txt", que NO existe -> 404.
+     *
+     * 🔴 Si este test se pone rojo, los tests de traversal dejan de significar algo: hay que cambiar
+     * el vector (probar %2e%2e en vez de ".." crudo, o $this->call('GET', $uri)) antes de confiar en
+     * ninguno de ellos. Y si alguien "ordena" el setUp poniendole el mismo nombre a los dos
+     * archivos, este test sigue verde y deja de discriminar en silencio: por eso el nombre distinto
+     * esta comentado alla tambien.
      *
      * @test
      */
     public function un_dot_dot_que_vuelve_adentro_del_directorio_si_se_sirve()
     {
+        // Precondicion del test: los dos nombres tienen que ser distintos, si no no discrimina.
+        $this->assertFileDoesNotExist(
+            storage_path('app/public/'.$this->prefijo.'_dir/sub/'.$this->prefijo.'.txt'),
+            'El archivo anidado no puede llamarse igual que el de la raiz: con el mismo nombre este '
+            .'test da 200 en los dos escenarios y deja de discriminar.'
+        );
+
         $ruta = '/storage/'.$this->prefijo.'_dir/sub/../../'.$this->prefijo.'.txt';
 
         $this->get($ruta)->assertStatus(200);
@@ -153,9 +173,22 @@ class Lectura_arbitraria_de_archivos_Test extends TestCase
         $this->get('/storage/../'.$this->prefijo.'_marcador.txt')->assertStatus(404);
     }
 
-    /** @test */
+    /**
+     * El caso concreto que motivo la mision. Va con skip explicito si no hay .env: sin el archivo,
+     * el 404 llegaria por "no existe" y el test daria verde incluso con el codigo roto. Un verde que
+     * no depende del arreglo es peor que un test que falta, porque nadie lo mira.
+     *
+     * El respaldo que NO depende del entorno es storage_no_sirve_un_archivo_de_afuera, que apunta a
+     * un marcador que el propio test crea.
+     *
+     * @test
+     */
     public function storage_no_sirve_el_env()
     {
+        if (! is_file(base_path('.env'))) {
+            $this->markTestSkipped('No hay .env en este checkout: el test no podria distinguir el arreglo de su ausencia.');
+        }
+
         $this->get('/storage/../../../.env')->assertStatus(404);
     }
 
@@ -168,6 +201,10 @@ class Lectura_arbitraria_de_archivos_Test extends TestCase
     /** @test */
     public function exported_files_no_sirve_el_env()
     {
+        if (! is_file(base_path('.env'))) {
+            $this->markTestSkipped('No hay .env en este checkout: el test no podria distinguir el arreglo de su ausencia.');
+        }
+
         $this->get('/exported-files/../../../.env')->assertStatus(404);
     }
 
@@ -213,10 +250,19 @@ class Lectura_arbitraria_de_archivos_Test extends TestCase
         ];
 
         foreach ($rutas as $ruta) {
-            $respuesta = $this->get($ruta);
+            $codigo = $this->get($ruta)->getStatusCode();
 
-            $respuesta->assertStatus(404);
-            $this->assertNotEquals(403, $respuesta->getStatusCode(), 'La ruta '.$ruta.' respondio 403.');
+            /*
+             * Se compara el codigo a mano en vez de encadenar assertStatus(404) + assertNotEquals(403):
+             * con assertStatus primero, la asercion del 403 nunca se evalua (ya fallo la anterior) y
+             * queda de adorno. Asi el mensaje nombra el 403 cuando el 403 es lo que efectivamente paso.
+             */
+            $this->assertEquals(
+                404,
+                $codigo,
+                'La ruta '.$ruta.' respondio '.$codigo.'. Tiene que ser 404: cualquier otro codigo '
+                .'sobre un archivo que existe le confirma al atacante que existe.'
+            );
         }
     }
 
@@ -245,23 +291,40 @@ class Lectura_arbitraria_de_archivos_Test extends TestCase
     }
 
     /**
-     * El separador al final del prefijo es lo unico que impide que un directorio hermano cuyo nombre
-     * empieza igual (app/public vs app/publico) pase como si estuviera adentro.
+     * El separador al final del prefijo (StoragePathHelper, "rtrim(...) . DIRECTORY_SEPARATOR") es
+     * lo unico que impide que un directorio hermano cuyo nombre empieza igual -- app/publico contra
+     * app/public -- pase como si estuviera adentro.
+     *
+     * 🔴 El motivo se asierta a proposito, y no alcanza con assertNull($resultado['path']). Si el
+     * base no existiera, el helper rechazaria por 'base_inexistente' mucho antes de llegar a la
+     * comparacion de prefijo, el test daria verde igual y NO estaria probando el separador: alguien
+     * podria borrar el DIRECTORY_SEPARATOR de la linea 90 del helper -- que es exactamente el
+     * "simplificar" contra el que avisa el comentario de ahi -- y este test seguiria en verde.
+     * Por eso se crean los DOS directorios y se exige 'fuera_del_base'.
      *
      * @test
      */
     public function un_directorio_hermano_con_nombre_parecido_no_pasa()
     {
+        $base    = storage_path('app/'.$this->prefijo.'_public');
         $hermano = storage_path('app/'.$this->prefijo.'_publico');
+
+        $this->crear_directorio($base);
         $this->crear_directorio($hermano);
         $this->crear_archivo($hermano.'/adentro.txt', 'del hermano');
 
         $resultado = \App\Http\Controllers\Helpers\StoragePathHelper::inspeccionar(
-            storage_path('app/'.$this->prefijo.'_public'),
-            'adentro.txt'
+            $base,
+            '../'.$this->prefijo.'_publico/adentro.txt'
         );
 
         $this->assertNull($resultado['path']);
+        $this->assertEquals(
+            'fuera_del_base',
+            $resultado['motivo'],
+            'Tiene que rechazar por la comparacion de prefijo. Si rechaza por otra cosa, este test '
+            .'no esta probando el separador final del prefijo.'
+        );
     }
 
     /** @test */

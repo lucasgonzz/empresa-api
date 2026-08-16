@@ -60,6 +60,13 @@ class StoragePathHelper
          * "foto.jpg\0../../.env" pasaria cualquier validacion de extension y despues abriria otro
          * archivo. Se rechaza antes de tocar el disco. No se sanitiza sacandolo: si vino un byte
          * nulo, el pedido no es honesto.
+         *
+         * Este guard no es redundante con el "=== false" de mas abajo, aunque lo parezca. Medido en
+         * PHP 7.4.33: realpath() con un byte nulo adentro emite un Warning y devuelve NULL, no
+         * false, asi que el chequeo de "=== false" NO lo atrapa. Terminaria cayendo igual en
+         * empieza_con(), donde un NULL da largo 0 y devuelve false -- o sea que se rechazaria, pero
+         * de rebote, con el motivo equivocado y dejando un Warning en el log de PHP. Sacar este
+         * chequeo cambia un rechazo explicito por uno accidental.
          */
         if (strpos($relative_path, "\0") !== false || strpos($base_dir, "\0") !== false) {
             return self::rechazo(self::MOTIVO_BYTE_NULO);
@@ -115,27 +122,15 @@ class StoragePathHelper
     }
 
     /**
-     * Igual que inspeccionar(), pero devuelve solo el path resuelto o null.
+     * Dice si el motivo de un inspeccionar() corresponde a un intento de escape que valga la pena
+     * loguear.
      *
-     * Para los llamadores que no necesitan loguear el motivo.
-     *
-     * @param  string  $base_dir
-     * @param  string  $relative_path
-     * @return string|null
-     */
-    public static function resolver_dentro_de($base_dir, $relative_path)
-    {
-        $resultado = self::inspeccionar($base_dir, $relative_path);
-
-        return $resultado['path'];
-    }
-
-    /**
-     * Dice si el motivo de un inspeccionar() corresponde a un intento de escape, y no a un pedido
-     * legitimo por un archivo que no existe.
-     *
-     * Sirve para decidir que se loguea: un 404 comun no aporta nada al log, un intento de salir del
-     * directorio si.
+     * Deja AFUERA a proposito el caso mas comun de traversal: pedir "../algo" donde "algo" no
+     * existe cae en MOTIVO_INEXISTENTE y no se loguea, igual que un 404 comun. La razon es que
+     * cualquiera que escanee a ciegas genera miles de esos y taparia el log; lo que queda anotado es
+     * el intento que efectivamente dio con un archivo real afuera del directorio, que es la señal
+     * que importa. La contrapartida, y hay que saberla: un escaneo que no acierta ningun archivo NO
+     * deja rastro acá.
      *
      * @param  string  $motivo
      * @return bool
