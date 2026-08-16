@@ -213,70 +213,81 @@ Route::post('/password-reset/update-password',
  *
  * Y responden 404, nunca 403: un 403 le confirma al atacante que el archivo existe.
  */
-Route::get('/storage/{path}', function ($path) {
+/*
+ * Las tres rutas comparten este closure a proposito, en vez de repetir el cuerpo tres veces.
+ * El motivo es concreto y ya paso: cuando el bug se reporto, se reportaron DOS de las tres rutas.
+ * La tercera (/exported-files/) tenia la misma forma, el mismo defecto y nadie la vio, justamente
+ * porque eran tres copias del mismo cuerpo que hay que acordarse de mantener juntas. Con un solo
+ * cuerpo, la proxima ruta de esta familia no puede quedar atras sin que se note.
+ *
+ * @param  string    $etiqueta   Nombre de la ruta, para el log.
+ * @param  string    $base_dir   Directorio permitido, absoluto.
+ * @param  string    $path       Path pedido por el usuario.
+ * @param  callable  $servir     Recibe el path resuelto y devuelve la respuesta.
+ * @return \Symfony\Component\HttpFoundation\Response
+ */
+$servir_archivo_confinado = function ($etiqueta, $base_dir, $path, $servir) {
+    $resultado = StoragePathHelper::inspeccionar($base_dir, $path);
+
+    /*
+     * Solo se loguea el intento de escape, no cada 404. Antes /imported-files/ tenia un
+     * Log::info($full_path) que escribia la ruta absoluta de CADA descarga legitima: ruido en el
+     * log y, de paso, el layout del servidor anotado en un archivo que se comparte para
+     * diagnosticar otras cosas.
+     *
+     * El path se recorta a 255 caracteres porque el ->where('path', '.*') no le pone techo y un
+     * pedido de varios miles de bytes se escribiria entero, tantas veces como el atacante quiera.
+     */
+    if (StoragePathHelper::es_intento_de_escape($resultado['motivo'])) {
+        Log::warning($etiqueta.': intento de salir del directorio permitido', [
+            'path_pedido' => mb_substr((string) $path, 0, 255),
+            'motivo'      => $resultado['motivo'],
+            'ip'          => request()->ip(),
+        ]);
+    }
+
+    if (is_null($resultado['path'])) {
+        abort(404);
+    }
+
+    /*
+     * El try/catch no es decorativo: entre el realpath() de la verificacion y este servido hay una
+     * ventana en la que el archivo puede desaparecer, y es un caso real en /exported-files/, donde
+     * los exportados son temporales que una limpieza puede borrar mientras alguien los descarga.
+     * Sin esto, response()->file() tira FileNotFoundException -> HTTP 500, y la diferencia entre
+     * 500 y 404 vuelve a ser el oraculo de existencia que este arreglo viene a sacar. Encima el
+     * mensaje de la excepcion lleva la ruta absoluta al log, que es lo otro que se saco aca.
+     */
+    try {
+        return $servir($resultado['path']);
+    } catch (\Exception $e) {
+        abort(404);
+    }
+};
+
+Route::get('/storage/{path}', function ($path) use ($servir_archivo_confinado) {
     /*
      * Esta ruta es el fallback para las instalaciones SIN el symlink public/storage. Donde el
      * symlink existe, el servidor web sirve el archivo antes de llegar a index.php y esto no corre
      * nunca; en hosting compartido, donde no se puede crear el symlink, es lo unico que sirve las
      * imagenes de articulos. Por eso no se borra.
      */
-    $resultado = StoragePathHelper::inspeccionar(storage_path('app/public'), $path);
-
-    if (StoragePathHelper::es_intento_de_escape($resultado['motivo'])) {
-        Log::warning('storage: intento de salir del directorio permitido', [
-            'path_pedido' => $path,
-            'motivo'      => $resultado['motivo'],
-            'ip'          => request()->ip(),
-        ]);
-    }
-
-    if (is_null($resultado['path'])) {
-        abort(404);
-    }
-
-    return response()->file($resultado['path']);
+    return $servir_archivo_confinado('storage', storage_path('app/public'), $path, function ($archivo) {
+        return response()->file($archivo);
+    });
 })->where('path', '.*');
 
-Route::get('/imported-files/{path}', function ($path) {
-    $resultado = StoragePathHelper::inspeccionar(storage_path('app/imported_files'), $path);
-
-    /*
-     * Solo se loguea el intento de escape. Antes habia un Log::info($full_path) que escribia la ruta
-     * absoluta de CADA descarga legitima: ruido en el log y, de paso, el layout del servidor
-     * anotado en un archivo que se comparte para diagnosticar otras cosas.
-     */
-    if (StoragePathHelper::es_intento_de_escape($resultado['motivo'])) {
-        Log::warning('imported-files: intento de salir del directorio permitido', [
-            'path_pedido' => $path,
-            'motivo'      => $resultado['motivo'],
-            'ip'          => request()->ip(),
-        ]);
-    }
-
-    if (is_null($resultado['path'])) {
-        abort(404);
-    }
-
-    return response()->file($resultado['path']);
+Route::get('/imported-files/{path}', function ($path) use ($servir_archivo_confinado) {
+    return $servir_archivo_confinado('imported-files', storage_path('app/imported_files'), $path, function ($archivo) {
+        return response()->file($archivo);
+    });
 })->where('path', '.*');
 
-Route::get('/exported-files/{path}', function ($path) {
+Route::get('/exported-files/{path}', function ($path) use ($servir_archivo_confinado) {
     // Se expone archivo exportado para descarga desde notificación global.
-    $resultado = StoragePathHelper::inspeccionar(storage_path('app/exported-files'), $path);
-
-    if (StoragePathHelper::es_intento_de_escape($resultado['motivo'])) {
-        Log::warning('exported-files: intento de salir del directorio permitido', [
-            'path_pedido' => $path,
-            'motivo'      => $resultado['motivo'],
-            'ip'          => request()->ip(),
-        ]);
-    }
-
-    if (is_null($resultado['path'])) {
-        abort(404);
-    }
-
-    return response()->download($resultado['path']);
+    return $servir_archivo_confinado('exported-files', storage_path('app/exported-files'), $path, function ($archivo) {
+        return response()->download($archivo);
+    });
 })->where('path', '.*');
 
 

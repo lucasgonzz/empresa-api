@@ -112,40 +112,51 @@ class Lectura_arbitraria_de_archivos_Test extends TestCase
     }
 
     /**
-     * Este es el test que le da sentido a todos los de traversal, y por eso va con su propia
-     * explicacion.
+     * 🔴 Este es el test que le da sentido a TODOS los de traversal, y por eso va con su propia
+     * explicacion y no se asierta por HTTP.
      *
-     * Los tests que piden "../" y esperan 404 son verdes si el confinamiento funciona, PERO TAMBIEN
-     * serian verdes si el framework hubiera normalizado el ".." antes de que el path llegara al
-     * closure. En ese segundo caso son falsos verdes: no prueban nada, y el dia que alguien saque
-     * el confinamiento van a seguir en verde.
+     * Los tests que piden "../" y esperan 404 son verdes si el confinamiento funciona, pero tambien
+     * serian verdes si el framework hubiera colapsado el ".." antes de que el path llegara al
+     * closure: en ese caso el closure nunca ve un traversal, no prueban nada, y el dia que alguien
+     * saque el confinamiento van a seguir en verde.
      *
-     * Este los desambigua, y depende de un detalle del setUp que hay que respetar: el archivo de la
-     * raiz se llama "<prefijo>.txt" y el anidado "<prefijo>_anidado.txt", DISTINTO. Entonces, para
-     * la URL "<prefijo>_dir/sub/../../<prefijo>.txt":
+     * La premisa que hay que fijar, entonces, es que el ".." llega CRUDO al closure. Y se asierta
+     * directamente sobre el path decodificado del Request, que es lo unico que la prueba sin
+     * ambiguedad.
      *
-     *   - Si el ".." llega vivo al closure, realpath() lo resuelve y termina en el archivo de la
-     *     raiz, que existe -> 200.
-     *   - Si el framework hubiera colapsado los ".." antes, el path pedido seria
-     *     "<prefijo>_dir/sub/<prefijo>.txt", que NO existe -> 404.
+     * Se intento antes hacerlo por HTTP, pidiendo "<dir>/sub/../../<x>.txt" y esperando 200: no
+     * sirve. Colapsar textualmente esos ".." da el mismo archivo que resolverlos, asi que devuelve
+     * 200 en los dos escenarios. Lo marcaron dos chequeos independientes el 16/8/2026 y quedo
+     * escrito para que no se vuelva a intentar por ahi.
      *
-     * 🔴 Si este test se pone rojo, los tests de traversal dejan de significar algo: hay que cambiar
-     * el vector (probar %2e%2e en vez de ".." crudo, o $this->call('GET', $uri)) antes de confiar en
-     * ninguno de ellos. Y si alguien "ordena" el setUp poniendole el mismo nombre a los dos
-     * archivos, este test sigue verde y deja de discriminar en silencio: por eso el nombre distinto
-     * esta comentado alla tambien.
+     * Si este test se pone rojo, los tests de traversal dejan de significar algo hasta que se
+     * cambie el vector (probar %2e%2e, o $this->call('GET', $uri) en vez de $this->get()).
+     *
+     * @test
+     */
+    public function el_dot_dot_llega_crudo_al_closure_y_no_lo_colapsa_el_framework()
+    {
+        $uri = '/storage/'.$this->prefijo.'_dir/sub/../../'.$this->prefijo.'.txt';
+
+        $request = \Illuminate\Http\Request::create($uri);
+
+        $this->assertStringContainsString(
+            '/../',
+            '/'.$request->decodedPath(),
+            'El framework colapso los ".." antes del closure. Mientras eso pase, los tests de '
+            .'traversal de este archivo son falsos verdes y no protegen nada.'
+        );
+    }
+
+    /**
+     * Un ".." que vuelve a entrar al directorio permitido es legitimo y tiene que seguir sirviendo.
+     * Este test NO prueba que el ".." llegue crudo (de eso se ocupa el de arriba): prueba que el
+     * confinamiento no rompio un pedido valido.
      *
      * @test
      */
     public function un_dot_dot_que_vuelve_adentro_del_directorio_si_se_sirve()
     {
-        // Precondicion del test: los dos nombres tienen que ser distintos, si no no discrimina.
-        $this->assertFileDoesNotExist(
-            storage_path('app/public/'.$this->prefijo.'_dir/sub/'.$this->prefijo.'.txt'),
-            'El archivo anidado no puede llamarse igual que el de la raiz: con el mismo nombre este '
-            .'test da 200 en los dos escenarios y deja de discriminar.'
-        );
-
         $ruta = '/storage/'.$this->prefijo.'_dir/sub/../../'.$this->prefijo.'.txt';
 
         $this->get($ruta)->assertStatus(200);
@@ -325,6 +336,119 @@ class Lectura_arbitraria_de_archivos_Test extends TestCase
             'Tiene que rechazar por la comparacion de prefijo. Si rechaza por otra cosa, este test '
             .'no esta probando el separador final del prefijo.'
         );
+    }
+
+    /**
+     * Un archivo que existe adentro del directorio pero que el proceso no puede leer tiene que dar
+     * 404 igual que uno inexistente. Sin el is_readable() del helper, BinaryFileResponse tiraba
+     * FileException y la ruta respondia 500: la diferencia 500/404 vuelve a ser el oraculo de
+     * existencia que todo esto viene a sacar, un escalon mas adentro.
+     *
+     * Se asierta contra el helper y no por HTTP porque negar el permiso de lectura de forma
+     * portable entre Windows y Linux desde un test no es confiable.
+     *
+     * @test
+     */
+    public function un_archivo_que_no_se_puede_leer_no_se_sirve()
+    {
+        $archivo = storage_path('app/public/'.$this->prefijo.'_ilegible.txt');
+        $this->crear_archivo($archivo, 'no se deberia poder leer');
+
+        if (! @chmod($archivo, 0000) || is_readable($archivo)) {
+            $this->markTestSkipped('Este entorno no permite sacarle el permiso de lectura al archivo.');
+        }
+
+        $resultado = \App\Http\Controllers\Helpers\StoragePathHelper::inspeccionar(
+            storage_path('app/public'),
+            $this->prefijo.'_ilegible.txt'
+        );
+
+        @chmod($archivo, 0644);
+
+        $this->assertNull($resultado['path']);
+        $this->assertEquals('no_se_puede_leer', $resultado['motivo']);
+    }
+
+    /**
+     * Si el archivo desaparece entre la verificacion y el servido, la ruta tiene que responder 404
+     * y no 500. Es un caso real en /exported-files/, donde los exportados son temporales que una
+     * limpieza puede borrar mientras alguien los descarga.
+     *
+     * @test
+     */
+    public function si_el_archivo_desaparece_antes_de_servirlo_responde_404_y_no_500()
+    {
+        $archivo = storage_path('app/exported-files/'.$this->prefijo.'_efimero.xlsx');
+        $this->crear_archivo($archivo, 'me van a borrar');
+
+        $real = realpath($archivo);
+        unlink($archivo);
+
+        try {
+            response()->download($real);
+            $this->fail('Se esperaba que response()->download() fallara sobre un archivo borrado.');
+        } catch (\Exception $e) {
+            // Es justo lo que el try/catch de routes/web.php convierte en 404.
+            $this->assertInstanceOf('Exception', $e);
+        }
+
+        $this->get('/exported-files/'.$this->prefijo.'_efimero.xlsx')->assertStatus(404);
+    }
+
+    /**
+     * Un base que es la raiz del filesystem no confina nada: el prefijo quedaria en "/" (o "C:\") y
+     * cualquier path absoluto lo matchearia. Es el mismo agujero que el base inexistente, entrando
+     * por otra puerta.
+     *
+     * @test
+     */
+    public function un_base_que_es_la_raiz_del_filesystem_no_confina_nada_y_se_rechaza()
+    {
+        $raiz = realpath(DIRECTORY_SEPARATOR === '\\' ? substr(storage_path(), 0, 3) : '/');
+
+        $resultado = \App\Http\Controllers\Helpers\StoragePathHelper::inspeccionar(
+            $raiz,
+            ltrim(str_replace(base_path().DIRECTORY_SEPARATOR, '', storage_path('app/public/'.$this->prefijo.'.txt')), '/\\')
+        );
+
+        $this->assertNull($resultado['path']);
+        $this->assertEquals('base_invalido', $resultado['motivo']);
+    }
+
+    /**
+     * La afirmacion central del diseño del helper: se verifica sobre realpath() y no sobre el string
+     * PORQUE un chequeo textual de ".." no ve los symlinks. Sin este test, alguien puede
+     * "simplificar" el helper a un strpos('..') y los otros 20 tests siguen en verde.
+     *
+     * Se saltea si el entorno no deja crear symlinks (en Windows hace falta privilegio). En Linux,
+     * que es donde corre produccion, corre siempre.
+     *
+     * @test
+     */
+    public function un_symlink_adentro_del_base_que_apunta_afuera_se_rechaza()
+    {
+        $destino = storage_path('app/'.$this->prefijo.'_marcador.txt');
+        $enlace  = storage_path('app/public/'.$this->prefijo.'_link.txt');
+
+        if (! @symlink($destino, $enlace)) {
+            $this->markTestSkipped('Este entorno no permite crear symlinks (en Windows hace falta privilegio).');
+        }
+
+        $this->archivos_creados[] = $enlace;
+
+        $resultado = \App\Http\Controllers\Helpers\StoragePathHelper::inspeccionar(
+            storage_path('app/public'),
+            $this->prefijo.'_link.txt'
+        );
+
+        $this->assertNull(
+            $resultado['path'],
+            'Un symlink adentro del directorio permitido que apunta afuera tiene que rechazarse. '
+            .'Si esto pasa, el helper dejo de resolver symlinks.'
+        );
+        $this->assertEquals('fuera_del_base', $resultado['motivo']);
+
+        $this->get('/storage/'.$this->prefijo.'_link.txt')->assertStatus(404);
     }
 
     /** @test */

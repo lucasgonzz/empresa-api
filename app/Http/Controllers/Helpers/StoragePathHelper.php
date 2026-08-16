@@ -20,6 +20,12 @@ namespace App\Http\Controllers\Helpers;
  *    resuelve "..", ".", separadores repetidos Y symlinks en una sola pasada, contra el filesystem
  *    real.
  *
+ *    Lo que esta verificacion NO ve, y conviene tenerlo escrito para no creerle de mas: los HARD
+ *    LINKS. Un hard link creado adentro del directorio permitido apuntando a un archivo de afuera
+ *    es indistinguible del archivo original para realpath(), asi que se sirve. Es inherente a
+ *    cualquier chequeo por path y requiere acceso de escritura local en el servidor, o sea que ya
+ *    perdiste antes; no es algo que este helper pueda resolver. Verificado el 16/8/2026.
+ *
  * 2) Hacia afuera todos los motivos de rechazo son indistinguibles: el llamador responde 404 y nunca
  *    403. Un 403 le confirma al atacante que el archivo existe, y esa señal es la mitad del trabajo
  *    de enumerar un servidor. Por eso inspeccionar() devuelve el motivo -- para el log, del lado de
@@ -31,9 +37,11 @@ class StoragePathHelper
     const MOTIVO_VACIO            = 'path_vacio';
     const MOTIVO_BYTE_NULO        = 'byte_nulo';
     const MOTIVO_BASE_INEXISTENTE = 'base_inexistente';
+    const MOTIVO_BASE_INVALIDO    = 'base_invalido';
     const MOTIVO_INEXISTENTE      = 'inexistente';
     const MOTIVO_FUERA_DEL_BASE   = 'fuera_del_base';
     const MOTIVO_NO_ES_ARCHIVO    = 'no_es_archivo';
+    const MOTIVO_NO_SE_PUEDE_LEER = 'no_se_puede_leer';
 
     /**
      * Resuelve un path relativo adentro de un directorio permitido y dice por que fallo si fallo.
@@ -91,17 +99,56 @@ class StoragePathHelper
         }
 
         /*
+         * Que cuenta como separador DEPENDE DE LA PLATAFORMA, y tratarlos igual en las dos rompe
+         * Linux, que es donde corre produccion. En Linux la barra invertida es un caracter valido
+         * de nombre de archivo, no un separador: recortarla de las puntas cambia a que archivo
+         * apunta el path.
+         *
+         * Los dos casos concretos, medidos por el chequeo independiente en WSL el 16/8/2026:
+         *   - rtrim del base: un directorio llamado "pub\" quedaba recortado a "pub", con lo cual
+         *     el prefijo apuntaba a OTRO directorio. Servia archivos del hermano "pub/" con
+         *     motivo=ok y rechazaba los propios. O sea, fuga.
+         *   - ltrim del path pedido: "\foto.jpg" quedaba en "foto.jpg" y servia un archivo
+         *     distinto del pedido, y "\../secreto.txt" se convertia en "../secreto.txt", creando
+         *     un traversal que el input no tenia (lo frena realpath() despues, pero de rebote).
+         */
+        $separadores = (DIRECTORY_SEPARATOR === '\\') ? "/\\" : "/";
+
+        $base_recortado = rtrim($base_real, $separadores);
+
+        /*
+         * Un base que es la raiz del filesystem no confina nada: el prefijo quedaria en "/" (o en
+         * "C:\") y CUALQUIER path absoluto lo matchearia. Es el mismo agujero que el base
+         * inexistente de arriba, entrando por otra puerta -- y es el caso que el comentario de
+         * arriba nombra ("o en DIRECTORY_SEPARATOR a secas") y que hasta el 16/8/2026 no estaba
+         * cubierto. Sacados los separadores del final, la raiz de Linux queda en "" y la de Windows
+         * en "C:".
+         */
+        if ($base_recortado === '' || preg_match('~^[A-Za-z]:$~', $base_recortado) === 1) {
+            return self::rechazo(self::MOTIVO_BASE_INVALIDO);
+        }
+
+        /*
          * El separador al final del prefijo no es cosmetico: es lo unico que impide que
          * "/storage/app/publico" matchee como si estuviera adentro de "/storage/app/public".
          */
-        $prefijo = rtrim($base_real, '/\\') . DIRECTORY_SEPARATOR;
+        $prefijo = $base_recortado . DIRECTORY_SEPARATOR;
 
-        $candidato = $prefijo . ltrim($relative_path, '/\\');
+        $candidato = $prefijo . ltrim($relative_path, $separadores);
 
         $real = realpath($candidato);
 
         if ($real === false) {
             return self::rechazo(self::MOTIVO_INEXISTENTE);
+        }
+
+        /*
+         * Pedir el directorio permitido en si ("/storage/." o "/storage/") no es un intento de
+         * escape: es un pedido tonto. Se separa del caso de abajo para que no quede anotado en el
+         * log como ataque, que era ruido puro.
+         */
+        if ($real === $base_recortado) {
+            return self::rechazo(self::MOTIVO_NO_ES_ARCHIVO);
         }
 
         if (!self::empieza_con($real, $prefijo)) {
@@ -116,6 +163,20 @@ class StoragePathHelper
          */
         if (!is_file($real)) {
             return self::rechazo(self::MOTIVO_NO_ES_ARCHIVO);
+        }
+
+        /*
+         * is_readable() no es paranoia: sin este chequeo, un archivo que existe adentro del
+         * directorio pero que el usuario del servidor web no puede leer hacia que
+         * BinaryFileResponse::setFile() tirara FileException('File must be readable') y la ruta
+         * respondiera 500. Un archivo inexistente responde 404.
+         *
+         * O sea que la diferencia 500 contra 404 volvia a ser el oraculo de existencia que todo
+         * este arreglo viene a sacar, solo que un escalon mas adentro. Medido el 16/8/2026 negando
+         * el permiso de lectura con icacls sobre un archivo de storage/app/public.
+         */
+        if (!is_readable($real)) {
+            return self::rechazo(self::MOTIVO_NO_SE_PUEDE_LEER);
         }
 
         return array('path' => $real, 'motivo' => self::MOTIVO_OK);
