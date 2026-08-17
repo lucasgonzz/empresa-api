@@ -448,7 +448,7 @@ class DemoMediaUrlsFrescasTest extends TestCase
      *
      * Sin sesion de demo el endpoint corta en 204 ANTES de llegar al fetcher, asi que no sale ni
      * una peticion al admin. Es lo unico que sostiene el costo cero de esta mision en las
-     * instancias que no son de demo: una llamada HTTP de 3 segundos de timeout metida en el
+     * instancias que no son de demo: una llamada HTTP de 2 segundos de timeout metida en el
      * camino de un cliente real no es un detalle de performance, es la instancia colgada.
      *
      * @group demo
