@@ -470,7 +470,7 @@ SYSTEM;
             ],
             [
                 'name' => 'consultar_actividad_de_un_cliente',
-                'description' => 'Devuelve qué hizo un cliente en la tienda online: qué artículos miró y cuántos minutos, qué buscó (y si esa búsqueda no devolvió resultados), qué puso en el carrito y qué compró. Primero conseguí el id del cliente con consultar_clientes. Usala cuando te pregunten qué estuvo mirando o qué le interesa a un cliente.',
+                'description' => 'Devuelve qué hizo un cliente en la tienda online: qué artículos miró y cuántos minutos, qué buscó (y si esa búsqueda no devolvió resultados), qué puso en el carrito y qué compró. La respuesta trae "totales" con los números completos del periodo y "movimientos" con el detalle, que puede venir recortado: si movimientos_en_esta_lista es menor que movimientos_encontrados, contá con los totales y no con la cantidad de filas. En totales, compras_sin_articulo son compras que la tienda no informó de qué artículo eran: si es mayor a cero, no afirmes que el cliente no compró un artículo determinado. Primero conseguí el id del cliente con consultar_clientes. Usala cuando te pregunten qué estuvo mirando o qué le interesa a un cliente.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -489,7 +489,7 @@ SYSTEM;
             ],
             [
                 'name' => 'consultar_interesados_en_un_articulo',
-                'description' => 'Devuelve los clientes que miraron o pusieron en el carrito un artículo en la tienda online y TODAVÍA NO LO COMPRARON, con cuántas veces lo miraron y cuánto tiempo. Filtrá por nombre o código del artículo. Solo lista compradores que estén vinculados a un cliente del sistema: los visitantes anónimos de la tienda no se pueden nombrar y no aparecen acá.',
+                'description' => 'Devuelve los clientes que miraron o pusieron en el carrito un artículo en la tienda online y, hasta donde el sistema puede saber, todavía no lo compraron: se descartan los que tienen una venta confirmada de ese artículo y los que lo compraron en la tienda. No es una certeza — una compra por mostrador todavía sin facturar, o un checkout que llegó sin el artículo, no se pueden descontar —, así que decilo como "no figura que lo haya comprado" y no como un hecho. Una fila con lo_compro_antes_y_lo_volvio_a_mirar en una fecha SÍ lo compró: quedó en la lista porque volvió a mirarlo después, así que hablá de recompra y nunca digas que no lo compró. Filtrá por nombre o código del artículo. La lista solo trae compradores vinculados a un cliente del sistema, porque a un visitante anónimo no se lo puede nombrar ni llamar; cuántos anónimos anduvieron sobre el mismo artículo viene aparte, en visitantes_anonimos, y con la lista vacía ese número puede ser lo único que haya para contestar.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
