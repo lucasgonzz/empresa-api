@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\ActividadDeClientes;
 
+use App\Console\Commands\PurgarBuyerTracking;
 use App\Models\Article;
 use App\Models\ArticlePurchase;
 use App\Models\Buyer;
@@ -577,48 +578,191 @@ class Lector_de_actividad_Test extends TestCase
     }
 
     /**
-     * 🔴 "Sin comprarlo" se resuelve contra `article_purchases` —la verdad de la compra— y NO contra
-     * los propios eventos: `checkout_complete` no garantiza traer article_id, así que un NOT EXISTS
-     * sobre el tracking dejaría pasar justo al que sí lo compró
-     * (CriteriosDeOfertaService:224-229). El descarte sólo aplica si la compra es POSTERIOR a la
-     * señal: que lo haya comprado el año pasado no dice nada de que lo esté mirando esta semana.
+     * 🔴 "SIN COMPRARLO" SE RESUELVE CONTRA LAS DOS COMPRAS, Y ESO ES LO QUE MIDE ESTE TEST.
+     *
+     *   - `article_purchases`: la venta CONFIRMADA del ERP, que es la verdad de la facturación.
+     *   - El `checkout_complete` del tracking: la compra tal como pasó en la tienda.
+     *
+     * Con sólo la primera esta lista mentía, y no en un caso de borde: la confirmación del pedido de
+     * la tienda es un paso MANUAL, así que un cliente que compró online sigue sin figurar en
+     * `article_purchases` hasta que el comerciante lo confirma — y mientras tanto la tool lo listaba
+     * bajo el título "TODAVÍA NO LO COMPRARON". Se mide el caso "compró en la tienda y todavía no
+     * está facturado", que es justo el que se colaba.
+     *
+     * El descarte sólo aplica si la compra es POSTERIOR a la señal: que lo haya comprado el año
+     * pasado no dice nada de que lo esté mirando esta semana.
      *
      * @group actividad-de-clientes
      * @test
      */
     public function los_interesados_en_un_articulo_no_incluyen_al_que_ya_lo_compro()
     {
-        $compro = $this->cliente('El que ya lo compro');
-        $mira   = $this->cliente('El que todavia lo mira');
-        $art    = $this->articulo('Taladro percutor');
+        $compro         = $this->cliente('El que ya lo compro');
+        $compro_online  = $this->cliente('El que lo compro en la tienda');
+        $mira           = $this->cliente('El que todavia lo mira');
+        $art            = $this->articulo('Taladro percutor');
 
-        $buyer_compro = $this->comprador($compro);
-        $buyer_mira   = $this->comprador($mira);
+        $buyer_compro        = $this->comprador($compro);
+        $buyer_compro_online = $this->comprador($compro_online);
+        $buyer_mira          = $this->comprador($mira);
 
         $this->evento(['buyer_id' => $buyer_compro->id, 'article_id' => $art->id, 'dwell_ms' => 30000, 'occurred_at' => now()->subDays(10)]);
+        $this->evento(['buyer_id' => $buyer_compro_online->id, 'article_id' => $art->id, 'dwell_ms' => 30000, 'occurred_at' => now()->subDays(10)]);
         $this->evento(['buyer_id' => $buyer_mira->id, 'article_id' => $art->id, 'dwell_ms' => 60000, 'occurred_at' => now()->subDays(10)]);
         $this->evento(['buyer_id' => $buyer_mira->id, 'article_id' => $art->id, 'event_type' => 'cart_add', 'occurred_at' => now()->subDays(9)]);
 
         // La compra es POSTERIOR a la vista: ya no hay nada que ofrecerle.
         $this->comprar($compro, $art, 5);
 
+        /*
+         * 🔴 Y éste compró EN LA TIENDA y no tiene una sola fila en `article_purchases`: es el
+         * pedido que el comerciante todavía no confirmó. Sin el descarte por `checkout_complete`,
+         * aparece en la lista de "no lo compraron".
+         */
+        $this->evento([
+            'buyer_id'    => $buyer_compro_online->id,
+            'article_id'  => $art->id,
+            'event_type'  => 'checkout_complete',
+            'amount'      => 15400.50,
+            'occurred_at' => now()->subDays(4),
+        ]);
+
         $servicio    = $this->servicio();
         $interesados = $servicio->interesados_en_un_articulo($art->id, 30);
 
-        $this->assertCount(1, $interesados, 'el que ya lo compró después de mirarlo sale de la lista');
+        $this->assertCount(
+            1,
+            $interesados,
+            'el que lo compró después de mirarlo sale de la lista, lo haya facturado el ERP o lo haya cerrado en la tienda'
+        );
         $this->assertSame($mira->id, $interesados[0]['client_id']);
         $this->assertSame('El que todavia lo mira', $interesados[0]['cliente']);
         $this->assertSame(1, $interesados[0]['vistas']);
         $this->assertSame(60, $interesados[0]['segundos']);
         $this->assertSame(1, $interesados[0]['al_carrito']);
 
-        $todos = $servicio->interesados_en_un_articulo($art->id, 30, false);
-        $this->assertCount(2, $todos, 'sin el filtro de "sin comprar" están los dos');
-
         // Y la tenencia la da el artículo: uno de otro comercio no devuelve nada.
         $ajeno = $this->articulo('Articulo de otro', $this->otro_comercio);
         $this->assertSame([], $servicio->interesados_en_un_articulo($ajeno->id, 30));
         $this->assertNull($servicio->articulo_del_dueno($ajeno->id));
+    }
+
+    /**
+     * 🔴 EL DESCARTE PASA ANTES DEL RECORTE, Y ESTE ES EL CASO QUE LO PRUEBA.
+     *
+     * El tope estaba en el LIMIT del SQL y el descarte de "ya lo compró" corría después, en PHP. Con
+     * un artículo que miraron muchos clientes y donde los que más lo miraron YA LO COMPRARON, la
+     * consulta se traía justo a ésos, el filtro los sacaba a todos y la lista volvía VACÍA: la IA
+     * contestaba "no lo está mirando nadie sin comprarlo" sobre un artículo que estaban mirando diez
+     * clientes. No hay error, no hay excepción: hay una lista vacía perfectamente plausible.
+     *
+     * El test del tope que ya existía no lo agarraba porque sembraba interesados que no habían
+     * comprado NINGUNO, o sea el único caso en que filtrar antes o después da lo mismo.
+     *
+     * @group actividad-de-clientes
+     * @test
+     */
+    public function el_descarte_de_los_que_ya_compraron_pasa_antes_del_recorte_de_la_lista()
+    {
+        $art = $this->articulo('Amoladora que compraron los que mas la miraron');
+
+        /*
+         * Los que MÁS lo miraron ya lo compraron: son los primeros que trae el SQL (ordena por
+         * vistas descendente), así que son los que se llevaría un recorte aplicado antes del filtro.
+         */
+        for ($i = 0; $i < 25; $i++) {
+            $cliente = $this->cliente('Ya lo compro ' . $i);
+            $buyer   = $this->comprador($cliente);
+
+            for ($v = 0; $v < 5; $v++) {
+                $this->evento(['buyer_id' => $buyer->id, 'article_id' => $art->id, 'occurred_at' => now()->subDays(10)]);
+            }
+
+            $this->comprar($cliente, $art, 3);
+        }
+
+        // Y tres que lo están mirando de verdad, con menos vistas que los de arriba.
+        $mirando = [];
+
+        for ($i = 0; $i < 3; $i++) {
+            $cliente   = $this->cliente('Solo lo mira ' . $i);
+            $mirando[] = $cliente->id;
+            $buyer     = $this->comprador($cliente);
+
+            $this->evento(['buyer_id' => $buyer->id, 'article_id' => $art->id, 'occurred_at' => now()->subDays(10)]);
+        }
+
+        $interesados = $this->servicio()->interesados_en_un_articulo($art->id, 30);
+
+        $this->assertCount(
+            3,
+            $interesados,
+            'La lista volvió recortada por los que ya compraron: el descarte está corriendo DESPUÉS del tope.'
+        );
+
+        foreach ($interesados as $fila) {
+            $this->assertContains(
+                $fila['client_id'],
+                $mirando,
+                'Se coló un cliente que ya había comprado el artículo.'
+            );
+        }
+    }
+
+    /**
+     * 🔴 LA REGLA DE CORTE POR ANTIGÜEDAD LA APLICA EL PRODUCTOR, NO EL QUE LLAMA.
+     *
+     * El docblock de la clase dice que pedirle a `buyer_tracking_events` una ventana mayor a la
+     * retención "devuelve una mentira tranquilizadora", porque la purga ya se llevó lo de más atrás.
+     * Esa regla vivía en fuente_para(), y a fuente_para() la llamaba SOLO actividad(): los dos
+     * métodos por artículo tomaban los días crudos. No estaba roto porque sus llamadores recortan al
+     * enum antes de llamar — o sea que la protección estaba en el llamador y no en el productor, que
+     * es cómo se llega a que el tercer llamador la rompa sin enterarse.
+     *
+     * Se mide con un evento que cae entre la retención y la ventana pedida: con el tope, no entra.
+     *
+     * @group actividad-de-clientes
+     * @test
+     */
+    public function las_consultas_por_articulo_topean_la_ventana_a_la_retencion_aunque_les_pidan_mas()
+    {
+        $cliente = $this->cliente('Cliente de la ventana larga');
+        $buyer   = $this->comprador($cliente);
+        $art     = $this->articulo('Articulo mirado hace mucho');
+
+        $mas_viejo_que_la_retencion = PurgarBuyerTracking::DIAS_RETENCION + 30;
+
+        $this->evento([
+            'buyer_id'    => $buyer->id,
+            'article_id'  => $art->id,
+            'occurred_at' => now()->subDays($mas_viejo_que_la_retencion - 5),
+        ]);
+
+        $this->evento([
+            'buyer_id'    => null,
+            'visitor_id'  => 'ffffffff-0000-4000-8000-0000000000aa',
+            'article_id'  => $art->id,
+            'occurred_at' => now()->subDays($mas_viejo_que_la_retencion - 5),
+        ]);
+
+        $servicio = $this->servicio();
+
+        $this->assertSame(
+            [],
+            $servicio->interesados_en_un_articulo($art->id, $mas_viejo_que_la_retencion),
+            'interesados_en_un_articulo() contestó una ventana más larga que la retención en vez de topearla.'
+        );
+
+        $this->assertSame(
+            ['eventos' => 0, 'visitantes' => 0],
+            $servicio->anonimos_de_un_articulo($art->id, $mas_viejo_que_la_retencion),
+            'anonimos_de_un_articulo() contestó una ventana más larga que la retención en vez de topearla.'
+        );
+
+        // Y adentro de la retención los mismos eventos sí se ven: el tope no está apagando la consulta.
+        $this->evento(['buyer_id' => $buyer->id, 'article_id' => $art->id, 'occurred_at' => now()->subDays(3)]);
+
+        $this->assertCount(1, $servicio->interesados_en_un_articulo($art->id, PurgarBuyerTracking::DIAS_RETENCION));
     }
 
     /**
@@ -776,11 +920,176 @@ class Lector_de_actividad_Test extends TestCase
 
         // Todas las claves están SIEMPRE presentes: el front las da por ciertas.
         foreach (['vistas', 'articulos_distintos', 'tiempo_total_segundos', 'busquedas', 'busquedas_sin_resultado',
-                  'agregados_al_carrito', 'quitados_del_carrito', 'checkouts_empezados', 'compras'] as $clave) {
+                  'agregados_al_carrito', 'quitados_del_carrito', 'checkouts_empezados', 'compras',
+                  'compras_sin_articulo'] as $clave) {
             $this->assertSame(0, $actividad['totales'][$clave], $clave . ' tiene que venir en cero, no faltar');
         }
 
         $this->assertSame(0.0, $actividad['totales']['monto_comprado']);
         $this->assertNull($actividad['totales']['ultima_actividad']);
+    }
+
+    /**
+     * 🔴 QUÉ COMPRÓ, POR ARTÍCULO — Y CUÁNTO NO SE PUEDE SABER.
+     *
+     * De las cinco señales que se pidieron, ésta llegaba recortada: `checkout_complete` estaba
+     * excluido del detalle por artículo porque el evento no garantiza traer `article_id`, así que la
+     * pantalla contestaba "qué compró" con un número pelado de compras. Esconder lo que no se sabe
+     * no lo vuelve verdad: se informa lo que SÍ se sabe (`articulos[].comprados`) y cuánto NO se
+     * sabe (`totales.compras_sin_articulo`).
+     *
+     * 🔴 La segunda es la que vuelve honesta a la primera. Sin ella, un `comprados = 0` se lee como
+     * "no lo compró", cuando puede ser "lo compró y la tienda no mandó el artículo" — y con ese dato
+     * el comerciante sale a ofrecerle lo que la persona ya tiene. Por eso el caso del checkout SIN
+     * artículo se siembra a propósito: en datos reales aparece solo, pero el sembrador manda
+     * `article_id` en el 100% de los checkouts y ahí este caso no se ve nunca.
+     *
+     * @group actividad-de-clientes
+     * @test
+     */
+    public function el_detalle_por_articulo_dice_que_compro_y_cuantas_compras_no_se_pudieron_atribuir()
+    {
+        $cliente = $this->cliente('Cliente que compra');
+        $buyer   = $this->comprador($cliente);
+        $mirado  = $this->articulo('Cable HDMI 2m que compro');
+        $solo_visto = $this->articulo('Pinza que solo miro');
+
+        foreach ([$mirado, $solo_visto] as $art) {
+            $this->evento(['buyer_id' => $buyer->id, 'article_id' => $art->id, 'dwell_ms' => 60000, 'occurred_at' => now()->subDays(3)]);
+        }
+
+        // Dos compras del mismo artículo, atribuidas.
+        for ($i = 0; $i < 2; $i++) {
+            $this->evento([
+                'buyer_id'    => $buyer->id,
+                'article_id'  => $mirado->id,
+                'event_type'  => 'checkout_complete',
+                'amount'      => 1000,
+                'occurred_at' => now()->subDays(2),
+            ]);
+        }
+
+        // Y una compra que llegó SIN artículo: el tracking no puede decir de qué fue.
+        $this->evento([
+            'buyer_id'    => $buyer->id,
+            'article_id'  => null,
+            'event_type'  => 'checkout_complete',
+            'amount'      => 500,
+            'occurred_at' => now()->subDays(1),
+        ]);
+
+        $servicio  = $this->servicio();
+        $actividad = $servicio->actividad($servicio->buyer_ids_de_un_cliente($cliente->id), 30);
+
+        $this->assertSame(3, $actividad['totales']['compras'], 'las tres compras se cuentan igual, se hayan podido atribuir o no');
+        $this->assertSame(
+            1,
+            $actividad['totales']['compras_sin_articulo'],
+            'la compra que vino sin article_id tiene que poder verse: es la que vuelve honesto al detalle'
+        );
+
+        $por_id = [];
+
+        foreach ($actividad['articulos'] as $articulo) {
+            $por_id[$articulo['article_id']] = $articulo;
+        }
+
+        $this->assertSame(2, $por_id[$mirado->id]['comprados'], 'los dos checkout_complete con este article_id son dos compras');
+        $this->assertSame(1, $por_id[$mirado->id]['vistas']);
+        $this->assertSame(0, $por_id[$solo_visto->id]['comprados'], 'un artículo que no compró viene en 0, no sin la clave');
+
+        /*
+         * 🔴 Los dos números que NO se pueden mover: la compra no es tiempo mirando el artículo, y
+         * "artículos distintos que miró" no puede crecer porque además compró algo.
+         */
+        $this->assertSame(60, $por_id[$mirado->id]['tiempo_segundos'], 'un checkout no suma tiempo mirando el artículo');
+        $this->assertSame(2, $actividad['totales']['articulos_distintos'], 'los artículos distintos son los que MIRÓ');
+    }
+
+    /**
+     * 🔴 UN ARTÍCULO QUE SÓLO SE COMPRÓ TAMBIÉN ENTRA AL DETALLE, y con la "última vez" en null
+     * en vez de con la fecha de la compra: `ultima_vez` contesta "cuándo anduvo mirándolo", y poner
+     * ahí el día de la compra sería una fecha correcta contestando otra pregunta.
+     *
+     * @group actividad-de-clientes
+     * @test
+     */
+    public function un_articulo_que_solo_se_compro_entra_al_detalle_sin_inventarle_una_vista()
+    {
+        $cliente = $this->cliente('Cliente que compro sin mirar');
+        $buyer   = $this->comprador($cliente);
+        $art     = $this->articulo('Articulo comprado a ciegas');
+
+        $this->evento([
+            'buyer_id'    => $buyer->id,
+            'article_id'  => $art->id,
+            'event_type'  => 'checkout_complete',
+            'amount'      => 2500,
+            'occurred_at' => now()->subDays(2),
+        ]);
+
+        $servicio  = $this->servicio();
+        $actividad = $servicio->actividad($servicio->buyer_ids_de_un_cliente($cliente->id), 30);
+
+        $this->assertCount(1, $actividad['articulos']);
+        $this->assertSame(1, $actividad['articulos'][0]['comprados']);
+        $this->assertSame(0, $actividad['articulos'][0]['vistas']);
+        $this->assertSame(0, $actividad['articulos'][0]['tiempo_segundos']);
+        $this->assertNull($actividad['articulos'][0]['ultima_vez'], 'la compra no es "la última vez que lo miró"');
+        $this->assertSame(0, $actividad['totales']['articulos_distintos'], 'no miró ningún artículo distinto: lo compró');
+        $this->assertSame(0, $actividad['totales']['compras_sin_articulo']);
+    }
+
+    /**
+     * 🔴 EL `desde` QUE SE INFORMA ES EL CORTE QUE SE USÓ, Y NO UNO PARECIDO.
+     *
+     * Se informaba `now()->subDays($periodo)->format('Y-m-d')` mientras la consulta cortaba con
+     * `now()->subDays($periodo)`, o sea CON LA HORA de la corrida: con periodo 30 a las 14:30 la
+     * pantalla decía "desde el 18" y se estaban dejando afuera todos los eventos del 18 anteriores a
+     * las 14:30. Lo que falta no se ve, y ese `desde` viajaba igual al prompt de la IA como si fuera
+     * la ventana entera. El corte se movió al principio del día, así que ahora el `desde` es verdad.
+     *
+     * @group actividad-de-clientes
+     * @test
+     */
+    public function el_desde_informado_es_el_corte_real_de_la_consulta()
+    {
+        $cliente = $this->cliente('Cliente del borde del dia');
+        $buyer   = $this->comprador($cliente);
+        $art     = $this->articulo('Articulo del borde');
+
+        /*
+         * Un evento del PRIMER día de la ventana, a las 00:05. Con el corte viejo —que llevaba la
+         * hora de la corrida— este evento quedaba afuera en cualquier corrida posterior a las 00:05,
+         * o sea prácticamente siempre, y la pantalla igual decía que estaba informando ese día.
+         */
+        $primer_dia = now()->subDays(30)->startOfDay()->addMinutes(5);
+
+        $this->evento(['buyer_id' => $buyer->id, 'article_id' => $art->id, 'occurred_at' => $primer_dia]);
+
+        $servicio  = $this->servicio();
+        $actividad = $servicio->actividad($servicio->buyer_ids_de_un_cliente($cliente->id), 30);
+
+        $this->assertSame(
+            $primer_dia->format('Y-m-d'),
+            $actividad['desde'],
+            'el desde informado tiene que ser el primer día que la consulta realmente incluye'
+        );
+
+        $this->assertSame(
+            1,
+            $actividad['totales']['vistas'],
+            'un evento del día que la pantalla dice estar informando NO puede quedar afuera de la consulta'
+        );
+
+        // Y el día anterior al informado sigue afuera: el corte se corrió, no se borró.
+        $this->evento([
+            'buyer_id'    => $buyer->id,
+            'article_id'  => $art->id,
+            'occurred_at' => now()->subDays(31)->endOfDay(),
+        ]);
+
+        $actividad = $servicio->actividad($servicio->buyer_ids_de_un_cliente($cliente->id), 30);
+        $this->assertSame(1, $actividad['totales']['vistas'], 'el día anterior al desde informado no entra');
     }
 }

@@ -79,9 +79,30 @@ use Illuminate\Support\Facades\DB;
  *   C2 búsquedas por comprador (eventos)           -> bte_buyer_ocurrido_index      (range)
  *   C3 línea de tiempo por comprador               -> bte_buyer_ocurrido_index      (range + filesort)
  *   C4/C5 totales y búsquedas del agregado         -> btd_buyer_fecha_index         (range)
- *   C6 interesados en un artículo                  -> bte_articulo_ocurrido_index en `e`,
- *                                                     PRIMARY en `b` (eq_ref)
+ *   C6 interesados en un artículo                  -> ver abajo: NO es lo que se esperaba
  *   C7 anónimos sobre un artículo                  -> bte_articulo_ocurrido_index   (range)
+ *
+ * 🔴 C6, MEDIDO DE NUEVO CON LA BASE SEMBRADA (17/8/2026, 9.050 eventos crudos). El plan anunciaba
+ * `bte_articulo_ocurrido_index` en `e` y `PRIMARY` en `b` (eq_ref). CON DATOS NO DA ESO:
+ *
+ *   EXPLAIN SELECT b.comercio_city_client_id, ... FROM buyer_tracking_events e
+ *   JOIN buyers b ON b.id = e.buyer_id
+ *   WHERE e.article_id = 40 AND e.occurred_at >= '...' AND b.user_id = 500
+ *     AND b.comercio_city_client_id IS NOT NULL AND e.event_type IN ('product_view','cart_add')
+ *   GROUP BY b.comercio_city_client_id ORDER BY vistas DESC, client_id LIMIT 200;
+ *
+ *     table: b   type: ALL  key: NULL                      rows: 3   (Using temporary; filesort)
+ *     table: e   type: ref  key: bte_buyer_ocurrido_index  rows: 30  ref: b.id
+ *
+ * O sea que `b` es la CONDUCTORA y `e` entra por el índice de comprador, no por el de artículo. Y
+ * es una elección razonable del optimizador, no un defecto del código: en esta base `buyers` tiene
+ * TRES filas, así que barrerla entera y pedirle a `e` los eventos de cada una es más barato que
+ * entrar por el artículo. Con una `buyers` del tamaño real de un comercio la elección se da vuelta
+ * sola. Lo que importa —que la tabla GRANDE nunca entre en `type: ALL`— se cumple en las dos formas.
+ *
+ * 🔴 Lo que se aprende de esto vale más que el índice: un EXPLAIN es una medición CON los datos que
+ * había cuando se corrió, y la forma de las tablas chicas del entorno de prueba cambia el plan. Por
+ * eso acá se escribe lo que dio, y no lo que se esperaba que diera.
  *
  * 🔴 En C7 los anónimos se cuentan con un `CASE WHEN` y NO con `WHERE buyer_id IS NULL`. Medido con
  * EXPLAIN: con ese predicado el optimizador elige `bte_buyer_ocurrido_index` —el peor índice
@@ -113,28 +134,47 @@ use Illuminate\Support\Facades\DB;
  * entrando por `buyer_id`. Es la diferencia entre las dos puertas de la pantalla.
  *
  * -------------------------------------------------------------------------------------------
- * 4. 🔴 POR QUÉ NO HAY CLAVE `comprado` POR ARTÍCULO
+ * 4. 🔴 QUÉ COMPRÓ: SE INFORMA LO QUE SE SABE Y SE DICE CUÁNTO NO SE SABE
  * -------------------------------------------------------------------------------------------
  *
- * Porque `checkout_complete` NO garantiza traer `article_id` (BuyerTrackingEvent::TIPOS lo permite
- * null; está explicado en CriteriosDeOfertaService:224-229), así que "lo compró" NO SE PUEDE
- * CONTESTAR DESDE EL TRACKING. La verdad de la compra es `article_purchases`, y cruzarla acá por
- * artículo sería reimplementar `ultima_compra_por_par()` con otro criterio, que es cómo se llega a
- * que dos pantallas del mismo sistema contesten distinto la misma pregunta. Esta clase informa lo
- * que el tracking sabe: lo vio, lo buscó, lo puso en el carrito, y cuántas compras cerró en total.
- * El único lugar donde sí se cruza `article_purchases` es interesados_en_un_articulo(), y ahí se
- * LLAMA a CriteriosDeOfertaService::filtro_de_ventas_reales() —que es `public static` justamente
- * para eso—, no se copia.
+ * `checkout_complete` NO garantiza traer `article_id` (BuyerTrackingEvent::TIPOS lo permite null;
+ * está explicado en CriteriosDeOfertaService:224-229). Durante un tiempo eso se resolvió acá NO
+ * informando nada por artículo, y era peor: el comerciante que preguntó "¿qué compró?" veía un
+ * número pelado de compras y el porqué del recorte vivía en un docblock de PHP, o sea en ningún
+ * lado para él. Y del lado de la IA era directamente una trampa: el prompt le pedía decir "lo miró
+ * mucho y no lo compró" sobre artículos de los que no tenía un solo dato de compra.
+ *
+ * La salida no es esconderlo mejor. Se informan LAS DOS COSAS:
+ *
+ *   - `articulos[].comprados`      cuántas veces ese article_id apareció en un checkout_complete de
+ *                                  estos compradores en la ventana. 0 cuando no lo compró.
+ *   - `totales.compras_sin_articulo`  cuántos checkout_complete vinieron SIN article_id, o sea
+ *                                  compras que el tracking NO PUEDE atribuir a ningún artículo.
+ *
+ * Con las dos juntas el número se puede leer sin mentirse: "compró 3 de estos artículos y hay 2
+ * compras que no sabemos de qué fueron". Sin la segunda, un `comprados = 0` se leería como "no lo
+ * compró" cuando puede ser "lo compró y la tienda no mandó el artículo".
+ *
+ * 🔴 Esto NO convierte al tracking en la verdad de la compra: la verdad sigue siendo
+ * `article_purchases` (las ventas confirmadas del ERP). Son dos preguntas distintas y las dos hacen
+ * falta — una compra hecha en la tienda todavía no está confirmada en el ERP, porque la
+ * confirmación es un paso MANUAL. Por eso interesados_en_un_articulo() descarta por las dos:
+ * por `article_purchases` (llamando a CriteriosDeOfertaService::filtro_de_ventas_reales(), que es
+ * `public static` justamente para eso y no se copia) Y por el `checkout_complete` del tracking.
  *
  * -------------------------------------------------------------------------------------------
- * 5. 🔴 LAS DOS TABLAS ESTÁN HOY EN CERO FILAS EN TODOS LOS ENTORNOS
+ * 5. CON QUÉ DATOS SE VERIFICA ESTA CLASE
  * -------------------------------------------------------------------------------------------
  *
- * Medido sobre empresa_testing_s2: `buyer_tracking_events` 0 filas y `buyer_tracking_daily` 0 filas,
- * porque las escribe la tienda y tienda todavía no se desplegó. Los EXPLAIN de arriba fijan la
- * ELECCIÓN DE ÍNDICE, que es lo válido sobre tablas vacías; la verificación con datos se hace con el
- * sembrador `tracking:sembrar-actividad-de-prueba`. Verificar esta clase contra las tablas en cero
- * es mirar una pantalla vacía y declararla andando.
+ * Las dos tablas las escribe la TIENDA, que todavía no se desplegó, así que en un entorno recién
+ * levantado están las dos en cero y verificar contra eso es mirar una pantalla vacía y declararla
+ * andando. Para eso está el sembrador `tracking:sembrar-actividad-de-prueba`.
+ *
+ * 🔴 Ese "están en cero" es un hecho FECHADO y no una propiedad de la clase: medido el 15/8/2026
+ * sobre empresa_testing_s2, y ya no es cierto — el 17/8/2026, con el sembrador de esta misma misión
+ * corrido, esa base tiene 9.050 eventos crudos y 9.000 filas de agregado, y los EXPLAIN de arriba
+ * están re-medidos contra ella. Antes de repetir cualquiera de estas mediciones, contá las filas:
+ * un EXPLAIN sobre tablas vacías no es una medición.
  *
  * PHP 7.4: sin match, ?->, str_contains ni #[...].
  */
@@ -169,8 +209,22 @@ class ActividadDeClientesService
     /** Techo de eventos de la línea de tiempo. */
     const MAX_EVENTOS_LINEA_DE_TIEMPO = 50;
 
-    /** Techo de clientes que devuelve interesados_en_un_articulo(). */
-    const MAX_INTERESADOS = 20;
+    /**
+     * Techo de la CONSULTA de interesados: cuántos clientes trae el SQL ANTES de que el descarte de
+     * "ya lo compró" corra en PHP.
+     *
+     * 🔴 NO ES EL TECHO DE LA RESPUESTA, y la diferencia es todo el punto. Antes acá había un tope
+     * de 20 aplicado en el LIMIT, o sea ANTES del filtro: con un artículo que miraron 40 clientes y
+     * donde los 20 con más vistas ya lo habían comprado, la lista volvía VACÍA y la IA contestaba
+     * "nadie lo está mirando sin comprarlo" — que es exactamente lo contrario de lo que pasaba. Se
+     * explora de más justamente para que el filtro tenga de dónde sacar.
+     *
+     * 🔴 Y este método NO recorta lo que devuelve: el techo de la respuesta lo pone quien la muestra
+     * (hoy ConsultasSistemaIaHelper::MAX_RESULTS, que es el que arma el JSON que ve Claude). Dos
+     * constantes recortando la MISMA lista es cómo se llega a que alguien suba una y el tope real
+     * siga siendo el de la otra. Acá una explora y la otra muestra, y por eso pueden convivir.
+     */
+    const MAX_CANDIDATOS_INTERESADOS = 200;
 
     /**
      * El texto en criollo de cada tipo de evento. Tabla única de la misión.
@@ -205,12 +259,28 @@ class ActividadDeClientesService
     ];
 
     /**
-     * Los tipos que arman el detalle por artículo. `checkout_complete` NO está, y el porqué es el
-     * punto 4 del docblock de la clase.
+     * Los tipos que hablan de INTERÉS por un artículo: lo miró y lo puso en el carrito.
+     *
+     * Es la lista que usan las consultas por artículo (C6/C7), donde la pregunta es "quién anduvo
+     * mirando esto". La compra NO entra acá porque no es interés: es lo contrario, y es lo que saca
+     * a alguien de la lista de interesados.
      *
      * @var array<int, string>
      */
-    const TIPOS_CON_DETALLE_POR_ARTICULO = ['product_view', 'cart_add'];
+    const TIPOS_DE_INTERES_POR_ARTICULO = ['product_view', 'cart_add'];
+
+    /**
+     * Los tipos que arman el detalle por artículo de la pantalla.
+     *
+     * 🔴 `checkout_complete` SÍ está, y el punto 4 del docblock de la clase explica por qué se lo
+     * agregó: sin él la pantalla no podía contestar "qué compró", que era una de las cinco señales
+     * que se pidieron. Lo que aporta es la columna `comprados`; el tiempo y la "última vez" del
+     * artículo los siguen armando SOLO los tipos de interés, porque un checkout no es tiempo mirando
+     * el artículo ni una señal de que lo esté mirando ahora.
+     *
+     * @var array<int, string>
+     */
+    const TIPOS_CON_DETALLE_POR_ARTICULO = ['product_view', 'cart_add', 'checkout_complete'];
 
     /**
      * Dueño del comercio. NO sale de Auth: las tools del chat corren adentro de un job sin sesión.
@@ -383,7 +453,7 @@ class ActividadDeClientesService
             return $this->bloque_vacio($fuente, $periodo);
         }
 
-        $desde = ($fuente === self::FUENTE_EVENTOS) ? Carbon::now()->subDays($periodo) : null;
+        $desde = ($fuente === self::FUENTE_EVENTOS) ? $this->desde_de_eventos($periodo) : null;
 
         $grupos    = ($fuente === self::FUENTE_EVENTOS) ? $this->grupos_de_eventos($ids, $desde) : $this->grupos_del_agregado($ids);
         $busquedas = ($fuente === self::FUENTE_EVENTOS) ? $this->busquedas_de_eventos($ids, $desde) : $this->busquedas_del_agregado($ids);
@@ -440,21 +510,33 @@ class ActividadDeClientesService
      * 🔴 Los visitantes ANÓNIMOS no aparecen acá, y no es un olvido: sin `comercio_city_client_id`
      * no hay a quién nombrar. Se cuentan aparte, con anonimos_de_un_articulo().
      *
-     * 🔴 El descarte de "ya lo compró" va en PHP y contra `article_purchases`, llamando a
-     * CriteriosDeOfertaService::filtro_de_ventas_reales() —que es público estático justamente para
-     * que ese criterio viva en un solo lugar—. NO va como un NOT EXISTS contra la propia tabla de
-     * eventos: `checkout_complete` no garantiza traer `article_id`, así que ese NOT EXISTS dejaría
-     * pasar lo que sí se compró (CriteriosDeOfertaService:224-229).
+     * 🔴 EL DESCARTE DE "YA LO COMPRÓ" MIRA LAS DOS COMPRAS, Y LA SEGUNDA NO ES UN ADORNO:
      *
-     * @param  int  $article_id
-     * @param  int  $dias
-     * @param  bool $solo_sin_comprar
-     * @return array<int, array> Filas ['client_id','cliente','telefono','vistas','segundos','al_carrito','ultima_vez']
+     *   1. `article_purchases`, o sea las ventas CONFIRMADAS del ERP, llamando a
+     *      CriteriosDeOfertaService::filtro_de_ventas_reales() —que es público estático justamente
+     *      para que ese criterio viva en un solo lugar—, no copiándolo.
+     *   2. El `checkout_complete` del propio tracking con ese `article_id`.
+     *
+     * Con sólo la 1 esta lista MIENTE, y está medido: una compra hecha en la tienda todavía no está
+     * en `article_purchases`, porque la confirmación del pedido es un paso MANUAL del comerciante.
+     * Sobre los datos sembrados, la pantalla decía "Cerró una compra · CESTO DE BASURA" para el
+     * cliente 1 y esta misma consulta lo devolvía adentro de una lista titulada "TODAVÍA NO LO
+     * COMPRARON". El evento de checkout no siempre trae `article_id` (por eso el punto 1 no se
+     * puede reemplazar por el 2), pero cuando lo trae es la señal MÁS FRESCA que hay.
+     *
+     * 🔴 Y el descarte pasa ANTES del recorte de la lista, nunca después: el porqué está en el
+     * docblock de MAX_CANDIDATOS_INTERESADOS.
+     *
+     * 🔴 Este método NO recorta lo que devuelve. El techo de la respuesta lo pone quien la muestra.
+     *
+     * @param  int $article_id
+     * @param  int $dias Ventana hacia atrás; se topea sola a PERIODO_MAXIMO_CON_DETALLE
+     * @return array<int, array> Filas ['client_id','cliente','telefono','vistas','segundos','al_carrito','ultima_vez','ultima_compra']
      */
-    public function interesados_en_un_articulo($article_id, $dias, $solo_sin_comprar = true)
+    public function interesados_en_un_articulo($article_id, $dias)
     {
         $article_id = (int) $article_id;
-        $dias       = (int) $dias;
+        $dias       = $this->dias_de_eventos($dias);
 
         if ($article_id <= 0 || $dias <= 0 || !$this->articulo_del_dueno($article_id)) {
             return [];
@@ -463,10 +545,10 @@ class ActividadDeClientesService
         $filas = DB::table('buyer_tracking_events as e')
             ->join('buyers as b', 'b.id', '=', 'e.buyer_id')
             ->where('e.article_id', $article_id)
-            ->where('e.occurred_at', '>=', Carbon::now()->subDays($dias))
+            ->where('e.occurred_at', '>=', $this->desde_de_eventos($dias))
             ->where('b.user_id', $this->owner_id)
             ->whereNotNull('b.comercio_city_client_id')
-            ->whereIn('e.event_type', self::TIPOS_CON_DETALLE_POR_ARTICULO)
+            ->whereIn('e.event_type', self::TIPOS_DE_INTERES_POR_ARTICULO)
             ->groupBy('b.comercio_city_client_id')
             ->selectRaw(
                 "b.comercio_city_client_id as client_id,
@@ -476,9 +558,9 @@ class ActividadDeClientesService
                  MAX(e.occurred_at) as ultimo"
             )
             ->orderByDesc('vistas')
-            // Desempate explícito: sin él, dos corridas iguales podrían recortar distinto en el LIMIT.
+            // Desempate explícito: sin él, dos corridas iguales podrían recortar distinto en el tope.
             ->orderBy('client_id')
-            ->limit(self::MAX_INTERESADOS)
+            ->limit(self::MAX_CANDIDATOS_INTERESADOS)
             ->get();
 
         if ($filas->isEmpty()) {
@@ -486,7 +568,7 @@ class ActividadDeClientesService
         }
 
         $client_ids   = $this->ids_limpios($filas->pluck('client_id')->all());
-        $ya_comprados = $solo_sin_comprar ? $this->ultima_compra_del_articulo($client_ids, $article_id) : [];
+        $ya_comprados = $this->ultima_compra_del_articulo($client_ids, $article_id);
         $datos        = $this->datos_de_clientes($client_ids);
         $interesados  = [];
 
@@ -499,6 +581,13 @@ class ActividadDeClientesService
                 continue;
             }
 
+            /*
+             * El descarte corre ACÁ, sobre los MAX_CANDIDATOS_INTERESADOS que trajo el SQL, y recién
+             * lo que sobrevive llega al que muestra. Al revés —recortar primero y filtrar después—
+             * la lista se vacía justo en el caso que más importa: un artículo que compraron todos
+             * los que más lo miraron.
+             */
+
             $interesados[] = [
                 'client_id'  => $client_id,
                 'cliente'    => isset($datos[$client_id]) ? $datos[$client_id]['nombre'] : 'Cliente #' . $client_id,
@@ -507,6 +596,19 @@ class ActividadDeClientesService
                 'segundos'   => $this->a_segundos($fila->dwell_ms_total),
                 'al_carrito' => (int) $fila->al_carrito,
                 'ultima_vez' => $this->formatear_momento($fila->ultimo, self::FUENTE_EVENTOS),
+                /*
+                 * 🔴 EL QUE ESTÁ ACÁ HABIENDO COMPRADO ANTES TIENE QUE DECIRLO. Los que quedan en la
+                 * lista con una compra registrada son los que la compraron y DESPUÉS la volvieron a
+                 * mirar: por la regla del `continue` de arriba siguen siendo interés real (una
+                 * recompra), pero listarlos mudos abajo de un título que dice "todavía no lo
+                 * compraron" es contarle al comerciante lo contrario de lo que pasó. Medido sobre
+                 * los datos sembrados: el cliente 1 compró el CESTO el 15/8 17:45 y lo volvió a
+                 * mirar el 17/8 13:53, así que aparece — y con esta clave se puede decir por qué.
+                 * null es "no hay ninguna compra registrada", que es el caso normal.
+                 */
+                'ultima_compra' => isset($ya_comprados[$client_id])
+                    ? $this->formatear_momento($ya_comprados[$client_id], self::FUENTE_EVENTOS)
+                    : null,
             ];
         }
 
@@ -523,15 +625,21 @@ class ActividadDeClientesService
      * grueso del tráfico es anónimo— matchea casi toda la tabla. Sin el predicado se queda en
      * `bte_articulo_ocurrido_index`, que es el que corresponde.
      *
+     * 🔴 QUIÉN LO CONSUME, porque un método de lectura sin consumidor es una trampa cargada: lo usa
+     * ConsultasSistemaIaHelper::interesados_en_un_articulo(), que informa estos dos números al lado
+     * de la lista de clientes con nombre. Sin ellos, un artículo que están mirando quince visitantes
+     * sin cuenta le vuelve a la IA como una lista vacía, y la IA contesta "no lo está mirando
+     * nadie" — que es falso y encima manda a no hacer nada.
+     *
      * @param  int $article_id
-     * @param  int $dias
+     * @param  int $dias Ventana hacia atrás; se topea sola a PERIODO_MAXIMO_CON_DETALLE
      * @return array{'eventos': int, 'visitantes': int}
      */
     public function anonimos_de_un_articulo($article_id, $dias)
     {
         $vacio      = ['eventos' => 0, 'visitantes' => 0];
         $article_id = (int) $article_id;
-        $dias       = (int) $dias;
+        $dias       = $this->dias_de_eventos($dias);
 
         if ($article_id <= 0 || $dias <= 0 || !$this->articulo_del_dueno($article_id)) {
             return $vacio;
@@ -539,11 +647,9 @@ class ActividadDeClientesService
 
         $fila = DB::table('buyer_tracking_events as e')
             ->where('e.article_id', $article_id)
-            ->where('e.occurred_at', '>=', Carbon::now()->subDays($dias))
+            ->where('e.occurred_at', '>=', $this->desde_de_eventos($dias))
             ->selectRaw(
-                'COUNT(*) as eventos,
-                 COUNT(DISTINCT e.visitor_id) as visitantes,
-                 SUM(CASE WHEN e.buyer_id IS NULL THEN 1 ELSE 0 END) as eventos_anonimos,
+                'SUM(CASE WHEN e.buyer_id IS NULL THEN 1 ELSE 0 END) as eventos_anonimos,
                  COUNT(DISTINCT CASE WHEN e.buyer_id IS NULL THEN e.visitor_id ELSE NULL END) as visitantes_anonimos'
             )
             ->first();
@@ -598,6 +704,55 @@ class ActividadDeClientesService
     }
 
     /**
+     * La ventana, ya topeada a lo que los eventos crudos PUEDEN contestar.
+     *
+     * 🔴 ESTA GUARDA VIVE ACÁ, EN EL PRODUCTOR, Y NO EN EL QUE LLAMA. La regla de corte del punto 1
+     * del docblock de la clase —pedirle a `buyer_tracking_events` una ventana mayor a la retención
+     * devuelve la cola de lo que sobrevivió a la purga con cara de total— la aplicaba SOLO
+     * actividad(), a través de fuente_para(). Los otros dos métodos públicos que leen los crudos
+     * (interesados_en_un_articulo() y anonimos_de_un_articulo()) tomaban `$dias` tal como venía.
+     * No estaba roto porque sus dos llamadores recortan al enum antes de llamar, y eso es
+     * exactamente el problema: la protección estaba en el llamador y no en el productor, así que el
+     * día que apareciera un tercer llamador —o que alguien bajara DIAS_RETENCION— la mentira volvía
+     * sola y sin que nada la denunciara.
+     *
+     * Acá no se puede degradar al agregado como hace actividad(): el agregado no guarda `article_id`
+     * con `visitor_id` ni el detalle por comprador que estas consultas necesitan. Lo que sí se puede
+     * es no prometer más de lo que hay, y eso es topear la ventana.
+     *
+     * @param  mixed $dias
+     * @return int
+     */
+    protected function dias_de_eventos($dias)
+    {
+        $dias = (int) $dias;
+
+        if ($dias > self::PERIODO_MAXIMO_CON_DETALLE) {
+            return self::PERIODO_MAXIMO_CON_DETALLE;
+        }
+
+        return $dias;
+    }
+
+    /**
+     * Desde qué momento se leen los eventos crudos de una ventana de N días.
+     *
+     * 🔴 EL CORTE ES AL PRINCIPIO DEL DÍA, Y ESO ES LO QUE LO HACE COINCIDIR CON EL `desde` QUE SE
+     * INFORMA. Antes el corte era `now()->subDays($n)` —con la hora de la corrida— y el `desde` que
+     * viajaba al front y al prompt de la IA era ese mismo momento formateado a `Y-m-d`. O sea: con
+     * periodo 30 a las 14:30 la pantalla decía "desde el 18" y se estaban dejando afuera todos los
+     * eventos del 18 anteriores a las 14:30. Nadie lo puede notar mirando la pantalla, porque lo que
+     * falta no se ve; y el número igual viajaba al prompt como si fuera la ventana completa.
+     *
+     * @param  int $dias
+     * @return \Carbon\Carbon
+     */
+    protected function desde_de_eventos($dias)
+    {
+        return Carbon::now()->subDays((int) $dias)->startOfDay();
+    }
+
+    /**
      * C1 — Totales Y artículos en UNA sola consulta: se agrupa por (event_type, article_id) y después
      * se recorre en PHP, sumando por tipo para los totales y quedándose con las filas
      * product_view / cart_add para el detalle. Una consulta y no cuatro.
@@ -617,11 +772,17 @@ class ActividadDeClientesService
             ->where('e.occurred_at', '>=', $desde)
             ->groupBy('e.event_type', 'e.article_id')
             ->selectRaw(
+                /*
+                 * Acá había además un COUNT(DISTINCT e.visitor_id) as visitantes que NADIE leía: la
+                 * columna se seleccionaba, viajaba y se tiraba. Se sacó. Si alguna vez hace falta
+                 * "cuántas personas distintas", entra con su consumidor y con su nombre, no de
+                 * arrastre — una columna sin lector es una que el día que alguien lea nadie va a
+                 * revisar si significa lo que su nombre dice.
+                 */
                 'e.event_type as event_type, e.article_id as article_id,
                  COUNT(*) as total,
                  COALESCE(SUM(e.dwell_ms), 0) as dwell_ms_total,
                  COALESCE(SUM(e.amount), 0) as monto_total,
-                 COUNT(DISTINCT e.visitor_id) as visitantes,
                  SUM(CASE WHEN e.results_count = 0 THEN 1 ELSE 0 END) as sin_resultado,
                  MIN(e.occurred_at) as primero,
                  MAX(e.occurred_at) as ultimo'
@@ -647,11 +808,17 @@ class ActividadDeClientesService
             ->whereIn('d.buyer_id', $buyer_ids)
             ->groupBy('d.event_type', 'd.article_id')
             ->selectRaw(
+                /*
+                 * Acá había un SUM(d.visitantes) as visitantes que nadie leía, y que además habría
+                 * estado MAL si alguien lo leyera: `buyer_tracking_daily.visitantes` es un conteo de
+                 * distintos POR DÍA, y sumar conteos de distintos cuenta dos veces al que volvió dos
+                 * días. Un COUNT DISTINCT no se reconstruye sumando: se sacó en vez de dejarlo ahí
+                 * esperando a que alguien lo use creyendo que es "cuántas personas".
+                 */
                 'd.event_type as event_type, d.article_id as article_id,
                  SUM(d.total) as total,
                  SUM(d.dwell_ms_total) as dwell_ms_total,
                  SUM(d.amount_total) as monto_total,
-                 SUM(d.visitantes) as visitantes,
                  SUM(CASE WHEN d.results_count = 0 THEN d.total ELSE 0 END) as sin_resultado,
                  MIN(d.fecha) as primero,
                  MAX(d.fecha) as ultimo'
@@ -783,6 +950,17 @@ class ActividadDeClientesService
 
             if ($tipo === 'checkout_complete') {
                 $totales['monto_comprado'] += (float) $grupo->monto_total;
+
+                /*
+                 * 🔴 LA CLAVE QUE VUELVE HONESTO AL DETALLE POR ARTÍCULO. Un checkout sin
+                 * `article_id` es una compra que el tracking NO PUEDE atribuir a nada, y se cuenta
+                 * acá en vez de desaparecer: sin este número, un artículo con `comprados = 0` se
+                 * lee como "no lo compró", cuando puede ser "lo compró y la tienda no mandó de qué
+                 * artículo era". Es la diferencia entre no saber y decir que no pasó.
+                 */
+                if (is_null($grupo->article_id)) {
+                    $totales['compras_sin_articulo'] += $total;
+                }
             }
 
             $primera = $this->menor($primera, $grupo->primero);
@@ -800,14 +978,27 @@ class ActividadDeClientesService
                     'vistas'               => 0,
                     'dwell_ms'             => 0,
                     'agregados_al_carrito' => 0,
+                    'comprados'            => 0,
                     'ultima_vez'           => null,
                 ];
             }
 
             if ($tipo === 'product_view') {
                 $articulos[$article_id]['vistas'] += $total;
-            } else {
+            } elseif ($tipo === 'cart_add') {
                 $articulos[$article_id]['agregados_al_carrito'] += $total;
+            } else {
+                $articulos[$article_id]['comprados'] += $total;
+            }
+
+            /*
+             * El tiempo y la "última vez" del artículo los arman SOLO las señales de interés. Un
+             * checkout no es tiempo mirándolo, y contar la compra como "última vez que anduvo con
+             * este artículo" haría que la fila diga "lo miró, última vez <el día que lo compró>",
+             * que es una fecha correcta contestando otra pregunta.
+             */
+            if (!in_array($tipo, self::TIPOS_DE_INTERES_POR_ARTICULO, true)) {
+                continue;
             }
 
             $articulos[$article_id]['dwell_ms'] += (int) $grupo->dwell_ms_total;
@@ -821,8 +1012,20 @@ class ActividadDeClientesService
          * Los artículos distintos se cuentan ANTES del recorte: con el conteo tomado después, un
          * cliente que miró 40 artículos informaría "20 artículos distintos" y el número sería una
          * consecuencia del tope de la pantalla en vez de un dato del cliente.
+         *
+         * 🔴 Y se cuentan los que MIRÓ o puso en el carrito, no los que aparecen en la lista. Desde
+         * que el detalle también trae los comprados, un artículo que sólo aparece en un checkout
+         * inflaría este número, que la pantalla y el prompt llaman "artículos distintos que miró".
          */
-        $totales['articulos_distintos'] = count($articulos);
+        $distintos = 0;
+
+        foreach ($articulos as $articulo) {
+            if ($articulo['vistas'] > 0 || $articulo['agregados_al_carrito'] > 0) {
+                $distintos++;
+            }
+        }
+
+        $totales['articulos_distintos'] = $distintos;
 
         return [
             'totales'   => $totales,
@@ -848,6 +1051,12 @@ class ActividadDeClientesService
 
             if ($a['dwell_ms'] !== $b['dwell_ms']) {
                 return ($a['dwell_ms'] < $b['dwell_ms']) ? 1 : -1;
+            }
+
+            // Con las mismas vistas y el mismo tiempo, adelante el que además compró: un artículo
+            // que sólo entró por un checkout tiene 0 vistas y quedaría al fondo del tope si no.
+            if ($a['comprados'] !== $b['comprados']) {
+                return ($a['comprados'] < $b['comprados']) ? 1 : -1;
             }
 
             return $a['article_id'] - $b['article_id'];
@@ -890,6 +1099,12 @@ class ActividadDeClientesService
                 'vistas'               => $articulo['vistas'],
                 'tiempo_segundos'      => $this->a_segundos($articulo['dwell_ms']),
                 'agregados_al_carrito' => $articulo['agregados_al_carrito'],
+                /*
+                 * 🔴 Un 0 acá es "el tracking no vio una compra de este artículo", NO "no lo
+                 * compró": el checkout puede haber venido sin `article_id`. Cuánto de eso hubo lo
+                 * dice `totales.compras_sin_articulo`, y las dos se leen juntas o no se leen.
+                 */
+                'comprados'            => $articulo['comprados'],
                 'ultima_vez'           => $this->formatear_momento($articulo['ultima_vez'], $fuente),
             ];
         }
@@ -1037,7 +1252,18 @@ class ActividadDeClientesService
     }
 
     /**
-     * Última compra REAL de un artículo por cada cliente de la lista.
+     * Última compra de un artículo por cada cliente de la lista, mirando LAS DOS COMPRAS que hay en
+     * este sistema y quedándose con la más nueva.
+     *
+     * 🔴 SON DOS PORQUE UNA SOLA NO ALCANZA, Y NO ES REDUNDANCIA:
+     *
+     *   - `article_purchases` es la venta CONFIRMADA del ERP. Es la verdad de la facturación, pero
+     *     llega TARDE: un pedido hecho en la tienda entra ahí recién cuando el comerciante lo
+     *     confirma a mano, y hasta entonces el cliente ya tiene el artículo comprado y esta lista lo
+     *     seguiría llamando "interesado que todavía no lo compró".
+     *   - El `checkout_complete` del tracking es la compra tal como pasó en la tienda, al instante,
+     *     pero SOLO cuando el evento trajo `article_id` (BuyerTrackingEvent::TIPOS lo permite null).
+     *     No puede reemplazar a la primera; la completa.
      *
      * 🔴 Se LLAMA a CriteriosDeOfertaService::filtro_de_ventas_reales(), no se copia: su docblock
      * dice textual que vive en un solo método "para que no envejezca por su lado en ninguna" de las
@@ -1046,7 +1272,7 @@ class ActividadDeClientesService
      *
      * @param  array $client_ids
      * @param  int   $article_id
-     * @return array<int, string> Mapa client_id => fecha de la última compra
+     * @return array<int, string> Mapa client_id => momento de la última compra
      */
     protected function ultima_compra_del_articulo(array $client_ids, $article_id)
     {
@@ -1066,6 +1292,28 @@ class ActividadDeClientesService
 
         foreach ($q->get() as $fila) {
             $mapa[(int) $fila->client_id] = $fila->ultima;
+        }
+
+        // La compra vista desde la tienda, que llega antes que la confirmación del ERP.
+        $del_tracking = DB::table('buyer_tracking_events as e')
+            ->join('buyers as b', 'b.id', '=', 'e.buyer_id')
+            ->where('e.article_id', (int) $article_id)
+            ->where('e.event_type', 'checkout_complete')
+            ->where('b.user_id', $this->owner_id)
+            ->whereIn('b.comercio_city_client_id', $client_ids)
+            ->groupBy('b.comercio_city_client_id')
+            ->selectRaw('b.comercio_city_client_id as client_id, MAX(e.occurred_at) as ultima')
+            ->get();
+
+        foreach ($del_tracking as $fila) {
+            $client_id = (int) $fila->client_id;
+
+            // La MÁS NUEVA de las dos: cada fuente se entera de la compra en un momento distinto, y
+            // quedarse con la vieja volvería a dejar entrar al que ya compró.
+            $mapa[$client_id] = $this->mayor(
+                isset($mapa[$client_id]) ? $mapa[$client_id] : null,
+                $fila->ultima
+            );
         }
 
         return $mapa;
@@ -1148,6 +1396,9 @@ class ActividadDeClientesService
             'quitados_del_carrito'    => 0,
             'checkouts_empezados'     => 0,
             'compras'                 => 0,
+            // Compras que el tracking no puede atribuir a ningún artículo. Ver el punto 4 del
+            // docblock de la clase: sin este número, `articulos[].comprados = 0` miente por omisión.
+            'compras_sin_articulo'    => 0,
             'monto_comprado'          => 0.0,
             'ultima_actividad'        => null,
         ];
@@ -1198,6 +1449,32 @@ class ActividadDeClientesService
     protected function a_segundos($milisegundos)
     {
         return (int) round(((int) $milisegundos) / 1000);
+    }
+
+    /**
+     * Segundos a minutos, con la ÚNICA convención del sistema: se redondea PARA ABAJO.
+     *
+     * 🔴 ESTO ES UNA CONVENCIÓN Y TIENE OTRA PUNTA. La pantalla (empresa-spa, el modal de actividad)
+     * hace `Math.floor(segundos / 60)`, y del lado de la API se estaba haciendo `round()`: con 220
+     * segundos medidos sobre el mismo artículo del mismo cliente, el modal decía 3 minutos y el chat
+     * de la IA decía 4. Ningún número era "el que anda mal" — eran dos formas distintas de contar la
+     * misma cosa, y el comerciante no tiene cómo saber cuál mirar. Se unifica en `floor` porque es
+     * lo que la pantalla ya hacía y porque "estuvo 3 minutos" con 220 segundos es lo que un humano
+     * diría.
+     *
+     * 🔴 Si alguna vez esto cambia, la otra punta está en el componente del modal de empresa-spa y
+     * hay que cambiarla en el mismo movimiento: dos convenciones de minutos vuelven en cuanto una
+     * de las dos se toca sola.
+     *
+     * Es público estático porque lo llaman los dos consumidores de la API (el helper de las tools y
+     * el que arma el prompt del resumen) y la convención tiene que vivir en un solo lugar.
+     *
+     * @param  mixed $segundos
+     * @return int
+     */
+    public static function a_minutos($segundos)
+    {
+        return (int) floor(((int) $segundos) / 60);
     }
 
     /**
