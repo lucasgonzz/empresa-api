@@ -995,6 +995,20 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:motor_de_ofertas'])-
     Route::delete('client-offer/{id}', 'ClientOfferController@destroy');
 });
 
+// Actividad de los clientes en el ecommerce (misión actividad-de-clientes-y-oferta-por-whatsapp),
+// gateado por Sanctum + la extensión 'tracking_buyers' (ExtencionTrackingBuyersSeeder).
+// Esa extensión es EL interruptor del tracking de las dos puntas: sin ella la tienda no manda un
+// solo evento y la ingesta no escribe una sola fila, así que la pantalla no tendría nada que
+// mostrar. Las dos rutas son de LECTURA PURA: no escriben en buyer_tracking_events ni en
+// buyer_tracking_daily.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:tracking_buyers'])->group(function () {
+    Route::get('actividad-de-clientes', 'ActividadDeClientesController@show');
+    // La lectura en criollo. SINCRÓNICA a propósito, no un job: el modal no puede quedar
+    // esperando a un worker. Molde: WhatsappChatController@summary (llama a Anthropic desde el
+    // request y devuelve el texto sin persistir nada).
+    Route::post('actividad-de-clientes/resumen', 'ActividadDeClientesController@resumen');
+});
+
 
 // Plans
 Route::get('plan', 'PlanController@index');
