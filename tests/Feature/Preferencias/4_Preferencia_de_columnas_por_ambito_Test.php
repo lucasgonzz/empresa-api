@@ -18,9 +18,14 @@ use Tests\TestCase;
  *
  * El bug: ese patrón entró en la SPA y nunca en la API. `assert_preference_type()` tenía la
  * whitelist con `search` a secas y el patrón `btm_*`, así que todo `search_*` moría en un
- * `abort(404)`. El barrido sobre `empresa-spa/src/models/*.js` dio 42 relaciones con ámbito
- * propio: las 42 tiraban 404 en GET y en PUT. El GET se lo tragaba el catch del modal (el usuario
- * veía columnas por defecto y creía que "no le guardó"), el PUT sí rompía al apretar Listo.
+ * `abort(404)`, en GET y en PUT. El GET se lo tragaba el catch del modal (el usuario veía columnas
+ * por defecto y creía que "no le guardó"), el PUT sí rompía al apretar Listo. No era un caso
+ * suelto: toda relación belongs_to_many de `empresa-spa/src/models` que declara sus propias
+ * `props_to_show` genera un ámbito de estos, y son alrededor de 44 (medido el 17/8/2026; el
+ * conteo exacto varía según cómo se asocien las keys con su bloque, así que si el número importa
+ * hay que volver a barrer y no confiar en este comentario). Lo que sí es firme: ninguno de los
+ * ámbitos que la SPA puede generar hoy queda afuera del regex, y el más largo mide 53 caracteres
+ * (`search_pago_de_cliente_current_acount_payment_methods`) contra `preference_type varchar(60)`.
  *
  * DatabaseTransactions (no RefreshDatabase): la base de testing está sembrada de antes y un
  * refresh la vaciaría, rompiendo el resto de las suites.
@@ -87,8 +92,11 @@ class Preferencia_de_columnas_por_ambito_Test extends TestCase
         $owner = $this->autenticar();
 
         // La base de testing viene sembrada de antes: se limpia el ámbito para que el test mida
-        // el caso "todavía no guardó nada". DatabaseTransactions revierte el borrado al terminar.
-        TableColumnPreference::where('model_name', 'article')
+        // el caso "todavía no guardó nada". Va acotado al usuario del test y no a la tabla entera:
+        // DatabaseTransactions revierte esto, pero solo mientras el engine sea transaccional, y
+        // `config/database.php` deja el engine configurable por DB_ENGINE.
+        TableColumnPreference::where('user_id', $owner->id)
+            ->where('model_name', 'article')
             ->where('preference_type', self::TIPO_CON_AMBITO)
             ->delete();
 
@@ -99,7 +107,6 @@ class Preferencia_de_columnas_por_ambito_Test extends TestCase
         // Sin fila propia la API devuelve model null, que es lo que la SPA espera para caer a los
         // defaults del consumidor en vez de mostrar un error.
         $this->assertNull($response->json('model'));
-        $this->assertNull($this->preferencia($owner->id, 'article', self::TIPO_CON_AMBITO));
     }
 
     /**

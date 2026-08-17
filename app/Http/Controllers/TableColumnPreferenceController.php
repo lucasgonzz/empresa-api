@@ -23,8 +23,14 @@ class TableColumnPreferenceController extends Controller
      *   el consumidor declara sus propias `props_to_show` (ej: search_provider_order_articles, el
      *   buscador de artículos dentro de una compra). El ámbito lo arma la SPA en
      *   `ModelForm.search_preference_scope()` como `<modelo padre>_<relación>`, y sirve para que un
-     *   mismo modelo tenga columnas distintas según desde dónde se lo busque. El patrón cubre las
-     *   42 relaciones con ámbito propio que hoy existen en `empresa-spa/src/models`.
+     *   mismo modelo tenga columnas distintas según desde dónde se lo busque. Toda relación
+     *   belongs_to_many de `empresa-spa/src/models` que declara sus propias `props_to_show` genera
+     *   un ámbito así: son alrededor de 44 (medido el 17/8/2026; el conteo exacto varía según cómo
+     *   se asocien las keys con su bloque, así que si el número importa hay que volver a barrer y
+     *   no confiar en este comentario). Lo que sí es firme: ninguno de los ámbitos que la SPA
+     *   puede generar hoy queda afuera del regex, y el más largo mide 53 caracteres
+     *   (`search_pago_de_cliente_current_acount_payment_methods`) contra la columna
+     *   `preference_type varchar(60)` — quedan 7 de margen.
      *
      * Valida que preference_type sea alguno de los anteriores; aborta con 404 si no.
      */
