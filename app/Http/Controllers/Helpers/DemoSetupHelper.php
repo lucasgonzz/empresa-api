@@ -143,9 +143,6 @@ class DemoSetupHelper
             $seeders[] = 'RecipeSeeder';
         }
 
-        // Datos de ejemplo de ventas para que la demo tenga movimientos visibles
-        $seeders[] = 'SaleDemoSeeder';
-
         foreach ($seeders as $seeder) {
             Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);
         }
@@ -157,7 +154,23 @@ class DemoSetupHelper
         // Reportes pre-calculados que usa el dashboard de ventas
         // Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteSeeder', '--force' => true]);
         // Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteArticuloSeeder', '--force' => true]);
-        Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\ReportesMesSeeder', '--force' => true]);
+        /**
+         * D1 (mision seeders-demo-datos-completos, 17/8/2026): la demo deja de sembrar con
+         * ReportesMesSeeder y pasa a llamar al MISMO comando que usa local, semilla:datos.
+         * Antes la demo de producción y una corrida local quedaban con datos distintos; ahora
+         * las dos dejan exactamente la misma aritmética (~523 ventas, la cadencia por mes,
+         * aperturas diarias, planilla de control), y lo que Lucas ve en una demo es lo mismo
+         * que se verifica en local. Sin '--reset': la base recién vino del migrate:fresh de
+         * arriba, así que no hay nada previo que limpiar.
+         *
+         * No se chequea el código de salida ni se envuelve en try/catch, A PROPÓSITO: en una
+         * instancia de CLIENTE REAL -- que corre este mismo helper al instalarse -- ni
+         * config('app.env') es 'local' ni config('app.FOR_USER') es 'demo', así que la guarda
+         * de entorno de semilla:datos sale con código 1 sin sembrar nada. Eso es lo CORRECTO
+         * (el cliente no tiene por qué recibir datos de ejemplo), no una falla que haya que
+         * propagar.
+         */
+        Artisan::call('semilla:datos');
 
         // Performance histórica del usuario (costos, márgenes, etc.)
         Artisan::call('set_company_performances', ['--historico' => true]);
@@ -364,6 +377,18 @@ class DemoSetupHelper
             'acopios',
             'bar_code_scanner',
             'enviar_mail_a_clientes',
+
+            /*
+                D1: la demo ahora siembra con semilla:datos, que deja actividad de tienda,
+                stock por sucursal y ventas facturadas. Sin estas 4 extensiones encendidas,
+                los módulos que muestran esos datos (sugerencias de stock, sugerencias de
+                compra, motor de ofertas, tracking de compradores) quedan con las rutas en
+                403 y esa data sembrada no se puede ni mirar.
+            */
+            'sugerencias_inteligentes',
+            'sugerencias_compras',
+            'motor_de_ofertas',
+            'tracking_buyers',
         ];
     }
 
@@ -408,6 +433,12 @@ class DemoSetupHelper
             'ProviderPriceListSeeder',
             'ColorSeeder',
             'DepositSeeder',
+
+            /*
+                D1: tiene que ir ANTES de ClientSeeder -- ClientSeeder escribe address_id 1..4
+                contra sucursales que, hasta ahora, la demo nunca sembraba.
+            */
+            'AddressSeeder',
             'ClientSeeder',
             'BuyerSeeder',
             'DiscountSeeder',
@@ -419,7 +450,16 @@ class DemoSetupHelper
 
             // 'MessageSeeder',
 
+            /*
+                D1: ExpenseCategorySeeder ANTES de ExpenseConceptSeeder -- este último
+                hardcodea expense_category_id 1 y 2 (Impuestos / Gastos bancarios) contra las
+                filas que crea el primero. Y SaleTaxSeeder porque sin un SaleTax activo,
+                ContabilidadRepository::iibb_determinado() da 0 y el renglón de IIBB de la
+                planilla de control no se puede verificar contra el reporte.
+            */
+            'ExpenseCategorySeeder',
             'ExpenseConceptSeeder',
+            'SaleTaxSeeder',
             'PendingSeeder',
 
             'EmployeeSeeder',
@@ -442,6 +482,14 @@ class DemoSetupHelper
                 dueño, y si corriera antes no agarraría a los que la demo acaba de crear.
             */
             'GlobalSearchDefaultsSeeder',
+
+            /*
+                D1: al final, para que las 4 extensiones de IA (agregadas en base_extencions())
+                ya estén enganchadas al usuario cuando esto corre. Queda idempotente igual --
+                si ya están enganchadas (por el sync de más arriba) las salta, ver su propio
+                PHPDoc -- así que no importa si algún día alguien reordena esta lista.
+            */
+            'ExtencionesIaUserSeeder',
         ];
     }
 
