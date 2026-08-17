@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Models\Article;
 use App\Models\Client;
 use App\Models\CurrentAcount;
+use App\Services\ActividadDeClientes\ActividadDeClientesService;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -349,6 +350,254 @@ class ConsultasSistemaIaHelper
                 'desde'          => (string) $fila->desde,
                 'hasta'          => (string) $fila->hasta,
                 'notificada'     => !is_null($fila->notificada_email_at),
+            ];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Qué estuvo haciendo un cliente en la tienda online: qué artículos miró y cuánto tiempo, qué
+     * buscó (marcando lo que buscó y NO encontró), qué puso en el carrito y qué cerró. Tool de
+     * lectura del chat de IA (misión actividad-de-clientes-y-oferta-por-whatsapp).
+     *
+     * El dato sale del tracking de la tienda (`buyer_tracking_events`) a través de
+     * ActividadDeClientesService, que es quien sabe de qué tabla leer según la antigüedad pedida y
+     * quien SUMA los varios compradores que un mismo cliente del ERP puede tener
+     * (`buyers.comercio_city_client_id`, mismo criterio que CriteriosDeOfertaService:408-412). Acá
+     * no se toca el tracking por afuera de ese servicio: una segunda forma de leer las mismas
+     * tablas es una segunda verdad, y el día que una cambie las dos van a contestar distinto sin
+     * que nada lo denuncie.
+     *
+     * 🔴 Todas las filas llevan SIEMPRE las mismas siete claves, con null donde no aplica. Un JSON
+     * con filas de forma distinta según el tipo obliga a Claude a adivinar el shape, y adivina mal.
+     *
+     * 🔴 `ultima_vez` en null es "no lo sé", NUNCA "no pasó". Las tres filas de resumen (compró /
+     * empezó a comprar / sacó del carrito) y la del carrito por artículo sacan su momento de la
+     * línea de tiempo, que está topeada en ActividadDeClientesService::MAX_EVENTOS_LINEA_DE_TIEMPO:
+     * un evento más viejo que ese tope se informa sin fecha en vez de con una inventada.
+     *
+     * 🔴 Los minutos van SOLO en la fila 'vio'. El lector suma el dwell del artículo entero (lo que
+     * miró más lo que carreteó) en un único total, así que repetirlo en la fila 'carrito' lo
+     * contaría dos veces.
+     *
+     * El orden de las filas es de más a menos accionable, porque MAX_RESULTS corta la cola: lo que
+     * cerró, lo que dejó por la mitad, lo que buscó sin encontrar, y recién después el detalle
+     * largo de lo que miró.
+     *
+     * @param  int  $owner_id   Id del dueño. Nunca Auth: esta tool corre en un job sin sesión.
+     * @param  int  $client_id  Id del cliente del ERP, tal como lo devolvió consultar_clientes.
+     * @param  int  $dias       Ventana hacia atrás; un valor fuera de la lista blanca cae a 30.
+     * @return array<int, array<string, mixed>>
+     */
+    public static function actividad_de_un_cliente(int $owner_id, int $client_id, int $dias): array
+    {
+        $service = new ActividadDeClientesService($owner_id);
+
+        /*
+         * Un valor fuera de la lista blanca cae al default en vez de cambiar de tabla por lo bajo:
+         * con $dias = 0 el servicio contesta desde el agregado, que no tiene hora ni línea de
+         * tiempo, y esta tool quedaría sin ninguno de los momentos que informa.
+         */
+        if (! ActividadDeClientesService::es_periodo_valido($dias) || $dias <= 0) {
+            $dias = 30;
+        }
+
+        /*
+         * La tenencia la da la resolución de compradores (buyers.user_id = $owner_id): un cliente
+         * de otro comercio devuelve lista vacía, y con lista vacía el bloque de actividad vuelve
+         * en cero SIN tocar el tracking.
+         */
+        $actividad = $service->actividad($service->buyer_ids_de_un_cliente($client_id), $dias);
+
+        if (! $actividad['hay_datos']) {
+            return [];
+        }
+
+        // Un strtotime que falla no puede terminar en un 01/01/1970 con cara de fecha real.
+        $fecha = function ($valor) {
+            if (is_null($valor) || $valor === '') {
+                return null;
+            }
+
+            $momento = strtotime($valor);
+
+            return $momento === false ? null : date('d/m/Y', $momento);
+        };
+
+        /*
+         * El momento más nuevo por tipo de evento, y por (tipo, artículo) cuando lo hay. La línea
+         * de tiempo ya viene del más nuevo al más viejo, así que el primero que aparece gana.
+         */
+        $ultimo_de = [];
+
+        foreach ($actividad['linea_de_tiempo'] as $evento) {
+            $claves = [$evento['tipo']];
+
+            if (! is_null($evento['article_id'])) {
+                $claves[] = $evento['tipo'] . ':' . $evento['article_id'];
+            }
+
+            foreach ($claves as $clave) {
+                if (! isset($ultimo_de[$clave])) {
+                    $ultimo_de[$clave] = $evento['cuando'];
+                }
+            }
+        }
+
+        $momento_de = function ($clave) use ($ultimo_de, $fecha) {
+            return $fecha(isset($ultimo_de[$clave]) ? $ultimo_de[$clave] : null);
+        };
+
+        // Las siete claves se arman en un solo lugar para que ninguna fila salga con una de menos.
+        $armar = function ($tipo, $detalle, $veces, $segundos, $resultados, $monto, $ultima_vez) {
+            return [
+                'tipo'       => $tipo,
+                'detalle'    => $detalle,
+                'veces'      => (int) $veces,
+                'minutos'    => (int) round(((int) $segundos) / 60),
+                'resultados' => is_null($resultados) ? null : (int) $resultados,
+                'monto'      => (float) $monto,
+                'ultima_vez' => $ultima_vez,
+            ];
+        };
+
+        $totales = $actividad['totales'];
+        $filas   = [];
+
+        if ($totales['compras'] > 0) {
+            $filas[] = $armar('compro', null, $totales['compras'], 0, null, $totales['monto_comprado'], $momento_de('checkout_complete'));
+        }
+
+        if ($totales['checkouts_empezados'] > 0) {
+            $filas[] = $armar('empezo_a_comprar', null, $totales['checkouts_empezados'], 0, null, 0, $momento_de('checkout_start'));
+        }
+
+        if ($totales['quitados_del_carrito'] > 0) {
+            $filas[] = $armar('saco_del_carrito', null, $totales['quitados_del_carrito'], 0, null, 0, $momento_de('cart_remove'));
+        }
+
+        /*
+         * 🔴 Primero lo que buscó y NO encontró: es el dato más accionable que hay (hay demanda y
+         * no hay oferta), así que no puede ser lo primero que se coma el tope. Adentro de cada
+         * grupo se respeta el orden del lector, que ya viene por veces descendente.
+         */
+        foreach ([true, false] as $sin_resultado) {
+            foreach ($actividad['busquedas'] as $busqueda) {
+                if ($busqueda['sin_resultado'] !== $sin_resultado) {
+                    continue;
+                }
+
+                $filas[] = $armar('busco', $busqueda['termino'], $busqueda['veces'], 0, $busqueda['resultados'], 0, $fecha($busqueda['ultima_vez']));
+            }
+        }
+
+        foreach ($actividad['articulos'] as $articulo) {
+            if ($articulo['agregados_al_carrito'] > 0) {
+                // El momento sale de la línea de tiempo y no del artículo: el `ultima_vez` del
+                // artículo es la última vez que anduvo con él de cualquier forma, y usarlo acá
+                // diría "lo puso en el carrito" un día en que solamente lo miró.
+                $filas[] = $armar('carrito', $articulo['nombre'], $articulo['agregados_al_carrito'], 0, null, 0, $momento_de('cart_add:' . $articulo['article_id']));
+            }
+        }
+
+        foreach ($actividad['articulos'] as $articulo) {
+            if ($articulo['vistas'] > 0) {
+                $filas[] = $armar('vio', $articulo['nombre'], $articulo['vistas'], $articulo['tiempo_segundos'], null, 0, $fecha($articulo['ultima_vez']));
+            }
+        }
+
+        return array_slice($filas, 0, self::MAX_RESULTS);
+    }
+
+    /**
+     * Quién anduvo mirando o carreteando un artículo en la tienda online y TODAVÍA NO LO COMPRÓ.
+     * Tool de lectura del chat de IA (misión actividad-de-clientes-y-oferta-por-whatsapp): la IA
+     * contesta "a quién le puedo ofrecer esto" con gente que de verdad lo miró, nunca inventada.
+     *
+     * El dato sale de `buyer_tracking_events` a través de ActividadDeClientesService, y el descarte
+     * de "ya lo compró" lo hace ese servicio contra `article_purchases` con el filtro de ventas
+     * reales del motor de ofertas (CriteriosDeOfertaService::filtro_de_ventas_reales(), que es
+     * público estático justamente para que ese criterio viva en un solo lugar).
+     *
+     * 🔴 Los visitantes ANÓNIMOS de la tienda no aparecen acá, y no es un olvido: sin cliente
+     * asociado no hay a quién nombrar ni a quién llamar. La tool contesta una lista de contactos, y
+     * una fila sin nombre en esa lista es una fila que no sirve para nada.
+     *
+     * 🔴 Cada fila dice de QUÉ artículo está hablando. La búsqueda es difusa (nombre o código, con
+     * LIKE) y puede matchear más de un artículo: sin el nombre resuelto adentro de la respuesta, la
+     * IA contestaría con total seguridad sobre un artículo que no es el que le preguntaron. Mismo
+     * criterio que precios_de_proveedores(), que también informa el artículo que resolvió.
+     *
+     * @param  int     $owner_id  Id del dueño. Nunca Auth: esta tool corre en un job sin sesión.
+     * @param  string  $busqueda  Nombre (o parte), código de barras o código de proveedor.
+     * @param  int     $dias      Ventana hacia atrás; un valor fuera de la lista blanca cae a 30.
+     * @return array<int, array<string, mixed>>
+     */
+    public static function interesados_en_un_articulo(int $owner_id, string $busqueda, int $dias): array
+    {
+        $busqueda = trim($busqueda);
+
+        /*
+         * Sin búsqueda no hay pregunta que contestar. Traer "el primer artículo del catálogo" y
+         * listar a sus interesados sería una respuesta perfectamente plausible sobre algo que nadie
+         * preguntó, que es la peor forma de estar equivocado.
+         */
+        if ($busqueda === '') {
+            return [];
+        }
+
+        if (! ActividadDeClientesService::es_periodo_valido($dias) || $dias <= 0) {
+            $dias = 30;
+        }
+
+        $candidatos = Article::query()
+            ->where('user_id', $owner_id)
+            ->where(function ($sub) use ($busqueda) {
+                $sub->where('name', 'LIKE', '%' . $busqueda . '%')
+                    ->orWhere('bar_code', 'LIKE', '%' . $busqueda . '%')
+                    ->orWhere('provider_code', 'LIKE', '%' . $busqueda . '%');
+            })
+            ->orderBy('name')
+            ->limit(self::MAX_RESULTS)
+            ->get(['id', 'name']);
+
+        if ($candidatos->isEmpty()) {
+            return [];
+        }
+
+        /*
+         * Un solo artículo por respuesta, elegido de forma determinística: si el texto es
+         * exactamente el nombre de uno —que es lo normal, porque la IA lo saca de
+         * consultar_stock_de_articulos— gana ése; si no, el primero por nombre.
+         */
+        $elegido = $candidatos->first();
+
+        foreach ($candidatos as $candidato) {
+            if (self::normalize_text((string) $candidato->name) === self::normalize_text($busqueda)) {
+                $elegido = $candidato;
+                break;
+            }
+        }
+
+        $service = new ActividadDeClientesService($owner_id);
+        // La tenencia del artículo la vuelve a controlar el servicio: sin artículo del dueño, lista
+        // vacía y no se toca el tracking.
+        $interesados = $service->interesados_en_un_articulo((int) $elegido->id, $dias);
+
+        $result = [];
+
+        foreach (array_slice($interesados, 0, self::MAX_RESULTS) as $fila) {
+            $momento = is_null($fila['ultima_vez']) ? false : strtotime($fila['ultima_vez']);
+
+            $result[] = [
+                'articulo'   => (string) $elegido->name,
+                'cliente'    => (string) $fila['cliente'],
+                'telefono'   => (string) $fila['telefono'],
+                'vistas'     => (int) $fila['vistas'],
+                'minutos'    => (int) round(((int) $fila['segundos']) / 60),
+                'al_carrito' => (int) $fila['al_carrito'],
+                'ultima_vez' => $momento === false ? null : date('d/m/Y', $momento),
             ];
         }
 

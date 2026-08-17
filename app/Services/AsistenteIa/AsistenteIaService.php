@@ -468,6 +468,44 @@ SYSTEM;
                     'required' => ['busqueda'],
                 ],
             ],
+            [
+                'name' => 'consultar_actividad_de_un_cliente',
+                'description' => 'Devuelve qué hizo un cliente en la tienda online: qué artículos miró y cuántos minutos, qué buscó (y si esa búsqueda no devolvió resultados), qué puso en el carrito y qué compró. Primero conseguí el id del cliente con consultar_clientes. Usala cuando te pregunten qué estuvo mirando o qué le interesa a un cliente.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'client_id' => [
+                            'type' => 'integer',
+                            'description' => 'Id del cliente, tal como lo devolvió consultar_clientes.',
+                        ],
+                        'dias' => [
+                            'type' => 'integer',
+                            'description' => 'Ventana de días hacia atrás. Si no la mandás se usan 30.',
+                            'enum' => [7, 30, 90],
+                        ],
+                    ],
+                    'required' => ['client_id'],
+                ],
+            ],
+            [
+                'name' => 'consultar_interesados_en_un_articulo',
+                'description' => 'Devuelve los clientes que miraron o pusieron en el carrito un artículo en la tienda online y TODAVÍA NO LO COMPRARON, con cuántas veces lo miraron y cuánto tiempo. Filtrá por nombre o código del artículo. Solo lista compradores que estén vinculados a un cliente del sistema: los visitantes anónimos de la tienda no se pueden nombrar y no aparecen acá.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'busqueda' => [
+                            'type' => 'string',
+                            'description' => 'Nombre o parte del nombre del artículo, o su código de barras / de proveedor.',
+                        ],
+                        'dias' => [
+                            'type' => 'integer',
+                            'description' => 'Ventana de días hacia atrás. Si no la mandás se usan 30.',
+                            'enum' => [7, 30, 90],
+                        ],
+                    ],
+                    'required' => ['busqueda'],
+                ],
+            ],
         ];
     }
 
@@ -537,6 +575,28 @@ SYSTEM;
                     // se agregan juntas o la IA la llama y recibe un error.
                     $busqueda = (string) ($tool_input['busqueda'] ?? '');
                     $data = ConsultasSistemaIaHelper::ofertas_activas($owner_id, $busqueda);
+                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
+                } elseif ($tool_name === 'consultar_actividad_de_un_cliente') {
+                    // La otra punta de esta tool está en build_tools(): las dos
+                    // se agregan juntas o la IA la llama y recibe un error.
+                    $client_id = (int) ($tool_input['client_id'] ?? 0);
+                    $dias = (int) ($tool_input['dias'] ?? 30);
+                    // Defensa contra un valor fuera del enum: se cae al default.
+                    if (! in_array($dias, [7, 30, 90], true)) {
+                        $dias = 30;
+                    }
+                    $data = ConsultasSistemaIaHelper::actividad_de_un_cliente($owner_id, $client_id, $dias);
+                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
+                } elseif ($tool_name === 'consultar_interesados_en_un_articulo') {
+                    // La otra punta de esta tool está en build_tools(): las dos
+                    // se agregan juntas o la IA la llama y recibe un error.
+                    $busqueda = (string) ($tool_input['busqueda'] ?? '');
+                    $dias = (int) ($tool_input['dias'] ?? 30);
+                    // Defensa contra un valor fuera del enum: se cae al default.
+                    if (! in_array($dias, [7, 30, 90], true)) {
+                        $dias = 30;
+                    }
+                    $data = ConsultasSistemaIaHelper::interesados_en_un_articulo($owner_id, $busqueda, $dias);
                     $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
                 } else {
                     $tool_desconocida = true;
