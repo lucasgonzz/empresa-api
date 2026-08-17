@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Models\Article;
 use App\Models\Client;
 use App\Models\CurrentAcount;
+use App\Services\ActividadDeClientes\ActividadDeClientesService;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -353,6 +354,393 @@ class ConsultasSistemaIaHelper
         }
 
         return $result;
+    }
+
+    /**
+     * Qué estuvo haciendo un cliente en la tienda online: qué artículos miró y cuánto tiempo, qué
+     * buscó (marcando lo que buscó y NO encontró), qué puso en el carrito y qué cerró. Tool de
+     * lectura del chat de IA (misión actividad-de-clientes-y-oferta-por-whatsapp).
+     *
+     * El dato sale del tracking de la tienda (`buyer_tracking_events`) a través de
+     * ActividadDeClientesService, que es quien sabe de qué tabla leer según la antigüedad pedida y
+     * quien SUMA los varios compradores que un mismo cliente del ERP puede tener
+     * (`buyers.comercio_city_client_id`, mismo criterio que CriteriosDeOfertaService:408-412). Acá
+     * no se toca el tracking por afuera de ese servicio: una segunda forma de leer las mismas
+     * tablas es una segunda verdad, y el día que una cambie las dos van a contestar distinto sin
+     * que nada lo denuncie.
+     *
+     * 🔴 LA RESPUESTA NO ES SÓLO LA LISTA: LLEVA LOS TOTALES ADELANTE, Y ESO ES UN ARREGLO Y NO UN
+     * ADORNO. La lista está topeada por MAX_RESULTS, así que un cliente que miró 40 artículos entra
+     * acá con 17 filas de vistas — y la IA, que no tiene ninguna otra cifra, contesta "miró 17". Es
+     * el número de la PANTALLA informado como número del negocio: no hay error, hay un dato de la
+     * herramienta haciéndose pasar por un dato del cliente. Los totales ya venían calculados y a
+     * mano; lo único que faltaba era mandarlos. Y viajan también `movimientos_encontrados` y
+     * `movimientos_en_esta_lista`, que es la forma de que "esto está recortado" se pueda leer.
+     *
+     * 🔴 Todas las filas de `movimientos` llevan SIEMPRE las mismas siete claves, con null donde no
+     * aplica. Un JSON con filas de forma distinta según el tipo obliga a Claude a adivinar el shape,
+     * y adivina mal.
+     *
+     * 🔴 `ultima_vez` en null es "no lo sé", NUNCA "no pasó". Las tres filas de resumen (compró /
+     * empezó a comprar / sacó del carrito) y la del carrito por artículo sacan su momento de la
+     * línea de tiempo, que está topeada en ActividadDeClientesService::MAX_EVENTOS_LINEA_DE_TIEMPO:
+     * un evento más viejo que ese tope se informa sin fecha en vez de con una inventada.
+     *
+     * 🔴 Los minutos van SOLO en la fila 'vio'. El lector suma el dwell del artículo entero (lo que
+     * miró más lo que carreteó) en un único total, así que repetirlo en la fila 'carrito' lo
+     * contaría dos veces.
+     *
+     * 🔴 Los minutos salen de ActividadDeClientesService::a_minutos(), que redondea PARA ABAJO. No
+     * se calculan acá con un round(): la convención de minutos vive en un solo lugar y su otra punta
+     * es la pantalla (ver el docblock de ese método).
+     *
+     * El orden de las filas es de más a menos accionable, porque MAX_RESULTS corta la cola: lo que
+     * cerró, lo que dejó por la mitad, lo que buscó sin encontrar, y recién después el detalle
+     * largo de lo que miró.
+     *
+     * @param  int  $owner_id   Id del dueño. Nunca Auth: esta tool corre en un job sin sesión.
+     * @param  int  $client_id  Id del cliente del ERP, tal como lo devolvió consultar_clientes.
+     * @param  int  $dias       Ventana hacia atrás; un valor fuera de la lista blanca cae a 30.
+     * @return array<string, mixed> Vacío si el cliente no hizo nada en la ventana
+     */
+    public static function actividad_de_un_cliente(int $owner_id, int $client_id, int $dias): array
+    {
+        $service = new ActividadDeClientesService($owner_id);
+
+        /*
+         * Un valor fuera de la lista blanca cae al default en vez de cambiar de tabla por lo bajo:
+         * con $dias = 0 el servicio contesta desde el agregado, que no tiene hora ni línea de
+         * tiempo, y esta tool quedaría sin ninguno de los momentos que informa.
+         */
+        if (! ActividadDeClientesService::es_periodo_valido($dias) || $dias <= 0) {
+            $dias = 30;
+        }
+
+        /*
+         * La tenencia la da la resolución de compradores (buyers.user_id = $owner_id): un cliente
+         * de otro comercio devuelve lista vacía, y con lista vacía el bloque de actividad vuelve
+         * en cero SIN tocar el tracking.
+         */
+        $actividad = $service->actividad($service->buyer_ids_de_un_cliente($client_id), $dias);
+
+        if (! $actividad['hay_datos']) {
+            return [];
+        }
+
+        // Un strtotime que falla no puede terminar en un 01/01/1970 con cara de fecha real.
+        $fecha = function ($valor) {
+            if (is_null($valor) || $valor === '') {
+                return null;
+            }
+
+            $momento = strtotime($valor);
+
+            return $momento === false ? null : date('d/m/Y', $momento);
+        };
+
+        /*
+         * El momento más nuevo por tipo de evento, y por (tipo, artículo) cuando lo hay. La línea
+         * de tiempo ya viene del más nuevo al más viejo, así que el primero que aparece gana.
+         */
+        $ultimo_de = [];
+
+        foreach ($actividad['linea_de_tiempo'] as $evento) {
+            $claves = [$evento['tipo']];
+
+            if (! is_null($evento['article_id'])) {
+                $claves[] = $evento['tipo'] . ':' . $evento['article_id'];
+            }
+
+            foreach ($claves as $clave) {
+                if (! isset($ultimo_de[$clave])) {
+                    $ultimo_de[$clave] = $evento['cuando'];
+                }
+            }
+        }
+
+        $momento_de = function ($clave) use ($ultimo_de, $fecha) {
+            return $fecha(isset($ultimo_de[$clave]) ? $ultimo_de[$clave] : null);
+        };
+
+        // Las siete claves se arman en un solo lugar para que ninguna fila salga con una de menos.
+        $armar = function ($tipo, $detalle, $veces, $segundos, $resultados, $monto, $ultima_vez) {
+            return [
+                'tipo'       => $tipo,
+                'detalle'    => $detalle,
+                'veces'      => (int) $veces,
+                'minutos'    => ActividadDeClientesService::a_minutos($segundos),
+                'resultados' => is_null($resultados) ? null : (int) $resultados,
+                'monto'      => (float) $monto,
+                'ultima_vez' => $ultima_vez,
+            ];
+        };
+
+        $totales = $actividad['totales'];
+        $filas   = [];
+
+        /*
+         * 🔴 QUÉ COMPRÓ, POR ARTÍCULO. Acá había UNA fila 'compro' con `detalle => null` y el total
+         * de compras adentro, mientras la descripción de la tool le prometía a Claude "qué compró":
+         * un null en la clave que contesta la pregunta es mentir por omisión, porque no se lee como
+         * "no lo sé" sino como "no hay nada que decir". El detalle por artículo ahora existe
+         * (`articulos[].comprados`) y va fila por fila.
+         */
+        foreach ($actividad['articulos'] as $articulo) {
+            if ($articulo['comprados'] > 0) {
+                $filas[] = $armar('compro', $articulo['nombre'], $articulo['comprados'], 0, null, 0, $momento_de('checkout_complete:' . $articulo['article_id']));
+            }
+        }
+
+        /*
+         * 🔴 Y lo que NO se pudo atribuir se dice con todas las letras, en vez de quedar como un
+         * hueco entre el total de compras y la suma de las filas de arriba. El evento de checkout no
+         * garantiza traer `article_id`, así que estas compras existen y el tracking no sabe de qué
+         * fueron: sin esta fila, un artículo sin fila 'compro' se leería como "no lo compró".
+         */
+        if ($totales['compras_sin_articulo'] > 0) {
+            $filas[] = $armar(
+                'compro',
+                'compras que la tienda no informo de que articulo eran',
+                $totales['compras_sin_articulo'],
+                0,
+                null,
+                0,
+                $momento_de('checkout_complete')
+            );
+        }
+
+        if ($totales['checkouts_empezados'] > 0) {
+            $filas[] = $armar('empezo_a_comprar', null, $totales['checkouts_empezados'], 0, null, 0, $momento_de('checkout_start'));
+        }
+
+        if ($totales['quitados_del_carrito'] > 0) {
+            $filas[] = $armar('saco_del_carrito', null, $totales['quitados_del_carrito'], 0, null, 0, $momento_de('cart_remove'));
+        }
+
+        /*
+         * 🔴 Primero lo que buscó y NO encontró: es el dato más accionable que hay (hay demanda y
+         * no hay oferta), así que no puede ser lo primero que se coma el tope. Adentro de cada
+         * grupo se respeta el orden del lector, que ya viene por veces descendente.
+         */
+        foreach ([true, false] as $sin_resultado) {
+            foreach ($actividad['busquedas'] as $busqueda) {
+                if ($busqueda['sin_resultado'] !== $sin_resultado) {
+                    continue;
+                }
+
+                $filas[] = $armar('busco', $busqueda['termino'], $busqueda['veces'], 0, $busqueda['resultados'], 0, $fecha($busqueda['ultima_vez']));
+            }
+        }
+
+        foreach ($actividad['articulos'] as $articulo) {
+            if ($articulo['agregados_al_carrito'] > 0) {
+                // El momento sale de la línea de tiempo y no del artículo: el `ultima_vez` del
+                // artículo es la última vez que anduvo con él de cualquier forma, y usarlo acá
+                // diría "lo puso en el carrito" un día en que solamente lo miró.
+                $filas[] = $armar('carrito', $articulo['nombre'], $articulo['agregados_al_carrito'], 0, null, 0, $momento_de('cart_add:' . $articulo['article_id']));
+            }
+        }
+
+        foreach ($actividad['articulos'] as $articulo) {
+            if ($articulo['vistas'] > 0) {
+                $filas[] = $armar('vio', $articulo['nombre'], $articulo['vistas'], $articulo['tiempo_segundos'], null, 0, $fecha($articulo['ultima_vez']));
+            }
+        }
+
+        /*
+         * 🔴 MAX_RESULTS recorta la LISTA, nunca los totales. Los dos contadores de abajo son lo que
+         * le permite a la IA decir "de los 42 movimientos te muestro los 20 más accionables" en vez
+         * de contestar 20 como si fueran todos.
+         */
+        $mostradas = array_slice($filas, 0, self::MAX_RESULTS);
+
+        return [
+            'ventana_dias'              => $dias,
+            'totales'                   => self::totales_de_actividad($actividad),
+            'movimientos_encontrados'   => count($filas),
+            'movimientos_en_esta_lista' => count($mostradas),
+            'movimientos'               => $mostradas,
+        ];
+    }
+
+    /**
+     * Los totales del lector, tal cual los calculó, más los minutos con la convención única.
+     *
+     * 🔴 Acá no se recalcula NADA: se copian las claves que ya vienen hechas. Un total recalculado
+     * en el camino es cómo se llega a que la pantalla y el chat contesten distinto sobre el mismo
+     * cliente, que es justo el defecto que este bloque vino a arreglar.
+     *
+     * @param  array $actividad
+     * @return array<string, mixed>
+     */
+    protected static function totales_de_actividad(array $actividad): array
+    {
+        $totales = $actividad['totales'];
+
+        return [
+            'vistas'                  => (int) $totales['vistas'],
+            'articulos_distintos'     => (int) $totales['articulos_distintos'],
+            'minutos_mirando'         => ActividadDeClientesService::a_minutos($totales['tiempo_total_segundos']),
+            'busquedas'               => (int) $totales['busquedas'],
+            'busquedas_sin_resultado' => (int) $totales['busquedas_sin_resultado'],
+            'agregados_al_carrito'    => (int) $totales['agregados_al_carrito'],
+            'quitados_del_carrito'    => (int) $totales['quitados_del_carrito'],
+            'checkouts_empezados'     => (int) $totales['checkouts_empezados'],
+            'compras'                 => (int) $totales['compras'],
+            /*
+             * Cuántas de esas compras el tracking no pudo atribuir a un artículo. Va SIEMPRE, aunque
+             * sea 0: la IA tiene que poder distinguir "no compró ese artículo" de "compró y no
+             * sabemos qué".
+             */
+            'compras_sin_articulo'    => (int) $totales['compras_sin_articulo'],
+            'monto_comprado'          => (float) $totales['monto_comprado'],
+            'ultima_actividad'        => $totales['ultima_actividad'],
+        ];
+    }
+
+    /**
+     * Quién anduvo mirando o carreteando un artículo en la tienda online y TODAVÍA NO LO COMPRÓ.
+     * Tool de lectura del chat de IA (misión actividad-de-clientes-y-oferta-por-whatsapp): la IA
+     * contesta "a quién le puedo ofrecer esto" con gente que de verdad lo miró, nunca inventada.
+     *
+     * El dato sale de `buyer_tracking_events` a través de ActividadDeClientesService, y el descarte
+     * de "ya lo compró" lo hace ese servicio contra las DOS compras que hay: `article_purchases`
+     * (las ventas confirmadas del ERP, con el filtro de ventas reales del motor de ofertas) y el
+     * `checkout_complete` del propio tracking. Con sólo la primera la lista mentía, porque una
+     * compra hecha en la tienda entra al ERP recién cuando el comerciante la confirma A MANO.
+     *
+     * 🔴 "TODAVÍA NO LO COMPRARON" es lo mejor que se sabe, no una certeza, y la descripción de la
+     * tool lo dice así. Un checkout sin `article_id` no se puede atribuir, y una compra hecha por
+     * fuera de la tienda (mostrador) tampoco aparece hasta que se factura.
+     *
+     * 🔴 Los visitantes ANÓNIMOS no son una FILA de la lista —sin cliente asociado no hay a quién
+     * nombrar ni a quién llamar, y una fila sin nombre no sirve para nada—, pero SÍ se cuentan
+     * aparte. Que no aparecieran en ningún lado hacía que un artículo mirado por quince visitantes
+     * sin cuenta le llegara a la IA como una lista vacía, y la IA contestara "no lo está mirando
+     * nadie": falso, y encima manda a no hacer nada.
+     *
+     * 🔴 La respuesta dice de QUÉ artículo está hablando. La búsqueda es difusa y puede matchear más
+     * de uno: sin el nombre resuelto adentro, la IA contestaría con total seguridad sobre un
+     * artículo que no es el que le preguntaron. Mismo criterio que precios_de_proveedores().
+     *
+     * @param  int     $owner_id  Id del dueño. Nunca Auth: esta tool corre en un job sin sesión.
+     * @param  string  $busqueda  Nombre (o parte), código de barras o código de proveedor.
+     * @param  int     $dias      Ventana hacia atrás; un valor fuera de la lista blanca cae a 30.
+     * @return array<string, mixed> Vacío si la búsqueda no resolvió ningún artículo del dueño
+     */
+    public static function interesados_en_un_articulo(int $owner_id, string $busqueda, int $dias): array
+    {
+        $busqueda = trim($busqueda);
+
+        /*
+         * Sin búsqueda no hay pregunta que contestar. Traer "el primer artículo del catálogo" y
+         * listar a sus interesados sería una respuesta perfectamente plausible sobre algo que nadie
+         * preguntó, que es la peor forma de estar equivocado.
+         */
+        if ($busqueda === '') {
+            return [];
+        }
+
+        if (! ActividadDeClientesService::es_periodo_valido($dias) || $dias <= 0) {
+            $dias = 30;
+        }
+
+        /*
+         * 🔴 EL MATCH EXACTO SE BUSCA CONTRA LA BASE Y NO ADENTRO DE LOS CANDIDATOS. Antes se traían
+         * 20 artículos ordenados por nombre y recién ahí se buscaba el nombre exacto: si el exacto
+         * era el 21º alfabéticamente, quedaba afuera del tope y ganaba otro — con el docblock
+         * prometiendo lo contrario. Y este método elige UN SOLO artículo para contestar, así que
+         * elegir mal no devuelve de menos: devuelve la lista de interesados de otra cosa, con total
+         * seguridad y sin nada que lo denuncie.
+         */
+        $elegido = Article::query()
+            ->where('user_id', $owner_id)
+            ->where('name', $busqueda)
+            ->orderBy('id')
+            ->first(['id', 'name']);
+
+        if (is_null($elegido)) {
+            /*
+             * 🔴 Los comodines del LIKE se escapan. Molde y porqué:
+             * CriteriosDeOfertaService::articulos_que_matchean(). Un término real como "50%" o
+             * "cable_2" los trae adentro, y sin escaparlos "50%" matchea todo lo que empieza con 50.
+             * Acá pesa más que en el motor de ofertas: allá un comodín trae artículos de más, acá
+             * CAMBIA SOBRE CUÁL ARTÍCULO se contesta.
+             */
+            $escapado = addcslashes($busqueda, '%_\\');
+
+            $candidatos = Article::query()
+                ->where('user_id', $owner_id)
+                ->where(function ($sub) use ($escapado) {
+                    $sub->where('name', 'LIKE', '%' . $escapado . '%')
+                        ->orWhere('bar_code', 'LIKE', '%' . $escapado . '%')
+                        ->orWhere('provider_code', 'LIKE', '%' . $escapado . '%');
+                })
+                ->orderBy('name')
+                ->limit(self::MAX_RESULTS)
+                ->get(['id', 'name']);
+
+            if ($candidatos->isEmpty()) {
+                return [];
+            }
+
+            // Sin match exacto en la base, el primero por nombre. Antes de eso, el mismo nombre
+            // ignorando mayúsculas y acentos, que es como lo escribe una persona en el chat.
+            $elegido = $candidatos->first();
+
+            foreach ($candidatos as $candidato) {
+                if (self::normalize_text((string) $candidato->name) === self::normalize_text($busqueda)) {
+                    $elegido = $candidato;
+                    break;
+                }
+            }
+        }
+
+        $service = new ActividadDeClientesService($owner_id);
+        /*
+         * La tenencia del artículo la vuelve a controlar el servicio: sin artículo del dueño, lista
+         * vacía y no se toca el tracking. Y el servicio devuelve TODOS los que pasaron el descarte
+         * de "ya lo compró": el tope de la respuesta lo pone MAX_RESULTS acá, que es el único lugar
+         * donde se sabe cuánto JSON aguanta el prompt.
+         */
+        $interesados = $service->interesados_en_un_articulo((int) $elegido->id, $dias);
+        $anonimos    = $service->anonimos_de_un_articulo((int) $elegido->id, $dias);
+
+        $lista = [];
+
+        foreach (array_slice($interesados, 0, self::MAX_RESULTS) as $fila) {
+            $momento = is_null($fila['ultima_vez']) ? false : strtotime($fila['ultima_vez']);
+
+            $compra = is_null($fila['ultima_compra']) ? false : strtotime($fila['ultima_compra']);
+
+            $lista[] = [
+                'cliente'    => (string) $fila['cliente'],
+                'telefono'   => (string) $fila['telefono'],
+                'vistas'     => (int) $fila['vistas'],
+                'minutos'    => ActividadDeClientesService::a_minutos($fila['segundos']),
+                'al_carrito' => (int) $fila['al_carrito'],
+                'ultima_vez' => $momento === false ? null : date('d/m/Y', $momento),
+                /*
+                 * 🔴 El que está en la lista HABIENDO COMPRADO antes lo dice. Queda porque volvió a
+                 * mirarlo después de comprarlo —o sea que hay interés de recompra—, pero mudo abajo
+                 * de "todavía no lo compraron" es contarle al comerciante lo contrario de lo que
+                 * pasó. null es "no hay ninguna compra registrada", que es el caso normal.
+                 */
+                'lo_compro_antes_y_lo_volvio_a_mirar' => $compra === false ? null : date('d/m/Y', $compra),
+            ];
+        }
+
+        return [
+            'articulo'                   => (string) $elegido->name,
+            'ventana_dias'               => $dias,
+            'interesados_encontrados'    => count($interesados),
+            'interesados_en_esta_lista'  => count($lista),
+            'interesados'                => $lista,
+            // Gente sin cuenta que anduvo sobre el mismo artículo. No se puede llamar a ninguno,
+            // pero "lo están mirando 15 personas que no puedo nombrar" es un dato del negocio.
+            'visitantes_anonimos'        => (int) $anonimos['visitantes'],
+            'eventos_de_anonimos'        => (int) $anonimos['eventos'],
+        ];
     }
 
     /**
