@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
 use App\Models\DemoEvento;
+use App\Services\DemoMediaUrlsFetcher;
 use Illuminate\Http\Request;
 
 /**
@@ -54,9 +55,26 @@ class DemoPlanController extends Controller
          * mismos eventos con dos consumidores distintos. Misión 52. */
         $progreso = self::progreso_por_clip();
 
+        /* Las URLs de los videos SI se le piden al admin, y la asimetria con el progreso de arriba
+         * es deliberada: el progreso nace acá y el admin es un espectador, pero las URLs nacen del
+         * admin y esta instancia solo tiene la foto del momento del setup. Esa foto se saca antes
+         * de que Lucas cargue los links (medido: setup 15:02, links 15:51), asi que el mapa
+         * guardado llega vacio de todos los clips y el panel dice "Este video todavia no esta
+         * disponible" en los 28.
+         *
+         * 🔴 Y el admin sigue sin poder romper el panel: el fetcher no deja escapar NINGUNA
+         * Throwable y devuelve null ante cualquier falla --red, timeout, 401, 404, JSON invalido--,
+         * asi que la respuesta cae al `media_urls` guardado, que es exactamente lo que este
+         * endpoint devolvia antes de esta mision. Mision demo-panel-recorrido. */
+        $frescas = DemoMediaUrlsFetcher::frescas($config);
+
         return response()->json([
             'notas' => self::ultimas_notas(),
-            'secciones' => self::secciones_con_urls($config->plan, $config->media_urls, $progreso),
+            'secciones' => self::secciones_con_urls(
+                $config->plan,
+                is_array($frescas) ? $frescas : $config->media_urls,
+                $progreso
+            ),
         ], 200);
     }
 
