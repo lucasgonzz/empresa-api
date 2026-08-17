@@ -19,6 +19,12 @@ class TableColumnPreferenceController extends Controller
      * - global_search_filters: filtros fijos que el usuario agrega al lado del buscador general
      *   (guarda por columna `filter_kind`, `operator` y `default_value`).
      * - btm_*: columnas de una relación belongs_to_many puntual (ej: btm_provider_order_articles).
+     * - search_*: columnas del modal de búsqueda de una relación con ámbito propio, es decir cuando
+     *   el consumidor declara sus propias `props_to_show` (ej: search_provider_order_articles, el
+     *   buscador de artículos dentro de una compra). El ámbito lo arma la SPA en
+     *   `ModelForm.search_preference_scope()` como `<modelo padre>_<relación>`, y sirve para que un
+     *   mismo modelo tenga columnas distintas según desde dónde se lo busque. El patrón cubre las
+     *   42 relaciones con ámbito propio que hoy existen en `empresa-spa/src/models`.
      *
      * Valida que preference_type sea alguno de los anteriores; aborta con 404 si no.
      */
@@ -29,6 +35,15 @@ class TableColumnPreferenceController extends Controller
         }
 
         if (preg_match('/^btm_[a-z0-9_]+$/', $preference_type)) {
+            return;
+        }
+
+        // Va preg_match y no str_starts_with porque el repo está clavado en PHP 7.4, donde esa
+        // función no existe. Tampoco se colapsa con el patrón de btm_*: son dos familias distintas
+        // (columnas de una tabla belongs_to_many vs. columnas de un buscador con ámbito) y unirlas
+        // en un solo regex haría que cualquier prefijo nuevo entre sin que nadie lo decida.
+        // El regex además exige el guion bajo: `searchx` no es un ámbito y tiene que seguir en 404.
+        if (preg_match('/^search_[a-z0-9_]+$/', $preference_type)) {
             return;
         }
 
