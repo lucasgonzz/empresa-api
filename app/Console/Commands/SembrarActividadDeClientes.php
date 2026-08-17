@@ -388,6 +388,47 @@ class SembrarActividadDeClientes extends Command
         $this->control = [];
         $this->avisos  = [];
 
+        /*
+         * 🔴 TODO LO QUE PUEDE HACER FRACASAR LA SIEMBRA SE VALIDA ANTES DE BORRAR NADA, Y ESTE
+         * ORDEN ES EL ARREGLO. Antes limpiar() corría acá arriba y estas dos validaciones salían con
+         * `return 1` a continuación: en un comercio que no las cumple, el comando YA SE HABÍA
+         * LLEVADO PUESTO el agregado del rango —del comercio entero, porque `buyer_tracking_daily`
+         * no tiene columna de marca— y recién después avisaba que no había sembrado nada. El
+         * operador leía "no se sembró" y se quedaba tranquilo, sin ninguna forma de enterarse de que
+         * acababa de perder la única memoria de largo plazo del tracking, que no se reconstruye con
+         * nada. Una corrida que falla tiene que dejar la base como estaba.
+         *
+         * Con --limpiar no se validan: ahí borrar ES lo que se pidió, y exigirle compradores y
+         * artículos a un comercio para dejarlo limpiar sería negarle el borrado justo al que tiene
+         * la base a medias.
+         */
+        $protagonistas = null;
+        $articulos     = null;
+
+        if (!$this->option('limpiar')) {
+            $protagonistas = $this->resolver_protagonistas();
+
+            if (!$protagonistas['con_cliente_1']) {
+                $this->error(
+                    'tracking:sembrar-actividad-de-prueba — el comercio no tiene ningún comprador atado a un cliente del ERP'
+                    . ' (buyers.comercio_city_client_id). Sin eso no hay a quién sembrarle actividad: primero tiene que haber compradores.'
+                    . ' No se borró ni se sembró nada.'
+                );
+                return 1;
+            }
+
+            $articulos = $this->articulos_del_comercio();
+
+            if (count($articulos) < self::ARTICULOS_DE_LA_ESCENA) {
+                $this->error(
+                    'tracking:sembrar-actividad-de-prueba — hacen falta al menos ' . self::ARTICULOS_DE_LA_ESCENA
+                    . ' artículos del comercio para armar la escena, y hay ' . count($articulos) . '.'
+                    . ' No se borró ni se sembró nada.'
+                );
+                return 1;
+            }
+        }
+
         $borradas = $this->limpiar($dias);
 
         if ($this->option('limpiar')) {
@@ -396,26 +437,6 @@ class SembrarActividadDeClientes extends Command
                 . $borradas['agregado'] . ' filas de agregado. No se sembró nada (--limpiar).'
             );
             return 0;
-        }
-
-        $protagonistas = $this->resolver_protagonistas();
-
-        if (!$protagonistas['con_cliente_1']) {
-            $this->error(
-                'tracking:sembrar-actividad-de-prueba — el comercio no tiene ningún comprador atado a un cliente del ERP'
-                . ' (buyers.comercio_city_client_id). Sin eso no hay a quién sembrarle actividad: primero tiene que haber compradores.'
-            );
-            return 1;
-        }
-
-        $articulos = $this->articulos_del_comercio();
-
-        if (count($articulos) < self::ARTICULOS_DE_LA_ESCENA) {
-            $this->error(
-                'tracking:sembrar-actividad-de-prueba — hacen falta al menos ' . self::ARTICULOS_DE_LA_ESCENA
-                . ' artículos del comercio para armar la escena, y hay ' . count($articulos) . '.'
-            );
-            return 1;
         }
 
         // ANTES del primer reparto: sin esto dos corridas dan datos distintos y comparar una con otra
@@ -514,6 +535,9 @@ class SembrarActividadDeClientes extends Command
 
     /**
      * Borra lo que dejó una corrida anterior.
+     *
+     * 🔴 SE LLAMA DESPUÉS DE TODAS LAS VALIDACIONES DE handle(), y no antes. El porqué está escrito
+     * ahí: una corrida que va a fallar no puede haber borrado ya.
      *
      * 🔴 Corre SIEMPRE, también sin --limpiar, y eso es lo que hace que el comando sea idempotente:
      * correrlo dos veces deja exactamente lo mismo y no el doble. Es la misma propiedad, tomada por

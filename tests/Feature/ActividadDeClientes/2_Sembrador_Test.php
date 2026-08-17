@@ -4,10 +4,13 @@ namespace Tests\Feature\ActividadDeClientes;
 
 use App\Console\Commands\PurgarBuyerTracking;
 use App\Console\Commands\SembrarActividadDeClientes;
+use App\Models\Buyer;
+use App\Models\Client;
 use App\Models\ExtencionEmpresa;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Tests\TestCase;
 
 /**
@@ -37,6 +40,12 @@ use Tests\TestCase;
  * 🔴 En testing `config('app.env')` vale 'testing', que la guarda del comando PERMITE. Para probar el
  * rechazo hay que pisarla a mano y devolverla en el tearDown: sin eso, el test 1 pasaría siempre
  * porque nunca ejerce la rama que dice medir.
+ *
+ * 🔴 EL `@group` DE ESTE ARCHIVO ES `actividad-de-clientes`, CON GUIÓN MEDIO, IGUAL QUE LOS OTROS
+ * TRES. Estuvo escrito con guión bajo (`actividad_de_clientes`) y eso convertía a
+ * `--group actividad-de-clientes` en una medición que falla devolviendo un valor tranquilizador:
+ * corría 38 tests, se salteaba los 8 de este archivo —los del comando que BORRA filas— y salía
+ * verde sin una línea que dijera que faltaba algo. Un grupo mal escrito no da error: da menos tests.
  *
  * Casi todos los tests corren con `--fondo=0`: el fondo es cardinalidad para que un EXPLAIN
  * signifique algo, no un caso de la pantalla, y sembrar 9.000 filas en cada test sólo haría la suite
@@ -77,6 +86,14 @@ class Sembrador_Test extends TestCase
     protected $entorno_original;
 
     /**
+     * El comercio que resolvía config('app.USER_ID') antes de que un test lo pisara. Los tests que
+     * miden las validaciones del comando arman su propio comercio y lo apuntan ahí.
+     *
+     * @var mixed
+     */
+    protected $comercio_original;
+
+    /**
      * @return void
      */
     protected function setUp(): void
@@ -88,6 +105,7 @@ class Sembrador_Test extends TestCase
         config(['services.anthropic.api_key' => null]);
 
         $this->entorno_original = config('app.env');
+        $this->comercio_original = config('app.USER_ID');
 
         DB::table('buyer_tracking_daily')->where('user_id', self::COMERCIO)->delete();
         DB::table('buyer_tracking_events')->where('user_id', self::COMERCIO)->delete();
@@ -99,6 +117,7 @@ class Sembrador_Test extends TestCase
     protected function tearDown(): void
     {
         config(['app.env' => $this->entorno_original]);
+        config(['app.USER_ID' => $this->comercio_original]);
 
         parent::tearDown();
     }
@@ -203,7 +222,7 @@ class Sembrador_Test extends TestCase
      * memoria de largo plazo del comportamiento de la tienda y no se reconstruye con nada. La guarda
      * de entorno es lo único que lo impide, así que se mide: no alcanza con que esté escrita.
      *
-     * @group actividad_de_clientes
+     * @group actividad-de-clientes
      * @test
      */
     public function el_sembrador_no_corre_en_produccion()
@@ -226,7 +245,7 @@ class Sembrador_Test extends TestCase
      * recién aparecería en producción, tres meses después, cuando la purga se lleve los crudos y los
      * totales "de siempre" se achiquen solos.
      *
-     * @group actividad_de_clientes
+     * @group actividad-de-clientes
      * @test
      */
     public function siembra_eventos_recientes_y_agregado_viejo_y_el_corte_se_puede_ver()
@@ -294,7 +313,7 @@ class Sembrador_Test extends TestCase
      * Si el sembrador agregara también hoy, esa leyenda diría una cosa y la pantalla mostraría otra,
      * y nadie tendría con qué darse cuenta.
      *
-     * @group actividad_de_clientes
+     * @group actividad-de-clientes
      * @test
      */
     public function el_agregado_de_lo_reciente_lo_escribe_el_rollup_y_no_llega_hasta_hoy()
@@ -336,14 +355,18 @@ class Sembrador_Test extends TestCase
      * separa un evento sembrado de un evento real de la tienda: sin ese filtro, la primera corrida
      * contra una base que ya tenga tráfico real se lo lleva puesto.
      *
-     * Y de paso queda escrita la otra mitad, que es una limitación conocida y no un descuido: el
-     * agregado NO tiene columna de marca, así que se borra por rango de fechas y lo de afuera del
-     * rango sobrevive.
+     * 🔴 Y LA OTRA MITAD SE MIDE, NO SE MENCIONA. Este test se llamaba `limpiar_borra_solo_lo_sembrado`
+     * y sólo verificaba que sobreviviera una fila de agregado de AFUERA del rango. O sea: el nombre
+     * afirmaba "borra sólo lo sembrado" y el cuerpo nunca probaba una fila de ADENTRO del rango, que
+     * es justo la que SÍ se borra aunque no la haya sembrado él. `buyer_tracking_daily` no tiene
+     * columna de marca y se borra por rango de fechas: es una limitación conocida, está escrita en
+     * el docblock de limpiar(), y por eso mismo tiene que estar medida — una limitación que nadie
+     * mide es una que el día que cambie nadie se entera.
      *
-     * @group actividad_de_clientes
+     * @group actividad-de-clientes
      * @test
      */
-    public function limpiar_borra_solo_lo_sembrado()
+    public function limpiar_borra_los_eventos_por_su_marca_y_el_agregado_por_rango_de_fechas()
     {
         $this->comercio_listo();
 
@@ -368,6 +391,21 @@ class Sembrador_Test extends TestCase
             'buyer_id'   => 1,
             'event_type' => 'product_view',
             'total'      => 9,
+            'visitantes' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        /*
+         * Y una de ADENTRO del rango, que el sembrador no escribió: es la que SÍ se va a borrar.
+         * Sin esta fila, el test no prueba la mitad que duele.
+         */
+        DB::table('buyer_tracking_daily')->insert([
+            'user_id'    => self::COMERCIO,
+            'fecha'      => now()->subDays(5)->format('Y-m-d'),
+            'buyer_id'   => 1,
+            'event_type' => 'cart_add',
+            'total'      => 7,
             'visitantes' => 1,
             'created_at' => now(),
             'updated_at' => now(),
@@ -403,6 +441,135 @@ class Sembrador_Test extends TestCase
             $agregado_de_afuera,
             '--limpiar borró agregado de afuera del rango sembrado: el borrado por fechas se está pasando de largo.'
         );
+
+        /*
+         * 🔴 Y lo de ADENTRO del rango se lo lleva puesto, lo haya sembrado él o no. Esto NO es un
+         * defecto que este test tape: es la consecuencia medida de que `buyer_tracking_daily` no
+         * tenga columna de marca, y es la razón por la que el comando sólo corre en local, testing o
+         * demo y avisa fuerte antes de borrar. Si algún día el agregado gana una marca, este test se
+         * pone rojo y hay que venir a leer esto — que es exactamente para lo que está.
+         */
+        $agregado_de_adentro = DB::table('buyer_tracking_daily')
+            ->where('user_id', self::COMERCIO)
+            ->whereDate('fecha', now()->subDays(5)->format('Y-m-d'))
+            ->where('event_type', 'cart_add')
+            ->count();
+
+        $this->assertEquals(
+            0,
+            $agregado_de_adentro,
+            'El borrado del agregado va por RANGO DE FECHAS y se lleva lo que no sembró: si esto dejó de pasar, '
+            . 'el docblock de limpiar() y el aviso que el comando imprime antes de borrar quedaron desactualizados.'
+        );
+    }
+
+    /**
+     * 🔴 UNA CORRIDA QUE FALLA TIENE QUE DEJAR LA BASE COMO ESTABA.
+     *
+     * `limpiar()` corría ANTES de las validaciones de "hace falta un comprador atado a un cliente" y
+     * "hacen falta N artículos", y esas validaciones salen con código 1. O sea que en un comercio
+     * que no las cumple el comando YA HABÍA BORRADO el agregado del rango —del comercio entero,
+     * porque esa tabla no tiene columna de marca— y recién después decía que no había sembrado nada.
+     * El operador leía "no se sembró" y se quedaba tranquilo, sin ninguna forma de enterarse de que
+     * acababa de perder la única memoria de largo plazo del tracking, que no se reconstruye con nada.
+     *
+     * Se miden los DOS caminos de salida, porque son dos `return 1` distintos.
+     *
+     * @group actividad-de-clientes
+     * @test
+     */
+    public function una_corrida_que_no_puede_sembrar_no_borra_el_agregado()
+    {
+        foreach (['sin_compradores', 'sin_articulos'] as $escenario) {
+            $comercio = User::create([
+                'name'     => 'Comercio que no puede sembrar ' . $escenario,
+                'email'    => 'sembrador-' . $escenario . '-' . uniqid() . '@test.local',
+                'password' => Hash::make('secret'),
+            ]);
+
+            $this->activar_extencion($comercio);
+
+            if ($escenario === 'sin_articulos') {
+                // Tiene el comprador atado a un cliente, así que pasa la primera validación y se
+                // frena en la de artículos: el comercio no tiene ninguno.
+                $cliente = Client::create(['name' => 'Cliente del sembrador', 'user_id' => $comercio->id]);
+
+                Buyer::create([
+                    'name'                    => 'Comprador del sembrador',
+                    'email'                   => 'buyer-' . uniqid() . '@test.local',
+                    'user_id'                 => $comercio->id,
+                    'comercio_city_client_id' => $cliente->id,
+                ]);
+            }
+
+            // El agregado que el comando NO tiene derecho a borrar si no va a sembrar.
+            DB::table('buyer_tracking_daily')->insert([
+                'user_id'    => $comercio->id,
+                'fecha'      => now()->subDays(5)->format('Y-m-d'),
+                'buyer_id'   => 1,
+                'event_type' => 'product_view',
+                'total'      => 42,
+                'visitantes' => 1,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            config(['app.USER_ID' => $comercio->id]);
+
+            $this->artisan('tracking:sembrar-actividad-de-prueba', ['--fondo' => 0])->assertExitCode(1);
+
+            $this->assertEquals(
+                1,
+                DB::table('buyer_tracking_daily')->where('user_id', $comercio->id)->count(),
+                'Escenario "' . $escenario . '": el comando se llevó puesto el agregado y después avisó que no sembró nada. '
+                . 'Todo lo que puede hacer fracasar la siembra se valida ANTES de borrar.'
+            );
+
+            $this->assertEquals(
+                0,
+                DB::table('buyer_tracking_events')->where('user_id', $comercio->id)->count(),
+                'Escenario "' . $escenario . '": no tenía que sembrar un solo evento.'
+            );
+        }
+    }
+
+    /**
+     * Y --limpiar SÍ borra aunque el comercio no pueda sembrar: ahí borrar es exactamente lo que se
+     * pidió, y negarle el borrado al que tiene la base a medias sería dejarlo sin salida.
+     *
+     * @group actividad-de-clientes
+     * @test
+     */
+    public function limpiar_borra_aunque_el_comercio_no_tenga_con_que_sembrar()
+    {
+        $comercio = User::create([
+            'name'     => 'Comercio que solo limpia',
+            'email'    => 'sembrador-limpia-' . uniqid() . '@test.local',
+            'password' => Hash::make('secret'),
+        ]);
+
+        $this->activar_extencion($comercio);
+
+        DB::table('buyer_tracking_daily')->insert([
+            'user_id'    => $comercio->id,
+            'fecha'      => now()->subDays(5)->format('Y-m-d'),
+            'buyer_id'   => 1,
+            'event_type' => 'product_view',
+            'total'      => 42,
+            'visitantes' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        config(['app.USER_ID' => $comercio->id]);
+
+        $this->artisan('tracking:sembrar-actividad-de-prueba', ['--limpiar' => true])->assertExitCode(0);
+
+        $this->assertEquals(
+            0,
+            DB::table('buyer_tracking_daily')->where('user_id', $comercio->id)->count(),
+            '--limpiar tiene que borrar aunque el comercio no tenga compradores ni artículos.'
+        );
     }
 
     /**
@@ -413,7 +580,7 @@ class Sembrador_Test extends TestCase
      * había 12. Es la misma propiedad —y por el mismo motivo— que la idempotencia de
      * `tracking:agregar-buyers`.
      *
-     * @group actividad_de_clientes
+     * @group actividad-de-clientes
      * @test
      */
     public function correr_el_sembrador_dos_veces_con_limpiar_en_el_medio_deja_la_misma_cantidad()
@@ -453,7 +620,7 @@ class Sembrador_Test extends TestCase
      * a este comando lo corre una persona, y quedarse esperando datos que nunca se escribieron es
      * peor que un error.
      *
-     * @group actividad_de_clientes
+     * @group actividad-de-clientes
      * @test
      */
     public function sin_la_extencion_no_siembra_nada()
@@ -482,7 +649,7 @@ class Sembrador_Test extends TestCase
      *   - Visitantes anónimos sobre el MISMO artículo que miró un cliente conocido. Si estuvieran
      *     sobre artículos distintos, un error que mezcle anónimos con clientes nombrados no se vería.
      *
-     * @group actividad_de_clientes
+     * @group actividad-de-clientes
      * @test
      */
     public function la_siembra_deja_una_busqueda_sin_resultado_y_visitantes_anonimos_sobre_un_articulo_de_un_cliente()
@@ -545,7 +712,7 @@ class Sembrador_Test extends TestCase
      * tiene la forma de una tabla real. Este test fija que el sembrador deje muchos más compradores
      * distintos que los que hay en `buyers`, que es lo que hace que la medición signifique algo.
      *
-     * @group actividad_de_clientes
+     * @group actividad-de-clientes
      * @test
      */
     public function el_fondo_le_da_al_agregado_muchos_compradores_distintos()
