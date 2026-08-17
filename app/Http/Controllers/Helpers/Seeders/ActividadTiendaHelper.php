@@ -201,6 +201,31 @@ class ActividadTiendaHelper
          */
         mt_srand((int) config('semilla.semilla_aleatoria') + self::DESPLAZAMIENTO_SEMILLA);
 
+        try {
+            return $this->sembrar_con_el_generador_sembrado();
+        } finally {
+            /*
+             * 🔴 Y se lo devuelve al azar al salir. Esto no es cosmético: `DemoSetupHelper` invoca
+             * `semilla:datos` con `Artisan::call()` DENTRO de un request, así que sin esta línea el
+             * resto del request hereda un `mt_rand()` sembrado con una constante que además está en
+             * el repo (`semilla.semilla_aleatoria` + `DESPLAZAMIENTO_SEMILLA`), o sea predecible.
+             * PHP no deja guardar y restaurar el estado del generador; `mt_srand()` SIN argumento
+             * lo re-siembra con `GENERATE_SEED()`, que es lo más cerca de "como estaba" que hay.
+             * En `finally` para que valga también por los `return` tempranos del método de abajo.
+             */
+            mt_srand();
+        }
+    }
+
+    /**
+     * El cuerpo de `sembrar()`, separado solo para que el `try/finally` que restaura el generador
+     * aleatorio no obligue a indentar el método entero (y para que ningún `return` temprano nuevo
+     * se saltee esa restauración por olvido).
+     *
+     * @return array<string,mixed>
+     */
+    protected function sembrar_con_el_generador_sembrado()
+    {
         $this->addresses = Address::where('user_id', $this->user_id)->orderBy('num')->get();
         $this->articulos = Article::where('user_id', $this->user_id)
             ->where('status', '!=', 'inactive')
@@ -221,7 +246,7 @@ class ActividadTiendaHelper
         $resumen = [
             'buyers_con_cliente'  => $buyers->count(),
             'perfiles'            => [],
-            'cobranzas_de_cierre' => ['clientes' => 0, 'monto' => 0.0, 'por_caja' => []],
+            'cobranzas_de_cierre' => ['clientes' => 0, 'monto' => 0.0, 'por_caja' => [], 'por_cliente' => []],
             'eventos_por_tipo'    => $this->eventos_por_tipo,
             'eventos_totales'     => 0,
             'ventana_dias'        => [
@@ -266,12 +291,20 @@ class ActividadTiendaHelper
      * movimiento de caja y las comisiones desalineados entre sí, que es exactamente el desastre que
      * `SemillaHelper` entero viene a evitar.
      *
+     * 🔴 El resultado trae `por_cliente` (client_id => monto cobrado) además del total y del
+     * desglose por caja. No es un adorno: `SembrarDatosDePrueba::escribir_planilla_de_control()`
+     * necesita RESTAR estas cobranzas de `deuda_esperada_por_cliente`, porque la deuda que la
+     * planilla calculó mes a mes acá se cancela de verdad. Sin el detalle por cliente, la planilla
+     * informaba deuda de clientes que en la base ya estaban en cero (12 de 25 en la corrida
+     * completa) -- que es exactamente el tipo de número que rompe el ejercicio de verificar un
+     * reporte contra la planilla.
+     *
      * @param \Illuminate\Support\Collection $buyers
      * @return array<string,mixed>
      */
     protected function cancelar_saldos($buyers)
     {
-        $resultado = ['clientes' => 0, 'monto' => 0.0, 'por_caja' => []];
+        $resultado = ['clientes' => 0, 'monto' => 0.0, 'por_caja' => [], 'por_cliente' => []];
 
         if ($this->addresses->isEmpty()) {
             $this->avisos[] = 'El usuario no tiene ninguna Address: no se puede resolver la caja del cobro y no se cancela ningún saldo.';
@@ -319,6 +352,10 @@ class ActividadTiendaHelper
             $resultado['clientes']++;
             $resultado['monto'] += $pendiente;
             $resultado['por_caja'][$caja_id] = (isset($resultado['por_caja'][$caja_id]) ? $resultado['por_caja'][$caja_id] : 0) + $pendiente;
+            // Se acumula en vez de asignar aunque `$clientes` traiga cada cliente una sola vez
+            // (viene de un `whereIn` sobre ids únicos): si mañana el origen cambia, el número sigue
+            // siendo el total cobrado a ese cliente y no el último cobro.
+            $resultado['por_cliente'][$cliente->id] = (isset($resultado['por_cliente'][$cliente->id]) ? $resultado['por_cliente'][$cliente->id] : 0) + $pendiente;
         }
 
         $resultado['monto'] = round($resultado['monto'], 2);

@@ -9,8 +9,11 @@ use App\Http\Controllers\Helpers\DeleteModelsHelper;
 use App\Http\Controllers\Helpers\Seeders\ActividadTiendaHelper;
 use App\Http\Controllers\Helpers\Seeders\SaleSeederHelper;
 use App\Http\Controllers\Helpers\Seeders\SemillaHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\caja\CajaAperturaHelper;
 use App\Http\Controllers\Helpers\caja\CajaCierreHelper;
+use App\Http\Controllers\Helpers\caja\CajaLiquidacionHelper;
+use App\Http\Controllers\Helpers\caja\MovimientoEntreCajaHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Http\Controllers\SaleController;
 use App\Models\Address;
@@ -26,6 +29,7 @@ use App\Models\CurrentAcount;
 use App\Models\Expense;
 use App\Models\ExpenseConcept;
 use App\Models\MovimientoCaja;
+use App\Models\MovimientoEntreCaja;
 use App\Models\Provider;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderAfipTicket;
@@ -118,6 +122,17 @@ class SembrarDatosDePrueba extends Command
     const IIBB_FRACCION = 0.03;
 
     /**
+     * Alícuota de IVA de los artículos de la semilla, en PORCENTAJE (21, no 0,21).
+     *
+     * `FerreteriaArticlesSeeder` siembra el catálogo con `iva_id => 2`, que en `IvaSeeder` es la
+     * segunda alícuota de la lista: 21%. Se replica acá porque de este número dependen dos
+     * renglones de la planilla: el `importe_iva` de cada comprobante y -- sobre todo -- la base
+     * gravada del IIBB, que el reporte calcula NETA de IVA (ver `iibb_estimado` en
+     * `planificar_mes()`).
+     */
+    const IVA_ALICUOTA = 21;
+
+    /**
      * Mezcla de cobro: cómo se reparte TODO lo que entra a caja (mostrador + cobranzas) entre los
      * métodos de pago. Clave = id de CurrentAcountPaymentMethod (ver CurrentAcountPaymentMethodSeeder:
      * 1 Cheque, 3 Efectivo, 4 Transferencia, 6 Mercado Pago).
@@ -156,6 +171,29 @@ class SembrarDatosDePrueba extends Command
 
     /** Cantidad de registros por categoría al distribuir un total (mismo criterio que ReportesMesSeeder). */
     const CANT_REGISTROS = 4;
+
+    /**
+     * Barrido de efectivo del cierre de mes: qué fracción del saldo acumulado de cada caja de
+     * efectivo viaja a la Caja Fuerte, y qué fracción de la Caja Fuerte sigue viaje al Banco
+     * Nación. Ver `planificar_barrido_de_efectivo()` para el porqué de las dos cajas y por qué es
+     * un PORCENTAJE del saldo y no un monto fijo.
+     */
+    const BARRIDO_A_CAJA_FUERTE_FRACCION = 0.60;
+    const BARRIDO_A_BANCO_FRACCION = 0.70;
+
+    /**
+     * Nombres con los que `CajaSeeder::una_caja_para_cada_direccion_y_por_cada_metodo_de_pago()`
+     * crea las dos cajas del barrido, y claves con las que aparecen en `saldo_esperado_por_caja`.
+     *
+     * Se resuelven por NOMBRE, a diferencia de todas las demás cajas de este comando (que salen de
+     * `DefaultPaymentMethodCaja` vía `caja_para()`), justamente porque estas dos NO son la caja por
+     * defecto de ningún método de pago: ese es el motivo por el que quedaban sin un solo
+     * movimiento y no hay otro identificador estable para agarrarlas.
+     */
+    const CAJA_FUERTE_NOMBRE = 'Caja Fuerte';
+    const CAJA_BANCO_NOMBRE = 'Banco Nación';
+    const CLAVE_CAJA_FUERTE = 'caja_fuerte';
+    const CLAVE_CAJA_BANCO = 'banco_nacion';
 
     /** @var \App\Http\Controllers\Helpers\Seeders\SemillaHelper */
     protected $semilla;
@@ -206,9 +244,41 @@ class SembrarDatosDePrueba extends Command
     /**
      * Resumen de las aperturas de caja que hizo `ejecutar_operaciones()`, para la planilla.
      *
+     * `sembradas` son las que crea este comando (`dias * cajas`); `previas` son las que ya estaban
+     * en la base cuando arrancó (`CajaSeeder` deja una por caja, y `preparar_aperturas_previas()`
+     * les mueve el `created_at` pero NO las borra). `total` es lo que Lucas va a contar en la base:
+     * la suma de las dos. Informar solo `dias * cajas` dejaba la planilla corta por exactamente la
+     * cantidad de cajas del usuario.
+     *
      * @var array<string,int>
      */
-    protected $resumen_aperturas = ['dias' => 0, 'cajas' => 0, 'total' => 0];
+    protected $resumen_aperturas = ['dias' => 0, 'cajas' => 0, 'sembradas' => 0, 'previas' => 0, 'total' => 0];
+
+    /**
+     * Aperturas de caja que ya existían antes de esta corrida, contadas por
+     * `preparar_aperturas_previas()`.
+     *
+     * @var int
+     */
+    protected $aperturas_previas = 0;
+
+    /**
+     * Resumen del barrido de efectivo hacia Caja Fuerte y Banco Nación, para la planilla.
+     *
+     * @var array<string,int>
+     */
+    protected $resumen_barrido = [
+        'movimientos'               => 0,
+        'de_efectivo_a_caja_fuerte' => 0,
+        'de_caja_fuerte_a_banco'    => 0,
+    ];
+
+    /**
+     * Memo de `cajas_del_barrido()`: null mientras no se resolvió.
+     *
+     * @var array<string,int|null>|null
+     */
+    protected $memo_cajas_del_barrido = null;
 
     /**
      * Ids de los Cheque tipo "recibido" creados durante la corrida (para el ciclo de estados del
@@ -251,79 +321,128 @@ class SembrarDatosDePrueba extends Command
         // comparar una con otra es imposible.
         mt_srand((int) config('semilla.semilla_aleatoria'));
 
-        $this->semilla = new SemillaHelper();
+        /*
+         * 🔴 Todo lo que sigue va adentro de un try/finally SOLO para poder devolver el generador
+         * aleatorio global a un estado impredecible al terminar (ver el `finally`). No es paranoia
+         * de consola: `DemoSetupHelper::sembrar_datos()` invoca este comando con
+         * `Artisan::call('semilla:datos')` DENTRO de un request, y dejar `mt_rand()` sembrado con
+         * una constante conocida (`semilla.semilla_aleatoria`, que además está en el repo) vuelve
+         * predecible cualquier número aleatorio que se pida después en ese mismo proceso.
+         */
+        try {
+            $this->semilla = new SemillaHelper();
 
-        $meses_atras = !is_null($this->option('meses'))
-            ? (int) $this->option('meses')
-            : (int) config('semilla.meses_atras');
+            $meses_atras = !is_null($this->option('meses'))
+                ? (int) $this->option('meses')
+                : (int) config('semilla.meses_atras');
 
-        if ($meses_atras < 1) {
-            $this->error('meses_atras tiene que ser al menos 1 (el mes actual).');
-            return 1;
-        }
+            if ($meses_atras < 1) {
+                $this->error('meses_atras tiene que ser al menos 1 (el mes actual).');
+                return 1;
+            }
 
-        $cadencia = $this->cadencia_para($meses_atras);
+            $cadencia = $this->cadencia_para($meses_atras);
 
-        $control_meses = [];
-        $operaciones = [];
+            $control_meses = [];
+            $operaciones = [];
 
-        // Arrastre de cobranza: el 20% de las ventas a cuenta corriente que el mes anterior NO
-        // cobró se cobra en éste. El mes más viejo arranca en 0 porque no tiene mes anterior.
-        $cobranza_arrastrada = 0.0;
+            // Arrastre de cobranza: el 20% de las ventas a cuenta corriente que el mes anterior NO
+            // cobró se cobra en éste. El mes más viejo arranca en 0 porque no tiene mes anterior.
+            $cobranza_arrastrada = 0.0;
 
-        // m = meses_atras - 1 es el mes más VIEJO; m = 0 es el mes ACTUAL (parcial, hasta hoy).
-        // Acá SOLO se planifica: no se escribe una sola fila. La ejecución va toda junta y en
-        // orden cronológico después del loop, que es lo que permite abrir y cerrar la caja de cada
-        // día en el momento que corresponde (ver ejecutar_operaciones()).
-        for ($m = $meses_atras - 1; $m >= 0; $m--) {
-            $ventas_brutas_mes = (float) ($cadencia[$meses_atras - 1 - $m] * self::TICKET_PROMEDIO);
+            // Saldo planificado de CADA caja real (no por método de pago), acumulado mes a mes. Es
+            // lo que le permite al barrido de efectivo sacar un porcentaje de lo que esa caja
+            // puntual tiene, y no de lo que tienen las cuatro sumadas.
+            $saldo_por_caja_id = [];
 
-            $es_mes_actual = ($m === 0);
-            $this->info('Planificando mes '.($meses_atras - $m).'/'.$meses_atras.' (meses_atras='.$m.', '.$cadencia[$meses_atras - 1 - $m].' ventas, brutas '.$ventas_brutas_mes.')'.($es_mes_actual ? ' -- mes actual, hasta hoy' : ''));
+            // m = meses_atras - 1 es el mes más VIEJO; m = 0 es el mes ACTUAL (parcial, hasta hoy).
+            // Acá SOLO se planifica: no se escribe una sola fila. La ejecución va toda junta y en
+            // orden cronológico después del loop, que es lo que permite abrir y cerrar la caja de cada
+            // día en el momento que corresponde (ver ejecutar_operaciones()).
+            for ($m = $meses_atras - 1; $m >= 0; $m--) {
+                $ventas_brutas_mes = (float) ($cadencia[$meses_atras - 1 - $m] * self::TICKET_PROMEDIO);
 
-            $planificado = $this->planificar_mes($m, $ventas_brutas_mes, $es_mes_actual, $cobranza_arrastrada);
+                $es_mes_actual = ($m === 0);
+                $this->info('Planificando mes '.($meses_atras - $m).'/'.$meses_atras.' (meses_atras='.$m.', '.$cadencia[$meses_atras - 1 - $m].' ventas, brutas '.$ventas_brutas_mes.')'.($es_mes_actual ? ' -- mes actual, hasta hoy' : ''));
 
-            $operaciones = array_merge($operaciones, $planificado['operaciones']);
-            $control_meses[] = $planificado['control'];
+                $planificado = $this->planificar_mes($m, $ventas_brutas_mes, $es_mes_actual, $cobranza_arrastrada);
 
-            $cobranza_arrastrada = round(
-                $planificado['control']['ventas_cuenta_corriente'] * (1 - self::COBRANZA_CC_FRACCION),
-                2
+                $operaciones = array_merge($operaciones, $planificado['operaciones']);
+                $control_meses[] = $planificado['control'];
+
+                foreach ($planificado['saldo_por_caja_id'] as $caja_id => $monto) {
+                    $saldo_por_caja_id[$caja_id] = (isset($saldo_por_caja_id[$caja_id]) ? $saldo_por_caja_id[$caja_id] : 0) + $monto;
+                }
+
+                // 🔴 El barrido se planifica ACÁ y no adentro de `planificar_mes()` a propósito: es
+                // una política de tesorería de la corrida completa, no parte de la aritmética de un
+                // mes. El efecto práctico es que `sembrar_mes()` -- el punto de entrada público que
+                // usa `4_Semilla_Test.php` -- no siembra ni un movimiento entre cajas y su
+                // `saldo_por_caja` sigue teniendo exactamente las mismas cuatro claves (efectivo,
+                // mercado_pago, banco, cheques). Adentro de `planificar_mes()` le habría agregado
+                // `caja_fuerte` y `banco_nacion`, y ese test recorre las claves con
+                // `assertArrayHasKey()` contra un fixture que no tiene esas dos cajas.
+                //
+                // Solo al cierre de un mes CERRADO: el mes en curso todavía no cerró (su efectivo
+                // sigue en el mostrador), y además fechar el barrido al final del mes actual lo
+                // dejaría en el futuro respecto del `Carbon::now()` con el que corren `sembrar_hoy()`
+                // y la actividad de tienda.
+                if (!$es_mes_actual) {
+                    $operaciones = array_merge($operaciones, $this->planificar_barrido_de_efectivo(
+                        Carbon::now()->startOfMonth()->subMonths($m)->endOfMonth(),
+                        $saldo_por_caja_id
+                    ));
+                }
+
+                $cobranza_arrastrada = round(
+                    $planificado['control']['ventas_cuenta_corriente'] * (1 - self::COBRANZA_CC_FRACCION),
+                    2
+                );
+            }
+
+            $this->info('Ejecutando '.count($operaciones).' operaciones en orden cronológico, día por día...');
+            $this->ejecutar_operaciones($operaciones, Carbon::now()->startOfDay());
+
+            $this->info('Sembrando el bloque especial de hoy...');
+            $control_hoy = $this->sembrar_hoy();
+
+            $this->info('Aplicando ciclo de estados a los cheques recibidos...');
+            $ciclo_cheques = $this->sembrar_cheques_con_ciclo();
+
+            $this->info('Sembrando presupuestos en los tres estados...');
+            $presupuestos = $this->sembrar_presupuestos();
+
+            // 🔴 ÚLTIMO PASO, y el orden no es negociable: ActividadTiendaHelper necesita las ventas ya
+            // sembradas (calcula el saldo a cancelar y los artículos que cada cliente NO compró) y
+            // re-siembra el generador aleatorio global, así que cualquier reparto de plata posterior
+            // dejaría de reproducirse igual entre corridas.
+            $this->info('Sembrando la actividad de la tienda y cancelando el saldo de sus clientes...');
+            $actividad_tienda = (new ActividadTiendaHelper())->sembrar($this->user_id);
+
+            $this->escribir_planilla_de_control(
+                $control_meses,
+                $control_hoy,
+                $meses_atras,
+                $ciclo_cheques,
+                $presupuestos,
+                $cadencia,
+                $actividad_tienda
             );
+
+            $this->info('Listo.');
+
+            return 0;
+        } finally {
+            /*
+             * PHP no deja guardar y restaurar el estado del Mersenne Twister global, así que lo más
+             * cerca que se puede estar de "dejarlo como estaba" es volver a sembrarlo al azar:
+             * `mt_srand()` SIN argumento usa `GENERATE_SEED()` (verificado en PHP 7.4.33: dos
+             * llamadas seguidas dan flujos distintos). Sin esto, todo lo que corra después en el
+             * mismo proceso -- y en el camino de demo eso es el resto del request -- hereda un
+             * generador con semilla conocida.
+             */
+            mt_srand();
         }
-
-        $this->info('Ejecutando '.count($operaciones).' operaciones en orden cronológico, día por día...');
-        $this->ejecutar_operaciones($operaciones, Carbon::now()->startOfDay());
-
-        $this->info('Sembrando el bloque especial de hoy...');
-        $control_hoy = $this->sembrar_hoy();
-
-        $this->info('Aplicando ciclo de estados a los cheques recibidos...');
-        $ciclo_cheques = $this->sembrar_cheques_con_ciclo();
-
-        $this->info('Sembrando presupuestos en los tres estados...');
-        $presupuestos = $this->sembrar_presupuestos();
-
-        // 🔴 ÚLTIMO PASO, y el orden no es negociable: ActividadTiendaHelper necesita las ventas ya
-        // sembradas (calcula el saldo a cancelar y los artículos que cada cliente NO compró) y
-        // re-siembra el generador aleatorio global, así que cualquier reparto de plata posterior
-        // dejaría de reproducirse igual entre corridas.
-        $this->info('Sembrando la actividad de la tienda y cancelando el saldo de sus clientes...');
-        $actividad_tienda = (new ActividadTiendaHelper())->sembrar($this->user_id);
-
-        $this->escribir_planilla_de_control(
-            $control_meses,
-            $control_hoy,
-            $meses_atras,
-            $ciclo_cheques,
-            $presupuestos,
-            $cadencia,
-            $actividad_tienda
-        );
-
-        $this->info('Listo.');
-
-        return 0;
     }
 
     /**
@@ -460,7 +579,7 @@ class SembrarDatosDePrueba extends Command
      * @param float $ventas_brutas_mes
      * @param bool $es_mes_actual
      * @param float $cobranza_arrastrada
-     * @return array{operaciones: array<int,array<string,mixed>>, control: array<string,mixed>}
+     * @return array{operaciones: array<int,array<string,mixed>>, control: array<string,mixed>, saldo_por_caja_id: array<int,float>}
      */
     protected function planificar_mes($meses_atras, $ventas_brutas_mes, $es_mes_actual, $cobranza_arrastrada = 0)
     {
@@ -501,15 +620,47 @@ class SembrarDatosDePrueba extends Command
         $compras_total = round($ventas_brutas_mes * self::COMPRAS_FRACCION, 2);
         $pagos_proveedores_total = round($compras_total * self::PAGOS_PROVEEDORES_FRACCION, 2);
         $entra_a_caja_total = round($mostrador_total + $cobranza_cc_total, 2);
-        // Aproximación documentada: iibb_determinado() calcula la base gravada sobre
-        // article_sale.price_sin_iva (neto de IVA), pero esta semilla no distingue precio con/sin
-        // IVA -- los montos de venta ya son "el total", no hay descomposición de IVA por línea.
-        // Usar ventas_netas como base gravada es la aproximación más razonable disponible acá; el
-        // prompt 06 compara contra esta misma cifra, así que el test sigue siendo consistente
-        // consigo mismo aunque no sea matemáticamente idéntico a iibb_determinado() al centavo.
-        $iibb_estimado = round($ventas_netas * self::IIBB_FRACCION, 2);
+        /*
+         * IIBB, con la MISMA base que usa el reporte, no con el total facturado.
+         *
+         * `ContabilidadRepository::iibb_determinado()` no aplica la alícuota sobre lo vendido: la
+         * aplica sobre `SUM(article_sale.price_sin_iva * article_sale.amount)`, o sea sobre la base
+         * NETA de IVA. Y `price_sin_iva` lo escribe `SaleHelper::get_price_sin_iva()`, que hace
+         * `price / (1 + iva/100)` con el `iva_id` del artículo -- los del catálogo de la semilla van
+         * con `iva_id => 2`, que es 21% (ver `IVA_ALICUOTA`). O sea: la base gravada del mes es
+         * `ventas_brutas / 1,21`, no `ventas_brutas`.
+         *
+         * Y es sobre las BRUTAS, no sobre las netas: la devolución de esta semilla es una nota de
+         * crédito (`SemillaHelper::devolucion()` -> `CurrentAcountHelper::notaCredito()`), que
+         * escribe `article_current_acount`; las líneas de `article_sale` de la venta original
+         * quedan intactas y siguen entrando enteras en la base de IIBB.
+         *
+         * Lo único que queda de aproximación es el redondeo: `get_price_sin_iva()` redondea el
+         * precio unitario a 2 decimales antes de multiplicar por las unidades, así que sobre las
+         * ~500 ventas del año el reporte puede quedar unos pocos pesos por debajo de este número.
+         * Lo que había antes no era eso: era un 21% fijo de más, todos los meses.
+         */
+        $iibb_estimado = round(
+            ($ventas_brutas_mes / (1 + (self::IVA_ALICUOTA / 100))) * self::IIBB_FRACCION,
+            2
+        );
 
-        $saldo_por_caja = []; // nombre_metodo => monto
+        $saldo_por_caja = []; // nombre_metodo => monto (ingresos MENOS egresos)
+        /*
+         * Ingresos brutos por método de pago, sin restar un solo egreso. Va aparte de
+         * `$saldo_por_caja` porque la comisión de cobro se cobra SOLO sobre lo que entra:
+         * `MovimientoCajaHelper::crear_movimiento()` enciende `aplica_liquidacion` únicamente
+         * cuando `$data['ingreso'] > 0` (línea 37 de ese archivo), así que un egreso -- por
+         * ejemplo un pago a proveedor por Mercado Pago -- nunca liquida ni genera comisión.
+         */
+        $ingresos_por_caja = []; // nombre_metodo => ingresos del mes
+        /*
+         * Lo mismo pero indexado por caja REAL. Lo necesita el barrido de efectivo de `handle()`:
+         * las cuatro cajas de efectivo comparten la clave 'efectivo' de la planilla, y para no
+         * barrer más plata de la que hay en el mostrador de una sucursal puntual hace falta saber
+         * cuánto tiene ESA caja, no las cuatro sumadas.
+         */
+        $saldo_por_caja_id = []; // caja_id => saldo (ingresos MENOS egresos)
         $saldo_por_cliente_delta = []; // client_id => delta de deuda (ventas_cc - cobranzas - devoluciones)
         $saldo_por_proveedor_delta = []; // provider_id => delta de deuda (compras - pagos)
 
@@ -571,6 +722,8 @@ class SembrarDatosDePrueba extends Command
                 }
 
                 $saldo_por_caja[$parte['clave']] = ($saldo_por_caja[$parte['clave']] ?? 0) + $parte['monto'];
+                $ingresos_por_caja[$parte['clave']] = ($ingresos_por_caja[$parte['clave']] ?? 0) + $parte['monto'];
+                $saldo_por_caja_id[$parte['caja_id']] = ($saldo_por_caja_id[$parte['caja_id']] ?? 0) + $parte['monto'];
             }
 
             if (is_null($address_id)) {
@@ -594,7 +747,7 @@ class SembrarDatosDePrueba extends Command
                 'articulo_id' => $renglon['articulo_id'],
                 'unidades'    => $renglon['unidades'],
                 'facturar'    => $facturar,
-                'importe_iva' => round($monto * 0.21, 2),
+                'importe_iva' => round($monto * (self::IVA_ALICUOTA / 100), 2),
                 // Sin cliente no hay condición de IVA que mirar: una venta de mostrador se factura B.
                 'cbte_letra'  => 'B',
                 'cbte_tipo'   => '6',
@@ -630,7 +783,7 @@ class SembrarDatosDePrueba extends Command
                 'articulo_id' => $renglon['articulo_id'],
                 'unidades'    => $renglon['unidades'],
                 'facturar'    => $facturar,
-                'importe_iva' => round($monto * 0.21, 2),
+                'importe_iva' => round($monto * (self::IVA_ALICUOTA / 100), 2),
                 'cbte_letra'  => $comprobante['cbte_letra'],
                 'cbte_tipo'   => $comprobante['cbte_tipo'],
             ]);
@@ -652,7 +805,7 @@ class SembrarDatosDePrueba extends Command
                 // sembrar_cheques_con_ciclo() tenga suficientes cheques para sus 4 estados aun
                 // con --meses=1: un único cheque por mes no alcanza para cobrado + rechazado +
                 // endosado + en cartera.
-                $montos_cheque = ReportesMesSeeder::distribuir((int) $monto_metodo, self::CANT_REGISTROS);
+                $montos_cheque = $this->repartir_en_registros($monto_metodo, self::CANT_REGISTROS);
 
                 foreach ($montos_cheque as $indice_cheque => $monto_cheque) {
                     if ($monto_cheque <= 0) {
@@ -680,6 +833,8 @@ class SembrarDatosDePrueba extends Command
                     ]);
 
                     $saldo_por_caja['cheques'] = ($saldo_por_caja['cheques'] ?? 0) + $monto_cheque;
+                    $ingresos_por_caja['cheques'] = ($ingresos_por_caja['cheques'] ?? 0) + $monto_cheque;
+                    $saldo_por_caja_id[$caja_id] = ($saldo_por_caja_id[$caja_id] ?? 0) + $monto_cheque;
                     $saldo_por_cliente_delta[$cliente->id] = ($saldo_por_cliente_delta[$cliente->id] ?? 0) - $monto_cheque;
                 }
 
@@ -699,12 +854,14 @@ class SembrarDatosDePrueba extends Command
 
             $nombre = self::CLAVE_POR_METODO[$metodo_id];
             $saldo_por_caja[$nombre] = ($saldo_por_caja[$nombre] ?? 0) + $monto_metodo;
+            $ingresos_por_caja[$nombre] = ($ingresos_por_caja[$nombre] ?? 0) + $monto_metodo;
+            $saldo_por_caja_id[$caja_id] = ($saldo_por_caja_id[$caja_id] ?? 0) + $monto_metodo;
             $saldo_por_cliente_delta[$cliente->id] = ($saldo_por_cliente_delta[$cliente->id] ?? 0) - $monto_metodo;
         }
 
         // --- Devoluciones, repartidas entre clientes con ventas CC este mes ---------------------
         $montos_devoluciones = $devoluciones_total > 0
-            ? ReportesMesSeeder::distribuir((int) $devoluciones_total, self::CANT_REGISTROS)
+            ? $this->repartir_en_registros($devoluciones_total, self::CANT_REGISTROS)
             : [];
 
         foreach ($montos_devoluciones as $indice => $monto) {
@@ -722,7 +879,7 @@ class SembrarDatosDePrueba extends Command
         }
 
         // --- Compras a proveedores, repartidas entre los proveedores ----------------------------
-        $montos_compras = ReportesMesSeeder::distribuir((int) $compras_total, self::CANT_REGISTROS);
+        $montos_compras = $this->repartir_en_registros($compras_total, self::CANT_REGISTROS);
         $compras_facturadas = 0;
 
         foreach ($montos_compras as $indice => $monto) {
@@ -747,14 +904,14 @@ class SembrarDatosDePrueba extends Command
                 // Comprobante de compra: base para iva_credito()/percepciones/retenciones. IVA al
                 // 21% sobre el monto (alícuota general, no configurable acá -- esta semilla no
                 // modela percepciones/retenciones reales, quedan en 0 a propósito).
-                'importe_iva' => round($monto * 0.21, 2),
+                'importe_iva' => round($monto * (self::IVA_ALICUOTA / 100), 2),
             ]);
 
             $saldo_por_proveedor_delta[$proveedor->id] = ($saldo_por_proveedor_delta[$proveedor->id] ?? 0) + $monto;
         }
 
         // --- Pagos a proveedores, repartidos entre los 10 proveedores y por método de pago -----
-        $montos_pagos_prov = ReportesMesSeeder::distribuir((int) $pagos_proveedores_total, self::CANT_REGISTROS);
+        $montos_pagos_prov = $this->repartir_en_registros($pagos_proveedores_total, self::CANT_REGISTROS);
 
         foreach ($montos_pagos_prov as $indice => $monto) {
             if ($monto <= 0) {
@@ -783,10 +940,13 @@ class SembrarDatosDePrueba extends Command
             // incluye explícitamente "4.000.000 a proveedores".
             $nombre_metodo_pago = self::CLAVE_POR_METODO[$metodo_id];
             $saldo_por_caja[$nombre_metodo_pago] = ($saldo_por_caja[$nombre_metodo_pago] ?? 0) - $monto;
+            $saldo_por_caja_id[$caja_id] = ($saldo_por_caja_id[$caja_id] ?? 0) - $monto;
+            // 🔴 A propósito NO toca `$ingresos_por_caja`: esto es un EGRESO y un egreso nunca paga
+            // comisión (ver el comentario de la declaración de esa variable).
         }
 
         // --- Gastos operativos, repartidos entre los 4 registros --------------------------------
-        $montos_gastos = ReportesMesSeeder::distribuir((int) $gastos_total, self::CANT_REGISTROS);
+        $montos_gastos = $this->repartir_en_registros($gastos_total, self::CANT_REGISTROS);
 
         foreach ($montos_gastos as $indice => $monto) {
             if ($monto <= 0) {
@@ -799,14 +959,17 @@ class SembrarDatosDePrueba extends Command
             $metodos_gasto = [];
 
             if ($indice % 2 === 0) {
+                $caja_id_gasto = $this->semilla->caja_para(3, $primer_address_id);
+
                 $metodos_gasto = [
                     [
                         'current_acount_payment_method_id' => 3,
                         'amount'                           => $monto,
-                        'caja_id'                          => $this->semilla->caja_para(3, $primer_address_id),
+                        'caja_id'                          => $caja_id_gasto,
                     ],
                 ];
                 $saldo_por_caja['efectivo'] = ($saldo_por_caja['efectivo'] ?? 0) - $monto;
+                $saldo_por_caja_id[$caja_id_gasto] = ($saldo_por_caja_id[$caja_id_gasto] ?? 0) - $monto;
             }
 
             $operaciones[] = $this->operacion($fecha, 'gasto', [
@@ -842,7 +1005,10 @@ class SembrarDatosDePrueba extends Command
             // y sin movimiento de caja (el saldo sigue siendo el bruto), y
             // `ContabilidadRepository::query_gastos()` excluye por id los gastos referenciados
             // desde `movimiento_cajas.comision_expense_id`. Va como renglón informativo aparte.
-            'comision_mercado_pago' => $this->comision_estimada(6, $saldo_por_caja),
+            //
+            // Se calcula sobre los INGRESOS del mes (no sobre el saldo neto) y CON IVA, que es lo
+            // que informa `ContabilidadRepository::comisiones_de_cobro()`. Ver `comision_estimada()`.
+            'comision_mercado_pago' => $this->comision_estimada(6, $ingresos_por_caja),
             'entra_a_caja'         => $entra_a_caja_total,
             'iibb_estimado'        => $iibb_estimado,
             'saldo_por_caja'       => $saldo_por_caja,
@@ -850,7 +1016,15 @@ class SembrarDatosDePrueba extends Command
             'delta_deuda_por_proveedor' => $saldo_por_proveedor_delta,
         ];
 
-        return ['operaciones' => $operaciones, 'control' => $control];
+        // `saldo_por_caja_id` va FUERA de `$control` a propósito: es un dato de trabajo para el
+        // barrido de efectivo de `handle()` (que necesita el saldo de cada caja física), no un
+        // renglón que Lucas vaya a verificar contra un reporte. La planilla sigue mostrando el
+        // desglose por MÉTODO, que es como se lee un reporte de caja.
+        return [
+            'operaciones'       => $operaciones,
+            'control'           => $control,
+            'saldo_por_caja_id' => $saldo_por_caja_id,
+        ];
     }
 
     /**
@@ -1081,21 +1255,49 @@ class SembrarDatosDePrueba extends Command
     }
 
     /**
-     * Comisión que le va a cobrar la caja de un método de pago sobre lo que entró por él este mes.
+     * Comisión que le va a cobrar la caja de un método de pago sobre lo que ENTRÓ por él este mes,
+     * IVA incluido -- o sea, exactamente el número que después va a mostrar el reporte.
      *
-     * El porcentaje se lee de la caja real (`cajas.comision_porcentaje`), nunca del 5% hardcodeado:
-     * el número lo configura `CajaSeeder` y una demo con otra configuración tiene que ver su propio
-     * número en la planilla. Sin configuración, la comisión es 0 (que es lo que hace
-     * `CajaLiquidacionHelper::tiene_configuracion()`).
+     * Tres correspondencias con el código de producción, cada una verificada en su archivo:
+     *
+     * 1) La base son los INGRESOS del mes, no el saldo neto de la caja.
+     *    `MovimientoCajaHelper::crear_movimiento()` arma `$aplica_liquidacion` exigiendo
+     *    `$data['ingreso'] > 0` (línea 37): un egreso no liquida y no genera comisión. Como el
+     *    guion paga proveedores por Mercado Pago, calcular la comisión sobre el saldo (ingresos
+     *    menos esos pagos) la informaba muy de menos.
+     *
+     * 2) El número lleva IVA. `crear_gasto_comision()` (MovimientoCajaHelper:165-171) crea el
+     *    `Expense` con `amount = comision + calcular_iva_comision(...)` cuando la comisión está
+     *    configurada NETA -- y neta es lo que hay: `CajaSeeder` no lista `comision_iva_incluido`
+     *    en el insert justamente para que quede el default de columna (0 = neta, alícuota 21).
+     *    `ContabilidadRepository::comisiones_de_cobro()` suma `expenses.amount`, así que el
+     *    reporte muestra la comisión CON IVA. Si mañana alguien configura la caja con IVA
+     *    incluido, `crear_gasto_comision()` deja `amount = comision` pelada y este método también:
+     *    por eso se pregunta por la configuración en vez de multiplicar por 1,21 a mano.
+     *
+     * 3) Sin `expense_concept_id` no hay `Expense` (MovimientoCajaHelper:159-163 solo loguea un
+     *    warning), y entonces el reporte informa CERO por más que el movimiento tenga su
+     *    `comision_calculada`. La planilla tiene que decir lo mismo que el reporte, incluso
+     *    cuando el reporte dice cero.
+     *
+     * La configuración se lee con los mismos dos métodos del camino real
+     * (`CajaLiquidacionHelper::tiene_configuracion()` para decidir si corresponde,
+     * `resolve_config()` para los valores, con su cascada de overrides por método de pago), nunca
+     * del 5% hardcodeado ni leyendo las columnas de la caja a mano: una demo con otra
+     * configuración tiene que ver su propio número.
+     *
+     * Única aproximación que queda: acá se redondea una vez sobre el total del mes y en producción
+     * se redondea movimiento por movimiento, así que sobre las ~150 operaciones de un mes puede
+     * haber unos centavos de diferencia.
      *
      * @param int $metodo_id
-     * @param array<string,float> $saldo_por_caja
+     * @param array<string,float> $ingresos_por_caja Ingresos del mes, por clave de la planilla.
      * @return float
      */
-    protected function comision_estimada($metodo_id, $saldo_por_caja)
+    protected function comision_estimada($metodo_id, $ingresos_por_caja)
     {
         $clave = self::CLAVE_POR_METODO[$metodo_id];
-        $ingresos = isset($saldo_por_caja[$clave]) ? (float) $saldo_por_caja[$clave] : 0.0;
+        $ingresos = isset($ingresos_por_caja[$clave]) ? (float) $ingresos_por_caja[$clave] : 0.0;
 
         if ($ingresos <= 0) {
             return 0.0;
@@ -1103,11 +1305,211 @@ class SembrarDatosDePrueba extends Command
 
         $caja = Caja::find($this->semilla->caja_para($metodo_id, $this->addresses->first()->id));
 
-        if (is_null($caja) || is_null($caja->comision_porcentaje)) {
+        if (is_null($caja) || !CajaLiquidacionHelper::tiene_configuracion($caja, $metodo_id)) {
             return 0.0;
         }
 
-        return round($ingresos * ((float) $caja->comision_porcentaje / 100), 2);
+        $config = CajaLiquidacionHelper::resolve_config($caja, $metodo_id);
+
+        if (is_null($config['comision_porcentaje']) || (float) $config['comision_porcentaje'] <= 0) {
+            return 0.0;
+        }
+
+        if (is_null($config['expense_concept_id'])) {
+            return 0.0;
+        }
+
+        $comision = round($ingresos * ((float) $config['comision_porcentaje'] / 100), 2);
+
+        if (!empty($config['comision_iva_incluido'])) {
+            return $comision;
+        }
+
+        $iva = CajaLiquidacionHelper::calcular_iva_comision($comision, $config['comision_iva_alicuota'], false);
+
+        return round($comision + $iva, 2);
+    }
+
+    /**
+     * Reparte un total entre `$cantidad` partes con la variación aleatoria de
+     * `ReportesMesSeeder::distribuir()`, garantizando que ninguna parte salga NEGATIVA.
+     *
+     * 🔴 El problema: `distribuir()` sortea un factor en [0,60; 1,40] para las primeras `n-1`
+     * partes y le da a la última la DIFERENCIA contra el total. Si los tres primeros factores suman
+     * más de 4,0, la última parte sale NEGATIVA -- y como los cinco loops que la consumen la
+     * saltean (`if ($monto <= 0) continue;`), lo que queda sembrado son las tres partes positivas,
+     * o sea MÁS plata que el total que informa la planilla. Peor caso medido con los tres factores
+     * en 1,40 sobre las devoluciones del mes actual (1.490.000): partes
+     * [521.500, 521.500, 521.500, −74.500], se siembran 1.564.500 y la planilla sigue diciendo
+     * 1.490.000. Son 1.540 de las 531.441 combinaciones de `mt_rand(60, 140)` = 0,29% por llamada;
+     * con ~45 llamadas por corrida, 12% de las corridas pegan al menos una. Y con
+     * `semilla.semilla_aleatoria` fija es determinista: o le pega siempre o nunca.
+     *
+     * De las dos salidas posibles se elige NORMALIZAR el reparto, y no informar en el control lo
+     * efectivamente sembrado, porque el daño no es solo de la planilla: en el ejemplo de arriba el
+     * mes siembra 1.564.500 de devoluciones en vez del 10% de las brutas que promete
+     * `DEVOLUCIONES_FRACCION`, y el ancla "ventas_netas = 90% de ventas_brutas" se cae igual -- esa
+     * la mide `4_Semilla_Test.php::ventas_netas_son_el_noventa_por_ciento_de_las_brutas()`
+     * comparando el REPORTE contra sí mismo, sin mirar la planilla, así que un control honesto no
+     * la salva. Normalizar arregla las dos cosas de una.
+     *
+     * La normalización cae a `repartir_monto_en_ventas()`, el reparto exacto en partes iguales que
+     * este mismo archivo ya usa para las ventas: suma exactamente el mismo entero, nunca da una
+     * parte negativa y -- clave -- no consume ni un `mt_rand()` de más, porque `distribuir()` ya
+     * sorteó los suyos antes de que miremos el resultado. O sea que el resto de la corrida sigue
+     * siendo bit a bit la misma. Se pierde la variación entre partes en esa única llamada de cada
+     * ~400, que es un precio barato.
+     *
+     * El arreglo va del lado del consumidor porque `ReportesMesSeeder` está fuera de alcance (lo
+     * comparten los seeders viejos).
+     *
+     * @param float|int $total
+     * @param int $cantidad
+     * @return array<int,int>
+     */
+    protected function repartir_en_registros($total, $cantidad)
+    {
+        $total = (int) $total;
+
+        $partes = ReportesMesSeeder::distribuir($total, $cantidad);
+
+        foreach ($partes as $parte) {
+            if ($parte < 0) {
+                return $this->repartir_monto_en_ventas($total, $cantidad);
+            }
+        }
+
+        return $partes;
+    }
+
+    /**
+     * Barrido de efectivo del cierre de mes: parte del efectivo de cada sucursal viaja a la Caja
+     * Fuerte, y parte de la Caja Fuerte sigue al Banco Nación.
+     *
+     * 🔴 Por qué existe: `MEZCLA_COBRO` usa los métodos 3/4/6/1 y el método 4 pasó a la caja
+     * "Transferencias" (ver `CajaSeeder`), así que "Banco Nación" y "Caja Fuerte" -- dos cajas que
+     * Lucas pidió por nombre -- terminaban la corrida con saldo 0 y ~350 aperturas vacías. En una
+     * demo se ven como cajas muertas. La plata llega por el camino real
+     * (`MovimientoEntreCajaHelper`, que es como se mueve plata entre cajas en producción) y NO
+     * metiéndolas en `MEZCLA_COBRO`, que le cambiaría la aritmética a lo que verifica
+     * `4_Semilla_Test.php`. Por el mismo motivo la caja "Tarjetas" queda como está: nadie la pidió.
+     *
+     * 🔴 Se saca un PORCENTAJE del saldo acumulado de cada caja, nunca un monto fijo: con un monto
+     * fijo, los primeros meses de la rampa (4 ventas, 400.000 brutas) dejarían la caja de la
+     * sucursal en negativo. Y si el saldo planificado de una caja ya viene en cero o en negativo,
+     * esa caja no barre nada ese mes.
+     *
+     * ⚠️ Eso último NO es hipotético: la caja de efectivo de la sucursal 1 arranca cada mes en
+     * negativo, porque `planificar_mes()` le manda TODOS los egresos de efectivo (los gastos
+     * pagados y los pagos a proveedor salen siempre de `caja_para(3, $primer_address_id)`) mientras
+     * le entra solo el 40% del mostrador en efectivo más las cobranzas de cuenta corriente. Es una
+     * condición previa a este barrido -- el desbalance ya estaba -- y el `continue` de abajo hace
+     * que el barrido no la empeore. Si algún día se reparten esos egresos entre las cuatro
+     * sucursales, esta caja va a empezar a barrer sola, sin tocar nada de acá.
+     *
+     * Las dos operaciones se planifican con `operacion()`, o sea que entran al mismo flujo
+     * cronológico que el resto y cuelgan de la apertura del día que corresponde. El
+     * `orden_operacion` creciente garantiza además que el tramo Caja Fuerte -> Banco se ejecute
+     * DESPUÉS de los cuatro tramos que la llenaron, aunque compartan el mismo instante.
+     *
+     * @param \Carbon\Carbon $fin_de_mes Último día del mes que cierra. El barrido va a las 20:30:
+     *                                    después de la última operación posible del día
+     *                                    (`fecha_en_rango()` nunca pasa de las 19:59) y antes del
+     *                                    cierre de cajas de las 22:00.
+     * @param array<int,float> $saldo_por_caja_id Saldo planificado hasta acá, por caja. Se ACTUALIZA
+     *                                             con lo que mueve este barrido (por referencia).
+     * @return array<int,array<string,mixed>>
+     */
+    protected function planificar_barrido_de_efectivo($fin_de_mes, &$saldo_por_caja_id)
+    {
+        $cajas = $this->cajas_del_barrido();
+
+        if (is_null($cajas['caja_fuerte']) || is_null($cajas['banco'])) {
+            return [];
+        }
+
+        $operaciones = [];
+        $fecha = $fin_de_mes->copy()->setTime(20, 30);
+        $caja_fuerte_id = $cajas['caja_fuerte'];
+        $a_caja_fuerte = 0;
+
+        foreach ($this->addresses as $address) {
+            $caja_id = $this->semilla->caja_para(3, $address->id);
+            $saldo = isset($saldo_por_caja_id[$caja_id]) ? (float) $saldo_por_caja_id[$caja_id] : 0.0;
+            $monto = (int) round($saldo * self::BARRIDO_A_CAJA_FUERTE_FRACCION);
+
+            if ($monto <= 0) {
+                continue;
+            }
+
+            $operaciones[] = $this->operacion($fecha, 'movimiento_entre_cajas', [
+                'from_caja_id' => $caja_id,
+                'to_caja_id'   => $caja_fuerte_id,
+                'monto'        => $monto,
+            ]);
+
+            $saldo_por_caja_id[$caja_id] = $saldo - $monto;
+            $saldo_por_caja_id[$caja_fuerte_id] = (isset($saldo_por_caja_id[$caja_fuerte_id]) ? $saldo_por_caja_id[$caja_fuerte_id] : 0) + $monto;
+            $a_caja_fuerte += $monto;
+        }
+
+        $saldo_caja_fuerte = isset($saldo_por_caja_id[$caja_fuerte_id]) ? (float) $saldo_por_caja_id[$caja_fuerte_id] : 0.0;
+        $a_banco = (int) round($saldo_caja_fuerte * self::BARRIDO_A_BANCO_FRACCION);
+
+        if ($a_banco > 0) {
+            $operaciones[] = $this->operacion($fecha, 'movimiento_entre_cajas', [
+                'from_caja_id' => $caja_fuerte_id,
+                'to_caja_id'   => $cajas['banco'],
+                'monto'        => $a_banco,
+            ]);
+
+            $saldo_por_caja_id[$caja_fuerte_id] = $saldo_caja_fuerte - $a_banco;
+            $saldo_por_caja_id[$cajas['banco']] = (isset($saldo_por_caja_id[$cajas['banco']]) ? $saldo_por_caja_id[$cajas['banco']] : 0) + $a_banco;
+        } else {
+            $a_banco = 0;
+        }
+
+        $this->resumen_barrido['movimientos'] += count($operaciones);
+        $this->resumen_barrido['de_efectivo_a_caja_fuerte'] += $a_caja_fuerte;
+        $this->resumen_barrido['de_caja_fuerte_a_banco'] += $a_banco;
+
+        return $operaciones;
+    }
+
+    /**
+     * Los `caja_id` de "Caja Fuerte" y "Banco Nación", resueltos por NOMBRE y memoizados.
+     *
+     * Por nombre, y no con `caja_para()` como todo el resto del comando, porque estas dos son
+     * justamente las cajas que NO son el default de ningún método de pago -- ese es el motivo por
+     * el que quedaban sin un solo movimiento, y no hay otro identificador estable para agarrarlas.
+     * Los nombres son los que escribe `CajaSeeder::una_caja_para_cada_direccion_y_por_cada_metodo_de_pago()`.
+     *
+     * Si la instalación no las tiene (otro `FOR_USER`, o la base de testing, que arma sus propias
+     * cajas) no se barre nada y se avisa: esto es una mejora de cómo se ve la demo, no una
+     * precondición de la aritmética.
+     *
+     * @return array{caja_fuerte: int|null, banco: int|null}
+     */
+    protected function cajas_del_barrido()
+    {
+        if (!is_null($this->memo_cajas_del_barrido)) {
+            return $this->memo_cajas_del_barrido;
+        }
+
+        $caja_fuerte = Caja::where('user_id', $this->user_id)->where('name', self::CAJA_FUERTE_NOMBRE)->first();
+        $banco = Caja::where('user_id', $this->user_id)->where('name', self::CAJA_BANCO_NOMBRE)->first();
+
+        if (is_null($caja_fuerte) || is_null($banco)) {
+            $this->avisar('No existen las cajas "'.self::CAJA_FUERTE_NOMBRE.'" y/o "'.self::CAJA_BANCO_NOMBRE
+                .'" para el usuario '.$this->user_id.': no se siembra el barrido de efectivo y esas cajas van a quedar sin movimientos.');
+        }
+
+        $this->memo_cajas_del_barrido = [
+            'caja_fuerte' => is_null($caja_fuerte) ? null : (int) $caja_fuerte->id,
+            'banco'       => is_null($banco) ? null : (int) $banco->id,
+        ];
+
+        return $this->memo_cajas_del_barrido;
     }
 
     /**
@@ -1216,10 +1618,19 @@ class SembrarDatosDePrueba extends Command
             $dia = $dia->copy()->addDay();
         }
 
+        $sembradas = $dias * $cajas->count();
+
+        // 🔴 `total` NO es `dias * cajas`: `preparar_aperturas_previas()` no BORRA las aperturas que
+        // ya estaban (las de `CajaSeeder`, una por caja), solo les mueve el `created_at` al día
+        // anterior al primer día sembrado. Siguen en la base, así que Lucas cuenta más filas de las
+        // que decía este renglón. Se informan las tres cosas por separado para que la diferencia se
+        // pueda leer sin ir al código.
         $this->resumen_aperturas = [
-            'dias'  => $dias,
-            'cajas' => $cajas->count(),
-            'total' => $dias * $cajas->count(),
+            'dias'      => $dias,
+            'cajas'     => $cajas->count(),
+            'sembradas' => $sembradas,
+            'previas'   => $this->aperturas_previas,
+            'total'     => $sembradas + $this->aperturas_previas,
         ];
 
         $this->avisar_stock_negativo();
@@ -1301,8 +1712,67 @@ class SembrarDatosDePrueba extends Command
                 $this->semilla->gasto($fecha, $datos['monto'], $this->expense_concept_id, $datos['metodos']);
                 break;
 
+            case 'movimiento_entre_cajas':
+                $this->ejecutar_movimiento_entre_cajas(
+                    $fecha,
+                    $datos['from_caja_id'],
+                    $datos['to_caja_id'],
+                    $datos['monto']
+                );
+                break;
+
             default:
                 throw new \Exception('semilla:datos: tipo de operación desconocido "'.$operacion['tipo'].'".');
+        }
+    }
+
+    /**
+     * Mueve plata de una caja a otra por el camino real: `MovimientoEntreCaja::create()` +
+     * `MovimientoEntreCajaHelper::mover()`, que es exactamente lo que hace
+     * `MovimientoEntreCajaController::store()`. El helper crea los DOS movimientos de caja (egreso
+     * en la de origen, ingreso en la de destino) con el concepto 5, "Movimiento entre Cajas" de
+     * `ConceptoMovimientoCajaSeeder`, así que los saldos de las dos cajas quedan consistentes sin
+     * armar un `MovimientoCaja` a mano.
+     *
+     * No está en `SemillaHelper` como el resto de las primitivas porque `SemillaHelper` está fuera
+     * de alcance de este arreglo; si mañana hace falta mover plata entre cajas desde otro lado,
+     * este método es el candidato obvio a mudarse allá.
+     *
+     * El reloj se mueve igual que en las primitivas de `SemillaHelper`, y se restaura en un
+     * `finally`: `MovimientoCajaHelper::crear_movimiento()` no acepta una fecha, fecha con
+     * `Carbon::now()`, y sin esto los dos movimientos colgarían de la apertura de HOY en vez de la
+     * del día del barrido -- justo el invariante que el pedido 8 vino a arreglar.
+     *
+     * @param \Carbon\Carbon $fecha
+     * @param int $from_caja_id
+     * @param int $to_caja_id
+     * @param float|int $monto
+     * @return void
+     */
+    protected function ejecutar_movimiento_entre_cajas($fecha, $from_caja_id, $to_caja_id, $monto)
+    {
+        Carbon::setTestNow(Carbon::parse($fecha));
+
+        try {
+            $ultimo_num = DB::table('movimiento_entre_cajas')->where('user_id', $this->user_id)->max('num');
+
+            $movimiento = MovimientoEntreCaja::create([
+                'num'          => is_null($ultimo_num) ? 1 : ((int) $ultimo_num) + 1,
+                'from_caja_id' => $from_caja_id,
+                'to_caja_id'   => $to_caja_id,
+                'amount'       => $monto,
+                // La columna es NOT NULL (migración 2024_09_20_093603) y el controller real le pasa
+                // `$this->userId(false)`. En consola no hay empleado logueado, pero
+                // `DeleteModelsHelper::setup_auth_context()` ya dejó al owner autenticado y
+                // `UserHelper::userId(false)` cae igual a `config('app.USER_ID')` si no lo hubiera.
+                'employee_id'  => UserHelper::userId(false),
+                'user_id'      => $this->user_id,
+                'created_at'   => Carbon::now(),
+            ]);
+
+            (new MovimientoEntreCajaHelper())->mover($movimiento);
+        } finally {
+            Carbon::setTestNow(null);
         }
     }
 
@@ -1325,6 +1795,11 @@ class SembrarDatosDePrueba extends Command
     protected function preparar_aperturas_previas($cajas, $primer_dia)
     {
         $momento = $primer_dia->copy()->subDay()->setTime(8, 0)->format('Y-m-d H:i:s');
+
+        // Se cuentan ANTES de tocar nada y sin filtrar por fecha: son las filas que van a quedar en
+        // la base ADEMÁS de las que siembra esta corrida, y `resumen_aperturas.total` tiene que
+        // incluirlas o la planilla informa menos aperturas de las que Lucas va a contar.
+        $this->aperturas_previas = AperturaCaja::whereIn('caja_id', $cajas->pluck('id')->all())->count();
 
         foreach ($cajas as $caja) {
             AperturaCaja::where('caja_id', $caja->id)
@@ -1712,6 +2187,33 @@ class SembrarDatosDePrueba extends Command
             }
         }
 
+        // 🔴 Esas cobranzas de cierre además CANCELAN deuda: `cancelar_saldos()` cobra el saldo
+        // pendiente de cada cliente que también es Buyer, por el camino real. Sumarlas a la caja y
+        // no restarlas de la deuda dejaba a la planilla informando deuda de clientes que en la base
+        // ya están en cero (12 de 25 en la corrida completa). El detalle por cliente ahora viene en
+        // el resumen del helper (`por_cliente`), que es el dato que antes faltaba.
+        if (isset($actividad_tienda['cobranzas_de_cierre']['por_cliente'])) {
+            foreach ($actividad_tienda['cobranzas_de_cierre']['por_cliente'] as $client_id => $monto) {
+                $deuda_por_cliente[$client_id] = ($deuda_por_cliente[$client_id] ?? 0) - $monto;
+            }
+        }
+
+        // El barrido de efectivo del cierre de mes (ver `planificar_barrido_de_efectivo()`) mueve
+        // plata ENTRE cajas: baja el efectivo del mostrador y sube Caja Fuerte y Banco Nación. Va
+        // acá y no en el renglón de cada mes porque se planifica en `handle()`, fuera de la
+        // aritmética mensual.
+        if ($this->resumen_barrido['movimientos'] > 0) {
+            $saldo_por_caja_total['efectivo'] = ($saldo_por_caja_total['efectivo'] ?? 0)
+                - $this->resumen_barrido['de_efectivo_a_caja_fuerte'];
+
+            $saldo_por_caja_total[self::CLAVE_CAJA_FUERTE] = ($saldo_por_caja_total[self::CLAVE_CAJA_FUERTE] ?? 0)
+                + $this->resumen_barrido['de_efectivo_a_caja_fuerte']
+                - $this->resumen_barrido['de_caja_fuerte_a_banco'];
+
+            $saldo_por_caja_total[self::CLAVE_CAJA_BANCO] = ($saldo_por_caja_total[self::CLAVE_CAJA_BANCO] ?? 0)
+                + $this->resumen_barrido['de_caja_fuerte_a_banco'];
+        }
+
         $control = [
             'parametros' => [
                 'meses_atras'              => $meses_atras,
@@ -1724,14 +2226,13 @@ class SembrarDatosDePrueba extends Command
             'meses'                    => $control_meses,
             'hoy'                      => $control_hoy,
             'saldo_esperado_por_caja'  => $saldo_por_caja_total,
-            // ⚠️ `deuda_esperada_por_cliente` NO descuenta las cobranzas de cierre de tienda: el
-            // resumen de `ActividadTiendaHelper` trae el total y la cantidad de clientes, pero no el
-            // detalle por cliente. El monto está en `actividad_tienda.cobranzas_de_cierre.monto`.
+            // Ya descuenta las cobranzas de cierre de tienda, cliente por cliente (ver más arriba).
             'deuda_esperada_por_cliente'   => $deuda_por_cliente,
             'deuda_esperada_por_proveedor' => $deuda_por_proveedor,
             'cheques_por_estado'       => $ciclo_cheques,
             'presupuestos_por_estado'  => $presupuestos,
             'aperturas_de_caja'        => $this->resumen_aperturas,
+            'barrido_de_efectivo'      => $this->resumen_barrido,
             'perfiles_de_stock'        => $this->resumen_de_perfiles_de_stock(),
             'actividad_tienda'         => $actividad_tienda,
         ];
@@ -1768,6 +2269,7 @@ class SembrarDatosDePrueba extends Command
         $this->line('Cheques: '.json_encode($ciclo_cheques));
         $this->line('Presupuestos: '.json_encode($presupuestos));
         $this->line('Aperturas de caja: '.json_encode($this->resumen_aperturas));
+        $this->line('Barrido de efectivo: '.json_encode($this->resumen_barrido));
     }
 
     /**
@@ -1911,6 +2413,11 @@ class SembrarDatosDePrueba extends Command
             if (count($caja_ids)) {
                 MovimientoCaja::whereIn('caja_id', $caja_ids)->delete();
                 AperturaCaja::whereIn('caja_id', $caja_ids)->delete();
+
+                // Los movimientos entre cajas del barrido de efectivo: sus dos MovimientoCaja ya se
+                // borraron en la línea de arriba, pero la cabecera vive en su propia tabla y sin
+                // esto dos corridas con --reset dejarían el doble de transferencias en la pantalla.
+                MovimientoEntreCaja::where('user_id', $user_id)->delete();
 
                 Caja::whereIn('id', $caja_ids)->update([
                     'saldo'                    => 0,
