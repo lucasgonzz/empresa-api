@@ -43,6 +43,25 @@ use Illuminate\Support\Facades\DB;
 class SemillaHelper
 {
     /**
+     * Plazo de pago, en días, con el que se siembra cada venta a cuenta corriente.
+     *
+     * 🔴 No es cosmético: es lo único que separa "deuda" de "deuda VENCIDA" en todo el sistema.
+     * `SaleController::ventas_sin_cobrar()` y `HistorialCrediticioService::malos_pagadores()`
+     * cuentan la antigüedad con
+     * `COALESCE(sales.dias_alerta_venta_no_cobrada_personalizado, users.dias_alertar_administradores_ventas_no_cobradas)`,
+     * y `UserSeeder` deja esa columna del usuario en 1 -- o sea que, sin este plazo, una venta de
+     * AYER ya está vencida: la pantalla de ventas sin cobrar alerta absolutamente todo y el motor
+     * de ofertas descarta a cualquier cliente que deba un peso. Treinta días es el plazo con el que
+     * un comercio vende a cuenta corriente, y es el que hace que la demo distinga un cliente al día
+     * de uno moroso.
+     *
+     * No se toca `UserSeeder` para conseguir lo mismo: ese seeder lo comparten todas las instancias
+     * y bajarle los días de alerta le cambiaría el comportamiento a comercios que no tienen nada
+     * que ver con la demo.
+     */
+    const DIAS_DE_PLAZO_CUENTA_CORRIENTE = 30;
+
+    /**
      * Resumen acumulado de lo que se fue ejecutando (tipo de operación, fecha, monto, modelo
      * creado, métodos de pago usados). El comando del prompt 05 arma la planilla de control a
      * partir de esto.
@@ -167,6 +186,16 @@ class SemillaHelper
             ]);
 
             $sale = Sale::where('user_id', config('app.USER_ID'))->where('num', $num)->first();
+
+            // El plazo de pago va DESPUÉS del alta y no adentro de `SaleSeederHelper::create_sales()`
+            // porque ese helper es del camino real de producción (lo usa `vender`) y no le
+            // corresponde saber nada de la semilla. Sin timestamps para no pisar `updated_at` con
+            // algo distinto de lo que dejó el alta. Ver `DIAS_DE_PLAZO_CUENTA_CORRIENTE`.
+            if (!is_null($sale)) {
+                $sale->dias_alerta_venta_no_cobrada_personalizado = self::DIAS_DE_PLAZO_CUENTA_CORRIENTE;
+                $sale->timestamps = false;
+                $sale->save();
+            }
 
             $this->registrar('venta_cuenta_corriente', $fecha, $monto, $sale);
 

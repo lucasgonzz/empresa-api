@@ -10,6 +10,7 @@ use App\Models\BuyerTrackingEvent;
 use App\Models\Client;
 use App\Models\CreditAccount;
 use App\Models\User;
+use App\Services\OfertasClientes\HistorialCrediticioService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -283,7 +284,17 @@ class ActividadTiendaHelper
     }
 
     /**
-     * Paso 1 — deja en cero la cuenta corriente de los clientes que además compran por la tienda.
+     * Paso 1 — cancela la deuda VENCIDA de los clientes que además compran por la tienda.
+     *
+     * 🔴 VENCIDA, no toda (17/8/2026). Lo que hace que el motor de ofertas descarte a un cliente no
+     * es que deba plata: es que tenga una venta impaga MÁS VIEJA que su plazo de pago (ver
+     * `HistorialCrediticioService::malos_pagadores()`, y `SemillaHelper::DIAS_DE_PLAZO_CUENTA_CORRIENTE`
+     * para el plazo con el que se siembran esas ventas). Cancelar el saldo ENTERO dejaba a los 17
+     * clientes de tienda en cero pesos clavados, o sea a 17 de los 25 clientes de la demo sin una
+     * sola fila en el reporte de deudores ni en el módulo de cuentas corrientes. Cancelando solo lo
+     * vencido se consigue exactamente lo mismo para el motor de ofertas -- ninguno queda con una
+     * venta vencida impaga -- y la demo conserva la deuda del último mes, que es la que un comercio
+     * de verdad tiene abierta.
      *
      * Se cobra por efectivo y por la caja de la sucursal del cliente, con la fecha de HOY: es un
      * cobro de verdad, por el camino real (`SemillaHelper::cobro_cuenta_corriente()`), no un UPDATE
@@ -364,30 +375,99 @@ class ActividadTiendaHelper
     }
 
     /**
-     * Lo que hay que pagar para que no quede ni un débito abierto en esa cuenta.
+     * Lo que hay que pagar para que no quede ni un débito VENCIDO abierto en esa cuenta.
      *
-     * 🔴 Se suma `debe - pagandose` de los débitos pendientes y NO se lee `credit_accounts.saldo`, y
-     * la diferencia importa: el objetivo no es dejar el saldo en cero, es que ningún `current_acount`
-     * quede con `status` en `sin_pagar`/`pagandose`, que es lo ÚNICO que mira
-     * `HistorialCrediticioService::malos_pagadores()`. Esta suma es exactamente la que va a consumir
-     * `CurrentAcountPagoHelper::init()` imputando FIFO, así que alcanza justo y no sobra.
+     * 🔴 Se suma `debe - pagandose` de los débitos pendientes cuya venta ya pasó su plazo de pago, y
+     * NO se lee `credit_accounts.saldo`: el objetivo no es dejar el saldo en cero, es que ningún
+     * `current_acount` vencido quede con `status` en `sin_pagar`/`pagandose`, que es lo ÚNICO que
+     * mira `HistorialCrediticioService::malos_pagadores()`. La condición de antigüedad es copia
+     * literal de la de ese servicio (que a su vez la copió de `SaleController::ventas_sin_cobrar()`):
+     * el plazo sale de la venta y, si la venta no lo tiene, del parámetro del comercio.
+     *
+     * `CurrentAcountPagoHelper::init()` imputa FIFO, o sea del débito más viejo al más nuevo, y los
+     * vencidos son justamente los más viejos: pagar esta suma cancela exactamente esos y ni un peso
+     * de la deuda del último mes.
+     *
+     * Los débitos sin `sale_id` (notas de débito cargadas a mano) cuentan como vencidos: no tienen
+     * venta de la que sacar un plazo, y dejarlos afuera sería asumir que nunca vencen.
      *
      * No se filtra por `is_provisorio` a propósito: `CurrentAcountPagoHelper` tampoco lo hace al
      * armar sus débitos pendientes, y pedir menos plata de la que ese helper va a querer imputar
      * dejaría el último débito en `pagandose`.
+     *
+     * 🔴 Y NUNCA MÁS QUE EL SALDO REAL DE LA CUENTA (17/8/2026). Los dos números son el mismo
+     * mientras cada pago se haya imputado contra un débito que ya existía, pero no tienen por qué
+     * serlo: un cobro fechado ANTES de la venta que iba a pagar queda sin imputar, la venta se queda
+     * en `sin_pagar` para siempre y esta suma denuncia una deuda que el saldo ya no tiene. Cobrar
+     * ese fantasma dejaría al cliente con saldo A FAVOR, que es exactamente el defecto que se
+     * arregló del otro lado (ver `PERFIL_DE_PAGO` en `SembrarDatosDePrueba`). Se prefiere quedarse
+     * corto: en el peor caso el último débito queda en `pagandose` y ese cliente sigue contando como
+     * mal pagador para el motor de ofertas, que es un problema mucho más chico que inventar plata.
      *
      * @param int $credit_account_id
      * @return float
      */
     protected function deuda_pendiente($credit_account_id)
     {
+        $dias = $this->dias_de_alerta();
+
         $pendiente = DB::table('current_acounts')
-            ->where('credit_account_id', $credit_account_id)
-            ->whereIn('status', ['sin_pagar', 'pagandose'])
-            ->selectRaw('COALESCE(SUM(COALESCE(debe, 0) - COALESCE(pagandose, 0)), 0) as pendiente')
+            ->leftJoin('sales', 'sales.id', '=', 'current_acounts.sale_id')
+            ->where('current_acounts.credit_account_id', $credit_account_id)
+            ->whereIn('current_acounts.status', ['sin_pagar', 'pagandose'])
+            ->where(function ($sub) use ($dias) {
+                $sub->whereNull('current_acounts.sale_id')
+                    ->orWhereRaw(
+                        'DATE(`sales`.`created_at`) <= DATE_SUB(CURDATE(), INTERVAL COALESCE(`sales`.`dias_alerta_venta_no_cobrada_personalizado`, ?) DAY)',
+                        [$dias]
+                    );
+            })
+            ->selectRaw('COALESCE(SUM(COALESCE(current_acounts.debe, 0) - COALESCE(current_acounts.pagandose, 0)), 0) as pendiente')
             ->value('pendiente');
 
-        return round((float) $pendiente, 2);
+        $saldo = DB::table('current_acounts')
+            ->where('credit_account_id', $credit_account_id)
+            ->selectRaw('COALESCE(SUM(COALESCE(debe, 0)) - SUM(COALESCE(haber, 0)), 0) as saldo')
+            ->value('saldo');
+
+        $pendiente = round((float) $pendiente, 2);
+        $saldo = round((float) $saldo, 2);
+
+        if ($saldo < $pendiente) {
+            if ($saldo < $pendiente - 0.01) {
+                $this->avisos[] = 'La cuenta corriente '.$credit_account_id.' tiene '.$pendiente
+                    .' en débitos vencidos pendientes pero un saldo de '.$saldo
+                    .': se cobra el saldo y algún débito puede quedar en "pagandose".';
+            }
+
+            return $saldo;
+        }
+
+        return $pendiente;
+    }
+
+    /**
+     * Días a partir de los cuales una venta impaga cuenta como VENCIDA.
+     *
+     * Mismo criterio y mismo default que `HistorialCrediticioService::dias_de_alerta()`, que es el
+     * servicio cuyo resultado se está tratando de dejar en cero: si acá se usara otro número, se
+     * cancelaría de más (deuda que todavía no molestaba a nadie) o de menos (y el cliente seguiría
+     * siendo mal pagador después de haberle cobrado). Se lee la constante del propio servicio para
+     * que el default no quede escrito dos veces.
+     *
+     * @return int
+     */
+    protected function dias_de_alerta()
+    {
+        $user = User::find($this->user_id);
+
+        $dias = is_null($user) ? null : $user->dias_alertar_administradores_ventas_no_cobradas;
+
+        if (is_null($dias) || (int) $dias <= 0) {
+            return HistorialCrediticioService::DIAS_ALERTA_POR_DEFECTO;
+        }
+
+        return (int) $dias;
     }
 
     /**

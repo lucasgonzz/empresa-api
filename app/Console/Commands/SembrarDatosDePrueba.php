@@ -112,6 +112,38 @@ class SembrarDatosDePrueba extends Command
     /** Cobranza del mes, como fracción de las ventas a cuenta corriente del mismo mes. */
     const COBRANZA_CC_FRACCION = 0.80;
 
+    /**
+     * Perfil de pago de cada cliente: qué fracción de su deuda pendiente es capaz de pagar en UN
+     * mes. Rota por posición en el catálogo de clientes (`$this->clientes`, ordenado por `num`), o
+     * sea que el cliente N° 1 paga todo lo que debe, el N° 3 paga el 40%, el N° 8 no paga nunca, el
+     * N° 9 vuelve a pagar todo, y así.
+     *
+     * 🔴 POR QUÉ EXISTE, Y NO ES UN ADORNO (medido en `empresa_testing_s1` el 17/8/2026). Hasta
+     * esta corrida la cobranza del mes se repartía por ROTACIÓN: todo el balde de un método de pago
+     * iba a UN cliente elegido por `cliente_rotativo($metodo_id + $offset)`, sin mirar un solo peso
+     * de lo que ese cliente debía. Con 25 clientes comprando y 7 cobrados por mes, había clientes a
+     * los que se les cobraba cuatro veces lo que habían comprado: 8 de los 25 terminaban el año con
+     * saldo A FAVOR (hasta 3.434.436 pesos), se registraban 30.354.011 de cobranzas contra
+     * 26.158.000 de ventas, y el reporte de deudores no tenía una sola fila que mostrar.
+     *
+     * Y no alcanzaba con repartir bien: con `COBRANZA_CC_FRACCION` 0,80 más el arrastre del 20% del
+     * mes anterior se cobra, a lo largo del año, EXACTAMENTE todo lo vendido a cuenta corriente
+     * menos el 20% del último mes -- que es justo lo que se devuelve en notas de crédito
+     * (`DEVOLUCIONES_FRACCION` 0,10 de las brutas = 0,20 de las de cuenta corriente). O sea: aun
+     * con un reparto perfecto, el modelo converge a CERO deuda viva y el módulo de cuentas
+     * corrientes queda vacío. Lo que hace que quede deuda es que no todos los clientes pagan igual,
+     * que es además lo que pasa en un comercio de verdad.
+     *
+     * De cada ocho clientes: dos pagan todo lo que deben cada mes, uno no paga nunca (el deudor
+     * incobrable que el reporte tiene que mostrar) y los otros cinco pagan una parte.
+     *
+     * 🔴 Los dos primeros valores son 1,0 a propósito: `4_Semilla_Test.php` siembra un mes suelto
+     * de 400.000 con solo dos ventas a cuenta corriente (a las posiciones 0 y 1), y con esos dos
+     * clientes pagando al día la capacidad del mes (180.000) supera la cobranza pedida (160.000) --
+     * o sea que ese test sigue viendo exactamente los mismos números que antes de este cambio.
+     */
+    const PERFIL_DE_PAGO = [1.0, 0.8, 0.4, 1.0, 0.15, 0.6, 0.9, 0.0];
+
     /** Compras a proveedores, como fracción de las ventas brutas. */
     const COMPRAS_FRACCION = 0.50;
 
@@ -217,6 +249,20 @@ class SembrarDatosDePrueba extends Command
 
     /** @var \Illuminate\Support\Collection */
     protected $addresses;
+
+    /**
+     * Deuda de cuenta corriente que cada cliente arrastra EN LA PLANIFICACIÓN, mes a mes
+     * (client_id => saldo en pesos, siempre >= 0). No se consulta la base: la planificación de los
+     * doce meses corre entera antes de que se escriba una sola fila (ver `planificar_mes()`), así
+     * que la única forma de saber cuánto debe un cliente cuando se decide una cobranza es llevar la
+     * cuenta acá.
+     *
+     * Es lo que hace que no se le cobre a un cliente plata que nunca debió. Ver `PERFIL_DE_PAGO`
+     * para el porqué de todo esto.
+     *
+     * @var array<int,float>
+     */
+    protected $deuda_por_cliente = [];
 
     protected $expense_concept_id;
 
@@ -491,6 +537,12 @@ class SembrarDatosDePrueba extends Command
         $this->proveedores = Provider::where('user_id', $this->user_id)->orderBy('num')->get();
         $this->addresses = Address::where('user_id', $this->user_id)->orderBy('num')->get();
 
+        // El ledger de deuda arranca en cero en cada corrida. Se resetea acá y no en el constructor
+        // porque éste es el único punto por el que pasan los DOS caminos de entrada (`handle()` y
+        // `preparar_para_test()`), y porque un mismo proceso puede instanciar el comando dos veces
+        // (el `tearDown()` de `4_Semilla_Test.php` lo hace).
+        $this->deuda_por_cliente = [];
+
         if ($this->clientes->isEmpty()) {
             throw new \Exception('semilla:datos: no hay ningún Client para el usuario '.$this->user_id.'. ¿Corrió el prompt 01 (db:seed)?');
         }
@@ -655,10 +707,18 @@ class SembrarDatosDePrueba extends Command
         // `CriteriosDeOfertaService::excluir_malos_pagadores()` los descarta enteros, con lo cual
         // `ofertas:generar` devuelve cero líneas sin un solo error a la vista.
         $cobranza_arrastrada = round((float) $cobranza_arrastrada, 2);
-        $cobranza_cc_total = round($ventas_cc_total * self::COBRANZA_CC_FRACCION + $cobranza_arrastrada, 2);
+        /*
+         * 🔴 Esto es lo que la aritmética del mes PIDE cobrar, no lo que se cobra. Lo que se cobra
+         * es `$cobranza_cc_total`, y sale de cruzar este número con la deuda que los clientes
+         * REALMENTE tienen (`capacidad_de_cobro_del_mes()`), más abajo -- después de planificar las
+         * ventas a cuenta corriente del mes, que son parte de esa deuda.
+         *
+         * Antes del 17/8/2026 este número se cobraba tal cual, sin mirar deuda. Ver `PERFIL_DE_PAGO`
+         * para qué desastre producía eso.
+         */
+        $cobranza_cc_pedida = round($ventas_cc_total * self::COBRANZA_CC_FRACCION + $cobranza_arrastrada, 2);
         $compras_total = round($ventas_brutas_mes * self::COMPRAS_FRACCION, 2);
         $pagos_proveedores_total = round($compras_total * self::PAGOS_PROVEEDORES_FRACCION, 2);
-        $entra_a_caja_total = round($mostrador_total + $cobranza_cc_total, 2);
         /*
          * IIBB, con la MISMA base que usa el reporte, no con el total facturado.
          *
@@ -828,7 +888,20 @@ class SembrarDatosDePrueba extends Command
             ]);
 
             $saldo_por_cliente_delta[$cliente->id] = ($saldo_por_cliente_delta[$cliente->id] ?? 0) + $monto;
+            // La venta que se acaba de planificar ya es deuda cobrable de este mismo mes.
+            $this->deuda_por_cliente[$cliente->id] = round((isset($this->deuda_por_cliente[$cliente->id]) ? $this->deuda_por_cliente[$cliente->id] : 0) + $monto, 2);
         }
+
+        // --- Cuánto se puede cobrar este mes, y a quién ----------------------------------------
+        // Se arma DESPUÉS de las ventas del mes (la venta de hoy ya es deuda cobrable) y ANTES de
+        // las cobranzas. `$cobranza_cc_total` es el mínimo entre lo que la aritmética pide y lo que
+        // los clientes pueden pagar: nunca se cobra plata que nadie debe. Todo lo que se apoya en
+        // la cobranza -- el desglose por caja, `entra_a_caja`, la comisión de Mercado Pago -- se
+        // calcula desde acá, así que la planilla de control sigue describiendo exactamente lo que
+        // se sembró.
+        $capacidad_de_cobro = $this->capacidad_de_cobro_del_mes();
+        $cobranza_cc_total = min($cobranza_cc_pedida, round(array_sum($capacidad_de_cobro), 2));
+        $entra_a_caja_total = round($mostrador_total + $cobranza_cc_total, 2);
 
         // --- Cobranzas de cuenta corriente, repartidas por método de pago y por cliente --------
         foreach (self::MEZCLA_COBRO as $metodo_id => $fraccion) {
@@ -850,84 +923,112 @@ class SembrarDatosDePrueba extends Command
                     if ($monto_cheque <= 0) {
                         continue;
                     }
-                    $cliente = $this->cliente_rotativo($indice_cheque + $offset_rotacion);
-                    $fecha = $this->fecha_en_rango($inicio_mes, $dias_disponibles);
-                    $caja_id = $this->semilla->caja_para(1, $primer_address_id);
 
-                    $operaciones[] = $this->operacion($fecha, 'cobro_cuenta_corriente', [
-                        'monto'             => $monto_cheque,
-                        'client_id'         => $cliente->id,
-                        'registrar_cheque'  => true,
-                        'metodos'           => [
-                            [
-                                'current_acount_payment_method_id' => 1,
-                                'amount'                             => $monto_cheque,
-                                'caja_id'                            => $caja_id,
-                                'numero'                             => 'COB-'.$meses_atras.'-'.$indice_cheque.'-'.mt_rand(10000, 99999),
-                                'banco'                               => 'Banco Nación',
-                                'fecha_emision'                       => $fecha->format('Y-m-d'),
-                                'fecha_pago'                           => $fecha->copy()->addDays(30)->format('Y-m-d'),
+                    // 🔴 Cada registro de cheque se reparte entre los clientes que TIENEN esa
+                    // deuda, en vez de ir entero a un cliente rotativo. Lo normal es que el
+                    // registro entre completo en el primer cliente de la lista (es el 2,5% de la
+                    // cobranza del mes); si no entra, sigue con el siguiente. Ver `PERFIL_DE_PAGO`.
+                    foreach ($this->tomar_de_la_capacidad($monto_cheque, $capacidad_de_cobro) as $indice_parte => $parte) {
+                        $fecha = $this->fecha_en_rango($inicio_mes, $dias_disponibles);
+                        $caja_id = $this->semilla->caja_para(1, $primer_address_id);
+
+                        $operaciones[] = $this->operacion($fecha, 'cobro_cuenta_corriente', [
+                            'monto'             => $parte['monto'],
+                            'client_id'         => $parte['client_id'],
+                            'registrar_cheque'  => true,
+                            'metodos'           => [
+                                [
+                                    'current_acount_payment_method_id' => 1,
+                                    'amount'                             => $parte['monto'],
+                                    'caja_id'                            => $caja_id,
+                                    // El índice de la parte entra en el número para que dos cheques
+                                    // del mismo registro no puedan salir con el mismo número.
+                                    'numero'                             => 'COB-'.$meses_atras.'-'.$indice_cheque.'-'.$indice_parte.'-'.mt_rand(10000, 99999),
+                                    'banco'                               => 'Banco Nación',
+                                    'fecha_emision'                       => $fecha->format('Y-m-d'),
+                                    'fecha_pago'                           => $fecha->copy()->addDays(30)->format('Y-m-d'),
+                                ],
                             ],
-                        ],
-                    ]);
+                        ]);
 
-                    $saldo_por_caja['cheques'] = ($saldo_por_caja['cheques'] ?? 0) + $monto_cheque;
-                    $ingresos_por_caja['cheques'] = ($ingresos_por_caja['cheques'] ?? 0) + $monto_cheque;
-                    $saldo_por_caja_id[$caja_id] = ($saldo_por_caja_id[$caja_id] ?? 0) + $monto_cheque;
-                    $saldo_por_cliente_delta[$cliente->id] = ($saldo_por_cliente_delta[$cliente->id] ?? 0) - $monto_cheque;
+                        $saldo_por_caja['cheques'] = ($saldo_por_caja['cheques'] ?? 0) + $parte['monto'];
+                        $ingresos_por_caja['cheques'] = ($ingresos_por_caja['cheques'] ?? 0) + $parte['monto'];
+                        $saldo_por_caja_id[$caja_id] = ($saldo_por_caja_id[$caja_id] ?? 0) + $parte['monto'];
+                        $saldo_por_cliente_delta[$parte['client_id']] = ($saldo_por_cliente_delta[$parte['client_id']] ?? 0) - $parte['monto'];
+                    }
                 }
 
                 continue;
             }
 
-            $cliente = $this->cliente_rotativo($metodo_id + $offset_rotacion);
+            // Mismo criterio que los cheques: el balde del método se reparte entre los clientes que
+            // realmente deben, de mayor a menor deuda cobrable, y nunca por encima de lo que cada
+            // uno debe. La suma de las partes es EXACTAMENTE `$monto_metodo` (salvo que se acabe la
+            // capacidad del mes, que no puede pasar porque `$cobranza_cc_total` ya está topeado por
+            // ella), así que el desglose por caja del mes sigue siendo el que dice la planilla.
+            foreach ($this->tomar_de_la_capacidad($monto_metodo, $capacidad_de_cobro) as $parte) {
 
-            // El efectivo se reparte entre las cuatro cajas de mostrador; los otros métodos van a
-            // una caja compartida y no hay nada que repartir. Antes esta cobranza entraba entera a
-            // la caja de la sucursal 1, que es la misma que pagaba todos los egresos de efectivo.
-            $metodos_cobro = ($metodo_id === 3)
-                ? $this->metodos_de_efectivo_por_sucursal($monto_metodo)
-                : [
-                    [
-                        'current_acount_payment_method_id' => $metodo_id,
-                        'amount'                           => $monto_metodo,
-                        'caja_id'                          => $this->semilla->caja_para($metodo_id, $primer_address_id),
-                    ],
-                ];
+                // El efectivo se reparte entre las cuatro cajas de mostrador; los otros métodos van
+                // a una caja compartida y no hay nada que repartir. Antes esta cobranza entraba
+                // entera a la caja de la sucursal 1, que es la misma que pagaba todos los egresos
+                // de efectivo.
+                $metodos_cobro = ($metodo_id === 3)
+                    ? $this->metodos_de_efectivo_por_sucursal($parte['monto'])
+                    : [
+                        [
+                            'current_acount_payment_method_id' => $metodo_id,
+                            'amount'                           => $parte['monto'],
+                            'caja_id'                          => $this->semilla->caja_para($metodo_id, $primer_address_id),
+                        ],
+                    ];
 
-            $operaciones[] = $this->operacion($this->fecha_en_rango($inicio_mes, $dias_disponibles), 'cobro_cuenta_corriente', [
-                'monto'     => $monto_metodo,
-                'client_id' => $cliente->id,
-                'metodos'   => $metodos_cobro,
-            ]);
+                $operaciones[] = $this->operacion($this->fecha_en_rango($inicio_mes, $dias_disponibles), 'cobro_cuenta_corriente', [
+                    'monto'     => $parte['monto'],
+                    'client_id' => $parte['client_id'],
+                    'metodos'   => $metodos_cobro,
+                ]);
 
-            $nombre = self::CLAVE_POR_METODO[$metodo_id];
-            $saldo_por_caja[$nombre] = ($saldo_por_caja[$nombre] ?? 0) + $monto_metodo;
-            $ingresos_por_caja[$nombre] = ($ingresos_por_caja[$nombre] ?? 0) + $monto_metodo;
-            $saldo_por_cliente_delta[$cliente->id] = ($saldo_por_cliente_delta[$cliente->id] ?? 0) - $monto_metodo;
+                $nombre = self::CLAVE_POR_METODO[$metodo_id];
+                $saldo_por_caja[$nombre] = ($saldo_por_caja[$nombre] ?? 0) + $parte['monto'];
+                $ingresos_por_caja[$nombre] = ($ingresos_por_caja[$nombre] ?? 0) + $parte['monto'];
+                $saldo_por_cliente_delta[$parte['client_id']] = ($saldo_por_cliente_delta[$parte['client_id']] ?? 0) - $parte['monto'];
 
-            foreach ($metodos_cobro as $parte) {
-                $saldo_por_caja_id[$parte['caja_id']] = ($saldo_por_caja_id[$parte['caja_id']] ?? 0) + $parte['amount'];
+                foreach ($metodos_cobro as $movimiento) {
+                    $saldo_por_caja_id[$movimiento['caja_id']] = ($saldo_por_caja_id[$movimiento['caja_id']] ?? 0) + $movimiento['amount'];
+                }
             }
         }
 
-        // --- Devoluciones, repartidas entre clientes con ventas CC este mes ---------------------
+        // --- Devoluciones, repartidas entre clientes que tengan deuda que absorberlas -----------
+        //
+        // 🔴 Una nota de crédito es un HABER en la cuenta corriente del cliente, igual que un cobro:
+        // si cae sobre un cliente que no debe nada, lo deja con saldo a favor. Antes se elegía por
+        // rotación (`cliente_rotativo($indice + 2 + $offset)`) y eso era la mitad de los saldos
+        // negativos medidos el 17/8/2026 (4 de los 8 clientes en rojo tenían nota de crédito). Se
+        // reparte con la misma máquina que las cobranzas, pero contra la deuda ENTERA del cliente
+        // (perfil 1,0): la devolución no depende de la voluntad de pago de nadie, solo de que haya
+        // algo que devolver.
         $montos_devoluciones = $devoluciones_total > 0
             ? $this->repartir_en_registros($devoluciones_total, self::CANT_REGISTROS)
+            : [];
+
+        $deuda_para_devoluciones = $devoluciones_total > 0
+            ? $this->capacidad_de_cobro_del_mes(1.0)
             : [];
 
         foreach ($montos_devoluciones as $indice => $monto) {
             if ($monto <= 0) {
                 continue;
             }
-            $cliente = $this->cliente_rotativo($indice + 2 + $offset_rotacion);
 
-            $operaciones[] = $this->operacion($this->fecha_en_rango($inicio_mes, $dias_disponibles), 'devolucion', [
-                'monto'     => $monto,
-                'client_id' => $cliente->id,
-            ]);
+            foreach ($this->repartir_devolucion($monto, $deuda_para_devoluciones) as $parte) {
+                $operaciones[] = $this->operacion($this->fecha_en_rango($inicio_mes, $dias_disponibles), 'devolucion', [
+                    'monto'     => $parte['monto'],
+                    'client_id' => $parte['client_id'],
+                ]);
 
-            $saldo_por_cliente_delta[$cliente->id] = ($saldo_por_cliente_delta[$cliente->id] ?? 0) - $monto;
+                $saldo_por_cliente_delta[$parte['client_id']] = ($saldo_por_cliente_delta[$parte['client_id']] ?? 0) - $parte['monto'];
+            }
         }
 
         // --- Compras a proveedores, repartidas entre los proveedores ----------------------------
@@ -2395,6 +2496,16 @@ class SembrarDatosDePrueba extends Command
             }
         }
 
+        // Se redondea recién acá, después de todas las sumas y restas: son montos en pesos y la
+        // planilla es para leerla. Sin esto, un cliente que quedó en cero pero cuya deuda pasó por
+        // doce sumas y doce restas de floats aparece con "4.5474735088646E-12" en vez de "0".
+        foreach ($deuda_por_cliente as $client_id => $monto) {
+            $deuda_por_cliente[$client_id] = round((float) $monto, 2);
+        }
+        foreach ($deuda_por_proveedor as $provider_id => $monto) {
+            $deuda_por_proveedor[$provider_id] = round((float) $monto, 2);
+        }
+
         // El barrido de efectivo del cierre de mes (ver `planificar_barrido_de_efectivo()`) mueve
         // plata ENTRE cajas: baja el efectivo del mostrador y sube Caja Fuerte y Banco Nación. Va
         // acá y no en el renglón de cada mes porque se planifica en `handle()`, fuera de la
@@ -2638,6 +2749,137 @@ class SembrarDatosDePrueba extends Command
     protected function fecha_en_rango($inicio_mes, $dias_disponibles)
     {
         return $inicio_mes->copy()->addDays(mt_rand(0, max(0, $dias_disponibles - 1)))->setTime(mt_rand(9, 19), mt_rand(0, 59));
+    }
+
+    /**
+     * Cuánto puede pagar cada cliente este mes: su deuda pendiente multiplicada por su perfil de
+     * pago (ver `PERFIL_DE_PAGO`). Los que no deben nada, y los que tienen perfil 0, no aparecen.
+     *
+     * Se devuelve ordenado de mayor a menor monto cobrable, con el id de cliente como desempate
+     * ascendente. El orden no es cosmético: es el que consume `tomar_de_la_capacidad()`, así que es
+     * lo que decide a quién se le cobra primero cuando el balde de un método no alcanza para todos.
+     * `arsort()` no sirve para esto: en PHP 7.4 los sorts NO son estables y dos clientes con el
+     * mismo monto quedarían ordenados según el orden de inserción, que a su vez depende del
+     * catálogo -- el mismo tipo de dependencia escondida que hace que dos corridas dejen de ser
+     * comparables.
+     *
+     * @param float|null $perfil_fijo Si viene, se usa este perfil para TODOS los clientes en vez de
+     *                                `PERFIL_DE_PAGO`. Lo usan las devoluciones, que se apoyan en la
+     *                                deuda entera (1,0) porque una nota de crédito no depende de la
+     *                                voluntad de pago del cliente.
+     * @return array<int,float> client_id => monto cobrable
+     */
+    protected function capacidad_de_cobro_del_mes($perfil_fijo = null)
+    {
+        $capacidad = [];
+
+        foreach ($this->clientes->values() as $posicion => $cliente) {
+            $client_id = (int) $cliente->id;
+            $deuda = isset($this->deuda_por_cliente[$client_id]) ? (float) $this->deuda_por_cliente[$client_id] : 0.0;
+
+            if ($deuda <= 0) {
+                continue;
+            }
+
+            $perfil = is_null($perfil_fijo)
+                ? self::PERFIL_DE_PAGO[$posicion % count(self::PERFIL_DE_PAGO)]
+                : (float) $perfil_fijo;
+
+            $cobrable = round($deuda * $perfil, 2);
+
+            if ($cobrable > 0) {
+                $capacidad[$client_id] = $cobrable;
+            }
+        }
+
+        uksort($capacidad, function ($a, $b) use ($capacidad) {
+            if ($capacidad[$a] == $capacidad[$b]) {
+                return $a - $b;
+            }
+
+            return $capacidad[$a] < $capacidad[$b] ? 1 : -1;
+        });
+
+        return $capacidad;
+    }
+
+    /**
+     * Toma `$monto` de la capacidad de cobro del mes, cliente por cliente y de mayor a menor, sin
+     * pasarse NUNCA de lo que cada uno debe. Descuenta lo tomado de `$capacidad` y del ledger de
+     * deuda, así que dos llamadas seguidas (una por método de pago) no cobran dos veces lo mismo.
+     *
+     * La suma de las partes que devuelve es exactamente `$monto`, salvo que se acabe la capacidad
+     * del mes -- caso que el llamador ya evitó topeando `$cobranza_cc_total` con la capacidad total.
+     *
+     * @param float $monto
+     * @param array<int,float> $capacidad Se modifica: se le descuenta lo tomado.
+     * @return array<int,array<string,mixed>> Lista de ['client_id' => int, 'monto' => float]
+     */
+    protected function tomar_de_la_capacidad($monto, &$capacidad)
+    {
+        $partes = [];
+        $restante = round((float) $monto, 2);
+
+        // Se recorren las CLAVES y no el array: `$capacidad` llega por referencia y se modifica
+        // adentro del loop, y recorrer las claves deja explícito que la lista sobre la que se itera
+        // no cambia mientras se la consume.
+        foreach (array_keys($capacidad) as $client_id) {
+            if ($restante <= 0) {
+                break;
+            }
+
+            $cobrable = (float) $capacidad[$client_id];
+
+            if ($cobrable <= 0) {
+                continue;
+            }
+
+            $parte = round(min($cobrable, $restante), 2);
+
+            $partes[] = ['client_id' => (int) $client_id, 'monto' => $parte];
+
+            $capacidad[$client_id] = round($cobrable - $parte, 2);
+            $this->deuda_por_cliente[$client_id] = round((isset($this->deuda_por_cliente[$client_id]) ? $this->deuda_por_cliente[$client_id] : 0) - $parte, 2);
+            $restante = round($restante - $parte, 2);
+        }
+
+        return $partes;
+    }
+
+    /**
+     * A quién se le hace la nota de crédito de `$monto`. Misma máquina que las cobranzas, con una
+     * red al final: el monto de las devoluciones del mes es parte de la aritmética (entra en
+     * `ventas_netas`, en el costo y en el resultado bruto, que son justo lo que compara
+     * `4_Semilla_Test.php`), así que NO se puede recortar. Si no hay deuda suficiente para
+     * absorberlo, el sobrante va igual al primer cliente del catálogo y ese cliente queda con saldo
+     * a favor -- que es lo correcto contablemente: le devolvimos más de lo que debía.
+     *
+     * En la corrida completa ese caso no se da: cuando se planifican las devoluciones ya se
+     * descontaron las cobranzas del mes y queda deuda de sobra.
+     *
+     * @param float $monto
+     * @param array<int,float> $deuda_disponible Se modifica: se le descuenta lo tomado.
+     * @return array<int,array<string,mixed>> Lista de ['client_id' => int, 'monto' => float]
+     */
+    protected function repartir_devolucion($monto, &$deuda_disponible)
+    {
+        $partes = $this->tomar_de_la_capacidad($monto, $deuda_disponible);
+
+        $repartido = 0.0;
+        foreach ($partes as $parte) {
+            $repartido = round($repartido + $parte['monto'], 2);
+        }
+
+        $faltante = round((float) $monto - $repartido, 2);
+
+        if ($faltante > 0) {
+            $client_id = (int) $this->clientes->first()->id;
+
+            $partes[] = ['client_id' => $client_id, 'monto' => $faltante];
+            $this->deuda_por_cliente[$client_id] = round((isset($this->deuda_por_cliente[$client_id]) ? $this->deuda_por_cliente[$client_id] : 0) - $faltante, 2);
+        }
+
+        return $partes;
     }
 
     /**
