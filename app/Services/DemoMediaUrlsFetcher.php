@@ -27,9 +27,19 @@ class DemoMediaUrlsFetcher
     /**
      * Timeout corto y SIN reintentos: esto corre adentro del request que le dibuja el panel al
      * lead, no en un job de fondo. Un admin lento no puede convertirse en una pantalla en
-     * blanco; a los 3 segundos se usa lo guardado, que es exactamente el comportamiento de hoy.
+     * blanco; a los 2 segundos se usa lo guardado, que es exactamente el comportamiento de hoy.
+     *
+     * 🔴 ESTE NUMERO ESTA ATADO A OTRO QUE VIVE EN OTRO REPO. Del otro lado,
+     * `src/views/DemoIngreso.vue` de `empresa-spa` espera el plan con un techo (TECHO_ESPERA_PLAN,
+     * hoy 6000 ms) y, cumplido ese techo, entra igual. Si el admin no contesta, lo que tarde este
+     * timeout se come el presupuesto de esa espera: con 3 s + lo que cuesta el resto del request,
+     * el lead cae en el sistema a medio dibujar, que es JUSTO el sintoma que esta mision vino a
+     * matar. Con 2 s el margen queda holgado por los dos lados.
+     *
+     * O sea: si alguna vez subis este numero, o bajas el techo de aquella vista, tenes que mirar
+     * los dos archivos juntos. Ninguno de los dos se entiende solo.
      */
-    const TIMEOUT_SEGUNDOS = 3;
+    const TIMEOUT_SEGUNDOS = 2;
 
     /** Ultimo segmento del canal de eventos que ya existe. */
     const SEGMENTO_EVENTOS = 'demo-eventos';
@@ -103,12 +113,24 @@ class DemoMediaUrlsFetcher
 
             $cuerpo = $respuesta->json();
 
-            $mapa = self::normalizar(
-                is_array($cuerpo) && isset($cuerpo['media_urls']) ? $cuerpo['media_urls'] : null
-            );
+            $crudo = is_array($cuerpo) && isset($cuerpo['media_urls']) ? $cuerpo['media_urls'] : null;
+
+            $mapa = self::normalizar($crudo);
 
             if (is_null($mapa)) {
-                Log::warning('DemoMediaUrlsFetcher: el admin respondio 200 pero sin un `media_urls` usable. Se usa el mapa guardado.');
+                /**
+                 * Los dos caminos hacen LO MISMO -- caer al mapa guardado --; lo unico que cambia
+                 * es el nivel del log, y cambia por una razon: un `media_urls` vacio es el admin
+                 * que todavia no tiene ningun slot con video cargado. Eso es un estado legitimo,
+                 * no un defecto, y sale una vez por cada plan que se sirve. Dejarlo en warning
+                 * ensucia justo la senal que importa (JSON invalido, portal cautivo, una forma que
+                 * no es un mapa), que son los casos donde alguien tiene que ir a mirar.
+                 */
+                if (is_array($crudo) && count($crudo) === 0) {
+                    Log::info('DemoMediaUrlsFetcher: el admin respondio 200 con un `media_urls` vacio (todavia no hay videos cargados). Se usa el mapa guardado.');
+                } else {
+                    Log::warning('DemoMediaUrlsFetcher: el admin respondio 200 pero sin un `media_urls` usable. Se usa el mapa guardado.');
+                }
 
                 return null;
             }
@@ -189,6 +211,26 @@ class DemoMediaUrlsFetcher
      * No se confia en la forma: el cuerpo es de otro sistema y el panel resuelve la URL de cada
      * clip indexando este array. Una lista (`["http://a"]`) se rechaza entera aunque sus valores
      * sean strings: no es un mapa, y aceptarla dejaria claves "0", "1" que no son ningun clip.
+     *
+     * 🔴 EL FILO: ESTO NO ES TODO-O-NADA, Y RIO ABAJO SE REEMPLAZA, NO SE MERGEA.
+     *
+     * El foreach de abajo descarta los valores que no son string y se queda con el resto, asi que
+     * una respuesta PARCIALMENTE invalida devuelve un mapa PARCIAL. Y refrescar_guardado() pisa
+     * `demo_tracking_config.media_urls` entero con lo que salga de aca. Las dos decisiones son
+     * correctas por separado; juntas significan que una respuesta a medias RECORTA el mapa
+     * guardado en silencio, sin un solo log, porque para este metodo el resultado fue un exito.
+     *
+     * Hoy NO puede dispararse: del otro lado `DemoMedia::url_por_slot()` (admin-api) siempre
+     * devuelve strings, y esa es la unica razon por la que esto es seguro. El dia que el admin
+     * agregue metadata por slot -- `{"1.1": {"url": "...", "duracion": 42}}`, que es exactamente
+     * la forma que uno agregaria sin pensar que rompe nada porque el campo viejo sigue adentro --
+     * cada slot con metadata se cae del mapa y se BORRA del guardado. El panel muestra "Este video
+     * todavia no esta disponible", que es el bug que esta mision vino a matar, y el log queda mudo.
+     *
+     * No se "arregla" ahora: cualquier arreglo (mergear en vez de reemplazar, o rechazar el mapa
+     * entero si un valor no sirve) cambia el comportamiento en base a un cambio del admin que no
+     * existe. Queda senalizado aca, que es donde se pisa: si estas leyendo esto porque el contrato
+     * del admin cambio, ESTE es el metodo que hay que tocar antes.
      *
      * @param mixed $crudo Lo que vino en `media_urls`.
      * @return array<string, string>|null El mapa limpio, o null si no hay nada usable.
