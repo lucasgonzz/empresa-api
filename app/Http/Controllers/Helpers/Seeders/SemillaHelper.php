@@ -43,6 +43,25 @@ use Illuminate\Support\Facades\DB;
 class SemillaHelper
 {
     /**
+     * Plazo de pago, en días, con el que se siembra cada venta a cuenta corriente.
+     *
+     * 🔴 No es cosmético: es lo único que separa "deuda" de "deuda VENCIDA" en todo el sistema.
+     * `SaleController::ventas_sin_cobrar()` y `HistorialCrediticioService::malos_pagadores()`
+     * cuentan la antigüedad con
+     * `COALESCE(sales.dias_alerta_venta_no_cobrada_personalizado, users.dias_alertar_administradores_ventas_no_cobradas)`,
+     * y `UserSeeder` deja esa columna del usuario en 1 -- o sea que, sin este plazo, una venta de
+     * AYER ya está vencida: la pantalla de ventas sin cobrar alerta absolutamente todo y el motor
+     * de ofertas descarta a cualquier cliente que deba un peso. Treinta días es el plazo con el que
+     * un comercio vende a cuenta corriente, y es el que hace que la demo distinga un cliente al día
+     * de uno moroso.
+     *
+     * No se toca `UserSeeder` para conseguir lo mismo: ese seeder lo comparten todas las instancias
+     * y bajarle los días de alerta le cambiaría el comportamiento a comercios que no tienen nada
+     * que ver con la demo.
+     */
+    const DIAS_DE_PLAZO_CUENTA_CORRIENTE = 30;
+
+    /**
      * Resumen acumulado de lo que se fue ejecutando (tipo de operación, fecha, monto, modelo
      * creado, métodos de pago usados). El comando del prompt 05 arma la planilla de control a
      * partir de esto.
@@ -60,16 +79,20 @@ class SemillaHelper
      * @param float $monto
      * @param int $address_id Sucursal de la venta.
      * @param array $metodos Lista de ['current_acount_payment_method_id' => N, 'amount' => X, 'caja_id' => C].
+     * @param int|null $articulo_id Artículo del renglón. Null = el primero del usuario (ver
+     *                              `articulo_de_operacion()`), que es como venía andando hasta ahora.
+     * @param int $unidades Unidades del renglón. El precio unitario sale de `$monto / $unidades`.
      * @return \App\Models\Sale
      */
-    function venta_mostrador($fecha, $monto, $address_id, $metodos)
+    function venta_mostrador($fecha, $monto, $address_id, $metodos, $articulo_id = null, $unidades = 1)
     {
         $this->asegurar_semilla_user_id_coincide_con_app_user_id();
 
         Carbon::setTestNow(Carbon::parse($fecha));
 
         try {
-            $articulo = $this->articulo_de_operacion();
+            $articulo = $this->articulo_de_operacion($articulo_id);
+            $unidades = $this->unidades_de_operacion($unidades);
             $num = $this->next_num('sales');
 
             SaleSeederHelper::create_sales([
@@ -85,9 +108,19 @@ class SemillaHelper
                     'articles'        => [
                         [
                             'id'           => $articulo->id,
-                            'price_vender' => $monto,
-                            'cost'         => $monto / 2,
-                            'amount'       => 1,
+                            // 🔴 El costo es la mitad del precio UNITARIO, nunca la mitad del total
+                            // de la línea. `ContabilidadRepository::costo_mercaderia_vendida()` suma
+                            // `article_sale.cost * article_sale.amount`, mientras `ventas_brutas()`
+                            // suma `sales.total`: con `price_vender = monto/unidades` y
+                            // `cost = price_vender/2`, la línea aporta `monto/2` al costo y `monto` a
+                            // las ventas para CUALQUIER valor de $unidades, y el invariante se
+                            // sostiene solo. Si acá quedara el `$monto / 2` de antes, el costo se
+                            // multiplicaría por las unidades y el test 1 de
+                            // `tests/Feature/Reportes/4_Semilla_Test.php` ("resultado bruto = mitad de
+                            // las ventas netas") se caería apenas $unidades pase de 1.
+                            'price_vender' => $monto / $unidades,
+                            'cost'         => ($monto / $unidades) / 2,
+                            'amount'       => $unidades,
                         ],
                     ],
                     'payment_methods' => $metodos,
@@ -112,16 +145,19 @@ class SemillaHelper
      * @param float $monto
      * @param int $client_id
      * @param int $address_id
+     * @param int|null $articulo_id Artículo del renglón. Null = el primero del usuario.
+     * @param int $unidades Unidades del renglón.
      * @return \App\Models\Sale
      */
-    function venta_cuenta_corriente($fecha, $monto, $client_id, $address_id)
+    function venta_cuenta_corriente($fecha, $monto, $client_id, $address_id, $articulo_id = null, $unidades = 1)
     {
         $this->asegurar_semilla_user_id_coincide_con_app_user_id();
 
         Carbon::setTestNow(Carbon::parse($fecha));
 
         try {
-            $articulo = $this->articulo_de_operacion();
+            $articulo = $this->articulo_de_operacion($articulo_id);
+            $unidades = $this->unidades_de_operacion($unidades);
             $num = $this->next_num('sales');
 
             SaleSeederHelper::create_sales([
@@ -136,10 +172,13 @@ class SemillaHelper
                     'confirmed'       => 1,
                     'articles'        => [
                         [
+                            // Mismo costeo unitario que `venta_mostrador()`, por la misma razón:
+                            // el costo se multiplica por `amount` en el reporte, el total de la
+                            // venta no. Ver el comentario largo de allá antes de tocar esto.
                             'id'           => $articulo->id,
-                            'price_vender' => $monto,
-                            'cost'         => $monto / 2,
-                            'amount'       => 1,
+                            'price_vender' => $monto / $unidades,
+                            'cost'         => ($monto / $unidades) / 2,
+                            'amount'       => $unidades,
                         ],
                     ],
                     'payment_methods' => [],
@@ -147,6 +186,16 @@ class SemillaHelper
             ]);
 
             $sale = Sale::where('user_id', config('app.USER_ID'))->where('num', $num)->first();
+
+            // El plazo de pago va DESPUÉS del alta y no adentro de `SaleSeederHelper::create_sales()`
+            // porque ese helper es del camino real de producción (lo usa `vender`) y no le
+            // corresponde saber nada de la semilla. Sin timestamps para no pisar `updated_at` con
+            // algo distinto de lo que dejó el alta. Ver `DIAS_DE_PLAZO_CUENTA_CORRIENTE`.
+            if (!is_null($sale)) {
+                $sale->dias_alerta_venta_no_cobrada_personalizado = self::DIAS_DE_PLAZO_CUENTA_CORRIENTE;
+                $sale->timestamps = false;
+                $sale->save();
+            }
 
             $this->registrar('venta_cuenta_corriente', $fecha, $monto, $sale);
 
@@ -232,14 +281,17 @@ class SemillaHelper
      * @param string|\Carbon\Carbon $fecha
      * @param float $monto
      * @param int $provider_id
+     * @param int|null $articulo_id Artículo del pedido. Null = el primero del usuario.
+     * @param int $unidades Unidades del pedido. El costo unitario sale de `$monto / $unidades`.
      * @return \App\Models\ProviderOrder
      */
-    function compra_a_proveedor($fecha, $monto, $provider_id)
+    function compra_a_proveedor($fecha, $monto, $provider_id, $articulo_id = null, $unidades = 1)
     {
         Carbon::setTestNow(Carbon::parse($fecha));
 
         try {
-            $articulo = $this->articulo_de_operacion();
+            $articulo = $this->articulo_de_operacion($articulo_id);
+            $unidades = $this->unidades_de_operacion($unidades);
             $num = $this->next_num('provider_orders');
 
             $order = ProviderOrder::create([
@@ -253,11 +305,16 @@ class SemillaHelper
                 'user_id'                                     => config('semilla.user_id'),
             ]);
 
+            // 🔴 El pedido queda `received => 1` pero NO se registra movimiento de stock, a
+            // propósito: si la compra ingresara mercadería, el stock final de cada artículo dejaría
+            // de ser "inicial − vendido" y la cuenta con la que se dimensionaron los perfiles de
+            // stock (y con la que se predice cuántas líneas van a sugerir los motores de traslado y
+            // de compra) no cerraría más. Esta semilla modela la plata de la compra, no la logística.
             $order->articles()->attach($articulo->id, [
-                'amount'          => 1,
+                'amount'          => $unidades,
                 'notes'           => null,
                 'received'        => 1,
-                'cost'            => $monto,
+                'cost'            => $monto / $unidades,
                 'price'           => null,
                 'received_cost'   => null,
                 'update_cost'     => null,
@@ -474,9 +531,11 @@ class SemillaHelper
      * @param string|\Carbon\Carbon $fecha
      * @param int $sale_id
      * @param float $importe_iva
+     * @param string|null $cbte_letra Letra del comprobante ('A', 'B', ...). Null = no se escribe.
+     * @param string|null $cbte_tipo Código de tipo de comprobante de AFIP ('1', '6', ...).
      * @return \App\Models\AfipTicket
      */
-    function comprobante_de_venta($fecha, $sale_id, $importe_iva)
+    function comprobante_de_venta($fecha, $sale_id, $importe_iva, $cbte_letra = null, $cbte_tipo = null)
     {
         Carbon::setTestNow(Carbon::parse($fecha));
 
@@ -490,6 +549,14 @@ class SemillaHelper
                 // cbte_numero es cosmetico (afip_tickets no tiene columna num, y ningun reporte
                 // de ContabilidadRepository lo lee): alcanza con que sea distinguible.
                 'cbte_numero'         => (string) $sale_id,
+                // Letra y tipo son dos columnas string sueltas de `afip_tickets`, no una FK a
+                // `afip_tipo_comprobantes`: en el camino real las escribe `AfipWsfeHelper` con lo que
+                // contesta AFIP, acá las escribe el guion. Ningún reporte de contabilidad las lee
+                // (filtran por `resultado` y por fecha), pero sin ellas la pantalla de comprobantes y
+                // el PDF muestran la letra vacía, y una demo con facturas sin letra no se puede
+                // mostrar. Quedan en null si el llamador no las manda, que es como venían.
+                'cbte_letra'          => $cbte_letra,
+                'cbte_tipo'           => $cbte_tipo,
             ]);
 
             $this->registrar('comprobante_de_venta', $fecha, $importe_iva, $afip_ticket);
@@ -632,14 +699,38 @@ class SemillaHelper
     }
 
     /**
-     * Cualquier artículo real del usuario que se está sembrando, para las primitivas que
-     * necesitan un renglón de artículo (venta, compra). No depende de un id fijo: la semilla no
+     * Artículo real del usuario que se está sembrando, para las primitivas que necesitan un
+     * renglón de artículo (venta, compra, devolución). No depende de un id fijo: la semilla no
      * crea artículos nuevos, usa los que ya existen en la cuenta.
      *
+     * Con `$articulo_id` resuelve ese artículo puntual; sin él cae al primero del usuario, que es
+     * lo que hacían todas las primitivas antes de que el guion pudiera elegir artículo. Ese
+     * fallback se conserva a propósito: es lo que deja que los llamadores viejos sigan andando sin
+     * tocarlos.
+     *
+     * El filtro por `user_id` va también en la rama del id explícito: un `find()` pelado traería
+     * el artículo de otra cuenta si el guion se equivoca, y la venta quedaría sembrada contra
+     * mercadería ajena sin que nada se queje -- exactamente el modo de falla silencioso que
+     * `asegurar_semilla_user_id_coincide_con_app_user_id()` viene a cerrar del otro lado.
+     *
+     * @param int|null $articulo_id
      * @return \App\Models\Article
      */
-    protected function articulo_de_operacion()
+    protected function articulo_de_operacion($articulo_id = null)
     {
+        if (!is_null($articulo_id)) {
+            $articulo = Article::where('user_id', config('semilla.user_id'))->find($articulo_id);
+
+            if (is_null($articulo)) {
+                throw new \Exception(
+                    'SemillaHelper: el artículo '.$articulo_id.' no existe o no es del usuario '
+                    .config('semilla.user_id').'.'
+                );
+            }
+
+            return $articulo;
+        }
+
         $articulo = Article::where('user_id', config('semilla.user_id'))->first();
 
         if (is_null($articulo)) {
@@ -647,6 +738,29 @@ class SemillaHelper
         }
 
         return $articulo;
+    }
+
+    /**
+     * Valida las unidades de un renglón antes de usarlas como divisor.
+     *
+     * Existe porque en PHP 7.4 `$monto / 0` no tira excepción: emite un warning y devuelve `INF`.
+     * Sin este chequeo, un cero que se cuele desde el guion se guardaría como una venta con precio
+     * y costo infinitos, y recién se notaría al abrir el Estado de Resultados. Fallar acá, antes de
+     * escribir nada, es el mismo criterio que `caja_para()` y `credit_account_para()`.
+     *
+     * @param int $unidades
+     * @return int
+     */
+    protected function unidades_de_operacion($unidades)
+    {
+        if (!is_numeric($unidades) || (int) $unidades < 1) {
+            throw new \Exception(
+                'SemillaHelper: las unidades de un renglón tienen que ser un entero mayor o igual a 1, llegó '
+                .var_export($unidades, true).'.'
+            );
+        }
+
+        return (int) $unidades;
     }
 
     /**
