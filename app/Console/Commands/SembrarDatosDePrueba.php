@@ -162,10 +162,19 @@ class SembrarDatosDePrueba extends Command
     ];
 
     /**
-     * Reparto de la porción en EFECTIVO del mostrador entre las 4 sucursales (índice 0 a 3). Solo
-     * el efectivo se reparte por sucursal: es la única caja que es exclusiva de cada local (las
-     * demás son compartidas, ver prompt 02), y es lo que hace que la sucursal 1 facture el
-     * cuádruple que la 4 en el desglose por caja.
+     * Reparto de TODO lo que se mueve en EFECTIVO entre las 4 sucursales (índice 0 a 3). Solo el
+     * efectivo se reparte por sucursal: es la única caja que es exclusiva de cada local (las demás
+     * son compartidas, ver prompt 02), y es lo que hace que la sucursal 1 facture el cuádruple que
+     * la 4 en el desglose por caja.
+     *
+     * 🔴 Se aplica a los INGRESOS y a los EGRESOS con los mismos pesos, y eso no es simetría por
+     * prolijidad: es lo que mantiene a las cuatro cajas de mostrador fuera del rojo. Hasta el
+     * 17/8/2026 el mostrador repartía el efectivo 40/30/20/10 pero los gastos pagados y los pagos a
+     * proveedor en efectivo salían TODOS de `caja_para(3, $primer_address_id)` -- la sucursal 1
+     * cobraba el 40% y pagaba el 100%, y su caja terminaba cada mes en negativo (medido: −428.000
+     * en el mes de 10.700.000). Con los mismos pesos de los dos lados, cada caja es una copia a
+     * escala del flujo de efectivo del comercio entero: si el agregado da positivo, las cuatro dan
+     * positivo. Ver `metodos_de_efectivo_por_sucursal()`.
      */
     const REPARTO_SUCURSAL = [0.40, 0.30, 0.20, 0.10];
 
@@ -591,6 +600,36 @@ class SembrarDatosDePrueba extends Command
         // parcial tiene menos días que un mes cerrado).
         $dias_disponibles = max(1, $inicio_mes->diffInDays($fin_mes));
 
+        /*
+         * 🔴 Fecha ÚNICA de todo lo que SACA plata de una caja este mes (pagos a proveedor y gastos
+         * pagados): el último día del mes a las 20:00. No es cosmético, es lo que vuelve imposible
+         * que una caja pase por rojo.
+         *
+         * El saldo de una caja es corriente y se arma día por día, así que repartir bien los montos
+         * no alcanza: un mes que CIERRA en positivo puede haber pasado por negativo a mitad de
+         * camino si el pago cayó antes que las ventas. Y las cajas arrancan en 0
+         * (`CajaSeeder`), o sea que en el primer mes sembrado no hay colchón previo: cualquier
+         * egreso anterior al primer ingreso deja la caja negativa, sin importar los pesos.
+         *
+         * Con esta fecha el orden queda garantizado sin depender del azar: `fecha_en_rango()` nunca
+         * pasa de las 19:59 y nunca llega al último día de un mes cerrado (`dias_disponibles` sale
+         * de `diffInDays`, que redondea para abajo), así que cuando se paga, TODO el efectivo del
+         * mes ya entró. El barrido de fin de mes va después, a las 20:30, y el cierre de cajas a
+         * las 22:00.
+         *
+         * Además es el orden real de un comercio -- primero entra la plata del mes, después se paga
+         * -- y arregla de paso un desorden que ya existía: hasta ahora un pago a proveedor podía
+         * quedar fechado ANTES que la compra que estaba pagando.
+         *
+         * El mes en curso es la excepción: se usa la hora real, porque fechar a las 20:00 de hoy
+         * cuando son las 10:00 dejaría movimientos en el futuro. Ahí el orden estricto se pierde
+         * solo si la corrida cae un día 1 (único caso en que `fecha_en_rango()` puede devolver el
+         * día de hoy), y para entonces la caja arrastra el saldo de los once meses anteriores.
+         */
+        $fecha_egresos_de_caja = $es_mes_actual
+            ? $fin_mes->copy()
+            : $fin_mes->copy()->setTime(20, 0);
+
         // Desplaza a qué cliente/proveedor le toca cada índice, mes a mes -- sin esto, todos los
         // meses arrancan la rotación en el mismo punto y con CANT_REGISTROS=4 nunca se alcanzan
         // los 10 clientes/proveedores sembrados en el prompt 01 (hallazgo del checker, 3/8/2026).
@@ -842,21 +881,34 @@ class SembrarDatosDePrueba extends Command
             }
 
             $cliente = $this->cliente_rotativo($metodo_id + $offset_rotacion);
-            $caja_id = $this->semilla->caja_para($metodo_id, $primer_address_id);
+
+            // El efectivo se reparte entre las cuatro cajas de mostrador; los otros métodos van a
+            // una caja compartida y no hay nada que repartir. Antes esta cobranza entraba entera a
+            // la caja de la sucursal 1, que es la misma que pagaba todos los egresos de efectivo.
+            $metodos_cobro = ($metodo_id === 3)
+                ? $this->metodos_de_efectivo_por_sucursal($monto_metodo)
+                : [
+                    [
+                        'current_acount_payment_method_id' => $metodo_id,
+                        'amount'                           => $monto_metodo,
+                        'caja_id'                          => $this->semilla->caja_para($metodo_id, $primer_address_id),
+                    ],
+                ];
 
             $operaciones[] = $this->operacion($this->fecha_en_rango($inicio_mes, $dias_disponibles), 'cobro_cuenta_corriente', [
                 'monto'     => $monto_metodo,
                 'client_id' => $cliente->id,
-                'metodos'   => [
-                    ['current_acount_payment_method_id' => $metodo_id, 'amount' => $monto_metodo, 'caja_id' => $caja_id],
-                ],
+                'metodos'   => $metodos_cobro,
             ]);
 
             $nombre = self::CLAVE_POR_METODO[$metodo_id];
             $saldo_por_caja[$nombre] = ($saldo_por_caja[$nombre] ?? 0) + $monto_metodo;
             $ingresos_por_caja[$nombre] = ($ingresos_por_caja[$nombre] ?? 0) + $monto_metodo;
-            $saldo_por_caja_id[$caja_id] = ($saldo_por_caja_id[$caja_id] ?? 0) + $monto_metodo;
             $saldo_por_cliente_delta[$cliente->id] = ($saldo_por_cliente_delta[$cliente->id] ?? 0) - $monto_metodo;
+
+            foreach ($metodos_cobro as $parte) {
+                $saldo_por_caja_id[$parte['caja_id']] = ($saldo_por_caja_id[$parte['caja_id']] ?? 0) + $parte['amount'];
+            }
         }
 
         // --- Devoluciones, repartidas entre clientes con ventas CC este mes ---------------------
@@ -921,14 +973,24 @@ class SembrarDatosDePrueba extends Command
             // Los pagos a proveedor rotan entre efectivo, banco y Mercado Pago (no cheque acá: el
             // cheque emitido a proveedor es otro camino, `endosar()`, ya cubierto en el paso 4).
             $metodo_id = [3, 4, 6][$indice % 3];
-            $caja_id = $this->semilla->caja_para($metodo_id, $primer_address_id);
 
-            $operaciones[] = $this->operacion($this->fecha_en_rango($inicio_mes, $dias_disponibles), 'pago_a_proveedor', [
+            // Efectivo: se reparte entre las cuatro cajas de mostrador, con los mismos pesos con
+            // que entra (ver REPARTO_SUCURSAL). Antes salía entero de la caja de la sucursal 1.
+            $metodos_pago = ($metodo_id === 3)
+                ? $this->metodos_de_efectivo_por_sucursal($monto)
+                : [
+                    [
+                        'current_acount_payment_method_id' => $metodo_id,
+                        'amount'                           => $monto,
+                        'caja_id'                          => $this->semilla->caja_para($metodo_id, $primer_address_id),
+                    ],
+                ];
+
+            // Fecha de cierre de mes, no una al azar dentro del mes: ver `$fecha_egresos_de_caja`.
+            $operaciones[] = $this->operacion($fecha_egresos_de_caja, 'pago_a_proveedor', [
                 'monto'       => $monto,
                 'provider_id' => $proveedor->id,
-                'metodos'     => [
-                    ['current_acount_payment_method_id' => $metodo_id, 'amount' => $monto, 'caja_id' => $caja_id],
-                ],
+                'metodos'     => $metodos_pago,
             ]);
 
             $saldo_por_proveedor_delta[$proveedor->id] = ($saldo_por_proveedor_delta[$proveedor->id] ?? 0) - $monto;
@@ -940,9 +1002,12 @@ class SembrarDatosDePrueba extends Command
             // incluye explícitamente "4.000.000 a proveedores".
             $nombre_metodo_pago = self::CLAVE_POR_METODO[$metodo_id];
             $saldo_por_caja[$nombre_metodo_pago] = ($saldo_por_caja[$nombre_metodo_pago] ?? 0) - $monto;
-            $saldo_por_caja_id[$caja_id] = ($saldo_por_caja_id[$caja_id] ?? 0) - $monto;
             // 🔴 A propósito NO toca `$ingresos_por_caja`: esto es un EGRESO y un egreso nunca paga
             // comisión (ver el comentario de la declaración de esa variable).
+
+            foreach ($metodos_pago as $parte) {
+                $saldo_por_caja_id[$parte['caja_id']] = ($saldo_por_caja_id[$parte['caja_id']] ?? 0) - $parte['amount'];
+            }
         }
 
         // --- Gastos operativos, repartidos entre los 4 registros --------------------------------
@@ -952,6 +1017,9 @@ class SembrarDatosDePrueba extends Command
             if ($monto <= 0) {
                 continue;
             }
+            // Se sortea la fecha SIEMPRE, aunque el gasto pagado después la pise, para no alterar el
+            // flujo del generador aleatorio según la paridad del índice (los gastos sin pagar
+            // tienen que seguir cayendo en los mismos días que antes de este cambio).
             $fecha = $this->fecha_en_rango($inicio_mes, $dias_disponibles);
             // La mitad de los gastos se paga (mueve caja); la otra mitad queda cargada sin pagar
             // (pasa a formar parte de "deuda" del negocio, no de un cliente/proveedor puntual) --
@@ -959,17 +1027,18 @@ class SembrarDatosDePrueba extends Command
             $metodos_gasto = [];
 
             if ($indice % 2 === 0) {
-                $caja_id_gasto = $this->semilla->caja_para(3, $primer_address_id);
+                // Se paga en efectivo repartido entre las cuatro cajas de mostrador (antes salía
+                // entero de la sucursal 1) y a fin de mes, después de que entró la plata del mes:
+                // las dos cosas juntas son las que sacan a estas cajas del rojo. Ver
+                // `metodos_de_efectivo_por_sucursal()` y `$fecha_egresos_de_caja`.
+                $metodos_gasto = $this->metodos_de_efectivo_por_sucursal($monto);
+                $fecha = $fecha_egresos_de_caja;
 
-                $metodos_gasto = [
-                    [
-                        'current_acount_payment_method_id' => 3,
-                        'amount'                           => $monto,
-                        'caja_id'                          => $caja_id_gasto,
-                    ],
-                ];
                 $saldo_por_caja['efectivo'] = ($saldo_por_caja['efectivo'] ?? 0) - $monto;
-                $saldo_por_caja_id[$caja_id_gasto] = ($saldo_por_caja_id[$caja_id_gasto] ?? 0) - $monto;
+
+                foreach ($metodos_gasto as $parte) {
+                    $saldo_por_caja_id[$parte['caja_id']] = ($saldo_por_caja_id[$parte['caja_id']] ?? 0) - $parte['amount'];
+                }
             }
 
             $operaciones[] = $this->operacion($fecha, 'gasto', [
@@ -1094,6 +1163,88 @@ class SembrarDatosDePrueba extends Command
         ];
 
         return $baldes;
+    }
+
+    /**
+     * Arma las filas del array `metodos` de una operación en EFECTIVO, repartiendo el monto entre
+     * las cajas de mostrador de todas las sucursales con los pesos de `REPARTO_SUCURSAL`.
+     *
+     * 🔴 Para qué existe: los ingresos de mostrador ya se repartían por sucursal
+     * (`baldes_de_mostrador()`), pero la cobranza de cuenta corriente en efectivo, los gastos
+     * pagados y los pagos a proveedor en efectivo salían TODOS de `caja_para(3, $primer_address_id)`.
+     * La sucursal 1 cobraba el 40% del mostrador y pagaba el 100% de los egresos, y su caja quedaba
+     * en negativo todos los meses (−428.000 en el mes de 10.700.000, medido sobre la aritmética del
+     * guion). Una caja de mostrador en rojo se ve apenas se abre la pantalla de cajas, sin abrir un
+     * solo reporte.
+     *
+     * Repartir con los MISMOS pesos de los dos lados convierte a cada caja en una copia a escala
+     * del flujo de efectivo del comercio entero: `saldo(sucursal s) = peso_s × saldo(agregado)`. Si
+     * el agregado nunca es negativo, ninguna de las cuatro lo es.
+     *
+     * Se devuelven varias filas para UNA sola operación (no varias operaciones), que es lo que ya
+     * hace el mostrador cuando una venta cae entre dos baldes: `PaymentMethodHelper::attach_payment_methods()`
+     * hace un `attach()` por fila -- sin `sync` ni deduplicación --, y tanto
+     * `CurrentAcountPagoHelper::attachPaymentMethods()` como `SemillaHelper::gasto()` recorren
+     * `current_acount_payment_methods` y llaman al helper de caja UNA VEZ POR FILA DEL PIVOT. O sea
+     * que cuatro filas del método 3 con cuatro `caja_id` distintos generan cuatro movimientos de
+     * caja, uno en cada sucursal.
+     *
+     * La suma de las partes es EXACTAMENTE `$monto` (la última absorbe el redondeo, mismo criterio
+     * que `baldes_de_mostrador()`): si cada parte se redondeara por su cuenta, el desglose por caja
+     * de la planilla se iría uno o dos centavos contra la base y el test 3 de `4_Semilla_Test.php`
+     * -- que compara caja por caja con un delta de 0,01 -- empezaría a titilar.
+     *
+     * Las partes se agrupan POR CAJA antes de devolverlas, no por sucursal: si varias sucursales
+     * comparten la misma caja de efectivo, sus partes se suman en una sola fila. No es una
+     * optimización cosmética -- en una instalación sin caja de efectivo por sucursal (y en el
+     * fixture de `4_Semilla_Test.php`, que arma UNA caja compartida entre las cuatro) el reparto no
+     * tiene ningún sentido físico, y cuatro movimientos consecutivos en la misma caja por el mismo
+     * concepto son ruido en la pantalla de caja y trabajo de más en `set_apertura_caja_ingresos_egresos()`,
+     * que recorre todos los movimientos de la apertura en cada movimiento nuevo. Agrupando, el
+     * comportamiento en ese caso queda idéntico al de antes de este cambio.
+     *
+     * @param float $monto
+     * @return array<int,array<string,mixed>>
+     */
+    protected function metodos_de_efectivo_por_sucursal($monto)
+    {
+        $sucursales = $this->addresses->values();
+        $cantidad = $sucursales->count();
+        $pesos = $this->pesos_por_sucursal($cantidad);
+
+        $por_caja = [];
+        $repartido = 0.0;
+
+        foreach ($sucursales as $indice => $address) {
+            if ($indice === $cantidad - 1) {
+                $parte = round($monto - $repartido, 2);
+            } else {
+                $parte = round($monto * $pesos[$indice], 2);
+                $repartido = round($repartido + $parte, 2);
+            }
+
+            // Una sucursal con peso 0 (hay más de 4 y `pesos_por_sucursal()` las completa con ceros)
+            // no aporta ninguna fila: un movimiento de caja de 0 es ruido en la pantalla.
+            if ($parte <= 0) {
+                continue;
+            }
+
+            $caja_id = $this->semilla->caja_para(3, $address->id);
+
+            $por_caja[$caja_id] = round((isset($por_caja[$caja_id]) ? $por_caja[$caja_id] : 0) + $parte, 2);
+        }
+
+        $metodos = [];
+
+        foreach ($por_caja as $caja_id => $parte) {
+            $metodos[] = [
+                'current_acount_payment_method_id' => 3,
+                'amount'                           => $parte,
+                'caja_id'                          => $caja_id,
+            ];
+        }
+
+        return $metodos;
     }
 
     /**
@@ -1396,16 +1547,15 @@ class SembrarDatosDePrueba extends Command
      *
      * 🔴 Se saca un PORCENTAJE del saldo acumulado de cada caja, nunca un monto fijo: con un monto
      * fijo, los primeros meses de la rampa (4 ventas, 400.000 brutas) dejarían la caja de la
-     * sucursal en negativo. Y si el saldo planificado de una caja ya viene en cero o en negativo,
-     * esa caja no barre nada ese mes.
+     * sucursal en negativo. Y si el saldo planificado de una caja viniera en cero o en negativo, esa
+     * caja no barre nada ese mes (el `continue` de abajo).
      *
-     * ⚠️ Eso último NO es hipotético: la caja de efectivo de la sucursal 1 arranca cada mes en
-     * negativo, porque `planificar_mes()` le manda TODOS los egresos de efectivo (los gastos
-     * pagados y los pagos a proveedor salen siempre de `caja_para(3, $primer_address_id)`) mientras
-     * le entra solo el 40% del mostrador en efectivo más las cobranzas de cuenta corriente. Es una
-     * condición previa a este barrido -- el desbalance ya estaba -- y el `continue` de abajo hace
-     * que el barrido no la empeore. Si algún día se reparten esos egresos entre las cuatro
-     * sucursales, esta caja va a empezar a barrer sola, sin tocar nada de acá.
+     * Ese `continue` es una red, no la defensa principal. La garantía de que ninguna caja de
+     * efectivo pasa por rojo la dan `metodos_de_efectivo_por_sucursal()` (reparte ingresos y
+     * egresos con los mismos pesos) y `$fecha_egresos_de_caja` (los egresos van al cierre del mes,
+     * después de que entró todo el efectivo). Con esas dos, el saldo al momento del barrido es el
+     * saldo de cierre del mes, que es positivo, y sacarle el 60% lo deja en el 40% -- también
+     * positivo. Por inducción, el mes siguiente arranca en positivo y la cuenta se repite.
      *
      * Las dos operaciones se planifican con `operacion()`, o sea que entran al mismo flujo
      * cronológico que el resto y cuelgan de la apertura del día que corresponde. El
@@ -1634,6 +1784,8 @@ class SembrarDatosDePrueba extends Command
         ];
 
         $this->avisar_stock_negativo();
+
+        $this->avisar_caja_en_rojo();
     }
 
     /**
@@ -1897,6 +2049,51 @@ class SembrarDatosDePrueba extends Command
             $this->avisar($negativos.' pares (artículo, sucursal) quedaron con stock NEGATIVO. '
                 .'Revisar los perfiles de FerreteriaArticlesSeeder::PLANES_DE_STOCK contra la '
                 .'cadencia y las unidades por venta de este comando.');
+        }
+    }
+
+    /**
+     * Red que avisa si alguna caja PASÓ por saldo negativo en algún momento de la corrida.
+     *
+     * Es la hermana de `avisar_stock_negativo()` y existe por el mismo motivo: el reparto de plata
+     * está dimensionado para que ninguna caja entre en rojo, y si esto salta es que cambió algo del
+     * dimensionamiento. Lucas pidió para el stock "suficiente stock para que luego de hacer las
+     * ventas no queden en negativo"; para las cajas vale igual, y con el agravante de que una caja
+     * de mostrador en rojo se ve apenas se abre la pantalla de cajas, sin abrir un solo reporte.
+     *
+     * 🔴 Mira el MÍNIMO de `movimiento_cajas.saldo`, no `cajas.saldo`. La diferencia es todo el
+     * punto: `cajas.saldo` es el saldo final, y una caja que pasó por −4.000 en el segundo mes y
+     * cerró el año en millones tiene el saldo final impecable. `movimiento_cajas.saldo` es el saldo
+     * corriente que `MovimientoCajaHelper::set_saldos()` deja grabado en CADA movimiento, y como
+     * este comando siembra en orden cronológico estricto, su mínimo por caja es exactamente el peor
+     * momento que atravesó esa caja.
+     *
+     * Por qué puede saltar, si el reparto está pensado para que no: los montos de los gastos y de
+     * los pagos a proveedor los sortea `ReportesMesSeeder::distribuir()`. En el reparto MÁS
+     * desfavorable posible, el primer mes de la rampa -- el único que no tiene cobranza arrastrada
+     * y el único que arranca sin saldo previo -- queda corto por hasta el 1% de sus ventas brutas.
+     * Está acotado y es muy improbable, pero es mejor que el que corre el comando se entere acá.
+     *
+     * Es un aviso y NO una excepción, mismo criterio que el de stock: el resto de la semilla sigue
+     * siendo válida y tirar acá dejaría la base a medio sembrar.
+     *
+     * @return void
+     */
+    protected function avisar_caja_en_rojo()
+    {
+        $minimos = DB::table('movimiento_cajas')
+            ->join('cajas', 'cajas.id', '=', 'movimiento_cajas.caja_id')
+            ->where('cajas.user_id', $this->user_id)
+            ->where('movimiento_cajas.saldo', '<', 0)
+            ->groupBy('cajas.id', 'cajas.name')
+            ->selectRaw('cajas.id as caja_id, cajas.name as nombre, MIN(movimiento_cajas.saldo) as minimo, COUNT(*) as movimientos')
+            ->get();
+
+        foreach ($minimos as $fila) {
+            $this->avisar('La caja "'.$fila->nombre.'" (id '.$fila->caja_id.') pasó por saldo NEGATIVO: '
+                .'tocó '.$fila->minimo.' y estuvo en rojo durante '.$fila->movimientos.' movimientos. '
+                .'Revisar el reparto de egresos de efectivo (metodos_de_efectivo_por_sucursal()) y la '
+                .'fecha de cierre de mes de los egresos contra los ingresos de ese mes.');
         }
     }
 
