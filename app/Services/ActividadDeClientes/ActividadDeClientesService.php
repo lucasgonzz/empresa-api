@@ -402,7 +402,24 @@ class ActividadDeClientesService
             'periodo'         => $periodo,
             'desde'           => $this->desde_informado($fuente, $periodo, $resumen['primera']),
             'hasta'           => $this->hasta_informado($fuente),
-            'hay_datos'       => !empty($grupos),
+            /*
+             * 🔴 `hay_datos` SE DERIVA DE LO QUE SE VA A MOSTRAR, Y NUNCA DE UN empty() SOBRE LA
+             * COLECCIÓN. En PHP `empty()` de un OBJETO es SIEMPRE false, así que el `!empty($grupos)`
+             * que había acá daba `true` para cualquier cliente que tuviera un comprador cargado
+             * aunque no hubiera hecho absolutamente NADA en la tienda — con todos los contadores en
+             * cero y las tres listas vacías al lado, diciendo que sí. Y no fallaba ruidosamente: la
+             * SPA simplemente no dibujaba nunca el cartel de vacío (§3.2: "hay_datos es false cuando
+             * no hay una sola fila. El front muestra el cartel vacío y no pide el resumen de la IA"),
+             * y encima mandaba a pagar una llamada a la IA por un cliente que no hizo nada.
+             * Si alguna vez hace falta preguntarle a una Collection si está vacía, es `isEmpty()`.
+             *
+             * Se deriva de `ultima_actividad` —y no de `$grupos->isEmpty()`, que también sería
+             * correcto— a propósito: así `hay_datos` NO PUEDE quedar en true mientras la pantalla
+             * muestra todo en cero, porque sale del mismo número que se informa. Cada fila de C1/C4
+             * trae sí o sí su MAX(occurred_at) / MAX(fecha) (las dos columnas son NOT NULL en el
+             * esquema), así que "hay un momento" y "hay al menos una fila" son la misma cosa.
+             */
+            'hay_datos'       => !is_null($resumen['totales']['ultima_actividad']),
             'cliente'         => $this->cliente_de_los_compradores($ids),
             'compradores'     => $this->compradores($ids),
             'totales'         => $this->totales_informados($resumen, $fuente),

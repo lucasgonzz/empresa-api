@@ -687,6 +687,64 @@ class Lector_de_actividad_Test extends TestCase
     }
 
     /**
+     * 🔴 EL OTRO CAMINO DEL CARTEL DE VACÍO, y el que se había escapado: compradores REALES con cero
+     * actividad en el periodo. No pasa por la guarda temprana —hay buyer_ids, las consultas salen y
+     * vuelven sin una sola fila—, así que `hay_datos` tiene que salir de lo que devolvieron esas
+     * consultas y no de un `empty()` sobre la colección, que en PHP es SIEMPRE false para un objeto.
+     *
+     * Lo que estaba roto no se veía: la pantalla mostraba todos los contadores en cero y las tres
+     * listas vacías, y al lado un `hay_datos: true` que le decía al front "hay algo, dibujá la
+     * pantalla llena y andá a pedirle el resumen a la IA" — o sea una llamada paga por un cliente
+     * que no hizo nada.
+     *
+     * Se miden los tres casos que llegan acá: sin ningún evento, con actividad FUERA de la ventana
+     * pedida, y el histórico contra un agregado vacío.
+     *
+     * @group actividad-de-clientes
+     * @test
+     */
+    public function un_cliente_con_compradores_pero_sin_actividad_no_tiene_datos()
+    {
+        $cliente = $this->cliente('Cliente que nunca entro a la tienda');
+        $buyer   = $this->comprador($cliente);
+        $art     = $this->articulo('Articulo que nadie miro');
+
+        $servicio  = $this->servicio();
+        $buyer_ids = $servicio->buyer_ids_de_un_cliente($cliente->id);
+
+        $this->assertSame([$buyer->id], $buyer_ids, 'el cliente SÍ tiene comprador: no entra por la guarda temprana');
+
+        // 1. Sin un solo evento en ninguna parte.
+        $actividad = $servicio->actividad($buyer_ids, 30);
+
+        $this->assertFalse($actividad['hay_datos'], 'sin una sola fila no hay datos, por más que el cliente tenga comprador');
+        $this->assertSame(0, $actividad['totales']['vistas']);
+        $this->assertNull($actividad['totales']['ultima_actividad']);
+        $this->assertSame([], $actividad['articulos']);
+        $this->assertSame([], $actividad['busquedas']);
+        $this->assertSame([], $actividad['linea_de_tiempo']);
+
+        // 2. Con actividad, pero VIEJA: fuera de la ventana pedida es exactamente lo mismo que nada.
+        $this->evento(['buyer_id' => $buyer->id, 'article_id' => $art->id, 'occurred_at' => now()->subDays(45)]);
+
+        $actividad = $servicio->actividad($buyer_ids, 30);
+        $this->assertFalse($actividad['hay_datos'], 'un evento de hace 45 días no es actividad de los últimos 30');
+        $this->assertSame(0, $actividad['totales']['vistas']);
+
+        // Y con la ventana que sí lo alcanza, el mismo cliente sí tiene datos: la aserción de arriba
+        // no está pasando porque hay_datos esté clavado en false.
+        $actividad = $servicio->actividad($buyer_ids, 90);
+        $this->assertTrue($actividad['hay_datos']);
+        $this->assertSame(1, $actividad['totales']['vistas']);
+
+        // 3. El histórico contra un agregado vacío: el evento crudo no lo alcanza, el rollup nunca corrió.
+        $actividad = $servicio->actividad($buyer_ids, ActividadDeClientesService::PERIODO_HISTORICO);
+        $this->assertSame(ActividadDeClientesService::FUENTE_AGREGADO, $actividad['fuente']);
+        $this->assertFalse($actividad['hay_datos'], 'sin filas en buyer_tracking_daily el histórico está vacío');
+        $this->assertNull($actividad['totales']['ultima_actividad']);
+    }
+
+    /**
      * 🔴 GUARDA TEMPRANA. Un cliente sin ningún comprador de la tienda asociado es el caso MÁS COMÚN
      * (el vínculo es manual), así que tiene que contestarse sin una sola consulta: con la lista
      * vacía, el `whereIn` degenera a un `0 = 1` que igual viaja seis veces a la base para no poder
