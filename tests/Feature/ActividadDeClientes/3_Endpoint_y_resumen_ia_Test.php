@@ -332,11 +332,12 @@ class Endpoint_y_resumen_ia_Test extends TestCase
                     'quitados_del_carrito',
                     'checkouts_empezados',
                     'compras',
+                    'compras_sin_articulo',
                     'monto_comprado',
                     'ultima_actividad',
                 ],
                 'articulos' => ['*' => [
-                    'article_id', 'nombre', 'vistas', 'tiempo_segundos', 'agregados_al_carrito', 'ultima_vez',
+                    'article_id', 'nombre', 'vistas', 'tiempo_segundos', 'agregados_al_carrito', 'comprados', 'ultima_vez',
                 ]],
                 'busquedas' => ['*' => [
                     'termino', 'veces', 'resultados', 'sin_resultado', 'ultima_vez',
@@ -362,6 +363,74 @@ class Endpoint_y_resumen_ia_Test extends TestCase
         $this->assertSame(1, $actividad['totales']['compras']);
         $this->assertEquals(15400.5, $actividad['totales']['monto_comprado']);
         $this->assertTrue($actividad['busquedas'][0]['sin_resultado'], 'results_count = 0 es "busco y no encontro nada".');
+
+        /*
+         * 🔴 El checkout de esta escena viene SIN `article_id` —como puede venir de la tienda de
+         * verdad— y el contrato exige que eso se pueda ver. Sin `compras_sin_articulo`, el
+         * `comprados = 0` del artículo se lee como "no lo compró" cuando lo que hay es "compró algo
+         * y no sabemos qué": es la clave que vuelve honesto al detalle.
+         */
+        $this->assertSame(
+            1,
+            $actividad['totales']['compras_sin_articulo'],
+            'la compra que llegó sin article_id tiene que informarse, no desaparecer.'
+        );
+        $this->assertSame(
+            0,
+            $actividad['articulos'][0]['comprados'],
+            'de este artículo no hay una sola compra atribuida: 0, y con compras_sin_articulo al lado para poder leerlo.'
+        );
+    }
+
+    /**
+     * 🔴 "QUÉ COMPRÓ" ES UNA DE LAS CINCO SEÑALES QUE SE PIDIERON, Y LLEGA POR ARTÍCULO.
+     *
+     * Se mide la escena mixta, que es la única que distingue los tres estados posibles: un artículo
+     * con compra atribuida, uno sin ninguna, y compras que la tienda no pudo atribuir a ninguno.
+     *
+     * @group actividad-de-clientes
+     * @test
+     */
+    public function el_endpoint_informa_que_articulos_compro_y_cuantas_compras_quedaron_sin_atribuir()
+    {
+        $this->autenticar();
+
+        $otro = $this->articulo_de('Amoladora comprada');
+
+        $this->evento(['article_id' => $this->articulo->id, 'dwell_ms' => 30000, 'occurred_at' => now()->subDays(3)]);
+        $this->evento(['article_id' => $otro->id, 'dwell_ms' => 30000, 'occurred_at' => now()->subDays(3)]);
+
+        $this->evento([
+            'event_type'  => 'checkout_complete',
+            'article_id'  => $otro->id,
+            'amount'      => 8000,
+            'occurred_at' => now()->subDays(2),
+        ]);
+
+        // La compra que la tienda no atribuyó a ningún artículo.
+        $this->evento([
+            'event_type'  => 'checkout_complete',
+            'article_id'  => null,
+            'amount'      => 1200,
+            'occurred_at' => now()->subDays(1),
+        ]);
+
+        $actividad = $this->getJson(self::RUTA . '?client_id=' . $this->cliente->id . '&periodo=30')
+            ->assertStatus(200)
+            ->json('actividad');
+
+        $this->assertSame(2, $actividad['totales']['compras']);
+        $this->assertSame(1, $actividad['totales']['compras_sin_articulo']);
+
+        $por_id = [];
+
+        foreach ($actividad['articulos'] as $articulo) {
+            $por_id[$articulo['article_id']] = $articulo;
+        }
+
+        $this->assertSame(1, $por_id[$otro->id]['comprados']);
+        $this->assertSame(0, $por_id[$this->articulo->id]['comprados']);
+        $this->assertSame(30, $por_id[$otro->id]['tiempo_segundos'], 'la compra no suma tiempo mirando el artículo.');
     }
 
     /**
@@ -761,5 +830,99 @@ class Endpoint_y_resumen_ia_Test extends TestCase
         $this->assertStringContainsString('Cable HDMI 2m', $datos);
         $this->assertStringContainsString($datos, $prompt, 'armar_prompt() tiene que envolver el bloque tal cual.');
         $this->assertStringContainsString('NO ENCONTRO NINGUN ARTICULO', $datos, 'Buscar y no encontrar nada se dice con letras.');
+    }
+
+    /**
+     * 🔴 LA IA NO PUEDE AFIRMAR "NO LO COMPRÓ" SOBRE ALGO DE LO QUE NO TIENE UN SOLO DATO.
+     *
+     * El prompt traía la regla "Si miro mucho un articulo y no lo compro, decilo" mientras el bloque
+     * de datos NO llevaba una sola compra por artículo — tres renglones abajo de "No inventes ni
+     * recalcules ningun numero". O sea que la instrucción y los datos se contradecían, y de las dos
+     * la que gana es la instrucción: la IA afirmaba.
+     *
+     * Se mide que los datos ahora traigan las dos cosas —lo que compró por artículo y cuántas
+     * compras no se pudieron atribuir— y que la regla pida decirlo como algo que NO FIGURA.
+     *
+     * @group actividad-de-clientes
+     * @test
+     */
+    public function el_bloque_de_datos_lleva_lo_que_compro_por_articulo_y_lo_que_no_se_pudo_atribuir()
+    {
+        $servicio = new ResumenIaActividadService();
+
+        $actividad = [
+            'fuente'      => 'eventos',
+            'periodo'     => 30,
+            'desde'       => '2026-07-18',
+            'hasta'       => '2026-08-17',
+            'hay_datos'   => true,
+            'cliente'     => ['client_id' => 1, 'nombre' => 'Ferreteria Lopez'],
+            'compradores' => [['buyer_id' => 1, 'nombre' => 'Lucas gonzalez']],
+            'totales'     => [
+                'vistas'                  => 12,
+                'articulos_distintos'     => 2,
+                // 🔴 220 segundos: es donde floor y round se separan (3 minutos, no 4).
+                'tiempo_total_segundos'   => 220,
+                'busquedas'               => 0,
+                'busquedas_sin_resultado' => 0,
+                'agregados_al_carrito'    => 1,
+                'quitados_del_carrito'    => 0,
+                'checkouts_empezados'     => 1,
+                'compras'                 => 3,
+                'compras_sin_articulo'    => 2,
+                'monto_comprado'          => 15400.5,
+                'ultima_actividad'        => '2026-08-16 19:42:00',
+            ],
+            'articulos'   => [
+                [
+                    'article_id'           => 33,
+                    'nombre'               => 'Cable HDMI 2m',
+                    'vistas'               => 5,
+                    'tiempo_segundos'      => 220,
+                    'agregados_al_carrito' => 1,
+                    'comprados'            => 1,
+                    'ultima_vez'           => '2026-08-16 19:42:00',
+                ],
+                [
+                    'article_id'           => 34,
+                    'nombre'               => 'Taladro percutor',
+                    'vistas'               => 7,
+                    'tiempo_segundos'      => 0,
+                    'agregados_al_carrito' => 0,
+                    'comprados'            => 0,
+                    'ultima_vez'           => '2026-08-15 10:00:00',
+                ],
+            ],
+            'busquedas'       => [],
+            'linea_de_tiempo' => [],
+        ];
+
+        $datos  = $servicio->armar_datos($actividad, 'Ferreteria Lopez');
+        $prompt = $servicio->armar_prompt($actividad, 'Ferreteria Lopez');
+
+        $this->assertStringContainsString(
+            'Compras que la tienda NO informo de que articulo eran: 2',
+            $datos,
+            'sin este número, un artículo en cero se lee como "no lo compró" y puede ser "no sabemos qué compró".'
+        );
+
+        $this->assertStringContainsString('lo compro 1 veces en la tienda', $datos, 'el artículo comprado lo dice.');
+        $this->assertStringContainsString(
+            'el tracking no le vio ninguna compra de este articulo',
+            $datos,
+            '"el tracking no le vio una compra" y "no lo compró" no son lo mismo, y la diferencia se dice.'
+        );
+
+        // 🔴 Los minutos van calculados y con la misma convención que la pantalla: 220 s son 3.
+        $this->assertStringContainsString('220 segundos mirandolo (3 minutos)', $datos);
+        $this->assertStringContainsString('220 segundos (3 minutos)', $datos);
+        $this->assertStringNotContainsString('(4 minutos)', $datos, '220 segundos no son 4 minutos: la pantalla dice 3.');
+
+        // Y la regla del prompt ya no le pide afirmar una compra que no puede saber.
+        $this->assertStringContainsString(
+            'no figura que lo haya comprado',
+            $prompt,
+            'la regla tiene que pedir decirlo como algo que no figura, nunca como un hecho.'
+        );
     }
 }

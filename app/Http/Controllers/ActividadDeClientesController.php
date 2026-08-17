@@ -268,23 +268,24 @@ class ActividadDeClientesController extends Controller
      * ¿Hubo UNA sola señal de este cliente en el periodo pedido? Es la guarda que decide si se paga
      * una llamada a la IA.
      *
-     * 🔴 NO ALCANZA CON PREGUNTARLE A `hay_datos`, Y NO ES DESCONFIANZA: ESTÁ MEDIDO (17/8/2026,
-     * contra empresa_testing_s2 ya sembrada). `ActividadDeClientesService::actividad()` arma esa
-     * clave con `!empty($grupos)` sobre la Collection que devuelve el `->get()`, y en PHP `empty()`
-     * de un objeto es SIEMPRE false —aunque la colección no tenga una sola fila—, así que
-     * `hay_datos` viene `true` para cualquier cliente que tenga al menos un comprador de la tienda,
-     * haya hecho algo o no. Verificado: `actividad([987654], 30)` sobre un comprador sin un solo
-     * evento devuelve `hay_datos = true` con todos los contadores en cero.
+     * 🔴 ESTA ES UNA RED REDUNDANTE A PROPÓSITO, Y CONVIENE SABER QUE LO ES.
      *
-     * Ese archivo es de otra unidad y NO se toca desde acá (queda reportado como freno). Pero la
-     * plata la cuida este endpoint, así que la guarda se contesta con los números, que sí son
-     * correctos: `ultima_actividad` es el MAX(occurred_at) de todo lo que hubo y viene null cuando
-     * no hubo nada.
+     * `hay_datos` está BIEN. Lo estuvo roto un rato: `ActividadDeClientesService::actividad()` lo
+     * armaba con `!empty($grupos)` sobre la Collection que devuelve el `->get()`, y en PHP `empty()`
+     * de un objeto es SIEMPRE false —aunque la colección no tenga una sola fila—, así que venía
+     * `true` para cualquier cliente que tuviera un comprador cargado aunque no hubiera hecho nada.
+     * Eso se arregló en el commit 8da1913: hoy la clave se deriva de `totales.ultima_actividad`, que
+     * es el mismo número que mira el `if` de acá abajo.
      *
-     * Se mira primero `ultima_actividad` y recién después los contadores: si mañana la tienda manda
-     * un `event_type` nuevo, que no alimenta ningún contador, eso IGUAL es actividad y el cliente
-     * merece su resumen. Y se conserva el chequeo de `hay_datos` adelante para que el día que esa
-     * clave se arregle esta guarda siga diciendo exactamente lo mismo.
+     * O sea que el `foreach` de contadores del final es, hoy, INALCANZABLE: cualquier cosa que
+     * mueva un contador movió también `ultima_actividad` (las columnas de momento son NOT NULL en
+     * las dos tablas). Se deja igual, y la decisión es deliberada: lo que esta guarda decide es si
+     * se paga o no una llamada a la IA, y una guarda de más sobre plata no molesta a nadie. Lo que
+     * sí molestaría es que alguien la lea creyendo que compensa un bug que ya no existe.
+     *
+     * El orden también es a propósito: primero `ultima_actividad` y después los contadores, porque
+     * si mañana la tienda manda un `event_type` nuevo —que no alimenta ningún contador— eso IGUAL
+     * es actividad y el cliente merece su resumen.
      *
      * @param  array $actividad
      * @return bool

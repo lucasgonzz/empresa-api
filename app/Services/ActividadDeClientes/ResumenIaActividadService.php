@@ -112,7 +112,15 @@ class ResumenIaActividadService
         $filas[] = 'Numeros ya calculados:';
         $filas[] = '- Vistas de articulos: ' . $this->entero($totales, 'vistas');
         $filas[] = '- Articulos distintos que miro: ' . $this->entero($totales, 'articulos_distintos');
-        $filas[] = '- Tiempo total mirando articulos: ' . $this->entero($totales, 'tiempo_total_segundos') . ' segundos';
+        /*
+         * 🔴 Los minutos van CALCULADOS, y con el mismo redondeo que la pantalla. Antes acá viajaban
+         * los segundos crudos y la IA hacía la división sola —tres renglones después de que el
+         * prompt le dijera "no recalcules ningún número"—, así que el chat contestaba 4 minutos
+         * sobre los mismos 220 segundos que el modal mostraba como 3. Los segundos se siguen
+         * mandando al lado: son el número exacto, y de ahí sale el minuto.
+         */
+        $filas[] = '- Tiempo total mirando articulos: ' . $this->entero($totales, 'tiempo_total_segundos') . ' segundos'
+            . ' (' . ActividadDeClientesService::a_minutos($this->entero($totales, 'tiempo_total_segundos')) . ' minutos)';
         $filas[] = '- Busquedas: ' . $this->entero($totales, 'busquedas')
             . ' (de esas, ' . $this->entero($totales, 'busquedas_sin_resultado') . ' no devolvieron ni un solo articulo)';
         $filas[] = '- Agrego al carrito: ' . $this->entero($totales, 'agregados_al_carrito') . ' veces';
@@ -120,9 +128,17 @@ class ResumenIaActividadService
         $filas[] = '- Empezo a comprar sin cerrar: ' . $this->entero($totales, 'checkouts_empezados') . ' veces';
         $filas[] = '- Compras cerradas: ' . $this->entero($totales, 'compras')
             . ' por un total de ' . $this->formatear_cantidad(isset($totales['monto_comprado']) ? $totales['monto_comprado'] : 0);
+        /*
+         * 🔴 CUÁNTO NO SE SABE, DICHO EN CRIOLLO. Sin esta línea, un `comprados: 0` en la lista de
+         * abajo se lee como "no lo compró", y con ese dato la IA sale a decirle al comerciante que
+         * le ofrezca algo que el cliente ya tiene. El evento de checkout de la tienda no siempre
+         * trae el artículo, así que "no figura" y "no pasó" no son lo mismo y hay que poder
+         * distinguirlos.
+         */
+        $filas[] = '- Compras que la tienda NO informo de que articulo eran: ' . $this->entero($totales, 'compras_sin_articulo');
         $filas[] = '- Ultima señal de actividad: ' . $this->texto_o_guion(isset($totales['ultima_actividad']) ? $totales['ultima_actividad'] : null);
 
-        $filas[] = 'Articulos que miro:';
+        $filas[] = 'Articulos que miro (y si el tracking le vio una compra de cada uno):';
         $filas   = array_merge($filas, $this->filas_de_articulos($actividad));
 
         $filas[] = 'Lo que busco en la tienda:';
@@ -146,7 +162,15 @@ class ResumenIaActividadService
             '- Maximo 5 oraciones, texto corrido, sin markdown, sin listas, sin guiones de lista, sin saludar ni presentarte.',
             '- No inventes ni recalcules ningun numero: usa los que estan en los datos y nada mas.',
             '- Si busco algo y no encontro nada, decilo: es lo mas accionable que hay, porque significa que hay demanda y no hay oferta.',
-            '- Si miro mucho un articulo y no lo compro, decilo.',
+            /*
+             * 🔴 ESTA REGLA DECIA "Si miro mucho un articulo y no lo compro, decilo" CUANDO LOS
+             * DATOS NO TRAIAN UNA SOLA COMPRA POR ARTICULO: le pedía a la IA afirmar "no lo compró"
+             * sobre algo de lo que no sabía nada, tres renglones abajo de "no inventes ni recalcules
+             * ningun numero". Ahora el dato existe (cada artículo dice si el tracking le vio una
+             * compra), pero sigue sin ser una certeza —el checkout no siempre informa el artículo—,
+             * así que la regla pide decirlo COMO LO QUE ES: algo que no figura.
+             */
+            '- Si miro mucho un articulo y el tracking no le vio ninguna compra de ese articulo, decilo, pero decilo como "no figura que lo haya comprado" y nunca como un hecho: mira el numero de compras que la tienda no informo de que articulo eran, y si es mayor a cero aclaralo.',
             '- Cerra diciendo de que le conviene hablarle o que le conviene ofrecerle.',
         ];
 
@@ -349,10 +373,20 @@ class ResumenIaActividadService
         $filas = [];
 
         foreach ($articulos as $articulo) {
+            $segundos  = isset($articulo['tiempo_segundos']) ? (int) $articulo['tiempo_segundos'] : 0;
+            $comprados = isset($articulo['comprados']) ? (int) $articulo['comprados'] : 0;
+
+            // "El tracking no le vio una compra" y "no lo compró" no son lo mismo, y la diferencia
+            // se dice acá y no se deja deducir de un cero.
+            $compra = ($comprados > 0)
+                ? 'lo compro ' . $comprados . ' veces en la tienda'
+                : 'el tracking no le vio ninguna compra de este articulo';
+
             $filas[] = '- ' . $this->texto_o_guion(isset($articulo['nombre']) ? $articulo['nombre'] : null)
                 . ': ' . (isset($articulo['vistas']) ? (int) $articulo['vistas'] : 0) . ' vistas'
-                . ', ' . (isset($articulo['tiempo_segundos']) ? (int) $articulo['tiempo_segundos'] : 0) . ' segundos mirandolo'
+                . ', ' . $segundos . ' segundos mirandolo (' . ActividadDeClientesService::a_minutos($segundos) . ' minutos)'
                 . ', ' . (isset($articulo['agregados_al_carrito']) ? (int) $articulo['agregados_al_carrito'] : 0) . ' veces al carrito'
+                . ', ' . $compra
                 . ', ultima vez ' . $this->texto_o_guion(isset($articulo['ultima_vez']) ? $articulo['ultima_vez'] : null);
         }
 
