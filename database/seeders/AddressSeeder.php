@@ -63,6 +63,11 @@ class AddressSeeder extends Seeder
                 'num'       => 1,
                 'street'    => 'Tucuman',
                 'user_id'   => config('app.USER_ID'),
+                // Deposito de origen preferente para las sugerencias de traslado de stock: sin
+                // al menos una sucursal marcada, StockSuggestionService::obtenerOrigen() nunca
+                // entra en el escalon 1 (designados sin deficit) y cae directo al comportamiento
+                // historico, asi que la demo no llega a mostrar el escalonado por origen preferente.
+                'es_deposito_origen' => 1,
             ],
             [
                 'num'       => 2,

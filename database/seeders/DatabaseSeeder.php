@@ -57,6 +57,11 @@ class DatabaseSeeder extends Seeder
 
             $this->call(UserSeeder::class);
 
+            // Engancha al usuario dueño las extensiones de IA que la semilla de datos de
+            // prueba necesita activas (grupo seeders-demo-datos-completos, unidad U2). Va
+            // aca porque necesita al usuario ya creado (UserSeeder, arriba) y las filas de
+            // extencion_empresas ya sembradas (common_seeders(), antes de UserSeeder).
+            $this->call(ExtencionesIaUserSeeder::class);
 
             if ($for_user == 'golo_norte') {
 
