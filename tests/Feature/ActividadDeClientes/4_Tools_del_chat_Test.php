@@ -773,9 +773,14 @@ class Tools_del_chat_Test extends TestCase
      */
     public function la_busqueda_del_articulo_elige_el_exacto_y_escapa_los_comodines()
     {
-        // 25 artículos que empiezan antes alfabéticamente y contienen el término buscado.
+        /*
+         * 25 señuelos que CONTIENEN el término buscado (o sea que el LIKE los trae) y que ordenan
+         * ANTES por nombre, así llenan el tope de 20 candidatos y el nombre exacto queda afuera.
+         * Si no contuvieran el término, el LIKE no los traería y el test pasaría igual sin el
+         * arreglo: es la diferencia entre medir y parecer que se mide.
+         */
         for ($i = 0; $i < 25; $i++) {
-            $this->articulo('AAA Cinta ' . $i . ' aisladora');
+            $this->articulo('AAA Cinta aisladora negra numero ' . $i);
         }
 
         $exacto = $this->articulo('Cinta aisladora');
@@ -791,18 +796,30 @@ class Tools_del_chat_Test extends TestCase
             'con 25 artículos que ordenan antes, el nombre exacto se pierde si se lo busca dentro del tope del LIKE'
         );
 
-        // Y el comodín: un término con `%` no puede traer lo que no se le parece en nada.
+        /*
+         * Y el comodín. El caso está armado para que el escape sea LO ÚNICO que decide, porque un
+         * test de escape que pasa igual sin escapar no mide nada:
+         *
+         *   busqueda = "50% especial"
+         *   sin escapar -> LIKE '%50% especial%' = "contiene 50, después cualquier cosa, después
+         *                  ' especial'": matchea el señuelo, que además ordena ANTES por nombre.
+         *   escapado    -> LIKE '%50\% especial%' = "contiene literalmente '50% especial'": sólo
+         *                  matchea el que el operador quiso nombrar.
+         */
+        $senuelo     = $this->articulo('AAA 50 muy especial');
         $con_comodin = $this->articulo('Descuento 50% especial');
-        $otro_buyer  = $this->comprador($this->cliente('El que mira el descuento'));
 
-        $this->evento(['buyer_id' => $otro_buyer->id, 'article_id' => $con_comodin->id, 'occurred_at' => now()->subDays(2)]);
+        foreach ([$senuelo, $con_comodin] as $art) {
+            $otro_buyer = $this->comprador($this->cliente('El que mira ' . $art->id));
+            $this->evento(['buyer_id' => $otro_buyer->id, 'article_id' => $art->id, 'occurred_at' => now()->subDays(2)]);
+        }
 
         $respuesta = ConsultasSistemaIaHelper::interesados_en_un_articulo($this->comercio->id, '50% especial', 30);
 
         $this->assertEquals(
             'Descuento 50% especial',
             $respuesta['articulo'],
-            'sin escapar, el % del término lo convierte en comodín y el LIKE elige cualquier otro artículo'
+            'sin escapar, el % del término se vuelve comodín y la tool contesta sobre OTRO artículo con total seguridad'
         );
     }
 
