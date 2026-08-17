@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\caja\CajaAperturaHelper;
 use App\Models\Address;
 use App\Models\Caja;
 use App\Models\DefaultPaymentMethodCaja;
+use App\Models\ExpenseConcept;
 use App\Models\Moneda;
 use App\Models\User;
 use Illuminate\Database\Seeder;
@@ -34,14 +35,16 @@ class CajaSeeder extends Seeder
     }
 
     /**
-     * Cada sucursal maneja su propia caja de EFECTIVO; el resto (Mercado Pago, Banco, Tarjetas,
-     * Cheques) son compartidas entre las 4 -- es la estructura real de un comercio con locales:
-     * la plata física está en el mostrador de cada local, pero la cuenta de Mercado Pago y la
-     * cuenta bancaria son una sola de la empresa (pedido de Lucas, 3/8/2026, grupo 321).
+     * Cada sucursal maneja su propia caja de EFECTIVO; el resto (Mercado Pago, Banco Nación,
+     * Transferencias, Tarjetas, Cheques) son compartidas entre las 4 -- es la estructura real de
+     * un comercio con locales: la plata física está en el mostrador de cada local, pero la
+     * cuenta de Mercado Pago y la cuenta bancaria son una sola de la empresa (pedido de Lucas,
+     * 3/8/2026, grupo 321).
      *
      * Antes armaba el producto cartesiano completo (sucursal x método de pago = 24 cajas): esto
-     * deja 9 -- 4 de efectivo (una por sucursal) + Mercado Pago + Banco + Tarjetas + Cheques +
-     * Caja Fuerte.
+     * deja 10 -- 4 de efectivo (una por sucursal) + Mercado Pago + Banco Nación + Transferencias
+     * + Tarjetas + Cheques + Caja Fuerte. "Transferencias" se agregó después (pedido 6, semilla
+     * de datos de demo) como default del método 4, en el lugar que dejó libre "Banco Nación".
      */
     function una_caja_para_cada_direccion_y_por_cada_metodo_de_pago() {
 
@@ -91,17 +94,47 @@ class CajaSeeder extends Seeder
         // resuelve esto solo -- cuando el modelo no trae 'address_id' dentro de
         // 'default_payment_method_caja', itera $this->addresses y crea una fila por sucursal
         // apuntando todas al mismo caja_id.
+        //
+        // La comisión de Mercado Pago (5%, liquida en 15 días) es la que Lucas pidió para esta
+        // cuenta puntual -- por eso va hardcodeada acá y no en la migración, que la deja en null
+        // (sin comisión) para cualquier caja que no la configure. El concepto de gasto se busca
+        // por NOMBRE, nunca por id fijo, porque el id de ExpenseConcept no es estable entre
+        // bases. Si todavía no existe (instalación de un cliente real, fuera de local/demo, este
+        // seeder puede correr antes que ExpenseConceptSeeder), queda en null: eso no rompe la
+        // siembra porque MovimientoCajaHelper::crear_gasto_comision() ya sabe degradar sin
+        // excepción cuando no hay expense_concept_id configurado (solo loguea un warning).
+        $comision_mp_expense_concept = ExpenseConcept::where('user_id', config('app.USER_ID'))
+                                            ->where('name', 'Comisiones bancarias')
+                                            ->first();
+
         $models[] = [
-            'name'          => 'Mercado Pago',
-            'address_id'    => null,
-            'user_id'       => config('app.USER_ID'),
+            'name'                  => 'Mercado Pago',
+            'address_id'            => null,
+            'user_id'               => config('app.USER_ID'),
+            'dias_liquidacion'      => 15,
+            'comision_porcentaje'   => 5,
+            'expense_concept_id'    => $comision_mp_expense_concept->id ?? null,
             'default_payment_method_caja' => [
                 'payment_method_id' => 6,
             ],
         ];
 
+        // "Banco Nación" (antes "Banco"): sigue existiendo como caja compartida para asentar
+        // movimientos bancarios reales, pero deja de ser el default del método 4 -- ese lugar
+        // pasa a la caja "Transferencias" de abajo. Por eso ya no lleva
+        // default_payment_method_caja.
         $models[] = [
-            'name'          => 'Banco',
+            'name'          => 'Banco Nación',
+            'address_id'    => null,
+            'user_id'       => config('app.USER_ID'),
+        ];
+
+        // Caja nueva (pedido 6, semilla de datos de demo): "Transferencias" pasa a ser el
+        // default del método 4 en las 4 sucursales, en el lugar que dejó libre "Banco Nación".
+        // Sin address_id adentro del bloque, set_cajas_por_defecto() itera $this->addresses
+        // igual que hace con Mercado Pago, arriba.
+        $models[] = [
+            'name'          => 'Transferencias',
             'address_id'    => null,
             'user_id'       => config('app.USER_ID'),
             'default_payment_method_caja' => [
@@ -144,6 +177,15 @@ class CajaSeeder extends Seeder
             // inicial arbitrario mete ruido que no corresponde a ninguna operación real y hace
             // que esa verificación deje de cerrar. No "arreglar" esto sumando un valor de nuevo.
             $model_to_create['saldo'] = 0;
+
+            // Liquidación y comisión (hoy solo las trae Mercado Pago, arriba): si el modelo no
+            // las define, quedan en null -- mismo significado ("liquidación inmediata, sin
+            // comisión") que ya tenían las 9 cajas de antes de este cambio. comision_iva_alicuota
+            // y comision_iva_incluido NO se listan acá a propósito: quedan afuera del insert para
+            // que se aplique el default de columna (21 / 0) en vez de pisarlo.
+            $model_to_create['dias_liquidacion'] = $model['dias_liquidacion'] ?? null;
+            $model_to_create['comision_porcentaje'] = $model['comision_porcentaje'] ?? null;
+            $model_to_create['expense_concept_id'] = $model['expense_concept_id'] ?? null;
 
             if(isset($model['employee_id'])) {
 
