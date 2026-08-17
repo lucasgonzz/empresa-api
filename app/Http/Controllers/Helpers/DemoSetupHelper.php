@@ -107,6 +107,34 @@ class DemoSetupHelper
          */
         config(['app.USER_ID' => $user->id]);
 
+        /**
+         * Y ADEMAS semilla.user_id, que NO es lo mismo aunque lo parezca.
+         *
+         * `config/semilla.php:38` lo resuelve como `env('SEMILLA_USER_ID', env('USER_ID'))`, o sea
+         * que sale del `.env` de la instancia y se congela cuando se carga la configuracion --
+         * mucho antes de que este metodo exista un User. `create_demo_user()` no lo toca.
+         *
+         * El seeder que esta demo usaba antes (ReportesMesSeeder) leia config('app.USER_ID'), asi
+         * que con la linea de arriba alcanzaba. El que lo reemplazo, no: `semilla:datos` hace
+         * `$this->user_id = config('semilla.user_id')` en la PRIMERA parte de su handle()
+         * (SembrarDatosDePrueba.php:235, en runtime y no en el constructor -- por eso pisar la
+         * config aca sirve), y de ahi salen todas sus consultas.
+         *
+         * Sin esta linea, en una instancia cuyo `.env` no tenga `USER_ID`, o lo tenga con un id
+         * distinto al que devolvio `create_demo_user()`, `semilla:datos` busca el catalogo del
+         * usuario equivocado y muere: `cargar_catalogo()` tira "no hay ningun Client para el
+         * usuario X", o `SemillaHelper::asegurar_semilla_user_id_coincide_con_app_user_id()` tira
+         * en la primera venta porque los dos ids no coinciden.
+         *
+         * Y esa excepcion NO se la traga nadie: `Illuminate\Console\Application` corre con
+         * `setCatchExceptions(false)`, asi que `Artisan::call('semilla:datos')` la propaga y
+         * revienta este metodo DESPUES del `migrate:fresh` de arriba y ANTES de
+         * `set_company_performances`, `tienda()` y `DemoIngresoTokenHelper::guardar()`. La
+         * instancia queda con la base vaciada y a medio sembrar, que es el peor final posible
+         * para este helper.
+         */
+        config(['semilla.user_id' => $user->id]);
+
         // Puntos de venta de AFIP (RRII + Monotributo) asociados al user
         self::puntos_de_venta_afip($user);
 

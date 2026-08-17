@@ -5,6 +5,7 @@ namespace Database\Seeders;
 use App\Models\ExtencionEmpresa;
 use App\Models\User;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Engancha al usuario dueño (config('app.USER_ID')) las cuatro extensiones de IA que la
@@ -60,7 +61,24 @@ class ExtencionesIaUserSeeder extends Seeder
             // La extension puede no estar sembrada todavia si el seeder que la registra
             // no corrio (orden distinto en algun FOR_USER puntual). Se saltea esa sola,
             // no se corta la corrida entera por una que falta.
+            //
+            // Pero se AVISA, y fuerte: el PHPDoc de arriba dice que sin estas extensiones "los
+            // datos que siembra el resto de la semilla no se pueden ni mirar", asi que faltar una
+            // significa que un modulo entero de la demo va a devolver 403 y desde afuera va a
+            // parecer que la funcionalidad esta rota y no que falto sembrar una fila. Salir en
+            // silencio dejaba ese diagnostico sin ninguna pista, que es la misma clase de falla
+            // muda que FerreteriaArticlesSeeder cierra con su Log::warning de las fotos.
             if (! $extencion) {
+                Log::warning(
+                    'ExtencionesIaUserSeeder: no existe la fila de extencion_empresas con slug "'
+                    . $slug . '", asi que no se le engancha al usuario. El modulo que depende de '
+                    . 'esa extension va a responder 403 y los datos que siembra la semilla para el '
+                    . 'no se van a poder mirar. Falto correr el seeder que la registra '
+                    . '(ExtencionSugerenciasInteligentesSeeder, ExtencionSugerenciasComprasSeeder, '
+                    . 'ExtencionMotorDeOfertasSeeder o ExtencionTrackingBuyersSeeder).',
+                    ['slug' => $slug, 'user_id' => $user->id]
+                );
+
                 continue;
             }
 
