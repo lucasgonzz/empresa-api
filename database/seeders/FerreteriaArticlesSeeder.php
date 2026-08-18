@@ -9,6 +9,7 @@ use App\Models\Category;
 use App\Models\Description;
 use App\Models\Provider;
 use App\Models\SubCategory;
+use App\Observers\ArticleObserver;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -76,9 +77,39 @@ class FerreteriaArticlesSeeder extends Seeder
      * Ejecuta el seeder completo del rubro ferreteria.
      * Crea ocho categorias padre, subcategorias, marcas y articulos del catalogo con descripciones ecommerce.
      *
+     * 🔴 TODA LA CORRIDA VA CON EL FLAG DE SEMILLA PRENDIDO, Y ESO NO ES OPCIONAL.
+     *
+     * ArticleObserver::debe_generar_embedding() es el punto unico donde deciden los dos
+     * observers (Article y Description). Con el flag apagado, sembrar este catalogo dispara
+     * 138 llamadas pagas a OpenAI: 46 articulos x 3 jobs cada uno, uno por Article::created
+     * y dos por Description::created. Y los tres jobs de un mismo articulo ven textos
+     * distintos —sin descripcion, con una, con las tres—, asi que el corte por
+     * embedding_source_hash no salva ninguno: los tres pagan.
+     *
+     * El flag se apaga en un finally porque si el seeder revienta a mitad de camino no puede
+     * quedar prendido: el resto del proceso (o el resto de la suite de tests) se quedaria
+     * sin generar embeddings de nada, en silencio y sin sintoma.
+     *
      * @return void
      */
     public function run()
+    {
+        ArticleObserver::empezar_semilla();
+
+        try {
+            $this->sembrar_catalogo();
+        } finally {
+            ArticleObserver::terminar_semilla();
+        }
+    }
+
+    /**
+     * Cuerpo real del seeder, separado de run() para que el finally del flag de semilla
+     * envuelva la corrida entera sin un try gigante alrededor de todo el metodo.
+     *
+     * @return void
+     */
+    protected function sembrar_catalogo()
     {
         /** Catalogo base obtenido desde excels con codigos de barra validados. */
         $catalog = $this->get_catalog();
@@ -392,39 +423,106 @@ class FerreteriaArticlesSeeder extends Seeder
     }
 
     /**
-     * Crea una o mas descripciones del articulo para ecommerce.
+     * Ruta del archivo con las descripciones a medida de los 46 articulos.
+     *
+     * @var string
+     */
+    const ARCHIVO_DESCRIPCIONES = __DIR__ . '/data/ferreteria_descripciones.php';
+
+    /**
+     * Descripciones ya leidas del disco, para no hacer un require por articulo.
+     *
+     * @var array<string,array<int,array<string,string>>>|null
+     */
+    protected $descripciones_del_catalogo = null;
+
+    /**
+     * Crea las descripciones a medida del articulo, en el orden en que estan escritas.
+     *
+     * 🔴 EL ORDEN DE INSERCION ES PARTE DEL TEXTO QUE SE VECTORIZA. Cada Description se
+     * crea en el orden del array del archivo de datos, el orden de creacion define los id,
+     * y ArticleEmbeddingService::descriptions_text() ordena por id para armar el texto que
+     * se manda a OpenAI y se hashea. O sea que reordenar los tres bloques de un articulo
+     * cambia el texto, cambia el sha1 y obliga a rehornear el vector con
+     * `php artisan semilla:embeddings`. No es un detalle de presentacion.
+     *
+     * ¿POR QUE EL INDICE DEL ARCHIVO DE DATOS ES EL name Y NO OTRA COSA?
+     *
+     * - No por indice numerico: reordenar o intercalar una fila en get_catalog() correria
+     *   todo el mapeo y cada articulo quedaria con la descripcion del vecino, sin ningun
+     *   error a la vista. El sintoma seria un catalogo entero mal descripto y un agente de
+     *   IA contestando cualquier cosa.
+     * - No por bar_code: tres articulos lo tienen vacio (escobillon GARDEX, timbre CANDELA
+     *   y cinta TACSA), asi que colisionarian entre ellos en la misma clave ''.
+     * - No por provider_code: hay un 'SIN-COD-PROV' en el catalogo, que es un valor de
+     *   relleno y no un identificador.
+     *
+     * El acoplamiento por nombre es el mismo que ya denuncia nombre_de_archivo_de_imagen():
+     * si alguien retoca un name en get_catalog() y no lo retoca aca, este metodo no
+     * encuentra la entrada. Por eso avisa por log y sigue, en vez de reventar.
      *
      * @param int $article_id
-     * @param array<string,mixed> $item
+     * @param array<string,mixed> $item Fila del catalogo.
      * @return void
      */
     protected function create_descriptions($article_id, $item)
     {
-        /** Titulo principal de ficha para destacar uso recomendado. */
-        $main_title = 'Descripcion del producto';
+        /** Nombre exacto del catalogo, que es la clave del archivo de datos. */
+        $nombre = $item['name'];
 
-        /** Contenido principal con foco comercial y de decision de compra. */
-        $main_content = $item['name'] . ' de la marca ' . $item['brand_name'] . ', ideal para trabajos de ' . strtolower($item['sub_category_name']) . '. '
-            . 'Fabricado con materiales resistentes para uso frecuente en obra, taller o mantenimiento del hogar.';
+        /** Bloques escritos a mano para este articulo; array vacio si no hay entrada. */
+        $bloques = $this->descripciones_de($nombre);
 
-        Description::create([
-            'title' => $main_title,
-            'content' => $main_content,
-            'article_id' => $article_id,
-        ]);
+        if (count($bloques) === 0) {
+            /*
+             * Mismo criterio que avisar_imagenes_faltantes(): un articulo sin descripciones
+             * es un dato cosmetico incompleto, y este seeder corre adentro de
+             * DemoSetupHelper::run(), que instala clientes reales sobre un migrate:fresh.
+             * Voltear la instalacion entera por un texto que falta seria peor que crear el
+             * articulo sin el. El unico costo real es que ese articulo va a quedar con un
+             * embedding pobre hasta que alguien agregue la entrada.
+             */
+            Log::warning(
+                'FerreteriaArticlesSeeder: no hay descripciones a medida para "' . $nombre . '", '
+                . 'el articulo se crea SIN descripciones. El archivo '
+                . 'database/seeders/data/ferreteria_descripciones.php se indexa por el name EXACTO '
+                . 'de get_catalog(): si se retoco un nombre en el catalogo, hay que retocarlo alla '
+                . 'tambien y despues rehornear con "php artisan semilla:embeddings".',
+                ['name' => $nombre, 'article_id' => $article_id]
+            );
 
-        /** Titulo secundario orientado a beneficios logistica/uso real. */
-        $secondary_title = 'Beneficios';
+            return;
+        }
 
-        /** Contenido secundario para reforzar confianza y postventa ecommerce. */
-        $secondary_content = 'Excelente relacion costo-beneficio, facil de manipular y con rendimiento confiable. '
-            . 'Producto recomendado para profesionales y usuarios exigentes que buscan durabilidad y buen resultado final.';
+        foreach ($bloques as $bloque) {
+            Description::create([
+                'title' => $bloque['title'],
+                'content' => $bloque['content'],
+                'article_id' => $article_id,
+            ]);
+        }
+    }
 
-        Description::create([
-            'title' => $secondary_title,
-            'content' => $secondary_content,
-            'article_id' => $article_id,
-        ]);
+    /**
+     * Bloques de descripcion escritos a mano para un articulo del catalogo.
+     *
+     * El archivo se lee UNA sola vez por corrida y queda en memoria: son 46 entradas de
+     * texto y hacer un require por articulo seria leer el mismo archivo 46 veces.
+     *
+     * @param string $nombre Valor exacto de $item['name'].
+     * @return array<int,array<string,string>> Vacio si no hay entrada para ese nombre.
+     */
+    protected function descripciones_de($nombre)
+    {
+        if (is_null($this->descripciones_del_catalogo)) {
+            $this->descripciones_del_catalogo = require self::ARCHIVO_DESCRIPCIONES;
+        }
+
+        if (!isset($this->descripciones_del_catalogo[$nombre])) {
+            return [];
+        }
+
+        return $this->descripciones_del_catalogo[$nombre];
     }
 
     /**
