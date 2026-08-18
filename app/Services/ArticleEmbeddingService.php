@@ -234,18 +234,24 @@ class ArticleEmbeddingService
 
     /**
      * Genera el embedding del artículo y lo persiste en la columna embedding
-     * de la tabla articles usando una sentencia SQL cruda.
-     *
-     * Se usa SQL crudo porque el tipo vector() de pgvector no tiene soporte
-     * nativo en el ORM de Laravel 8; el cast ::vector es necesario en Postgres.
+     * de la tabla articles.
      *
      * @param Article $article Artículo con relaciones category, brand y descriptions cargadas.
      *
-     * @return void
+     * @return bool `true` si se escribió un vector nuevo; `false` si no había texto que
+     *              vectorizar y el artículo quedó tal cual estaba.
+     *
+     * 🔴 EL BOOL NO ES DECORACIÓN: es lo único que distingue "generé un embedding" de
+     * "salí sin hacer nada". Este método tiene un `return` mudo cuando el texto queda vacío
+     * (artículo sin nombre, sin categoría, sin marca, sin código y sin descripciones — pasa
+     * con filas a medio importar). Mientras devolvía `void`, el caller no tenía forma de
+     * enterarse y contaba ese caso como embedding generado, que es justo el número que la
+     * tanda le termina mostrando al comerciante en el toast. Si alguien viene a "limpiar"
+     * esto devolviendo `void` de nuevo, el contador vuelve a mentir en silencio.
      *
      * @throws \RuntimeException Si generate_embedding() falla.
      */
-    public function update_article_embedding(Article $article): void
+    public function update_article_embedding(Article $article): bool
     {
         // Construir texto representativo del artículo.
         $text = $this->embedding_for_article($article);
@@ -254,19 +260,51 @@ class ArticleEmbeddingService
             Log::channel('daily')->warning('ArticleEmbeddingService: artículo sin texto para embeddear.', [
                 'article_id' => $article->id,
             ]);
-            return;
+            return false;
         }
 
         // Obtener vector como array de floats.
         $embedding = $this->generate_embedding($text);
 
+        $this->persistir_embedding((int) $article->id, $embedding);
+
+        return true;
+    }
+
+    /**
+     * Persiste un vector YA CALCULADO en articles.embedding, en el formato del driver activo.
+     *
+     * Se usa SQL crudo porque el tipo vector() de pgvector no tiene soporte nativo en el ORM
+     * de Laravel 8; el cast ::vector es necesario en Postgres. En MySQL la columna es JSON y
+     * el vector viaja como array serializado.
+     *
+     * 🔴 POR QUÉ ESTO ES PÚBLICO Y ESTÁ SEPARADO DE update_article_embedding(), aunque a
+     * primera vista parezca que sobra un método:
+     *
+     * - Hay un segundo escritor de vectores que NO pasa por OpenAI: el seeder de la
+     *   ferretería, que copia embeddings horneados de un archivo commiteado en el repo. Ese
+     *   camino necesita persistir un vector que ya tiene en la mano, sin texto, sin llamada
+     *   paga y sin hash nuevo.
+     * - La decisión pgvector-vs-JSON NO PUEDE QUEDAR DUPLICADA. Es una rama de dos líneas y
+     *   por eso da ganas de copiarla al seeder; el problema es que el día que el proyecto se
+     *   mude a Postgres, la copia del seeder se olvida y horneás vectores que en producción
+     *   se guardan como texto JSON en una columna vector. El síntoma sería una búsqueda
+     *   semántica que devuelve cualquier cosa, sin ningún error.
+     *
+     * @param int               $article_id Artículo destino.
+     * @param array<int, float> $embedding  Vector completo, tal como lo devuelve OpenAI.
+     *
+     * @return void
+     */
+    public function persistir_embedding(int $article_id, array $embedding): void
+    {
         if ($this->uses_pgvector()) {
             // PostgreSQL: literal [f1,f2,...] con cast ::vector.
             $vector_string = '['.implode(',', $embedding).']';
 
             DB::statement(
                 'UPDATE articles SET embedding = ?::vector WHERE id = ?',
-                [$vector_string, $article->id]
+                [$vector_string, $article_id]
             );
 
             return;
@@ -274,7 +312,7 @@ class ArticleEmbeddingService
 
         // MySQL / otros: persistir el array como JSON.
         DB::table('articles')
-            ->where('id', $article->id)
+            ->where('id', $article_id)
             ->update(['embedding' => json_encode($embedding)]);
     }
 

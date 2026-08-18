@@ -123,6 +123,52 @@ class FinalizeArticleImport implements ShouldQueue
             ['import_history_id' => $import_history->id],
             (string) $import_history->id
         );
+
+        $this->generar_embeddings_de_lo_importado();
+    }
+
+    /**
+     * Dispara la vectorización de los artículos que la importación acaba de crear o modificar.
+     *
+     * POR QUÉ ACÁ Y POR QUÉ NO ALCANZA CON ESPERAR AL SCHEDULER
+     * --------------------------------------------------------
+     * Mientras dura una importación, los dos observers de embeddings se saltean a propósito cada
+     * artículo que se guarda (ArticleObserver::debe_generar_embedding() corta si hay un
+     * ImportStatus en 'en_proceso'), porque encolar un job por cada fila de un Excel de 20.000
+     * sería una tormenta sobre artículos que además siguen cambiando.
+     *
+     * La red que levantaba eso era el comando agendado cada 30 minutos. O sea que un lead que
+     * importaba su catálogo y se iba derecho a probar el agente de WhatsApp podía preguntar por
+     * un artículo recién importado y que el agente no lo encontrara — no porque estuviera mal
+     * cargado, sino porque todavía no tenía vector. Hasta media hora de ventana, justo en el
+     * momento en que está evaluando si compra.
+     *
+     * Este es el único punto donde engancharlo: es el último eslabón del Bus::chain que arma
+     * InitExcelImport, corre una sola vez, y si todavía faltaban chunks ya se re-despachó solo
+     * mucho antes de llegar hasta acá.
+     *
+     * Sobre `--ignorar-importacion-en-curso`: la justificación completa está en el gate del
+     * propio comando. En una línea, el gate mira TODOS los ImportStatus del usuario y no el de
+     * esta importación, así que un registro huérfano de una corrida muerta dejaría al comando
+     * mudo justo cuando más falta hace.
+     *
+     * No se chequea el código de salida a propósito: si no hay nada pendiente que vectorizar, o
+     * el dueño no tiene la extensión whatsapp_ia, el comando sale en 0 sin hacer nada y eso es
+     * lo correcto, no una falla que haya que propagar y que voltearía la finalización de una
+     * importación que ya terminó bien.
+     *
+     * @return void
+     */
+    protected function generar_embeddings_de_lo_importado()
+    {
+        Artisan::call('articles:generate-embeddings', [
+            '--origen'                        => 'importacion',
+            '--ignorar-importacion-en-curso'  => true,
+        ]);
+
+        Log::info('FinalizeArticleImport: se disparó la generación de embeddings post-importación.', [
+            'import_history_id' => $this->import_history_id,
+        ]);
     }
 
     /**

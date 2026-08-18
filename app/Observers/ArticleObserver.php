@@ -70,6 +70,64 @@ class ArticleObserver
     private static $cache_gate = [];
 
     /**
+     * Prendido mientras corre un seeder que ya trae los vectores calculados.
+     *
+     * 🔴 ESTE FLAG NO REEMPLAZA AL GATE DE EXTENSIÓN NI AL DE IMPORTACIÓN. Es un TERCER
+     * corte, con una razón distinta a las otras dos, y por eso está separado:
+     *
+     * - El gate de extensión corta porque el catálogo vectorial no lo consume nadie.
+     * - El gate de importación corta porque las filas todavía están cambiando y el
+     *   comando agendado las va a levantar igual más tarde.
+     * - Este corta porque durante la semilla el vector NO SE CALCULA, SE COPIA: el seeder
+     *   de la ferretería lee los embeddings horneados de un archivo commiteado en el repo
+     *   y los persiste tal cual. Despachar el job sería salir a pagarle a OpenAI por un
+     *   vector que ya está en el repo. Y no es una llamada por artículo: sembrar los 46
+     *   artículos dispara 138 jobs (uno por `Article::create()` más dos por las
+     *   `Description::create()` de cada uno), y los tres jobs de un mismo artículo ven
+     *   textos distintos, así que ni el corte por `embedding_source_hash` los salva.
+     *
+     * Por qué el flag vive ACÁ y no en los otros dos lugares donde alguien lo pondría:
+     *
+     * - `Article::withoutEvents()` en el seeder apagaría TODOS los observers del modelo,
+     *   no solo el de embeddings, y `crear_article()` hace bastante más que crear la fila.
+     * - `Event::fake()` es una herramienta de tests; no tiene nada que hacer adentro de un
+     *   seeder que se corre en local y en la demo.
+     * - `debe_generar_embedding()` YA ES el punto único donde los DOS observers (Article y
+     *   Description) deciden — `DescriptionObserver` la llama tal cual, justamente para no
+     *   duplicar criterio. Poniendo el flag ahí queda cubierto de una sola vez el artículo
+     *   Y sus descripciones, sin tocar `ArticleSeederHelper`, `Description` ni
+     *   `AppServiceProvider`.
+     *
+     * @var bool
+     */
+    private static $semilla_en_curso = false;
+
+    /**
+     * Avisa que arranca una semilla con vectores ya horneados: a partir de acá no se
+     * despacha ningún job de embedding hasta que se llame a terminar_semilla().
+     *
+     * El seeder tiene que apagarlo en un `finally`, no al final del `run()`: si el seeder
+     * revienta a mitad de camino, el flag prendido silenciaría los embeddings del resto
+     * del proceso.
+     *
+     * @return void
+     */
+    public static function empezar_semilla(): void
+    {
+        self::$semilla_en_curso = true;
+    }
+
+    /**
+     * Cierra la semilla y devuelve los observers a su comportamiento normal.
+     *
+     * @return void
+     */
+    public static function terminar_semilla(): void
+    {
+        self::$semilla_en_curso = false;
+    }
+
+    /**
      * Creación de artículo: si el tenant pasa el gate, se encola la generación del vector.
      *
      * @param Article $article Artículo recién creado.
@@ -121,11 +179,20 @@ class ArticleObserver
      *
      * Limpia el memo para los DOS observers, porque el memo es uno solo.
      *
+     * 🔴 LIMPIA TAMBIÉN EL FLAG DE SEMILLA, y no es de yapa. Los tests que corren el seeder
+     * de la ferretería lo prenden; si uno de esos tests revienta entre `empezar_semilla()` y
+     * el `finally` que lo apaga, el flag queda prendido para TODO el resto de la suite de
+     * PHPUnit, que es un solo proceso. A partir de ahí ningún test de embeddings vuelve a
+     * ver un job despachado y todos fallan por un motivo que no tiene nada que ver con lo
+     * que están probando. Este método ya se llama en el `setUp`/`tearDown` de esos tests,
+     * así que es el lugar donde el reseteo se garantiza solo.
+     *
      * @return void
      */
     public static function resetear_cache_gate(): void
     {
-        self::$cache_gate = [];
+        self::$cache_gate       = [];
+        self::$semilla_en_curso = false;
     }
 
     /**
@@ -145,6 +212,14 @@ class ArticleObserver
      */
     public static function debe_generar_embedding($user_id): bool
     {
+        // 0. Semilla en curso: se corta ANTES QUE NADA, sin mirar usuario ni base. El
+        // seeder ya trae los vectores calculados y los persiste él mismo; encolar el job
+        // sería pagarle a OpenAI por algo que está commiteado en el repo. Ver el docblock
+        // de $semilla_en_curso para el porqué de que el corte viva acá y no en el seeder.
+        if (self::$semilla_en_curso) {
+            return false;
+        }
+
         // 1. Sin dueño no hay a quién preguntarle por la extensión.
         if (empty($user_id)) {
             return false;
