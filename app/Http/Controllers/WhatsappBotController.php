@@ -180,8 +180,9 @@ class WhatsappBotController extends Controller
      *
      * Los campos técnicos (kapso_api_key, phone_number_id, webhook_secret, is_active) se
      * cargan desde ABM → Integraciones (equipo de ComercioCity). Los campos de
-     * configuración funcional del agente (agent_personality, ai_enabled_default,
-     * auto_send_sale_pdf; grupo 137, Prompt 07) se editan desde la pantalla de
+     * configuración funcional del agente (agent_personality, agent_skills,
+     * ai_enabled_default, auto_send_sale_pdf, ai_vision_enabled; grupo 137, Prompt 07, más
+     * la misión personalizacion-agente-whatsapp) se editan desde la pantalla de
      * Configuración del módulo WhatsApp, solo visible para el dueño. Ambas pantallas
      * pegan al mismo endpoint pero cada una manda solo sus propios campos: cada campo
      * se arma con `$request->has(...)` para no pisar con `null`/`false` lo que la otra
@@ -211,6 +212,9 @@ class WhatsappBotController extends Controller
             'ai_confirm_delay_seconds' => 'sometimes|integer|min:0|max:3600',
             // Si el agente mira las fotos que manda el cliente (misión whatsapp-sidebar-multimedia).
             'ai_vision_enabled'        => 'sometimes|boolean',
+            // Habilidades del agente IA (rubro, vocabulario, qué preguntar), texto libre del
+            // dueño (misión personalizacion-agente-whatsapp).
+            'agent_skills'             => 'sometimes|nullable|string|max:5000',
         ]);
 
         // Se arranca vacío y se agrega cada campo solo si vino en el request.
@@ -265,6 +269,12 @@ class WhatsappBotController extends Controller
         // cosa, sin ningún error a la vista.
         if ($request->has('ai_vision_enabled')) {
             $data['ai_vision_enabled'] = (bool) $request->ai_vision_enabled;
+        }
+
+        // Habilidades del agente IA (texto libre definido por el dueño: rubro, vocabulario,
+        // qué preguntar). Mismo motivo que arriba: va en su propio `if`, nunca agrupado.
+        if ($request->has('agent_skills')) {
+            $data['agent_skills'] = $request->agent_skills;
         }
 
         $user_id = $this->userId();
