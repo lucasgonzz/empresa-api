@@ -72,12 +72,16 @@ class Simular_entrante_Test extends TestCase
         ]);
 
         $this->config = WhatsappBotConfig::create([
-            'user_id'            => $this->comercio->id,
-            'kapso_api_key'      => 'kapso-f8-8',
-            'phone_number_id'    => '5491100000008',
-            'webhook_secret'     => 'secreto-f8-8',
-            'is_active'          => true,
-            'ai_enabled_default' => true,
+            'user_id'                  => $this->comercio->id,
+            'kapso_api_key'            => 'kapso-f8-8',
+            'phone_number_id'          => '5491100000008',
+            'webhook_secret'           => 'secreto-f8-8',
+            'is_active'                => true,
+            'ai_enabled_default'       => true,
+            // El toggle nuevo (misión personalizacion-agente-whatsapp, addendum Parte B) nace
+            // apagado por default; este archivo prueba la simulación en sí, no el toggle, así
+            // que se prende acá para no confundir un 422 del gate con un 422 de otra causa.
+            'chat_simulation_enabled'  => true,
         ]);
     }
 
