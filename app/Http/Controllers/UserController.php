@@ -116,7 +116,6 @@ class UserController extends Controller
         $model->sale_ticket_description          = $request->sale_ticket_description;
         $model->sale_ticket_name_font_size       = $request->sale_ticket_name_font_size;
         $model->sale_ticket_price_font_size      = $request->sale_ticket_price_font_size;
-        $model->sale_ticket_logo_full_width      = $request->sale_ticket_logo_full_width;
         $model->siempre_omitir_en_cuenta_corriente          = $request->siempre_omitir_en_cuenta_corriente;
         $model->redondear_centenas_en_vender          = $request->redondear_centenas_en_vender;
         $model->redondear_precios_en_decenas          = $request->redondear_precios_en_decenas;
