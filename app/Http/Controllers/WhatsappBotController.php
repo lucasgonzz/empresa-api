@@ -361,6 +361,11 @@ class WhatsappBotController extends Controller
      * gasta un embedding de OpenAI más una respuesta de Anthropic, y con el límite genérico
      * de 300/min eso eran 300 llamadas pagas por minuto sin techo.
      *
+     * 🔴 Gateado también por `chat_simulation_enabled` (misión personalizacion-agente-whatsapp,
+     * addendum Parte B), apagado de fábrica: sin este guard, el checkbox de la pantalla de
+     * Configuración sería puramente cosmético y cualquiera con Postman podría simular igual
+     * con el toggle "apagado".
+     *
      * @param  Request  $request  Espera `phone` y `body`.
      * @return JsonResponse
      */
@@ -380,6 +385,15 @@ class WhatsappBotController extends Controller
         $config = WhatsappBotConfig::where('user_id', $user_id)->first();
         if (is_null($config)) {
             return response()->json(['message' => 'Todavía no hay una configuración de WhatsApp para esta empresa.'], 422);
+        }
+
+        // El checkbox de la pantalla de Configuración solo esconde el botón: si el endpoint
+        // igual aceptara la llamada, cualquiera con Postman podría simular con el toggle
+        // "apagado". Este guard es lo que hace que el checkbox sea honesto.
+        if (! $config->chat_simulation_enabled) {
+            return response()->json([
+                'message' => 'La simulación de mensajes está desactivada. Activala en Configuración del agente.',
+            ], 422);
         }
 
         $phone = trim((string) $request->phone);
