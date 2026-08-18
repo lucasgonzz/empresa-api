@@ -2,15 +2,20 @@
 
 namespace Database\Seeders;
 
+use App\Console\Commands\HornearEmbeddingsDeSemilla;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\Seeders\ArticleSeederHelper;
+use App\Models\Article;
 use App\Models\Brand;
 use App\Models\Category;
 use App\Models\Description;
 use App\Models\Provider;
 use App\Models\SubCategory;
 use App\Observers\ArticleObserver;
+use App\Services\ArticleEmbeddingService;
+use Carbon\Carbon;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
@@ -187,6 +192,13 @@ class FerreteriaArticlesSeeder extends Seeder
 
             /** Se generan descripciones pensadas para ficha ecommerce. */
             $this->create_descriptions($created_article->id, $item);
+
+            /*
+             * Va DESPUES de create_descriptions() y no antes: la huella se calcula sobre el
+             * texto completo, que incluye las tres descripciones. Corrido para arriba,
+             * ninguna huella coincidiria y los 46 articulos quedarian sin vector.
+             */
+            $this->aplicar_embedding_horneado($created_article, $item);
 
             $article_helper->setStockMovement($created_article, $article_payload);
 
@@ -437,6 +449,13 @@ class FerreteriaArticlesSeeder extends Seeder
     protected $descripciones_del_catalogo = null;
 
     /**
+     * Vectores horneados, leidos una sola vez por corrida desde el JSON del repo.
+     *
+     * @var array<string,array<string,mixed>>|null
+     */
+    protected $embeddings_horneados = null;
+
+    /**
      * Crea las descripciones a medida del articulo, en el orden en que estan escritas.
      *
      * 🔴 EL ORDEN DE INSERCION ES PARTE DEL TEXTO QUE SE VECTORIZA. Cada Description se
@@ -501,6 +520,132 @@ class FerreteriaArticlesSeeder extends Seeder
                 'article_id' => $article_id,
             ]);
         }
+    }
+
+    /**
+     * Le copia al articulo el vector ya horneado que viaja commiteado en el repo, en vez de
+     * salir a generarlo.
+     *
+     * Es la otra mitad del flag de semilla: el flag evita que se DESPACHEN los jobs, y esto
+     * hace que el articulo quede igual de utilizable que si los jobs hubieran corrido. Sin
+     * esto, el catalogo de la demo quedaria sin vectores y el agente de WhatsApp no
+     * encontraria un solo articulo hasta que corriera el comando agendado — y en una demo sin
+     * OPENAI_API_KEY configurada, nunca.
+     *
+     * 🔴 SI LA HUELLA NO COINCIDE, NO SE ESCRIBE NADA. Esta es la decision importante del
+     * metodo y la que hay que defender, porque la tentacion de escribir el vector igual
+     * ("total es casi el mismo texto") produce un error que despues no se cura solo. Las tres
+     * salidas posibles cuando alguien edito una descripcion y no rehorneo:
+     *
+     *   1. Vector viejo + huella NUEVA: GenerateArticleEmbeddingJob corta por huella y no lo
+     *      regenera JAMAS. El agente busca para siempre contra un vector que no corresponde al
+     *      texto del articulo, sin ningun sintoma visible.
+     *   2. Vector viejo + huella VIEJA: el comando agendado lo regenera en el proximo ciclo,
+     *      pero hasta entonces la busqueda usa un vector que miente.
+     *   3. Nada (lo que hace este metodo): el articulo queda con embedding NULL, que es
+     *      exactamente el filtro con el que articles:generate-embeddings lo levanta. Se
+     *      regenera solo en el proximo ciclo y mientras tanto simplemente no aparece en la
+     *      busqueda semantica, que es lo honesto.
+     *
+     * Un vector que falta se cura solo; uno que miente se queda.
+     *
+     * @param \App\Models\Article $article Articulo recien creado, con sus descripciones ya cargadas.
+     * @param array<string,mixed> $item Fila del catalogo.
+     * @return void
+     */
+    protected function aplicar_embedding_horneado($article, $item)
+    {
+        /** Datos horneados para este articulo; null si el archivo no lo tiene. */
+        $horneado = $this->embedding_horneado_de($item['name']);
+
+        if (is_null($horneado)) {
+            Log::warning(
+                'FerreteriaArticlesSeeder: no hay embedding horneado para "' . $item['name'] . '", '
+                . 'el articulo queda sin vector hasta que corra articles:generate-embeddings. '
+                . 'Para hornearlo: php artisan semilla:embeddings',
+                ['name' => $item['name'], 'article_id' => $article->id]
+            );
+
+            return;
+        }
+
+        /** @var ArticleEmbeddingService $service */
+        $service = app(ArticleEmbeddingService::class);
+
+        /*
+         * Se recarga el articulo desde la base en vez de usar el que viene por parametro: el
+         * texto que se vectoriza incluye categoria, marca y las tres descripciones, y esas
+         * relaciones no estan cargadas en la instancia que devolvio crear_article(). Sin la
+         * recarga, embedding_for_article() armaria un texto sin descripciones y la huella no
+         * coincidiria nunca con la horneada.
+         */
+        $fresco = Article::with(['category', 'brand', 'descriptions'])->find($article->id);
+
+        if (is_null($fresco)) {
+            return;
+        }
+
+        $hash = sha1($service->embedding_for_article($fresco));
+
+        if ($hash !== $horneado['source_hash']) {
+            Log::warning(
+                'FerreteriaArticlesSeeder: el embedding horneado de "' . $item['name'] . '" quedo viejo '
+                . '(cambio el nombre, la marca, la categoria o alguna descripcion). El articulo queda '
+                . 'SIN vector a proposito, para no dejar guardado uno que no corresponde al texto. '
+                . 'Rehorneá con: php artisan semilla:embeddings',
+                ['name' => $item['name'], 'article_id' => $article->id]
+            );
+
+            return;
+        }
+
+        $service->persistir_embedding($article->id, $horneado['embedding']);
+
+        /*
+         * La huella se guarda junto con el vector, y es lo que hace que esto no se pague nunca
+         * mas: el proximo GenerateArticleEmbeddingJob que agarre este articulo va a recalcular
+         * el texto, ver la misma huella y cortar antes de llamar a OpenAI.
+         */
+        DB::table('articles')
+            ->where('id', $article->id)
+            ->update([
+                'embedding_generated_at' => Carbon::now(),
+                'embedding_source_hash'  => $hash,
+            ]);
+    }
+
+    /**
+     * Vector horneado de un articulo del catalogo, o null si no esta en el archivo.
+     *
+     * El archivo se lee UNA sola vez por corrida, igual que el de descripciones: son ~700 KB
+     * de JSON y decodificarlo 46 veces seria gratuito de evitar.
+     *
+     * @param string $nombre Valor exacto de $item['name'].
+     * @return array<string,mixed>|null
+     */
+    protected function embedding_horneado_de($nombre)
+    {
+        if (is_null($this->embeddings_horneados)) {
+            $ruta = HornearEmbeddingsDeSemilla::ruta_del_archivo();
+
+            /** Contenido decodificado del archivo, o array vacio si todavia no se horneo nunca. */
+            $crudo = is_file($ruta)
+                ? json_decode((string) file_get_contents($ruta), true)
+                : null;
+
+            $this->embeddings_horneados = (is_array($crudo) && isset($crudo['articulos']) && is_array($crudo['articulos']))
+                ? $crudo['articulos']
+                : [];
+        }
+
+        if (!isset($this->embeddings_horneados[$nombre])
+            || !isset($this->embeddings_horneados[$nombre]['source_hash'])
+            || !isset($this->embeddings_horneados[$nombre]['embedding'])) {
+
+            return null;
+        }
+
+        return $this->embeddings_horneados[$nombre];
     }
 
     /**
