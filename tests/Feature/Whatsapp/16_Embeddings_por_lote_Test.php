@@ -510,6 +510,92 @@ class Embeddings_por_lote_Test extends TestCase
     }
 
     /**
+     * Caso 7 bis. Una tanda que quedó TRABADA en 'despachando' también vence.
+     *
+     * 🔴 ESTE CASO SALIÓ DE UN BORDE REAL, encontrado releyendo el código antes de mergear, y
+     * está acá para que no vuelva.
+     *
+     * El comando crea la tanda en 'despachando' y la pasa a 'en_proceso' recién cuando terminó
+     * de despachar. Si muere en el medio —un error de base a mitad de un `chunkById`, el proceso
+     * del scheduler matado—, la tanda se queda en 'despachando' y NO HAY NADIE que vuelva a
+     * mover ese status.
+     *
+     * La primera versión del finalizador cortaba por 'despachando' ANTES de mirar el
+     * vencimiento, así que en ese escenario se re-despachaba cada quince segundos hasta agotar
+     * los 120 `tries`: media hora de intentos que no podían terminar en nada. La familia del
+     * error es "un guard que corta antes de la salida de emergencia": el corte estaba bien, lo
+     * que estaba mal era su orden respecto del vencimiento.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function una_tanda_trabada_en_despachando_tambien_vence()
+    {
+        $tanda = $this->crear_tanda([
+            'status'     => 'despachando',
+            'total_jobs' => 0,
+            'terminados' => 0,
+            'generados'  => 0,
+        ]);
+
+        $tanda = $this->envejecer_tanda($tanda, FinalizeEmbeddingRun::MINUTOS_PARA_VENCER + 5);
+
+        Queue::fake();
+        Event::fake([ArticleEmbeddingsBatchGenerated::class]);
+
+        (new FinalizeEmbeddingRun($tanda->id))->handle();
+
+        // Lo que importa: NO se vuelve a encolar. Con el orden viejo, acá había un re-despacho.
+        Queue::assertNotPushed(FinalizeEmbeddingRun::class);
+
+        $tanda = EmbeddingRun::find($tanda->id);
+
+        $this->assertEquals('vencida', $tanda->status);
+        $this->assertNotNull($tanda->notificado_at, 'El candado se escribe igual, así un re-despacho tardío no la reabre.');
+
+        // Y no avisa nada, porque no alcanzó a generar ni un vector.
+        Event::assertNotDispatched(ArticleEmbeddingsBatchGenerated::class);
+    }
+
+    /**
+     * Caso 7 ter. Una tanda RECIÉN creada en 'despachando' no se cierra: el comando todavía
+     * está metiendo jobs y `total_jobs` no es definitivo.
+     *
+     * Es la contracara del caso de arriba, y hace falta para que el arreglo del vencimiento no
+     * se haya llevado puesto el corte original: sin este test, alguien podría sacar el chequeo
+     * de 'despachando' entero y el caso seguiría verde.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function una_tanda_recien_creada_en_despachando_no_se_cierra()
+    {
+        $tanda = $this->crear_tanda([
+            'status'     => 'despachando',
+            'total_jobs' => 0,
+            'terminados' => 0,
+            'generados'  => 0,
+        ]);
+
+        Queue::fake();
+        Event::fake([ArticleEmbeddingsBatchGenerated::class]);
+
+        (new FinalizeEmbeddingRun($tanda->id))->handle();
+
+        /*
+         * 🔴 Si esto se cerrara, la comparación `terminados (0) >= total_jobs (0)` daría por
+         * terminada una tanda a la que no se le despachó todavía ni un job.
+         */
+        Queue::assertPushed(FinalizeEmbeddingRun::class);
+        Event::assertNotDispatched(ArticleEmbeddingsBatchGenerated::class);
+
+        $tanda = EmbeddingRun::find($tanda->id);
+
+        $this->assertEquals('despachando', $tanda->status);
+        $this->assertNull($tanda->notificado_at);
+    }
+
+    /**
      * Caso 8. 🔴 IDEMPOTENCIA: correr el finalizador dos veces sobre la misma tanda avisa UNA
      * sola vez.
      *

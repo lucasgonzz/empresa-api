@@ -135,16 +135,34 @@ class FinalizeEmbeddingRun implements ShouldQueue
          * que no se le despachó todavía ni un job.
          */
         if ($run->status === 'despachando') {
+            /*
+             * Pero el corte por 'despachando' TAMBIÉN vence, y por eso el chequeo está duplicado
+             * acá adentro en vez de vivir solo más abajo.
+             *
+             * El comando crea la tanda en 'despachando' y la pasa a 'en_proceso' recién cuando
+             * terminó de despachar. Si muere en el medio —un error de base a mitad de un
+             * `chunkById`, el proceso del scheduler matado— la tanda se queda en 'despachando'
+             * para siempre. Sin esta salida, este job se re-despacharía cada quince segundos
+             * hasta agotar los 120 `tries`: media hora de intentos que no pueden terminar en
+             * nada, porque no hay nadie que vaya a mover ese status.
+             */
+            if (Carbon::now()->greaterThanOrEqualTo($this->vence_at($run))) {
+                Log::channel('daily')->warning('FinalizeEmbeddingRun: la tanda quedó trabada en despachando y venció.', [
+                    'embedding_run_id' => $run->id,
+                ]);
+
+                $this->cerrar($run, 'vencida');
+
+                return;
+            }
+
             $this->volver_a_intentar();
 
             return;
         }
 
         if ((int) $run->terminados < (int) $run->total_jobs) {
-            /** Momento a partir del cual se deja de esperar a los jobs que faltan. */
-            $vence_at = Carbon::parse($run->created_at)->addMinutes(self::MINUTOS_PARA_VENCER);
-
-            if (Carbon::now()->lessThan($vence_at)) {
+            if (Carbon::now()->lessThan($this->vence_at($run))) {
                 $this->volver_a_intentar();
 
                 return;
@@ -167,6 +185,24 @@ class FinalizeEmbeddingRun implements ShouldQueue
         }
 
         $this->cerrar($run, 'completada');
+    }
+
+    /**
+     * Momento a partir del cual la tanda se da por abandonada.
+     *
+     * Está en un método para que las dos salidas por vencimiento —la tanda trabada en
+     * 'despachando' y la que espera jobs que no llegan— usen exactamente el mismo reloj. Si se
+     * calculara en dos lugares, alcanzaría con que alguien tocara uno para que las dos puntas
+     * dejaran de coincidir, y el desacuerdo no daría ningún error: solo tandas que cierran a
+     * destiempo.
+     *
+     * @param EmbeddingRun $run
+     *
+     * @return \Carbon\Carbon
+     */
+    protected function vence_at(EmbeddingRun $run)
+    {
+        return Carbon::parse($run->created_at)->addMinutes(self::MINUTOS_PARA_VENCER);
     }
 
     /**
