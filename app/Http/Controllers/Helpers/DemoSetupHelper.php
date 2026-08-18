@@ -417,6 +417,16 @@ class DemoSetupHelper
             'sugerencias_compras',
             'motor_de_ofertas',
             'tracking_buyers',
+
+            /*
+                D2 (18/8/2026): el ítem de menú de WhatsApp lo gatea 'whatsapp'
+                (empresa-spa/src/router/routes.js), no 'whatsapp_ia'. Sin 'whatsapp' el
+                módulo no aparece nunca en el menú, aunque se asigne 'whatsapp_ia' a mano
+                desde /user/extencions/edit. Van las dos juntas: 'whatsapp_ia' sola no tiene
+                ningún efecto visible porque el módulo que la usa ni se muestra.
+            */
+            'whatsapp',
+            'whatsapp_ia',
         ];
     }
 
