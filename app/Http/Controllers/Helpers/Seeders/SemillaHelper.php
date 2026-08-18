@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
 use App\Http\Controllers\Helpers\PaymentMethodHelper;
 use App\Http\Controllers\Helpers\expense\ExpenseCajaHelper;
+use App\Models\AfipInformation;
 use App\Models\AfipTicket;
 use App\Models\Article;
 use App\Models\CreditAccount;
@@ -528,6 +529,13 @@ class SemillaHelper
      * EMISIÓN), no por `created_at` de la venta -- por eso este método completa ese campo
      * explícitamente y no confía en el timestamp automático.
      *
+     * 🔴 Nunca llama a la AFIP real (ni WSAA ni WSFE, ni pasa por el CDR): el `cae` y el resto de
+     * los datos del comprobante son ficticios y fijos, igual que hace `AfipTicketSeeder.php`. Sin
+     * un `cae` no vacío, `AfipTicketController::problemas_al_facturar()` (que filtra
+     * `whereNull('cae')->orWhere('cae', '')`) marca CADA venta facturada por la semilla como error
+     * de facturación, aunque `resultado` diga 'A' -- ese era el bug: comprobantes aprobados que
+     * igual aparecían en la pantalla de "Problemas al facturar".
+     *
      * @param string|\Carbon\Carbon $fecha
      * @param int $sale_id
      * @param float $importe_iva
@@ -540,6 +548,11 @@ class SemillaHelper
         Carbon::setTestNow(Carbon::parse($fecha));
 
         try {
+            // Datos fiscales del emisor: si el usuario sembrado ya tiene un punto de venta AFIP
+            // cargado (alta de demo, `DemoSetupHelper::puntos_de_venta_afip()`), se usa el suyo;
+            // si no, el mismo CUIT/punto de venta ficticio de siempre.
+            $afip_information = AfipInformation::where('user_id', config('semilla.user_id'))->first();
+
             $afip_ticket = AfipTicket::create([
                 'sale_id'             => $sale_id,
                 'resultado'           => 'A',
@@ -557,6 +570,27 @@ class SemillaHelper
                 // mostrar. Quedan en null si el llamador no las manda, que es como venían.
                 'cbte_letra'          => $cbte_letra,
                 'cbte_tipo'           => $cbte_tipo,
+                // Contacto ficticio del negocio: el mismo CUIT/punto de venta que
+                // `DemoSetupHelper::puntos_de_venta_afip()` da de alta para el "Responsable
+                // Inscripto" de la demo, como fallback si el usuario sembrado no tiene AfipInformation.
+                'cuit_negocio'        => optional($afip_information)->cuit ?? '20175018841',
+                'iva_negocio'         => 'Responsable inscripto',
+                'punto_venta'         => optional($afip_information)->punto_venta ?? 4,
+                'moneda_id'           => 'PES',
+                'concepto'            => 'Productos',
+                // Contacto ficticio del cliente: venta de mostrador o cuenta corriente, la semilla
+                // nunca conoce un CUIT real -- consumidor final, como en el camino real cuando no
+                // hay AfipInformation de cliente.
+                'cuit_cliente'        => 'NR',
+                'iva_cliente'         => 'Consumidor Final',
+                // Ningún reporte de ContabilidadRepository lee `cae` ni `cae_expired_at` (filtran
+                // por `resultado` y `afip_fecha_emision`, ver PHPDoc de la clase); estos dos
+                // campos existen solo para que la pantalla de comprobantes no muestre la venta
+                // como un problema de facturación. Valor fijo, no aleatorio, para no romper
+                // `4_Semilla_Test.php` si algún día empieza a comparar comprobante por comprobante.
+                'cae'                 => '61234567890123',
+                'cae_expired_at'      => Carbon::now()->addDays(10),
+                'afip_information_id' => optional($afip_information)->id,
             ]);
 
             $this->registrar('comprobante_de_venta', $fecha, $importe_iva, $afip_ticket);
