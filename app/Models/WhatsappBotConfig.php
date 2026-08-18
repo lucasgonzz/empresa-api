@@ -25,6 +25,10 @@ class WhatsappBotConfig extends Model
         // viaja a Anthropic como texto o como bloques con la imagen en base64: un '0' string
         // es truthy en PHP y prendería la visión (y su costo) en TODOS los negocios.
         'ai_vision_enabled' => 'boolean',
+        // Si el dueño habilitó el botón de simular mensajes del cliente dentro de la
+        // conversación (y en la bandeja). Mismo motivo que `ai_vision_enabled`: MySQL
+        // devuelve 0/1 como string y un '0' string es truthy en PHP.
+        'chat_simulation_enabled' => 'boolean',
     ];
 
     /**

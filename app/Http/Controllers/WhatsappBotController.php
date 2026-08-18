@@ -181,10 +181,10 @@ class WhatsappBotController extends Controller
      * Los campos técnicos (kapso_api_key, phone_number_id, webhook_secret, is_active) se
      * cargan desde ABM → Integraciones (equipo de ComercioCity). Los campos de
      * configuración funcional del agente (agent_personality, agent_skills,
-     * ai_enabled_default, auto_send_sale_pdf, ai_vision_enabled; grupo 137, Prompt 07, más
-     * la misión personalizacion-agente-whatsapp) se editan desde la pantalla de
-     * Configuración del módulo WhatsApp, solo visible para el dueño. Ambas pantallas
-     * pegan al mismo endpoint pero cada una manda solo sus propios campos: cada campo
+     * ai_enabled_default, auto_send_sale_pdf, ai_vision_enabled, chat_simulation_enabled;
+     * grupo 137, Prompt 07, más la misión personalizacion-agente-whatsapp) se editan desde
+     * la pantalla de Configuración del módulo WhatsApp, solo visible para el dueño. Ambas
+     * pantallas pegan al mismo endpoint pero cada una manda solo sus propios campos: cada campo
      * se arma con `$request->has(...)` para no pisar con `null`/`false` lo que la otra
      * pantalla ya tiene guardado.
      */
@@ -215,6 +215,9 @@ class WhatsappBotController extends Controller
             // Habilidades del agente IA (rubro, vocabulario, qué preguntar), texto libre del
             // dueño (misión personalizacion-agente-whatsapp).
             'agent_skills'             => 'sometimes|nullable|string|max:5000',
+            // Si el dueño habilitó el botón de simular mensajes del cliente en la conversación
+            // y en la bandeja (misión personalizacion-agente-whatsapp, addendum Parte B).
+            'chat_simulation_enabled'  => 'sometimes|boolean',
         ]);
 
         // Se arranca vacío y se agrega cada campo solo si vino en el request.
@@ -275,6 +278,15 @@ class WhatsappBotController extends Controller
         // qué preguntar). Mismo motivo que arriba: va en su propio `if`, nunca agrupado.
         if ($request->has('agent_skills')) {
             $data['agent_skills'] = $request->agent_skills;
+        }
+
+        // Si el botón de simular mensajes del cliente está habilitado (en la conversación y en
+        // la bandeja). Apagado de fábrica: ver la migración que lo agrega.
+        //
+        // 🔴 MISMO MOTIVO QUE `ai_vision_enabled` ARRIBA: va en su propio `if`, nunca agrupado
+        // con otro campo. Las dos pantallas de configuración pegan a este mismo endpoint.
+        if ($request->has('chat_simulation_enabled')) {
+            $data['chat_simulation_enabled'] = (bool) $request->chat_simulation_enabled;
         }
 
         $user_id = $this->userId();
