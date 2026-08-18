@@ -148,6 +148,14 @@ class DemoSetupHelper
         // El ExtencionSeeder debe correr antes del sync para que existan los registros
         Artisan::call('db:seed', ['--class' => 'ExtencionSeeder', '--force' => true]);
 
+        /*
+            D2 (18/8/2026): 'whatsapp' NO esta en ExtencionSeeder -- vive solo en este seeder
+            standalone (pensado justamente para correr aparte en bases existentes). Sin esta
+            linea, el whereIn('slug', $extencions) de mas abajo no encuentra la fila y el
+            sync() la omite en silencio, aunque 'whatsapp' este en base_extencions().
+        */
+        Artisan::call('db:seed', ['--class' => 'ExtencionEmpresaWhatsappSeeder', '--force' => true]);
+
         // Vinculamos las extensiones elegidas al usuario
         $extModels = ExtencionEmpresa::whereIn('slug', $extencions)->get();
         $user->extencions()->sync($extModels->pluck('id'));
@@ -417,6 +425,16 @@ class DemoSetupHelper
             'sugerencias_compras',
             'motor_de_ofertas',
             'tracking_buyers',
+
+            /*
+                D2 (18/8/2026): el ítem de menú de WhatsApp lo gatea 'whatsapp'
+                (empresa-spa/src/router/routes.js), no 'whatsapp_ia'. Sin 'whatsapp' el
+                módulo no aparece nunca en el menú, aunque se asigne 'whatsapp_ia' a mano
+                desde /user/extencions/edit. Van las dos juntas: 'whatsapp_ia' sola no tiene
+                ningún efecto visible porque el módulo que la usa ni se muestra.
+            */
+            'whatsapp',
+            'whatsapp_ia',
         ];
     }
 
