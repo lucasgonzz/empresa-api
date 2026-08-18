@@ -17,11 +17,15 @@ use Illuminate\Support\Facades\Storage;
  * pero sin enviarse ni persistirse) y el resumen de una conversación (`summary`).
  *
  * El system prompt siempre se arma en el mismo orden: personalidad configurable por el
- * dueño (`whatsapp_bot_configs.agent_personality`) primero, y después las reglas fijas
- * no negociables, que pisan a la personalidad ante cualquier conflicto (ej: si el dueño
- * escribe una personalidad que le pide "inventar precios si no sabés", la regla fija
- * igual lo prohíbe porque se agrega siempre después y el prompt le indica a la IA que
- * las reglas fijas ganan).
+ * dueño (`whatsapp_bot_configs.agent_personality`) primero, después las habilidades
+ * configurables por el dueño (`whatsapp_bot_configs.agent_skills`; misión
+ * personalizacion-agente-whatsapp) y por último las reglas fijas no negociables, que pisan
+ * a todo lo anterior ante cualquier conflicto (ej: si el dueño escribe una personalidad o
+ * unas habilidades que piden "inventar precios si no sabés", la regla fija igual lo
+ * prohíbe porque se agrega siempre al final y el prompt le indica a la IA que las reglas
+ * fijas ganan). A diferencia de la personalidad, las habilidades no tienen un default: si
+ * el dueño no cargó ninguna, esa capa directamente no se agrega y el prompt queda igual
+ * que en las empresas que no configuraron nada.
  */
 class WhatsappBotAiService
 {
@@ -513,8 +517,9 @@ SUMMARY;
 
     /**
      * Arma el system prompt final: personalidad configurable (o la default) primero,
-     * reglas fijas no negociables después, la consigna del marcador de foto, y por último
-     * el nombre del negocio como contexto adicional.
+     * después las habilidades configurables (si el dueño cargó alguna), reglas fijas no
+     * negociables después, la consigna del marcador de foto, y por último el nombre del
+     * negocio como contexto adicional.
      *
      * 🔴 LA CONSIGNA DE LA FOTO VA DESPUÉS DE LAS REGLAS FIJAS Y NO ADENTRO DE ELLAS, aunque
      * las reglas fijas serían el lugar obvio. Dos motivos: una de esas reglas dice "texto
@@ -561,7 +566,19 @@ SUMMARY;
             .'Poné como mucho una por respuesta, y solo si estás recomendando un producto puntual: si estás'
             .' listando varios, o no estás recomendando ninguno, no la pongas.';
 
-        $blocks = [$personality, self::FIXED_RULES, $photo_rule];
+        $blocks = [$personality];
+
+        // Habilidades del agente IA (rubro, vocabulario, qué preguntar), texto libre del
+        // dueño. A diferencia de la personalidad NO tiene default: si viene vacío no se
+        // agrega nada al array, y el prompt queda idéntico al de antes de esta capa (garantía
+        // de no-regresión para las empresas que no configuren nada).
+        $skills = trim((string) $config->agent_skills);
+        if ($skills !== '') {
+            $blocks[] = $skills;
+        }
+
+        $blocks[] = self::FIXED_RULES;
+        $blocks[] = $photo_rule;
 
         $business_name = $this->business_name($config);
         if ($business_name !== '') {
