@@ -123,7 +123,6 @@ class UserController extends Controller
         $model->sale_ticket_description          = $request->sale_ticket_description;
         $model->sale_ticket_name_font_size       = $request->sale_ticket_name_font_size;
         $model->sale_ticket_price_font_size      = $request->sale_ticket_price_font_size;
-        $model->sale_ticket_logo_full_width      = $request->sale_ticket_logo_full_width;
         $model->siempre_omitir_en_cuenta_corriente          = $request->siempre_omitir_en_cuenta_corriente;
 
         // Tarea 4: las cuatro tildes de redondeo se reemplazaron por el select "Opciones de
