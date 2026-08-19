@@ -34,6 +34,9 @@ class ExtraFiltersHelper
      *   exactamente 0). El 0 solo se descarta para el operador legacy 'category' (donde significa
      *   "todas").
      * - Los operadores fuera de la whitelist se ignoran en silencio (nunca ejecutan SQL arbitrario).
+     * - 'address_stock_seteado' no filtra por columna sino por relación (whereHas sobre addresses,
+     *   más las de las variantes si el modelo las tiene): deja pasar los modelos que tienen seteada
+     *   la relación con esa sucursal, cualquiera sea el valor del pivote. Valor 0 = "todas".
      *
      * @param \Illuminate\Database\Eloquent\Builder $models Query base (ya armada, típicamente después
      *        del where(function...) del grupo OR de texto).
@@ -63,9 +66,16 @@ class ExtraFiltersHelper
             $value = isset($extra_filter['value']) ? $extra_filter['value'] : null;
 
             // Validación de la key contra el schema real de la tabla, SIEMPRE, antes de usarla en
-            // cualquier where. Excepción única: el operador legacy 'category', que no usa la key
-            // recibida sino que fuerza 'category_id' (ver más abajo).
-            if ($operator != 'category' && !Schema::hasColumn($table, $key)) {
+            // cualquier where. Excepciones: los operadores que NO filtran por una columna de la
+            // tabla del modelo y por lo tanto no tienen ninguna key que validar —'category' fuerza
+            // 'category_id', y 'address_stock_seteado' filtra por una RELACIÓN, no por una columna
+            // (articles no tiene address_id: el vínculo vive en el pivote address_article).
+            //
+            // Es una lista y no un `!=` encadenado a propósito: el `!= 'category'` que había acá
+            // ya era el segundo operador que necesitaba la excepción y el tercero volvería a
+            // alargar la condición en vez de agregar un elemento.
+            $operadores_sin_key = ['category', 'address_stock_seteado'];
+            if (!in_array($operator, $operadores_sin_key) && !Schema::hasColumn($table, $key)) {
                 continue;
             }
 
@@ -110,6 +120,55 @@ class ExtraFiltersHelper
                 // El 0 (o vacío) significa "todas las categorías": no se filtra.
                 if ($value != 0 && $value !== '' && $value !== null) {
                     $models = $models->where('category_id', $value);
+                }
+            } else if ($operator == 'address_stock_seteado') {
+                // Filtro por SUCURSAL del listado de artículos: deja pasar solo los artículos a los
+                // que en algún momento se les seteó el stock de esa sucursal, sin mirar el valor.
+                // Una fila en el pivote con amount 0, negativo o null cuenta igual que una con
+                // stock positivo: lo que se pregunta es si la relación existe, no cuánto hay.
+                //
+                // Por eso es whereHas y NO un where sobre pivot.amount: cualquier comparación
+                // numérica dejaría afuera justo los tres casos que Lucas pidió incluir (19/8/2026).
+                //
+                // El 0 significa "todas las sucursales" y no filtra nada. Se descarta acá adentro y
+                // no en el $sin_filtro de arriba porque aquel deja pasar el 0 a propósito (para '='
+                // sobre una columna numérica, "igual a 0" es un filtro legítimo). Mismo patrón que
+                // el operador 'category'.
+                $model_instance = $models->getModel();
+
+                if ($value != 0 && method_exists($model_instance, 'addresses')) {
+
+                    // ¿El modelo tiene variantes con stock propio por sucursal? (articles sí,
+                    // cualquier otro modelo con addresses() probablemente no).
+                    $tiene_variantes = method_exists($model_instance, 'article_variants');
+
+                    // 🔴 El where(function(){}) que envuelve al OR no es decorativo. Sin él, el
+                    // orWhereHas se suelta y se OR-ea contra TODA la query de arriba —el
+                    // where('user_id'), el grupo de coincidencia de texto y los filtros de
+                    // columna—, así que el filtro de sucursal traería artículos de otros usuarios
+                    // y de otras búsquedas. Agrupado, el OR queda contenido y el conjunto entero
+                    // se AND-ea con lo anterior, que es lo que un filtro tiene que hacer.
+                    $models = $models->where(function ($query) use ($value, $tiene_variantes) {
+
+                        $query->whereHas('addresses', function ($sub_query) use ($value) {
+                            $sub_query->where('addresses.id', $value);
+                        });
+
+                        // Un artículo con variantes no guarda su stock por sucursal en
+                        // address_article sino en address_article_variant, una fila por variante.
+                        // La columna "Sucursal X" de la tabla YA los muestra: get_address_stock()
+                        // del mixin payment_method_discounts_addresses_columns.js cae a sumar el
+                        // stock de las variantes cuando el artículo no tiene fila propia.
+                        //
+                        // Si este filtro mirara solo address_article, un artículo con un número
+                        // visible en la columna de Sucursal X desaparecería al filtrar por
+                        // Sucursal X. Desde la pantalla eso se lee como un bug, no como una regla.
+                        if ($tiene_variantes) {
+                            $query->orWhereHas('article_variants.addresses', function ($sub_query) use ($value) {
+                                $sub_query->where('addresses.id', $value);
+                            });
+                        }
+                    });
                 }
             } else if ($operator == 'stock_option') {
                 // Operador legacy: mismos valores que el select de stock del frontend.
