@@ -280,6 +280,14 @@ class Pipeline_y_prioridad_Test extends TestCase
         $this->assertNotNull($conversation, 'la conversación existe ANTES del aviso: ese es el arreglo que este test protege');
         $this->assertEquals('listo', $suggestion->fresh()->resumen_ia_estado);
 
+        // El título lleva la fecha en que se generó la corrida, no su id (pedido de Lucas,
+        // 19/8/2026). De las tres familias que cambiaron de formato, ésta era la única que
+        // quedaba sin blindar.
+        $this->assertEquals(
+            'Ofertas sugeridas ' . $suggestion->created_at->format('d/m/Y'),
+            $conversation->titulo
+        );
+
         Notification::assertSentTo($this->comercio, GlobalNotification::class, function ($notification) use ($conversation) {
             return array_column($notification->functions_to_execute, 'btn_text') === ['Ver las ofertas', 'Charlar con la IA', 'Entendido']
                 && (int) $notification->info_to_show[0]['ai_conversation_id'] === $conversation->id;
