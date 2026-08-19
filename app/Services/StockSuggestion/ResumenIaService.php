@@ -5,6 +5,7 @@ namespace App\Services\StockSuggestion;
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Models\Address;
 use App\Models\StockSuggestionArticle;
+use App\Services\Traits\TonoDeRedaccionIa;
 use Illuminate\Support\Facades\Http;
 
 /**
@@ -17,6 +18,8 @@ use Illuminate\Support\Facades\Http;
  */
 class ResumenIaService
 {
+    use TonoDeRedaccionIa;
+
     /** Techo de tokens de la respuesta (un resumen de 6 oraciones sobra). */
     const MAX_TOKENS = 700;
 
@@ -50,13 +53,14 @@ class ResumenIaService
      */
     public function armar_prompt($suggestion): string
     {
-        $prompt = "Sos el encargado de depósito de un comercio argentino. Escribí un resumen breve y ameno, tuteando en rioplatense, sobre los traslados de stock entre sucursales que el sistema ya calculó: qué conviene mover primero y por qué (menos días de cobertura = el stock se acaba antes).\n\n"
+        $prompt = "Sos el encargado de depósito de un comercio argentino. Escribí un resumen breve y claro, tuteando, sobre los traslados de stock entre sucursales que el sistema ya calculó: qué conviene mover primero y por qué (menos días de cobertura = el stock se acaba antes).\n\n"
             . $this->armar_datos($suggestion) . "\n\n"
             . "Reglas:\n"
             . "- No recalcules ni inventes cantidades: usa exactamente estas.\n"
             . "- Maximo 6 oraciones.\n"
             . "- Sin listas ni markdown: texto corrido.\n"
-            . "- No saludes ni te presentes.\n\n"
+            . "- No saludes ni te presentes.\n"
+            . $this->reglas_de_tono() . "\n\n"
             . "Responde solo con el texto plano del resumen.";
 
         return $prompt;
