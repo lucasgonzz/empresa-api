@@ -14,9 +14,17 @@ use Illuminate\Support\Facades\Schema;
  * con el "#id" para siempre y conviven dos formatos en la misma lista — que es
  * justamente lo que se venía a sacar.
  *
- * 🔴 SOLO toca filas cuyo título calza EXACTO con el patrón viejo "<prefijo> #<numero>".
- * Un título que la persona haya editado, o uno inferido por la IA para una conversación
- * normal, no matchea y no se toca. La condición por `origen` sola no alcanzaría.
+ * 🔴 El filtro es doble —`origen` de la familia Y `titulo LIKE '<prefijo> #%'`— y hacen
+ * falta los dos: por `origen` solo se pisarían los títulos que la IA infirió, y por
+ * `titulo` solo se pisarían conversaciones de otra familia que arranquen igual.
+ *
+ * ⚠️ El `LIKE` lleva comodín abierto al final, o sea que "Sugerencia de stock #47 (revisar
+ * con el proveedor)" también matchearía y perdería el texto agregado. Hoy eso NO puede
+ * pasar: no existe endpoint para renombrar una conversación (`routes/api.php` expone
+ * index, store, destroy, messages, send_message y show_message, y nada más), así que el
+ * único que escribe estos títulos es el job y el formato es fijo. **Si algún día se agrega
+ * el renombrado, esta migración ya corrió y no vuelve a correr — pero el patrón de acá no
+ * sirve de molde para la próxima.**
  *
  * La fecha sale del `created_at` de la SUGERENCIA, igual que el título nuevo. Si la
  * sugerencia ya no existe (se borró y la conversación quedó), cae al `created_at` de la
@@ -87,6 +95,11 @@ class RenombrarTitulosDeConversacionesDeSugerencia extends Migration
      *
      * Es exactamente reversible porque el id de la sugerencia sigue guardado en
      * `referencia_id`: el título viejo no llevaba ningún dato que no esté en la fila.
+     *
+     * ⚠️ Acá el LIKE es más ancho que el del `up()` (`'<prefijo> %'`, sin el `#`), porque
+     * después del renombrado el `#` ya no está. Con los títulos que el sistema genera hoy
+     * alcanza exactamente el mismo conjunto que tocó el `up()`; la asimetría solo
+     * importaría si alguna vez se pudiera editar el título a mano.
      *
      * @return void
      */
